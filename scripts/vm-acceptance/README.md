@@ -81,6 +81,14 @@ fails unless every requested swap is the layer its slot runs; the report's heade
 the swaps. A base more than 20 commits behind `ref` gets a warning at the top of the
 summary: everything not swapped is the base's code.
 
+If base slot creation returns the canonical structured display-change timeout, a run
+explicitly swapping Shell may apply that candidate first to its observed, active,
+owned base slot. It then repeats canonical creation once and requires the original
+outputs, scales and throwaway identity to be verified before testing. Other errors
+fail immediately. P01 records the early Shell swap exactly once alongside the base
+slot and candidate-create receipts; a failed bootstrap still cleans up the owned VM.
+
+
 The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the job installs
 libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks), and runs `run.py` as an
 unprivileged user (root cannot hand passt its socket in a session). The runners have no

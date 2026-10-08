@@ -20,6 +20,21 @@ from pathlib import Path
 class VmError(RuntimeError):
     """A tilo-vm command failed; carries its output for the report."""
 
+    def __init__(self, message: str, *, command: tuple[str, ...] = (),
+                 returncode: int | None = None, stdout: str = "", stderr: str = ""):
+        super().__init__(message)
+        self.command = command
+        self.returncode = returncode
+        self.data = None
+        for stream in (stdout, stderr):
+            try:
+                value = json.loads(stream)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(value, dict) and isinstance(value.get("error"), str):
+                self.data = value
+                break
+
     def reason(self) -> str:
         """The innermost `error ...` line, without tilo-vm's hints and receipt."""
         lines = [l.strip() for l in str(self).splitlines() if "error" in l]
@@ -64,7 +79,9 @@ class TiloVm:
             said = (proc.stderr or proc.stdout).strip()
             if len(said) > 1200:
                 said = said[:300] + " […] " + said[-900:]
-            raise VmError(f"`tilo-vm {shlex.join(args)[:200]}` exited {proc.returncode}: {said}")
+            raise VmError(f"`tilo-vm {shlex.join(args)[:200]}` exited {proc.returncode}: {said}",
+                          command=tuple(args), returncode=proc.returncode,
+                          stdout=proc.stdout, stderr=proc.stderr)
         return proc.stdout
 
     def _log(self, cmd, code, elapsed, out, err):

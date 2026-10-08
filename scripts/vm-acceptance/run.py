@@ -167,22 +167,19 @@ def renderer(vm: TiloVm) -> tuple[str, dict]:
     return label + text, display
 
 
-def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
-    helptext = vm.run("slot", "create", "--help", slot=False)
-    args = ["slot", "create", vm.slot, "--headful", "--outputs", ",".join(outputs)]
+def slot_create(vm: TiloVm, outputs: list[str], locale: str | None,
+                source: Path | None = None) -> dict:
+    helptext = vm.run("slot", "create", "--help", slot=False, cwd=source)
+    args = ["--json", "slot", "create", vm.slot, "--headful", "--outputs", ",".join(outputs)]
     # A throwaway test identity where this tilo-vm can mint one (`slot create --identity`).
     if "--identity" in helptext:
         args.append("--identity")
     if locale:
         args += ["--locale", locale]
-    try:
-        vm.run(*args, timeout=300, slot=False)
-    except VmError as exc:
-        # A slot whose compositor missed the display change is reapplied, as tilo-vm advises.
-        if "did not pick up the display change" not in str(exc):
-            raise
-        time.sleep(3)
-        vm.run(*args, timeout=300, slot=False)
+    result = first_json(vm.run(*args, timeout=300, slot=False, cwd=source))
+    if not isinstance(result, dict):
+        raise VmError("slot create returned no structured result")
+    return result
 
 
 def whole_json(text: str) -> dict:
@@ -199,13 +196,17 @@ def component_scopes(source: Path) -> dict[str, str]:
     return {c["name"]: c.get("scope", "session") for c in manifest.get("component", [])}
 
 
-def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path) -> dict:
+def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path,
+                    initial: dict | None = None) -> dict:
     """Build each component from the worktree `source` on the host and swap it into the VM:
     session components and apps into the run's slot, VM-wide ones into `vm`. Then read back the
     layer each slot runs, so P01 states what was tested: the base image plus these, from `ref`."""
     scopes = component_scopes(source)
     head = git("rev-parse", "HEAD", repo=source)
-    swapped, slots = [], set()
+    if initial and (initial.get("ref") != ref or initial.get("commit") != head):
+        raise VmError("the source changed after the bootstrap Shell swap")
+    swapped = [dict(entry) for entry in (initial or {}).get("components", [])]
+    slots = {entry["slot"] for entry in swapped if not entry.get("error")}
     for component in components:
         slot = "vm" if scopes.get(component) == "vm" else vm.slot
         entry = {"component": component, "slot": slot}
@@ -224,13 +225,112 @@ def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path) -
     layers = {}
     for slot in sorted(slots):
         try:
-            shown = whole_json(vm.run("--json", "slot", "show", slot, timeout=120, slot=False))
+            shown = whole_json(vm.run("--json", "slot", "show", slot, timeout=120, slot=False, cwd=source))
             layers[slot] = (shown.get("slot") or {}).get("components") or {}
         except VmError as exc:
             layers[slot] = {"error": exc.reason()}
     for entry in swapped:
-        entry["layer"] = layers.get(entry["slot"], {}).get(entry["component"])
+        observed_layer = layers.get(entry["slot"], {}).get(entry["component"])
+        if initial and entry["component"] == "shell" and observed_layer != entry.get("layer"):
+            raise VmError("bootstrap Shell layer changed during final component readback")
+        entry["layer"] = observed_layer
     return {"ref": ref, "commit": head, "components": swapped, "slot_layers": layers}
+
+
+def bootstrap_session(vm: TiloVm, outputs: list[str], plan: dict, provenance: dict) -> None:
+    source = plan["source"]
+    components = plan["components"]
+    try:
+        slot_create(vm, outputs, None, source)
+    except VmError as exc:
+        expected_error = {
+            "error": f"slot '{vm.slot}' outputs could not be set: exit status: 1: "
+                     "the compositor did not pick up the display change",
+            "hint": f"rerun tilo-vm slot create {vm.slot} --headful --outputs <same list> "
+                    f"to apply it again; tilo-vm logs {vm.slot} shows what the compositor did",
+            "see": "tilo-vm guide driving",
+        }
+        expected_command = ("--json", "slot", "create", vm.slot, "--headful", "--outputs",
+                            ",".join(outputs), "--identity")
+        if (components.count("shell") != 1 or exc.returncode != 1
+                or exc.command != expected_command or not isinstance(exc.data, dict)
+                or any(exc.data.get(key) != value for key, value in expected_error.items())):
+            raise
+        shown = first_json(vm.run("--json", "slot", "show", vm.slot,
+                                 timeout=120, slot=False, cwd=source))
+        observed = shown.get("slot") if isinstance(shown, dict) else None
+        expected = source_owner(source)
+        verify_slot(observed, vm.slot, outputs, expected)
+        if (type(observed.get("generation")) is not int or observed["generation"] != 0
+                or observed.get("generations") != [0] or observed.get("components") != {}):
+            raise VmError("display bootstrap requires an observed base slot with no prior layers")
+        bootstrap = {"base_create_error": exc.data, "base_slot": observed}
+        early = swap_components(vm, ["shell"], plan["ref"], source)
+        provenance["swap"] = early
+        provenance["bootstrap"] = bootstrap
+        entry = early["components"][0]
+        if entry.get("error") or not entry.get("layer"):
+            raise VmError("bootstrap Shell was not applied: " + entry.get("error", "no observed layer"))
+        result = entry.get("result") or {}
+        if (result.get("slot") != vm.slot or type(result.get("generation")) is not int
+                or result["generation"] <= observed["generation"]):
+            raise VmError("bootstrap Shell swap did not return the owned candidate generation")
+        applied = slot_create(vm, outputs, None, source)
+        final_slot = applied.get("slot")
+        verify_slot(final_slot, vm.slot, outputs, expected)
+        if (type(final_slot.get("generation")) is not int
+                or final_slot["generation"] != result["generation"]
+                or final_slot.get("user") != observed["user"] or final_slot.get("seat") != observed["seat"]
+                or not isinstance(final_slot.get("components"), dict)
+                or final_slot["components"].get("shell") != entry["layer"]):
+            raise VmError("bootstrap slot or Shell layer changed before display readback")
+        identity = applied.get("identity")
+        actions = applied.get("actions")
+        if (not isinstance(identity, dict) or not isinstance(actions, list)
+                or any(not isinstance(action, dict) for action in actions)):
+            raise VmError("bootstrap create returned no structured identity or output actions")
+        confirmed = [action.get("outputs") for action in actions
+                     if action.get("action") == "set_outputs"]
+        if (identity.get("throwaway") is not True or not identity.get("display_name")
+                or len(confirmed) != 1 or not isinstance(confirmed[0], str)
+                or output_specs(confirmed[0].split(",")) != output_specs(outputs)):
+            raise VmError("bootstrap create did not verify the original outputs and throwaway identity")
+        bootstrap["candidate_create"] = applied
+        remaining = [component for component in components if component != "shell"]
+        provenance["swap"] = swap_components(vm, remaining, plan["ref"], source, initial=early)
+        return
+    if components:
+        provenance["swap"] = swap_components(vm, components, plan["ref"], source)
+
+
+def output_specs(outputs: list[str]) -> list[dict]:
+    specs = []
+    for output in outputs:
+        try:
+            mode, _, scale = output.partition("@")
+            width, height = mode.split("x")
+            specs.append({"width": int(width), "height": int(height), "scale": float(scale or 1)})
+        except (AttributeError, ValueError) as exc:
+            raise VmError("display bootstrap received an invalid output specification") from exc
+    return specs
+
+
+def source_owner(source: Path) -> dict:
+    host = os.environ.get("HOSTNAME", os.environ.get("COMPUTERNAME"))
+    if host is None:
+        host = subprocess.run(["hostname"], capture_output=True, text=True, check=True).stdout.strip()
+    root = git("rev-parse", "--show-toplevel", repo=source)
+    if not host or not root or Path(root).resolve() != source.resolve():
+        raise VmError("cannot observe the bootstrap source owner")
+    return {"host": host, "worktree": root,
+            "branch": git("symbolic-ref", "--quiet", "--short", "HEAD", repo=source) or None}
+
+
+def verify_slot(slot: dict | None, name: str, outputs: list[str], owner: dict) -> None:
+    if (not isinstance(slot, dict) or slot.get("name") != name or slot.get("kind") != "headful"
+            or slot.get("session") != "active" or not slot.get("user") or not slot.get("seat")
+            or slot.get("owner") != owner or slot.get("outputs") != output_specs(outputs)):
+        raise VmError("display bootstrap could not observe the exact owned active headful slot")
 
 
 def switch_locale(vm: TiloVm, lang: str) -> None:
@@ -326,9 +426,9 @@ def main() -> int:
         meta["vm_up"] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
         facts = {"provenance": provenance_of(vm, disk, want_commit)}
         meta["provenance"] = facts["provenance"]
-        slot_create(vm, outputs, None)
-        if swaps:
-            facts["provenance"]["swap"] = swap_components(vm, swaps, swap_ref, swap_from)
+        bootstrap_session(vm, outputs,
+                          {"components": swaps, "ref": swap_ref, "source": swap_from},
+                          facts["provenance"])
         time.sleep(5)
         facts["renderer"], facts["display"] = renderer(vm)
         meta["renderer"], meta["display"] = facts["renderer"], facts["display"]
