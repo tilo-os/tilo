@@ -9,7 +9,7 @@
 //! the host streams a listed window while the list keeps arriving and still
 //! names it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -237,13 +237,8 @@ fn by_online_host(
     let Some((local, _)) = network.local_device_fabric_identity() else {
         return BTreeMap::new();
     };
-    let online = network
-        .device_fabric()
-        .snapshots()
-        .values()
-        .filter(|snapshot| snapshot.owner != local && snapshot.presence.online)
-        .map(|snapshot| snapshot.owner.clone())
-        .collect::<BTreeSet<_>>();
+    let mut online = network.online_device_ids();
+    online.remove(&local);
     let mut hosts: BTreeMap<DeviceId, Vec<WindowView>> = BTreeMap::new();
     for (host, view) in shown {
         let Ok(host) = DeviceId::new(host) else {

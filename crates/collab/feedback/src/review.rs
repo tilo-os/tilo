@@ -45,7 +45,7 @@ impl Draft {
                 texts,
             }],
         };
-        let proposals = tilo_feedback_review::review_without_model(&request)?;
+        let proposals = tilo_feedback_review::review_redactions_without_model(&request)?;
         let mut fields = request
             .steps
             .iter()
@@ -53,7 +53,6 @@ impl Draft {
             .enumerate()
             .map(|(index, text)| {
                 let mut spans: Vec<_> = proposals
-                    .redactions
                     .iter()
                     .filter(|proposal| proposal.step == 0 && proposal.node == text.node)
                     .map(|proposal| proposal.span)

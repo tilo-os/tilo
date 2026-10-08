@@ -19,6 +19,8 @@ esac
 # them through the packaging boundary.
 package_job="$repo_root/dist/ci/run-package-job.sh"
 python3 "$repo_root/dist/ci/tests/test_package_source_transfer.py"
+python3 "$repo_root/dist/ci/tests/test_failed_rpm_retention.py"
+python3 "$repo_root/dist/ci/tests/test_host_session_rpm_replay.py"
 grep -Fq -- '--env SOURCE_DATE_EPOCH="$source_epoch"' "$package_job"
 grep -Fq -- '--env GITHUB_SHA="$source_revision"' "$package_job"
 test "$(grep -Fc 'source tools/ci/sccache.sh prepare-shell' "$package_job")" -eq 3
@@ -34,8 +36,10 @@ fi
 "$repo_root/dist/session/tests/host-session-lifecycle.sh"
 python3 "$repo_root/dist/session/tests/flight-recorder.py"
 python3 "$repo_root/dist/session/tests/session-report.py"
+python3 "$repo_root/dist/session/tests/vm-e2e-exit-status.py"
 "$repo_root/dist/session/tests/private-dbus-handoff.sh"
 "$repo_root/dist/session/tests/private-user-manager-handoff.sh"
+python3 "$repo_root/dist/rpm/test-rpmlint-config.py"
 "$repo_root/dist/rpm/test-signing-contract.sh"
 "$repo_root/dist/rpm/test-app-store-stage.sh"
 "$repo_root/dist/rpm/test-build-target-dir.sh"

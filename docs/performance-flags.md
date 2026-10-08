@@ -293,19 +293,19 @@ offscreen GPU fence nor a queue submission proves a physical page flip.
 
 ### Projector capture workload
 
-`TILO_PROJECTOR_PROFILE` is an **input JSON path**, not a profiling-output flag.
-It defaults to `XDG_RUNTIME_DIR/tilo-projector/capture-profile.json` when that
-directory variable exists; otherwise no profile file is selected. The path is
-latched at capture construction, but active capture rereads the file at most
-once per second. Its u32 fields are `max_width`, `max_height`, `fps`, and
-`bitrate_kbps`; unreadable/malformed files leave the prior profile in place.
+The capture profile is not a flag. The projector service sends it to the
+shell as a `CaptureProfile` event on its control socket whenever it changes
+(`tilo_projector::control`), and the capture tap drains that channel before
+each frame; nothing is read from disk on the render thread. Its u32 fields are
+`max_width`, `max_height`, `fps`, and `bitrate_kbps`.
 The initial unknown-receiver ceiling is 1920×1080 at 60 fps and 10,368 kbps.
 Encoder pressure can reduce the effective dimensions/bitrate below the ceiling.
 This changes the streamed workload, not native display resolution; scaled
 projector results are not native-4K redraw evidence.
 
 `TILO_PROJECTOR_VIDEO_SOCKET` selects the capture worker's Unix socket, defaulting
-to `XDG_RUNTIME_DIR/tilo-projector/video.sock` when available. It routes output,
+to `video.sock` in the projector runtime directory (`TILO_PROJECTOR_RUNTIME_DIR`,
+else `XDG_RUNTIME_DIR/tilo-projector`). It routes output,
 not rendering speed. Sources:
 [capture](../crates/session/shell/src/compositor/projection_capture.rs),
 [profile schema and defaults](../crates/system/projector/src/lib.rs),

@@ -140,6 +140,9 @@ policies! {
         "tilo.display.night_light",
         "tilo.display.night_light_schedule",
         "tilo.display.night_light_temperature",
+        // Where each of the person's displays sits across their devices.
+        // Each device's own modes and screen layout stay device-local.
+        "tilo.display.arrangement",
         "tilo.shortcuts.bindings",
         "tilo.desktop_controls.vim_mode",
         "tilo.quick_settings.controls",

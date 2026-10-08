@@ -705,7 +705,7 @@ fn create_window_render_prepared(
         ),
         None => (RenderContext::new(), None),
     };
-    let mut surface = pollster::block_on(render_cx.create_surface(
+    let mut surface = pollster::block_on(render_cx.create_surface_unconfigured(
         window.clone(),
         size.width.max(1),
         size.height.max(1),

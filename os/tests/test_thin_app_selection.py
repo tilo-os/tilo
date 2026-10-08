@@ -110,6 +110,8 @@ pub fn value() -> usize { shared::value() }
 name = "{name}"
 version = "0.1.0"
 edition = "2024"
+[lib]
+name = "{name}_support"
 [features]
 thin = ["dep:runtime-dylib"]
 [dependencies]
@@ -122,6 +124,7 @@ shared = {{ path = "../../shared"{extra} }}
                 'fn main() { assert_eq!(runtime_dylib::value() & 1, 0); '
                 'assert_eq!(app_sdk::value() & 1, 0); println!("unified-runtime-ok"); }',
             )
+            self.write(f"apps/{name}/src/lib.rs", "pub fn library_value() -> usize { 42 }\n")
             self.write(f"apps/{name}/tilo-app.toml", f'bin = "bin/{name}"\n')
         # An app outside a collection whose feature unifies more code into the
         # shared crates when the image's thin graph pulls it in (#1158).
@@ -162,8 +165,13 @@ app-sdk = { path = "../../app_sdk" }
         with self.subTest(phase="selected_binary_retains_full_runtime_features_and_hash"):
             maps = self.root / "link-maps"
             selected = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator",
-                                        TILO_THIN_LINK_MAP_DIR=str(maps))
+                                        TILO_THIN_LINK_MAP_DIR=str(maps), EXTRA_CARGO_ARGS="-v")
             self.assertEqual(selected.returncode, 0, selected.stdout + selected.stderr)
+            library_compile = [line for line in selected.stderr.splitlines()
+                               if "Running `" in line and "--crate-name calculator_support" in line]
+            self.assertEqual(len(library_compile), 1, selected.stderr)
+            self.assertIn("-C opt-level=z", library_compile[0])
+            self.assertIn("-C codegen-units=1", library_compile[0])
             target = self.root / "target/thin-app"
             self.assertTrue((target / "calculator").is_file())
             # The size wrapper wrote the app's link map, so it compiled the app.
