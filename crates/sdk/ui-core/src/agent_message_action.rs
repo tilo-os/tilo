@@ -16,6 +16,53 @@ pub const RESOLVE_WINDOW: Duration = Duration::from_secs(5);
 pub const MAX_PAGES: u16 = 64;
 const ASYNC_RESPONSE_POLL: Duration = Duration::from_millis(50);
 
+enum ProvidersFailure<'a> {
+    Deadline,
+    PageBudget,
+    RemoteRefused(&'a tilo_actions::remote::ActionHostError),
+    ChangedCall,
+    InvalidPageFlags,
+    TooManyProviders,
+    ProviderRouteMismatch,
+}
+
+fn providers_failed(failure: ProvidersFailure<'_>) -> AgentMessagePoll {
+    let (class, remote_class) = match failure {
+        ProvidersFailure::Deadline => ("deadline_exhausted", None),
+        ProvidersFailure::PageBudget => ("page_budget_exhausted", None),
+        ProvidersFailure::RemoteRefused(error) => ("remote_refused", Some(error.code())),
+        ProvidersFailure::ChangedCall => ("changed_call", None),
+        ProvidersFailure::InvalidPageFlags => ("invalid_page_flags", None),
+        ProvidersFailure::TooManyProviders => ("too_many_providers", None),
+        ProvidersFailure::ProviderRouteMismatch => ("provider_route_mismatch", None),
+    };
+    observe_providers_poll("failed", Some(class), remote_class);
+    AgentMessagePoll::Failed
+}
+
+fn observe_providers_poll(result: &str, class: Option<&str>, remote_class: Option<&str>) {
+    let row = serde_json::json!({
+        "phase": "providers", "result": result,
+        "refusal_class": class, "remote_class": remote_class,
+    });
+    #[cfg(test)]
+    PROVIDERS_FAILURE_ROWS.with_borrow_mut(|rows| {
+        if let Some(rows) = rows {
+            rows.push(row.clone());
+        }
+    });
+    if crate::host::environment().diagnostics.presentation_profile {
+        crate::native_scenario::log::emit_json("tilo-agent-message-discovery", row);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static PROVIDERS_FAILURE_ROWS: std::cell::RefCell<Option<Vec<serde_json::Value>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
 #[derive(Clone)]
 pub enum AgentMessageSubmission {
     Providers(LocalState<CatalogueCall>),
@@ -253,6 +300,13 @@ pub fn poll(
             | AgentMessageSubmission::Invoke { .. }
     ) && (crate::time::now() >= resolve_deadline || pages_remaining == 0)
     {
+        if matches!(submission, AgentMessageSubmission::Providers(_)) {
+            return providers_failed(if crate::time::now() >= resolve_deadline {
+                ProvidersFailure::Deadline
+            } else {
+                ProvidersFailure::PageBudget
+            });
+        }
         return AgentMessagePoll::Failed;
     }
     match submission {
@@ -304,24 +358,30 @@ fn poll_providers(
     pages_remaining: u16,
 ) -> AgentMessagePoll {
     let RemoteCall::Done(page) = call.get() else {
-        return if call.get().is_pending() {
+        let current = call.get();
+        return if current.is_pending() {
+            observe_providers_poll("waiting", None, None);
             AgentMessagePoll::Waiting
         } else {
-            AgentMessagePoll::Failed
+            providers_failed(match &current {
+                RemoteCall::Refused(error) => ProvidersFailure::RemoteRefused(error),
+                _ => ProvidersFailure::ChangedCall,
+            })
         };
     };
     if page.stale_cursor || page.budget_exhausted || !page.exhausted || !page.next_cursor.is_empty()
     {
-        return AgentMessagePoll::Failed;
+        return providers_failed(ProvidersFailure::InvalidPageFlags);
     }
-    if page.providers.len() > 1
-        || page.providers.iter().any(|provider| {
-            provider.app_id != "so.tilo.chat"
-                || provider.room != workspace
-                || !provider.record_id.is_empty()
-        })
-    {
-        return AgentMessagePoll::Failed;
+    if page.providers.len() > 1 {
+        return providers_failed(ProvidersFailure::TooManyProviders);
+    }
+    if page.providers.iter().any(|provider| {
+        provider.app_id != "so.tilo.chat"
+            || provider.room != workspace
+            || !provider.record_id.is_empty()
+    }) {
+        return providers_failed(ProvidersFailure::ProviderRouteMismatch);
     }
     let mut providers = page
         .providers
@@ -331,6 +391,7 @@ fn poll_providers(
         .collect::<Vec<_>>();
     providers.sort();
     providers.dedup();
+    observe_providers_poll("advance", None, None);
     if providers.is_empty() {
         return AgentMessagePoll::Advance {
             submission: AgentMessageSubmission::LaunchRows(Box::new(AgentLaunchRows {
@@ -809,6 +870,200 @@ mod tests {
         ActionAddress, ActionContract, ActionDescriptor, ActionOutput, ExecutionLocus, InputSpec,
         InvocationId, InvocationUpdate, OperationKind, ResourceSemanticIdentity,
     };
+
+    fn complete_providers_page() -> CataloguePage {
+        let provider = tilo_actions::remote::CatalogueProvider {
+            provider: "PRIVATE-PROVIDER".into(),
+            app_id: "so.tilo.chat".into(),
+            room: "room-a".into(),
+            record_id: String::new(),
+            browsable: true,
+        };
+        CataloguePage {
+            exhausted: true,
+            providers: vec![provider],
+            ..CataloguePage::default()
+        }
+    }
+
+    fn assert_providers_failure(
+        call: CatalogueCall,
+        expired: bool,
+        pages: u16,
+        expected: &str,
+        remote: Option<&str>,
+    ) {
+        PROVIDERS_FAILURE_ROWS.with_borrow_mut(|rows| *rows = Some(Vec::new()));
+        let now = crate::time::now();
+        let deadline = if expired { now } else { now + RESOLVE_WINDOW };
+        assert!(matches!(
+            poll(
+                &RemoteActions::session(),
+                "room-a",
+                "scribe",
+                "PRIVATE-TEXT",
+                &AgentMessageSubmission::Providers(LocalState::new(call)),
+                deadline,
+                pages
+            ),
+            AgentMessagePoll::Failed
+        ));
+        let rows = PROVIDERS_FAILURE_ROWS.with_borrow_mut(|rows| rows.take().unwrap());
+        assert_eq!(
+            rows,
+            vec![serde_json::json!({
+                "phase": "providers", "result": "failed",
+                "refusal_class": expected, "remote_class": remote,
+            })]
+        );
+        assert!(!serde_json::to_string(&rows).unwrap().contains("PRIVATE"));
+    }
+
+    #[test]
+    fn providers_poll_reports_closed_budgets_and_remote_refusals() {
+        use tilo_actions::remote::ActionHostError;
+        let cases = [
+            (
+                RemoteCall::Pending,
+                true,
+                MAX_PAGES,
+                "deadline_exhausted",
+                None,
+            ),
+            (RemoteCall::Pending, false, 0, "page_budget_exhausted", None),
+            (
+                RemoteCall::Refused(ActionHostError::NotPermitted),
+                false,
+                MAX_PAGES,
+                "remote_refused",
+                Some("not_permitted"),
+            ),
+            (
+                RemoteCall::Refused(ActionHostError::Unavailable {
+                    reason: "PRIVATE-ERROR".into(),
+                }),
+                false,
+                MAX_PAGES,
+                "remote_refused",
+                Some("remote_actions_unavailable"),
+            ),
+        ];
+        for (call, expired, pages, expected, remote) in cases {
+            assert_providers_failure(call, expired, pages, expected, remote);
+        }
+    }
+
+    #[test]
+    fn providers_poll_reports_invalid_pages_and_exact_route_failures() {
+        use tilo_actions::remote::CatalogueProvider;
+        let complete = complete_providers_page();
+        let provider = complete.providers[0].clone();
+        let mut cases = Vec::new();
+        for page in [
+            CataloguePage {
+                stale_cursor: true,
+                ..complete.clone()
+            },
+            CataloguePage {
+                budget_exhausted: true,
+                ..complete.clone()
+            },
+            CataloguePage {
+                exhausted: false,
+                ..complete.clone()
+            },
+            CataloguePage {
+                next_cursor: b"PRIVATE-CURSOR".to_vec(),
+                ..complete.clone()
+            },
+        ] {
+            cases.push((
+                RemoteCall::Done(page),
+                false,
+                MAX_PAGES,
+                "invalid_page_flags",
+                None,
+            ));
+        }
+        cases.push((
+            RemoteCall::Done(CataloguePage {
+                providers: vec![provider.clone(), provider.clone()],
+                ..complete.clone()
+            }),
+            false,
+            MAX_PAGES,
+            "too_many_providers",
+            None,
+        ));
+        for changed in [
+            CatalogueProvider {
+                app_id: "PRIVATE-APP".into(),
+                ..provider.clone()
+            },
+            CatalogueProvider {
+                room: "PRIVATE-ROOM".into(),
+                ..provider.clone()
+            },
+            CatalogueProvider {
+                record_id: "PRIVATE-RECORD".into(),
+                ..provider.clone()
+            },
+        ] {
+            cases.push((
+                RemoteCall::Done(CataloguePage {
+                    providers: vec![changed],
+                    ..complete.clone()
+                }),
+                false,
+                MAX_PAGES,
+                "provider_route_mismatch",
+                None,
+            ));
+        }
+        for (call, expired, pages, expected, remote) in cases {
+            assert_providers_failure(call, expired, pages, expected, remote);
+        }
+    }
+
+    #[test]
+    fn providers_poll_observes_waiting_and_advance_without_private_data() {
+        for (call, expected) in [
+            (RemoteCall::Pending, "waiting"),
+            (RemoteCall::Done(complete_providers_page()), "advance"),
+            (
+                RemoteCall::Done(CataloguePage {
+                    exhausted: true,
+                    ..CataloguePage::default()
+                }),
+                "advance",
+            ),
+        ] {
+            PROVIDERS_FAILURE_ROWS.with_borrow_mut(|rows| *rows = Some(Vec::new()));
+            let result = poll(
+                &RemoteActions::session(),
+                "room-a",
+                "scribe",
+                "PRIVATE-TEXT",
+                &AgentMessageSubmission::Providers(LocalState::new(call)),
+                crate::time::now() + RESOLVE_WINDOW,
+                MAX_PAGES,
+            );
+            if expected == "waiting" {
+                assert!(matches!(result, AgentMessagePoll::Waiting));
+            } else {
+                assert!(matches!(result, AgentMessagePoll::Advance { .. }));
+            }
+            let rows = PROVIDERS_FAILURE_ROWS.with_borrow_mut(|rows| rows.take().unwrap());
+            assert_eq!(
+                rows,
+                vec![serde_json::json!({
+                    "phase": "providers", "result": expected,
+                    "refusal_class": null, "remote_class": null,
+                })]
+            );
+            assert!(!serde_json::to_string(&rows).unwrap().contains("PRIVATE"));
+        }
+    }
 
     fn message_row(agent: &str) -> CatalogueRow {
         let resource = format!("chat.person:{agent}");
