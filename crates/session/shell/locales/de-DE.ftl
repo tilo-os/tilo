@@ -1129,6 +1129,7 @@ lock-screen-help = Gib dein Passwort ein und drücke die Eingabetaste
 lock-screen-verifying-password = Passwort wird geprüft
 lock-screen-prompt-elsewhere = Die Passwortabfrage ist auf dem Hauptbildschirm
 lock-screen-enter-password = Passwort eingeben
+lock-screen-discovery-unavailable = Die Anwendungssuche ist nicht verfügbar, solange die Sitzung gesperrt ist
 lock-screen-verifying = Wird geprüft …
 lock-screen-press-enter = Zum Entsperren Eingabetaste drücken
 lock-screen-cannot-verify = Prüfung nicht möglich · Gib dein Passwort erneut ein

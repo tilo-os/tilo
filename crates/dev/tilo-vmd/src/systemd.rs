@@ -1455,7 +1455,7 @@ mod tests {
             123,
             "slot-user",
             1002,
-            "/var/home/slot-user",
+            "/var/home/you",
             std::path::Path::new("/var/tmp/private/app.tapp"),
         );
         assert_eq!(command.get_program(), "nsenter");
@@ -1468,7 +1468,7 @@ mod tests {
             args.windows(4)
                 .any(|args| args == ["runuser", "-u", "slot-user", "--"])
         );
-        assert!(args.contains(&"HOME=/var/home/slot-user".into()));
+        assert!(args.contains(&"HOME=/var/home/you".into()));
         assert!(args.contains(&"XDG_RUNTIME_DIR=/run/user/1002".into()));
         assert_eq!(
             &args[args.len() - 5..],
@@ -1489,7 +1489,7 @@ mod tests {
             123,
             "slot-user",
             1002,
-            "/var/home/slot-user",
+            "/var/home/you",
             std::path::Path::new("/var/tmp/private/app.tapp"),
             true,
         );

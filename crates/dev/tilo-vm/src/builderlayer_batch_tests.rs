@@ -309,13 +309,13 @@ fn userspace_batch_refuses_changed_source_before_emitting_a_layer() {
 fn userspace_batch_command_keeps_configured_builder_and_inventory() {
     let command = userspace_command(
         &[
-            "rcargo".into(),
+            "cargo-drop-in".into(),
             "--config".into(),
             "owned-builder.toml".into(),
         ],
         Path::new(".tilo-vm-inputs-owned.json"),
     );
-    assert_eq!(command.program, "rcargo");
+    assert_eq!(command.program, "cargo-drop-in");
     assert_eq!(
         command.args,
         [

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/zram0"
@@ -426,12 +431,14 @@ cmp -s "$app_host_service" "$repo/crates/packaging/app-host/systemd/tilo-app-hos
 cmp -s "$app_host_socket" "$repo/crates/packaging/app-host/systemd/tilo-app-host.socket" || {
   fail 'source-packaged and OS app-host activation sockets have drifted'
 }
+grep -Fqx 'ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.local/share/tilo-runtime' "$app_host_service" \
+  || fail 'app-host canonical runtime root is not provisioned before confinement'
 grep -Fqx 'ProtectHome=read-only' "$app_host_service" \
   || fail 'app-host exposes writable home outside its scoped broker state'
 grep -Fqx 'ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$app_host_service" \
   || fail 'app-host broker state is not provisioned before confinement'
-grep -Fqx 'ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$app_host_service" \
-  || fail 'app-host checkpoint and account package-manager writes lack exact scoped storage'
+grep -Fqx 'ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps %h/.local/share/tilo-runtime %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$app_host_service" \
+  || fail 'app-host runtime, checkpoint and account package-manager writes lack exact scoped storage'
 grep -Fqx 'Environment=TILO_STORE_CACHE_DIR=%S/tilo-app-host/cache' "$app_host_service" \
   || fail 'app-host verified downloads do not use its private writable state directory'
 grep -Fqx 'StateDirectoryMode=0700' "$app_host_service" \
