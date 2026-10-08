@@ -1483,6 +1483,77 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
         output / f"ime-preedit-detached-{size}.png"
     )}))
 
+    # Commit through the real source-seat continuation while the same editor
+    # is painted in the authenticated child. The child must then receive the
+    # ordinary seat before any subsequent physical selection or undo.
+    require_ok(call(socket, {"op": "key", "key": "Space"}))
+
+    def floating_committed_frame():
+        current = current_same_floating_presentation(
+            call(socket, {"op": "foreign_frames"}), frame
+        )
+        if current is None or not private_editor_value_matches(detached_access, committed_after):
+            return None
+        if current.get("input_route") is not None \
+                or current.get("input_source_surface_id") is not None:
+            return None
+        return current if current["keyboard_focused"] is True \
+            and chat_text_input_active(socket) else None
+
+    frame = wait_for(
+        "Rime's exact detached commit and child seat", floating_committed_frame, process
+    )
+    if detached_access["process"] != chat_process or not same_fcitx_process(fcitx_identity):
+        raise RuntimeError("detached Rime commit replaced Chat or the compositor input method")
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"ime-commit-detached-{size}.png"
+    )}))
+
+    set_physical_modifiers(socket, shift=True)
+    try:
+        require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
+        require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
+    finally:
+        set_physical_modifiers(socket)
+    floating_selection = wait_for_private_selection(
+        socket, detached_access, committed_after, [1, 3], process, output
+    )
+    if floating_selection["selection"] != [1, 3]:
+        raise RuntimeError("detached physical selection did not cover the Rime commit")
+    require_ok(call(socket, {"op": "key", "key": "ArrowRight"}))
+    physical_chord(socket, "z", ctrl=True)
+    wait_for(
+        "detached Rime commit undo",
+        lambda: private_editor_value_matches(detached_access, committed_before), process,
+    )
+
+    # Start a second genuine composition in the now-focused child. Return
+    # while it is still preedit, then commit that same composition in primary.
+    before_second_preedit = frame
+    require_ok(call(socket, {"op": "type", "text": "nihao"}))
+
+    def detached_second_preedit_frame():
+        current = current_same_floating_presentation(
+            call(socket, {"op": "foreign_frames"}), before_second_preedit
+        )
+        if current is None or current["frame_seq"] <= before_second_preedit["frame_seq"]:
+            return None
+        if not private_editor_value_matches(detached_access, committed_before):
+            raise RuntimeError("Rime's second composition committed before Return")
+        return current if current["keyboard_focused"] is True \
+            and chat_text_input_active(socket) else None
+
+    frame = wait_for(
+        "genuine Rime preedit in the detached Chat frame",
+        detached_second_preedit_frame,
+        process,
+    )
+    if not same_fcitx_process(fcitx_identity):
+        raise RuntimeError("the detached second composition replaced the input method")
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"ime-preedit-detached-second-{size}.png"
+    )}))
+
     float_geometry = presented_content_geometry(frame)
     before_return = presented_primary_frame(
         call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
@@ -1597,6 +1668,10 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
         "committed_value_unchanged_after_float": True,
         "committed_value_unchanged_after_return": True,
         "exact_rime_commit": True,
+        "floating_rime_commit": True,
+        "floating_rime_selection": True,
+        "floating_rime_commit_undo": True,
+        "returned_rime_commit": True,
         "ime_commit_undo": True,
         "pre_detach_undo": True,
         "pointer_float": True,

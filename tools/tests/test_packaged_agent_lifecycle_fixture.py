@@ -1435,6 +1435,30 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertLess(source.index("committed_value_unchanged_after_float"),
                         source.index("committed_value_unchanged_after_return"))
 
+    def test_native_ime_commits_and_undoes_in_float_before_returning_a_new_preedit(self):
+        source = inspect.getsource(PROOF.native_ime_float_return)
+        detached_ready = source.index('"detached Tide editor during Rime preedit"')
+        floating_commit = source.index('"Rime\'s exact detached commit and child seat"')
+        floating_select = source.index("wait_for_private_selection(", floating_commit)
+        floating_undo = source.index('"detached Rime commit undo"', floating_select)
+        second_type = source.index('{"op": "type", "text": "nihao"}', floating_undo)
+        second_preedit = source.index('"genuine Rime preedit in the detached Chat frame"', second_type)
+        returned = source.index('"Rime preedit\'s returned primary frame"', second_preedit)
+        returned_commit = source.index('"Rime\'s exact post-Return commit"', returned)
+        self.assertLess(detached_ready, floating_commit)
+        self.assertLess(floating_commit, floating_select)
+        self.assertLess(floating_select, floating_undo)
+        self.assertLess(floating_undo, second_type)
+        self.assertLess(second_type, second_preedit)
+        self.assertLess(second_preedit, returned)
+        self.assertLess(returned, returned_commit)
+        for proof in (
+                '"floating_rime_commit": True', '"floating_rime_selection": True',
+                '"floating_rime_commit_undo": True', '"returned_rime_commit": True'):
+            self.assertIn(proof, source)
+        self.assertEqual(source.count('{"op": "key", "key": "Space"}'), 2)
+        self.assertEqual(source.count('{"op": "type", "text": "nihao"}'), 2)
+
     def test_rime_settings_merge_preserves_existing_scratch_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             profile = pathlib.Path(directory)
