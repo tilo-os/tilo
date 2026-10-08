@@ -1345,7 +1345,7 @@ impl StatePeer {
             app: app.into(),
             record: record.into(),
         })?;
-        if entry.encryption_required || !ReadDoc::get_missing_deps(&entry.doc, &[]).is_empty() {
+        if entry.encryption_required || !ReadDoc::get_missing_deps(&*entry.doc, &[]).is_empty() {
             return None;
         }
         Some(entry.doc.base_heads())
@@ -1970,7 +1970,7 @@ impl StatePeer {
             .get(&route)
             .cloned()
             .unwrap_or_else(|| Document {
-                doc: AutoCommit::new(),
+                doc: AutoCommit::new().into(),
                 channel: ChannelState::default(),
                 encryption_required: false,
                 covered: BTreeMap::new(),
@@ -2215,7 +2215,7 @@ impl StatePeer {
                 &policy,
                 &route.app,
                 &route.record,
-                &candidate.doc,
+                &*candidate.doc,
             )
             .map_err(err)?;
         }
@@ -3289,7 +3289,9 @@ impl StatePeer {
             peer.core.documents.insert(
                 document.route,
                 Document {
-                    doc: tilo_automerge_isolate::load(&document.bytes).map_err(err)?,
+                    doc: tilo_automerge_isolate::load(&document.bytes)
+                        .map(CachedDocument::from)
+                        .map_err(err)?,
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,
