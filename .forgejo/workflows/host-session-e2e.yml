@@ -66,13 +66,30 @@ jobs:
   rpms:
     runs-on: ${{ inputs.rpm-artifact && 'runner-quality' || 'runner-large' }}
     timeout-minutes: 120
+    env:
+      TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
     steps:
+      # Fail before checkout, runtime download and compilation if the existing
+      # independent app-store authority is not configured. Caller RPMs have
+      # already passed the package lane's staging checks.
+      - name: Validate the app-store registry owner
+        if: ${{ !inputs.rpm-artifact }}
+        run: |
+          set -euo pipefail
+          owner=${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}
+          [[ $owner =~ ^[0-9a-fA-F]{64}$ && $owner != $(printf '0%.0s' {1..64}) ]] || {
+            echo '::error::TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key'
+            exit 1
+          }
       # A full clone, as the package lane takes (dist/ci/run-package-job.sh).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: ${{ !inputs.rpm-artifact }}
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Validate RPM lint exception paths before building
+        if: ${{ !inputs.rpm-artifact }}
+        run: python3 dist/rpm/test-rpmlint-config.py
       - name: Fetch the env-runtime environment image
         if: ${{ !inputs.rpm-artifact }}
         run: bash dist/ci/fetch-package-env-runtime.sh
