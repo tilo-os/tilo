@@ -3461,6 +3461,61 @@ mod tests {
         );
     }
 
+    fn advance_message_providers_to_rows(
+        app: &mut ChatApp,
+        requests: &[ui::collaboration::CollabRequest],
+    ) -> ui::time::Instant {
+        let providers = requests
+            .iter()
+            .filter_map(|request| match request {
+                ui::collaboration::CollabRequest::RemoteAction {
+                    message:
+                        tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                            correlation,
+                            query,
+                        },
+                } if query.max_results == 0 => Some((*correlation, query)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(providers.len(), 1);
+        assert!(
+            providers[0]
+                .1
+                .canonical_route
+                .as_ref()
+                .is_some_and(|route| {
+                    route.room == "ws_home"
+                        && route.app_id == "so.tilo.chat"
+                        && route.record_id.is_empty()
+                })
+        );
+        ui::widget::Collaborative::handle_collab_event(
+            app,
+            &ui::collaboration::CollabEvent::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::CatalogueResponse {
+                    correlation: providers[0].0,
+                    result: Ok(CataloguePage {
+                        revision: "chat-providers-1".into(),
+                        exhausted: true,
+                        providers: vec![tilo_actions::remote::CatalogueProvider {
+                            provider: "chat-peer".into(),
+                            app_id: "so.tilo.chat".into(),
+                            room: "ws_home".into(),
+                            record_id: String::new(),
+                            browsable: true,
+                        }],
+                        ..CataloguePage::default()
+                    }),
+                },
+            },
+        );
+        suspend_agent_observers(app);
+        app.agent_submissions.get()[&("ws_home".into(), "scribe".into())]
+            .next_poll_at
+            .expect("the provider-to-rows transition retains a future poll")
+    }
+
     #[test]
     fn idle_agent_message_catalogue_keeps_and_advances_its_poll_deadline() {
         let mut doc = AutoCommit::new();
@@ -3507,23 +3562,19 @@ mod tests {
         drop(pending);
 
         let requests = ui::widget::Collaborative::take_collab_requests(&mut app);
-        let providers = requests
-            .iter()
-            .filter_map(|request| match request {
-                ui::collaboration::CollabRequest::RemoteAction {
-                    message:
-                        tilo_actions::remote::RemoteActionMessage::CatalogueRequest { query, .. },
-                } if query.max_results == 0 => Some(query),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(providers.len(), 1);
-        assert!(providers[0].canonical_route.as_ref().is_some_and(|route| {
-            route.room == "ws_home" && route.app_id == "so.tilo.chat" && route.record_id.is_empty()
-        }));
+        let rows_wake = advance_message_providers_to_rows(&mut app, &requests);
+        assert!(rows_wake > ui::time::now());
+        assert_eq!(
+            [
+                ui::Widget::next_wake_deadline(&app),
+                ui::Widget::next_wake_deadline(&app),
+            ],
+            [Some(rows_wake), Some(rows_wake)],
+            "an immediate typed Rows state must not turn into a rolling native deadline"
+        );
 
         std::thread::sleep(
-            retained
+            rows_wake
                 .saturating_duration_since(ui::time::now())
                 .saturating_add(std::time::Duration::from_millis(2)),
         );
@@ -3532,8 +3583,22 @@ mod tests {
         let advanced = app.agent_submissions.get()[&("ws_home".into(), "scribe".into())]
             .next_poll_at
             .expect("an actual due poll rearms the pending catalogue");
-        assert!(advanced > retained);
+        assert!(advanced > rows_wake);
         assert_eq!(ui::Widget::next_wake_deadline(&app), Some(advanced));
+        assert!(
+            ui::widget::Collaborative::take_collab_requests(&mut app)
+                .iter()
+                .any(|request| matches!(
+                    request,
+                    ui::collaboration::CollabRequest::RemoteAction {
+                        message: tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                            query,
+                            ..
+                        },
+                    } if query.provider.as_deref() == Some("chat-peer")
+                )),
+            "servicing the retained Rows deadline must advance real catalogue discovery"
+        );
 
         app.agent_submissions.update(|pending| {
             let submission = pending.values_mut().next().expect("pending Message");

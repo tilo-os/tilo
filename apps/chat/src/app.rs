@@ -120,6 +120,7 @@ pub(crate) use ui::agent_message_action::{AgentMessagePoll, AgentMessageSubmissi
 pub(crate) const AGENT_MESSAGE_RESOLVE_WINDOW: std::time::Duration =
     ui::agent_message_action::RESOLVE_WINDOW;
 pub(crate) const AGENT_MESSAGE_MAX_PAGES: u16 = ui::agent_message_action::MAX_PAGES;
+const AGENT_MESSAGE_POLL_CADENCE: std::time::Duration = std::time::Duration::from_millis(50);
 
 type AgentSubmissionKey = (Id, Id);
 type AgentMessageWakeUpdate = (AgentSubmissionKey, Option<ui::time::Instant>);
@@ -2760,33 +2761,38 @@ impl ChatApp {
         )
     }
 
-    fn agent_message_next_wake(
-        &self,
-        submission: &AgentSubmission,
-        message: &AgentMessageSubmission,
+    fn agent_message_next_wake(submission: &AgentSubmission) -> Option<ui::time::Instant> {
+        submission.next_poll_at
+    }
+
+    fn retain_agent_message_wake(
+        deadline: Option<ui::time::Instant>,
+        now: ui::time::Instant,
+        give_up_at: ui::time::Instant,
     ) -> Option<ui::time::Instant> {
-        submission
-            .next_poll_at
-            .into_iter()
-            .chain(ui::agent_message_action::next_wake_deadline(
-                &self.agent_task_actions,
-                message,
-                submission.give_up_at,
-            ))
-            .min()
+        deadline.map(|deadline| {
+            if deadline <= now && now < give_up_at {
+                now.checked_add(AGENT_MESSAGE_POLL_CADENCE)
+                    .unwrap_or(give_up_at)
+                    .min(give_up_at)
+            } else {
+                deadline
+            }
+        })
     }
 
     fn agent_message_wake_update(
         &self,
         submission: &AgentSubmission,
         message: &AgentMessageSubmission,
-        now: ui::time::Instant,
     ) -> AgentMessageWakeDecision {
         let typed = ui::agent_message_action::next_wake_deadline(
             &self.agent_task_actions,
             message,
             submission.give_up_at,
         );
+        let now = ui::time::now();
+        let typed = Self::retain_agent_message_wake(typed, now, submission.give_up_at);
         let retained = submission.next_poll_at;
         let replace = retained.is_some_and(|deadline| deadline <= now)
             || match (retained, typed) {
@@ -2872,7 +2878,6 @@ impl ChatApp {
         let mut settled = Vec::new();
         let mut message_updates = Vec::new();
         let mut wake_updates = Vec::new();
-        let now = ui::time::now();
         for (key, submission) in &pending {
             if submission.intent == AgentComposerIntent::Message {
                 let Some(message) = submission.message.as_ref() else {
@@ -2882,7 +2887,7 @@ impl ChatApp {
                 match self.poll_agent_message_submission(&key.0, &key.1, submission, message) {
                     AgentMessagePoll::Waiting => {
                         if let AgentMessageWakeDecision::Replace(next_poll_at) =
-                            self.agent_message_wake_update(submission, message, now)
+                            self.agent_message_wake_update(submission, message)
                         {
                             wake_updates.push((key.clone(), next_poll_at));
                         }
@@ -2891,9 +2896,14 @@ impl ChatApp {
                         submission: advanced,
                         pages_remaining,
                     } => {
-                        let next_poll_at = ui::agent_message_action::next_wake_deadline(
+                        let typed = ui::agent_message_action::next_wake_deadline(
                             &self.agent_task_actions,
                             &advanced,
+                            submission.give_up_at,
+                        );
+                        let next_poll_at = Self::retain_agent_message_wake(
+                            typed,
+                            ui::time::now(),
                             submission.give_up_at,
                         );
                         message_updates.push((
@@ -5512,8 +5522,8 @@ impl Widget for ChatApp {
                     submission
                         .message
                         .as_ref()
-                        .map_or(submission.give_up_at, |message| {
-                            self.agent_message_next_wake(submission, message)
+                        .map_or(submission.give_up_at, |_| {
+                            Self::agent_message_next_wake(submission)
                                 .unwrap_or(submission.give_up_at)
                         })
                 })
