@@ -603,7 +603,7 @@ impl OriginalInvocation {
                     caller
                         .network
                         .as_ref()
-                        .map(tilo_relay::client::CertifiedAction::certificate)
+                        .map(tilo_relay_session::client::CertifiedAction::certificate)
                 })
             }
             InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),

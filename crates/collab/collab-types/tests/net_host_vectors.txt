@@ -1,0 +1,44 @@
+# What a `Scope::NetHost` grant covers: `grant host yes|no`, one per line.
+#
+# The one grammar (`collab_types::caps::NetHostPattern`). Every enforcer is
+# checked against this file on its own production path: `collab-types`
+# (`host_covers`, `EgressPolicy`), the launcher's gate for apps
+# (`EgressDecision::resolve`) and `tilo-egress` for environments. A row that
+# one answers differently from another is the bug this file exists to catch.
+
+# `*` is every host, address literals included.
+*                   example.com             yes
+*                   10.0.0.5                yes
+
+# A name is that one host, compared lower-case without a trailing dot.
+example.com         example.com             yes
+example.com         EXAMPLE.com.            yes
+example.com         api.example.com         no
+example.com         notexample.com          no
+Example.COM.        example.com             yes
+
+# `.example.com` is the domain and everything under it.
+.example.com        example.com             yes
+.example.com        mail.example.com        yes
+.example.com        a.b.example.com         yes
+.example.com        example.com.evil.net    no
+.example.com        notexample.com          no
+.Example.COM.       mail.example.com        yes
+
+# `*.example.com` is a spelling of `.example.com`, not a glob.
+*.example.com       example.com             yes
+*.example.com       mail.example.com        yes
+*.example.com       evil.com                no
+*.example.com       notexample.com          no
+
+# An address is not a host: refused as a grant, so it covers nothing.
+10.0.0.5            10.0.0.5                no
+192.168.1.1         192.168.1.1             no
+::1                 ::1                     no
+[::1]               ::1                     no
+
+# Junk covers nothing, not even itself.
+-x.com              -x.com                  no
+x..com              x..com                  no
+*.                  example.com             no
+**.example.com      a.example.com           no
