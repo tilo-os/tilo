@@ -2590,6 +2590,24 @@ impl Namespace {
         self.doc.get_heads()
     }
 
+    /// Whether the document file `ino` (its node: codec and content) changed
+    /// between namespace heads `before` and `after`. The diff walks only
+    /// that node's objects, so a change to another file costs little and
+    /// keeps a derived export valid. Unknown inodes count as changed.
+    pub fn document_changed_between(
+        &mut self,
+        ino: u64,
+        before: &[automerge::ChangeHash],
+        after: &[automerge::ChangeHash],
+    ) -> bool {
+        let Some(node) = self.ino_to_id.get(&ino).and_then(|id| self.node(id)) else {
+            return true;
+        };
+        self.doc
+            .diff_obj(&node, before, after, true)
+            .map_or(true, |patches| !patches.is_empty())
+    }
+
     /// Every change this document holds beyond `heads`, as one incremental
     /// chunk for [`Self::apply_remote_and_resolve`]. Heads this document
     /// does not know (the asker's own changes) are ignored, so an asker that
