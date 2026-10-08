@@ -588,6 +588,15 @@ impl<S: RichTextSource + 'static> Composer<S> {
         ui::undo::LocalUndo::handle_local_undo_request(self.host.widget_mut(), request)
     }
 
+    pub(crate) fn handle_owned_local_undo_request(
+        &mut self,
+        request: ui::undo::UndoRequest,
+    ) -> bool {
+        self.host
+            .widget_mut()
+            .handle_owned_local_undo_request(request)
+    }
+
     #[cfg(test)]
     pub(crate) fn is_composing(&self) -> bool {
         self.host.widget().editor().is_composing()

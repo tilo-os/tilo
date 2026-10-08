@@ -5022,6 +5022,133 @@ mod tests {
         assert_eq!(app.composer_main.value(), "draft");
     }
 
+    fn type_in_detached_editor_then_retire_focus(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        id: &str,
+        text: &str,
+    ) {
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            app,
+            Some(id),
+            true,
+        );
+        for ch in text.chars() {
+            let event = if ch == ' ' {
+                key_named(NamedKey::Space)
+            } else {
+                key_char(&ch.to_string())
+            };
+            feed_root_mods(app, doc, &event, Modifiers::default());
+        }
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            app,
+            Some(id),
+            false,
+        );
+        assert!(app.focused_agent_surface.is_none());
+    }
+
+    #[test]
+    fn exact_floating_event_source_routes_local_undo_before_focus_settles() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.reload(&doc);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "draft");
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float publishes the shared-host request");
+        let id = request.id;
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, Some(&id));
+        assert!(ui::undo::handle_local_undo_request(
+            &mut app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "draft"
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, None);
+        adopt_agent_surface(
+            &mut app,
+            &id,
+            vello::kurbo::Rect::new(80.0, 60.0, 600.0, 700.0),
+        );
+
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, Some(&id));
+        type_in_detached_editor_then_retire_focus(&mut app, &mut doc, &id, "!");
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "draft!"
+        );
+        let parent_before = app.composer_main.value();
+        assert!(ui::undo::handle_local_undo_request(
+            &mut app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "draft"
+        );
+        assert_eq!(app.composer_main.value(), parent_before);
+
+        type_in_detached_editor_then_retire_focus(&mut app, &mut doc, &id, "!");
+        let parent_before = app.composer_main.value();
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(
+            &mut app,
+            Some("foreign-surface"),
+        );
+        assert!(ui::undo::handle_local_undo_request(
+            &mut app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "draft!"
+        );
+        assert_eq!(app.composer_main.value(), parent_before);
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, None);
+        _ = ui::undo::handle_local_undo_request(&mut app, ui::undo::UndoRequest::Undo);
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "draft!"
+        );
+
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            &mut app,
+            Some(&id),
+            true,
+        );
+        assert!(ui::undo::handle_local_undo_request(
+            &mut app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "draft"
+        );
+
+        type_in_detached_editor_then_retire_focus(&mut app, &mut doc, &id, "!");
+        app.agent_surfaces.get_mut(&channel).unwrap().close();
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, Some(&id));
+        assert!(ui::undo::handle_local_undo_request(
+            &mut app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "draft!"
+        );
+    }
+
     #[test]
     fn detached_agent_editor_routes_keyboard_selection_undo_ime_and_accessible_return() {
         let mut doc = AutoCommit::new();

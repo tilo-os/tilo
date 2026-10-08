@@ -5493,6 +5493,34 @@ impl ChatApp {
 
 impl ui::undo::LocalUndo for ChatApp {
     fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        if let Some(id) = self.input_agent_surface.as_deref() {
+            let Some(surface) = self
+                .agent_surfaces
+                .values_mut()
+                .find(|surface| surface.id == id)
+            else {
+                // The native runner scopes this source to one dispatched
+                // event. A stale or foreign source consumes the local
+                // shortcut without falling through to another private editor
+                // or the shared document history.
+                return true;
+            };
+            if !surface.placement.is_desktop_adopted()
+                || surface.placement.is_return_pending()
+                || surface.is_closed()
+            {
+                return true;
+            }
+            // The native event-source ID is the custody proof for this one
+            // shortcut. The asynchronous focus callback may already have
+            // retired while the event is in flight, so route directly to the
+            // retained private editor without synthesizing view focus.
+            _ = surface
+                .view
+                .composer_main
+                .handle_owned_local_undo_request(request);
+            return true;
+        }
         if let Some(id) = self.focused_agent_surface.as_deref()
             && let Some(surface) = self
                 .agent_surfaces

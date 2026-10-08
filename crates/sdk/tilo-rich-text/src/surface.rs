@@ -1134,9 +1134,19 @@ fn editor_metadata(editor: &BlockEditor) -> Option<String> {
     .ok()
 }
 
-impl<S: RichTextSource + 'static> ui::undo::LocalUndo for RichTextSurface<S> {
-    fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
-        if !self.editor.is_focused() || !self.source.owns_local_history() {
+impl<S: RichTextSource + 'static> RichTextSurface<S> {
+    /// Apply an undo request after the host has authenticated this exact
+    /// editor as the event's owner. This does not change visual focus.
+    pub fn handle_owned_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        self.apply_local_undo_request(request, false)
+    }
+
+    fn apply_local_undo_request(
+        &mut self,
+        request: ui::undo::UndoRequest,
+        require_focus: bool,
+    ) -> bool {
+        if (require_focus && !self.editor.is_focused()) || !self.source.owns_local_history() {
             return false;
         }
         // A composing or view-only private field must not fall through and
@@ -1180,6 +1190,12 @@ impl<S: RichTextSource + 'static> ui::undo::LocalUndo for RichTextSurface<S> {
             }
         }
         true
+    }
+}
+
+impl<S: RichTextSource + 'static> ui::undo::LocalUndo for RichTextSurface<S> {
+    fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        self.apply_local_undo_request(request, true)
     }
 }
 
