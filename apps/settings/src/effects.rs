@@ -167,6 +167,7 @@ pub(crate) fn statuses(app: &SettingsApp) -> Vec<ui::framework::EffectStatus> {
     statuses.extend(app.bluetooth().statuses());
     statuses.extend(app.time_date().statuses());
     statuses.extend(app.power().statuses());
+    statuses.extend(app.updates().statuses());
     statuses
 }
 

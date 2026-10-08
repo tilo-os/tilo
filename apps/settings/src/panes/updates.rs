@@ -635,6 +635,66 @@ pub type CodecRunner = Arc<dyn Fn(CodecAction) -> Result<(), String> + Send + Sy
 /// Reads the codec-pack helper's status file (a fixture in tests).
 pub type CodecStatusProvider = Arc<dyn Fn() -> CodecPackStatus + Send + Sync>;
 
+#[derive(Clone)]
+struct InitialSources {
+    status: StatusProvider,
+    details: DetailsProvider,
+    control: Arc<dyn UpdateControl>,
+    firmware: Arc<dyn Fn() -> Result<Vec<os_actions::FirmwareUpdate>, String> + Send + Sync>,
+    history: Arc<dyn Fn() -> Result<Vec<os_actions::FirmwareHistoryEntry>, String> + Send + Sync>,
+    codec: CodecStatusProvider,
+}
+
+impl Default for InitialSources {
+    fn default() -> Self {
+        Self {
+            status: Arc::new(UpdateStatus::from_system),
+            details: Arc::new(UpdateDetails::from_system),
+            control: Arc::new(RealUpdateControl),
+            firmware: Arc::new(os_actions::get_firmware_updates),
+            history: Arc::new(os_actions::get_firmware_history),
+            codec: Arc::new(CodecPackStatus::read),
+        }
+    }
+}
+
+struct InitialSnapshot {
+    status: UpdateStatus,
+    details: UpdateDetails,
+    timer: Option<bool>,
+    schedule: Option<String>,
+    metered: Option<bool>,
+    rollback: Result<Option<String>, String>,
+    firmware: Result<Vec<os_actions::FirmwareUpdate>, String>,
+    history: Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
+    codec: CodecPackStatus,
+}
+
+impl InitialSources {
+    fn read(&self) -> InitialSnapshot {
+        let status = (self.status)();
+        let timer = self.control.timer_enabled();
+        let rollback = self.control.rollback_target();
+        InitialSnapshot {
+            status,
+            timer,
+            details: (self.details)(target_of(&rollback)),
+            schedule: self.control.schedule(),
+            metered: self.control.allow_metered(),
+            rollback,
+            firmware: (self.firmware)(),
+            history: (self.history)(),
+            codec: (self.codec)(),
+        }
+    }
+}
+
+enum InitialRead {
+    Ready,
+    Pending(Receiver<InitialSnapshot>),
+    Failed(String),
+}
+
 fn codecs_card_title() -> String {
     t("upd-codecs")
 }
@@ -679,6 +739,7 @@ fn now_stamp() -> String {
               constructor parameters"
 )]
 pub struct UpdatesModel {
+    initial: InitialRead,
     status: UpdateStatus,
     details: UpdateDetails,
     prefs: UpdatePrefs,
@@ -736,61 +797,77 @@ pub struct UpdatesModel {
 impl UpdatesModel {
     /// The model of this device's updates, read from the system now.
     pub fn new(cx: PaneCx) -> Self {
-        let status_provider: StatusProvider = Arc::new(UpdateStatus::from_system);
-        let status = status_provider();
-        let control: Arc<dyn UpdateControl> = Arc::new(RealUpdateControl);
-        let mut prefs = cx.settings::<UpdatePrefs>().get();
-        // The timer is the setting; the stored preference exists only so an
-        // existing file need not be migrated, and is immediately overwritten
-        // by what the machine actually reports.
-        let timer_enabled = control.timer_enabled();
-        if let Some(on) = timer_enabled {
-            prefs.auto = on;
-        }
-        let rollback_target = control.rollback_target();
-        let details = UpdateDetails::from_system(target_of(&rollback_target));
-        let schedule = control.schedule();
-        let allow_metered = control.allow_metered();
-        let firmware_updates = os_actions::get_firmware_updates();
-        let firmware_history = os_actions::get_firmware_history();
-        let pane = Self {
-            status,
-            details,
-            prefs,
-            last_prefs: UpdatePrefs::default(),
-            status_provider,
-            details_provider: Arc::new(UpdateDetails::from_system),
-            clock: Arc::new(now_stamp),
-            rebooter: Arc::new(RealRebooter),
-            control,
-            timer_enabled,
-            schedule,
-            allow_metered,
-            rollback_target,
-            firmware_updates,
-            firmware_history,
-            firmware_state: FirmwareUiState::Idle,
-            firmware_events: None,
-            check_events: None,
-            firmware_refresh_events: None,
-            check_pending: false,
-            firmware_refresh_pending: false,
-            codec_status: CodecPackStatus::read(),
-            codec_status_provider: Arc::new(CodecPackStatus::read),
-            codec_runner: Arc::new(crate::codec_pack::run),
-            codec_pending: None,
-            codec_events: None,
-            codec_status_changed: Arc::new(AtomicBool::new(false)),
-            wake: WakeHandle::new(),
-            rollback_armed: false,
-            notice: None,
-            dispatched_restart: false,
-            cx,
-            replies: crate::panes::model::Replies::default(),
-            changed: false,
+        Self::with_sources(cx, InitialSources::default())
+    }
+
+    fn with_sources(cx: PaneCx, sources: InitialSources) -> Self {
+        let status = UpdateStatus {
+            current_version: String::new(),
+            staged_version: None,
+            staged_error: None,
         };
-        pane.watch_codec_status();
-        pane
+        // This quiet constructor performs no device reads. Until the actual
+        // snapshot arrives, neither its placeholders nor mutation controls paint.
+        let prefs = cx.settings::<UpdatePrefs>().get();
+        let mut model = Self::with_parts(
+            cx,
+            status,
+            prefs,
+            sources.status.clone(),
+            Arc::new(now_stamp),
+            Arc::new(RealRebooter),
+        );
+        model.control = sources.control.clone();
+        model.details_provider = sources.details.clone();
+        model.codec_status_provider = sources.codec.clone();
+        model.codec_runner = Arc::new(crate::codec_pack::run);
+        let (sender, receiver) = mpsc::channel();
+        let wake = model.wake.clone();
+        model.initial =
+            match ui::background::Background::current().spawn("updates_snapshot", move || {
+                let snapshot = sources.read();
+                if sender.send(snapshot).is_ok() {
+                    wake.wake();
+                }
+            }) {
+                Ok(()) => InitialRead::Pending(receiver),
+                Err(error) => InitialRead::Failed(error.to_string()),
+            };
+        model
+    }
+
+    fn poll_initial(&mut self) {
+        let outcome = match &self.initial {
+            InitialRead::Pending(receiver) => match receiver.try_recv() {
+                Ok(snapshot) => Some(Ok(snapshot)),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err(t("upd-read-disconnected"))),
+            },
+            _ => None,
+        };
+        if let Some(outcome) = outcome {
+            match outcome {
+                Ok(snapshot) => {
+                    self.status = snapshot.status;
+                    self.details = snapshot.details;
+                    self.timer_enabled = snapshot.timer;
+                    if let Some(on) = snapshot.timer {
+                        self.prefs.auto = on;
+                    }
+                    self.last_prefs = self.prefs.clone();
+                    self.schedule = snapshot.schedule;
+                    self.allow_metered = snapshot.metered;
+                    self.rollback_target = snapshot.rollback;
+                    self.firmware_updates = snapshot.firmware;
+                    self.firmware_history = snapshot.history;
+                    self.codec_status = snapshot.codec;
+                    self.initial = InitialRead::Ready;
+                    self.watch_codec_status();
+                }
+                Err(error) => self.initial = InitialRead::Failed(error),
+            }
+            self.changed = true;
+        }
     }
 
     /// Test constructor: inject the status provider, the clock, the rebooter,
@@ -838,6 +915,7 @@ impl UpdatesModel {
             prefs.auto = on;
         }
         Self {
+            initial: InitialRead::Ready,
             status,
             details: UpdateDetails::default(),
             prefs: prefs.clone(),
@@ -1298,6 +1376,24 @@ impl UpdatesModel {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
+        match &self.initial {
+            InitialRead::Pending(_) => {
+                return crate::widgets::cards(vec![card(
+                    &t("upd-software"),
+                    caption(&t("upd-reading")),
+                )]);
+            }
+            InitialRead::Failed(error) => {
+                return crate::widgets::cards(vec![card(
+                    &t("upd-software"),
+                    error_caption(&t_args(
+                        "upd-read-error",
+                        &[("error", error.as_str().into())],
+                    )),
+                )]);
+            }
+            InitialRead::Ready => {}
+        }
         let mut all = vec![
             self.overview_card(),
             self.status_card(),
@@ -2278,6 +2374,19 @@ impl UpdatesModel {
         if let Some(reply) = reply {
             self.replies.wait(effect.id(), reply);
         }
+        self.poll_initial();
+        let refusal = match &self.initial {
+            InitialRead::Ready => None,
+            InitialRead::Pending(_) => Some(t("upd-reading")),
+            InitialRead::Failed(error) => Some(t_args(
+                "upd-read-error",
+                &[("error", error.as_str().into())],
+            )),
+        };
+        if let Some(refusal) = refusal {
+            self.operation_failed(effect.id(), refusal);
+            return;
+        }
         match effect {
             UpdatesEffect::CheckForUpdates => self.check(),
             UpdatesEffect::RestartToUpdate => self.restart(),
@@ -2316,6 +2425,8 @@ impl UpdatesModel {
 pub struct UpdatesArea {
     cx: PaneCx,
     model: std::cell::OnceCell<crate::panes::model::Shared<UpdatesModel>>,
+    #[cfg(test)]
+    sources: Option<InitialSources>,
 }
 
 impl UpdatesArea {
@@ -2323,12 +2434,21 @@ impl UpdatesArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            #[cfg(test)]
+            sources: None,
         }
     }
 
     /// The model, created on first use: a capture's reaches no system tool.
     pub fn model(&self) -> &crate::panes::model::Shared<UpdatesModel> {
         self.model.get_or_init(|| {
+            #[cfg(test)]
+            if let Some(sources) = &self.sources {
+                return std::rc::Rc::new(std::cell::RefCell::new(UpdatesModel::with_sources(
+                    self.cx.clone(),
+                    sources.clone(),
+                )));
+            }
             let model = if self.cx.reaches_devices() {
                 UpdatesModel::new(self.cx.clone())
             } else {
@@ -2348,11 +2468,54 @@ impl UpdatesArea {
         })
     }
 
+    pub(crate) fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        let Some(model) = self.model.get() else {
+            return Vec::new();
+        };
+        let mut model = model.borrow_mut();
+        model.poll_initial();
+        let reason = match &model.initial {
+            InitialRead::Ready => return Vec::new(),
+            InitialRead::Pending(_) => t("upd-reading"),
+            InitialRead::Failed(error) => {
+                t_args("upd-read-error", &[("error", error.as_str().into())])
+            }
+        };
+        [
+            UpdatesEffect::CHECK_FOR_UPDATES.id,
+            UpdatesEffect::RESTART_TO_UPDATE.id,
+            UpdatesEffect::REVIEW_ROLLBACK.id,
+            UpdatesEffect::ROLL_BACK.id,
+            UpdatesEffect::REFRESH_FIRMWARE.id,
+            UpdatesEffect::INSTALL_FIRMWARE.id,
+            UpdatesEffect::INSTALL_CODECS.id,
+            UpdatesEffect::REMOVE_CODECS.id,
+            UpdatesEffect::REFRESH_CODECS.id,
+            UpdatesEffect::SET_AUTOMATIC_UPDATES.id,
+            UpdatesEffect::SET_UPDATE_SCHEDULE.id,
+            UpdatesEffect::SET_METERED_UPDATES.id,
+        ]
+        .into_iter()
+        .map(|id| {
+            ui::framework::EffectStatus::unavailable(
+                ui::tilo_resource::ActionRef::<crate::effects::SettingsEffect, ()>::new(id, &[]),
+                "pending_updates_read",
+                reason.clone(),
+            )
+        })
+        .collect()
+    }
+
     /// Take in finished background work, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
             use crate::panes::model::PaneModel;
-            let _ = model.borrow_mut().poll();
+            let mut model = model.borrow_mut();
+            if model.poll() {
+                // The app polls even with this pane closed. Preserve the visual
+                // invalidation for the mounted ModelPane's own sync pass.
+                model.changed = true;
+            }
         }
     }
 }
@@ -2378,6 +2541,10 @@ impl crate::panes::model::PaneModel for UpdatesModel {
     }
 
     fn poll(&mut self) -> bool {
+        self.poll_initial();
+        if !matches!(self.initial, InitialRead::Ready) {
+            return std::mem::take(&mut self.changed);
+        }
         self.drain_check_events();
         self.drain_firmware_refresh_events();
         self.drain_firmware_events();
@@ -2398,10 +2565,261 @@ impl crate::panes::model::PaneModel for UpdatesModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effects::{NavigationEffect, SettingsEffect};
     use crate::panes::model::PaneModel;
+    use crate::resource::SettingsShell;
+    use crate::settings_app::SettingsApp;
     use std::sync::Mutex;
+    use ui::framework::testing::TestApp;
 
     /// A model's settings document of its own.
+    #[test]
+    fn mounted_updates_navigation_does_not_wait_for_its_initial_service_read() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let (entered, entry) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let gate = Mutex::new(Some(gate));
+        let control: Arc<dyn UpdateControl> =
+            Arc::new(FakeControl::new(Some(true), Some("real previous")));
+        let sources = InitialSources {
+            status: Arc::new(move || {
+                entered.send(std::thread::current().id()).unwrap();
+                let held = gate.lock().unwrap().take();
+                held.unwrap().recv_timeout(Duration::from_secs(3)).unwrap();
+                UpdateStatus {
+                    current_version: "actual test deployment".into(),
+                    staged_version: None,
+                    staged_error: None,
+                }
+            }),
+            details: Arc::new(|_| UpdateDetails::default()),
+            control,
+            firmware: Arc::new(|| Ok(Vec::new())),
+            history: Arc::new(|| Ok(Vec::new())),
+            codec: Arc::new(CodecPackStatus::default),
+        };
+        app.surface::<SettingsApp, _>(|app| app.updates_mut().sources = Some(sources))
+            .unwrap();
+        let reader_task = std::thread::spawn(move || {
+            let reader = entry.recv_timeout(Duration::from_secs(3)).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            release.send(()).unwrap();
+            reader
+        });
+        let started = std::time::Instant::now();
+        app.effect(&SettingsEffect::from(NavigationEffect::OpenPane {
+            pane: "updates".into(),
+        }))
+        .unwrap();
+        let elapsed = started.elapsed();
+        let reader = reader_task.join().unwrap();
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "mounted Updates navigation waited for its actual initial read: {elapsed:?}, reader={reader:?}"
+        );
+        assert_ne!(reader, std::thread::current().id());
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| h
+                    .inspection_json()
+                    .is_ok_and(|text| text.contains("actual test deployment")))
+        );
+    }
+
+    struct HeldInitialControl {
+        actual: Arc<FakeControl>,
+        gate: Mutex<Option<Receiver<()>>>,
+        entered: mpsc::Sender<std::thread::ThreadId>,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl UpdateControl for HeldInitialControl {
+        fn timer_enabled(&self) -> Option<bool> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.entered.send(std::thread::current().id()).unwrap();
+            let gate = self.gate.lock().unwrap().take();
+            gate.unwrap().recv_timeout(Duration::from_secs(3)).unwrap();
+            self.actual.timer_enabled()
+        }
+        fn set_timer(&self, on: bool) -> Result<(), String> {
+            self.actual.set_timer(on)
+        }
+        fn rollback_target(&self) -> Result<Option<String>, String> {
+            self.actual.rollback_target()
+        }
+        fn roll_back(&self) -> Result<(), String> {
+            self.actual.roll_back()
+        }
+        fn check_now(&self) -> Result<(), String> {
+            self.actual.check_now()
+        }
+    }
+
+    #[test]
+    fn actual_updates_control_read_wakes_adopts_and_never_runs_on_relayout() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let (entered, entry) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let actual = Arc::new(FakeControl::new(
+            Some(true),
+            Some("actual prior deployment"),
+        ));
+        let control = Arc::new(HeldInitialControl {
+            actual: actual.clone(),
+            gate: Mutex::new(Some(gate)),
+            entered,
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let sources = initial_fixture_sources(
+            Arc::new(|| UpdateStatus {
+                current_version: "actual observed deployment".into(),
+                staged_version: None,
+                staged_error: None,
+            }),
+            control.clone(),
+        );
+        app.surface::<SettingsApp, _>(|app| app.updates_mut().sources = Some(sources))
+            .unwrap();
+        let started = std::time::Instant::now();
+        app.effect(&SettingsEffect::from(NavigationEffect::OpenPane {
+            pane: "updates".into(),
+        }))
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "mounted navigation cannot wait for the held real UpdateControl"
+        );
+        assert_ne!(
+            entry.recv_timeout(Duration::from_secs(3)).unwrap(),
+            std::thread::current().id()
+        );
+        assert_eq!(
+            app.surface::<SettingsApp, _>(|app| app.updates().statuses().len())
+                .unwrap(),
+            12
+        );
+        assert!(
+            !app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains("actual observed deployment")
+        );
+        assert!(
+            app.effect(&SettingsEffect::from(UpdatesEffect::CheckForUpdates))
+                .is_err(),
+            "a held initial read cannot silently complete or invoke a device job"
+        );
+        assert_eq!(*actual.check_calls.lock().unwrap(), 0);
+        release.send(()).unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| h
+                    .inspection_json()
+                    .is_ok_and(|text| text.contains("actual observed deployment")))
+        );
+        app.surface::<SettingsApp, _>(|app| {
+            let model = app.updates().model().borrow();
+            assert_eq!(model.timer_enabled(), Some(true));
+            assert_eq!(model.rollback_target(), Some("actual prior deployment"));
+            assert!(matches!(&model.firmware_updates, Ok(items) if items.is_empty()));
+            drop(model);
+            assert!(app.updates().statuses().is_empty());
+        })
+        .unwrap();
+        for theme in [
+            ui::theme::Theme::light(),
+            ui::theme::Theme::dark(),
+            ui::theme::Theme::high_contrast(),
+        ] {
+            app.harness().relayout_themed((1160, 1000), theme).unwrap();
+            assert!(
+                app.harness()
+                    .inspection_json()
+                    .unwrap()
+                    .contains("actual observed deployment")
+            );
+        }
+        assert_eq!(control.reads.load(Ordering::SeqCst), 1);
+        let invocation = app
+            .start_effect(&SettingsEffect::from(UpdatesEffect::CheckForUpdates))
+            .unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| h
+                    .job_updates(invocation)
+                    .iter()
+                    .any(tilo_actions::InvocationUpdate::is_terminal))
+        );
+        assert!(
+            matches!(app.harness().job_updates(invocation).last(), Some(tilo_actions::InvocationUpdate::Succeeded {invocation:id,..}) if *id == invocation)
+        );
+        assert_eq!(*actual.check_calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn initial_updates_snapshot_notifies_the_real_owner_wake_scope() {
+        let mut scope = ui::WakeScope::new();
+        let (woke, wakes) = mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        let _scope = scope.enter();
+        let (release, gate) = mpsc::channel();
+        let gate = Mutex::new(Some(gate));
+        let sources = InitialSources {
+            status: Arc::new(move || {
+                let gate = gate.lock().unwrap().take();
+                gate.unwrap().recv_timeout(Duration::from_secs(3)).unwrap();
+                UpdateStatus {
+                    current_version: "woken deployment".into(),
+                    staged_version: None,
+                    staged_error: None,
+                }
+            }),
+            details: Arc::new(|_| UpdateDetails::default()),
+            control: Arc::new(FakeControl::new(Some(true), None)),
+            firmware: Arc::new(|| Ok(Vec::new())),
+            history: Arc::new(|| Ok(Vec::new())),
+            codec: Arc::new(CodecPackStatus::default),
+        };
+        let model = std::rc::Rc::new(std::cell::RefCell::new(UpdatesModel::with_sources(
+            test_cx(),
+            sources,
+        )));
+        let pane = crate::panes::model::ModelPane::new(model.clone());
+        assert!(!pane.needs_animation_frame());
+        assert!(pane.next_wake_deadline().is_none());
+        release.send(()).unwrap();
+        wakes.recv_timeout(Duration::from_secs(3)).unwrap();
+        let mut harness = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            pane,
+            (1200, 1000),
+            ui::theme::Theme::dark(),
+        );
+        assert!(harness.wait_until(ui::time::Duration::from_secs(3), |h| {
+            h.inspection_json()
+                .is_ok_and(|text| text.contains("woken deployment"))
+        }));
+        assert!(matches!(model.borrow().initial, InitialRead::Ready));
+    }
+
+    fn initial_fixture_sources(
+        status: StatusProvider,
+        control: Arc<dyn UpdateControl>,
+    ) -> InitialSources {
+        InitialSources {
+            status,
+            control,
+            details: Arc::new(|_| UpdateDetails::default()),
+            firmware: Arc::new(|| Ok(Vec::new())),
+            history: Arc::new(|| Ok(Vec::new())),
+            codec: Arc::new(CodecPackStatus::default),
+        }
+    }
+
     fn test_cx() -> PaneCx {
         let profile = tempfile::tempdir().unwrap().keep();
         PaneCx::in_file(profile.join("settings.json"))

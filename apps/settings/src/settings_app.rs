@@ -600,6 +600,11 @@ impl SettingsApp {
     }
 
     /// This device's system image, firmware and codec pack.
+    #[cfg(test)]
+    pub(crate) fn updates_mut(&mut self) -> &mut panes::updates::UpdatesArea {
+        &mut self.updates
+    }
+
     pub(crate) fn updates(&self) -> &panes::updates::UpdatesArea {
         &self.updates
     }
