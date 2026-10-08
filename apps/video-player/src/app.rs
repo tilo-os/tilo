@@ -1458,6 +1458,107 @@ impl PlayerApp {
             .position(|node| node.action_target.as_deref() == Some("video-player.formats"))
     }
 
+    fn focus_player_control(&mut self, path: &[usize]) -> bool {
+        match path {
+            [0] => {
+                self.open_focused = true;
+                self.library_focused = false;
+                self.player.reveal_controls();
+                self.dirty = true;
+                true
+            }
+            [1] => {
+                self.library_focused = true;
+                self.open_focused = false;
+                self.player.reveal_controls();
+                self.dirty = true;
+                true
+            }
+            [2] if self.library_visible => {
+                self.library_focus_id = Some("library-close".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [3] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-queue".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [4] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-recent".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [5] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-shared".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                self.library_focus_id = Some("shared-watch-later".into());
+                self.dirty = true;
+                true
+            }
+            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                self.library_focus_id = Some("shared-bookmark".into());
+                self.dirty = true;
+                true
+            }
+            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                let Some((focus, _, _)) = shared_accessibility_targets(self)
+                    .get(index.saturating_sub(8))
+                    .cloned()
+                else {
+                    return false;
+                };
+                self.library_focus_id = Some(focus);
+                self.dirty = true;
+                true
+            }
+            [index] => {
+                let library_index = index.saturating_sub(6);
+                let play_count = self.library_row_hits.len();
+                self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
+                {
+                    Some(row.id.clone())
+                } else if self.library_tab == LibraryTab::Recent
+                    && !self.recent.is_empty()
+                    && library_index == play_count
+                {
+                    Some("library-clear".into())
+                } else {
+                    let remove_index = library_index.saturating_sub(
+                        play_count
+                            + usize::from(
+                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
+                            ),
+                    );
+                    self.library_row_hits
+                        .iter()
+                        .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
+                        .nth(remove_index)
+                        .map(|id| format!("library-remove-{id}"))
+                };
+                if self.library_focus_id.is_none() {
+                    return false;
+                }
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn request_status_action(&self) {
         if self.formats_visible() {
             self.request(&VideoEffect::OpenFormats);
@@ -2808,104 +2909,7 @@ impl Widget for PlayerApp {
             return true;
         }
         self.formats_focused = false;
-        match path {
-            [0] => {
-                self.open_focused = true;
-                self.library_focused = false;
-                self.player.reveal_controls();
-                self.dirty = true;
-                true
-            }
-            [1] => {
-                self.library_focused = true;
-                self.open_focused = false;
-                self.player.reveal_controls();
-                self.dirty = true;
-                true
-            }
-            [2] if self.library_visible => {
-                self.library_focus_id = Some("library-close".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [3] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-queue".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [4] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-recent".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [5] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-shared".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                self.library_focus_id = Some("shared-watch-later".into());
-                self.dirty = true;
-                true
-            }
-            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                self.library_focus_id = Some("shared-bookmark".into());
-                self.dirty = true;
-                true
-            }
-            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                let Some((focus, _, _)) = shared_accessibility_targets(self)
-                    .get(index.saturating_sub(8))
-                    .cloned()
-                else {
-                    return false;
-                };
-                self.library_focus_id = Some(focus);
-                self.dirty = true;
-                true
-            }
-            [index] => {
-                let library_index = index.saturating_sub(6);
-                let play_count = self.library_row_hits.len();
-                self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
-                {
-                    Some(row.id.clone())
-                } else if self.library_tab == LibraryTab::Recent
-                    && !self.recent.is_empty()
-                    && library_index == play_count
-                {
-                    Some("library-clear".into())
-                } else {
-                    let remove_index = library_index.saturating_sub(
-                        play_count
-                            + usize::from(
-                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
-                            ),
-                    );
-                    self.library_row_hits
-                        .iter()
-                        .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
-                        .nth(remove_index)
-                        .map(|id| format!("library-remove-{id}"))
-                };
-                if self.library_focus_id.is_none() {
-                    return false;
-                }
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            _ => false,
-        }
+        self.focus_player_control(path)
     }
 
     fn perform_semantic_action(
