@@ -83,8 +83,8 @@ jobs:
           RPM_SOURCE_COMMIT: ${{ inputs.rpm-source-commit }}
         run: |
           set -euo pipefail
-          if [[ -n $RPM_SOURCE_RUN || -n $RPM_SOURCE_COMMIT ]]; then
-            [[ $RPM_SOURCE_RUN =~ ^[1-9][0-9]{0,18}$ && $RPM_SOURCE_COMMIT =~ ^[0-9a-f]{40}$ ]] || {
+          if [[ -n ${RPM_SOURCE_RUN:-} || -n ${RPM_SOURCE_COMMIT:-} ]]; then
+            [[ ${RPM_SOURCE_RUN:-} =~ ^[1-9][0-9]{0,18}$ && ${RPM_SOURCE_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || {
               echo '::error::RPM replay requires both a positive API run ID and a full source commit'
               exit 1
             }

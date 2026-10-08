@@ -96,6 +96,8 @@ class HostSessionRpmReplayTests(unittest.TestCase):
         workflow = (CI.parents[1] / ".forgejo/workflows/host-session-e2e.yml").read_text()
         block = workflow.split("- name: Validate explicit RPM replay source", 1)[1]
         script = textwrap.dedent(block.split("        run: |\n", 1)[1].split("      # Fail before checkout", 1)[0])
+        unset = {k: v for k, v in os.environ.items() if k not in ["RPM_SOURCE_RUN", "RPM_SOURCE_COMMIT"]}
+        self.assertEqual(subprocess.run(["bash", "-c", script], env=unset, capture_output=True).returncode, 0)
         for run, commit, accepted in [("", "", True), ("123", SHA, True), ("123", "", False),
                                       ("", SHA, False), ("0", SHA, False), ("../123", SHA, False),
                                       ("123", SHA.upper(), False), ("123", "a" * 39, False)]:
