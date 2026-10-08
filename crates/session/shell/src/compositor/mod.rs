@@ -519,3 +519,6 @@ mod tests {
         ]));
     }
 }
+
+#[cfg(target_os = "linux")]
+mod spatial_pointer;
