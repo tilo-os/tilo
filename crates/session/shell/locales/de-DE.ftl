@@ -2407,6 +2407,7 @@ dictation-listening = Mikrofon an · Sprechen und zum Einfügen beenden.
 dictation-finishing = Mikrofon aus · Text wird fertiggestellt…
 dictation-stopping = Diktat wird angehalten…
 dictation-editable-required = Ein Eingabefeld fokussieren. Passwörter erlauben kein Diktat.
+dictation-unsupported-field = Diktate werden in Terminalfeldern noch nicht unterstützt. Ein anderes Eingabefeld fokussieren.
 dictation-busy = Das vorherige Diktat wird noch angehalten. Gleich erneut versuchen.
 dictation-target-changed = Das Feld hat sich geändert. Diktat ohne Texteingabe abgebrochen.
 dictation-timeout = Zeitüberschreitung beim Diktat. Kein Text wurde eingefügt.

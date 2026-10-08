@@ -153,9 +153,15 @@ dictionary, language/source chooser and hold-to-talk interaction remain unbuilt.
 
 [Wispr's terminal guidance](https://docs.wisprflow.ai/articles/6478598909-using-flow-with-linux-wsl-and-terminal-applications)
 describes clipboard recovery and cautions that contextual formatting can change
-commands. Tilo keeps insertion on the original trusted IME connection, excludes
-control characters and rejects a changed terminal epoch. Command safety and
-recognition accuracy still require representative live qualification.
+commands. Tilo keeps insertion on the original trusted IME connection and excludes
+control characters. Dictation refuses the text-input protocol's Terminal purpose:
+process input does not identify an inner program's editable, command or secret
+mode. A caret, terminal epoch or private delivery receipt alone cannot establish
+that eligibility. The refusal applies at activation and every session revalidation,
+without changing ordinary keyboard IME, emoji insertion or terminal paste.
+Terminal support requires an explicit inner-field eligibility/privacy contract,
+with edit-mode transitions invalidating the original grant, before live
+qualification can admit it. No clipboard or key-injection fallback is permitted.
 
 The bookmarks behind this research were identified on 2026-10-07 from the
 owner's X bookmarks (research comment on issue #3543). The candidates below are

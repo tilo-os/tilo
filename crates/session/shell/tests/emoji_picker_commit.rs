@@ -663,6 +663,119 @@ fn dictation_rejects_secret_fields_and_an_unavailable_input_method() {
 }
 
 #[test]
+fn dictation_terminal_purpose_requires_a_qualified_inner_editing_target() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let now = Instant::now();
+    for hint in [
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentHint::HiddenText,
+    ] {
+        let field = h.field(Some((hint, zwp_text_input_v3::ContentPurpose::Terminal)));
+        let expected = if hint.is_empty() {
+            DictationError::UnsupportedField
+        } else {
+            DictationError::SensitiveField
+        };
+        for _ in 0..2 {
+            assert_eq!(h.state.prepare_dictation(now), Err(expected));
+            assert_eq!(h.state.begin_dictation(now), Err(expected));
+        }
+        h.pump();
+        assert!(h.peer(&field).committed.is_empty());
+    }
+    let editable = h.field(None);
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "editable successor".into(), now)
+        .unwrap();
+    h.state.finish_dictation(id, now).unwrap();
+    h.pump();
+    assert_eq!(
+        h.peer(&editable).committed,
+        [Some("editable successor".into())]
+    );
+}
+
+#[test]
+fn dictation_editable_to_terminal_transition_cancels_and_does_not_revive() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(None);
+    let now = Instant::now();
+    let old = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(old, "must not reach process input".into(), now)
+        .unwrap();
+    field.text_input().set_content_type(
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentPurpose::Terminal,
+    );
+    field.text_input().commit();
+    h.pump();
+    assert_eq!(
+        h.state.check_dictation(old, now),
+        Err(DictationError::UnsupportedField)
+    );
+    assert_eq!(
+        h.state.finish_dictation(old, now),
+        Err(DictationError::StaleSession)
+    );
+    field.text_input().set_content_type(
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentPurpose::Normal,
+    );
+    field.text_input().commit();
+    h.pump();
+    let next = h.state.begin_dictation(now).unwrap();
+    assert_ne!(old, next);
+    assert!(!h.state.cancel_dictation(old));
+    assert_eq!(
+        h.state.update_dictation(old, "late callback".into(), now),
+        Err(DictationError::StaleSession)
+    );
+    assert!(h.state.cancel_dictation(next));
+    let final_id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(final_id, "fresh edit".into(), now)
+        .unwrap();
+    h.state.finish_dictation(final_id, now).unwrap();
+    h.pump();
+    assert_eq!(h.peer(&field).committed, [Some("fresh edit".into())]);
+}
+
+#[test]
+fn dictation_idle_terminal_activation_refuses_before_recording() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let field = h.field(Some((
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentPurpose::Terminal,
+    )));
+    let id = h.state.prepare_dictation(Instant::now()).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        match h.state.advance_dictation_preparation(id, Instant::now()) {
+            Ok(false) => h.pump(),
+            Err(DictationError::UnsupportedField) => break,
+            other => panic!("unexpected terminal activation result: {other:?}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "terminal purpose was not identified"
+        );
+    }
+    assert_eq!(
+        h.state.finish_dictation(id, Instant::now()),
+        Err(DictationError::StaleSession)
+    );
+    h.pump();
+    assert!(h.peer(&field).committed.is_empty());
+}
+
+#[test]
 fn dictation_bounds_silence_model_output_and_terminal_control_characters() {
     use shell::compositor::dictation::{DictationError, MAX_DRAFT_BYTES, SESSION_WINDOW};
     let mut h = Harness::new();
