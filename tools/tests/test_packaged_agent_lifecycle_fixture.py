@@ -496,11 +496,67 @@ class PresentedEditorTargetTests(unittest.TestCase):
             PROOF.automatic_single_task_status({"task": "/actual-picker"}, current, task, "tide")
         source = inspect.getsource(PROOF.exercise_agent_quick_composer)
         binding = source.index("automatic_single_task_status(access, current_tasks(), before, agent)")
-        visible = source.index("agent_quick_composer_status(agent, {current_task_status})", binding)
+        visible = source.index("quick_composer_steer_ready(", binding)
         send = source.index('"name": "agent-quick-send"', visible)
         self.assertLess(binding, visible)
         self.assertLess(visible, send)
         self.assertIn("applied_revision == receipt_revision", source)
+
+    def test_physical_steer_requires_same_popup_status_draft_and_enabled_send(self):
+        access = {"bus": "owned", "root": "/popup", "composer": "/editor",
+                  "controls": {"send": "/send"}}
+        for status, draft, enabled, expected in (
+                ("owner-status", True, True, True),
+                (None, True, True, False),
+                ("owner-status", False, True, False),
+                ("owner-status", True, False, False)):
+            with self.subTest(status=status, draft=draft, enabled=enabled), \
+                    patch.object(PROOF, "quick_composer_status_at", return_value=status) as label, \
+                    patch.object(PROOF, "private_editor_value_matches", return_value=draft) as value, \
+                    patch.object(PROOF, "accessibility_control_enabled", return_value=enabled) as control:
+                self.assertEqual(PROOF.quick_composer_steer_ready(
+                    access, "owner-status", "PRIVATE-DRAFT-CANARY"), expected)
+                label.assert_called_once_with(access, {"owner-status"})
+                if status == "owner-status":
+                    value.assert_called_once_with(access, "PRIVATE-DRAFT-CANARY")
+                if status == "owner-status" and draft:
+                    control.assert_called_once_with(access, "/send")
+        source = inspect.getsource(PROOF.exercise_agent_quick_composer)
+        self.assertLess(source.index("access = wait_for(\"automatic Steer's exact interactive"),
+                        source.index('"name": "agent-quick-send"'))
+
+    def test_steer_failure_capture_is_closed_and_does_not_resubmit(self):
+        before = {"task_id": "PRIVATE-ID", "run_epoch": 7, "after_revision": 3,
+                  "title": "PRIVATE-TITLE"}
+        access = {"controls": {"send": "/send"}}
+        operations = []
+        def actual_call(_socket, operation):
+            operations.append(operation["op"])
+            return {"ok": True}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_quick_composer_accessibility", return_value=access), \
+                patch.object(PROOF, "accessibility_control_enabled", return_value=False), \
+                patch.object(PROOF, "private_editor_value_matches", return_value=False), \
+                patch.object(PROOF, "quick_composer_status_at",
+                             return_value="This action is unavailable. Your draft is still here."), \
+                patch.object(PROOF, "quick_composer_targets"), \
+                patch.object(PROOF, "call", side_effect=actual_call):
+            output = pathlib.Path(directory)
+            PROOF.capture_steer_receipt_failure("socket", "tide", lambda: {
+                **before, "status": "failed"}, before, output, "1600x900")
+            raw = (output / "agent-steer-receipt-failed.json").read_text()
+            observed = json.loads(raw)
+        self.assertEqual(operations, ["list_targets", "snapshot"])
+        self.assertEqual(observed["status"], "refused")
+        self.assertFalse(observed["send_enabled"])
+        self.assertFalse(observed["draft_empty"])
+        self.assertFalse(observed["task_active"])
+        self.assertTrue(observed["same_task"])
+        self.assertTrue(observed["revision_equal"])
+        self.assertFalse(observed["revision_advanced"])
+        self.assertEqual(observed["physical_send_count"], 1)
+        self.assertNotIn("PRIVATE", raw)
+        self.assertNotIn("/send", raw)
 
     def test_prime_chat_frontier_restarts_only_stale_same_owned_tree_under_original_deadline(self):
         access = {"process": 123, "agent": "Tide", "detached": False,

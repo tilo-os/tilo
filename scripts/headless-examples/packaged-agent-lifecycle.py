@@ -375,6 +375,11 @@ def agent_quick_composer_status(agent, labels):
     access = agent_quick_composer_accessibility(agent)
     if access is None:
         return None
+    return quick_composer_status_at(access, labels)
+
+
+def quick_composer_status_at(access, labels):
+    """Read known statuses from this same bound composer, never another popup."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
     subtree = accessible_subtree(client, access["root"], atspi.APP_TREE_NODE_LIMIT)
     present = [label for label in labels if len(client.named(subtree, label)) == 1]
@@ -4217,8 +4222,71 @@ def automatic_single_task_status(access, current, before, agent):
     return f"Steer current task: {task['title']}"
 
 
+def quick_composer_steer_ready(access, expected_status, expected_draft):
+    """Require the actual bound popup's draft, owner label and interactive Send."""
+    return quick_composer_status_at(access, {expected_status}) == expected_status \
+        and private_editor_value_matches(access, expected_draft) \
+        and accessibility_control_enabled(access, access["controls"]["send"])
+
+
+def capture_steer_receipt_failure(socket, agent, exact_task, before, output, size):
+    """Failure-only closed observations; never resubmit or retain private labels."""
+    observed = {"composer_observable": False, "send_enabled": None,
+                "draft_empty": None, "status": "unobservable",
+                "task_observable": False, "task_active": None,
+                "same_task": None, "same_run": None,
+                "revision_equal": None, "revision_advanced": None,
+                "send_geometry_valid": False, "physical_send_count": 1,
+                "snapshot_captured": False, "private_content_recorded": False}
+    labels = {
+        f"Steer current task: {before['title']}": "exact_current_task",
+        "Choose which current task to steer": "choose_task",
+        "This agent has no current task to steer": "no_current_task",
+        "Saving direction to the current task…": "submitting",
+        "Sent. Waiting for Task Center to confirm whether the direction was saved…": "outcome_unknown",
+        "Earlier direction was saved in Task Center.": "saved",
+        "The agent applied earlier direction.": "applied",
+        "This action is unavailable. Your draft is still here.": "refused",
+    }
+    try:
+        access = agent_quick_composer_accessibility(agent)
+        if access is not None:
+            observed["composer_observable"] = True
+            observed["send_enabled"] = accessibility_control_enabled(access, access["controls"]["send"])
+            observed["draft_empty"] = private_editor_value_matches(access, "")
+            observed["status"] = labels.get(quick_composer_status_at(access, labels), "other")
+    except (RuntimeError, atspi.GateError):
+        pass  # Diagnostic failure cannot replace the original strict gate failure.
+    try:
+        task = exact_task()
+        if isinstance(task, dict):
+            observed["task_observable"] = True
+            observed["task_active"] = task.get("status") == "in_progress"
+            observed["same_task"] = task.get("task_id") == before.get("task_id")
+            observed["same_run"] = task.get("run_epoch") == before.get("run_epoch")
+            revision = task.get("after_revision")
+            if type(revision) is int:
+                observed["revision_equal"] = revision == before["after_revision"]
+                observed["revision_advanced"] = revision > before["after_revision"]
+    except (RuntimeError, atspi.GateError):
+        pass
+    try:
+        quick_composer_targets(call(socket, {"op": "list_targets"}))
+        observed["send_geometry_valid"] = True
+    except RuntimeError:
+        pass
+    try:
+        require_ok(call(socket, {"op": "snapshot", "path": str(
+            output / f"agent-steer-receipt-failed-{size}.png")}))
+        observed["snapshot_captured"] = True
+    except RuntimeError:
+        pass
+    (output / "agent-steer-receipt-failed.json").write_text(json.dumps(observed, indent=2))
+
+
 def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
-                                 reopened_message_draft=None, current_tasks=None):
+                                 reopened_message_draft=None, current_tasks=None,
+                                 output=None, size=None):
     """Use the actual shell controls while one genuine Agent run is current."""
     fixture_drafts = {
         "message": "Keep this marker Message draft private.",
@@ -4276,8 +4344,13 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
     if current_tasks is None:
         raise RuntimeError("automatic Steer has no observable current owner task list")
     current_task_status = automatic_single_task_status(access, current_tasks(), before, agent)
-    wait_for("automatic Steer's exact visible current-task binding", lambda:
-             agent_quick_composer_status(agent, {current_task_status}), process)
+    def interactive_steer():
+        current = composer()
+        return current if current is not None and quick_composer_steer_ready(
+            current, current_task_status, fixture_drafts["steer"]) else None
+
+    access = wait_for("automatic Steer's exact interactive current-task binding",
+                      interactive_steer, process)
 
     require_ok(call(socket, {"op": "click_named", "name": "agent-quick-send"}))
 
@@ -4290,8 +4363,16 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
         revision = task.get("after_revision")
         return task if type(revision) is int and revision > before_revision else None
 
-    received = wait_for("physical Steer's exact owner frontier receipt",
-                        owner_direction_receipt, process)
+    try:
+        received = wait_for("physical Steer's exact owner frontier receipt",
+                            owner_direction_receipt, process)
+    except RuntimeError:
+        if output is not None:
+            try:
+                capture_steer_receipt_failure(socket, agent, exact_task, before, output, size)
+            except (RuntimeError, OSError, atspi.GateError):
+                pass  # Keep the original receipt refusal even if diagnostics fail.
+        raise
     receipt_revision = received["after_revision"]
 
     def owner_direction_applied():
@@ -4756,6 +4837,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
         socket, agent, exact_task, process,
         reopened_message_draft=reopened_message_draft,
         current_tasks=lambda: current_agent_tasks(socket, room, agent, process),
+        output=output, size=size,
     )
 
     wait_for("post-Steer normal third model turn",
