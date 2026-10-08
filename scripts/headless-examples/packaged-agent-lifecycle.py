@@ -4569,6 +4569,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
         shell_env["RUST_LOG"] = (
             "warn,tilo_action_broker::collab_broker_capnp=debug,"
             "tilo_ui::collaboration::broker=info,"
+            "tilo_agent_catalogue=info,"
             "tilo_agent=info,"
             "tilo_agent_delivery=debug,"
             "shell::shell::search::providers::live_app_actions=debug,"
