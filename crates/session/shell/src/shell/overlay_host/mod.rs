@@ -32,6 +32,7 @@ use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::quick_settings::actions::QsActions as _;
+use crate::shell::quick_settings::refresh::QsField;
 use ui::TextRole;
 
 mod controller;
@@ -177,6 +178,14 @@ mod launcher_action_coverage_tests;
 )]
 #[path = "idle_io_animation_tests.rs"]
 mod idle_io_animation_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each test reads one chrome borrow through to its last assertion"
+)]
+#[path = "qs_device_state_tests.rs"]
+mod qs_device_state_tests;
 
 /// Draw a relationship line with a visible head at the followed person. This
 /// intentionally encodes direction in geometry, so a room observer does not
@@ -1555,18 +1564,26 @@ struct SearchFilterInputs {
 /// tests.
 type GroupsPerStrip = Vec<(StripId, Vec<(u64, Vec<u64>)>)>;
 
-/// `(brightness, volume, wifi, bluetooth, power, wired, battery)` — the
-/// scalar fields [`ShellOverlayHost::apply_fast_qs_reading`] pulls out of a
-/// [`crate::shell::quick_settings::refresh::FastReading`].
-type QsFastFields = (
-    Option<f32>,
-    Option<f32>,
-    Option<bool>,
-    Option<bool>,
-    Option<crate::shell::quick_settings::actions::PowerProfile>,
-    Option<crate::shell::quick_settings::actions::WiredInfo>,
-    Option<crate::shell::quick_settings::actions::BatteryInfo>,
-);
+/// The control a radio change writes.
+const fn radio_field(change: os_actions::RadioChange) -> QsField {
+    match change {
+        os_actions::RadioChange::Wifi(_) => QsField::Wifi,
+        os_actions::RadioChange::Airplane(_) => QsField::Airplane,
+    }
+}
+
+/// The panel's three-way profile, from the daemon's.
+const fn ui_power_profile(
+    profile: crate::shell::quick_settings::actions::PowerProfile,
+) -> crate::shell::quick_settings::PowerProfile {
+    use crate::shell::quick_settings::PowerProfile as UiPP;
+    use crate::shell::quick_settings::actions::PowerProfile as ActPP;
+    match profile {
+        ActPP::Saver => UiPP::Saver,
+        ActPP::Balanced => UiPP::Balanced,
+        ActPP::Performance => UiPP::Performance,
+    }
+}
 
 type AppLauncher = std::rc::Rc<dyn Fn(&Chrome, &str, &str)>;
 impl ShellOverlayHost {
@@ -3125,6 +3142,14 @@ impl ShellOverlayHost {
         };
         let mut st = chrome.borrow_mut();
         if st.status != next {
+            // The bridge is the shell's one volume: a level that changed
+            // there — a media key, the poller, the panel's own read — moves
+            // the panel's slider too, so the two never show different values.
+            if st.status.volume != next.volume
+                && let Some(volume) = next.volume
+            {
+                st.quick_settings.volume = volume.level;
+            }
             st.status = next;
             st.bump();
         }
@@ -9197,20 +9222,68 @@ impl ShellOverlayHost {
         true
     }
 
-    /// Unpacks a [`QsReading::Fast`] payload, writing its non-scalar fields
-    /// (radios, VPNs, privacy) straight to chrome state and returning the
-    /// scalar ones for [`Self::apply_one_qs_reading`]'s shared apply chain
-    /// — split out to keep that function under the line-count ceiling.
-    fn apply_fast_qs_reading(
+    /// Applies a single quick-settings worker reading to chrome state and
+    /// bumps the revision — the per-iteration body of
+    /// [`Self::apply_quick_settings_readings`].
+    fn apply_one_qs_reading(
+        &mut self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        reading: Box<crate::shell::quick_settings::refresh::FastReading>,
-    ) -> QsFastFields {
+        reading: crate::shell::quick_settings::refresh::QsReading,
+    ) {
+        use crate::shell::quick_settings::refresh::QsReading;
+        match reading {
+            QsReading::Fast(reading) => self.apply_fast_qs_reading(st, *reading),
+            QsReading::Field(reading) => self.apply_qs_field_reading(st, reading),
+            QsReading::WifiNetworks(result) => {
+                st.quick_settings.wifi_scanning = false;
+                match result {
+                    Ok(nets) => {
+                        st.quick_settings.wifi_scan_error = None;
+                        Self::apply_qs_wifi_networks(st, nets);
+                    }
+                    Err(error) => {
+                        tracing::warn!(target: "tilo::os_actions", op = "list_wifi_networks", %error, "Wi-Fi scan failed");
+                        st.quick_settings.wifi_scan_error = Some(error);
+                    }
+                }
+            }
+            QsReading::BtDevices(Some(devs)) => {
+                use crate::shell::quick_settings::BtDevice;
+                st.quick_settings.bt_devices = devs
+                    .into_iter()
+                    .map(|d| BtDevice {
+                        name: d.name,
+                        address: d.mac,
+                        battery: d.battery,
+                        connected: d.connected,
+                    })
+                    .collect();
+            }
+            QsReading::BtDevices(None) => {}
+            QsReading::Firmware(updates) => {
+                st.quick_settings.firmware_updates = updates.map(|v| v.len());
+            }
+            QsReading::WifiJoin(join) => {
+                self.apply_wifi_join_result(st, join);
+                return;
+            }
+        }
+        st.bump();
+    }
+
+    /// Everything the panel shows, read on the open edge. Each field applies
+    /// only if actually read.
+    fn apply_fast_qs_reading(
+        &self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+        reading: crate::shell::quick_settings::refresh::FastReading,
+    ) {
         use crate::shell::quick_settings::refresh::FastReading;
         let FastReading {
             brightness,
             displays,
+            volume_available,
             volume,
-            wifi,
             bluetooth,
             bluetooth_available,
             power,
@@ -9220,147 +9293,135 @@ impl ShellOverlayHost {
             radios,
             privacy,
             vpns,
-        } = *reading;
+        } = reading;
         if let Some(profiles) = power_profiles {
-            use crate::shell::quick_settings::PowerProfile as UiPP;
-            use crate::shell::quick_settings::actions::PowerProfile as ActPP;
-            st.quick_settings.power_profiles = profiles
-                .into_iter()
-                .map(|profile| match profile {
-                    ActPP::Saver => UiPP::Saver,
-                    ActPP::Balanced => UiPP::Balanced,
-                    ActPP::Performance => UiPP::Performance,
-                })
-                .collect();
+            st.quick_settings.power_profiles = profiles.into_iter().map(ui_power_profile).collect();
         }
-        st.quick_settings.brightness_available = brightness.is_some() || !displays.is_empty();
-        let brightness = brightness.or_else(|| displays.first().map(|display| display.level));
-        if st.quick_settings.displays != displays {
-            st.quick_settings.displays = displays;
-            st.bump();
+        Self::apply_qs_brightness(st, brightness, displays);
+        if let Some(available) = volume_available {
+            st.quick_settings.volume_available = available;
         }
-        st.quick_settings.volume_available = volume.is_some();
+        self.apply_qs_volume(st, volume);
         if let Some(radios) = radios {
-            st.quick_settings.radios = radios;
+            self.apply_qs_radios(st, radios);
         }
         if let Some(vpns) = vpns {
             st.quick_settings.vpns = vpns;
         }
         st.quick_settings.bluetooth_available = bluetooth_available;
+        if let Some(on) = bluetooth {
+            st.quick_settings.bluetooth = on;
+        }
+        if let Some(wired) = wired {
+            st.quick_settings.wired = Some(wired);
+        }
+        if let Some(profile) = power {
+            st.quick_settings.power_profile = ui_power_profile(profile);
+        }
+        st.quick_settings.battery = battery;
         st.quick_settings.privacy = privacy;
-        (
-            brightness,
-            volume,
-            wifi,
-            bluetooth,
-            power,
-            wired,
-            Some(battery),
-        )
     }
 
-    /// Applies a single quick-settings worker reading to chrome state and
-    /// bumps the revision — the per-iteration body of
-    /// [`Self::apply_quick_settings_readings`], split out to keep that
-    /// function under the line-count ceiling.
-    fn apply_one_qs_reading(
-        &mut self,
+    /// The read-back of the one control the panel just wrote.
+    fn apply_qs_field_reading(
+        &self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        reading: crate::shell::quick_settings::refresh::QsReading,
+        reading: crate::shell::quick_settings::refresh::FieldReading,
     ) {
-        use crate::shell::quick_settings::refresh::QsReading;
-        let (brightness, volume, wifi, bluetooth, power, wired, battery, wifi_nets, bt_devices) =
-            match reading {
-                QsReading::Fast(reading) => {
-                    if let Some(radios) = reading.radios.as_ref() {
-                        self.qs_action_slot.observe_radio_availability(radios);
-                    }
-                    let (brightness, volume, wifi, bluetooth, power, wired, battery) =
-                        Self::apply_fast_qs_reading(st, reading);
-                    (
-                        brightness, volume, wifi, bluetooth, power, wired, battery, None, None,
-                    )
+        use crate::shell::quick_settings::refresh::FieldReading;
+        match reading {
+            FieldReading::Radios(Some(radios)) => self.apply_qs_radios(st, radios),
+            FieldReading::Bluetooth(Some(on)) => st.quick_settings.bluetooth = on,
+            FieldReading::Wired(Some(wired)) => st.quick_settings.wired = Some(wired),
+            FieldReading::Power(Some(profile)) => {
+                st.quick_settings.power_profile = ui_power_profile(profile);
+            }
+            FieldReading::Vpns(Some(vpns)) => st.quick_settings.vpns = vpns,
+            FieldReading::Brightness(brightness, displays) => {
+                Self::apply_qs_brightness(st, brightness, Some(displays));
+            }
+            FieldReading::Volume(volume) => self.apply_qs_volume(st, volume),
+            // Not read: leave the control as it is.
+            FieldReading::Radios(None)
+            | FieldReading::Bluetooth(None)
+            | FieldReading::Wired(None)
+            | FieldReading::Power(None)
+            | FieldReading::Vpns(None) => {}
+        }
+    }
+
+    /// Wi-Fi on/off is derived from the radio snapshot rather than read
+    /// again; a machine with no adapter leaves the switch alone.
+    fn apply_qs_radios(
+        &self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+        radios: os_actions::RadioState,
+    ) {
+        self.qs_action_slot.observe_radio_availability(&radios);
+        if let Ok(on) = os_actions::wifi_from_radios(&radios) {
+            st.quick_settings.wifi = on;
+        }
+        st.quick_settings.radios = radios;
+    }
+
+    /// `displays: None` means the monitor list was not read this time, so
+    /// neither the list nor the slider's availability changes.
+    fn apply_qs_brightness(
+        st: &mut crate::shell::chrome_state::ChromeState,
+        brightness: Option<f32>,
+        displays: Option<Vec<crate::shell::chrome_state::DisplayBrightness>>,
+    ) {
+        let brightness = match displays {
+            Some(displays) => {
+                st.quick_settings.brightness_available =
+                    brightness.is_some() || !displays.is_empty();
+                let brightness =
+                    brightness.or_else(|| displays.first().map(|display| display.level));
+                if st.quick_settings.displays != displays {
+                    st.quick_settings.displays = displays;
                 }
-                QsReading::WifiNetworks(result) => {
-                    st.quick_settings.wifi_scanning = false;
-                    match result {
-                        Ok(nets) => {
-                            st.quick_settings.wifi_scan_error = None;
-                            (None, None, None, None, None, None, None, Some(nets), None)
-                        }
-                        Err(error) => {
-                            tracing::warn!(target: "tilo::os_actions", op = "list_wifi_networks", %error, "Wi-Fi scan failed");
-                            st.quick_settings.wifi_scan_error = Some(error);
-                            st.bump();
-                            return;
-                        }
-                    }
-                }
-                QsReading::BtDevices(devs) => {
-                    (None, None, None, None, None, None, None, None, devs)
-                }
-                QsReading::Firmware(updates) => {
-                    st.quick_settings.firmware_updates = updates.map(|v| v.len());
-                    st.bump();
-                    return;
-                }
-                QsReading::WifiJoin(join) => {
-                    self.apply_wifi_join_result(st, join);
-                    return;
-                }
-            };
-        if let Some(v) = brightness {
-            st.quick_settings.brightness = v;
+                brightness
+            }
+            None => brightness,
+        };
+        if let Some(level) = brightness {
+            st.quick_settings.brightness = level;
         }
-        if let Some(v) = volume {
-            st.quick_settings.volume = v;
+    }
+
+    /// The tray's [`crate::shell::status::StatusBridge`] is the shell's one
+    /// volume: a reading goes there first, and the panel's slider mirrors it
+    /// (see [`Self::sync_status_from_bridge`]). Without a bridge — shots,
+    /// unit tests — the slider takes the reading directly.
+    fn apply_qs_volume(
+        &self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+        volume: Option<os_actions::VolumeState>,
+    ) {
+        let Some(volume) = volume else {
+            return;
+        };
+        if let Some(bridge) = self.status_bridge.as_ref() {
+            bridge.set_volume(volume);
+            st.status.volume = Some(volume);
         }
-        if let Some(v) = wifi {
-            st.quick_settings.wifi = v;
-        }
-        if let Some(v) = bluetooth {
-            st.quick_settings.bluetooth = v;
-        }
-        if let Some(v) = wired {
-            st.quick_settings.wired = Some(v);
-        }
-        if let Some(v) = battery {
-            st.quick_settings.battery = v;
-        }
-        if let Some(p) = power {
-            use crate::shell::quick_settings::PowerProfile as UiPP;
-            use crate::shell::quick_settings::actions::PowerProfile as ActPP;
-            st.quick_settings.power_profile = match p {
-                ActPP::Saver => UiPP::Saver,
-                ActPP::Balanced => UiPP::Balanced,
-                ActPP::Performance => UiPP::Performance,
-            };
-        }
-        if let Some(nets) = wifi_nets {
-            use crate::shell::quick_settings::WifiNetwork;
-            st.quick_settings.wifi_networks = nets
-                .into_iter()
-                .map(|n| WifiNetwork {
-                    ssid: n.ssid,
-                    signal: n.signal,
-                    secure: n.secure,
-                    connected: n.connected,
-                })
-                .collect();
-        }
-        if let Some(devs) = bt_devices {
-            use crate::shell::quick_settings::BtDevice;
-            st.quick_settings.bt_devices = devs
-                .into_iter()
-                .map(|d| BtDevice {
-                    name: d.name,
-                    address: d.mac,
-                    battery: d.battery,
-                    connected: d.connected,
-                })
-                .collect();
-        }
-        st.bump();
+        st.quick_settings.volume = volume.level;
+    }
+
+    fn apply_qs_wifi_networks(
+        st: &mut crate::shell::chrome_state::ChromeState,
+        nets: Vec<os_actions::WifiNetworkInfo>,
+    ) {
+        use crate::shell::quick_settings::WifiNetwork;
+        st.quick_settings.wifi_networks = nets
+            .into_iter()
+            .map(|n| WifiNetwork {
+                ssid: n.ssid,
+                signal: n.signal,
+                secure: n.secure,
+                connected: n.connected,
+            })
+            .collect();
     }
 
     fn apply_wifi_join_result(
@@ -14289,16 +14350,17 @@ impl ShellOverlayHost {
             crate::shell::quick_settings::wifi::WifiPaneOutcome::DrillIn(outcome) => {
                 Self::finish_quick_settings_drill_in_click(chrome, outcome);
             }
+            // Wi-Fi and the hotspot are both the radio snapshot.
             crate::shell::quick_settings::wifi::WifiPaneOutcome::Reconcile => {
                 chrome.borrow_mut().bump();
-                self.qs_refresh.kick_fast_after_write();
+                self.qs_refresh.kick_field(QsField::Wifi);
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::ActionFailed { action, error } => {
                 chrome.borrow_mut().push_notification(
                     t_args("qs-action-failed", &[("action", action.into())]),
                     t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
-                self.qs_refresh.kick_fast_after_write();
+                self.qs_refresh.kick_field(QsField::Wifi);
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::JoinOpen(ssid) => {
                 let mut state = chrome.borrow_mut();
@@ -14375,14 +14437,14 @@ impl ShellOverlayHost {
             }
             VpnPaneOutcome::Reconcile => {
                 chrome.borrow_mut().bump();
-                self.qs_refresh.kick_fast_after_write();
+                self.qs_refresh.kick_field(QsField::Vpn);
             }
             VpnPaneOutcome::ActionFailed { profile, error } => {
                 chrome.borrow_mut().push_notification(
                     t_args("qs-vpn-change-failed", &[("profile", profile.into())]),
                     t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
-                self.qs_refresh.kick_fast_after_write();
+                self.qs_refresh.kick_field(QsField::Vpn);
             }
         }
     }
@@ -15578,15 +15640,13 @@ impl ShellOverlayHost {
         let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
             self.qs_actions.as_ref(),
         );
-        let (label, result, osd) = match commit {
-            SliderCommit::Brightness(value_pct) => {
-                let result = actions.set_brightness(value_pct);
-                (
-                    "brightness",
-                    result,
-                    crate::shell::osd::Osd::brightness(value_pct / 100.0),
-                )
-            }
+        let (field, result) = match commit {
+            SliderCommit::Brightness(value_pct) => (
+                QsField::Brightness,
+                actions
+                    .set_brightness(value_pct)
+                    .map(|()| crate::shell::osd::Osd::brightness(value_pct / 100.0)),
+            ),
             SliderCommit::DisplayBrightness(index, value_pct) => {
                 let connector = self.chrome.as_ref().and_then(|chrome| {
                     chrome
@@ -15601,50 +15661,37 @@ impl ShellOverlayHost {
                     |connector| actions.set_display_brightness(&connector, value_pct),
                 );
                 (
-                    "brightness",
-                    result,
-                    crate::shell::osd::Osd::brightness(value_pct / 100.0),
+                    QsField::Brightness,
+                    result.map(|()| crate::shell::osd::Osd::brightness(value_pct / 100.0)),
                 )
             }
             SliderCommit::Volume(value_pct) => {
-                let previous = self
-                    .status_bridge
-                    .as_ref()
-                    .and_then(|bridge| bridge.snapshot().volume);
-                let mut result = actions.set_volume(value_pct);
-                let should_unmute = value_pct > 0.0 && previous.is_some_and(|v| v.muted);
-                if result.is_ok() && should_unmute {
-                    result = actions.set_mute(false);
-                }
-                let muted = previous.is_some_and(|v| v.muted) && !should_unmute;
-                if result.is_ok()
-                    && let (Some(bridge), Some(_)) = (self.status_bridge.as_ref(), previous)
-                {
-                    bridge.set_volume(os_actions::VolumeState {
-                        level: (value_pct / 100.0).clamp(0.0, 1.0),
-                        muted,
-                    });
-                }
+                let bridge = self.status_bridge.as_ref();
+                let previous = bridge.and_then(|bridge| bridge.snapshot().volume);
                 (
-                    "volume",
-                    result,
-                    crate::shell::osd::Osd::volume(value_pct / 100.0, muted),
+                    QsField::Volume,
+                    crate::shell::media_keys::commit_volume(
+                        &actions,
+                        bridge,
+                        previous,
+                        value_pct / 100.0,
+                    )
+                    .map(|(_, osd)| osd),
                 )
             }
         };
         match result {
-            Ok(()) => {
+            Ok(osd) => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().show_osd(osd);
                 }
-                // A read sampled before this commit must not snap the
-                // slider back to where it was.
-                self.qs_refresh.kick_fast_after_write();
             }
             Err(error) => {
+                let volume = field == QsField::Volume;
+                let label = if volume { "volume" } else { "brightness" };
                 tracing::warn!(target: "tilo::os_actions", op = label, %error, "quick setting failed");
                 if let Some(chrome) = self.chrome.as_ref() {
-                    let title = if label == "volume" {
+                    let title = if volume {
                         t("host-qs-change-failed-volume")
                     } else {
                         t("host-qs-change-failed-brightness")
@@ -15653,11 +15700,12 @@ impl ShellOverlayHost {
                         .borrow_mut()
                         .push_notification(title, t("host-qs-change-failed-value-restored"));
                 }
-                // Reconcile the optimistic slider with authoritative device
-                // state. Worker completion wakes the idle compositor.
-                self.qs_refresh.kick_fast_after_write();
             }
         }
+        // Reconcile the optimistic slider with the device's own level; a
+        // read sampled before this commit must not snap the slider back.
+        // Worker completion wakes the idle compositor.
+        self.qs_refresh.kick_field(field);
     }
 
     #[allow(
@@ -15766,6 +15814,7 @@ impl ShellOverlayHost {
             )
             .set_bluetooth(v);
             self.finish_quick_settings_action(
+                QsField::Bluetooth,
                 "set_bluetooth",
                 t("host-qs-change-failed-bluetooth"),
                 result,
@@ -15777,6 +15826,7 @@ impl ShellOverlayHost {
             )
             .set_wired(v);
             self.finish_quick_settings_action(
+                QsField::Wired,
                 "set_wired",
                 t("host-qs-change-failed-wired"),
                 result,
@@ -15791,6 +15841,7 @@ impl ShellOverlayHost {
             )
             .set_hotspot(v);
             self.finish_quick_settings_action(
+                QsField::Hotspot,
                 "set_hotspot",
                 t("host-qs-change-failed-hotspot"),
                 result,
@@ -15802,6 +15853,7 @@ impl ShellOverlayHost {
             )
             .set_mobile_broadband(v);
             self.finish_quick_settings_action(
+                QsField::Mobile,
                 "set_mobile_broadband",
                 t("host-qs-change-failed-mobile"),
                 result,
@@ -15827,6 +15879,7 @@ impl ShellOverlayHost {
             )
             .set_power_profile(mapped);
             self.finish_quick_settings_action(
+                QsField::Power,
                 "set_power_profile",
                 t("host-qs-change-failed-power"),
                 result,
@@ -15843,6 +15896,7 @@ impl ShellOverlayHost {
             Ok(None) => self.reconcile_quick_settings_radio(change),
             Err(error) => {
                 self.finish_quick_settings_action(
+                    radio_field(change),
                     match change {
                         os_actions::RadioChange::Wifi(_) => "set_wifi",
                         os_actions::RadioChange::Airplane(_) => "set_airplane_mode",
@@ -15858,7 +15912,7 @@ impl ShellOverlayHost {
     }
 
     fn reconcile_quick_settings_radio(&mut self, change: os_actions::RadioChange) {
-        self.qs_refresh.kick_fast_after_write();
+        self.qs_refresh.kick_field(radio_field(change));
         if change == os_actions::RadioChange::Wifi(true) && self.qs_refresh.os_reads_enabled() {
             if let Some(chrome) = &self.chrome {
                 let mut state = chrome.borrow_mut();
@@ -15880,7 +15934,7 @@ impl ShellOverlayHost {
         if job.result().is_some_and(|result| result.is_ok()) {
             self.reconcile_quick_settings_radio(job.change);
         } else {
-            self.qs_refresh.kick_fast_after_write();
+            self.qs_refresh.kick_field(radio_field(job.change));
         }
         true
     }
@@ -15890,6 +15944,7 @@ impl ShellOverlayHost {
     /// machine never entered.
     fn finish_quick_settings_action(
         &mut self,
+        field: QsField,
         operation: &'static str,
         failure_title: String,
         result: Result<(), String>,
@@ -15903,8 +15958,9 @@ impl ShellOverlayHost {
             }
         }
         // Even a successful daemon request can be normalized by hardware or
-        // policy. Read back the authoritative state; completion wakes paint.
-        self.qs_refresh.kick_fast_after_write();
+        // policy. Read back the authoritative state of what was written —
+        // only that; completion wakes paint.
+        self.qs_refresh.kick_field(field);
     }
 
     /// Apply the typed hit produced by [`WorkspaceSettingsOverlay`]. Policy

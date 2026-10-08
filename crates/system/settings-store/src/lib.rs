@@ -72,12 +72,14 @@ pub mod magnifier;
 pub mod notification_policy;
 pub mod personal_dictionary;
 pub mod roaming_provenance;
+mod section_digest;
 mod session;
 mod source;
 pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
 
+pub use section_digest::SectionDigest;
 pub use session::{SessionPaths, SessionSettings};
 pub use source::{
     ChangeSignal, ConditionalUpdate, DisplayUpdate, HostDocument, Listener, SettingsSource,

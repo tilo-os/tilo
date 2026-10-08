@@ -445,3 +445,180 @@ fn explicit_cohort_install_preserves_held_packages_and_existing_pins() {
     assert!(!installed.package.held);
     assert_eq!(installed.replaced.unwrap().package_id(), Some(first.id()));
 }
+
+/// Make `path` writable by its owner; the store may write records read-only.
+fn make_writable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+#[test]
+fn sweep_removes_lru_until_under_cap_in_one_gc() {
+    let identity = SigningIdentity::generate();
+    let shared = bytes(40, 200_000);
+    let own = |seed: u8| bytes(seed, 100_000);
+    let (_pp, p) = package(
+        &identity,
+        "so.tilo.p",
+        "1.0.0",
+        &BTreeMap::from([("bin/app", own(41))]),
+    );
+    let (_pa, a) = package(
+        &identity,
+        "so.tilo.a",
+        "1.0.0",
+        &BTreeMap::from([("bin/app", own(42)), ("share/lib.so", shared.clone())]),
+    );
+    let (_pb, b) = package(
+        &identity,
+        "so.tilo.b",
+        "1.0.0",
+        &BTreeMap::from([("bin/app", own(43)), ("share/lib.so", shared)]),
+    );
+    let (_pc, c) = package(
+        &identity,
+        "so.tilo.c",
+        "1.0.0",
+        &BTreeMap::from([("bin/app", own(44))]),
+    );
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    store
+        .install(
+            full_tapp(&p).as_slice(),
+            |_| {
+                Ok(Admission {
+                    pinned: true,
+                    ..Admission::default()
+                })
+            },
+            None,
+        )
+        .unwrap();
+    for (packed, last_used) in [(&a, 10), (&b, 20), (&c, 30)] {
+        let installed = store
+            .install(full_tapp(packed).as_slice(), admit_all, None)
+            .unwrap();
+        store
+            .update_row(&installed.package.id, |row| row.last_used = last_used)
+            .unwrap();
+    }
+    // The pinned package is the least recently used of all.
+    store
+        .update_row("so.tilo.p", |row| row.last_used = 0)
+        .unwrap();
+    let before = store.disk_usage().unwrap();
+    assert_eq!(
+        before.total_bytes,
+        4 * 100_000 + 200_000,
+        "the library counts once"
+    );
+    assert_eq!(before.pinned_bytes, 100_000);
+    assert_eq!(content_files(root.path()).len(), 5);
+
+    // Evicting a frees only its own binary while b still ships the library,
+    // so b must go too; c, newer, stays, and so does the pinned p.
+    let removed = store.sweep(before.total_bytes - 250_000).unwrap();
+    assert_eq!(
+        removed,
+        vec!["so.tilo.a".to_string(), "so.tilo.b".to_string()]
+    );
+    let registry = store.registry().unwrap();
+    let left: Vec<&str> = registry
+        .entries()
+        .iter()
+        .map(|row| row.id.as_str())
+        .collect();
+    assert_eq!(left, vec!["so.tilo.p", "so.tilo.c"]);
+    assert_eq!(store.disk_usage().unwrap().total_bytes, 200_000);
+    assert!(!store.layout().payload(a.id()).exists());
+    assert!(!store.layout().payload(b.id()).exists());
+    // The sweep collected garbage before returning: nothing is left over.
+    assert_eq!(content_files(root.path()).len(), 2);
+    assert_eq!(store.collect_garbage().unwrap(), 0);
+    for row in registry.entries() {
+        assert!(
+            package_store::integrity::verify(row, &row.payload_root)
+                .unwrap()
+                .is_intact()
+        );
+    }
+    // Under the cap already: nothing more goes, pinned or not.
+    assert!(store.sweep(200_000).unwrap().is_empty());
+}
+
+#[test]
+fn disk_usage_does_not_verify_signatures() {
+    let identity = SigningIdentity::generate();
+    let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    store
+        .install(full_tapp(&a).as_slice(), admit_all, None)
+        .unwrap();
+    let before = store.disk_usage().unwrap();
+    assert!(before.total_bytes > 0);
+
+    let signed_root = store
+        .layout()
+        .meta_dir(a.id())
+        .join(package_store::layout::SIGNED_ROOT_FILE);
+    let mut corrupted = std::fs::read(&signed_root).unwrap();
+    *corrupted.last_mut().unwrap() ^= 0x01;
+    make_writable(&signed_root);
+    std::fs::write(&signed_root, &corrupted).unwrap();
+
+    // Accounting reads the collection; it never replays the signature.
+    assert_eq!(store.disk_usage().unwrap(), before);
+    // Verification, the explicit operation, still sees the damage.
+    let row = store
+        .registry()
+        .unwrap()
+        .find("so.tilo.a")
+        .cloned()
+        .unwrap();
+    assert!(matches!(
+        package_store::integrity::verify(&row, &row.payload_root),
+        Err(package_store::integrity::IntegrityError::RootIdMismatch)
+    ));
+    // And a sweep under pressure still measures and evicts it.
+    assert_eq!(store.sweep(1).unwrap(), vec!["so.tilo.a".to_string()]);
+    assert!(content_files(root.path()).is_empty());
+}
+
+#[test]
+fn gc_refuses_when_a_collection_is_unreadable() {
+    let identity = SigningIdentity::generate();
+    let (_pa, a) = package(&identity, "so.tilo.a", "1.0.0", &v1_files());
+    let (_pb, b) = package(&identity, "so.tilo.b", "1.0.0", &v2_files());
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    store
+        .install(full_tapp(&a).as_slice(), admit_all, None)
+        .unwrap();
+    store
+        .install(full_tapp(&b).as_slice(), admit_all, None)
+        .unwrap();
+    let stored = content_files(root.path()).len();
+
+    std::fs::remove_file(
+        store
+            .layout()
+            .meta_dir(a.id())
+            .join(package_store::layout::COLLECTION_FILE),
+    )
+    .unwrap();
+
+    // b's own blobs are garbage once it goes, but a's can no longer be told
+    // apart from them, so nothing is evicted.
+    assert!(matches!(
+        store.remove("so.tilo.b", false),
+        Err(StoreError::CorruptPackage(ref id, _)) if id == "so.tilo.a"
+    ));
+    assert_eq!(content_files(root.path()).len(), stored);
+    assert!(matches!(
+        store.collect_garbage(),
+        Err(StoreError::CorruptPackage(ref id, _)) if id == "so.tilo.a"
+    ));
+    assert_eq!(content_files(root.path()).len(), stored);
+}
