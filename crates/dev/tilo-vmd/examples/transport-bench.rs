@@ -163,6 +163,6 @@ fn main() {
     );
     println!(
         "{}",
-        serde_json::json!({"scope":"rcargo builder; isolated Unix sockets; no live VM or SSH latency claim","artifact_sha256":hex::encode(sha.finalize()),"artifact_kind":if supplied_archive { "archive" } else { "executable" },"archive_bytes":size,"old":old,"new":new,"binary_both":binary_both})
+        serde_json::json!({"scope":"isolated Unix sockets; no live VM or SSH latency claim","artifact_sha256":hex::encode(sha.finalize()),"artifact_kind":if supplied_archive { "archive" } else { "executable" },"archive_bytes":size,"old":old,"new":new,"binary_both":binary_both})
     );
 }
