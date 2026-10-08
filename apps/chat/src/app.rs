@@ -4571,6 +4571,15 @@ impl ChatApp {
         Self::deduplicate_semantic_hits(self.semantic_hits_from(&self.hits))
     }
 
+    /// Resolve an accessibility target to the exact painted keyboard-ring
+    /// entry that pointer and physical-key activation share.
+    fn semantic_hit(&self, target: &str) -> Option<(usize, Hit)> {
+        self.semantic_hits()
+            .into_iter()
+            .enumerate()
+            .find_map(|(index, (_, hit, ..))| (hit.semantic_id() == target).then_some((index, hit)))
+    }
+
     pub(crate) fn hover_tooltip_target(&self, point: Point) -> Option<(Rect, String)> {
         if let Some((rect, hit)) = self.hits.iter().rev().find(|(rect, hit)| {
             rect.contains(point)
@@ -6054,14 +6063,7 @@ impl Widget for ChatApp {
         if target.starts_with("context-menu:item:") {
             return self.perform_menu_semantic_action(target, action, state, path);
         }
-        let hit = self
-            .semantic_hits()
-            .into_iter()
-            .enumerate()
-            .find_map(|(index, (_, hit, ..))| {
-                (hit.semantic_id() == target).then_some((index, hit))
-            });
-        let Some((hit_index, hit)) = hit else {
+        let Some((hit_index, hit)) = self.semantic_hit(target) else {
             return false;
         };
         // These immediate-mode editors are real TextInputs, even though their
