@@ -298,13 +298,26 @@ pub fn any_pending(tree: &WorkspaceTree) -> bool {
     !pending(tree).is_empty()
 }
 
-/// Settle a persisted host-app card whose process started but never produced
+/// Settle a persisted app card whose process started but never produced
 /// a surface. This is not automatically retryable: retrying every frame would
 /// create an unbounded process loop.
-pub(crate) fn mark_timed_out_host_restore(tree: &mut WorkspaceTree, desktop_id: &str) -> bool {
-    let Some(app) = crate::shell::host_apps::find(desktop_id) else {
-        return false;
-    };
+pub(crate) fn mark_timed_out_restore(tree: &mut WorkspaceTree, package_id: &str) -> bool {
+    settle_local_restore(
+        tree,
+        package_id,
+        &crate::shell::i18n::t("host-app-did-not-open-body"),
+    )
+}
+
+/// A terminal launch outcome answers only still-opening local cards. Keep the
+/// saved tab and app record association, and never retry an answered card on
+/// each frame. A mapped Foreign window or an unrelated refusal is untouched.
+pub(crate) fn settle_local_restore(
+    tree: &mut WorkspaceTree,
+    package_id: &str,
+    detail: &str,
+) -> bool {
+    let host_app = crate::shell::host_apps::find(package_id);
     let mut changed = false;
     for ws in &mut tree.desktop.workspaces {
         for strip in &mut ws.strips {
@@ -313,14 +326,16 @@ pub(crate) fn mark_timed_out_host_restore(tree: &mut WorkspaceTree, desktop_id: 
                     let TileContent::LocalApp { app_id, note, .. } = &mut tab.tile else {
                         continue;
                     };
-                    if note == OPENING
-                        && (app.desktop_id.eq_ignore_ascii_case(app_id)
-                            || app
-                                .window_identities
-                                .iter()
-                                .any(|id| id.eq_ignore_ascii_case(app_id)))
-                    {
-                        *note = "The app started but did not open a window.".to_string();
+                    let matches = launcher::app_id_matches_package(app_id, package_id)
+                        || host_app.as_ref().is_some_and(|app| {
+                            app.desktop_id.eq_ignore_ascii_case(app_id)
+                                || app
+                                    .window_identities
+                                    .iter()
+                                    .any(|id| id.eq_ignore_ascii_case(app_id))
+                        });
+                    if note == OPENING && matches {
+                        *note = detail.to_string();
                         changed = true;
                     }
                 }
@@ -1258,6 +1273,67 @@ mod tests {
     }
 
     #[test]
+    fn native_local_restore_failures_settle_without_discarding_saved_tabs() {
+        let (mut tree, tab) = tree_with_local_app(FILES);
+        assert!(set_note(&mut tree, tab, OPENING.into()));
+        tree.remember_local_app_record(tab, 8130);
+        let saved = tree.local_app_records.clone();
+        let original_id = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        assert!(mark_timed_out_restore(&mut tree, FILES));
+        assert_eq!(
+            local_app_note(&tree, tab),
+            crate::shell::i18n::t("host-app-did-not-open-body")
+        );
+        assert!(
+            !any_pending(&tree),
+            "answered timeout must not relaunch each frame"
+        );
+        assert!(!mark_timed_out_restore(&mut tree, FILES));
+        assert_eq!(
+            tree.local_app_records, saved,
+            "timeout keeps the saved app record"
+        );
+        assert_eq!(
+            tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id,
+            original_id
+        );
+
+        assert!(set_note(&mut tree, tab, OPENING.into()));
+        assert!(!settle_local_restore(
+            &mut tree,
+            APP,
+            "different app failed"
+        ));
+        assert_eq!(local_app_note(&tree, tab), OPENING);
+        let failure = launcher::LaunchEvent {
+            package_id: FILES.into(),
+            display_name: "Files".into(),
+            managed_agent_id: None,
+            managed_workspace_id: None,
+            kind: launcher::LaunchEventKind::SpawnFailed {
+                detail: "worker refused".into(),
+            },
+        }
+        .failure_notice()
+        .unwrap();
+        assert!(settle_local_restore(&mut tree, FILES, &failure.body));
+        assert_eq!(local_app_note(&tree, tab), failure.body);
+        assert!(!settle_local_restore(&mut tree, FILES, "later error"));
+        assert!(!any_pending(&tree));
+
+        // A mapped window has already completed restore: failure never rewrites it.
+        tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
+            surface_id: 99,
+            app_id: FILES.into(),
+        };
+        assert!(!mark_timed_out_restore(&mut tree, FILES));
+        assert!(matches!(
+            tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile,
+            TileContent::Foreign { surface_id: 99, .. }
+        ));
+    }
+
+    #[test]
     fn a_window_hosted_on_another_device_is_never_opened_here() {
         let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
         tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile =
@@ -1334,13 +1410,10 @@ mod tests {
 
             let (mut tree, tab) = tree_with_local_app("org.example.Windowless");
             assert!(set_note(&mut tree, tab, OPENING.to_string()));
-            assert!(mark_timed_out_host_restore(
-                &mut tree,
-                "org.example.Windowless"
-            ));
+            assert!(mark_timed_out_restore(&mut tree, "org.example.Windowless"));
             assert_eq!(
                 local_app_note(&tree, tab),
-                "The app started but did not open a window."
+                crate::shell::i18n::t("host-app-did-not-open-body")
             );
             assert!(
                 !any_pending(&tree),
