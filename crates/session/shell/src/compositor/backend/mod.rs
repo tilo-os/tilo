@@ -804,12 +804,23 @@ pub trait Backend {
     /// arrives, so nothing else would trigger it.
     fn reset_display(&mut self) {}
 
-    /// Re-read the persisted input preferences and apply them.
+    /// Re-read the persisted input, keyboard, accessibility and tablet
+    /// preferences and apply them.
     ///
     /// Default no-op — only the DRM backend owns input devices. Called
-    /// when the Settings app writes a change, so pointer speed and
+    /// when one of those settings sections changes, so pointer speed and
     /// tap-to-click take effect without restarting the session.
     fn reload_input_settings(&mut self) {}
+
+    /// `display`, `display_transaction` or `display_profiles` changed:
+    /// advance the display transaction and re-apply the arrangement, scale
+    /// and modes from the connector state the last hotplug probe found.
+    ///
+    /// Must not force-probe connectors: this runs on the input path, and a
+    /// forced KMS probe of every connector (slow on DP-MST docks) stalls
+    /// pointer and keyboard dispatch. Only a hotplug re-probes. Default
+    /// no-op for backends that own no displays.
+    fn reload_display_settings(&mut self) {}
 
     /// Show `image` as the pointer. Default no-op: a hosted backend's
     /// pointer belongs to the host and a headless one has none.
