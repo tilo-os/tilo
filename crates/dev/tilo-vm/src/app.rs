@@ -46,6 +46,8 @@ use crate::vmbuild;
 mod admin;
 mod builder;
 mod device;
+#[cfg(test)]
+mod forwarded_port_tests;
 mod kernel;
 mod reach;
 mod scenario;
@@ -299,6 +301,7 @@ struct Published {
 /// What `vm create` will do, settled before it does anything.
 struct Plan {
     choice: host::Choice,
+    ssh_port: Option<u16>,
     image: Option<PathBuf>,
     /// The format of `image`.
     image_format: Option<image::Format>,
@@ -312,6 +315,13 @@ struct Plan {
 impl Plan {
     fn describe(&self) -> String {
         let mut lines = vec![format!("  hypervisor: {}", self.choice.describe())];
+        if let Some(port) = self.ssh_port
+            && matches!(self.choice.adapter, "libvirt" | "qemu" | "whpx")
+        {
+            lines.push(format!(
+                "  SSH forwarding: host TCP port {port} (availability checked, not reserved)"
+            ));
+        }
         match (&self.image, &self.published) {
             (Some(image), _) => {
                 let format = self.image_format.map_or("", image::Format::name);
@@ -1745,6 +1755,8 @@ impl App {
             });
         }
         Self::validate_create_options(choice.adapter, args)?;
+        let ssh_port =
+            crate::forwarded_port::select(&self.registry()?, choice.adapter, args.ssh_port)?;
         if !sshkey::key_path(&self.registry_path, &args.name).exists() && !on_path("ssh-keygen") {
             return Err(CliError::ToolMissing {
                 tool: "ssh-keygen".into(),
@@ -1821,6 +1833,7 @@ impl App {
         }
         Ok(Plan {
             choice,
+            ssh_port,
             image,
             image_format,
             import,
@@ -2005,7 +2018,7 @@ impl App {
             gl: args.gl,
             resolution: args.resolution,
             cpus: args.cpus,
-            ssh_port: args.ssh_port,
+            ssh_port: plan.ssh_port,
             template: args.template,
             image_format: image_format
                 .filter(|f| *f == image::Format::Raw)
@@ -2067,7 +2080,7 @@ impl App {
         let slot = "tilo-vm slot create --headless".to_owned();
         let mut outcome = Outcome::new(
             text,
-            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "key": key, "key_as_credential": credentials, "commands": commands }),
+            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "ssh_port": plan.ssh_port, "key": key, "key_as_credential": credentials, "commands": commands }),
         );
         outcome.next = vec![start, slot];
         Ok(outcome)

@@ -712,6 +712,10 @@ pub struct CardHandle {
 }
 
 /// One connected connector as the hotplug path sees it: enough to decide whether it is new, gone, or re-moded, and to modeset it if new.
+///
+/// `Clone` because the runtime keeps the last forced probe's snapshots, so
+/// a settings change re-applies the arrangement without probing again.
+#[derive(Clone)]
 pub struct ConnectorSnapshot {
     pub connector_id: u32,
     pub handle: connector::Handle,
@@ -937,6 +941,11 @@ impl CardHandle {
     }
 
     /// Ask the hardware what is connected now; `force_probe` is on since a hotplug event is precisely when cached connector state is stale.
+    ///
+    /// A forced probe of every connector, plus an EDID read each, is slow
+    /// (hundreds of milliseconds per DP-MST sink) and runs on the input
+    /// thread. Only startup and udev hotplug call this; everything else
+    /// reads the runtime's copy of the last result.
     pub fn connected(&self) -> Vec<ConnectorSnapshot> {
         let res = match self.card.resource_handles() {
             Ok(r) => r,

@@ -9932,77 +9932,107 @@ pub fn run() {
         }
 
         input_steps.step("focus-persist");
-        // The Settings app writes to a file with no notification, so poll cheaply
-        // (once/sec) to reach input devices and display scale.
+        // A settings write wakes the loop through the file watch above (and
+        // output management's staging), and the watch's own rate-limited
+        // stat catches one that arrived while the watch was unavailable.
+        // Only the work the changed sections need runs: a notification
+        // toggle must not reconfigure input devices or reconcile outputs on
+        // this input path.
         if state.output_management.poll_staging() {
             settings_written.store(true, Ordering::Release);
         }
         if settings_written.swap(false, Ordering::AcqRel) {
             settings_watch.check_now();
         }
-        if settings_watch.changed(Instant::now()) {
+        let settings_change = crate::compositor::backend::drm::input_config::SettingsChange::from(
+            settings_watch.changed_sections(Instant::now()),
+        );
+        if !settings_change.is_empty() {
             input_steps.step("settings-poll");
-            tracing::info!("compositor: settings changed on disk; re-applying");
-            state.reload_keyboard_settings();
-            input_steps.step("settings-keyboard");
-            backend.reload_input_settings();
-            input_steps.step("settings-input-devices");
-            // Preserve Keep/Revert tracking after an Apply receipt was drained.
-            state.output_management.resolve_transactions(
-                settings_store::hardware::DisplayTransaction::load().as_ref(),
+            tracing::info!(
+                ?settings_change,
+                "compositor: settings changed on disk; re-applying"
             );
-            if let Some(xwayland) = xwayland.as_mut() {
-                xwayland.reload_keyboard_settings();
-            }
-            input_steps.step("settings-displays-xwayland");
-            // Shortcut ownership is decided before a focused client sees the
-            // press. Refresh the host's validated snapshot in the same settings
-            // transaction so changes made in Settings take effect live rather
-            // than only after the next compositor session.
-            if let Err(error) = frame_builder
-                .host_mut()
-                .set_shortcut_config(settings_store::hardware::ShortcutConfig::load())
-            {
-                tracing::warn!(?error, "compositor: rejected invalid shortcut settings");
-            }
-            // A GlobalShortcuts grant may not take a chord the user has just
-            // assigned to a desktop action.
-            state
-                .global_shortcuts
-                .set_shortcut_config(frame_builder.host().shortcut_config().clone());
-            frame_builder.host_mut().set_desktop_controls_config(
-                settings_store::hardware::DesktopControlsConfig::load(),
-            );
-            frame_builder.host_mut().poll_display_identify();
-            input_steps.step("settings-shortcuts");
-            // Input/display reload above does not re-theme. An appearance
-            // write must rebuild chrome on this tick and wake tiled apps so
-            // they paint the new Theme instead of keeping the last buffer.
-            frame_builder
-                .with_chrome(crate::shell::chrome_state::ChromeState::note_appearance_change);
-            for toplevel in state.xdg_shell_state.toplevel_surfaces() {
-                if toplevel.is_initial_configure_sent() {
-                    toplevel.send_configure();
+            if settings_change.keyboard() {
+                state.reload_keyboard_settings();
+                if let Some(xwayland) = xwayland.as_mut() {
+                    xwayland.reload_keyboard_settings();
                 }
             }
-            force_first_paint = true;
+            input_steps.step("settings-keyboard");
+            if settings_change.input_devices() {
+                backend.reload_input_settings();
+            }
+            input_steps.step("settings-input-devices");
+            if settings_change.displays() {
+                // Re-applies from the last hotplug probe; never force-probes.
+                backend.reload_display_settings();
+                // Preserve Keep/Revert tracking after an Apply receipt was drained.
+                state.output_management.resolve_transactions(
+                    settings_store::hardware::DisplayTransaction::load().as_ref(),
+                );
+                outputs_dirty = true;
+            }
+            input_steps.step("settings-displays");
+            if settings_change.shortcuts() {
+                // Shortcut ownership is decided before a focused client sees the
+                // press. Refresh the host's validated snapshot in the same settings
+                // transaction so changes made in Settings take effect live rather
+                // than only after the next compositor session.
+                if let Err(error) = frame_builder
+                    .host_mut()
+                    .set_shortcut_config(settings_store::hardware::ShortcutConfig::load())
+                {
+                    tracing::warn!(?error, "compositor: rejected invalid shortcut settings");
+                }
+                // A GlobalShortcuts grant may not take a chord the user has just
+                // assigned to a desktop action.
+                state
+                    .global_shortcuts
+                    .set_shortcut_config(frame_builder.host().shortcut_config().clone());
+            }
+            if settings_change.desktop_controls() {
+                frame_builder.host_mut().set_desktop_controls_config(
+                    settings_store::hardware::DesktopControlsConfig::load(),
+                );
+            }
+            if settings_change.display_identify() {
+                frame_builder.host_mut().poll_display_identify();
+            }
+            input_steps.step("settings-shortcuts");
+            if settings_change.appearance() {
+                // An appearance write must rebuild chrome on this tick and
+                // wake tiled apps so they paint the new Theme instead of
+                // keeping the last buffer.
+                frame_builder
+                    .with_chrome(crate::shell::chrome_state::ChromeState::note_appearance_change);
+                for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+                    if toplevel.is_initial_configure_sent() {
+                        toplevel.send_configure();
+                    }
+                }
+                force_first_paint = true;
+            }
             input_steps.step("settings-appearance");
-            // The profile the power service last read, not a fresh ask:
-            // `powerprofilesctl` is a process start this thread would wait on.
-            let policy = idle_policy_for_backend(
-                tilo_power_mgmt::config::load_policy_for_profile(
-                    power_bridge.active_profile().as_deref(),
-                ),
-                headless,
-            );
-            power_policy = policy;
-            session.set_blank_timeout(policy.idle_blank);
-            session.set_lock_timeout(policy.idle_lock);
-            session.set_suspend_timeout(policy.idle_suspend);
-            power_bridge.update_policy(policy);
-            outputs_dirty = true;
+            if settings_change.power() {
+                // The profile the power service last read, not a fresh ask:
+                // `powerprofilesctl` is a process start this thread would wait on.
+                let policy = idle_policy_for_backend(
+                    tilo_power_mgmt::config::load_policy_for_profile(
+                        power_bridge.active_profile().as_deref(),
+                    ),
+                    headless,
+                );
+                power_policy = policy;
+                session.set_blank_timeout(policy.idle_blank);
+                session.set_lock_timeout(policy.idle_lock);
+                session.set_suspend_timeout(policy.idle_suspend);
+                power_bridge.update_policy(policy);
+            }
             input_steps.step("settings-power");
-            input_methods.reload(&mut state);
+            if settings_change.keyboard() {
+                input_methods.reload(&mut state);
+            }
             input_steps.step("settings-input-methods");
         }
         // Drain backend receipts even when the storage completion followed

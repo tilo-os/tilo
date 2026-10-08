@@ -13004,15 +13004,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "runtime-connected"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.21",
- "tilo-connected-protocol",
- "workspace-hack",
-]
-
-[[package]]
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
@@ -16406,17 +16397,6 @@ name = "tilo-clock"
 version = "0.1.0"
 dependencies = [
  "web-time",
-]
-
-[[package]]
-name = "tilo-connected-protocol"
-version = "0.1.0"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "workspace-hack",
 ]
 
 [[package]]
