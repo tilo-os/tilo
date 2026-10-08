@@ -1307,10 +1307,6 @@ pub(crate) fn answer(
     if effect == InputEffect::InspectKeyboardMap {
         return app.keyboard_inspection().map(Effected::value);
     }
-    if let InputEffect::InspectInputSources { query, page } = &effect {
-        return inspect_input_sources(app, query.as_deref(), page.unwrap_or(0))
-            .map(Effected::value);
-    }
     let host = app.host();
     match effect {
         InputEffect::AddDictionaryWord {
