@@ -40,13 +40,17 @@ pub(crate) struct StoredRoom {
     pub workspace: u64,
     pub governor: DeviceCert,
     pub device: DeviceCert,
+    #[serde(with = "bytes_compat")]
     pub invitation: Vec<u8>,
+    #[serde(with = "bytes_compat")]
     pub enrollment_intent: Vec<u8>,
     pub enrolled_at_ns: u64,
     pub transport_hint: TransportHint,
     pub host: Option<DeviceCert>,
     pub locator: Option<TransportHint>,
     pub hint: Option<TransportHint>,
+    /// `StatePeer::durable()`: the largest field by far.
+    #[serde(with = "bytes_compat")]
     pub peer: Vec<u8>,
     pub generation: u64,
     pub continuity: u64,
@@ -130,5 +134,56 @@ impl StoredPendingEnrollment {
     #[must_use]
     pub fn status(&self) -> PendingEnrollmentStatus {
         self.status
+    }
+}
+
+/// Opaque byte fields of a room record: base64 text in a human-readable
+/// format (the owner file, the desktop state file), the unchanged `Vec<u8>`
+/// encoding in a binary one. Records written before this held JSON integer
+/// arrays, four to six bytes per byte pretty-printed; those still read back.
+pub(crate) mod bytes_compat {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+    pub(crate) fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&STANDARD.encode(bytes))
+        } else {
+            bytes.serialize(serializer)
+        }
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(Legacy)
+        } else {
+            Vec::deserialize(deserializer)
+        }
+    }
+
+    struct Legacy;
+    impl<'de> de::Visitor<'de> for Legacy {
+        type Value = Vec<u8>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("base64 text or a legacy array of bytes")
+        }
+        fn visit_str<E: de::Error>(self, text: &str) -> Result<Vec<u8>, E> {
+            STANDARD.decode(text).map_err(E::custom)
+        }
+        fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<Vec<u8>, E> {
+            Ok(bytes.to_vec())
+        }
+        fn visit_byte_buf<E: de::Error>(self, bytes: Vec<u8>) -> Result<Vec<u8>, E> {
+            Ok(bytes)
+        }
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
+            let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(1 << 20));
+            while let Some(byte) = seq.next_element::<u8>()? {
+                bytes.push(byte);
+            }
+            Ok(bytes)
+        }
     }
 }
