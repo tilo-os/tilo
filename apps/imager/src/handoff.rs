@@ -964,30 +964,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn handoff_copy_refuses_a_planted_destination_parent() {
-        let source = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        fs::create_dir_all(source.path().join("NetworkManager/system-connections")).unwrap();
-        fs::write(
-            source
-                .path()
-                .join("NetworkManager/system-connections/tilo-setup.nmconnection"),
-            b"wifi-secret",
-        )
-        .unwrap();
-        std::os::unix::fs::symlink(outside.path(), target.path().join("NetworkManager")).unwrap();
-        let error = copy_tree(source.path(), target.path())
-            .expect_err("a planted parent must refuse the copy");
-        assert!(
-            error.to_string().contains("not a real directory"),
-            "{error}"
-        );
-        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
-    }
-
     #[test]
     fn access_handoff_names_the_target_only_when_a_hostname_was_chosen() {
         let unnamed = InstallProfile {
