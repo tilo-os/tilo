@@ -21,7 +21,7 @@ pub const LETTER_LAYOUTS: [(&str, &str); 2] = [
 ];
 
 /// The letter layout names a preference may take.
-pub const LAYOUT_NAMES: [&str; 2] = ["qwerty", "azerty"];
+pub use tilo_keyboard_map::touch::LAYOUT_NAMES;
 
 /// One keyboard preference set to a value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

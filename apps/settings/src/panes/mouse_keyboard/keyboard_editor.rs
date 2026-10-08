@@ -8,6 +8,7 @@ use ui::widget::{ListRow, VirtualList};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum SourceView {
     #[default]
+    Native,
     Configured,
     Live,
 }
@@ -32,7 +33,7 @@ impl Default for EditorState {
             pending: None,
             options_open: false,
             inspection_open: false,
-            view: SourceView::Configured,
+            view: SourceView::Native,
         }
     }
 }
@@ -186,6 +187,9 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
         }
         InputEffect::SetSourceInspectionVisible { visible } => {
             editor.inspection_open = *visible;
+            if editor.view == SourceView::Native {
+                editor.view = SourceView::Live;
+            }
             Ok(Effected::done())
         }
         InputEffect::OpenSourcePicker => {
@@ -923,7 +927,7 @@ fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
         .in_document(document.clone())
         .get();
     let configured = if stored.layouts.is_empty() {
-        osk::actions::LAYOUT_NAMES
+        tilo_keyboard_map::touch::LAYOUT_NAMES
             .iter()
             .map(|name| (*name).to_owned())
             .collect()
@@ -963,7 +967,7 @@ fn store_osk(document: &ui::storage::SettingsDocument, profile: &KeyboardProfile
 }
 
 fn touch_preview(source: &str, label: String) -> ui::KeyboardMap {
-    use osk::layout::{KeyboardLayout, ShiftState, key_rects};
+    use tilo_keyboard_map::touch::{KeyboardLayout, ShiftState, key_rects};
     use winit::keyboard::{NativeKeyCode, PhysicalKey};
     let layout = if source == "azerty" {
         KeyboardLayout::azerty()
@@ -1007,6 +1011,10 @@ mod tests {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         app.surface::<SettingsApp, _>(|surface| {
             surface.input().live.set(false);
+            // These fixtures edit configured sources without a native seat observation.
+            let mut editor = surface.input().editor.get();
+            editor.view = SourceView::Configured;
+            surface.input().editor.set(editor);
             surface.input().devices.borrow_mut().1 =
                 crate::scenarios::keyboard_fixture(Some(scenario));
         })
@@ -1397,13 +1405,24 @@ mod tests {
 
     #[test]
     fn keyboard_editor_osk_updates_preserve_existing_preferences_and_survive_restart() {
+        #[derive(Default, serde::Serialize, serde::Deserialize)]
+        #[serde(default)]
+        struct FixtureOskPreferences {
+            layout: String,
+            layouts: Vec<String>,
+            suggestions: bool,
+            personalization: bool,
+        }
+        impl ui::storage::SettingsSchema for FixtureOskPreferences {
+            const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+        }
         let mut app = fixture_app("keyboard-osk", (440, 820));
         let document = app
             .surface::<SettingsApp, _>(|surface| surface.input().document.clone())
             .unwrap();
-        let settings = ui::storage::Settings::<osk::OskPreferences>::for_app("so.tilo.osk")
+        let settings = ui::storage::Settings::<FixtureOskPreferences>::for_app("so.tilo.osk")
             .in_document(document);
-        let preferences = osk::OskPreferences {
+        let preferences = FixtureOskPreferences {
             layout: "azerty".into(),
             suggestions: false,
             personalization: false,
