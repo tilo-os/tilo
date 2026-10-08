@@ -23,7 +23,8 @@ class RuntimeDependencies(unittest.TestCase):
         sources = {
             'leaf': 'int leaf(void) { return 7; }',
             'bridge': 'extern int leaf(void); int bridge(void) { return leaf(); }',
-            'runtime': '#include <stdio.h>\nint toolkit(void) { return puts("fixture"); }',
+            'runtime': '#include <stdio.h>\nextern int bridge(void); '
+                       'int toolkit(void) { return puts("fixture") + bridge(); }',
             'app': '#include <stdio.h>\nextern int bridge(void); '
                    'int main(void) { printf("%d", bridge()); return 0; }',
         }
@@ -33,7 +34,8 @@ class RuntimeDependencies(unittest.TestCase):
             ['cc', '-shared', '-fPIC', 'leaf.c', '-Wl,-soname,libleaf.so', '-o', 'libleaf.so'],
             ['cc', '-shared', '-fPIC', 'bridge.c', '-L.', '-lleaf',
              '-Wl,-soname,libbridge.so', '-o', 'libbridge.so'],
-            ['cc', '-shared', '-fPIC', 'runtime.c', '-o', 'libruntime_dylib.so'],
+            ['cc', '-shared', '-fPIC', 'runtime.c', '-L.', '-lbridge',
+             '-Wl,-rpath-link,.', '-o', 'libruntime_dylib.so'],
             ['cc', 'app.c', '-L.', '-lbridge', '-Wl,-rpath-link,.', '-o', 'app'],
         ]
         for command in commands:
@@ -43,7 +45,7 @@ class RuntimeDependencies(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def test_real_elf_app_only_transitive_closure_and_loader(self):
+    def test_real_elf_transitive_closure_and_loader(self):
         paths = COLLECTOR.collect([self.directory / 'app'], [self.directory])
         self.assertIn(self.directory / 'libbridge.so', paths)
         self.assertIn(self.directory / 'libleaf.so', paths)
@@ -74,19 +76,17 @@ elif args[0]=='build':
  pathlib.Path(args[args.index('--version-out')+1]).write_text('fixture-version')
 ''')
         recorder.chmod(0o755)
-        inputs = self.directory / 'objects'
-        inputs.write_text(str(self.directory / 'app') + '\n')
         environment = dict(os.environ, RUNTIME_RELEASE='fixture',
                            OUT_DIR=str(self.directory / 'output'),
                            BUNDLE_BIN=str(recorder),
                            RECORD=str(self.directory / 'record.json'),
                            EXTRA_LIBS=f'{self.directory}/libruntime_dylib.so '
                                       f'{self.directory}/libstd-fixture.so',
-                           DEPENDENCY_OBJECTS_FILE=str(inputs), TRUST_LIST='')
+                           TRUST_LIST='')
         return subprocess.run(['bash', str(ROOT / 'os/scripts/bake-runtime-bundle.sh')],
                               env=environment, capture_output=True, text=True)
 
-    def test_production_bake_includes_app_only_dependencies_before_signing(self):
+    def test_production_bake_includes_transitive_dependencies_before_signing(self):
         result = self.bake()
         self.assertEqual(result.returncode, 0, result.stderr)
         arguments = json.loads((self.directory / 'record.json').read_text())

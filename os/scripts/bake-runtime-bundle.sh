@@ -41,8 +41,6 @@
 #                       must exist -- a typo is an error, not a silent skip,
 #                       because a bundle missing the toolkit produces a thin
 #                       app that dies at exec with an unresolved soname.
-#   DEPENDENCY_OBJECTS_FILE newline-separated built ELF paths whose native
-#                       dependencies must also be signed (for thin apps).
 #
 # Called from os/build.sh via `--bake-runtime` before the container build.
 # Callable stand-alone during dev — the output tree can then be COPYied
@@ -109,12 +107,6 @@ for lib in $EXTRA_LIBS; do
     dependency_dirs+=(--library-dir "$(dirname "$lib")")
     msg "including shared object: $lib"
 done
-if [ -n "${DEPENDENCY_OBJECTS_FILE:-}" ]; then
-    [ -f "$DEPENDENCY_OBJECTS_FILE" ] || die "dependency objects file is absent"
-    while IFS= read -r object; do
-        [ -n "$object" ] && dependency_objects+=("$object")
-    done < "$DEPENDENCY_OBJECTS_FILE"
-fi
 if [ "${#dependency_objects[@]}" -gt 0 ]; then
     # Capture the exit status before consuming output: process substitution
     # would hide an ldd failure and let an incomplete runtime be signed.
