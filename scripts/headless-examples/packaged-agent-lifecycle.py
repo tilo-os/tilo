@@ -1442,6 +1442,73 @@ def current_detached_control_target(socket, previous, agent_name, draft, expecte
     return confirmed, access, target
 
 
+def current_ime_return_target(socket, child, owner, draft, editor, input_method):
+    """Observe one fresh Return target without settling or repairing real preedit."""
+    target = current_detached_control_target(socket, child, owner["agent"], draft, editor)
+    if target is None:
+        return None
+    frame, access, _ = target
+    if access.get("process") != owner["process"] or access.get("detached") is not True:
+        raise RuntimeError("Rime Return replaced its exact private editor owner")
+    if frame.get("keyboard_focused") is not True \
+            or frame.get("suspended") is not False or frame.get("transferring") is not False \
+            or frame.get("last_error") is not None \
+            or frame.get("input_route") is not None \
+            or frame.get("input_source_surface_id") is not None:
+        raise RuntimeError("Rime Return lost its exact ordinary child seat")
+    if not chat_text_input_active(socket) or not chat_input_method_preedit_active(socket) \
+            or not same_fcitx_process(input_method):
+        raise RuntimeError("refreshing Rime Return committed or retired the real composition")
+    return target
+
+
+def ime_return_withdrawal_observation(response, child, primary):
+    """Closed native custody evidence; identities are compared only in memory."""
+    rows = foreign_frames(response)
+    children = [row for row in rows if row.get("app_id") == child["app_id"]
+                and row.get("floating_id") == child["floating_id"]]
+    if len(children) > 1 or children and children[0].get("surface_id") != native_surface_id(child):
+        raise RuntimeError("Rime Return's exact native child became foreign or ambiguous")
+    current = children[0] if children else None
+    if current is not None and type(current.get("presented")) is not bool:
+        raise RuntimeError("Rime Return's child withdrawal is unobservable")
+    primaries = [row for row in rows if row.get("app_id") == primary["app_id"]
+                 and not row.get("floating_id")
+                 and row.get("surface_id") == native_surface_id(primary)]
+    sample = {"exact_child_exists": current is not None,
+              "exact_primary_exists": len(primaries) == 1,
+              "primary_keyboard_focused": len(primaries) == 1
+                  and primaries[0].get("keyboard_focused") is True,
+              "withdrawn": current is None or current["presented"] is False}
+    for field in ("presented", "keyboard_focused", "suspended", "transferring",
+                  "pixels_ready", "capture_pending"):
+        sample["child_" + field] = current is not None and current.get(field) is True
+    sample["child_error_present"] = current is not None and current.get("last_error") is not None
+    sample["ordinary_child_route"] = current is not None \
+        and current.get("input_route") is None and current.get("input_source_surface_id") is None
+    return sample
+
+
+def wait_for_ime_return_withdrawal(socket, output, child, primary, input_method, process):
+    evidence = {"observation_count": 0, "initial": None, "last": None}
+
+    def observe():
+        sample = ime_return_withdrawal_observation(
+            call(socket, {"op": "foreign_frames"}), child, primary)
+        sample["text_input_active"] = chat_text_input_active(socket) is True
+        sample["preedit_active"] = chat_input_method_preedit_active(socket) is True
+        sample["same_input_method_process"] = same_fcitx_process(input_method) is True
+        evidence["observation_count"] += 1
+        if evidence["initial"] is None:
+            evidence["initial"] = sample.copy()
+        evidence["last"] = sample
+        (output / "ime-return-withdrawal-observations.json").write_text(
+            json.dumps(evidence, indent=2, allow_nan=False) + "\n")
+        return sample["withdrawn"]
+
+    return wait_for("Rime Float withdrawal", observe, process)
+
+
 def wait_for_floating_keyboard_seat(socket, previous, output, process):
     """Require the actual same ordinary child seat before a physical Return key."""
     evidence = {"observation_count": 0, "initial": None, "last": None}
@@ -2814,24 +2881,28 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
         output / f"ime-preedit-detached-second-{size}.png"
     )}))
 
-    float_geometry = presented_content_geometry(frame)
     before_return = presented_primary_frame(
         call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
     )
     if before_return is None:
         raise RuntimeError("Chat's primary presentation disappeared before Rime Return")
-    return_x, return_y = component_global_center(
-        detached_access, detached_access["control"], float_geometry,
-        "Return conversation control",
-    )
-    require_ok(call(socket, {"op": "click_at", "x": return_x, "y": return_y}))
-    wait_for(
-        "Rime Float withdrawal",
-        lambda: not floating_surface_presenting(
-            call(socket, {"op": "foreign_frames"}), "so.tilo.chat", frame["floating_id"]
-        ),
+    before_return_editor = private_editor_observation(detached_access, committed_before)
+    frame, detached_access, return_target = wait_for(
+        "current Rime Return control on the same composed child",
+        lambda: current_ime_return_target(
+            socket, frame, detached_access, committed_before, before_return_editor, fcitx_identity),
         process,
     )
+    (output / "ime-return-target.json").write_text(json.dumps({
+        "geometry": presented_content_geometry(frame), "target": return_target,
+        "same_chat_process": detached_access["process"] == chat_process,
+        "baseline_matches": before_return_editor["draft_matches"],
+        "text_input_active": True, "preedit_active": True,
+        "same_input_method_process": True, "private_content_recorded": False,
+    }, indent=2, allow_nan=False) + "\n")
+    return_x, return_y = (return_target["global_center"][axis] for axis in ("x", "y"))
+    require_ok(call(socket, {"op": "click_at", "x": return_x, "y": return_y}))
+    wait_for_ime_return_withdrawal(socket, output, frame, before_return, fcitx_identity, process)
 
     def returned_preedit_frame():
         current = current_same_primary_presentation(

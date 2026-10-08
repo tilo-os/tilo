@@ -811,10 +811,7 @@ fn restart_stale_rows(
     };
     if state.parent.is_none()
         || !state.providers.is_empty()
-        || !state
-            .revision
-            .as_ref()
-            .is_some_and(|revision| !revision.is_empty())
+        || state.revision.as_ref().is_none_or(String::is_empty)
     {
         return discovery_failed("rows", "stale_cursor");
     }

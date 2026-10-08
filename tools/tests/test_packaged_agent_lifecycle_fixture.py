@@ -4114,6 +4114,84 @@ class PresentedEditorTargetTests(unittest.TestCase):
             ))
             component.assert_not_called()
 
+    def test_ime_return_refreshes_target_only_while_exact_real_composition_survives(self):
+        primary, child, access, editor, _ = self.return_editor_continuity_subjects()
+        child = {**child, "presented": True, "suspended": False, "transferring": False}
+        access = {**access, "detached": True}
+        target = {"global_center": {"x": 60, "y": 200}}
+        with patch.object(PROOF, "current_detached_control_target",
+                          return_value=(child, access, target)) as fresh, \
+                patch.object(PROOF, "chat_text_input_active", return_value=True), \
+                patch.object(PROOF, "chat_input_method_preedit_active", return_value=True), \
+                patch.object(PROOF, "same_fcitx_process", return_value=True):
+            self.assertEqual(PROOF.current_ime_return_target(
+                "socket", child, access, "draft-secret", editor, {}), (child, access, target))
+            fresh.assert_called_once_with("socket", child, "Tide", "draft-secret", editor)
+        for changed in ({"process": 9976}, {"detached": False}):
+            with self.subTest(changed=changed), \
+                    patch.object(PROOF, "current_detached_control_target",
+                                 return_value=(child, {**access, **changed}, target)):
+                with self.assertRaises(RuntimeError):
+                    PROOF.current_ime_return_target("socket", child, access, "draft-secret", editor, {})
+        for lost in ("chat_text_input_active", "chat_input_method_preedit_active", "same_fcitx_process"):
+            with self.subTest(lost=lost), \
+                    patch.object(PROOF, "current_detached_control_target", return_value=(child, access, target)), \
+                    patch.object(PROOF, "chat_text_input_active", return_value=True), \
+                    patch.object(PROOF, "chat_input_method_preedit_active", return_value=True), \
+                    patch.object(PROOF, "same_fcitx_process", return_value=True), \
+                    patch.object(PROOF, lost, return_value=False):
+                with self.assertRaises(RuntimeError):
+                    PROOF.current_ime_return_target("socket", child, access, "draft-secret", editor, {})
+
+    def test_ime_return_withdrawal_records_only_closed_same_native_custody(self):
+        primary, child, _, _, _ = self.return_editor_continuity_subjects()
+        pending = {**child, "presented": True, "suspended": False}
+        retired = {**child, "presented": False, "suspended": True}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", side_effect=[
+                    {"answer": {"frames": [primary, pending]}},
+                    {"answer": {"frames": [primary, retired]}}]), \
+                patch.object(PROOF, "chat_text_input_active", return_value=True), \
+                patch.object(PROOF, "chat_input_method_preedit_active", return_value=True), \
+                patch.object(PROOF, "same_fcitx_process", return_value=True), \
+                patch.object(PROOF.time, "sleep"):
+            output = pathlib.Path(directory)
+            self.assertTrue(PROOF.wait_for_ime_return_withdrawal(
+                "socket", output, child, primary, {}, None))
+            payload = (output / "ime-return-withdrawal-observations.json").read_text()
+            receipt = json.loads(payload)
+            self.assertEqual(receipt["observation_count"], 2)
+            self.assertFalse(receipt["initial"]["withdrawn"])
+            self.assertTrue(receipt["last"]["withdrawn"])
+            self.assertTrue(all(type(v) is bool for row in
+                                (receipt["initial"], receipt["last"]) for v in row.values()))
+            for forbidden in ("9973", "9974", "private-native-child", "draft-secret"):
+                self.assertNotIn(forbidden, payload)
+        for rows in ([{**child, "surface_id": 9976}], [child, child],
+                     [{**child, "presented": None}]):
+            with self.subTest(rows=rows), self.assertRaises(RuntimeError):
+                PROOF.ime_return_withdrawal_observation({"answer": {"frames": rows}}, child, primary)
+
+    def test_ime_return_withdrawal_does_not_replay_click_or_extend_timeout(self):
+        primary, child, _, _, _ = self.return_editor_continuity_subjects()
+        pending = {**child, "presented": True}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [primary, pending]}}), \
+                patch.object(PROOF, "chat_text_input_active", return_value=True), \
+                patch.object(PROOF, "chat_input_method_preedit_active", return_value=True), \
+                patch.object(PROOF, "same_fcitx_process", return_value=True), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]):
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_ime_return_withdrawal(
+                    "socket", pathlib.Path(directory), child, primary, {}, None)
+        source = inspect.getsource(PROOF.wait_for_ime_return_withdrawal)
+        self.assertNotIn("click_at", source)
+        self.assertNotIn("timeout=", source)
+        fixture = inspect.getsource(PROOF.native_ime_float_return)
+        self.assertIn("current_ime_return_target(", fixture)
+        self.assertIn('"ime-return-target.json"', fixture)
+
     def test_presented_content_geometry_accepts_only_authoritative_finite_fields(self):
         expected = {
             "rect": {"x": 700.0, "y": 100.0, "w": 600.0, "h": 500.0},
