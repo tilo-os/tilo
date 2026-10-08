@@ -9,36 +9,39 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use tilo_projector::DisplayStreamPolicy;
+use tilo_projector::control::{ConnectStage, Credential};
+use tilo_projector::{DisplayStreamPolicy, ProjectionDevice, ProjectionOptions};
 
-use super::SESSION_POLL_INTERVAL;
-use super::paths::SessionPaths;
-use crate::cli::{parse_stream_policy, required};
+use super::context::SessionContext;
+use super::receiver_address;
 use crate::error::ProjectorError;
 
-pub(crate) fn run_airplay_session(args: &[String]) -> Result<(), ProjectorError> {
-    let address = required(args, "--address")?;
-    let port = required(args, "--port")?
-        .parse::<u16>()
-        .map_err(|_| ProjectorError::Protocol("invalid --port".to_owned()))?;
-    let audio = args.iter().any(|arg| arg == "--audio");
-    let stream_policy = parse_stream_policy(args)?;
-    let executable = std::env::var("TILO_DOUBLETAKE")
-        .unwrap_or_else(|_| "/usr/libexec/tilo-doubletake".to_owned());
-    let paths = SessionPaths::resolve()?;
-    paths.clear_markers();
-    fs::write(&paths.pid, std::process::id().to_string())
-        .map_err(ProjectorError::io("cannot record AirPlay session"))?;
+/// How often a running sender is checked for having exited. Output and stop
+/// requests wake the session at once; only an exit that leaves the sender's
+/// pipes open (a capture child holding them) waits for this tick.
+const SENDER_EXIT_CHECK: Duration = Duration::from_millis(500);
+
+pub(crate) fn run_airplay_session(
+    device: &ProjectionDevice,
+    options: &ProjectionOptions,
+    credential: Option<Credential>,
+    context: &SessionContext,
+) -> Result<(), ProjectorError> {
+    let address = receiver_address(device)?;
     let credentials = airplay_credentials_path()?;
-    let command_args = airplay_command_args(&address, port, audio, stream_policy, &credentials);
-    let pairing_credential = std::env::var("TILO_PROJECTION_CREDENTIAL")
-        .ok()
-        .filter(|value| !value.is_empty());
+    let command_args = airplay_command_args(
+        address,
+        device.port,
+        options.audio,
+        options.stream_policy,
+        &credentials,
+    );
+    let pairing_credential = credential.filter(|value| !value.expose().is_empty());
     run_airplay_process(
-        &executable,
+        &context.helpers.doubletake,
         &command_args,
-        &paths,
-        pairing_credential.as_deref(),
+        context,
+        pairing_credential.as_ref().map(Credential::expose),
     )
 }
 
@@ -105,34 +108,33 @@ fn airplay_command_args(
 fn run_airplay_process(
     executable: &str,
     args: &[String],
-    paths: &SessionPaths,
+    context: &SessionContext,
     pairing_credential: Option<&str>,
 ) -> Result<(), ProjectorError> {
     run_external_process(
         executable,
         args,
-        paths,
+        context,
         &["mirror session ready"],
         "AirPlay",
+        // Doubletake reads the code only from its environment. This one
+        // sender process is the only place the credential is an environment
+        // variable: the broker and the shell carry it in-band.
         pairing_credential.map(|value| ("DOUBLETAKE_CODE", value)),
     )
 }
 
-pub(crate) fn run_miracast_session(args: &[String]) -> Result<(), ProjectorError> {
-    let peer = required(args, "--address")?;
-    let audio = args.iter().any(|arg| arg == "--audio");
-    let stream_policy = parse_stream_policy(args)?;
-    let executable =
-        std::env::var("TILO_FLUXCAST").unwrap_or_else(|_| "/usr/libexec/tilo-fluxcast".to_owned());
-    let paths = SessionPaths::resolve()?;
-    paths.clear_markers();
-    fs::write(&paths.pid, std::process::id().to_string())
-        .map_err(ProjectorError::io("cannot record Miracast session"))?;
-    let command_args = miracast_command_args(peer, audio, stream_policy);
+pub(crate) fn run_miracast_session(
+    device: &ProjectionDevice,
+    options: &ProjectionOptions,
+    context: &SessionContext,
+) -> Result<(), ProjectorError> {
+    let peer = receiver_address(device)?.to_owned();
+    let command_args = miracast_command_args(peer, options.audio, options.stream_policy);
     run_external_process(
-        &executable,
+        &context.helpers.fluxcast,
         &command_args,
-        &paths,
+        context,
         &["PLAY accepted; media stream started."],
         "Miracast",
         None,
@@ -168,10 +170,18 @@ fn miracast_command_args(
     args
 }
 
+/// What the session loop wakes for.
+enum SenderOutput {
+    /// A line of sender output, and whether it says the stream is up.
+    Line { ready: bool, text: String },
+    /// The service asked the session to stop.
+    Stop,
+}
+
 fn run_external_process(
     executable: &str,
     args: &[String],
-    paths: &SessionPaths,
+    context: &SessionContext,
     ready_messages: &[&str],
     transport_name: &str,
     credential_env: Option<(&str, &str)>,
@@ -193,6 +203,7 @@ fn run_external_process(
     if let Some((name, value)) = credential_env {
         command.env(name, value);
     }
+    context.stage(ConnectStage::Handshake);
     let mut child = command.spawn().map_err(ProjectorError::io(format!(
         "cannot start {transport_name} sender"
     )))?;
@@ -204,6 +215,7 @@ fn run_external_process(
     })?;
     let (line_tx, line_rx) = mpsc::channel();
     let stdout_tx = line_tx.clone();
+    let stop_tx = line_tx.clone();
     let secret = credential_env.map(|(_, value)| value.to_owned());
     let stdout_secret = secret.clone();
     let ready_messages = ready_messages
@@ -227,37 +239,42 @@ fn run_external_process(
         .map_err(ProjectorError::io(format!(
             "cannot monitor {transport_name} diagnostics"
         )))?;
+    // A stop request lands in the same channel as the sender's output, so
+    // the loop below wakes for it at once.
+    context.control().on_stop(move || {
+        let _ = stop_tx.send(SenderOutput::Stop);
+    });
     let mut diagnostics = Vec::new();
     let mut ready = false;
     loop {
-        while let Ok((is_ready, line)) = line_rx.try_recv() {
-            if is_ready {
-                fs::write(&paths.ready, b"ready").map_err(ProjectorError::io(format!(
-                    "cannot publish {transport_name} readiness"
-                )))?;
-                ready = true;
+        match line_rx.recv_timeout(SENDER_EXIT_CHECK) {
+            Ok(SenderOutput::Line {
+                ready: is_ready,
+                text,
+            }) => {
+                if is_ready && !ready {
+                    context.ready();
+                    ready = true;
+                }
+                keep_tail(&mut diagnostics, text);
+                continue;
             }
-            diagnostics.push(line);
-            if diagnostics.len() > 8 {
-                diagnostics.remove(0);
+            Ok(SenderOutput::Stop) => {
+                bounded_command::terminate_tree(&mut child, Duration::from_secs(1));
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Ok(());
             }
-        }
-        if paths.stop.exists() {
-            bounded_command::terminate_tree(&mut child, Duration::from_secs(1));
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            paths.clear_markers();
-            return Ok(());
+            Err(_) => {}
         }
         if let Some(status) = child.try_wait().map_err(ProjectorError::io(format!(
             "cannot inspect {transport_name} sender"
         )))? {
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            while let Ok((_, line)) = line_rx.try_recv() {
-                diagnostics.push(line);
-                if diagnostics.len() > 8 {
-                    diagnostics.remove(0);
+            while let Ok(output) = line_rx.try_recv() {
+                if let SenderOutput::Line { text, .. } = output {
+                    keep_tail(&mut diagnostics, text);
                 }
             }
             let detail = diagnostics.join("\n");
@@ -269,7 +286,14 @@ fn run_external_process(
                 detail
             }));
         }
-        std::thread::sleep(SESSION_POLL_INTERVAL);
+    }
+}
+
+/// Keeps the last eight diagnostic lines: enough to explain a failure.
+fn keep_tail(diagnostics: &mut Vec<String>, line: String) {
+    diagnostics.push(line);
+    if diagnostics.len() > 8 {
+        diagnostics.remove(0);
     }
 }
 
@@ -277,18 +301,18 @@ fn run_external_process(
 // password on either stream, and later become user-visible session errors.
 fn forward_sender_diagnostics(
     stream: impl Read,
-    lines: &mpsc::Sender<(bool, String)>,
+    lines: &mpsc::Sender<SenderOutput>,
     credential: Option<&str>,
     ready_messages: &[String],
 ) {
     for line in BufReader::new(stream).lines().map_while(Result::ok) {
         // Classify before redaction: a password may coincide with a status word.
         let ready = ready_messages.iter().any(|message| line.contains(message));
-        let line = match credential.filter(|value| !value.is_empty()) {
+        let text = match credential.filter(|value| !value.is_empty()) {
             Some(secret) => line.replace(secret, "[redacted]"),
             None => line,
         };
-        if lines.send((ready, line)).is_err() {
+        if lines.send(SenderOutput::Line { ready, text }).is_err() {
             break;
         }
     }
@@ -297,30 +321,56 @@ fn forward_sender_diagnostics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
+    use std::sync::mpsc::Receiver;
 
     use tilo_projector::DisplayResolutionLimit;
+    use tilo_projector::control::ProjectorEvent;
 
-    #[test]
-    fn rejected_airplay_credential_is_private_and_can_be_retried() {
+    use crate::session::Helpers;
+    use crate::session::paths::SessionPaths;
+
+    fn fixture(name: &str) -> (PathBuf, SessionContext, Receiver<ProjectorEvent>) {
         let root = std::env::temp_dir().join(format!(
-            "tilo-projector-auth-{}-{:?}",
+            "tilo-projector-{name}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
         let paths = SessionPaths::for_root(root.clone()).expect("session paths");
+        let (context, events) = SessionContext::for_test(paths, Helpers::from_env());
+        (root, context, events)
+    }
+
+    fn write_sender(path: &Path, script: &[u8]) {
+        fs::write(path, script).expect("write sender");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("make sender executable");
+    }
+
+    /// Waits for the session to report the receiver connected.
+    fn connected(events: &Receiver<ProjectorEvent>) -> bool {
+        let deadline = tilo_test_env::hang_deadline();
+        while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
+            match events.recv_timeout(remaining) {
+                Ok(ProjectorEvent::Connected { .. }) => return true,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn rejected_airplay_credential_is_private_and_can_be_retried() {
+        let (root, context, events) = fixture("auth");
         let sender = root.join("sender");
-        fs::write(
+        write_sender(
             &sender,
             b"#!/bin/sh\n[ -z \"$TILO_PROJECTION_CREDENTIAL\" ] || exit 8\n[ \"$DOUBLETAKE_CODE\" = \"receiver-password\" ] || exit 9\necho \"rejected code: $DOUBLETAKE_CODE\"\necho \"authentication failed: $DOUBLETAKE_CODE\" >&2\nexit 1\n",
-        )
-        .expect("write sender");
-        fs::set_permissions(&sender, fs::Permissions::from_mode(0o700))
-            .expect("make sender executable");
+        );
         let error = run_airplay_process(
             &sender.display().to_string(),
             &[],
-            &paths,
+            &context,
             Some("receiver-password"),
         )
         .expect_err("rejected authentication must fail")
@@ -328,39 +378,34 @@ mod tests {
         assert!(!error.contains("receiver-password"));
         assert!(error.contains("rejected code: [redacted]"));
         assert!(error.contains("authentication failed: [redacted]"));
-        assert!(!paths.ready.exists(), "rejection must not report streaming");
+        assert!(
+            !events
+                .try_iter()
+                .any(|event| matches!(event, ProjectorEvent::Connected { .. })),
+            "rejection must not report streaming"
+        );
 
         // A new explicitly supplied code can retry the same session. Readiness
         // is still reported when the sender includes that code in its message.
-        fs::write(
+        write_sender(
             &sender,
             b"#!/bin/sh\n[ \"$DOUBLETAKE_CODE\" = \"mirror session ready\" ] || exit 9\necho \"mirror session ready: $DOUBLETAKE_CODE\"\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
-        )
-        .expect("write retry sender");
-        let worker_paths = paths.clone();
+        );
+        let (root_retry, context, events) = fixture("auth-retry");
+        let worker = context.clone();
         let sender_path = sender.display().to_string();
         let session = std::thread::spawn(move || {
-            run_airplay_process(
-                &sender_path,
-                &[],
-                &worker_paths,
-                Some("mirror session ready"),
-            )
+            run_airplay_process(&sender_path, &[], &worker, Some("mirror session ready"))
         });
-        let deadline = tilo_test_env::hang_deadline();
-        while !paths.ready.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let ready = paths.ready.exists();
-        fs::write(&paths.stop, b"stop").expect("stop retry");
+        let ready = connected(&events);
+        context.control().request_stop(None);
         session
             .join()
             .expect("join retry")
             .expect("disconnect retry");
         assert!(ready, "authenticated retry must report readiness");
-        assert!(!paths.ready.exists());
-        assert!(!paths.stop.exists());
         fs::remove_dir_all(root).expect("remove fixture");
+        fs::remove_dir_all(root_retry).expect("remove retry fixture");
     }
 
     #[test]
@@ -371,38 +416,23 @@ mod tests {
     fn airplay_miracast_and_external_senders_run_without_hardware() {
         // Phase `airplay_process_readiness_and_disconnect_are_hardware_free`.
         {
-            let root = std::env::temp_dir().join(format!(
-                "tilo-projector-airplay-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            let paths = SessionPaths::for_root(root.clone()).expect("session paths");
-            paths.clear_markers();
+            let (root, context, events) = fixture("airplay");
             let sender = root.join("airplay-sender-simulator");
-            fs::write(
+            write_sender(
                 &sender,
                 b"#!/bin/sh\n[ \"$DOUBLETAKE_CODE\" = \"4821\" ] || exit 7\ntrap 'exit 0' TERM INT\necho 'screen capture started' >&2\necho 'mirror session ready (data port: 7001)' >&2\nwhile :; do sleep 1; done\n",
-            )
-            .expect("write AirPlay simulator");
-            fs::set_permissions(&sender, fs::Permissions::from_mode(0o700))
-                .expect("make simulator executable");
-            let worker_paths = paths.clone();
+            );
+            let worker = context.clone();
             let sender_path = sender.display().to_string();
             let session = std::thread::spawn(move || {
-                run_airplay_process(&sender_path, &[], &worker_paths, Some("4821"))
+                run_airplay_process(&sender_path, &[], &worker, Some("4821"))
             });
-            let deadline = tilo_test_env::hang_deadline();
-            while !paths.ready.exists() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            assert!(paths.ready.exists(), "AirPlay readiness was not published");
-            fs::write(&paths.stop, b"stop").expect("request AirPlay disconnect");
+            assert!(connected(&events), "AirPlay readiness was not published");
+            context.control().request_stop(None);
             session
                 .join()
                 .expect("join AirPlay session")
                 .expect("clean AirPlay disconnect");
-            assert!(!paths.ready.exists());
-            assert!(!paths.stop.exists());
             fs::remove_dir_all(root).expect("remove AirPlay fixture directory");
         }
         // Phase `airplay_pairing_credentials_use_persistent_private_storage`.
@@ -428,45 +458,30 @@ mod tests {
         }
         // Phase `miracast_process_readiness_and_disconnect_are_hardware_free`.
         {
-            let root = std::env::temp_dir().join(format!(
-                "tilo-projector-miracast-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            let paths = SessionPaths::for_root(root.clone()).expect("session paths");
-            paths.clear_markers();
+            let (root, context, events) = fixture("miracast");
             let sender = root.join("miracast-sender-simulator");
-            fs::write(
+            write_sender(
                 &sender,
                 b"#!/bin/sh\ntrap 'exit 0' TERM INT\necho 'PLAY accepted; media stream started.'\nwhile :; do sleep 1; done\n",
-            )
-            .expect("write Miracast simulator");
-            fs::set_permissions(&sender, fs::Permissions::from_mode(0o700))
-                .expect("make simulator executable");
-            let worker_paths = paths.clone();
+            );
+            let worker = context.clone();
             let sender_path = sender.display().to_string();
             let session = std::thread::spawn(move || {
                 run_external_process(
                     &sender_path,
                     &[],
-                    &worker_paths,
+                    &worker,
                     &["PLAY accepted; media stream started."],
                     "Miracast",
                     None,
                 )
             });
-            let deadline = tilo_test_env::hang_deadline();
-            while !paths.ready.exists() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            assert!(paths.ready.exists(), "Miracast readiness was not published");
-            fs::write(&paths.stop, b"stop").expect("request Miracast disconnect");
+            assert!(connected(&events), "Miracast readiness was not published");
+            context.control().request_stop(None);
             session
                 .join()
                 .expect("join Miracast session")
                 .expect("clean Miracast disconnect");
-            assert!(!paths.ready.exists());
-            assert!(!paths.stop.exists());
             fs::remove_dir_all(root).expect("remove Miracast fixture directory");
         }
         // Phase `external_sender_arguments_select_portal_capture_audio_and_exact_receiver`.

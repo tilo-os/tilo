@@ -2227,8 +2227,6 @@ speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 
 # Drahtlose Bildschirmprojektion
 projection-service-unavailable-detail = Der Projektionsdienst ist nicht verfügbar ({ $error }). Prüfe den Tilo-Projektordienst.
-projection-service-exited = Der Projektionsdienst wurde beendet: { $status }
-projection-service-invalid-discovery = Der Projektionsdienst hat ungültige Suchergebnisse geliefert: { $error }
 projection-mode-unsupported = { $device } unterstützt den Modus „{ $mode }“ nicht
 projection-service-unavailable = Der Projektionsdienst ist nicht verfügbar
 projection-service-stopped = Der Projektionsdienst wurde beendet

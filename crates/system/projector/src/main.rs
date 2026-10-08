@@ -1,14 +1,17 @@
 //! Tilo screen-projection protocol broker.
 //!
 //! This executable is intentionally separate from the compositor: discovery
-//! touches the LAN, and protocol sessions will own receiver sockets for much
-//! longer than the Win+P overlay is visible. The shell invokes the small JSON
-//! command surface in `shell::shell::projection::SystemProjectionBackend`.
+//! touches the LAN, and protocol sessions own receiver sockets for much
+//! longer than the Win+P overlay is visible. It runs as the
+//! socket-activated user service `tilo-projector.service`; the shell talks to
+//! it over the control socket (`tilo_projector::control`) from
+//! `shell::shell::projection::SystemProjectionBackend`.
 //!
-//! [`cli`] parses that surface; [`discovery`] finds receivers; a `connect`
-//! starts a detached [`session`] child (Cast and `FCast` in `session::cast`,
-//! `AirPlay` and Miracast through an external sender in `session::external`)
-//! that serves the compositor's video over [`http`].
+//! [`cli`] parses the command line; [`service`] serves the control socket and
+//! supervises one [`session`] at a time (Cast and `FCast` in `session::cast`,
+//! `AirPlay` and Miracast through an external sender in `session::external`),
+//! which serves the compositor's video over [`http`]; [`discovery`] finds
+//! receivers.
 
 #![cfg_attr(
     test,
@@ -27,6 +30,7 @@ mod cli;
 mod discovery;
 mod error;
 mod http;
+mod service;
 mod session;
 
 fn main() {

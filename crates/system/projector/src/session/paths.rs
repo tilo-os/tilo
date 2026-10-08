@@ -1,4 +1,8 @@
-//! The projection runtime directory and the files a session keeps in it.
+//! The projection runtime directory and the media files a session keeps in
+//! it: the compositor's video socket, the HLS playlist and its segments.
+//!
+//! Session state (readiness, errors, stop requests, the capture profile)
+//! travels as control-socket events, never as files here.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -12,21 +16,13 @@ pub(crate) struct SessionPaths {
     pub(crate) root: PathBuf,
     pub(crate) video_socket: PathBuf,
     pub(crate) playlist: PathBuf,
-    pub(crate) stop: PathBuf,
-    pub(crate) ready: PathBuf,
-    pub(crate) error: PathBuf,
-    pub(crate) pid: PathBuf,
-    pub(crate) profile: PathBuf,
 }
 
 impl SessionPaths {
     pub(crate) fn resolve() -> Result<Self, ProjectorError> {
-        let root = std::env::var_os("TILO_PROJECTOR_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .or_else(|| xdg_paths::xdg::runtime_dir().map(|dir| dir.join("tilo-projector")))
-            .ok_or_else(|| {
-                ProjectorError::Unavailable("XDG_RUNTIME_DIR is unavailable".to_owned())
-            })?;
+        let root = tilo_projector::control::runtime_dir().ok_or_else(|| {
+            ProjectorError::Unavailable("XDG_RUNTIME_DIR is unavailable".to_owned())
+        })?;
         Self::for_root(root)
     }
 
@@ -40,25 +36,13 @@ impl SessionPaths {
         Ok(Self {
             video_socket: root.join("video.sock"),
             playlist: root.join("live.m3u8"),
-            stop: root.join("stop"),
-            ready: root.join("ready"),
-            error: root.join("error"),
-            pid: root.join("session.pid"),
-            profile: root.join("capture-profile.json"),
             root,
         })
     }
 
-    pub(crate) fn clear_markers(&self) {
-        for path in [
-            &self.video_socket,
-            &self.playlist,
-            &self.stop,
-            &self.ready,
-            &self.error,
-            &self.pid,
-            &self.profile,
-        ] {
+    /// Removes the previous session's media files. The control socket stays.
+    pub(crate) fn clear(&self) {
+        for path in [&self.video_socket, &self.playlist] {
             let _ = fs::remove_file(path);
         }
         if let Ok(entries) = fs::read_dir(&self.root) {
