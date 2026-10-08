@@ -174,6 +174,142 @@ fn late_history_cannot_reappear_after_navigation_or_contact_revocation() {
     }
 }
 
+struct DelayedSend {
+    pending: Host,
+    error: tilo_messaging::SendError,
+}
+
+impl HistoryHost for DelayedSend {
+    fn read(&self, route: routing::Route, limit: usize) -> HistoryFuture {
+        Host::new(true, false).read(route, limit)
+    }
+}
+
+impl tilo_messaging::MessagingHost for DelayedSend {
+    fn supports(&self, _: &routing::Route) -> bool {
+        true
+    }
+    fn send(&self, request: tilo_messaging::SendRequest) -> tilo_messaging::SendFuture {
+        assert_eq!(request.route.service, "signal");
+        let pending = self.pending.clone();
+        let error = self.error;
+        Box::pin(std::future::poll_fn(move |cx| {
+            if !pending.ready.load(Ordering::SeqCst) {
+                pending
+                    .wakes
+                    .lock()
+                    .expect("send wakers")
+                    .push(cx.waker().clone());
+                return Poll::Pending;
+            }
+            Poll::Ready(Err(error))
+        }))
+    }
+}
+
+fn add_sms_route(app: &mut TestApp<MessagesShell>) -> String {
+    let mut settings = TestApp::<crate::tests::AccountOwnerFixture>::for_person(&"11".repeat(32))
+        .expect("original metadata owner");
+    let owner = settings
+        .shared_person::<tilo_messaging::PersonAccounts>()
+        .expect("accounts owner");
+    owner
+        .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
+            "fixture-sms".into(),
+            "sms".into(),
+            "Personal SIM".into(),
+            serde_json::json!({"messaging_scope":"fixture-sms-scope"}),
+            true,
+            0,
+        )))
+        .expect("second service metadata");
+    app.shared_person::<tilo_messaging::PersonAccounts>()
+        .expect("read-only accounts")
+        .record()
+        .merge_peer_document(owner.record().document().expect("owner document"))
+        .expect("original record sync");
+    app.shared_person::<ContactDirectory>()
+        .expect("contacts")
+        .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
+            Id::from_raw("00000000-0000-4000-8000-000000000001"),
+            Id::from_raw("sms"),
+            "sms".into(),
+            "fixture-sms-scope".into(),
+            "+12025550123".into(),
+            "fixture-sms-revision".into(),
+        )))
+        .expect("reviewed SMS fixture identity");
+    app.settle();
+    serde_json::json!({"service":"sms", "account":"fixture-sms", "recipient":"+12025550123",
+        "association":"sms", "scope":"fixture-sms-scope", "revision":"fixture-sms-revision"})
+    .to_string()
+}
+
+#[test]
+fn late_send_failure_preserves_the_selected_service_history_and_reports_failure() {
+    for error in [
+        tilo_messaging::SendError::Revoked,
+        tilo_messaging::SendError::Unavailable,
+    ] {
+        for switch_back in [false, true] {
+            let pending = Host::new(false, false);
+            let client = tilo_messaging::MessagingClient::new(
+                "11".repeat(32),
+                Arc::new(DelayedSend {
+                    pending: pending.clone(),
+                    error,
+                }),
+            );
+            let mut app = crate::tests::live_messages_with_service(Some(client));
+            let sms = add_sms_route(&mut app);
+            app.effect(&MessagesEffect::SelectRoute { choice: choice() })
+                .expect("select Signal");
+            let invocation = app
+                .start_effect(&MessagesEffect::Send {
+                    choice: choice(),
+                    operation: "fixture-delayed-send".into(),
+                    text: "private outgoing text".into(),
+                })
+                .expect("pending original send");
+            app.effect(&MessagesEffect::SelectRoute {
+                choice: sms.clone(),
+            })
+            .expect("switch explicitly to SMS");
+            app.effect(&MessagesEffect::ReadHistory { choice: sms })
+                .expect("selected SMS history");
+            if switch_back {
+                app.effect(&MessagesEffect::SelectRoute { choice: choice() })
+                    .expect("return to Signal with a new conversation view");
+                app.effect(&MessagesEffect::ReadHistory { choice: choice() })
+                    .expect("fresh Signal history");
+            }
+            assert!(has_text(&mut app, PRIVATE));
+            pending.release();
+            assert!(
+                app.harness()
+                    .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                        harness
+                            .job_updates(invocation)
+                            .iter()
+                            .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+                    }),
+                "the original send must finish"
+            );
+            assert!(
+                app.harness().job_updates(invocation).iter().any(|update| {
+                    matches!(update, ui::tilo_actions::InvocationUpdate::Failed { .. })
+                }),
+                "a late failure must remain a failure for its original caller"
+            );
+            assert!(
+                has_text(&mut app, PRIVATE),
+                "another service's history must survive the old send failure"
+            );
+            assert!(!app.harness().dump_json().contains(PRIVATE));
+        }
+    }
+}
+
 #[test]
 fn forged_history_requests_fail_before_reading_the_host() {
     let host = Host::new(true, false);

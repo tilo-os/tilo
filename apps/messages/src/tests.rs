@@ -316,7 +316,7 @@ fn public_route_action_refuses_revoked_identity_until_a_new_association_is_revie
     );
 }
 
-struct AccountOwnerFixture;
+pub(crate) struct AccountOwnerFixture;
 impl ui::framework::ResourceApp for AccountOwnerFixture {
     type Resource = tilo_messaging::PersonAccounts;
     const ID: &'static str = "so.tilo.settings";
