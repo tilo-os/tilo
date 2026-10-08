@@ -418,6 +418,9 @@ pub struct PlayerApp {
     /// painted in the no-frame state, preserving a successfully playing video
     /// when a later picker request fails.
     open_error: Option<String>,
+    missing_codec: Option<String>,
+    formats_focused: bool,
+    formats_label: String,
     /// Where files have no path: the kept copy (`crate::kept`) of each
     /// queue or recent entry opened by contents, by entry id.
     kept: HashMap<String, String>,
@@ -812,6 +815,9 @@ impl PlayerApp {
             source_generation: 0,
             shown_metadata: DecoderMetadata::default(),
             open_error: None,
+            missing_codec: None,
+            formats_focused: false,
+            formats_label: crate::i18n::t("video-formats-title"),
             kept: HashMap::new(),
             kept_retained,
             kept_recall: None,
@@ -854,7 +860,7 @@ impl PlayerApp {
     pub(crate) fn stage_capture(&mut self, launched: Option<&str>, scenario: Option<&str>) {
         self.stage_shot_source(launched, scenario);
         self.stage_shot_scenario(scenario);
-        if !matches!(scenario, Some("empty" | "error")) {
+        if !matches!(scenario, Some("empty" | "error" | "missing-codec")) {
             self.player.reveal_controls();
         }
     }
@@ -873,7 +879,7 @@ impl PlayerApp {
     }
 
     fn stage_shot_source(&mut self, launched: Option<&str>, scenario: Option<&str>) {
-        if matches!(scenario, Some("empty" | "error")) {
+        if matches!(scenario, Some("empty" | "error" | "missing-codec")) {
             return;
         }
         if let Some(argument) = launched {
@@ -931,6 +937,10 @@ impl PlayerApp {
         match scenario {
             // Nothing opened: the open itself failed.
             Some("error") => self.fail_playback(),
+            Some("missing-codec") => {
+                self.fail_playback();
+                self.missing_codec = Some("HEVC".into());
+            }
             // A video opened and the decoder then gave up on it: the title
             // and the strip stay, the picture is the failure.
             Some("native-error") => {
@@ -1170,6 +1180,7 @@ impl PlayerApp {
             queue_id,
         });
         self.open_error = None;
+        self.missing_codec = None;
         self.dirty = true;
     }
 
@@ -1255,6 +1266,7 @@ impl PlayerApp {
         self.cancel_pending_portal("a direct video open replaced the file picker");
         self.fail_open("a newer video open replaced this decoder request".into());
         self.open_error = None;
+        self.missing_codec = None;
         self.title = title;
         self.current_queue_id = queue_id;
         self.player.open(source);
@@ -1388,6 +1400,7 @@ impl PlayerApp {
     }
 
     fn close_media(&mut self) {
+        self.missing_codec = None;
         self.fail_open("video was closed before decoding a first frame".into());
         let player = configured_player(
             self.mode,
@@ -1431,6 +1444,25 @@ impl PlayerApp {
     fn request(&self, effect: &VideoEffect) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(effect);
+        }
+    }
+
+    fn formats_visible(&self) -> bool {
+        self.missing_codec.is_some() && self.open_error.is_some()
+    }
+
+    fn formats_access_index(&self) -> Option<usize> {
+        self.accessibility()?
+            .children
+            .iter()
+            .position(|node| node.action_target.as_deref() == Some("video-player.formats"))
+    }
+
+    fn request_status_action(&self) {
+        if self.formats_visible() {
+            self.request(&VideoEffect::OpenFormats);
+        } else {
+            self.request_open_action();
         }
     }
 
@@ -1661,6 +1693,7 @@ impl PlayerApp {
         })?;
         self.portal_generation = generation;
         self.open_error = None;
+        self.missing_codec = None;
         self.portal_open = Some(PendingPortalOpen {
             channel: if tilo_paths::availability(tilo_paths::Feature::NativePaths)
                 == tilo_paths::Availability::Available
@@ -1774,6 +1807,7 @@ impl PlayerApp {
 
     /// Open the video `path` names on this device: a file, or a stream's URL.
     fn open_named(&mut self, path: &str) -> Result<(), String> {
+        self.missing_codec = None;
         let source = source_for_argument(path);
         if let media::Source::LocalFile(file) | media::Source::Workspace(file) = &source
             && !file.is_file()
@@ -1792,6 +1826,13 @@ impl PlayerApp {
     /// controls need an open video, and clearing needs a recent one.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
+        if !self.formats_visible() {
+            statuses.push(EffectStatus::unavailable(
+                VideoEffect::OPEN_FORMATS,
+                "no_missing_decoder",
+                crate::i18n::t("video-formats-unavailable"),
+            ));
+        }
         if !self.player.has_media() {
             for effect in [
                 VideoEffect::CLOSE.id,
@@ -1832,6 +1873,12 @@ impl PlayerApp {
     )]
     fn perform(&mut self, effect: VideoEffect) -> Result<(), String> {
         match effect {
+            VideoEffect::OpenFormats => {
+                if !self.formats_visible() {
+                    return Err(crate::i18n::t("video-formats-unavailable"));
+                }
+                ui::portal::open_uri_detached("settings://updates");
+            }
             VideoEffect::Open { path: Some(path) } => self.open_named(&path)?,
             VideoEffect::Open { path: None } => self.trigger_open(None)?,
             VideoEffect::PlayQueued { item } => self.open_local_entry(&item)?,
@@ -2181,26 +2228,34 @@ impl PlayerApp {
     /// file-open contract and the user-facing error copy.
     fn drain_player_media_events(&mut self) {
         for event in self.player.take_media_events() {
-            match event {
-                media::MediaEvent::Error(message) => {
-                    // The decoder's own wording is for logs and agents; the
-                    // person is told what it means for them.
-                    tracing::warn!(error = %message, "video player: the decoder reported an error");
-                    self.fail_playback();
-                    if let Some(pending) = self.media_open.take() {
-                        pending.reply.finish(Err(message));
-                    }
-                }
-                media::MediaEvent::Ended => {
-                    // Queue advancement belongs to the app, but remains gated
-                    // on a real engine end event rather than the current
-                    // playhead looking close to its duration.
-                    self.advance_after_engine_end();
-                }
-                media::MediaEvent::Buffering { .. }
-                | media::MediaEvent::Position { .. }
-                | media::MediaEvent::DurationKnown { .. } => {}
+            self.handle_media_event(event);
+        }
+    }
+
+    fn handle_media_event(&mut self, event: media::MediaEvent) {
+        match event {
+            media::MediaEvent::MissingDecoder { codec } => {
+                self.missing_codec = Some(codec);
+                self.dirty = true;
             }
+            media::MediaEvent::Error(message) => {
+                // The decoder's own wording is for logs and agents; the
+                // person is told what it means for them.
+                tracing::warn!(error = %message, "video player: the decoder reported an error");
+                self.fail_playback();
+                if let Some(pending) = self.media_open.take() {
+                    pending.reply.finish(Err(message));
+                }
+            }
+            media::MediaEvent::Ended => {
+                // Queue advancement belongs to the app, but remains gated
+                // on a real engine end event rather than the current
+                // playhead looking close to its duration.
+                self.advance_after_engine_end();
+            }
+            media::MediaEvent::Buffering { .. }
+            | media::MediaEvent::Position { .. }
+            | media::MediaEvent::DurationKnown { .. } => {}
         }
     }
 
@@ -2292,7 +2347,7 @@ impl PlayerApp {
             return true;
         }
         if self.status_action_rect.contains(self.last_cursor) {
-            self.request_open_action();
+            self.request_status_action();
             return true;
         }
         if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
@@ -2667,6 +2722,19 @@ impl Widget for PlayerApp {
             children.extend(local_library_accessibility_nodes(self));
         }
         children.extend(self.history.accessibility(self.history_button_rect));
+        if self.formats_visible() && self.status_action_rect.width() > 0.0 {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(self.formats_label.clone())
+                    .with_action_target("video-player.formats")
+                    .with_bounds(self.status_action_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.formats_focused,
+                        ..Default::default()
+                    }),
+            );
+        }
         Some(
             AccessNode::new(Role::Group)
                 .with_name(if self.player.has_media() {
@@ -2679,6 +2747,11 @@ impl Widget for PlayerApp {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        if let [index] = path
+            && self.formats_access_index() == Some(*index)
+        {
+            return Some(self.status_action_rect);
+        }
         match path {
             [0] => Some(self.open_target_rect()),
             [1] => Some(self.library_button_rect),
@@ -2725,6 +2798,16 @@ impl Widget for PlayerApp {
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        if let [index] = path
+            && self.formats_access_index() == Some(*index)
+        {
+            self.formats_focused = true;
+            self.open_focused = false;
+            self.library_focused = false;
+            self.dirty = true;
+            return true;
+        }
+        self.formats_focused = false;
         match path {
             [0] => {
                 self.open_focused = true;
@@ -2832,7 +2915,10 @@ impl Widget for PlayerApp {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if self.history.perform_semantic_action(target, action) {
+        if target == "video-player.formats" && matches!(action, ui::a11y::Action::Activate) {
+            self.request(&VideoEffect::OpenFormats);
+            true
+        } else if self.history.perform_semantic_action(target, action) {
             true
         } else if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
             self.request_open_action();
@@ -2906,6 +2992,9 @@ impl Widget for PlayerApp {
     }
 
     fn tooltip(&self) -> Option<&str> {
+        if self.formats_visible() && self.status_action_rect.contains(self.last_cursor) {
+            return Some(self.formats_label.as_str());
+        }
         if (self.overlay_visible() && self.open_button_rect.contains(self.last_cursor))
             || self.status_action_rect.contains(self.last_cursor)
         {
@@ -3041,6 +3130,81 @@ mod tests {
     use super::strip::TopStrip;
     use super::*;
     use ui::headless::Framed;
+
+    #[test]
+    fn a_missing_decoder_exposes_one_formats_action_and_clears_on_a_new_open() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut app = PlayerApp::new(RunMode::Capture);
+            app.handle_media_event(media::MediaEvent::MissingDecoder {
+                codec: "HEVC".into(),
+            });
+            assert!(
+                !app.formats_visible(),
+                "the decoder has not reported failure yet"
+            );
+            app.handle_media_event(media::MediaEvent::Error("decoder missing".into()));
+            let mut framed = Framed::new(
+                ui::State::new(),
+                app,
+                ui::headless::viewport((960.0, 640.0)),
+                theme,
+            );
+            assert!(
+                framed.open_button_rect.width() > 0.0,
+                "another video stays reachable"
+            );
+            assert_eq!(
+                framed
+                    .open_button_rect
+                    .intersect(framed.status_action_rect)
+                    .area(),
+                0.0,
+                "Open and the formats remedy have distinct painted targets"
+            );
+            let root = framed.accessibility().expect("player accessibility");
+            let offers: Vec<_> = root
+                .children
+                .iter()
+                .filter(|node| node.action_target.as_deref() == Some("video-player.formats"))
+                .collect();
+            assert_eq!(offers.len(), 1, "one visible decoder remedy");
+            assert_eq!(
+                offers[0].name.as_deref(),
+                Some("Play more video and audio formats")
+            );
+            assert!(
+                framed.status_action_rect.width() > 0.0 && framed.status_action_rect.height() > 0.0
+            );
+            assert!(framed.effect_statuses().iter().all(|status| *status
+                != EffectStatus::unavailable(
+                    VideoEffect::OPEN_FORMATS,
+                    "no_missing_decoder",
+                    crate::i18n::t("video-formats-unavailable")
+                )));
+            let index = framed
+                .formats_access_index()
+                .expect("the formats control is addressable");
+            assert!(framed.focus_synthetic_accessibility(&[index]));
+            assert!(framed.formats_focused);
+            assert_eq!(
+                framed.synthetic_accessibility_rect(&[index]),
+                Some(framed.status_action_rect)
+            );
+            framed
+                .open_named("/tilo-test-absent-video.mp4")
+                .expect_err("a new failed file open");
+            assert!(
+                !framed.formats_visible(),
+                "the prior decoder does not describe the new file"
+            );
+            assert!(framed.effect_statuses().iter().any(|status| *status
+                == EffectStatus::unavailable(
+                    VideoEffect::OPEN_FORMATS,
+                    "no_missing_decoder",
+                    crate::i18n::t("video-formats-unavailable")
+                )));
+        }
+    }
 
     #[test]
     fn opening_sources_sets_identity_without_exposing_paths() {
