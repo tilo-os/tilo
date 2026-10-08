@@ -271,6 +271,170 @@ fn certified_native_profile_assignment_advances_local_policy_revision() {
     drop(fixture);
 }
 
+#[test]
+fn native_person_profile_commands_retain_original_and_survive_owner_publication() {
+    use collab_types::caps::CapDecision;
+    use tilo_action_broker::services::WorkspaceAuthority;
+    use tilo_actions::remote::Caller;
+
+    let fixture = fixture();
+    assert_native_profile_original_certificate(&fixture);
+    let actions = fixture.broker.app_action_broker().unwrap();
+    let host = crate::shell::remote_actions::BrokerActionHost::new(actions.clone());
+    let room = fixture.room.to_string();
+    let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        fixture.certificate.user_public_key,
+    );
+    // No wire certificate or caller device labels: the actual installed seat
+    // service must retain this original Person before the owner command.
+    let caller = Caller::local_person(&person).in_room(&room);
+    let authority =
+        super::NativeWorkspaceAuthority(native_workspace_owner::test_tree_of(&fixture.owner));
+    assert_eq!(
+        profile_action_decision(
+            &authority.snapshot().unwrap(),
+            &room,
+            "tide",
+            "open-agent-conversation"
+        ),
+        CapDecision::DeniedByRole
+    );
+    for (operation, arguments) in [
+        (
+            "profile.save",
+            serde_json::json!({
+                "name": "Native Person exact view", "rules": [{
+                    "scope": {"Action": {"app": "so.tilo.chat", "action": "open-agent-conversation"}},
+                    "effect": "Grant", "verb": "Read"
+                }]
+            }),
+        ),
+        (
+            "profile.assign",
+            serde_json::json!({
+                "profile": "Native Person exact view", "subject_kind": "agent", "subject": "tide"
+            }),
+        ),
+    ] {
+        let request = native_profile_request(&host, &caller, &room, operation, &arguments);
+        let (job, receipt) = ready_remote(host.invoke_local_person_job(&caller, &request)).unwrap();
+        assert_eq!(receipt.invocation, request.invocation);
+        wait_for_invocation(&actions, job);
+        let generation = fixture
+            .owner
+            .with_current(fixture.room, |view| Ok(view.generation()))
+            .unwrap();
+        let replay = ready_remote(host.invoke_local_person_job(&caller, &request)).unwrap();
+        assert_eq!(replay, (job, receipt));
+        assert_eq!(
+            fixture
+                .owner
+                .with_current(fixture.room, |view| Ok(view.generation()))
+                .unwrap(),
+            generation
+        );
+        for denied in [
+            Caller::local_agent("tide").in_room(&room),
+            caller.clone().from_foreign_device(true),
+            Caller::local_person("forged-person").in_room(&room),
+            Caller::authenticated(fixture.certificate.user_public_key, [97; 32]).in_room(&room),
+            caller
+                .clone()
+                .in_room(crate::shell::state::RoomId::new().to_string()),
+        ] {
+            let mut fresh = request.clone();
+            fresh.invocation = tilo_actions::InvocationId::new();
+            assert!(ready_remote(host.invoke_local_person_job(&denied, &fresh)).is_err());
+        }
+        assert_eq!(
+            fixture
+                .owner
+                .with_current(fixture.room, |view| Ok(view.generation()))
+                .unwrap(),
+            generation
+        );
+    }
+    drop(host);
+    drop(actions);
+    publish_unrelated_owner_receipt(&fixture);
+    let projected = authority.snapshot().unwrap();
+    assert_eq!(
+        profile_action_decision(&projected, &room, "tide", "open-agent-conversation"),
+        CapDecision::Allow
+    );
+    assert_eq!(
+        profile_action_decision(&projected, &room, "other", "open-agent-conversation"),
+        CapDecision::DeniedByRole
+    );
+    assert_eq!(
+        profile_action_decision(&projected, &room, "tide", "message"),
+        CapDecision::DeniedByRole
+    );
+    drop(authority);
+    drop(fixture);
+}
+
+fn assert_native_profile_original_certificate(fixture: &NativeFixture) {
+    use tilo_action_broker::services::LocalPersonServices;
+    let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+    let service = crate::shell::local_person::NativeLocalPerson {
+        tree: std::sync::Arc::downgrade(&tree),
+    };
+    let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        fixture.certificate.user_public_key,
+    );
+    assert!(
+        service
+            .certificate(&fixture.room.to_string(), &person)
+            .unwrap()
+            == fixture.certificate,
+        "the native origin must retain the exact enrolled room certificate"
+    );
+}
+
+fn native_profile_request(
+    host: &crate::shell::remote_actions::BrokerActionHost,
+    caller: &tilo_actions::remote::Caller,
+    room: &str,
+    action: &str,
+    arguments: &serde_json::Value,
+) -> tilo_actions::remote::InvokeRequest {
+    use tilo_actions::remote::{
+        ActionHost, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+    let provider = tilo_actions::remote::workspace_provider(room);
+    let page = ready_remote(host.query(
+        caller,
+        CatalogueQuery {
+            provider: Some(provider.clone()),
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    let descriptor = page
+        .rows
+        .iter()
+        .find_map(|row| {
+            row.action.as_ref().filter(|descriptor| {
+                row.provider == provider && descriptor.address.action == action
+            })
+        })
+        .expect("the installed native owner offers the exact governance command");
+    InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider,
+            address: descriptor.address.clone(),
+        },
+        argument: InvokeArgument::Json(arguments.as_object().unwrap().clone()),
+        confirmation: Some(Confirmation::Confirmed),
+        revision: Some(page.revision),
+        context: None,
+        on_behalf_of: None,
+    }
+}
+
 fn profile_action_decision(
     tree: &tilo_desktop_model::DesktopTree,
     room: &str,

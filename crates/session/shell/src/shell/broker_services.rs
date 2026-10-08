@@ -1704,18 +1704,7 @@ pub(crate) fn native_services_with_agent_runtime(
     let workspace_memberships = owner.as_ref().map(|service| {
         service.clone() as Arc<dyn tilo_action_broker::services::WorkspaceMemberships>
     });
-    let resource_views = membership
-        .as_ref()
-        .zip(network.as_ref())
-        .map(|(tree, network)| {
-            Arc::new(resource_views::NativeResourceViews {
-                owner: Arc::new(NativeOwnerCommitService::new(
-                    tree.clone(),
-                    Some(network.clone()),
-                )),
-                network: network.clone(),
-            }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
-        });
+    let resource_views = native_resource_views(membership.as_ref(), network.as_ref());
     let workspace_tasks = owner
         .as_ref()
         .map(|service| service.clone() as Arc<dyn WorkspaceTasks>);
@@ -1743,20 +1732,8 @@ pub(crate) fn native_services_with_agent_runtime(
     });
     let launcher: Arc<dyn tilo_action_broker::services::LauncherServices> =
         Arc::new(NativeLauncher(membership.clone(), network.clone()));
-    let display_control = membership
-        .as_ref()
-        .zip(settings_store::installed_source())
-        .map(|(tree, source)| {
-            Arc::new(super::display_control::NativeDisplayControl {
-                tree: Arc::downgrade(tree),
-                source,
-            }) as Arc<dyn tilo_action_broker::services::DisplayControlServices>
-        });
-    let local_person = membership.as_ref().map(|tree| {
-        Arc::new(super::local_person::NativeLocalPerson {
-            tree: Arc::downgrade(tree),
-        }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
-    });
+    let display_control = native_display_control(membership.as_ref());
+    let local_person = native_local_person(membership.as_ref());
     let services = HostServices {
         #[cfg(target_os = "linux")]
         file_clipboard: native_file_clipboard(membership.as_ref()),
@@ -1798,6 +1775,44 @@ pub(crate) fn native_services_with_agent_runtime(
         ..Default::default()
     };
     (services, agent_runtime)
+}
+
+fn native_resource_views(
+    membership: Option<&WorkspaceTreeHandle>,
+    network: Option<&Arc<super::network::ShellNetwork>>,
+) -> Option<Arc<dyn tilo_action_broker::services::NativeResourceViews>> {
+    membership.zip(network).map(|(tree, network)| {
+        Arc::new(resource_views::NativeResourceViews {
+            owner: Arc::new(NativeOwnerCommitService::new(
+                tree.clone(),
+                Some(network.clone()),
+            )),
+            network: network.clone(),
+        }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
+    })
+}
+
+fn native_display_control(
+    membership: Option<&WorkspaceTreeHandle>,
+) -> Option<Arc<dyn tilo_action_broker::services::DisplayControlServices>> {
+    membership
+        .zip(settings_store::installed_source())
+        .map(|(tree, source)| {
+            Arc::new(super::display_control::NativeDisplayControl {
+                tree: Arc::downgrade(tree),
+                source,
+            }) as Arc<dyn tilo_action_broker::services::DisplayControlServices>
+        })
+}
+
+fn native_local_person(
+    membership: Option<&WorkspaceTreeHandle>,
+) -> Option<Arc<dyn tilo_action_broker::services::LocalPersonServices>> {
+    membership.map(|tree| {
+        Arc::new(super::local_person::NativeLocalPerson {
+            tree: Arc::downgrade(tree),
+        }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
+    })
 }
 
 #[cfg(target_os = "linux")]

@@ -50,10 +50,22 @@ impl LocalPersonServices for NativeLocalPerson {
             .read()
             .installed_native_owner()
             .ok_or("native caller owner unavailable")?;
+        // The generic primary-device record is the protected seat identity,
+        // not necessarily the exact certificate admitted to this native room.
+        // Keep that identity fence while retaining the freshly selected room
+        // evidence; an alternate Person or device may never borrow this seat.
+        let (_, selected) = tilo_identity_host::broker::trusted_current_device(&room.to_string())
+            .map_err(|_| "native caller room identity unavailable")?;
+        if selected.user_public_key != certificate.user_public_key
+            || selected.device_public_key != certificate.device_public_key
+            || selected.capabilities.can_act_as_host
+        {
+            return Err("native caller room identity differs from protected seat".into());
+        }
         owner.with_current(room, |view| {
             view.peer()
-                .permissions(certificate.device_public_key, std::time::SystemTime::now())?;
-            Ok(certificate)
+                .permissions(selected.device_public_key, std::time::SystemTime::now())?;
+            Ok(selected)
         })
     }
 }
