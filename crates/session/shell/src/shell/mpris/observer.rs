@@ -147,8 +147,14 @@ pub(super) fn ensure_started() {
     drop(state);
     let spawned = super::spawn_on_session(async {
         let _stopped = Stopped(&OBSERVER);
-        if let Some(connection) = super::session_bus().await {
-            observe(&connection, &OBSERVER).await;
+        let Some(connection) = super::session_bus().await else {
+            return;
+        };
+        match zbus::Connection::session().await {
+            Ok(listener) => observe(&connection, &listener, &OBSERVER).await,
+            Err(error) => {
+                tracing::debug!(target: "tilo::mpris", %error, "cannot follow MPRIS players");
+            }
         }
     });
     if !spawned {
@@ -225,6 +231,38 @@ fn apply(state: &'static Mutex<ObserverState>, event: PlayerEvent) -> super::tab
     applied
 }
 
+/// Try again to attribute players whose owner could not be attributed to a
+/// launch when it appeared — all of them, or with `only`, just that
+/// connection's. A bounded walk of `/proc` from the process recorded at
+/// appearance; no bus call. Until it succeeds, a player is shown on the card
+/// but never offered for handoff.
+pub(super) fn retry_verification(state: &'static Mutex<ObserverState>, only: Option<&str>) {
+    let unverified = state
+        .lock()
+        .map_or_else(|_| Vec::new(), |state| state.table.unverified());
+    let verified = unverified
+        .into_iter()
+        .filter(|(_, unique_name, _)| only.is_none_or(|only| only == unique_name))
+        .filter_map(|(bus_name, unique_name, pid)| {
+            crate::shell::launcher::verified_package_for_descendant(pid)
+                .map(|package_id| (bus_name, unique_name, package_id))
+        })
+        .collect::<Vec<_>>();
+    if verified.is_empty() {
+        return;
+    }
+    let missing = state.lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| {
+            for (bus_name, unique_name, package_id) in verified {
+                state.table.verify(&bus_name, &unique_name, package_id);
+            }
+            state.publish(Instant::now())
+        },
+    );
+    decode_artwork(state, missing);
+}
+
 /// The three subscriptions, made before the bus is listed so nothing that
 /// happens during seeding is missed.
 struct Signals {
@@ -263,10 +301,20 @@ impl Signals {
     }
 }
 
-/// Follow every MPRIS player on `connection`'s bus into `state` until the
-/// connection closes.
-pub(super) async fn observe(connection: &zbus::Connection, state: &'static Mutex<ObserverState>) {
-    let mut signals = match Signals::subscribe(connection).await {
+/// Follow every MPRIS player on the bus into `state` until a connection
+/// closes.
+///
+/// Signals arrive on `listener`, a connection of their own; every call goes
+/// out on `connection`. zbus stops reading a connection while one of its
+/// signal queues is full, so a player flooding signals while the observer
+/// waits on a call must only ever hold up the listener, never the replies
+/// the observer, the transport keys and the card's controls wait for.
+pub(super) async fn observe(
+    connection: &zbus::Connection,
+    listener: &zbus::Connection,
+    state: &'static Mutex<ObserverState>,
+) {
+    let mut signals = match Signals::subscribe(listener).await {
         Ok(signals) => signals,
         Err(error) => {
             tracing::debug!(target: "tilo::mpris", %error, "cannot follow MPRIS players");
@@ -397,6 +445,9 @@ async fn on_properties_changed(
     if !applied.changed {
         return;
     }
+    // A player that changes state is the moment its launch is most likely
+    // recorded, if it was not when the player appeared.
+    retry_verification(state, Some(&unique_name));
     if reread && let Some(changed) = get_all(connection, &unique_name, &interface).await {
         apply(
             state,
@@ -751,7 +802,8 @@ mod tests {
 
         let state: &'static Mutex<ObserverState> = Box::leak(Box::default());
         state.lock().unwrap().seed.send_replace(Seed::Pending);
-        let observer = tokio::spawn(async move { observe(&connection, state).await });
+        let listener = bus.connect().await;
+        let observer = tokio::spawn(async move { observe(&connection, &listener, state).await });
         assert!(
             seeded(state, tilo_test_env::hang_bound()).await,
             "the observer lists the bus"

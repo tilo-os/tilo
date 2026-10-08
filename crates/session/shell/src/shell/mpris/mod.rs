@@ -464,27 +464,9 @@ async fn run_resume(
 
 /// The players verified to belong to `package_id`, each with the source it
 /// reports. A player whose owner could not yet be attributed to a launch
-/// when it appeared is tried again here, from the process the observer
-/// recorded: no bus call.
+/// when it appeared is tried again first: no bus call.
 async fn verified_players(package_id: &str) -> Vec<(String, Option<String>)> {
-    let Some(unverified) = with_players(PlayerTable::unverified).await else {
-        return Vec::new();
-    };
-    let verified = unverified
-        .into_iter()
-        .filter_map(|(bus_name, unique_name, pid)| {
-            crate::shell::launcher::verified_package_for_descendant(pid)
-                .map(|package| (bus_name, unique_name, package))
-        })
-        .collect::<Vec<_>>();
-    if !verified.is_empty() {
-        if let Ok(mut state) = observer::OBSERVER.lock() {
-            for (bus_name, unique_name, package) in verified {
-                state.table.verify(&bus_name, &unique_name, package);
-            }
-        }
-        observer::republish(&observer::OBSERVER);
-    }
+    observer::retry_verification(&observer::OBSERVER, None);
     with_players(|table| table.players_of(package_id))
         .await
         .unwrap_or_default()
