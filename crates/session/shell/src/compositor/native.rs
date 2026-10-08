@@ -16197,6 +16197,8 @@ mod tests {
                 "routed_keyboard_surface": null,
                 "text_input": null,
                 "text_input_active": false,
+                "input_method_connected": false,
+                "input_method_keyboard_grabbed": false,
                 "on_screen_keyboard_surface": null,
             })
         );

@@ -566,6 +566,12 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
         !h.clients[im_client].peer.unavailable,
         "the seat's slot was free"
     );
+    let observed = h.state.seat_focus_json();
+    assert_eq!(observed["input_method_connected"].as_bool(), Some(true));
+    assert_eq!(
+        observed["input_method_keyboard_grabbed"].as_bool(),
+        Some(true)
+    );
 
     // Focusing the field enters its text input; enabling it with a caret
     // rectangle activates the input method.

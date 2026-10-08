@@ -1427,6 +1427,39 @@ def preserve_ime_drag_refusal(socket, output, size, drag):
             pass
 
 
+def preserve_attached_preedit_refusal(
+        socket, output, size, access, baseline, rime_commit, fcitx_identity):
+    """Record only fixture-known equality and protocol booleans on refusal."""
+    evidence_path = output / "ime-attached-preedit-refused.json"
+    try:
+        direct_latin = baseline + "nihao"
+        evidence_path.write_text(json.dumps({
+            "phase": "attached_preedit_before_float",
+            "baseline_retained": private_editor_value_matches(access, baseline),
+            "direct_latin_committed": private_editor_value_matches(access, direct_latin),
+            "rime_candidate_committed": private_editor_value_matches(access, rime_commit),
+            "text_input_active": chat_text_input_active(socket),
+            "input_method_ready": chat_input_method_ready(socket),
+            "same_input_method_process": same_fcitx_process(fcitx_identity),
+            "private_content_recorded": False,
+        }, indent=2) + "\n")
+    except Exception:
+        try:
+            evidence_path.write_text(json.dumps({
+                "phase": "attached_preedit_before_float",
+                "diagnostic_unavailable": True,
+                "private_content_recorded": False,
+            }, indent=2) + "\n")
+        except OSError:
+            pass
+    try:
+        require_ok(call(socket, {"op": "snapshot", "path": str(
+            output / f"ime-attached-preedit-refused-{size}.png"
+        )}))
+    except Exception:
+        pass
+
+
 def native_ime_float_return(socket, output, size, process, fcitx_identity):
     """Hold a genuine Rime preedit across Float and Return, then commit it."""
     committed_before = "u"
@@ -1445,7 +1478,11 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     )
     physically_click_editor(socket, access, presented_content_geometry(primary))
     require_chat_keyboard_focus_after_click(socket, output)
-    wait_for("Chat's active production text input", lambda: chat_text_input_active(socket), process)
+    wait_for(
+        "Chat's active input method and keyboard grab",
+        lambda: chat_input_method_ready(socket),
+        process,
+    )
     if not same_fcitx_process(fcitx_identity):
         raise RuntimeError("the compositor-owned Rime process changed before composition")
 
@@ -1471,6 +1508,9 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
         if frame is None or frame["frame_seq"] <= before_preedit["frame_seq"]:
             return None
         if not private_editor_value_matches(access, committed_before):
+            preserve_attached_preedit_refusal(
+                socket, output, size, access, committed_before, committed_after, fcitx_identity,
+            )
             raise RuntimeError("Rime committed before the Float handoff")
         return frame if chat_text_input_active(socket) else None
 
@@ -2451,6 +2491,23 @@ def chat_text_input_active(socket):
         seat["text_input_active"]
         and keyboard.get("app_id") == "so.tilo.chat"
         and text_input.get("app_id") == "so.tilo.chat"
+    )
+
+
+def chat_input_method_ready(socket):
+    """Require Chat's field plus the compositor's live input method and grab."""
+    seat = chrome_state(socket).get("seat_focus")
+    required = ("text_input_active", "input_method_connected", "input_method_keyboard_grabbed")
+    if not isinstance(seat, dict) or any(type(seat.get(key)) is not bool for key in required):
+        raise RuntimeError("the compositor input-method readiness is unobservable")
+    keyboard = seat.get("keyboard")
+    text_input = seat.get("text_input")
+    return bool(
+        isinstance(keyboard, dict)
+        and isinstance(text_input, dict)
+        and keyboard.get("app_id") == "so.tilo.chat"
+        and text_input.get("app_id") == "so.tilo.chat"
+        and all(seat[key] for key in required)
     )
 
 

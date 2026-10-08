@@ -94,7 +94,8 @@ use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::input_method::{
-    InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
+    InputMethodHandler, InputMethodManagerState, InputMethodSeat,
+    PopupSurface as InputMethodPopupSurface,
 };
 use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
 use smithay::wayland::session_lock::{
@@ -1287,6 +1288,8 @@ impl State {
             "routed_keyboard_surface": self.client_input.keyboard_focus(),
             "text_input": self.seat.text_input().focus().map(describe),
             "text_input_active": self.text_input_active(),
+            "input_method_connected": self.input_method_resource_client.is_some(),
+            "input_method_keyboard_grabbed": self.seat.input_method().keyboard_grabbed(),
             "on_screen_keyboard_surface": self.osk_surface,
         })
     }

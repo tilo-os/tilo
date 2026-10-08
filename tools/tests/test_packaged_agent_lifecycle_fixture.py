@@ -1526,6 +1526,72 @@ class PresentedEditorTargetTests(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn('"last_error"', source)
 
+    def test_native_ime_waits_for_the_real_input_method_grab_before_typing(self):
+        ready = {
+            "keyboard": {"app_id": "so.tilo.chat"},
+            "text_input": {"app_id": "so.tilo.chat"},
+            "text_input_active": True,
+            "input_method_connected": True,
+            "input_method_keyboard_grabbed": True,
+        }
+        for changes, accepted in (
+                ({}, True),
+                ({"input_method_connected": False}, False),
+                ({"input_method_keyboard_grabbed": False}, False),
+                ({"text_input_active": False}, False),
+                ({"keyboard": {"app_id": "so.tilo.store"}}, False),
+                ({"text_input": {"app_id": "so.tilo.store"}}, False)):
+            with self.subTest(changes=changes), patch.object(
+                    PROOF, "chrome_state", return_value={"seat_focus": {**ready, **changes}}):
+                self.assertEqual(PROOF.chat_input_method_ready("socket"), accepted)
+        for malformed in (None, {}, {**ready, "input_method_connected": None}):
+            with self.subTest(malformed=malformed), patch.object(
+                    PROOF, "chrome_state", return_value={"seat_focus": malformed}), \
+                    self.assertRaises(RuntimeError):
+                PROOF.chat_input_method_ready("socket")
+
+        source = inspect.getsource(PROOF.native_ime_float_return)
+        readiness = source.index("chat_input_method_ready(socket)")
+        first_shift = source.index('{"op": "key", "key": "Shift"}')
+        self.assertLess(readiness, first_shift)
+
+    def test_attached_preedit_refusal_records_only_closed_fixture_evidence(self):
+        private = "private editor text"
+        values = {"u": False, "unihao": True, "u你好": False}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", return_value={"ok": {}}), \
+                patch.object(PROOF, "require_ok"), \
+                patch.object(PROOF, "private_editor_value_matches",
+                             side_effect=lambda _access, value: values[value]), \
+                patch.object(PROOF, "chat_text_input_active", return_value=True), \
+                patch.object(PROOF, "chat_input_method_ready", return_value=True), \
+                patch.object(PROOF, "same_fcitx_process", return_value=True):
+            output = pathlib.Path(directory)
+            PROOF.preserve_attached_preedit_refusal(
+                "socket", output, "1600x900", {"private": private}, "u", "u你好", {},
+            )
+            evidence = json.loads((output / "ime-attached-preedit-refused.json").read_text())
+        self.assertFalse(evidence["baseline_retained"])
+        self.assertTrue(evidence["direct_latin_committed"])
+        self.assertFalse(evidence["rime_candidate_committed"])
+        self.assertTrue(evidence["input_method_ready"])
+        self.assertFalse(evidence["private_content_recorded"])
+        self.assertNotIn(private, json.dumps(evidence))
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", side_effect=RuntimeError("snapshot failed")), \
+                patch.object(PROOF, "private_editor_value_matches", return_value=False), \
+                patch.object(PROOF, "chat_text_input_active", return_value=True), \
+                patch.object(PROOF, "chat_input_method_ready", return_value=True), \
+                patch.object(PROOF, "same_fcitx_process", return_value=True):
+            output = pathlib.Path(directory)
+            PROOF.preserve_attached_preedit_refusal(
+                "socket", output, "1600x900", {}, "u", "u你好", {},
+            )
+            evidence = json.loads((output / "ime-attached-preedit-refused.json").read_text())
+        self.assertNotIn("diagnostic_unavailable", evidence)
+        self.assertTrue(evidence["input_method_ready"])
+
     def test_return_seat_refresh_requires_exact_native_source_without_frame_regression(self):
         previous = {"app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 10,
                     "keyboard_focused": False}
