@@ -9,7 +9,7 @@ use ui::tilo_actions::remote::{
     RemoteActionMessage, RemoteActionTarget, ViewResourceQuery,
 };
 use ui::tilo_actions::{ActionOutput, InvocationId, Resource as PublishedResource};
-use ui::tilo_resource::Effect;
+use ui::tilo_resource::{ActionRef, Effect};
 use ui::widget::{Column, Element, Property, PropertyList, Text};
 
 pub fn resource(experiment: &Experiment) -> PublishedResource {
@@ -28,6 +28,10 @@ pub fn resource(experiment: &Experiment) -> PublishedResource {
         }
         .bound(),
     )
+    .with_action(ui::tilo_resource::items::bound(
+        &crate::resource::experiment_remove_declaration(),
+        &[("name", serde_json::Value::String(experiment.name.clone()))],
+    ))
 }
 
 async fn page(actions: &PublishedActions, query: CatalogueQuery) -> Result<CataloguePage, String> {
@@ -40,10 +44,7 @@ async fn page(actions: &PublishedActions, query: CatalogueQuery) -> Result<Catal
     }
 }
 
-async fn resolve(
-    actions: &PublishedActions,
-    link: &ActionLink,
-) -> Result<(RemoteActionTarget, String), String> {
+async fn provider(actions: &PublishedActions, link: &ActionLink) -> Result<String, String> {
     let providers = page(
         actions,
         CatalogueQuery {
@@ -58,14 +59,22 @@ async fn resolve(
             && provider.app_id == link.route.app_id
             && provider.record_id == link.route.record_id
     });
-    let provider = matching
+    let current = matching
         .next()
         .ok_or("original record has no current custodian")?;
     if matching.next().is_some() {
         return Err("original record custody is ambiguous".into());
     }
+    Ok(current.provider.clone())
+}
+
+async fn resolve(
+    actions: &PublishedActions,
+    link: &ActionLink,
+) -> Result<(RemoteActionTarget, String), String> {
+    let provider = provider(actions, link).await?;
     let target = RemoteActionTarget {
-        provider: provider.provider.clone(),
+        provider,
         address: link.address.clone(),
     };
     let resolved = page(
@@ -256,11 +265,11 @@ pub fn open(name: &str, source: bool, cx: &mut EffectCx<ChipProject>) -> Result<
     let actions = cx.published_actions()?;
     Ok(cx.spawn(
         move |_| async move {
-            let (target, _) = resolve(&actions, &link).await?;
+            let provider = provider(&actions, &link).await?;
             let views = page(
                 &actions,
                 CatalogueQuery {
-                    provider: Some(target.provider),
+                    provider: Some(provider.clone()),
                     view_resource: Some(ViewResourceQuery {
                         id: link.resource.id.clone(),
                         kind: link.resource.kind.clone(),
@@ -270,10 +279,14 @@ pub fn open(name: &str, source: bool, cx: &mut EffectCx<ChipProject>) -> Result<
             )
             .await?;
             let mut matching = views.rows.iter().filter(|row| {
-                row.action.as_ref().is_some_and(|action| {
-                    action.semantic_identity.as_ref() == Some(&link.semantic_identity)
-                        && action.view.as_ref().is_some_and(|view| view.primary)
-                })
+                row.provider == provider
+                    && row.app_id == link.route.app_id
+                    && row.resource.id == link.resource.id
+                    && row.resource.kind == link.resource.kind
+                    && row.action.as_ref().is_some_and(|action| {
+                        action.semantic_identity.as_ref() == Some(&link.semantic_identity)
+                            && action.view.as_ref().is_some_and(|view| view.primary)
+                    })
             });
             let row = matching
                 .next()
@@ -292,13 +305,21 @@ pub fn open(name: &str, source: bool, cx: &mut EffectCx<ChipProject>) -> Result<
                 revision: Some(views.revision),
                 on_behalf_of: None,
             };
-            match actions.invoke_and_wait(request)?.await {
+            match actions
+                .invoke_and_wait(request)
+                .map_err(|error| {
+                    format!("original view invocation {invocation:?} dispatch unavailable: {error}")
+                })?
+                .await
+            {
                 PublishedActionAnswer::Answer(RemoteActionMessage::Receipt(receipt))
                     if receipt.invocation == invocation =>
                 {
                     match receipt.status {
                         ReceiptStatus::Completed { output } => Ok(output),
-                        other => Err(format!("original resource view refused: {other:?}")),
+                        other => Err(format!(
+                            "original view invocation {invocation:?} refused: {other:?}"
+                        )),
                     }
                 }
                 _ => Err(format!(
@@ -328,6 +349,12 @@ pub fn body(cx: &ViewCx<ChipProject>, state: &ProjectState) -> Element {
                 &experiment.check.semantic_identity.key,
             ),
         ];
+        if experiment.references_truncated {
+            properties.push(Property::new(
+                crate::view::tr("chip-project-references-truncated-label"),
+                crate::view::tr("chip-project-references-truncated"),
+            ));
+        }
         properties.extend(experiment.invocations.iter().map(|link| {
             Property::new(
                 crate::view::tr("chip-original-invocation"),
@@ -361,6 +388,13 @@ pub fn body(cx: &ViewCx<ChipProject>, state: &ProjectState) -> Element {
                     source: false,
                 },
             )))
+            .push(Box::new(
+                cx.button(
+                    &crate::view::tr("chip-remove-experiment"),
+                    ActionRef::<ChipProject, String>::new("remove-experiment", &["name"])
+                        .with(experiment.name.clone()),
+                ),
+            ))
             .push(Box::new(PropertyList::new(properties)))
             .push(Box::new(cx.effect_button(
                 &crate::view::tr("chip-run-experiment"),

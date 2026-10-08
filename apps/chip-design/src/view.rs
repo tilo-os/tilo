@@ -28,6 +28,9 @@ pub enum ChipEffect {
     /// Inspect the original Code file then run its original approved Git check.
     #[effect(job, cancellable, returns, device_only = false)]
     RunExperiment { name: String },
+    /// Choose existing published Code and Git resources using system search.
+    #[effect(job, cancellable, returns, device_only = false)]
+    LinkProject,
     /// Open the original published Code or Git resource view.
     #[effect(job, cancellable, permission = "read", device_only = false)]
     OpenProjectResource { name: String, source: bool },
@@ -121,6 +124,7 @@ impl ResourceApp for ChipDesignShell {
         let graph_inspected = graph_selection.clone();
         cx.effects(move |effect: ChipEffect, cx| match effect {
             ChipEffect::RunExperiment { name } => crate::project_composition::run(name, cx),
+            ChipEffect::LinkProject => crate::project_setup::choose(cx),
             ChipEffect::OpenProjectResource { name, source } => {
                 crate::project_composition::open(&name, source, cx)
             }
@@ -278,11 +282,16 @@ fn evidence_body(
     }
     if reports.is_empty() && verifications.is_empty() && state.experiments.is_empty() {
         return Box::new(
-            EmptyState::new(tr("chip-empty-title")).with_message(tr("chip-empty-message")),
+            Column::new()
+                .push(Box::new(
+                    EmptyState::new(tr("chip-empty-title")).with_message(tr("chip-empty-message")),
+                ))
+                .push(crate::project_setup::body(cx)),
         );
     }
     let mut body = Column::new()
         .with_intrinsic_height()
+        .push(crate::project_setup::body(cx))
         .push(crate::project_composition::body(cx, state));
     for (id, report) in reports {
         if selected.is_some_and(|selection| selection != id.as_str()) {

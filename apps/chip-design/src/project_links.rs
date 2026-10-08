@@ -27,6 +27,9 @@ pub struct Experiment {
     pub check_id: String,
     #[serde(default)]
     pub invocations: Vec<InvocationLink>,
+    /// Computed from reported references, never stored as execution state.
+    #[serde(default)]
+    pub references_truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +48,16 @@ impl Experiment {
         }
         let experiment: Self = serde_json::from_str(json).map_err(|error| error.to_string())?;
         experiment.validate()?;
+        if experiment.references_truncated {
+            return Err("binding cannot supply reference truncation metadata".into());
+        }
+        if serde_json::to_vec(&experiment)
+            .map_err(|error| error.to_string())?
+            .len()
+            > MAX_LINK_BYTES
+        {
+            return Err("experiment references exceed bounds".into());
+        }
         Ok(experiment)
     }
     pub fn validate(&self) -> Result<(), String> {
@@ -119,17 +132,37 @@ pub fn read(doc: &ui::tilo_resource::Doc, json: &str) -> Result<Experiment, Stri
         return Err("binding contains invocation references".into());
     }
     let prefix = reference_prefix(&experiment.name);
-    for key in doc.keys(ROOT).filter(|key| key.starts_with(&prefix)) {
+    for (index, key) in doc
+        .keys(ROOT)
+        .filter(|key| key.starts_with(&prefix))
+        .enumerate()
+    {
+        if index == 16 {
+            experiment.references_truncated = true;
+            break;
+        }
         let Some((value, _)) = doc.get(ROOT, &key).map_err(|error| error.to_string())? else {
             continue;
         };
-        let link: InvocationLink =
-            serde_json::from_str(value.as_str().ok_or("invalid invocation reference")?)
-                .map_err(|error| error.to_string())?;
+        let raw = value.as_str().ok_or("invalid invocation reference")?;
+        if raw.len() > MAX_LINK_BYTES {
+            experiment.references_truncated = true;
+            break;
+        }
+        let link: InvocationLink = serde_json::from_str(raw).map_err(|error| error.to_string())?;
         if key != format!("{prefix}{}", link.invocation.0) {
             return Err("original invocation key mismatch".into());
         }
         experiment.invocations.push(link);
+        if serde_json::to_vec(&experiment)
+            .map_err(|error| error.to_string())?
+            .len()
+            > MAX_LINK_BYTES
+        {
+            experiment.invocations.pop();
+            experiment.references_truncated = true;
+            break;
+        }
     }
     experiment.validate()?;
     Ok(experiment)
@@ -158,6 +191,11 @@ pub fn retain(
             .ok_or_else(|| ActionError::Refused("invalid experiment".into()))?,
     )
     .map_err(ActionError::Refused)?;
+    if experiment.references_truncated {
+        return Err(ActionError::Refused(
+            "reported references exceed display bounds; inspect original Jobs".into(),
+        ));
+    }
     let link: InvocationLink =
         serde_json::from_str(json).map_err(|error| ActionError::Refused(error.to_string()))?;
     let reference_key = format!("{}{}", reference_prefix(name), link.invocation.0);
@@ -204,4 +242,27 @@ pub fn retain(
     // a serialized project list. These are reported links, never host authority.
     doc.put(ROOT, reference_key, json)?;
     Ok(())
+}
+
+pub fn remove(
+    doc: &mut ui::tilo_resource::Doc,
+    name: &str,
+) -> Result<(), ui::tilo_actions::ActionError> {
+    use ui::automerge::{ROOT, ReadDoc, transaction::Transactable};
+    doc.delete(ROOT, format!("{PREFIX}{name}"))?;
+    let prefix = reference_prefix(name);
+    let references: Vec<_> = doc
+        .keys(ROOT)
+        .filter(|key| key.starts_with(&prefix))
+        .collect();
+    for reference in references {
+        doc.delete(ROOT, reference)?;
+    }
+    Ok(())
+}
+
+pub fn has_references(doc: &ui::tilo_resource::Doc, name: &str) -> bool {
+    use ui::automerge::{ROOT, ReadDoc};
+    let prefix = reference_prefix(name);
+    doc.keys(ROOT).any(|key| key.starts_with(&prefix))
 }

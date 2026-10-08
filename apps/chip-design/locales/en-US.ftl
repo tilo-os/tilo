@@ -240,3 +240,15 @@ chip-open-repository = Open original Git repository
 chip-project-reference-scope = Reference scope
 chip-project-reference-scope-value = Links confer no authority or execution status. The Code snapshot page does not pin the later check inputs.
 chip-original-output-reference = Original output resource
+chip-project-name = Experiment name
+chip-link-project = Choose Code file and Git repository
+chip-project-fields-required = Enter an experiment name and an existing approved check identity.
+chip-project-fields-changed = The experiment fields changed while choosing resources. Choose again for the current fields.
+chip-selection-dismissed = Resource selection dismissed; no project binding was submitted.
+chip-selection-unavailable = Original resource selection is unavailable. No project binding was submitted.
+chip-remove-experiment = Remove experiment links
+chip-project-name-used = Choose a new experiment name, or remove the existing links first.
+
+chip-project-references-truncated = Some reported links exceed display bounds; inspect original Jobs.
+
+chip-project-references-truncated-label = Additional reported links

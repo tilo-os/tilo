@@ -19,12 +19,23 @@ const VERIFICATION_PREFIX: &str = "verification:";
 pub struct ProjectState {
     pub reports: BTreeMap<String, StorageReport>,
     pub experiments: BTreeMap<String, crate::project_links::Experiment>,
+    pub experiment_name: String,
+    pub experiment_check_id: String,
     pub operator_graph: crate::operator_graph::OperatorState,
     pub verifications: BTreeMap<String, VerificationRecord>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProjectAction {
+    RemoveExperiment {
+        name: String,
+    },
+    SetExperimentName {
+        value: String,
+    },
+    SetExperimentCheck {
+        value: String,
+    },
     BindExperiment {
         json: String,
     },
@@ -59,6 +70,13 @@ impl Action for ProjectAction {
     }
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            Self::RemoveExperiment { name } => crate::project_links::remove(doc, name)?,
+            Self::SetExperimentName { value } => {
+                crate::project_setup::set_field(doc, "experiment-name", value)?;
+            }
+            Self::SetExperimentCheck { value } => {
+                crate::project_setup::set_field(doc, "experiment-check", value)?;
+            }
             Self::BindExperiment { json } => {
                 let experiment =
                     crate::project_links::Experiment::parse(json).map_err(ActionError::Refused)?;
@@ -68,7 +86,9 @@ impl Action for ProjectAction {
                     ));
                 }
                 let key = format!("{}{}", crate::project_links::PREFIX, experiment.name);
-                if doc.get(ROOT, &key)?.is_some() {
+                if doc.get(ROOT, &key)?.is_some()
+                    || crate::project_links::has_references(doc, &experiment.name)
+                {
                     return Err(ActionError::Refused(
                         "experiment already exists; retain its original history".into(),
                     ));
@@ -244,7 +264,7 @@ impl Resource for ChipProject {
         }
         match item {
             None => Ok(
-                serde_json::json!({"kind": Self::KIND, "experiments": state.experiments, "operator_graph": {"resource":crate::operator_graph::RESOURCE_ID,"qualification":"structural_design_only","nodes":state.operator_graph.nodes.len(),"active_edges":state.operator_graph.active.len(),"rejected_candidates":state.operator_graph.rejected.len()}, "reports": state.reports.iter().map(|(id, report)| serde_json::json!({
+                serde_json::json!({"kind": Self::KIND, "experiments": state.experiments, "experiment_setup":{"name":state.experiment_name,"check_id":state.experiment_check_id}, "operator_graph": {"resource":crate::operator_graph::RESOURCE_ID,"qualification":"structural_design_only","nodes":state.operator_graph.nodes.len(),"active_edges":state.operator_graph.active.len(),"rejected_candidates":state.operator_graph.rejected.len()}, "reports": state.reports.iter().map(|(id, report)| serde_json::json!({
                 "resource": report_resource_id(id), "model": report.model,
                 "revision": report.revision, "evidence": report.evidence,
             })).collect::<Vec<_>>(), "verifications": state.verifications.iter().map(|(id, record)| serde_json::json!({
@@ -272,6 +292,8 @@ impl Resource for ChipProject {
     fn read(doc: &Doc) -> Result<ProjectState, ModelError> {
         let mut state = ProjectState {
             operator_graph: crate::operator_graph::OperatorGraph::read(doc)?,
+            experiment_name: crate::project_setup::read_field(doc, "experiment-name")?,
+            experiment_check_id: crate::project_setup::read_field(doc, "experiment-check")?,
             ..ProjectState::default()
         };
         for key in doc
@@ -339,6 +361,9 @@ impl Resource for ChipProject {
 
     fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
+            experiment_remove_declaration(),
+            ActionDecl::new("set-experiment-name", "Name experiment", vec![ActionParam::required("value", ParamType::Text, "Experiment name")], |args, _| Ok(ProjectAction::SetExperimentName { value: args.text("value").ok_or("missing experiment name")?.into() })),
+            ActionDecl::new("set-experiment-check", "Choose approved check identity", vec![ActionParam::required("value", ParamType::Text, "Identity from the project's existing approved checks")], |args, _| Ok(ProjectAction::SetExperimentCheck { value: args.text("value").ok_or("missing check identity")?.into() })),
             ActionDecl::new("bind-experiment", "Link project actions", vec![ActionParam::required("json", ParamType::Text, "Named experiment with exact current Code and Git record, action and semantic references")], |args, _| {
                 let json = args.text("json").ok_or("missing experiment links")?.to_owned();
                 let experiment = crate::project_links::Experiment::parse(&json)?;
@@ -600,4 +625,21 @@ fn flow_search(report: &str, record: &VerificationRecord) -> Vec<SearchEntry> {
             ..Default::default()
         })
         .collect()
+}
+
+pub(crate) fn experiment_remove_declaration() -> ActionDecl<ChipProject> {
+    ActionDecl::new(
+        "remove-experiment",
+        "Remove experiment links",
+        vec![ActionParam::required(
+            "name",
+            ParamType::Text,
+            "Experiment name",
+        )],
+        |args, _| {
+            Ok(ProjectAction::RemoveExperiment {
+                name: args.text("name").ok_or("missing experiment name")?.into(),
+            })
+        },
+    )
 }

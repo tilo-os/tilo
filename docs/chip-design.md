@@ -175,6 +175,18 @@ links confer no authority. Agents can use the same declared action door as
 people; the platform resource-selection workflow must supply these original
 references rather than asking a person to manufacture opaque identities.
 
+Open the project’s existing Code file and Git repository in the workspace.
+Enter a name and an existing approved check identity in the shared fields,
+then choose those published resources through platform search.
+Selection returns only current typed publications authorized for the original
+caller; dismissal or unavailable custody submits no binding. Editing the fields
+while choosing refuses the older selection. The selection job reports that a
+normal binding action was submitted; the live project and attributed history
+show whether it committed. `remove-experiment` removes the local configuration
+and informative links through the same normal undoable action door. Original
+Jobs remain canonical. A binding name retaining references after undo cannot
+be silently reused for another target; remove those links first.
+
 `run-experiment` resolves the exact current record custodian and action under
 its original caller, reads one bounded Code snapshot page, then invokes the
 existing Git `run-approved-check` action. It does not select commands, paths,
@@ -187,15 +199,17 @@ Each explicit `run-experiment` is a distinct original Job. Separately invoked
 runs may execute concurrently. No child UUID is automatically retried or
 reissued after an unknown answer; the original parent failure retains that
 child UUID even if an informative metadata update is refused. Inspect the
-original Jobs before deliberately starting another run. Cancellation and child retirement use the shared broker
-continuation relation. Cancellation-request delivery does not prove worker
+original Jobs before deliberately starting another run. Cancellation and child
+retirement use the shared broker continuation relation. Cancellation-request delivery does not prove worker
 termination or process cleanup.
 
 After an original child answer, Chip queues a best-effort attributed update
-to retain bounded original invocation and output
-resource references on independent CRDT keys. Metadata refusal does not
+to retain bounded original invocation and output resource references on independent CRDT keys. Metadata refusal does not
 control execution or replace an original result. These links are not durable
-job ownership or admission proof. The document stores no runtime status,
+job ownership or admission proof. Concurrent reported references exceeding
+display bounds show an explicit truncation notice and do not invalidate the
+project; all original Jobs remain available through the platform. The document
+stores no runtime status,
 output bytes or scheduler state. Original Jobs and Git output resources remain
 canonical. Opening the original Code or Git resource resolves its current
 published primary view; Git's existing selected-output read/transfer actions
