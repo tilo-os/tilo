@@ -146,15 +146,10 @@ def prepare(args):
     env.update({"XDG_CONFIG_HOME": str(profile / "config"), "XDG_DATA_HOME": str(profile / "data"), "XDG_STATE_HOME": str(profile / "state"), "XDG_CACHE_HOME": str(profile / "cache"), "TILO_IDENTITY_ROOT": str(profile / "identity"), "XDG_RUNTIME_DIR": str(runtime), "TILO_APPS_DATA_DIR": str(profile / "apps"), "TILO_RUNTIME_BUNDLE_DIR": str(profile / "runtimes"), "TILO_LAUNCHER_BIN": str(args.binaries / "tilo-launcher"), "TILO_STATE_PATH": str(profile / "config/tilo/state.json"), "TILO_HEADLESS_SIZE": "1024x768"})
     for name in ("DISPLAY", "WAYLAND_DISPLAY", "TILO_APPS_SYSTEM_DIR"):
         env.pop(name, None)
-    ordinary = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "rcargo/config.toml"
-    if not ordinary.is_file() or ordinary.is_symlink():
-        raise RuntimeError("ordinary build configuration unavailable")
-    private = profile / "config/rcargo/config.toml"
-    private.parent.mkdir(mode=0o700)
-    with private.open("xb") as stream:
-        stream.write(ordinary.read_bytes())
-    private.chmod(0o600)
-    env["CARGO"] = shutil.which("cargo") or "cargo"
+    ordinary_cargo = shutil.which(os.environ.get("CARGO", "cargo"))
+    if ordinary_cargo is None:
+        raise RuntimeError("ordinary Cargo entry point unavailable")
+    env["CARGO"] = ordinary_cargo
     observed = sources()
     private_json(output / "source-at-start.json", {"hashes": observed, "compiler_input_attestation": False})
     image = verify_image(args.image.resolve())

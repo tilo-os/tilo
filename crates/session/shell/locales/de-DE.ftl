@@ -1280,6 +1280,9 @@ search-app-job-streaming = liefert Ergebnisse
 search-app-job-succeeded = abgeschlossen
 search-app-job-failed = fehlgeschlagen
 search-app-job-cancelled = abgebrochen
+search-app-job-routing-unavailable = Die Weiterleitung von Aktionsaufträgen ist nicht verfügbar.
+search-app-job-routing-already-retained = Dieser Aktionsauftrag wird bereits verfolgt.
+search-app-job-routing-capacity-exhausted = Zu viele Aktionsaufträge werden verfolgt.
 search-app-resource-contains = { $app } · enthält Ressourcen
 search-app-action-launches = { $resource } · { $app } · startet die Anwendung
 
@@ -2489,3 +2492,5 @@ task-review-provider = Aufgabenprüfung
 
 host-history-task-refused-title = Aufgabe konnte nicht geändert werden
 host-history-task-refused-body = Der Arbeitsbereich hat diese Änderung nicht angenommen. Ihr Entwurf bleibt erhalten. Prüfen Sie vor einem erneuten Versuch Ihre Identität und die Berechtigungen im Arbeitsbereich.
+shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht verfügbar.
+shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.

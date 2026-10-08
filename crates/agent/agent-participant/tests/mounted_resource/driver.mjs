@@ -30,11 +30,12 @@ await new Promise(done => server.listen(0, '127.0.0.1', done));
 const origin = `https://127.0.0.1:${server.address().port}`;
 process.stdout.write(JSON.stringify({origin}) + '\n');
 const fixture = JSON.parse((await lines.next()).value);
+if (fixture.encryptedRestart) assert.notEqual(process.getuid?.(), 0, 'cold encrypted resource requires an unprivileged sandboxed browser');
 process.env.CHROME ??= '/usr/bin/chromium-browser';
 let browser;
 const stages = [];
 const stage = name => {stages.push(name); process.stdout.write(JSON.stringify({stage: name}) + '\n');};
-const evidence = resolve(fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
+const evidence = resolve(fixture.encryptedRestart ? 'target/mounted-resource-encrypted' : fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
 mkdirSync(evidence, {recursive:true});
 const deadline = setTimeout(async () => {
   console.error('Mounted resource journey exceeded its 130-second bound');
@@ -43,6 +44,7 @@ const deadline = setTimeout(async () => {
   process.exit(1);
 }, 130_000);
 try {
+  if (fixture.encryptedRestart) stage('cold-remote-encrypted-canonical-primary');
   // Certificate exceptions exist only inside this disposable fixture browser.
   browser = await launch({args: ['--ignore-certificate-errors', '--enable-features=Vulkan',
     '--use-vulkan=swiftshader', '--use-angle=swiftshader',
@@ -60,6 +62,16 @@ try {
   assert.equal(initialized.error, undefined, JSON.stringify(initialized));
   await tab.waitFor('document.querySelector("canvas")?.width > 0');
   assert.ok((await tab.evaluate('mount.actions(fixture.reference.id)')).some(action => action.address.action === 'reveal-message-range'));
+  if (fixture.encryptedRestart) {
+    const read = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
+    assert.equal(read.state, 'completed');
+    const original = read.output.value.content.messages.find(message => message.id === fixture.reference.id.replace('chat.message:', ''));
+    assert.ok(original, 'the exact original message must be readable');
+    assert.equal(original.author, fixture.sourceAuthor, 'remote message retains the certified foreign writer identity');
+    assert.notEqual(original.author, fixture.root, 'the original author must differ from the viewing person');
+    assert.notEqual(fixture.sourcePeople.find(person => person.id === original.author)?.name, 'You', 'an unnamed writer must not persist the current-reader label as a shared name');
+    writeFileSync(join(evidence, 'identity-boundary.json'), JSON.stringify({writer:original.author, viewer:fixture.root, sourcePeople:fixture.sourcePeople, semantics:await tab.evaluate('mount.state().semantics')}, null, 2));
+  }
   stage('compiled-native-chat-mounted-exact-range');
   const initialShot = await tab.screenshot();
   assert.ok(initialShot?.length, 'the mounted fixture must produce a rendered frame');
@@ -185,7 +197,7 @@ try {
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
   assert.notEqual(await tab.evaluate('document.querySelector("#status").textContent'), 'Shared resource open. Leave to close this session.');
   stage('governed-revocation-refuses-link-reopen');
-  writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
+  writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.encryptedRestart ? 'certified-browser-encrypted-cold' : fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
     app:'so.tilo.chat', stages}, null, 2) + '\n');
 } finally {
   clearTimeout(deadline);

@@ -28,6 +28,8 @@ pub struct FlowStage {
     pub checks: BTreeMap<String, CheckStatus>,
     pub limitations: Vec<String>,
     pub observations: Option<Observation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<super::placement::Placement>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "scope", rename_all = "snake_case", deny_unknown_fields)]
@@ -120,6 +122,15 @@ pub(super) fn validate(receipt: &VerificationReceipt) -> Result<(), String> {
         terminal(&stage.status, &stage.checks)?;
         if let Some(observation) = &stage.observations {
             observation.validate()?;
+        }
+        if let Some(placement) = &stage.placement {
+            if !matches!(
+                stage.observations,
+                Some(Observation::LibraryPhysical { .. })
+            ) {
+                return Err("macro placement requires a reported physical stage".into());
+            }
+            placement.validate(receipt)?;
         }
     }
     for link in &flow.subflows {

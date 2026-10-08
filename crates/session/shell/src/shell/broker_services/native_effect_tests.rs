@@ -530,7 +530,7 @@ fn assert_capacity_refuses_before_native_admission(
     );
     assert!(
         matches!(pending.poll_ready(), PendingPoll::Ready(Err(ActionHostError::Unavailable { reason }))
-        if reason == "certified job routing capacity exhausted before admission")
+        if reason == crate::shell::i18n::t("search-app-job-routing-capacity-exhausted"))
     );
     assert_eq!(
         fixture

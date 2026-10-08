@@ -45,6 +45,8 @@
 #                            store and scratch in DIR instead of
 #                            /var/lib/containers and /var/tmp (a build host
 #                            whose root filesystem is small)
+#   TILO_ROOT_PODMAN_STORAGE_CONF=FILE  explicitly pass a root storage.conf
+#                            through sudo (for a native overlay store)
 #   TILO_QCOW2_COMPRESS=1      write zstd clusters in the first qcow2 conversion;
 #                            useful for the dev-disk runner's limited scratch
 #
@@ -105,6 +107,9 @@ if [ -n "${TILO_ROOT_PODMAN_STORE:-}" ]; then
   sudo -n mkdir -p "$ROOT_CONTAINERS/storage" "$TILO_ROOT_PODMAN_STORE/run" "$TILO_ROOT_PODMAN_STORE/tmp"
   ROOT_PODMAN_ARGS=(--root "$ROOT_CONTAINERS/storage" --runroot "$TILO_ROOT_PODMAN_STORE/run")
   ROOT_PODMAN_ENV=("TMPDIR=$TILO_ROOT_PODMAN_STORE/tmp")
+fi
+if [ -n "${TILO_ROOT_PODMAN_STORAGE_CONF:-}" ]; then
+  ROOT_PODMAN_ENV+=("CONTAINERS_STORAGE_CONF=$TILO_ROOT_PODMAN_STORAGE_CONF")
 fi
 root_podman() {
   sudo -n env "${ROOT_PODMAN_ENV[@]+"${ROOT_PODMAN_ENV[@]}"}" \
