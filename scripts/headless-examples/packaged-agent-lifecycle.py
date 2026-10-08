@@ -1080,6 +1080,39 @@ def private_editor_value_matches(access, expected):
     return atspi.text_reply(reply) == expected
 
 
+def closed_return_editor_observation(access, before, after, same_chat):
+    """Classify a private editor in memory; export neither text nor transport errors."""
+    observed = dict.fromkeys(("editor_observed", "same_chat_process", "composer_name_matches",
+                              "transport_success", "unknown_object", "unparseable",
+                              "baseline_matches", "chinese_matches", "direct_latin_matches",
+                              "empty", "other"), False)
+    observed["character_count"] = None
+    if access is None:
+        return observed
+    observed["editor_observed"] = True
+    observed["same_chat_process"] = same_chat is True
+    client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
+    try:
+        observed["composer_name_matches"] = atspi.property_text(client.property(
+            access["composer"], "Name")) == "Message composer"
+        reply = client.call(access["composer"], "org.a11y.atspi.Text.GetText", "--", "0", "-1")
+        observed["transport_success"] = True
+        value = atspi.text_reply(reply)
+        observed["unparseable"] = value is None
+        if value is not None:
+            observed.update({
+                "baseline_matches": value == before,
+                "chinese_matches": value == after,
+                "direct_latin_matches": value == before + "nihao",
+                "empty": value == "",
+                "other": value not in (before, after, before + "nihao", ""),
+                "character_count": len(value),
+            })
+    except atspi.GateError as error:
+        observed["unknown_object"] = "org.freedesktop.DBus.Error.UnknownObject" in str(error)
+    return observed
+
+
 def wait_for_private_selection(socket, access, expected, selection, process, output):
     """Observe dispatched physical keys; never replay them or change the assertion."""
     last = None
@@ -2388,6 +2421,19 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     )
     if returned_access["process"] != chat_process:
         raise RuntimeError("Return replaced the Chat process")
+    returned_editor_observation = {
+        "cached": closed_return_editor_observation(
+            returned_access, committed_before, committed_after,
+            returned_access["process"] == chat_process),
+    }
+    (output / "ime-returned-editor-observations.json").write_text(
+        json.dumps(returned_editor_observation, indent=2) + "\n")
+    fresh_returned_access = agent_conversation_accessibility("Tide")
+    returned_editor_observation["fresh"] = closed_return_editor_observation(
+        fresh_returned_access, committed_before, committed_after,
+        fresh_returned_access is not None and fresh_returned_access["process"] == chat_process)
+    (output / "ime-returned-editor-observations.json").write_text(
+        json.dumps(returned_editor_observation, indent=2) + "\n")
     if not private_editor_value_matches(returned_access, committed_before) \
             or not chat_text_input_active(socket):
         raise RuntimeError("Return committed or deactivated the live Rime preedit")

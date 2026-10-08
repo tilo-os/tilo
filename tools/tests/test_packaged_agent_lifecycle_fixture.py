@@ -2570,6 +2570,40 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertLess(diagnostic, assertion)
         self.assertIn('"ime-returned-first-frame-', source)
 
+    def test_return_editor_classification_distinguishes_retired_nodes_without_private_values(self):
+        access = {"bus": "private-bus", "composer": "private-path"}
+        with patch.object(PROOF.atspi, "atspi_address", return_value="private-address"), \
+                patch.object(PROOF.atspi, "AtspiClient") as constructor:
+            client = constructor.return_value
+            client.property.return_value = "(<'Message composer'>,)"
+            for value, expected in (("nihao", "baseline_matches"), ("nihao你好", "chinese_matches"),
+                                    ("nihaonihao", "direct_latin_matches"), ("", "empty"),
+                                    ("PRIVATE-CANARY", "other")):
+                client.call.return_value = repr((value,))
+                observed = PROOF.closed_return_editor_observation(access, "nihao", "nihao你好", True)
+                self.assertTrue(observed[expected])
+                self.assertEqual(observed["character_count"], len(value))
+                self.assertTrue(observed["transport_success"])
+                self.assertNotIn("PRIVATE-CANARY", json.dumps(observed))
+                self.assertNotIn("private-path", json.dumps(observed))
+            client.call.return_value = "malformed PRIVATE-CANARY"
+            self.assertTrue(PROOF.closed_return_editor_observation(
+                access, "nihao", "nihao你好", True)["unparseable"])
+            client.call.side_effect = PROOF.atspi.GateError(
+                "org.freedesktop.DBus.Error.UnknownObject PRIVATE-CANARY private-path")
+            retired = PROOF.closed_return_editor_observation(access, "nihao", "nihao你好", True)
+            self.assertTrue(retired["unknown_object"])
+            self.assertFalse(retired["transport_success"])
+            self.assertIsNone(retired["character_count"])
+            self.assertNotIn("PRIVATE-CANARY", json.dumps(retired))
+        missing = PROOF.closed_return_editor_observation(None, "nihao", "nihao你好", False)
+        self.assertFalse(missing["editor_observed"])
+        source = inspect.getsource(PROOF.native_ime_float_return)
+        receipt = source.index('"ime-returned-editor-observations.json"')
+        guard = source.index('"Return committed or deactivated the live Rime preedit"')
+        self.assertLess(receipt, guard)
+        self.assertIn("private_editor_value_matches(returned_access, committed_before)", source[receipt:guard])
+
     def test_pending_return_wait_accepts_only_live_exact_transfer_then_strict_proxy(self):
         primary = {"app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 30,
                    "presented": True, "last_error": None, "keyboard_focused": False}
