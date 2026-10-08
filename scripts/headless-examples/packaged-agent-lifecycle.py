@@ -387,15 +387,23 @@ def owned_shell_accessibility_windows():
     return windows
 
 
-def agent_marker_accessibility(agent, *, windows=None):
+def agent_marker_accessibility(agent, *, windows=None, observation=None):
     """Read live marker children directly, decoding their actual wire Names."""
     pattern = re.compile(rf"^Agent action: {re.escape(agent)}(?: · Agent)?$", re.IGNORECASE)
     matches = []
-    for owned in owned_shell_accessibility_windows() if windows is None else windows:
+    windows = owned_shell_accessibility_windows() if windows is None else windows
+    counts = {"owned_root_count": len(windows), "readable_root_count": 0,
+              "root_read_failure_count": 0, "direct_child_count": 0,
+              "child_name_read_failure_count": 0, "exact_marker_candidate_count": 0}
+    for owned in windows:
         client = atspi.AtspiClient(owned["address"], owned["bus"])
+        root_read = False
         try:
             children = client.call(owned["root"], "org.a11y.atspi.Accessible.GetChildren")
+            root_read = True
+            counts["readable_root_count"] += 1
             paths = list(dict.fromkeys(atspi.PATH_RE.findall(children)))
+            counts["direct_child_count"] += len(paths)
             if len(paths) > atspi.APP_TREE_NODE_LIMIT:
                 raise RuntimeError("the compositor marker children exceed the observation bound")
             for path in paths:
@@ -403,7 +411,12 @@ def agent_marker_accessibility(agent, *, windows=None):
                 if name is not None and pattern.fullmatch(name):
                     matches.append({**owned, "control": path, "label": name})
         except atspi.GateError:
+            counts["child_name_read_failure_count" if root_read
+                   else "root_read_failure_count"] += 1
             continue
+    counts["exact_marker_candidate_count"] = len(matches)
+    if observation is not None:
+        observation.update(counts)
     if len(matches) > 1:
         raise RuntimeError("the compositor published duplicate exact Agent markers")
     return matches[0] if matches else None
@@ -1513,6 +1526,74 @@ def capture_return_input_observations(socket, output, primary, child, same_chat,
     return response
 
 
+def wait_for_return_input_route(socket, output, primary, child, same_chat, fcitx_identity,
+                                process, initial_response=None):
+    """Wait only for the exact active child's pending Return receipt to be consumed."""
+    evidence = {"observation_count": 0, "initial": None, "last": None}
+    pending_response = initial_response
+
+    def observe():
+        nonlocal pending_response
+        sample = dict.fromkeys(("observation_valid", "exact_primary_present",
+                                "exact_child_exists", "preedit_active", "text_input_active",
+                                "same_chat_process", "same_input_method_process",
+                                "pending_adoption", "strict_route_accepted"), False)
+        evidence["observation_count"] += 1
+        try:
+            response = pending_response if pending_response is not None \
+                else call(socket, {"op": "foreign_frames"})
+            pending_response = None
+            current_primary = current_same_primary_presentation(response, primary)
+            children = [row for row in foreign_frames(response)
+                        if row.get("app_id") == child["app_id"]
+                        and row.get("surface_id") == native_surface_id(child)
+                        and row.get("floating_id") == child["floating_id"]]
+            sample["exact_primary_present"] = current_primary is not None
+            sample["exact_child_exists"] = len(children) == 1
+            if current_primary is None or len(children) != 1:
+                raise RuntimeError("Return adoption lost its exact native subjects")
+            current_child = children[0]
+            if type(current_child.get("frame_seq")) is not int \
+                    or current_child["frame_seq"] < child["frame_seq"] \
+                    or type(current_primary.get("keyboard_focused")) is not bool \
+                    or any(type(current_child.get(name)) is not bool for name in (
+                        "keyboard_focused", "presented", "suspended", "transferring")):
+                raise RuntimeError("Return adoption state is malformed or stale")
+            activity = (chat_input_method_preedit_active(socket), chat_text_input_active(socket),
+                        same_chat, same_fcitx_process(fcitx_identity))
+            if any(type(value) is not bool for value in activity):
+                raise RuntimeError("Return adoption activity is unobservable")
+            sample.update(zip(("preedit_active", "text_input_active", "same_chat_process",
+                               "same_input_method_process"), activity))
+            if not all(activity):
+                raise RuntimeError("Return adoption lost active composition or process continuity")
+            if current_child["transferring"]:
+                if current_primary["keyboard_focused"] \
+                        or current_primary.get("input_route") is not None \
+                        or current_primary.get("input_source_surface_id") is not None \
+                        or current_child["keyboard_focused"] is not True \
+                        or current_child["presented"] is not False \
+                        or current_child["suspended"] is not True \
+                        or current_child.get("input_route") is not None \
+                        or current_child.get("input_source_surface_id") is not None:
+                    raise RuntimeError("Return adoption is not the exact pending child transfer")
+                sample["pending_adoption"] = True
+                result = None
+            else:
+                result = returned_ime_input_route(response, primary, child)
+                sample["strict_route_accepted"] = True
+            sample["observation_valid"] = True
+            return result
+        finally:
+            if evidence["initial"] is None:
+                evidence["initial"] = sample.copy()
+            evidence["last"] = sample
+            (output / "ime-returned-adoption-observations.json").write_text(
+                json.dumps(evidence, indent=2, allow_nan=False) + "\n")
+
+    return wait_for("Return's exact active preedit input adoption", observe, process)
+
+
 def native_float_return(socket, room, record, output, size, process):
     """Exercise the actual seat, IME and native surface handoff end to end."""
     draft = "Keep this private Tide draft"
@@ -2293,7 +2374,10 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
         socket, output, returned_first, frame,
         returned_access["process"] == chat_process, fcitx_identity,
     )
-    returned, returned_input = returned_ime_input_route(returned_response, returned_first, frame)
+    returned, returned_input = wait_for_return_input_route(
+        socket, output, returned_first, frame,
+        returned_access["process"] == chat_process, fcitx_identity, process, returned_response,
+    )
     returned_observation = returned_ime_observation(
         returned_first, returned, returned_access["process"] == chat_process,
         chat_text_input_active(socket), same_fcitx_process(fcitx_identity),
@@ -4097,6 +4181,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     shell_windows = wait_for("owned compositor accessibility windows",
                              owned_shell_accessibility_windows, process)
     category_access = {**category_access, "address": shell_windows[0]["address"]}
+    marker_released_at = time.monotonic()
     provider.release_through(1)
     wait_for("marker task's normal held continuation",
              provider.marker_second_held, process)
@@ -4110,28 +4195,53 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
         raise RuntimeError("Chat retained a different marker task Planning sequence")
 
     latest_marker_binding = None
+    marker_observations = {"first": None, "last": None, "probe_count": 0,
+                           "private_content_recorded": False}
 
     def bound_marker():
         nonlocal latest_marker_binding
-        marker = agent_marker_accessibility(agent, windows=shell_windows)
-        category = category_access
-        frame = presented_primary_frame(
-            call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
-        )
-        if marker is None or category is None or frame is None:
-            return None
-        client = atspi.AtspiClient(shell_windows[0]["address"], category["bus"])
+        observed = {"elapsed_since_release_ms": round(
+                        (time.monotonic() - marker_released_at) * 1000),
+                    "primary_frame_present": False, "category_label_matches": None,
+                    "bounds_valid": None, "category_bound": None}
         try:
-            label = atspi.property_text(client.property(category["control"], "Name"))
-        except atspi.GateError:
-            return None
-        if label not in {"Collapse Agent marker proof", "Expand Agent marker proof"}:
-            return None
-        binding = marker_binds_presented_category(
-            marker, category, presented_content_geometry(frame)
-        )
-        latest_marker_binding = binding
-        return (marker, binding) if binding["category_bound"] else None
+            marker = agent_marker_accessibility(
+                agent, windows=shell_windows, observation=observed)
+            category = category_access
+            frame = presented_primary_frame(
+                call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+            )
+            observed["primary_frame_present"] = frame is not None
+            if category is None or frame is None:
+                return None
+            client = atspi.AtspiClient(shell_windows[0]["address"], category["bus"])
+            try:
+                label = atspi.property_text(client.property(category["control"], "Name"))
+            except atspi.GateError:
+                observed["category_label_matches"] = False
+                return None
+            observed["category_label_matches"] = label in {
+                "Collapse Agent marker proof", "Expand Agent marker proof"}
+            if marker is None or not observed["category_label_matches"]:
+                return None
+            try:
+                binding = marker_binds_presented_category(
+                    marker, category, presented_content_geometry(frame)
+                )
+            except (RuntimeError, atspi.GateError):
+                observed["bounds_valid"] = False
+                raise
+            observed["bounds_valid"] = True
+            observed["category_bound"] = binding["category_bound"]
+            latest_marker_binding = binding
+            return (marker, binding) if binding["category_bound"] else None
+        finally:
+            if marker_observations["first"] is None:
+                marker_observations["first"] = observed
+            marker_observations["last"] = observed
+            marker_observations["probe_count"] += 1
+            (output / "marker-accessibility-observation.json").write_text(
+                json.dumps(marker_observations, indent=2) + "\n")
 
     try:
         marker, marker_binding = wait_for(

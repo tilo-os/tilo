@@ -513,6 +513,36 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, "duplicate exact Agent markers"):
             PROOF.agent_marker_accessibility("tide", windows=windows)
 
+    def test_marker_observation_distinguishes_stale_root_from_absent_marker_without_content(self):
+        class Client:
+            def __init__(self, stale):
+                self.stale = stale
+
+            def call(self, _path, _interface):
+                if self.stale:
+                    raise PROOF.atspi.GateError("PRIVATE stale root transport detail")
+                return "([(':1.1', '/private_child')],)"
+
+            def property(self, _path, _name):
+                return "(<'PRIVATE unrelated control content'>,)"
+
+        windows = [{"address": "PRIVATE", "bus": ":1.1", "window": "/window",
+                    "root": "/workspace"}]
+        for stale in [False, True]:
+            observed = {}
+            with self.subTest(stale=stale), patch.object(
+                    PROOF.atspi, "AtspiClient", return_value=Client(stale)):
+                self.assertIsNone(PROOF.agent_marker_accessibility(
+                    "tide", windows=windows, observation=observed))
+            self.assertEqual(observed, {
+                "owned_root_count": 1, "readable_root_count": int(not stale),
+                "root_read_failure_count": int(stale),
+                "direct_child_count": int(not stale), "child_name_read_failure_count": 0,
+                "exact_marker_candidate_count": 0,
+            })
+            self.assertNotIn("PRIVATE", json.dumps(observed))
+            self.assertNotIn("/private_child", json.dumps(observed))
+
     def test_owned_shell_windows_prime_the_actual_workspace_under_the_window_wrapper(self):
         class Client(PROOF.atspi.AtspiClient):
             def __init__(self):
@@ -2532,13 +2562,70 @@ class PresentedEditorTargetTests(unittest.TestCase):
     def test_return_reobserves_after_accessibility_before_strict_focus_assertion(self):
         source = inspect.getsource(PROOF.native_ime_float_return)
         ready = source.index('"returned Tide editor during Rime preedit"')
-        refresh = source.index("returned, returned_input = returned_ime_input_route(", ready)
+        refresh = source.index("returned, returned_input = wait_for_return_input_route(", ready)
         diagnostic = source.index('"ime-returned-native.json"', refresh)
         assertion = source.index('returned_access["process"] != chat_process', diagnostic)
         self.assertLess(ready, refresh)
         self.assertLess(refresh, diagnostic)
         self.assertLess(diagnostic, assertion)
         self.assertIn('"ime-returned-first-frame-', source)
+
+    def test_pending_return_wait_accepts_only_live_exact_transfer_then_strict_proxy(self):
+        primary = {"app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 30,
+                   "presented": True, "last_error": None, "keyboard_focused": False}
+        child = {"app_id": "so.tilo.chat", "floating_id": "private", "surface_id": 11,
+                 "frame_seq": 22, "presented": False, "keyboard_focused": True,
+                 "suspended": True, "transferring": True}
+        response = lambda p, c: {"answer": {"frames": [p, c]}}
+        pending = response(primary, child)
+        valid_primary = {**primary, "frame_seq": 31, "input_route": "floating-preedit-child",
+                         "input_source_surface_id": 11}
+        valid = response(valid_primary, {**child, "transferring": False})
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", side_effect=[pending, valid]), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "chat_text_input_active", return_value=True), \
+                patch.object(PROOF, "chat_input_method_preedit_active", return_value=True), \
+                patch.object(PROOF, "same_fcitx_process", return_value=True):
+            output = pathlib.Path(directory)
+            observed, route = PROOF.wait_for_return_input_route(
+                "socket", output, primary, child, True, object(), None)
+            self.assertEqual(observed, valid_primary)
+            self.assertTrue(route["child_preedit_continuation"])
+            path = output / "ime-returned-adoption-observations.json"
+            receipt = json.loads(path.read_text())
+            self.assertEqual(receipt["observation_count"], 2)
+            self.assertTrue(receipt["initial"]["pending_adoption"])
+            self.assertTrue(receipt["last"]["strict_route_accepted"])
+            self.assertNotIn("surface_id", json.dumps(receipt))
+            self.assertTrue(all(type(value) is bool for name in ("initial", "last")
+                                for value in receipt[name].values()))
+            with patch.object(PROOF, "call", return_value=pending), \
+                    patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
+                with self.assertRaises(PROOF.ProofTimeout):
+                    PROOF.wait_for_return_input_route(
+                        "socket", output, primary, child, True, object(), None)
+            receipt = json.loads(path.read_text())
+            self.assertEqual(receipt["observation_count"], 3)
+            self.assertTrue(receipt["last"]["pending_adoption"])
+            for invalid in (
+                    response({**primary, "input_route": "foreign"}, child),
+                    response({**primary, "input_source_surface_id": 99}, child),
+                    response(primary, {**child, "surface_id": 99}),
+                    response(primary, {**child, "keyboard_focused": False}),
+                    response(primary, {**child, "frame_seq": 21}),
+                    response(primary, {**child, "transferring": "true"}),
+                    response(primary, {**child, "input_route": "foreign"}),
+                    response(primary, {**child, "transferring": False})):
+                with self.subTest(invalid=invalid), patch.object(PROOF, "call", return_value=invalid):
+                    with self.assertRaises(RuntimeError):
+                        PROOF.wait_for_return_input_route(
+                            "socket", output, primary, child, True, object(), None)
+            with patch.object(PROOF, "call", return_value=pending), \
+                    patch.object(PROOF, "chat_input_method_preedit_active", return_value=False):
+                with self.assertRaisesRegex(RuntimeError, "lost active composition"):
+                    PROOF.wait_for_return_input_route(
+                        "socket", output, primary, child, True, object(), None)
 
     def test_native_ime_stage_uses_real_rime_and_preserves_each_handoff_boundary(self):
         source = inspect.getsource(PROOF.native_ime_float_return)
