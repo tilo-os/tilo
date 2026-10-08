@@ -1547,13 +1547,26 @@ impl QuickFS {
 
     /// Import `data` as the content of document `ino`.
     fn commit_document(&self, ino: u64, data: &[u8]) -> Result<(), i32> {
-        self.remember_rich_metadata(ino, data);
         if self
             .document_export(ino)
             .is_some_and(|current| *current == *data)
         {
+            self.remember_rich_metadata(ino, data);
             return Ok(());
         }
+        // The version records the written bytes by the content id the store
+        // serves them under, like any other file's, so history can read and
+        // restore it. A failed ingest fails the write before anything changes.
+        let content = self
+            .write_content_blocking(data)
+            .map_err(|error| commit_errno(&error))?
+            .map(|hash| collab_types::ContentHash(*hash.as_bytes()));
+        // The version's metadata finds these facts by its content id.
+        self.remember_rich_metadata_as(
+            ino,
+            data,
+            content.unwrap_or_else(|| collab_types::ContentHash(*blake3::hash(data).as_bytes())),
+        );
         // import_document validates before replacing; an invalid input
         // leaves the previous content intact and returns false.
         let delta = {
@@ -1570,11 +1583,7 @@ impl QuickFS {
             return Err(EINVAL);
         }
         self.publish(delta);
-        self.record_version(
-            ino,
-            collab_types::FileProvenance::Edit,
-            Some(collab_types::ContentHash(*blake3::hash(data).as_bytes())),
-        );
+        self.record_version(ino, collab_types::FileProvenance::Edit, content);
         Ok(())
     }
 
@@ -1618,6 +1627,18 @@ impl QuickFS {
         ino: u64,
         bytes: &[u8],
     ) -> Option<collab_types::FilePropertiesV1> {
+        let hash = collab_types::ContentHash(*blake3::hash(bytes).as_bytes());
+        self.remember_rich_metadata_as(ino, bytes, hash)
+    }
+
+    /// [`Self::remember_rich_metadata`] keyed by `hash`, the content id the
+    /// version holding `bytes` records.
+    fn remember_rich_metadata_as(
+        &self,
+        ino: u64,
+        bytes: &[u8],
+        hash: collab_types::ContentHash,
+    ) -> Option<collab_types::FilePropertiesV1> {
         let (record_id, name) = {
             let ns = self.ns();
             let record_id = ns.record_id_for(ino)?;
@@ -1626,7 +1647,6 @@ impl QuickFS {
             (record_id, name)
         };
         let properties = crate::rich_metadata::extract(&name, bytes)?;
-        let hash = collab_types::ContentHash(*blake3::hash(bytes).as_bytes());
         self.rich_metadata
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2652,11 +2672,12 @@ impl QuickFS {
         {
             return Err(EBUSY);
         }
-        if Self::restore_codec(&self.ns(), ino).is_err() {
-            // Document restoration needs codec-aware CRDT checkout rather
-            // than replacing its exported bytes as if it were a plain file.
-            return Err(libc::ENOTSUP);
-        }
+        // A namespace-held document needs a codec-aware CRDT checkout rather
+        // than replacing its exported bytes as if it were a plain file.
+        let kind = Self::restore_kind(&self.ns(), ino).map_err(|outcome| match outcome {
+            collab_types::files::CheckedHistoryOutcomeV1::UnsupportedOwner { .. } => libc::ENOTSUP,
+            _ => ENOENT,
+        })?;
         let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let record_id = self.ns().record_id_for(ino).ok_or(ENOENT)?;
         let version = history
@@ -2681,31 +2702,28 @@ impl QuickFS {
             }
             None => Vec::new(),
         };
-        if tilo_doc::Document::load(&data).is_ok() {
-            return Err(libc::ENOTSUP);
-        }
-        let current_hash = self.ns().hash_for(ino);
-        if let Some(hash) = current_hash.filter(|hash| {
-            Some(collab_types::ContentHash(*hash.as_bytes())) != version.content_hash
-        }) {
-            let hydrator = self.hydrator.clone();
-            let runtime = hydrator.runtime_handle.clone();
-            let current =
-                tokio::task::block_in_place(|| runtime.block_on(hydrator.read(hash, 0, u64::MAX)))
-                    .map_err(|_| EIO)?;
-            if tilo_doc::Document::load(&current).is_ok() {
-                return Err(libc::ENOTSUP);
-            }
-        }
-        let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
-        if restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0) {
-            return Err(EIO);
-        }
         let (expected_hash, expected_len) = {
             let namespace = self.ns();
             let attr = namespace.getattr(ino).ok_or(ENOENT)?;
             (namespace.hash_for(ino), attr.size)
         };
+        // A serialized document is restored as a new CRDT revision of the
+        // current document; any other content gets the version's bytes back.
+        let data = if kind.is_serialized_document() {
+            self.restored_document(expected_hash, version.content_hash, &data)
+                .map_err(|error| match error {
+                    checked_restore::DocumentRestoreError::Unavailable => EIO,
+                    checked_restore::DocumentRestoreError::NotADocument(_) => libc::ENOTSUP,
+                })?
+        } else {
+            data
+        };
+        let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
+        if !kind.is_serialized_document()
+            && restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0)
+        {
+            return Err(EIO);
+        }
         let snapshot = self
             .replacement_snapshot(ino, restored_hash, data.len() as u64)
             .ok_or(EIO)?;
