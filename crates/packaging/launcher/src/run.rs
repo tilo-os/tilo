@@ -1822,6 +1822,7 @@ fn splice_app_dir(
             "a granted bind covers the user's home; telling the app where it is"
         );
     }
+    crate::sandbox::push_user_data(argv, capabilities);
     // And where the room's shared mounts are, on the same terms: a
     // workspace the app cannot read is not one it should be told about.
     if let Some(roots) = crate::sandbox::push_workspace_roots(argv, capabilities) {
