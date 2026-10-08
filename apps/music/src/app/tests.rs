@@ -22,6 +22,65 @@ fn app_with_doc() -> (MusicApp, AutoCommit) {
     (app, doc)
 }
 
+#[cfg(feature = "audio")]
+#[test]
+fn private_queue_metadata_restores_unsaved_songs_before_resume() {
+    let (mut original, _) = app_with_doc();
+    original.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+    original.pb.current = Some("tk_g1".into());
+    original.pb.playing = true;
+    let profile = crate::storage::DeviceProfile {
+        playback: original.pb.clone(),
+        queue_catalogue: original.queue_catalogue(),
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("profile.json");
+    crate::storage::save_device_profile_to(&path, &profile).unwrap();
+    let restored = crate::storage::load_device_profile_from(&path);
+    let mut app = MusicApp::from_device_profile(restored, false, String::new(), None);
+    let mut doc = AutoCommit::new();
+    app.reload(&doc);
+    let before = doc.get_heads();
+    assert!(!app.pb.playing, "restoration never starts audio");
+    assert_eq!(app.pb.queue, original.pb.queue);
+    for id in &app.pb.queue {
+        assert_eq!(app.playback_track(id), original.playback_track(id));
+    }
+    let mut requested = app.pb.clone();
+    requested.playing = true;
+    assert!(app.apply_resource_playback(requested).is_ok());
+    assert!(doc::load_library(&doc).tracks.is_empty());
+    assert_eq!(doc.get_heads(), before);
+    app.audio.stop();
+}
+
+#[cfg(feature = "audio")]
+#[test]
+fn legacy_spotify_queue_resolves_canonical_ids_without_inventing_metadata() {
+    let (mut app, mut doc) = app_with_doc();
+    let before = doc.get_heads();
+    let next = "spotify:track:0DiWol3AO6WpXZgp0goxAV";
+    let request = Playback {
+        current: Some("tk_g1".into()),
+        queue: vec!["tk_g1".into(), next.into()],
+        ..Default::default()
+    };
+    assert!(app.playback_track(next).is_none());
+    assert!(app.apply_resource_playback(request.clone()).is_ok());
+    assert_eq!(app.pb.queue, request.queue);
+    let mut invalid = request;
+    invalid.queue.push("/private/not-granted.wav".into());
+    assert!(app.apply_resource_playback(invalid).is_err());
+    assert!(app.apply_resource_play_queue_item(1, next).is_ok());
+    assert!(
+        app.playback_track(next).is_none(),
+        "the provider must supply metadata"
+    );
+    assert_eq!(doc.get_heads(), before);
+    app.audio.stop();
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
