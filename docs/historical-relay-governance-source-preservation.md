@@ -40,3 +40,12 @@ Close an original source PR only after verifying its contribution on landed
 main and retaining these exact recovery pointers. Qualification changes only
 source and tests, never live identities, access grants, credentials or deployed
 trust.
+
+Exact-head fast quality exposed two obsolete launcher test dependencies,
+`getrandom` and `threshold-identity`. Both unused edges are removed from the
+launcher manifest and its existing lock entry, with no fresh resolution and all
+1,747 locked package versions, sources, checksums and other package entries
+preserved. CI's exact analyzer mode reproduces both failures on the old manifest
+and passes on the repaired one. Locked all-target launcher compilation, launcher
+Clippy, required shell test compilation and pinned Hakari diff/dry-run/verify
+pass; no ignored-dependency configuration is added.
