@@ -265,8 +265,14 @@ tilo-vm vm awake yoga            # until when it is held
 tilo-vm vm awake yoga --off      # done: it may suspend once idle (the next request holds it again)
 ```
 
-Hold it with `--for` before anything that runs long without tilo-vm
-requests: waking a device is not reliable (below), keeping it awake is.
+Remote component builds renew the existing automatic lease every minute while
+waiting for the builder's header, and admitted upload requests continue renewing
+it during transfer. Explicit longer holds are preserved. `vm ssh` deliberately
+works without tilo-vmd, including daemon recovery, so it does not renew this lease;
+owner-control commands transported through `vm ssh` have the same limitation.
+
+Hold it with `--for` before long SSH commands, owner-control captures or other work
+without tilo-vmd requests. Waking a device is not reliable (below); keeping it awake is.
 
 **Its address is only a hint.** `vm add` and `vm status` record the device's
 hostname, its MAC on the network tilo-vm reached it on, and what can wake it.

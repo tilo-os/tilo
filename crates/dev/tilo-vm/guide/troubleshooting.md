@@ -23,8 +23,9 @@ status is then non-zero.
 
 **It went to sleep mid-command.** tilo-vmd holds every machine it serves
 awake until 30 minutes after the last request (`tilo-vm-awake.service`, a
-logind `sleep` lock), so idle-suspend does not cut a deploy off. A job that
-runs longer without tilo-vm requests needs `tilo-vm vm awake <name> --for 2h`
+logind `sleep` lock), so idle-suspend does not cut a deploy off. Remote component builds renew while waiting for the builder and while uploading.
+SSH and owner-control commands carried by `vm ssh` do not use this daemon lease.
+A job that runs longer without tilo-vmd requests needs `tilo-vm vm awake <name> --for 2h`
 first. `vm status` shows until when it is held; a lease it should hold but
 does not names the cause (`journalctl -u tilo-vm-awake` on the machine).
 Closing a laptop's lid still suspends it. A libvirt VM's firmware may boot

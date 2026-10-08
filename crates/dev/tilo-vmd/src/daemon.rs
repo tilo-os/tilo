@@ -571,6 +571,9 @@ impl Daemon {
             }
             Some(_) => {}
         }
+        if !matches!(request, Request::Awake(_)) {
+            self.record_request_activity();
+        }
         match request {
             Request::Hello(_) => Err(DaemonError::HelloRequired),
             Request::DeviceActions(p) => self.device_actions(&p.line),
@@ -775,6 +778,18 @@ impl Daemon {
 
     fn lease_path(&self) -> PathBuf {
         self.root.join(awake::LEASE_FILE)
+    }
+
+    /// Keep admitted RPC traffic alive, without a systemd probe per upload chunk.
+    fn record_request_activity(&mut self) {
+        let (_, write) = awake::renewal(
+            awake::read(&self.lease_path()),
+            tilo_clock::unix_now(),
+            awake::Change::Request,
+        );
+        if write {
+            let _lease = self.renew_awake(awake::Change::Request);
+        }
     }
 
     /// Renew (or release) the keep-awake lease and make the lock follow it.
@@ -1982,6 +1997,127 @@ mod tests {
         let off = awake(&mut daemon, None, true);
         assert_eq!(off, AwakeLease::default());
         assert!(hello(&mut daemon).awake.unwrap().held);
+    }
+
+    #[test]
+    fn admitted_upload_activity_renews_existing_lease_without_new_connection() {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::default()),
+            None,
+            BaseInfo::default(),
+        );
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let upload: tilo_vm_protocol::LayerUploadBeginResult = serde_json::from_value(
+            daemon
+                .handle(Request::LayerUploadBegin(
+                    tilo_vm_protocol::LayerUploadBegin {},
+                ))
+                .unwrap(),
+        )
+        .unwrap();
+        let now = tilo_clock::unix_now();
+        let expired = awake::Lease {
+            idle_until: now.saturating_sub(1),
+            hold_until: None,
+        };
+        fs::write(daemon.lease_path(), serde_json::to_vec(&expired).unwrap()).unwrap();
+        let result: tilo_vm_protocol::LayerUploadChunkResult = serde_json::from_value(
+            daemon
+                .handle(Request::LayerUploadChunk(
+                    tilo_vm_protocol::LayerUploadChunk {
+                        upload: upload.upload,
+                        data: "YWJj".into(),
+                    },
+                ))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result.received, 3);
+        let renewed = awake::read(&daemon.lease_path()).unwrap();
+        assert!(
+            renewed.idle_until >= now.saturating_add(1800),
+            "live upload must renew the real stored lease: {renewed:?}"
+        );
+        assert_eq!(renewed.hold_until, None);
+    }
+
+    #[test]
+    fn rpc_activity_preserves_hold_query_release_and_protocol_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::default()),
+            None,
+            BaseInfo::default(),
+        );
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        daemon
+            .handle(Request::Awake(tilo_vm_protocol::Awake {
+                seconds: Some(7200),
+                off: false,
+            }))
+            .unwrap();
+        let held = fs::read(daemon.lease_path()).unwrap();
+        daemon
+            .handle(Request::SlotList(tilo_vm_protocol::SlotList {}))
+            .unwrap();
+        assert_eq!(
+            fs::read(daemon.lease_path()).unwrap(),
+            held,
+            "short requests must preserve explicit hold and renewal granularity"
+        );
+        daemon
+            .handle(Request::Awake(tilo_vm_protocol::Awake {
+                seconds: None,
+                off: true,
+            }))
+            .unwrap();
+        let released = fs::read(daemon.lease_path()).unwrap();
+        let status: AwakeLease = serde_json::from_value(
+            daemon
+                .handle(Request::Awake(tilo_vm_protocol::Awake {
+                    seconds: None,
+                    off: false,
+                }))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status, AwakeLease::default());
+        assert_eq!(
+            fs::read(daemon.lease_path()).unwrap(),
+            released,
+            "inspection must not undo explicit release"
+        );
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION.checked_add(1).unwrap(),
+                client_version: String::new(),
+            }))
+            .unwrap();
+        fs::write(daemon.lease_path(), &released).unwrap();
+        assert!(matches!(
+            daemon.handle(Request::LayerUploadBegin(
+                tilo_vm_protocol::LayerUploadBegin {}
+            )),
+            Err(DaemonError::VersionMismatch { .. })
+        ));
+        assert_eq!(
+            fs::read(daemon.lease_path()).unwrap(),
+            released,
+            "unadmitted protocol traffic must not renew"
+        );
     }
 
     #[test]
