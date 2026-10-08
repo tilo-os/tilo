@@ -748,7 +748,17 @@ def accessibility_control_enabled(access, control):
 def task_phase_accessibility(access, label):
     """Observe one exact public status label in the mounted Chat window."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
-    tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+    try:
+        tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+    except atspi.GateError as error:
+        if not re.search(
+                r" failed: Error: GDBus\.Error:org\.freedesktop\.DBus\.Error\.UnknownObject:",
+                str(error)):
+            raise
+        # A replaced node invalidates this entire snapshot. The enclosing
+        # wait retries a fresh walk under its original deadline; absence is
+        # never evidence that the requested task phase has been observed.
+        return False
     return len(client.named(tree, label)) == 1
 
 

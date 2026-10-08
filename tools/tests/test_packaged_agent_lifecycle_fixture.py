@@ -2694,6 +2694,68 @@ class PresentedEditorTargetTests(unittest.TestCase):
             PROOF.atspi.atspi_address = original_address
             PROOF.accessible_subtree = original_subtree
 
+    def test_task_phase_retries_only_stale_objects_within_the_original_deadline(self):
+        class Client(PROOF.atspi.AtspiClient):
+            def __init__(self, stale, labels):
+                self.stale = stale
+                self.labels = list(labels)
+                self.walks = 0
+                self.status_reads = 0
+
+            def property(self, path, _name):
+                if path == "/status":
+                    self.status_reads += 1
+                    return f"'{self.labels.pop(0)}'"
+                return "'window'"
+
+            def interfaces(self, _path):
+                return "()"
+
+            def call(self, path, interface):
+                self.assert_interface = interface
+                if path == "/window":
+                    self.walks += 1
+                    if self.stale:
+                        self.stale -= 1
+                        raise PROOF.atspi.GateError(
+                            "gdbus call --address owned --dest failed: Error: "
+                            "GDBus.Error:org.freedesktop.DBus.Error.UnknownObject: retired node")
+                    return "([(':1.1', '/status')],)"
+                return "([],)"
+
+        access = {"bus": "owned", "window": "/window"}
+        for stale, labels, expected in (
+                (1, ["Planning another task", "Planning: Lifecycle task"], True),
+                (10, [], False)):
+            client = Client(stale, labels)
+            with self.subTest(persistent=not expected), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="owned"), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF.time, "monotonic", side_effect=[0, 0, .1, .2, .3]), \
+                    patch.object(PROOF.time, "sleep"):
+                predicate = lambda: PROOF.task_phase_accessibility(
+                    access, "Planning: Lifecycle task")
+                if expected:
+                    self.assertTrue(PROOF.wait_for("current task phase", predicate, timeout=.25))
+                    self.assertEqual(client.status_reads, 2)
+                else:
+                    with self.assertRaisesRegex(PROOF.ProofTimeout, "current task phase"):
+                        PROOF.wait_for("current task phase", predicate, timeout=.25)
+                    self.assertEqual(client.status_reads, 0)
+                self.assertEqual(client.walks, 3)
+                self.assertEqual(client.assert_interface, "org.a11y.atspi.Accessible.GetChildren")
+
+        for detail in (
+                "the bounded application accessibility subtree is incomplete",
+                "gdbus failed: Error: GDBus.Error:org.freedesktop.DBus.Error.UnknownMethod: absent",
+                "gdbus failed: Error: GDBus.Error:org.freedesktop.DBus.Error.AccessDenied: refused"):
+            with self.subTest(detail=detail), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="owned"), \
+                    patch.object(PROOF.atspi, "AtspiClient"), \
+                    patch.object(PROOF, "accessible_subtree", side_effect=PROOF.atspi.GateError(detail)):
+                with self.assertRaises(PROOF.atspi.GateError):
+                    PROOF.task_phase_accessibility(access, "Planning: Lifecycle task")
+
     def test_control_enabled_reads_the_actual_atspi_state(self):
         class Client:
             def __init__(self, reply):
