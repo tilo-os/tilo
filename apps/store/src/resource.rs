@@ -569,7 +569,9 @@ impl ResourceApp for StoreShell {
                 contents: Some(contents.to_owned()),
             }
         } else if let Some(argument) = input.argument() {
-            if argument.starts_with("tilo-store:") {
+            if argument == "tilo-store:catalogue" {
+                StoreEffect::ShowCatalogue
+            } else if argument.starts_with("tilo-store:") {
                 match parse_store_uri(argument) {
                     Ok(app) => StoreEffect::ShowDetails { app },
                     Err(error) => {
@@ -1917,6 +1919,38 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(frame(&mut app).contains("GIMP"));
+    }
+
+    #[test]
+    fn onboarding_catalogue_link_opens_store_without_an_install() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::launched(&["tilo-store:catalogue"]).unwrap();
+        let resources = app.harness().resources();
+        assert!(
+            resources
+                .iter()
+                .any(|resource| resource.kind == Store::KIND)
+        );
+        let observed = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(observed.get("selected_app"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            observed
+                .get("pending_jobs")
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+        assert!(
+            !frame(&mut app).contains("tilo-store:catalogue"),
+            "catalogue URI must not become a package reference"
+        );
+        assert!(
+            app.effect_progress().is_empty(),
+            "opening the catalogue admits no package job"
+        );
     }
 
     /// A `tilo-store:app/<id>` link asks for that app's details.

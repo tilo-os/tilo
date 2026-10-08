@@ -358,3 +358,26 @@ imager-setup-internal-download-consuming-detail = The installer helper is copyin
 imager-setup-internal-download-consumed = Download used
 imager-setup-internal-download-consumed-detail = The installer helper copied the verified download. The download stays on this computer until you discard it.
 imager-setup-internal-download-kept = Installation stopped; download kept
+
+# Desktop setup shares these effects with its controls and automation.
+imager-setup-desktop-heading = Tilo Desktop on this computer
+imager-setup-desktop-install = Install Tilo Desktop
+imager-setup-desktop-cancel = Cancel download
+imager-setup-desktop-recheck = Check again
+imager-setup-desktop-command-unavailable = This operation is unavailable in the current setup state.
+imager-setup-method-heading = Install Tilo OS
+imager-setup-method-body = Install alongside your current system, or create a USB installer. You review the target before writing.
+imager-setup-usb-open = Create a USB installer
+imager-setup-usb-unavailable = USB image writing is unavailable on this host. Use a supported host to create the installer.
+imager-setup-alongside = Install directly alongside
+
+imager-journey-heading = Make Tilo yours
+imager-journey-body = Bring files now or decide later. Connect accounts explicitly and choose apps in Store after identity setup.
+imager-journey-accounts = Connect accounts
+imager-journey-store = Choose apps in Store
+imager-journey-identity-required = Complete identity setup in the trusted Tilo session first.
+imager-journey-navigation-pending = Asking the session to open your choice…
+imager-journey-navigation-opened = Your choice opened.
+imager-journey-navigation-lost = The session did not return an opening result. Try again.
+
+imager-setup-alongside-unavailable = Not available on this computer yet.
