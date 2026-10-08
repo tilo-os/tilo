@@ -14,6 +14,7 @@ mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
 mod paired_continuity_tests;
+mod personal_device_peers;
 mod record_content;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
@@ -968,15 +969,19 @@ fn personal_device_peer_addrs(
             return Vec::new();
         }
     };
+    enrolled_endpoints(&devices, local_device)
+}
+
+/// The dialable endpoints among `devices`, other than `local_device`.
+fn enrolled_endpoints(
+    devices: &[[u8; 32]],
+    local_device: Option<[u8; 32]>,
+) -> Vec<iroh::EndpointAddr> {
     devices
-        .into_iter()
-        .filter(|device| local_device != Some(*device))
-        .filter(|device| !known.is_revoked(device))
-        .filter_map(|device| {
-            iroh::EndpointId::from_bytes(&device)
-                .ok()
-                .map(iroh::EndpointAddr::new)
-        })
+        .iter()
+        .filter(|device| local_device != Some(**device))
+        .filter_map(|device| iroh::EndpointId::from_bytes(device).ok())
+        .map(iroh::EndpointAddr::new)
         .collect()
 }
 
@@ -1490,6 +1495,11 @@ pub struct ShellNetwork {
     /// Certified device keys eligible to decrypt personal secrets. Routing
     /// uses the deliberately distinct relay service ids above.
     registered_home_device_ids: Mutex<std::collections::HashSet<[u8; 32]>>,
+    /// This person's scoped enrollment and the certified recipients derived
+    /// from it, re-validated at most once per recheck interval instead of read per
+    /// outgoing message. `registered_home_device_ids` may be locked while
+    /// holding this, never the reverse.
+    personal_device_peers: Mutex<personal_device_peers::PersonalDevicePeers>,
     /// Last bounded scan of the enrollment registry. A paired home peer may
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
@@ -1527,6 +1537,10 @@ pub struct ShellNetwork {
     /// Convergent same-person device state, persisted separately from app
     /// continuation so transport upgrades cannot regress existing handoff.
     device_fabric: Mutex<crate::shell::device_fabric::DeviceFabric>,
+    /// How often [`Self::device_fabric`] cloned and [`Self::with_device_fabric`]
+    /// borrowed the fabric, so tests can hold per-frame paths to borrowing.
+    #[cfg(test)]
+    device_fabric_reads: DeviceFabricReads,
     device_fabric_path: Option<PathBuf>,
     /// Validated, ephemeral exact-target actions awaiting the shell runtime.
     personal_fabric_actions: Mutex<VecDeque<ReceivedPersonalFabricAction>>,
@@ -1977,6 +1991,7 @@ impl ShellNetwork {
             lan_discovery,
             last_presence_export: Mutex::new(None),
             registered_home_device_ids: Mutex::new(home_device_ids),
+            personal_device_peers: Mutex::default(),
             last_home_peer_refresh: Mutex::new(None),
             last_revocation_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
@@ -1998,6 +2013,8 @@ impl ShellNetwork {
             #[cfg(test)]
             continuity_policy_override: None,
             device_fabric: Mutex::new(device_fabric),
+            #[cfg(test)]
+            device_fabric_reads: DeviceFabricReads::default(),
             device_fabric_path: Some(device_fabric_path),
             personal_fabric_actions: Mutex::new(VecDeque::new()),
             authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
@@ -3894,9 +3911,7 @@ impl ShellNetwork {
         else {
             // Preserve existing routes for availability, but fail closed for
             // secrets when current enrollment authority cannot be proven.
-            if let Ok(mut devices) = self.registered_home_device_ids.lock() {
-                devices.clear();
-            }
+            self.update_registered_home_device_ids(std::collections::HashSet::clear);
             // Preserve the last known-good routing set across a partial or
             // malformed registry write. A subsequent bounded refresh retries.
             self.export_personal_rooms();
@@ -3906,9 +3921,7 @@ impl ShellNetwork {
             .iter()
             .map(|host| host.expectation.device_public_key)
             .collect::<std::collections::HashSet<_>>();
-        if let Ok(mut devices) = self.registered_home_device_ids.lock() {
-            *devices = desired_device_ids;
-        }
+        self.update_registered_home_device_ids(|devices| *devices = desired_device_ids);
         let desired_ids: std::collections::HashSet<_> =
             desired.iter().map(|host| host.addr.id).collect();
         let previous_ids = self
@@ -4009,16 +4022,7 @@ impl ShellNetwork {
     /// without this device and without any device the person's root
     /// revoked, as recorded beside the list or already known here.
     fn direct_peer_addrs(&self, local_device: Option<[u8; 32]>) -> Vec<iroh::EndpointAddr> {
-        let known = self
-            .personal_continuity_user
-            .map(|user| self.peer_identities.revocations_of(&user))
-            .unwrap_or_default();
-        personal_device_peer_addrs(
-            &personal_peers_dir(),
-            local_device,
-            self.personal_continuity_user.as_ref(),
-            &known,
-        )
+        self.enrolled_personal_devices(local_device)
     }
 
     fn refresh_local_revocations_periodically(&self) {
@@ -5021,8 +5025,9 @@ impl ShellNetwork {
         let certified = self.certified_secret_recipients();
         let fabric = self.device_fabric.lock().ok();
         let devices = certified
-            .into_iter()
-            .filter(|device| self.personal_continuity_device.as_ref() != Some(device))
+            .iter()
+            .filter(|device| self.personal_continuity_device.as_ref() != Some(*device))
+            .cloned()
             .map(|device| {
                 let label = fabric
                     .as_ref()
@@ -5120,10 +5125,53 @@ impl ShellNetwork {
     }
 
     /// Return the locally retained, convergent view of this person's devices.
+    ///
+    /// A deep clone, clipboard histories included: per-frame readers use
+    /// [`Self::with_device_fabric`] or [`Self::online_device_ids`] instead.
     pub fn device_fabric(&self) -> crate::shell::device_fabric::DeviceFabric {
+        #[cfg(test)]
+        self.device_fabric_reads
+            .cloned
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.device_fabric.lock().map_or_else(
             |_| crate::shell::device_fabric::DeviceFabric::default(),
             |state| state.clone(),
+        )
+    }
+
+    /// Read the device fabric in place, without cloning it. `None` when the
+    /// lock is poisoned. `f` must not call back into the fabric.
+    pub fn with_device_fabric<R>(
+        &self,
+        f: impl FnOnce(&crate::shell::device_fabric::DeviceFabric) -> R,
+    ) -> Option<R> {
+        #[cfg(test)]
+        self.device_fabric_reads
+            .borrowed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.device_fabric.lock().ok().map(|state| f(&state))
+    }
+
+    /// The devices of this person the fabric currently sees online.
+    pub fn online_device_ids(
+        &self,
+    ) -> std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId> {
+        self.with_device_fabric(|fabric| {
+            fabric
+                .online_devices()
+                .map(|presence| presence.device.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// `(clones, borrows)` of the device fabric so far.
+    #[cfg(test)]
+    pub(crate) fn device_fabric_reads(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.device_fabric_reads.cloned.load(Relaxed),
+            self.device_fabric_reads.borrowed.load(Relaxed),
         )
     }
 
@@ -5724,7 +5772,7 @@ impl ShellNetwork {
             security,
             password,
             &snapshot.owner,
-            recipients,
+            recipients.iter().cloned(),
             stamp.clone(),
         )
         .map_err(|error| error.to_string())?;
@@ -5839,7 +5887,7 @@ impl ShellNetwork {
             let current =
                 crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
                     .map_err(|error| error.to_string())?;
-            if current == desired {
+            if current == *desired {
                 continue;
             }
             let Ok(password) = crate::shell::device_fabric_secrets::open_wifi_credential(
@@ -5854,32 +5902,91 @@ impl ShellNetwork {
         Ok(changed)
     }
 
+    /// This device, the registered home devices and the enrolled personal
+    /// devices: who may receive personal secrets and fabric actions.
+    ///
+    /// Consulted per outgoing message, so it is served from
+    /// [`Self::personal_device_peers`]: the enrolment file is re-validated at
+    /// most once per recheck interval, and the set is rebuilt only when that
+    /// file or the registered home-device ids change.
     fn certified_secret_recipients(
         &self,
-    ) -> std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId> {
-        let mut recipients = self
-            .personal_continuity_device
-            .clone()
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
-        if let Ok(devices) = self.registered_home_device_ids.lock() {
-            recipients.extend(devices.iter().filter_map(|device| {
+    ) -> Arc<std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>> {
+        let local = self.personal_continuity_device.as_ref();
+        let build = |enrolled: &[[u8; 32]]| {
+            let mut recipients = local
+                .cloned()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            if let Ok(devices) = self.registered_home_device_ids.lock() {
+                recipients.extend(devices.iter().filter_map(|device| {
+                    crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).ok()
+                }));
+            }
+            recipients.extend(enrolled.iter().filter_map(|device| {
                 crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).ok()
             }));
+            recipients
+        };
+        let Ok(mut peers) = self.personal_device_peers.lock() else {
+            // Fail closed for secrets: nobody but this device.
+            return Arc::new(local.cloned().into_iter().collect());
+        };
+        let person = self.personal_continuity_user;
+        let known = person
+            .map(|user| self.peer_identities.revocations_of(&user))
+            .unwrap_or_default();
+        peers.recipients_at(
+            person,
+            || person.and_then(|user| own_person_peers(&personal_peers_dir(), &user)),
+            std::time::Instant::now(),
+            &known,
+            local,
+            build,
+        )
+    }
+
+    /// Enrolled personal-device endpoints other than `local_device`, from the
+    /// bounded-staleness cache of the enrolment file.
+    fn enrolled_personal_devices(&self, local_device: Option<[u8; 32]>) -> Vec<iroh::EndpointAddr> {
+        let person = self.personal_continuity_user;
+        let known = person
+            .map(|user| self.peer_identities.revocations_of(&user))
+            .unwrap_or_default();
+        let devices = self.personal_device_peers.lock().map_or_else(
+            |_| Arc::from([]),
+            |mut peers| {
+                peers.devices_at(
+                    person,
+                    || person.and_then(|user| own_person_peers(&personal_peers_dir(), &user)),
+                    std::time::Instant::now(),
+                    &known,
+                )
+            },
+        );
+        enrolled_endpoints(&devices, local_device)
+    }
+
+    /// Re-validate enrollment on the next query, as a due recheck would.
+    #[cfg(test)]
+    fn recheck_personal_device_peers(&self) {
+        if let Ok(mut peers) = self.personal_device_peers.lock() {
+            peers.expire();
         }
-        for addr in
-            self.direct_peer_addrs(self.personal_continuity_device.as_ref().and_then(|device| {
-                let bytes = hex::decode(device.as_str()).ok()?;
-                bytes.try_into().ok()
-            }))
-        {
-            if let Ok(device) =
-                crate::shell::personal_continuity::DeviceId::new(hex::encode(addr.id.as_bytes()))
-            {
-                recipients.insert(device);
-            }
+    }
+
+    /// Change the registered home-device ids, and drop the recipient set
+    /// derived from them.
+    fn update_registered_home_device_ids(
+        &self,
+        update: impl FnOnce(&mut std::collections::HashSet<[u8; 32]>),
+    ) {
+        if let Ok(mut devices) = self.registered_home_device_ids.lock() {
+            update(&mut devices);
         }
-        recipients
+        if let Ok(mut peers) = self.personal_device_peers.lock() {
+            peers.invalidate_recipients();
+        }
     }
 
     fn local_device_fabric_checkpoint(&self) -> Option<Vec<u8>> {
@@ -8192,6 +8299,14 @@ fn load_identity_revocations(
     Ok(entries)
 }
 
+/// See [`ShellNetwork::device_fabric_reads`].
+#[cfg(test)]
+#[derive(Default)]
+struct DeviceFabricReads {
+    cloned: std::sync::atomic::AtomicUsize,
+    borrowed: std::sync::atomic::AtomicUsize,
+}
+
 impl Drop for ShellNetwork {
     fn drop(&mut self) {
         // `take` + explicit shutdown avoids the noisy "runtime dropped
@@ -8238,6 +8353,7 @@ pub(crate) fn shell_network_for_test(
         lan_discovery: None,
         last_presence_export: Mutex::new(None),
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
+        personal_device_peers: Mutex::default(),
         last_home_peer_refresh: Mutex::new(None),
         last_revocation_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
@@ -8256,6 +8372,7 @@ pub(crate) fn shell_network_for_test(
         ),
         continuity_policy_override: Some(continuity_policy_for_test()),
         device_fabric: Mutex::new(crate::shell::device_fabric::DeviceFabric::default()),
+        device_fabric_reads: DeviceFabricReads::default(),
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
         authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
@@ -8649,6 +8766,16 @@ mod tests {
         env.set("XDG_STATE_HOME", dir.path().join("state"));
         let (net, _commands) = personal_continuity_network_for_test(user);
         assert_eq!(net.lan_discovery_peers(), [recorded, held, live].into());
+        let recipient =
+            |key| crate::shell::personal_continuity::DeviceId::new(hex::encode(key)).unwrap();
+        // Warm both caches; a registered home grant must also obey revocation.
+        net.update_registered_home_device_ids(|devices| {
+            devices.insert(held);
+        });
+        let recipients = net.certified_secret_recipients();
+        assert!(recipients.contains(&recipient(recorded)));
+        assert!(recipients.contains(&recipient(held)));
+        assert!(recipients.contains(&recipient(live)));
         person
             .record_revocation(&revocation_of(&root, recorded))
             .unwrap();
@@ -8659,6 +8786,23 @@ mod tests {
         known.insert(future).unwrap();
         net.peer_identities.set_revocations(user, &known);
         assert_eq!(net.lan_discovery_peers(), [live].into());
+        let recipients = net.certified_secret_recipients();
+        assert!(!recipients.contains(&recipient(recorded)));
+        assert!(!recipients.contains(&recipient(held)));
+        assert!(recipients.contains(&recipient(live)));
+        assert_eq!(
+            net.direct_peer_addrs(None)
+                .iter()
+                .map(|addr| *addr.id.as_bytes())
+                .collect::<Vec<_>>(),
+            vec![live],
+            "a fresh enrollment cache still applies permanent revocations"
+        );
+        assert_eq!(net.personal_device_peers.lock().unwrap().reads(), 1);
+        assert!(matches!(
+            net.try_send_personal_fabric_action(&recipient(held), remote_audio_frame()),
+            Err(PersonalFabricSendError::Rejected(_))
+        ));
         let mut foreign_revocations = tilo_user_identity::RevocationList::new();
         foreign_revocations
             .insert(revocation_of(&stranger, live))
@@ -8723,6 +8867,104 @@ mod tests {
             }
         }
         assert!(found, "the action must be handed to the personal transport");
+    }
+
+    /// Enrol `devices` the way the identity host does: an atomic replace.
+    fn write_personal_device_peers(dir: &Path, devices: &[[u8; 32]]) {
+        let person = person_dir(dir, [0x44; 32]);
+        let staged = person.join("personal-device-peers.json.staged");
+        std::fs::write(&staged, direct_peers_of([0x44; 32], devices)).unwrap();
+        std::fs::rename(&staged, person.join("personal-device-peers.json")).unwrap();
+    }
+
+    fn remote_audio_frame() -> crate::shell::device_fabric::PersonalFabricAction {
+        crate::shell::device_fabric::PersonalFabricAction::RemoteAudioFrame {
+            session_id: [0x5; 16],
+            authorization: [0x6; 16],
+            sequence: 1,
+            media_ts: 48_000,
+            presentation_ns: 1_000_000_000
+                + crate::shell::device_fabric::REMOTE_AUDIO_GROUP_LATENCY_NS,
+            pcm_s16le: vec![0; crate::shell::device_fabric::MAX_REMOTE_AUDIO_FRAME_BYTES],
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn certified_recipients_cache_rereads_only_on_change() {
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let kept_key = *iroh::SecretKey::generate().public().as_bytes();
+        let removed_key = *iroh::SecretKey::generate().public().as_bytes();
+        write_personal_device_peers(dir.path(), &[kept_key, removed_key]);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        let kept = crate::shell::personal_continuity::DeviceId::new(hex::encode(kept_key)).unwrap();
+        let removed =
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(removed_key)).unwrap();
+        let reads = || net.personal_device_peers.lock().unwrap().reads();
+        // One second of audio to two speakers, on the production send path.
+        for _ in 0..50 {
+            for target in [&kept, &removed] {
+                net.try_send_personal_fabric_action(target, remote_audio_frame())
+                    .expect("enrolled device takes an audio frame");
+                while commands.try_recv().is_ok() {}
+            }
+        }
+        for _ in 0..1_000 {
+            assert!(net.certified_secret_recipients().contains(&removed));
+        }
+        assert_eq!(
+            reads(),
+            1,
+            "the enrolment file is read once, not per message"
+        );
+
+        write_personal_device_peers(dir.path(), &[kept_key]);
+        net.recheck_personal_device_peers();
+        let recipients = net.certified_secret_recipients();
+        assert!(recipients.contains(&kept) && !recipients.contains(&removed));
+        assert_eq!(reads(), 2);
+        net.recheck_personal_device_peers();
+        assert!(!net.certified_secret_recipients().contains(&removed));
+        assert_eq!(
+            reads(),
+            2,
+            "a recheck of an unchanged file does not read it"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn removed_device_is_refused_within_recheck_window() {
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let kept = *iroh::SecretKey::generate().public().as_bytes();
+        let removed = *iroh::SecretKey::generate().public().as_bytes();
+        write_personal_device_peers(dir.path(), &[kept, removed]);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        let removed =
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(removed)).unwrap();
+        net.try_send_personal_fabric_action(&removed, remote_audio_frame())
+            .expect("an enrolled device takes an audio frame");
+        while commands.try_recv().is_ok() {}
+
+        write_personal_device_peers(dir.path(), &[kept]);
+        // Real time, no test hook: revocation must land by the recheck bound.
+        std::thread::sleep(personal_device_peers::RECHECK);
+        assert!(matches!(
+            net.try_send_personal_fabric_action(&removed, remote_audio_frame()),
+            Err(PersonalFabricSendError::Rejected(_))
+        ));
+        assert!(
+            commands.try_recv().is_err(),
+            "nothing reaches the transport for a removed device"
+        );
     }
 
     #[test]
@@ -9458,10 +9700,9 @@ mod tests {
             .expect("target device");
             net.personal_continuity_user = Some(user);
             net.personal_continuity_device = Some(local);
-            net.registered_home_device_ids
-                .lock()
-                .expect("recipients")
-                .insert(*target_endpoint.as_bytes());
+            net.update_registered_home_device_ids(|ids| {
+                ids.insert(*target_endpoint.as_bytes());
+            });
             let dir = tempfile::tempdir().expect("media source");
             let path = dir.path().join("song.flac");
             std::fs::write(&path, b"audio bytes").expect("source bytes");
@@ -10642,10 +10883,9 @@ mod tests {
             ))
             .unwrap();
             authenticated_personal_peer(&net, &root, &target_key);
-            net.registered_home_device_ids
-                .lock()
-                .unwrap()
-                .insert(*target_key.public().as_bytes());
+            net.update_registered_home_device_ids(|ids| {
+                ids.insert(*target_key.public().as_bytes());
+            });
             let request_id = net
                 .send_personal_fabric_action(
                     &target,

@@ -579,6 +579,9 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
     let peers_path = home.config().join("home-peers.json");
     home.env().set("TILO_HOME_PEERS_PATH", &peers_path);
     enroll_session_pair(&peers_path, &left.cert, &right.cert);
+    // Enrolled mid-session: take effect now rather than at the next recheck.
+    left.network.recheck_personal_device_peers();
+    right.network.recheck_personal_device_peers();
     let registry = crate::shell::personal_continuity_registry::global_registry();
     {
         let mut reports = registry.lock().unwrap();
@@ -993,7 +996,15 @@ impl NativeEditorPair {
     }
 
     fn enroll(&self) -> std::path::PathBuf {
-        enroll_session_pair(&self.peers, &self.left.cert, &self.right.cert)
+        let path = enroll_session_pair(&self.peers, &self.left.cert, &self.right.cert);
+        self.recheck_enrollment();
+        path
+    }
+
+    /// Enrollment changed mid-session: make each shell's next recheck now.
+    fn recheck_enrollment(&self) {
+        self.left.network.recheck_personal_device_peers();
+        self.right.network.recheck_personal_device_peers();
     }
 
     fn send_view(
@@ -1233,6 +1244,7 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
     assert!(second[0].generation > first[0].generation);
     pair.apply_target(&second[0], 70);
     std::fs::remove_file(enrolled_peers).unwrap();
+    pair.recheck_enrollment();
     let stopped = in_owner_registry(&pair.right_registry, || {
         pair.right.network.pump_owner_views()
     });
