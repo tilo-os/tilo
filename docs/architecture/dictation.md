@@ -502,6 +502,41 @@ seeded 20 dB white noise recorded 6/18. The largest scope peak was 656 MB.
 Concatenation is not natural code-switching, and synthetic noise is not a noisy
 microphone recording. These results and their provenance remain in the ledger.
 
+The descriptor worker now selects upstream Flash Attention for the pinned GGML
+small architecture (768-wide, 12-layer audio and text states); tiny/base retain
+their existing allocation path. The small header is read from the same immutable
+verified descriptor, without reopening a path. This is an allocation decision,
+not model admission: the complete native parser, receipt/catalogue checks,
+256 MiB artifact cap, 1 GiB address-space cap and 960 MiB review headroom guard
+remain intact. The compatibility byte loader uses the same decision.
+
+The [small allocation ledger](dictation-small-allocation-qualification.json)
+retains the failed non-flash production-worker attempt: the headroom guard stopped
+it before final delivery at 1,028,264 KiB virtual size. An earlier probe parser
+mismatch also failed before a decoder was observed; that was fixed rather than
+counted as a model result. Six isolated Flash Attention review sessions and six
+sessions on the actual conditional implementation completed within the same
+limits. Small raw errors were English 1/19 words, German 0/18, French 2/20,
+Spanish 1/29, Arabic 6/15 and Mandarin 11/23 characters. Mandarin worsened against
+base's 9/23. The base control retained its prior French 7/20 result and roughly
+3.1-second first draft; small first drafts took about 7.2–7.3 seconds. The largest
+observed review scope peak was 1.09 GB, including witness/cache costs. Warmer
+subsequent scopes do not establish lower physical cold-device memory use.
+
+The six-language review used one allocator arena. A separate French session on
+the actual conditional worker removed that harness override and passed with the
+production default allocator: the same 2/20 raw errors, about 7.4 seconds to first
+draft and 889,540 KiB peak virtual size. No production allocator setting changed.
+This control qualifies that session, not all physical machines or languages.
+
+Base remains the engineering integration baseline. This makes the existing small
+candidate usable under the memory policy, with measured accuracy/latency tradeoffs;
+it does not switch any model, accept a licence, change the shipping catalogue or
+grant microphone access. Raw errors were scored without cleanup, the unspoken
+German “TiLo” hint remained absent, and the shared dictionary path is unchanged.
+These are exposed public source-paced batches, not continuous microphone,
+natural noisy speech, physical older-device or universal accuracy acceptance.
+
 The candidate catalog keeps U²-Net unchanged and adds three MIT multilingual
 models at the same pinned revision: compact **Whisper tiny** (77,691,713 bytes),
 **Whisper base** (147,951,465 bytes) and **Whisper small-q5_1** (190,085,487 bytes).

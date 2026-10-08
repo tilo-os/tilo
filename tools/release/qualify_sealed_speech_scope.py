@@ -10,7 +10,9 @@ import json,os,subprocess,sys,hashlib,argparse
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--native-review',action='store_true')
 parser.add_argument('--whisper-public-review',action='store_true',
-                    help='qualify pinned multilingual base with public fixtures; no installation')
+                    help='qualify pinned multilingual Whisper with public fixtures; no installation')
+parser.add_argument('--whisper-model',choices=['tiny','base','small-q5_1'],default='base')
+parser.add_argument('--whisper-allocator',choices=['arena-1','default'],default='arena-1')
 parser.add_argument('--lifecycle',action='store_true')
 parser.add_argument('--identity-review',action='store_true')
 PUBLIC_CASES=['en_us-0','de_de-0','fr_fr-0','es_419-0','ar_eg-0','cmn_hans_cn-0']
@@ -27,6 +29,8 @@ parser.add_argument('--noise-snr-db',type=int,choices=[10,20])
 parser.add_argument('--frozen-evaluation-index',type=int,choices=range(32))
 parser.add_argument('--evaluation-profile',choices=['context160','context320'])
 args=parser.parse_args()
+if args.whisper_model!='base' and not args.whisper_public_review:raise RuntimeError('alternate Whisper model requires explicit public review')
+if args.whisper_allocator!='arena-1' and not args.whisper_public_review:raise RuntimeError('alternate Whisper allocator requires explicit public review')
 if args.whisper_public_review and (args.native_review or args.lifecycle or args.identity_review or args.frozen_evaluation_index is not None or args.evaluation_profile or args.native_phase or args.native_low_latency or args.native_right_context!=1 or args.phase_repeat or args.resident_second_case):raise RuntimeError('public Whisper review excludes native, lifecycle and frozen evaluation options')
 if args.identity_review and not args.lifecycle:raise RuntimeError('identity review requires fixed native lifecycle')
 evaluation=args.frozen_evaluation_index is not None
@@ -89,6 +93,9 @@ if evaluation:
  print('FROZEN_EVALUATION_EXPOSURE '+json.dumps({'case':args.case,'profile':args.evaluation_profile,'suite_sha256':stated,'configuration_sha256':receipts['evaluation-freeze.json']}),flush=True)
 command=['bwrap','--unshare-all','--die-with-parent','--ro-bind','/usr','/usr','--symlink','usr/lib64','/lib64','--symlink','usr/lib','/lib','--proc','/proc','--dev','/dev','--tmpfs','/tmp','--dir','/review','--ro-bind',str(root),'/review','--ro-bind',str(root/'worker'),'/review/tilo-speech-worker','--clearenv','--setenv','LANG','C.UTF-8','--setenv','MALLOC_ARENA_MAX','1','--setenv','OMP_NUM_THREADS','2','--setenv','LD_LIBRARY_PATH','/review','--setenv','TILO_TEST_PRIVATE_NAMESPACE','1','--setenv','PYTHONPATH','/review','--chdir','/','/usr/bin/time','-f','ASR_RESOURCE {"user":%U,"system":%S}','/usr/bin/python3','/review/probe.py','--manifest','/review/public/manifest.json','--qualifier','/review/qualifier','--worker','/review/tilo-speech-worker','--model','base','--case','en_us-0','--cpus','2','--first-draft-seconds','2']
 if args.whisper_public_review:
+ command[command.index('--model')+1]=args.whisper_model
+ if args.whisper_allocator=='default':
+  i=command.index('MALLOC_ARENA_MAX');del command[i-1:i+2]
  command[command.index('--case')+1]=args.case
  if args.native_language:command.extend(['--language',args.native_language])
  for case in args.append_case:command.extend(['--append-case',case])

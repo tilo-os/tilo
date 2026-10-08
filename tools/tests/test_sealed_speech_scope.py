@@ -35,6 +35,26 @@ class SealedSpeechScopeTests(unittest.TestCase):
         self.assertIn("explicit public review required", result.stderr)
         self.assertNotIn("SEALED_WORKER_SCOPE_BEFORE", result.stdout)
 
+    def test_alternate_model_requires_public_review_before_execution(self):
+        for model in ["tiny", "small-q5_1"]:
+            with self.subTest(model=model):
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPT), "--whisper-model", model],
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("alternate Whisper model requires explicit public review", result.stderr)
+                self.assertNotIn("SEALED_WORKER_SCOPE_BEFORE", result.stdout)
+
+    def test_allocator_override_requires_public_review_before_execution(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--whisper-allocator", "default"],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("alternate Whisper allocator requires explicit public review", result.stderr)
+        self.assertNotIn("SEALED_WORKER_SCOPE_BEFORE", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

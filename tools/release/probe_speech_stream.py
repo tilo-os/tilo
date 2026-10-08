@@ -161,7 +161,7 @@ def main():
     parser.add_argument('--native-review-model', type=Path,
                         help='explicit isolated Nemotron worker fixture; never installed catalogue authority')
     parser.add_argument('--worker', required=True, type=Path)
-    parser.add_argument('--model', choices=('tiny', 'base', 'base-q8_0'), default='base')
+    parser.add_argument('--model', choices=tuple(REVIEW_MODELS), default='base')
     parser.add_argument('--case', required=True)
     parser.add_argument('--append-case', action='append', default=[])
     parser.add_argument('--language', choices=('auto', 'en', 'de', 'fr', 'es', 'ar', 'zh'))

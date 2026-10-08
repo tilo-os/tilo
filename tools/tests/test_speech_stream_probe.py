@@ -13,6 +13,21 @@ spec.loader.exec_module(probe)
 
 
 class PublicSpeechStressTests(unittest.TestCase):
+    def test_small_review_model_reaches_private_namespace_gate_without_execution(self):
+        import os
+        import subprocess
+        environment = dict(os.environ)
+        environment.pop('TILO_TEST_PRIVATE_NAMESPACE', None)
+        result = subprocess.run(
+            [sys.executable, str(RELEASE / 'probe_speech_stream.py'),
+             '--manifest', '/nonexistent', '--worker', '/nonexistent',
+             '--model', 'small-q5_1', '--case', 'fr_fr-0'],
+            env=environment, capture_output=True, text=True, timeout=10,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('requires an unprivileged, owned hardware-free namespace', result.stderr)
+        self.assertNotIn('invalid choice', result.stderr)
+
     def test_quantized_review_receipt_preserves_existing_models(self):
         for model, sha in probe.MODELS.items():
             self.assertEqual(probe.REVIEW_MODELS[model], sha)
