@@ -3111,8 +3111,9 @@ pub struct CapnpBrokerState {
     /// Steps of interactive shortcut runs waiting for their person.
     step_prompts: crate::automation::StepPrompts,
     /// Bumped whenever a pending or completed invocation changes, so hosts
-    /// can refresh retained invocation projections exactly when needed.
-    invocation_generation: AtomicU64,
+    /// can refresh retained invocation projections exactly when needed and
+    /// a waiter on a running invocation wakes when it may have moved.
+    invocation_generation: tokio::sync::watch::Sender<u64>,
     execution_activity: ActivityBus,
     /// Admission serialization covers policy, one-use confirmation, the durable
     /// barrier and the single application delivery. Never held across awaits.
@@ -3715,7 +3716,7 @@ impl CapnpBrokerState {
     ) {
         if let Ok(mut completed) = self.completed_invocations.lock() {
             completed.insert(id, (actor, update));
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
             while completed.len() > Self::MAX_RETAINED_INVOCATIONS {
                 let Some(oldest) = completed.keys().min().copied() else {
                     break;
@@ -4027,7 +4028,7 @@ impl CapnpBrokerState {
                 app_action_consent: RwLock::new(None),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 step_prompts: crate::automation::StepPrompts::default(),
-                invocation_generation: AtomicU64::new(0),
+                invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
@@ -5631,7 +5632,7 @@ impl CapnpBrokerState {
                 cancellation_fence: Arc::new(AtomicBool::new(false)),
             },
         );
-        self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        self.invocation_changed();
         if sender
             .send(InvocationEnvelope {
                 id,
@@ -5646,7 +5647,7 @@ impl CapnpBrokerState {
         {
             let removed = registry.remove(&id);
             drop(registry);
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
             if let Some(pending) = removed {
                 let _ = self.persist_invocation(
                     &pending,
@@ -5697,7 +5698,20 @@ impl CapnpBrokerState {
     /// Changes whenever a pending or completed invocation changes.
     #[must_use]
     pub fn invocations_generation(&self) -> u64 {
-        self.invocation_generation.load(Ordering::Relaxed)
+        *self.invocation_generation.borrow()
+    }
+
+    /// Record that a pending or completed invocation changed, waking every
+    /// [`Self::invocation_changes`] waiter.
+    fn invocation_changed(&self) {
+        self.invocation_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    /// A receiver that sees every later invocation change; what it has seen
+    /// so far counts as seen.
+    pub(crate) fn invocation_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.invocation_generation.subscribe()
     }
 
     /// Read one current receipt without surveying or disclosing another
@@ -5838,7 +5852,7 @@ impl CapnpBrokerState {
                 job.activity.as_ref(),
                 ExecutionStatus::CancellationRequested,
             );
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
         }
         drop(pending);
         self.cancellation_requests
@@ -19345,7 +19359,7 @@ impl CapnpBrokerState {
         pending.last_sequence = next_sequence;
         pending.update = update.clone();
         let publication = state.publish_pending_activity(pending, &update, managed_current);
-        state.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        state.invocation_changed();
         if update.is_terminal() {
             let completion = terminal_invocation_completion(&update)?;
             let pending = state

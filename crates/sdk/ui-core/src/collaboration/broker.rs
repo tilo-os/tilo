@@ -2608,6 +2608,21 @@ struct ConnectedBroker {
     primary_route: PrimaryRouteState,
 }
 
+#[cfg(all(test, unix))]
+pub(crate) struct NativeRefreshProbe {
+    replace_history: Box<dyn Fn(Vec<u8>)>,
+    committed_read_count: Box<dyn Fn() -> usize>,
+}
+#[cfg(all(test, unix))]
+impl NativeRefreshProbe {
+    pub(crate) fn committed_read_count(&self) -> usize {
+        (self.committed_read_count)()
+    }
+    pub(crate) fn replace_history(&self, history: Vec<u8>) {
+        (self.replace_history)(history);
+    }
+}
+
 impl CollaborationManager {
     /// Connect to the launcher-inherited typed collaboration service and
     /// announce an explicit route. Headless participants use this instead of
@@ -2899,6 +2914,15 @@ impl CollaborationManager {
         gate: tokio::sync::oneshot::Receiver<()>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
         tests::native_initial_parked_fixture(app, room, history, gate)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_refresh_fixture_for_test(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+    ) -> (Self, NativeRefreshProbe) {
+        tests::native_refresh_fixture(app, room, history)
     }
 
     fn for_route_from(
@@ -10105,6 +10129,37 @@ mod tests {
             updates: Box::new(move || update_captures.lock().unwrap().invocation_updates.clone()),
             thread,
         }
+    }
+
+    pub(super) fn native_refresh_fixture(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+    ) -> (CollaborationManager, NativeRefreshProbe) {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                committed_history_fixture: Some(history),
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        let replace = captures.clone();
+        let probe = NativeRefreshProbe {
+            committed_read_count: Box::new(move || captures.lock().unwrap().committed_reads.len()),
+            replace_history: Box::new(move |history| {
+                let mut captures = replace.lock().unwrap();
+                captures.committed_history_fixture = Some(history);
+                captures.committed_revision = Some([8; 32]);
+            }),
+        };
+        (
+            CollaborationManager::from_sdk_fd_for_test(fd, app, room),
+            probe,
+        )
     }
 
     pub(super) fn native_initial_fixture(

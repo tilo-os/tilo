@@ -227,6 +227,15 @@ pub struct DrmDispatchState {
     /// from `live`: a disabled dock connector still needs a fresh Settings
     /// capability snapshot when it is plugged or removed.
     capability_topology: BTreeSet<DrmOutputKey>,
+    /// Every card's connectors as the last forced probe (startup or a udev
+    /// hotplug) found them, before display intent is applied. A settings
+    /// change and capability publication re-apply intent to these rather
+    /// than force-probing every connector on the input thread.
+    connector_probes: BTreeMap<u64, Vec<ConnectorSnapshot>>,
+    /// How many times connectors were force-probed, so tests can assert
+    /// which production paths reach the hardware.
+    #[cfg(test)]
+    forced_probes: usize,
     /// Channel to whoever owns the scanouts — the presenter once split off, the backend itself before that.
     pub commands: Option<Sender<ScanoutCommand>>,
     /// The persisted pointer/keyboard preferences, applied to every libinput device as it appears.
@@ -919,8 +928,35 @@ fn display_set_of<'a>(
     }))
 }
 
-/// Probe every retained card, then resolve connector keys over the *whole*
-/// seat before looking up display intent.  Per-card configuration lookup is
+/// Force-probe every retained card: what is connected and each sink's EDID
+/// identity. Slow on real hardware (a DP-MST sink alone can take hundreds of
+/// milliseconds) and on the input thread, so only startup and udev hotplug
+/// call it; see [`ConnectorProbe`].
+fn force_probe_connectors(
+    cards: &BTreeMap<u64, CardHandle>,
+) -> BTreeMap<u64, Vec<ConnectorSnapshot>> {
+    cards
+        .iter()
+        .map(|(&device_id, card)| (device_id, card.connected()))
+        .collect()
+}
+
+/// How [`DrmDispatchState::connector_snapshots`] learns what is connected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConnectorProbe {
+    /// Ask the hardware ([`force_probe_connectors`]). A udev hotplug edge is
+    /// precisely when the remembered connector state is stale, so only the
+    /// udev paths pay for it.
+    Force,
+    /// What the last forced probe found. Connectors, their mode tables and
+    /// their EDIDs change only through a hotplug, which re-probes, so a
+    /// settings change and capability publication read this instead.
+    Cached,
+}
+
+/// Take probed snapshots (one list per retained card), then resolve
+/// connector keys over the *whole* seat before looking up display intent.
+/// Per-card configuration lookup is
 /// wrong for a hybrid laptop because both cards may legitimately have an
 /// `HDMI-A-1`; this one path is shared by startup, hotplug, Settings
 /// publication and transaction validation.
@@ -936,16 +972,13 @@ fn display_set_of<'a>(
 /// for (empty and `None` at startup).
 fn configured_connectors(
     cards: &BTreeMap<u64, CardHandle>,
+    mut snapshots: BTreeMap<u64, Vec<ConnectorSnapshot>>,
     live: &[LiveEntry],
     lit_for: Option<&settings_store::hardware::DisplaySet>,
 ) -> (
     BTreeMap<u64, Vec<ConnectorSnapshot>>,
     settings_store::hardware::DisplaySet,
 ) {
-    let mut snapshots: BTreeMap<u64, Vec<_>> = cards
-        .iter()
-        .map(|(&device_id, card)| (device_id, card.connected()))
-        .collect();
     let provisional = display_set_of(snapshots.values().flatten());
     let config = settings_store::hardware::DisplayConfig::load_effective(&provisional);
     let keys = resolve_connector_config_keys(
@@ -1010,17 +1043,16 @@ fn configured_connectors(
 }
 
 /// Build the Settings capability contract from the same topology that chose
-/// scanout configuration keys. Disabled sinks stay visible here so users can
+/// scanout configuration keys (`snapshots`, already through
+/// [`configured_connectors`]). Disabled sinks stay visible here so users can
 /// independently re-enable a colliding connector.
 fn display_capabilities(
     cards: &BTreeMap<u64, CardHandle>,
-    live: &[LiveEntry],
-    lit_for: &settings_store::hardware::DisplaySet,
+    snapshots: &BTreeMap<u64, Vec<ConnectorSnapshot>>,
     profiles: &BTreeMap<String, String>,
     signal_status: &BTreeMap<String, OutputSignalStatus>,
     scale_override: Option<f64>,
 ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
-    let (snapshots, _) = configured_connectors(cards, live, Some(lit_for));
     let mut outputs: Vec<_> = cards
         .iter()
         .flat_map(|(&device_id, card)| {
@@ -1131,6 +1163,9 @@ impl DrmDispatchState {
             color_profiles: BTreeMap::new(),
             live: Vec::new(),
             capability_topology: BTreeSet::new(),
+            connector_probes: BTreeMap::new(),
+            #[cfg(test)]
+            forced_probes: 0,
             commands: Some(commands_tx),
             input,
             accessibility,
@@ -1253,14 +1288,7 @@ impl DrmDispatchState {
     /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
     /// the output plan itself.
     fn publish_display_snapshot(&mut self) {
-        let mut outputs = display_capabilities(
-            &self.cards,
-            &self.live,
-            &self.display_set,
-            &self.color_profiles,
-            &self.signal_status,
-            self.scale_override,
-        );
+        let mut outputs = self.capability_outputs();
         apply_live_scales(
             &mut outputs,
             self.live
@@ -1318,12 +1346,78 @@ impl DrmDispatchState {
             .is_some_and(|tx| tx.send(cmd).is_ok())
     }
 
+    /// Every retained card's connectors, from the hardware or from the last
+    /// forced probe (see [`ConnectorProbe`]). A forced probe replaces the
+    /// remembered result for every card.
+    fn connector_snapshots(
+        &mut self,
+        probe: ConnectorProbe,
+    ) -> BTreeMap<u64, Vec<ConnectorSnapshot>> {
+        match probe {
+            ConnectorProbe::Force => {
+                #[cfg(test)]
+                {
+                    self.forced_probes = self.forced_probes.saturating_add(1);
+                }
+                self.connector_probes = force_probe_connectors(&self.cards);
+                self.connector_probes.clone()
+            }
+            ConnectorProbe::Cached => {
+                let mut snapshots = BTreeMap::new();
+                for (&device_id, card) in &self.cards {
+                    let probed = self.connector_probes.entry(device_id).or_insert_with(|| {
+                        // Every path that retains a card probes it (startup,
+                        // then the udev rescan that follows an add). A card
+                        // never probed has no state to reuse; reading it as
+                        // connectorless would tear its outputs down.
+                        tracing::warn!(
+                            device_id,
+                            "DRM display: card has no probed connectors; probing it"
+                        );
+                        #[cfg(test)]
+                        {
+                            self.forced_probes = self.forced_probes.saturating_add(1);
+                        }
+                        card.connected()
+                    });
+                    snapshots.insert(device_id, probed.clone());
+                }
+                snapshots
+            }
+        }
+    }
+
+    /// The Settings capability contract for the current topology, built from
+    /// the last forced probe: publication follows hotplug, display settings
+    /// and presenter reports, none of which changes what is connected.
+    fn capability_outputs(&mut self) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
+        let probed = self.connector_snapshots(ConnectorProbe::Cached);
+        let (snapshots, _) =
+            configured_connectors(&self.cards, probed, &self.live, Some(&self.display_set));
+        display_capabilities(
+            &self.cards,
+            &snapshots,
+            &self.color_profiles,
+            &self.signal_status,
+            self.scale_override,
+        )
+    }
+
     /// Re-ask the hardware what is connected and reconcile.
     ///
     /// Every udev edge lands here, including no-op ones — a `Changed` event
     /// fires on every DPMS transition and EDID re-read, and re-modesetting on those would flash the panel for nothing. [`hotplug::plan`] tells the two apart.
     pub fn rescan_outputs(&mut self, reason: &str) {
-        self.rescan_outputs_with_removal_ack(reason, None);
+        self.rescan_outputs_with_removal_ack(reason, None, ConnectorProbe::Force);
+    }
+
+    /// Reconcile the outputs with the display settings, over the connectors
+    /// the last forced probe found — the hotplug reconciliation without the
+    /// probe. A settings write may request another mode or turn a connector
+    /// on or off, and that modesets here; what is connected changes only
+    /// through a udev edge, which takes [`Self::rescan_outputs`].
+    pub fn reapply_outputs_from_cache(&mut self, reason: &str) {
+        self.rescan_outputs_with_removal_ack(reason, None, ConnectorProbe::Cached);
     }
 
     /// As [`Self::rescan_outputs`], with an acknowledgement sent by the
@@ -1338,9 +1432,11 @@ impl DrmDispatchState {
         &mut self,
         reason: &str,
         removal_ack: Option<(u64, Sender<u64>)>,
+        probe: ConnectorProbe,
     ) {
+        let probed = self.connector_snapshots(probe);
         let (snapshots, display_set) =
-            configured_connectors(&self.cards, &self.live, Some(&self.display_set));
+            configured_connectors(&self.cards, probed, &self.live, Some(&self.display_set));
         let display_set_changed = self.display_set != display_set;
         self.display_set = display_set;
         // A surviving output now answers to the configuration of this set
@@ -1569,6 +1665,8 @@ impl DrmDispatchState {
                 color_buffer: Vec::new(),
                 direct_targets: None,
                 direct_ineligible: None,
+                present_by_readback: false,
+                readback_current: false,
                 direct_degradation: DirectDegradation::default(),
                 hdr_direct_degradation: DirectDegradation::default(),
                 hdr_failure: None,
@@ -2555,7 +2653,11 @@ impl DrmDispatchState {
             .card_removal_ack_sender
             .clone()
             .map(|ack| (device_id, ack));
-        self.rescan_outputs_with_removal_ack("udev device removed", removal_ack);
+        self.rescan_outputs_with_removal_ack(
+            "udev device removed",
+            removal_ack,
+            ConnectorProbe::Force,
+        );
     }
 
     /// Remember that libseat could not close a device. Reopening it in this
@@ -3600,9 +3702,16 @@ pub struct ScanoutEntry {
     /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
     /// readback presenter remains authoritative.
     pub direct_targets: Option<DirectScanoutTargets>,
-    /// Why this output's current shape cannot use direct scanout (more than
-    /// one output, a rotation, ...). Re-evaluated every frame.
+    /// Why this output's current shape cannot use direct scanout (a rotation,
+    /// an ICC profile, ...). Re-evaluated every frame.
     pub direct_ineligible: Option<&'static str>,
+    /// The current frame presents this output through the combined readback:
+    /// it is powered and its direct frame was not, or could not be, submitted.
+    pub present_by_readback: bool,
+    /// The dumb front shows the combined readback's latest image. False while
+    /// the output is direct and until its first readback frame, so readback
+    /// shortcuts that patch or skip pixels already shown never reach it stale.
+    pub readback_current: bool,
     /// Direct scanout failed: the readback presenter stands in until the
     /// retry this records.
     pub direct_degradation: DirectDegradation,
@@ -3736,15 +3845,7 @@ pub(crate) fn logical_output_size(
 /// fallback.  Unlike the previous "first usable GPU" implementation, a
 /// failure or a connectorless card is local and never suppresses the other
 /// GPUs.
-fn bring_up_all_devices(
-    session: &LibSeatSession,
-    kms_gpus: &[PathBuf],
-) -> (
-    BTreeMap<u64, CardHandle>,
-    Option<PathBuf>,
-    Vec<ScanoutBuild>,
-    settings_store::hardware::DisplaySet,
-) {
+fn bring_up_all_devices(session: &LibSeatSession, kms_gpus: &[PathBuf]) -> StartupDevices {
     let mut cards = BTreeMap::new();
     let mut card_order = Vec::new();
     let mut primary_gpu = None;
@@ -3780,7 +3881,9 @@ fn bring_up_all_devices(
     // Every card must be open before configuration is selected: a connector
     // name that looked unique on card0 may collide with one on card1. This is
     // the startup counterpart to `rescan_outputs`' card-wide reconciliation.
-    let (snapshots, display_set) = configured_connectors(&cards, &[], None);
+    let connector_probes = force_probe_connectors(&cards);
+    let (snapshots, display_set) =
+        configured_connectors(&cards, connector_probes.clone(), &[], None);
     let mut all_builds = Vec::new();
     for (device_id, path) in card_order {
         let Some(card) = cards.get(&device_id) else {
@@ -3809,7 +3912,24 @@ fn bring_up_all_devices(
         }
         all_builds.extend(builds);
     }
-    (cards, primary_gpu, all_builds, display_set)
+    StartupDevices {
+        cards,
+        primary_gpu,
+        builds: all_builds,
+        display_set,
+        connector_probes,
+    }
+}
+
+/// What [`bring_up_all_devices`] found and lit.
+struct StartupDevices {
+    cards: BTreeMap<u64, CardHandle>,
+    /// The first card that lit an output.
+    primary_gpu: Option<PathBuf>,
+    builds: Vec<ScanoutBuild>,
+    display_set: settings_store::hardware::DisplaySet,
+    /// The startup probe, which later settings changes re-apply intent to.
+    connector_probes: BTreeMap<u64, Vec<ConnectorSnapshot>>,
 }
 
 /// Register the three loop-wide event sources: session (VT switch), udev
@@ -3984,9 +4104,8 @@ impl DrmRuntime {
         // Retain and drive every usable KMS card.  The CPU bridge renders the
         // combined scene once, then each card scans its own XRGB dumb buffer;
         // no unsafe cross-GPU texture import is needed for this path.
-        let (cards, primary_gpu, scanout_builds, display_set) =
-            bring_up_all_devices(&session, &kms_gpus);
-        if scanout_builds.is_empty() {
+        let startup = bring_up_all_devices(&session, &kms_gpus);
+        if startup.builds.is_empty() {
             // `--backend headless` is the explicit display-free mode. A real
             // DRM login that cannot drive a connector must return control to
             // the display manager instead of staying alive behind the stale
@@ -4036,7 +4155,7 @@ impl DrmRuntime {
 
         let mut dispatch = DrmDispatchState::new(
             session_state,
-            cards,
+            startup.cards,
             session.clone(),
             input,
             accessibility,
@@ -4044,7 +4163,8 @@ impl DrmRuntime {
             tx,
             keyboard,
         );
-        dispatch.display_set = display_set;
+        dispatch.display_set = startup.display_set;
+        dispatch.connector_probes = startup.connector_probes;
         dispatch.signal_reports = Some(signal_rx);
         // Tablet pads are read from a context of their own; see `PadInput`.
         let pads = PadInput::new(session.clone());
@@ -4065,7 +4185,7 @@ impl DrmRuntime {
         // Adopt the connectors already live at startup — the same path a
         // hot-plug takes — and seed the pointer/snapshot; see the helper's
         // doc comment.
-        let scanouts = dispatch.finalize_startup_scanouts(scanout_builds);
+        let scanouts = dispatch.finalize_startup_scanouts(startup.builds);
         // Seat assignment queues the attached devices immediately, before the
         // libinput fd becomes readable. Publish/configure those devices through
         // the ordinary handler before waiting for physical input.
@@ -4075,7 +4195,7 @@ impl DrmRuntime {
             event_loop,
             dispatch,
             session,
-            primary_gpu,
+            primary_gpu: startup.primary_gpu,
             scanouts,
             commands: Some(rx),
             signal_reports: Some(signal_tx),
@@ -4237,40 +4357,15 @@ impl DrmRuntime {
             ..GestureConfig::default()
         });
         input_config::reconfigure_all(&self.dispatch.input, &mut self.dispatch.devices);
-        let scale_override = load_display_scale_override();
-        if scale_override != self.dispatch.scale_override {
-            self.dispatch.scale_override = scale_override;
-            self.dispatch.relayout_outputs();
-            self.dispatch.outputs_changed = true;
-            self.dispatch.push(BackendEvent::OutputsChanged);
-        }
-        self.reconcile_display_transaction();
-        // The same atomic settings write may carry a topology/mode change.
-        // Re-probe first so a requested advertised mode is modeset; then
-        // publish arrangement/scale even when the connector
-        // set itself did not change.
-        self.dispatch.rescan_outputs("display settings changed");
-        self.dispatch.relayout_outputs();
-        let outputs = self.dispatch.output_table();
-        self.dispatch.command(ScanoutCommand::Reconfigure {
-            remove: Vec::new(),
-            add: Vec::new(),
-            outputs,
-            removal_ack: None,
-        });
-        self.dispatch.outputs_changed = true;
-        self.dispatch.push(BackendEvent::OutputsChanged);
-        self.dispatch.push(BackendEvent::Redraw);
-        self.dispatch.publish_display_snapshot();
     }
 
     /// Check the timed display confirmation independently of settings-file
     /// changes. The compositor loop calls this continuously, but filesystem
     /// work is bounded to four times a second. Capability snapshots are
     /// published only when their inputs change (startup, hotplug, display
-    /// settings, or ICC results): building one force-probes every KMS
-    /// connector, and doing that periodically on this input-thread path can
-    /// stall pointer and keyboard dispatch for seconds on real hardware.
+    /// settings, or ICC results), and are built from the last hotplug probe:
+    /// force-probing every KMS connector on this input-thread path can stall
+    /// pointer and keyboard dispatch for seconds on real hardware.
     pub fn poll_display_transaction(&mut self) {
         if self.dispatch.drain_signal_reports() {
             self.dispatch.publish_display_snapshot();
@@ -4306,14 +4401,53 @@ impl DrmRuntime {
             return;
         };
         if transaction.expired(unix_now_ms()) {
-            self.reload_input_settings();
+            self.dispatch.reload_display_settings();
         }
     }
+}
 
-    /// Advance one display request before the KMS re-probe consumes its
-    /// effective configuration. Validation uses the compositor-published
+impl DrmDispatchState {
+    /// The `display`, `display_transaction` or `display_profiles` section
+    /// changed (or a pending transaction timed out): advance the transaction,
+    /// then re-apply scale, arrangement and modes.
+    ///
+    /// Never force-probes a connector. This runs on the input thread for a
+    /// settings write — including the transaction write this very function
+    /// makes — and a forced probe of every connector stalls pointer and
+    /// keyboard dispatch for seconds on a DP-MST dock. What is connected
+    /// changes only through a udev edge, which re-probes.
+    pub fn reload_display_settings(&mut self) {
+        let scale_override = load_display_scale_override();
+        if scale_override != self.scale_override {
+            self.scale_override = scale_override;
+            self.relayout_outputs();
+            self.outputs_changed = true;
+            self.push(BackendEvent::OutputsChanged);
+        }
+        self.reconcile_display_transaction();
+        // The same atomic settings write may carry a topology/mode change.
+        // Reconcile first so a requested advertised mode is modeset; then
+        // publish arrangement/scale even when the connector
+        // set itself did not change.
+        self.reapply_outputs_from_cache("display settings changed");
+        self.relayout_outputs();
+        let outputs = self.output_table();
+        self.command(ScanoutCommand::Reconfigure {
+            remove: Vec::new(),
+            add: Vec::new(),
+            outputs,
+            removal_ack: None,
+        });
+        self.outputs_changed = true;
+        self.push(BackendEvent::OutputsChanged);
+        self.push(BackendEvent::Redraw);
+        self.publish_display_snapshot();
+    }
+
+    /// Advance one display request before the output reconciliation consumes
+    /// its effective configuration. Validation uses the compositor-published
     /// descriptor set, never values supplied by Settings.
-    fn reconcile_display_transaction(&self) {
+    fn reconcile_display_transaction(&mut self) {
         use settings_store::hardware::{DisplaySet, DisplayTransaction, DisplayTransactionState};
 
         let Some(mut transaction) = DisplayTransaction::load() else {
@@ -4326,17 +4460,11 @@ impl DrmRuntime {
         }
         match transaction.state {
             DisplayTransactionState::Requested => {
-                let descriptors: Vec<_> = display_capabilities(
-                    &self.dispatch.cards,
-                    &self.dispatch.live,
-                    &self.dispatch.display_set,
-                    &self.dispatch.color_profiles,
-                    &self.dispatch.signal_status,
-                    self.dispatch.scale_override,
-                )
-                .into_iter()
-                .map(|output| output.descriptor)
-                .collect();
+                let descriptors: Vec<_> = self
+                    .capability_outputs()
+                    .into_iter()
+                    .map(|output| output.descriptor)
+                    .collect();
                 if descriptors.is_empty() {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message =
@@ -4393,7 +4521,9 @@ impl DrmRuntime {
             | DisplayTransactionState::Rejected => {}
         }
     }
+}
 
+impl DrmRuntime {
     /// Every attached connector as output-management heads: the cached
     /// capability snapshot joined with the outputs being driven and the
     /// effective intent for the ones that are off.
@@ -8264,6 +8394,40 @@ mod tests {
             assert_eq!(plan.disable_while_typing, Some(true));
             assert_eq!(plan.accel_speed(), Some(0.0));
         }
+    }
+
+    #[test]
+    fn display_reload_never_force_probes() {
+        // A display settings write — Settings, Super+P, output management,
+        // or this backend's own transaction write — re-applies the
+        // arrangement from the last hotplug probe. Force-probing every KMS
+        // connector here stalled pointer and keyboard dispatch for seconds
+        // on DP-MST docks.
+        let mut state = DrmDispatchState::default();
+        state.reload_display_settings();
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::OutputsChanged)),
+            "the reload ran and told the compositor the outputs were re-applied"
+        );
+        state.reapply_outputs_from_cache("display settings changed");
+        state.publish_display_snapshot();
+        assert_eq!(
+            state.forced_probes, 0,
+            "a settings reload and capability publication must reuse the last probe"
+        );
+
+        // A udev edge is when connector state is stale: that, and only
+        // that, asks the hardware.
+        state.rescan_outputs("udev device changed");
+        assert_eq!(state.forced_probes, 1);
+        state.reload_display_settings();
+        assert_eq!(
+            state.forced_probes, 1,
+            "and the next settings reload reuses it"
+        );
     }
 
     // libinput device configuration, on the production plan

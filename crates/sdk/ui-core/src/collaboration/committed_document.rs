@@ -29,7 +29,36 @@ enum Gate {
         private_window: Arc<AtomicU64>,
     },
 }
+/// Read-only phase observations for a failed construction barrier. These
+/// independently sampled flags are diagnostic metadata, never admission.
+pub(super) struct ReadinessDiagnostic {
+    pub(super) required: bool,
+    pub(super) staged: bool,
+    pub(super) applied: bool,
+    pub(super) refresh_requested: bool,
+}
 impl Reads {
+    pub(super) fn readiness_diagnostic(&self, key: &str) -> Option<ReadinessDiagnostic> {
+        let required = self
+            .0
+            .lock()
+            .ok()?
+            .get(key)
+            .is_some_and(|gate| matches!(gate, Gate::Required { .. }));
+        let staged = self
+            .1
+            .lock()
+            .ok()?
+            .get(key)
+            .map(|read| read.merged.load(Ordering::Acquire));
+        let refresh_requested = self.2.lock().ok()?.contains(key);
+        Some(ReadinessDiagnostic {
+            required,
+            staged: staged.is_some(),
+            applied: staged.unwrap_or(false),
+            refresh_requested,
+        })
+    }
     pub(super) fn delivery_generation(&self, key: &str) -> Option<Arc<AtomicBool>> {
         let rows = self.0.lock().ok()?;
         match rows.get(key)? {
@@ -146,7 +175,6 @@ impl Reads {
         self.request_refresh(key);
         None
     }
-
     fn request_refresh(&self, key: &str) {
         let Ok(rows) = self.0.lock() else {
             return;
@@ -163,6 +191,21 @@ impl Reads {
         refresh.insert(key.into());
         state.store(APPLYING, Ordering::Release);
         ready.store(false, Ordering::Release);
+    }
+
+    /// The current staged capture still awaiting the canonical owner's merge.
+    /// Unlike `initial`, observing this handoff does not request a refresh.
+    pub(super) fn unapplied(&self, key: &str) -> Option<CommittedDocument> {
+        let gates = self.0.lock().ok()?;
+        if !matches!(gates.get(key), Some(Gate::Required { .. })) {
+            return None;
+        }
+        self.1
+            .lock()
+            .ok()?
+            .get(key)
+            .filter(|read| read.is_current() && !read.merged.load(Ordering::Acquire))
+            .cloned()
     }
     fn stage(
         &self,
@@ -487,6 +530,93 @@ impl Assembly {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn committed_document_downgrade_excludes_unapplied_owner_handoff() {
+        use automerge::transaction::Transactable;
+        let mut graph = automerge::AutoCommit::new();
+        graph
+            .put(automerge::ROOT, "body", "retained owner graph")
+            .unwrap();
+        graph.commit();
+        let bytes = graph.save();
+        let budget = ByteBudget::new();
+        let (read, _) = read_capture_using(
+            Reply::Chunk {
+                capture: 1,
+                revision: [7; 32],
+                total: u32::try_from(bytes.len()).unwrap(),
+                offset: 0,
+                bytes,
+                token: [3; 16],
+            },
+            &budget,
+            async |_| Ok(Reply::Cancelled),
+        )
+        .await
+        .unwrap();
+        let reads = Reads::default();
+        let ready = reads.pending("route").unwrap();
+        reads.stage("route", &ready, read.clone()).unwrap();
+        assert!(reads.unapplied("route").is_some());
+        reads.legacy("route").unwrap();
+        assert!(
+            reads.publishable("route"),
+            "existing legacy publication semantics remain unchanged"
+        );
+        assert!(
+            reads.unapplied("route").is_none(),
+            "a downgraded gate cannot hand retained bytes to a new owner"
+        );
+        assert!(
+            !read.merged.load(Ordering::Acquire),
+            "observing a downgrade cannot acknowledge the capture"
+        );
+    }
+
+    #[tokio::test]
+    async fn construction_diagnostic_does_not_request_or_consume_owner_refresh() {
+        let reads = Reads::default();
+        let ready = reads.pending("route").unwrap();
+        let (read, _) = read_capture_using(
+            Reply::Chunk {
+                capture: 1,
+                revision: [3; 32],
+                total: 1,
+                offset: 0,
+                bytes: vec![1],
+                token: [4; 16],
+            },
+            &ByteBudget::new(),
+            async |request| {
+                assert!(matches!(request, Request::Cancel { capture: 1, .. }));
+                Ok(Reply::Cancelled)
+            },
+        )
+        .await
+        .unwrap();
+        reads.stage("route", &ready, read.clone()).unwrap();
+        let phase = reads.readiness_diagnostic("route").unwrap();
+        assert!(phase.required && phase.staged && !phase.applied);
+        assert!(!phase.refresh_requested && !reads.publishable("route"));
+        read.applied();
+        assert!(reads.readiness_diagnostic("route").unwrap().applied);
+        reads.clear_stage("route", &read.merged);
+        ready.store(true, Ordering::Release);
+        let phase = reads.readiness_diagnostic("route").unwrap();
+        assert!(!phase.staged && !phase.refresh_requested);
+        assert!(reads.publishable("route"));
+        assert!(!reads.refresh_requested("route"));
+        assert!(reads.initial("route").is_none());
+        assert!(
+            reads
+                .readiness_diagnostic("route")
+                .unwrap()
+                .refresh_requested
+        );
+        assert!(reads.refresh_requested("route"));
+        assert!(!reads.refresh_requested("route"));
+    }
+
+    #[tokio::test]
     async fn committed_small_captures_share_the_existing_byte_budget() {
         use automerge::{ReadDoc, transaction::Transactable};
         let budget = ByteBudget::new();
@@ -709,7 +839,18 @@ mod tests {
             initialized: Arc::new(AtomicBool::new(false)),
         };
         reads.stage("route", &ready, read.clone()).unwrap();
+        assert!(reads.unapplied("route").is_some());
+        read.applied();
+        assert!(
+            reads.unapplied("route").is_none(),
+            "acknowledged capture must not merge again"
+        );
+        read.merged.store(false, Ordering::Release);
         reads.pending("route").unwrap();
+        assert!(
+            reads.unapplied("route").is_none(),
+            "replaced capture must not reach the owner"
+        );
         assert!(
             reads.initial("route").is_none(),
             "old generation must not hydrate the replacement"

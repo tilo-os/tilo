@@ -319,6 +319,12 @@ impl ActionHost for CertifiedLocalActionHost {
         self.state.action_observe(&self.effective, id)
     }
 
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        self.check(caller).ok()?;
+        self.state
+            .action_next_change(&self.effective, id, self.state.invocation_changes())
+    }
+
     fn cancel(
         &self,
         caller: &Caller,

@@ -232,20 +232,46 @@ fn current_volume(status: Option<&StatusBridge>) -> Option<os_actions::VolumeSta
 fn step_volume(delta: f32, actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option<Osd> {
     let now = current_volume(status)?;
     let next = (now.level + delta).clamp(0.0, 1.0);
-    actions.set_volume(next * 100.0).ok()?;
-    // Nudging the volume un-mutes: reaching for volume-up on a muted sink
-    // means "let me hear it".
-    let muted = if now.muted && delta > 0.0 {
-        actions.set_mute(false).ok()?;
-        false
-    } else {
-        now.muted
-    };
-    let published = os_actions::VolumeState { level: next, muted };
-    if let Some(s) = status {
-        s.set_volume(published);
+    commit_volume(actions, status, Some(now), next)
+        .ok()
+        .map(|(_, osd)| osd)
+}
+
+/// Set the default sink to `level` (`0.0..=1.0`) — the one path behind the
+/// volume keys and the Quick Settings slider, so both answer the same
+/// change with the same sink state, tray reading and readout.
+///
+/// `previous` is the state the change starts from. A change that does not
+/// turn the level down, and leaves it audible, un-mutes: reaching for more
+/// volume on a muted sink means "let me hear it", while turning down is not
+/// a request to hear anything. The tray is updated only from a known
+/// previous state and only once every write succeeded, so a failure never
+/// publishes a state the sink is not in.
+///
+/// # Errors
+///
+/// The daemon's error when setting the level or un-muting failed.
+pub(crate) fn commit_volume(
+    actions: &dyn QsActions,
+    status: Option<&StatusBridge>,
+    previous: Option<os_actions::VolumeState>,
+    level: f32,
+) -> Result<(os_actions::VolumeState, Osd), String> {
+    let level = level.clamp(0.0, 1.0);
+    actions.set_volume(level * 100.0)?;
+    let was_muted = previous.is_some_and(|now| now.muted);
+    let unmute = previous.is_some_and(|now| level > 0.0 && level >= now.level);
+    if was_muted && unmute {
+        actions.set_mute(false)?;
     }
-    Some(Osd::volume(next, muted))
+    let committed = os_actions::VolumeState {
+        level,
+        muted: was_muted && !unmute,
+    };
+    if let (Some(status), Some(_)) = (status, previous) {
+        status.set_volume(committed);
+    }
+    Ok((committed, Osd::volume(level, committed.muted)))
 }
 
 fn toggle_mute(actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option<Osd> {
