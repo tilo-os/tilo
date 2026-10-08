@@ -12666,13 +12666,8 @@ fn spawn_auto_brightness_worker() {
             loop {
                 let current = settings_store::stamp();
                 if settings_store::document_changed(seen, cached_stamp, current) {
-                    let settings = settings_store::load();
-                    enabled = settings_store::bool_at(
-                        &settings,
-                        "display",
-                        "auto_brightness",
-                    )
-                    .unwrap_or(false);
+                    enabled = settings_store::hardware::AUTO_BRIGHTNESS
+                        .from_document(&settings_store::load());
                     seen = true;
                     cached_stamp = current;
                 }
