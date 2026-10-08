@@ -40,6 +40,10 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "tools"))
 import atspi_external_client as atspi
 
+# AT-SPI's stable wire value for AtspiRole::Heading. The external client
+# intentionally exposes numeric roles because AccessKit has no role-name call.
+AT_SPI_ROLE_HEADING = 83
+
 
 def accessible_subtree(client, root, limit):
     """Walk one bounded window tree without reading editable descendants."""
@@ -214,8 +218,14 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
             for window in windows:
                 tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
                 observed["complete_windows"] += 1
-                headings = client.named({path: name.casefold() for path, name in tree.items()},
-                                        f"{agent_name.casefold()}, agent")
+                headings = [
+                    path
+                    for path in client.named(
+                        {path: name.casefold() for path, name in tree.items()},
+                        f"{agent_name.casefold()}, agent",
+                    )
+                    if client.role(path) == AT_SPI_ROLE_HEADING
+                ]
                 composers = [path for path in client.named(tree, composer_name)
                              if "org.a11y.atspi.EditableText" in client.interfaces(path)]
                 controls = client.named(tree, control_name)
@@ -1423,7 +1433,9 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     committed_after = "u你好"
     access = wait_for(
         "attached Tide editor for Rime handoff",
-        lambda: agent_conversation_accessibility("Tide"), process,
+        lambda: agent_conversation_accessibility(
+            "Tide", diagnostic_path=output / "ime-attached-accessibility.json"),
+        process,
     )
     chat_process = access["process"]
     primary = wait_for(

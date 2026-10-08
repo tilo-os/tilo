@@ -380,6 +380,58 @@ class PresentedEditorTargetTests(unittest.TestCase):
             ["org.a11y.atspi.Component.GrabFocus", "org.a11y.atspi.Action.GetActions"],
         )
 
+    def test_agent_conversation_selects_heading_when_roster_name_is_duplicated(self):
+        tree = {
+            "/heading": "('tide, Agent',)",
+            "/roster": "('tide, Agent',)",
+            "/composer": "('Message composer',)",
+            "/float": "('Float conversation',)",
+            "/drag": "('Drag conversation',)",
+        }
+
+        class Client:
+            def __init__(self, *_args):
+                pass
+
+            @staticmethod
+            def named(nodes, label):
+                needle = f"'{label}'"
+                return [path for path, name in nodes.items() if needle in name]
+
+            @staticmethod
+            def role(path):
+                return PROOF.AT_SPI_ROLE_HEADING if path == "/heading" else 30
+
+            @staticmethod
+            def interfaces(path):
+                return "org.a11y.atspi.EditableText" if path == "/composer" else ""
+
+            @staticmethod
+            def call(_path, interface, *_args, **_kwargs):
+                if interface.endswith("GetChildren"):
+                    return "(['/window'],)"
+                raise AssertionError(interface)
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "bus_pids", return_value={"bus": 7}), \
+                patch.object(PROOF.atspi, "app_process", return_value=8), \
+                patch.object(PROOF.atspi, "AtspiClient", Client), \
+                patch.object(PROOF, "process_program", return_value="chat"), \
+                patch.object(PROOF, "accessible_subtree", return_value=tree):
+            diagnostic = pathlib.Path(directory) / "accessibility.json"
+            access = PROOF.agent_conversation_accessibility(
+                "Tide", diagnostic_path=diagnostic,
+            )
+            observed = json.loads(diagnostic.read_text())
+
+        self.assertEqual(access["heading"], "/heading")
+        self.assertEqual(observed["heading_matches"], 1)
+        self.assertEqual(observed["composer_matches"], 1)
+        self.assertEqual(observed["control_matches"], 1)
+        self.assertEqual(observed["drag_handle_matches"], 1)
+        self.assertFalse(observed["private_content_recorded"])
+
     def test_physical_selection_observes_delivery_without_replaying_keys(self):
         before = {"selection": None, "caret": 9, "draft_matches": True,
                   "accessibility_focused": True}
@@ -1375,6 +1427,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
     def test_native_ime_retains_pixels_before_accessibility_or_focus_refusal(self):
         source = inspect.getsource(PROOF.native_ime_float_return)
+        self.assertIn('diagnostic_path=output / "ime-attached-accessibility.json"', source)
         self.assertLess(source.index("ime-detached-first-frame-"),
                         source.index('"detached Tide editor during Rime preedit"'))
         for required in ("ime-detached-native.json", "ime-detached-accessibility.json",
