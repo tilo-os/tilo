@@ -103,3 +103,9 @@ chat-identity-in-voice = In voice
 
 chat-resource-copy-link = Copy resource link
 chat-resource-open-link = Open resource in browser
+chat-voice-unavailable = Voice calls are unavailable until a media service is connected.
+chat-attachment-import-unavailable = Attachment import is unavailable on this host.
+
+# "You" belongs to the current reader; shared/legacy names identify their person.
+chat-person-unnamed = Someone ({ $tag })
+chat-person-relative-name = { $name } ({ $tag })

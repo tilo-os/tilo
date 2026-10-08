@@ -16,7 +16,29 @@ pub fn trash_dir() -> Option<PathBuf> {
         None
     }
     #[cfg(not(windows))]
-    xdg_paths::data_dir().map(|d| d.join("Trash").join("files"))
+    xdg_paths::data_dir().map(|directory| directory.join("Trash/files"))
+}
+
+/// The user's Trash accessible through an existing launcher grant. This is
+/// separate from a confined app's private-data Trash; callers can present
+/// both without redirecting legacy operations into another namespace.
+#[must_use]
+pub fn user_trash_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        let data = if std::env::var_os("TILO_APP_DIR").is_some() {
+            std::env::var_os("TILO_USER_DATA_HOME")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+        } else {
+            xdg_paths::data_dir()
+        };
+        data.map(|directory| directory.join("Trash/files"))
+    }
 }
 
 /// Permanently remove everything in the trash. Returns how many items were purged.

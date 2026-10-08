@@ -286,7 +286,8 @@ impl Client {
         }
         if let Some(mut transfer) = self.transfer.take() {
             let step = match result {
-                Ok(Reply::Rejected { reason }) | Err(reason) => transfer.failed(reason.clone()),
+                Ok(Reply::Rejected { reason }) => transfer.rejected(reason.clone()),
+                Err(reason) => transfer.failed(reason.clone()),
                 Ok(reply) => transfer.answer(reply),
             };
             return self.transfer_step(transfer, step);
@@ -426,6 +427,21 @@ impl Client {
         Ok(())
     }
 
+    pub(super) fn restore(
+        &mut self,
+        invocation: InvocationId,
+        source: SelectedDescriptor,
+        retained: Arc<RetainedObject>,
+    ) -> Result<(), String> {
+        if self.busy() {
+            return Err("another clipboard operation is still running".into());
+        }
+        let transfer = transfer::Transfer::restoring(invocation, source, retained);
+        self.send(invocation, transfer.restore_command())?;
+        self.transfer = Some(transfer);
+        Ok(())
+    }
+
     fn transfer_step(
         &mut self,
         transfer: transfer::Transfer,
@@ -434,7 +450,10 @@ impl Client {
         match step {
             transfer::Step::Done(result) => Some(result.map(Completion::Transferred)),
             transfer::Step::Send(command) => {
-                let paced = matches!(command, Command::Observe { .. } | Command::Paste { .. });
+                let paced = matches!(
+                    command,
+                    Command::Observe { .. } | Command::Paste { .. } | Command::RestoreTrash { .. }
+                );
                 if let Err(error) = self.send(transfer.invocation, command) {
                     return Some(Err(error));
                 }
@@ -654,6 +673,7 @@ impl FileExplorerWidget {
             receipt.operation.clone(),
             super::OpFollowUp::Clipboard {
                 completed: receipt.completed,
+                restore: receipt.restore,
                 error: receipt.error.clone(),
             },
         );
@@ -683,6 +703,40 @@ impl FileExplorerWidget {
         self.local_clipboard.paste(
             invocation.ok_or_else(|| t("files-clipboard-unavailable"))?,
             descriptor,
+            retained,
+        )?;
+        self.structure_dirty = true;
+        Ok(super::Ran::Pending)
+    }
+
+    pub(super) fn restore_clipboard_entry(
+        &mut self,
+        invocation: Option<InvocationId>,
+        path: &Path,
+    ) -> Result<super::Ran, String> {
+        if !self.hosted_clipboard() {
+            return Err(t("files-clipboard-unavailable"));
+        }
+        self.refuse_while_answering()?;
+        let retained = if let Some((_, retained)) = self.shown_selection.objects.get(path) {
+            retained
+                .clone()
+                .ok_or_else(|| t("files-clipboard-source-changed"))?
+        } else {
+            let observed = self
+                .entries
+                .iter()
+                .find(|entry| entry.path == path)
+                .and_then(|entry| entry.observed)
+                .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+            Arc::new(
+                RetainedObject::retain_shown(path, observed)
+                    .map_err(|_| t("files-clipboard-source-changed"))?,
+            )
+        };
+        self.local_clipboard.restore(
+            invocation.ok_or_else(|| t("files-clipboard-unavailable"))?,
+            selected(path, &retained)?,
             retained,
         )?;
         self.structure_dirty = true;

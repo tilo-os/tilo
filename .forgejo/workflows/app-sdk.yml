@@ -60,6 +60,9 @@ env:
   WASM_BINDGEN_VERSION: "0.2.108"
 
 jobs:
+  # Native PR lanes wait for these compile-free gates; invalid PRs do not
+  # consume native slots. Main keeps all selected native diagnostics even
+  # when policy fails. The dev and release browser lanes remain independent.
   # Compile-free gates: portability rules and their shrink-only baseline, the
   # capabilities each app's code uses against its manifest, the
   # manifest-generated desktop registry, the SDK patch list outside apps
@@ -69,7 +72,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -106,7 +109,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       image: ${{ steps.resolve.outputs.image }}
       main: ${{ steps.merge.outputs.main }}
@@ -142,8 +145,8 @@ jobs:
   # Linux: the CLI's own tests, the Linux artifact and .tapp of a
   # representative app, and a generated app built outside the repository.
   linux:
-    needs: [builder]
-    if: needs.builder.outputs.affected == 'true'
+    needs: [builder, policy]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # Several full debug graphs (tilo-app-cli's tests, Calculator, a generated
     # app for two targets) share one target directory: they outgrow the
     # quality lane's 20 GiB disk and reach its 5 GiB memory limit. Each step
@@ -270,8 +273,8 @@ jobs:
   # app mounted in headless Chromium on WebGPU.
   web:
     # The dev mount does not consume release artifacts; build both lanes in parallel.
-    needs: [builder]
-    if: needs.builder.outputs.affected == 'true'
+    needs: [builder, policy]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner
@@ -280,6 +283,9 @@ jobs:
       image: ${{ needs.builder.outputs.image }}
     env:
       CDP_PORT: "9333"
+      # Three isolated browsers fit the existing 6-CPU/22-GiB job budget.
+      # Set this back to "2" to roll back without changing any probe.
+      TILO_WEB_SMOKE_SHARDS: "3"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -317,11 +323,43 @@ jobs:
         run: |
           cargo run --locked -p tilo-agent-participant --example mounted-resource -- \
             target/tilo-app/web/calculator/bundle
+      - name: Compiled Chat browser disconnect and retry
+        run: |
+          target/debug/tilo-app build apps/chat --platform web
+          cargo run --locked -p tilo-agent-participant --example mounted-resource -- \
+            target/tilo-app/web/chat/bundle --disconnect-retry
+      - name: Compiled Chat browser call consent and lifecycle
+        run: |
+          install -d -m 700 -o nobody target/mounted-resource-voice
+          python3 - <<'PY'
+          import os, pathlib, shlex
+          root = pathlib.Path.cwd()
+          wrapper = root / "target/chat-fixture-chromium"
+          wrapper.write_text("#!/bin/sh\nexec python3 " +
+              shlex.quote(str(root / "tools/web/owned_browser.py")) + " " +
+              shlex.quote(os.environ["CHROME"]) + ' "$@"\n')
+          wrapper.chmod(0o755)
+          PY
+          CHROME="$PWD/target/chat-fixture-chromium" cargo run --locked \
+            --config 'target.x86_64-unknown-linux-gnu.runner=["runuser","--preserve-environment","--user","nobody","--","env","TMPDIR=/tmp","bash","tools/with-test-environment.sh"]' \
+            -p tilo-agent-participant --example mounted-resource -- \
+            target/tilo-app/web/chat/bundle --voice
+      - name: Compiled Chat encrypted resource after host restart
+        run: |
+          install -d -m 700 -o nobody target/mounted-resource-encrypted
+          CHROME="$PWD/target/chat-fixture-chromium" cargo run --locked \
+            --config 'target.x86_64-unknown-linux-gnu.runner=["runuser","--preserve-environment","--user","nobody","--","env","TMPDIR=/tmp","bash","tools/with-test-environment.sh"]' \
+            -p tilo-agent-participant --example mounted-resource -- \
+            target/tilo-app/web/chat/bundle --encrypted-restart
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
-          name: app-sdk-mounted-resource
-          path: target/mounted-resource
+          name: app-sdk-mounted-resource-${{ github.run_attempt }}
+          path: |
+            target/mounted-resource
+            target/mounted-resource-recovery
+            target/mounted-resource-voice
+            target/mounted-resource-encrypted
           if-no-files-found: error
       - name: Mount every registered app
         shell: bash
@@ -349,8 +387,8 @@ jobs:
 
   # The release desktop bundle held to its size budget, beside the mount test.
   web-size:
-    needs: [builder]
-    if: needs.builder.outputs.affected == 'true'
+    needs: [builder, policy]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner

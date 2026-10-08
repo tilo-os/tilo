@@ -8,14 +8,10 @@ import time
 import uuid
 from pathlib import Path
 
-from acceptance.vm import TiloVm, VmError, first_json, wait_until
+from acceptance.vm import TiloVm, first_json, wait_until
+from acceptance.action_jobs import require, succeeded, invoke
 
 APP = "so.tilo.terminal"
-
-
-def require(ok, message):
-    if not ok:
-        raise VmError(message)
 
 
 def identity(row):
@@ -36,35 +32,6 @@ def select(rows, operation, bound=None):
     require(row.get("contract", {}).get("availability", {}).get("state") == "available",
             f"Terminal {operation} unavailable")
     return row
-
-
-def succeeded(reply):
-    update = reply.get("receipt", {}).get("update", {})
-    require(update.get("state") == "succeeded", "action did not succeed")
-    return update.get("output", {}).get("value")
-
-
-def invoke(vm, row, args, out, name):
-    receipt = vm.invoke(row["provider"], row["id"], args)
-    (out / f"{name}-invoke.json").write_text(json.dumps(receipt, indent=2))
-    job = receipt.get("receipt", {}).get("broker_invocation_id")
-    require(isinstance(job, int) and not isinstance(job, bool), "missing broker job identity")
-
-    def probe():
-        reply = vm.control_json("actions", "status", str(job))
-        state = reply.get("receipt", {}).get("update", {}).get("state")
-        if state in ("succeeded", "failed", "cancelled"):
-            return reply
-        require(state in ("accepted", "running"), "unobservable action status")
-        return None
-
-    final = wait_until(probe, 45, interval=0.5)
-    require(final is not None, "action did not reach authoritative terminal status")
-    require(final.get("receipt", {}).get("broker_invocation_id") == job
-            and final["receipt"]["update"].get("invocation") == receipt["receipt"]["update"].get("invocation"),
-            "action status changed invocation identity")
-    (out / f"{name}-status.json").write_text(json.dumps(final, indent=2))
-    return succeeded(final)
 
 
 # Only process identities, mapped runtime ELF and hashes; no argv, environment or documents.

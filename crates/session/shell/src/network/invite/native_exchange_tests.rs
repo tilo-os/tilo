@@ -18,6 +18,15 @@ use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
 use tilo_user_identity::RevocationList;
 
+#[path = "native_exchange_tests/cold_code.rs"]
+mod cold_code;
+
+#[path = "native_exchange_tests/mounted_code.rs"]
+mod mounted_code;
+
+#[path = "native_exchange_tests/receipts.rs"]
+mod receipts;
+
 #[path = "native_exchange_tests/refresh.rs"]
 mod refresh;
 type ActualAuthority = Arc<Mutex<Option<TestGovernor>>>;
@@ -76,12 +85,12 @@ impl WorkspaceJoinService for ActualService {
 
 #[tokio::test]
 async fn native_enrollment_pinned_exchange_persists_complete_before_send() {
-    Box::pin(actual_exchange(false)).await;
+    Box::pin(actual_exchange(false, false, None)).await;
 }
 
 #[tokio::test]
 async fn native_enrollment_restart_automatically_refreshes_and_resends_retained_history() {
-    Box::pin(actual_exchange(true)).await;
+    Box::pin(actual_exchange(true, false, None)).await;
 }
 
 #[allow(
@@ -89,11 +98,19 @@ async fn native_enrollment_restart_automatically_refreshes_and_resends_retained_
     reason = "one end-to-end enrollment exchange over a real relay; the steps share live \
               endpoints and custody state that splitting would have to thread through helpers"
 )]
-async fn actual_exchange(restart: bool) {
+#[expect(
+    clippy::future_not_send,
+    reason = "the mounted journey keeps Rc UI roots on this test runtime thread"
+)]
+async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted_code::Journey>) {
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let mut remote_owner = TestGovernor::new();
+    let mut remote_owner = if cold_code {
+        cold_code::governor(directory.path())
+    } else {
+        TestGovernor::new()
+    };
     let governor = remote_owner.governor().clone();
     let governor_key = remote_owner.governor_key().clone();
     let host = remote_owner.host().clone();
@@ -109,7 +126,7 @@ async fn actual_exchange(restart: bool) {
     let topic = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
     let hint = remote_owner.hint(server.addr());
     let device_key = SigningKey::from_bytes(&[81; 32]);
-    let root_key = SigningKey::from_bytes(&[82; 32]);
+    let root_key = SigningKey::from_bytes(&[if cold_code { 0xC2 } else { 82 }; 32]);
     let mut device = DeviceCert {
         user_public_key: root_key.verifying_key().to_bytes(),
         device_public_key: device_key.verifying_key().to_bytes(),
@@ -132,6 +149,13 @@ async fn actual_exchange(restart: bool) {
     let local = tree.desktop.active;
     tree.persist_path = Some(directory.path().join("state.json"));
     let receiving_owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
+    if cold_code {
+        assert!(
+            receiving_owner.with_current(room, |_| Ok(())).is_err(),
+            "the receiving owner must not have native custody before signed enrollment"
+        );
+        assert!(!directory.path().join("cold-code-profile").exists());
+    }
     let saw = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let actual = ActualService {
         authority: Arc::new(Mutex::new(Some(remote_owner))),
@@ -267,8 +291,9 @@ async fn actual_exchange(restart: bool) {
     )
     .await
     .unwrap();
-    let publisher =
-        tilo_relay::RelayCoeditSession::join(client, topic, governor.device_public_key).unwrap();
+    let publisher = Arc::new(
+        tilo_relay::RelayCoeditSession::join(client, topic, governor.device_public_key).unwrap(),
+    );
     tilo_test_env::within("the publisher's Ready", async {
         loop {
             if matches!(
@@ -348,12 +373,24 @@ async fn actual_exchange(restart: bool) {
     receiving_owner
         .with_current(room, |view| {
             assert!(
-                view.peer().document("so.tilo.chat", "").is_some(),
-                "actual retained Chat admitted before fanout"
+                view.peer()
+                    .document(
+                        if cold_code {
+                            cold_code::APP
+                        } else {
+                            "so.tilo.chat"
+                        },
+                        if cold_code { cold_code::RECORD } else { "" }
+                    )
+                    .is_some(),
+                "actual retained application body admitted before fanout"
             );
             Ok(())
         })
         .unwrap();
+    if cold_code {
+        cold_code::assert_native_body(&receiving_owner, &identity, directory.path());
+    }
     commands
         .send(crate::network::actor::NetCmd::LeaveWorkspace { ws: topic })
         .await
@@ -375,6 +412,37 @@ async fn actual_exchange(restart: bool) {
     actor.abort();
     let _ = actor.await;
     drop(received);
+    if let Some(journey) = mounted {
+        Box::pin(mounted_code::run(
+            mounted_code::Context {
+                journey,
+                directory: &directory,
+                relay: &relay,
+                publisher: &publisher,
+                server: server.addr(),
+                endpoint: &endpoint,
+            },
+            receiving_owner.clone(),
+            &identity,
+            actual_authority.clone(),
+            receiving_custody.clone(),
+        ))
+        .await;
+    } else if cold_code {
+        Box::pin(cold_code::restart_after_offline_edits(
+            refresh::LiveExchange {
+                directory: &directory,
+                identity: &identity,
+                endpoint: &endpoint,
+                relay: &relay,
+                publisher: &publisher,
+            },
+            receiving_owner.clone(),
+            room,
+            actual_authority.clone(),
+        ))
+        .await;
+    }
     if restart {
         Box::pin(refresh::restart_after_offline_snapshot(
             refresh::LiveExchange {

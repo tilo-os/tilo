@@ -1,0 +1,18 @@
+{
+  "qualification_only": true,
+  "runtime_changes": false,
+  "cef_interface_sha256": "b84bf03de5ab390e95550f6ac428d64fb56ba41f083b9b067da3e7995395f412",
+  "files": [
+    {
+      "repo_path": "content/public/test/mock_navigation_throttle_registry.h",
+      "upstream_post_cef_sha256": "dfef4fd4ba4e4b4f3f6b656cd18d8277551b0a8d936c976fab7b9e38b751b554",
+      "candidate_sha256": "6492644dbc9e5c1845bd0a2f10c291914fa40521b1494a4f33e6878ada33642c"
+    },
+    {
+      "repo_path": "content/public/test/mock_navigation_throttle_registry.cc",
+      "upstream_post_cef_sha256": "5393fdf31e8dbc36a5f31186d1f23e6834db9a19df25c6a9babc41527c220a8a",
+      "candidate_sha256": "46ebd444d3435dda6bcad9a7b29f7b2c894f532cd3201bf83f6740d1fb709017"
+    }
+  ],
+  "patch_sha256": "63e73b3c7a5c57cf7a934068fa22e3622cb5609f5621f134585e7696569e2c3c"
+}

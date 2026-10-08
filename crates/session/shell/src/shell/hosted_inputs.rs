@@ -47,6 +47,7 @@ pub struct HostedTileInputs {
     pub files: Option<file_explorer::StartupInputs>,
     pub picker_scope: Option<crate::portal::PickerScope>,
     fixture: Option<Arc<FixtureDirectory>>,
+    fixture_clock: Option<tilo_desktop::chrome::ClockSnapshot>,
     file_services: Option<file_explorer::files_app::HostedFileServices>,
     native_apps: Arc<[NativeAppRegistration]>,
     documents: Rc<RefCell<HashMap<TabId, HostedDocumentState>>>,
@@ -102,6 +103,13 @@ impl HostedTileInputs {
                 file_explorer::files_app::HostedFileServices::deferred_document_open(),
             ),
             native_apps: Arc::from([
+                NativeAppRegistration {
+                    package_id: tilo_desktop::feedback::PACKAGE,
+                    display_name: tilo_desktop::feedback::definition().title,
+                    kind: AppKind::Other("Feedback".into()),
+                    opens_extensions: &[],
+                    opens_mime_types: &[],
+                },
                 NativeAppRegistration {
                     package_id: FILES_PACKAGE_ID,
                     display_name: "Files",
@@ -200,6 +208,7 @@ impl HostedTileInputs {
                 trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
             }),
             fixture: Some(fixture),
+            fixture_clock: None,
             file_services,
             native_apps: Arc::default(),
             documents: Rc::default(),
@@ -245,6 +254,28 @@ impl HostedTileInputs {
 
     pub(crate) fn is_fixture(&self) -> bool {
         self.fixture.is_some()
+    }
+
+    /// Give an owned fixture a stable clock, without changing the live source.
+    /// # Errors
+    /// Returns an error if these inputs belong to a live host.
+    pub fn with_fixture_clock(
+        mut self,
+        clock: tilo_desktop::chrome::ClockSnapshot,
+    ) -> std::io::Result<Self> {
+        if !self.is_fixture() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "A fixture clock requires owned fixture inputs",
+            ));
+        }
+        self.fixture_clock = Some(clock);
+        Ok(self)
+    }
+
+    pub(crate) fn fixture_clock(&self) -> Option<tilo_desktop::chrome::ClockSnapshot> {
+        self.is_fixture()
+            .then(|| self.fixture_clock.clone().unwrap_or_default())
     }
 
     /// The hosted application catalogue for this native session.

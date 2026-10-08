@@ -70,6 +70,19 @@ type = "cli"
 bin = "lib/chromium/tilo-chromium-host"
 TOML
 fi
+if [[ $package_id == so.tilo.runtime.signal ]]; then
+    test -x "$bundle/lib/lib64/ld-linux-x86-64.so.2"
+    # The declaration is part of the signed native payload identity, preventing
+    # reuse of an older installed bundle whose loader materialized as 0644.
+    printf 'lib/lib64/ld-linux-x86-64.so.2\n' > "$work/runtime-entrypoint.txt"
+    cmp "$work/runtime-entrypoint.txt" "$bundle/lib/signal-provider/runtime-entrypoint.txt"
+    cat >> "$work/manifest.toml" <<'TOML'
+
+[entrypoint]
+type = "cli"
+bin = "lib/lib64/ld-linux-x86-64.so.2"
+TOML
+fi
 file="${package_id##*.}-$version-$arch.tapp"
 "$bin_dir/tilo-app-package" pack --manifest "$work/manifest.toml" --payload "$bundle" \
     --identity "$identity" --output "$work/$file" >&2

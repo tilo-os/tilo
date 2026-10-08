@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ..RunOptions::default()
         },
     };
-    let exit = launcher::owned_service::run_connected(
+    let result = launcher::owned_service::run_connected(
         launch,
         authority,
         cancellation,
@@ -107,7 +107,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                 _ => Err(io::ErrorKind::InvalidData.into()),
             }
         })),
-    )?;
+    );
+    let exit = match result {
+        Ok(exit) => exit,
+        Err(error) => {
+            if std::env::var_os(launcher::run::DEBUG_STDERR_ENV).as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            {
+                eprintln!(
+                    "empty-profile diagnostic directory: {}",
+                    root.keep().display()
+                );
+            }
+            return Err(error.into());
+        }
+    };
     if !exit.matches(&key, &data_home, PACKAGE) {
         return Err("original owned namespace did not finish".into());
     }

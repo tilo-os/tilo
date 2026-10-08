@@ -41,7 +41,7 @@ use super::credential::{
     WireCredential, line,
 };
 use super::providers::{self, MountSpec};
-use super::volume::{CloudVolume, Health, VolumeConfig};
+use super::volume::{CloudVolume, DEFAULT_IDLE_POLL_MAX, Health, VolumeConfig};
 
 /// What a running mount tells the service.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -722,6 +722,7 @@ impl Launcher for InProcessLauncher {
                 dir: state_dir.to_path_buf(),
                 cache_budget: spec.cache_budget,
                 poll_interval: Duration::from_secs(30),
+                idle_poll_max: DEFAULT_IDLE_POLL_MAX,
             },
             Box::new(move |h| health(MountEvent::Health(h))),
         )?;
@@ -800,6 +801,7 @@ pub fn run_mount(mount_point: &Path, state_dir: &Path) -> io::Result<()> {
             dir: state_dir.to_path_buf(),
             cache_budget: spec.cache_budget,
             poll_interval: Duration::from_secs(30),
+            idle_poll_max: DEFAULT_IDLE_POLL_MAX,
         },
         Box::new(|health| {
             let mut out = io::stdout();

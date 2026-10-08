@@ -1861,7 +1861,7 @@ impl ActionPalette {
                 .is_some_and(|parameter| parameter.ty != tilo_actions::ParamType::Text);
         Some(match &fa.action.input {
             ActionInput::Immediate(enc) => ActionKind::NoArgument {
-                intent: PreparedActionIntent::Encoded(enc.clone()),
+                intent: PreparedActionIntent::Encoded(enc.as_ref().clone()),
                 context,
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
@@ -2948,9 +2948,19 @@ impl Widget for ActionPalette {
                 }
             }
         }
+        if !self.in_argument_mode()
+            && !self.history_review_required
+            && let Some(results) = self.results.accessibility()
+        {
+            children.push(results.with_hashed_key(self.target("results")));
+        }
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
-                .with_name("Action confirmation")
+                .with_name(if self.in_argument_mode() {
+                    "Action confirmation"
+                } else {
+                    "Search"
+                })
                 .with_state(crate::a11y::AccessState::new().modal(true))
                 .with_children(children),
         )
@@ -2970,6 +2980,13 @@ impl Widget for ActionPalette {
                 self.focus_part(0);
             }
             return self.field.perform_action(action, doc, path);
+        }
+        if !self.in_argument_mode() && !self.history_review_required {
+            let handled = self
+                .results
+                .perform_semantic_action(target, action, doc, path);
+            self.poll_view_activation();
+            return handled;
         }
         if self.confirm.is_none() && !self.history_review_required {
             return false;

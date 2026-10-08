@@ -156,6 +156,14 @@ policies! {
         "tilo.input.tablets",
         "tilo.input.touchpad_enabled",
         "tilo.input.host_input_migration_version",
+        // Physical model and explicit inspection choices stay with this device.
+        // Assignments identify physical devices on this host, unlike personal source order.
+        "tilo.input.keyboard_assignments",
+        "tilo.input.keyboard_model",
+        "tilo.input.keyboard_preview",
+        "tilo.input.keyboard_preview_extra_levels",
+        "tilo.input.keyboard_preview_level",
+        "tilo.input.keyboard_inspected_key",
         // Like whether the touchpad is on, whether a mouse switches it off
         // says nothing about another device's touchpad.
         "tilo.input.touchpad_disabled_on_external_mouse",

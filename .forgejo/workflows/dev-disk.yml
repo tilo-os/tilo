@@ -25,6 +25,10 @@ name: Release / Dev VM disk
 on:
   workflow_dispatch:
     inputs:
+      signed_board_image:
+        description: "Disk-only Orange Pi assembly from an already signed immutable tilo-vm child; no OS rebuild, account credentials or channel promotion."
+        required: false
+        default: ""
       source_revision:
         description: "Full commit SHA to build; empty uses the dispatched commit. Its production image must be published."
         required: false
@@ -71,6 +75,7 @@ concurrency:
 
 jobs:
   plan:
+    if: github.event.inputs.signed_board_image == ''
     runs-on: runner-quality
     timeout-minutes: 15
     outputs:
@@ -622,3 +627,49 @@ jobs:
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: ./os/dev/publish-dev-disk.sh
+
+  signed-board-disk:
+    if: github.event.inputs.signed_board_image != ''
+    runs-on: runner-disk-100g-arm64
+    timeout-minutes: 75
+    env:
+      IMAGE: ${{ github.event.inputs.signed_board_image }}
+      IMAGE_SOURCE: ${{ github.event.inputs.source_revision }}
+      TILO_DISTROBOX: ""
+      OUTPUT: /var/tmp/tilo-signed-board-disk
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install disk tools in the disposable ARM guest
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends binutils btrfs-progs curl dosfstools e2fsprogs fdisk jq mtools podman python3 qemu-utils skopeo sudo systemd uidmap util-linux zstd
+          else
+            sudo -n dnf install -y binutils btrfs-progs curl dosfstools e2fsprogs jq mtools podman python3 qemu-img skopeo sudo systemd util-linux zstd
+          fi
+          # Debian splits sfdisk out of util-linux into fdisk. Fail before the
+          # source pull if disk verification tools are unavailable to root.
+          sudo -n sfdisk --version
+      - name: Prepare disposable disk devices
+        run: bash os/dev/ci-prepare-disk-devices.sh --kata-job
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: ${{ runner.arch }}
+      - name: Assemble the signed board disk without an OS build
+        run: os/dev/assemble-signed-board-disk.sh
+      - name: Publish immutable disk and preparation proof
+        env:
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          package="${TILO_PACKAGE_PUBLIC_BASE_URL%/}/tilo-pi-flash/${IMAGE_SOURCE:0:12}-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}"
+          test -n "$TILO_PACKAGE_PUBLIC_BASE_URL"
+          printf '%s\t%s\n' "$OUTPUT/modern-orangepi-signed.qcow2" "$package/modern-orangepi-signed.qcow2" "$OUTPUT/modern-orangepi-signed.qcow2.sha256" "$package/modern-orangepi-signed.qcow2.sha256" "$OUTPUT/preparation.json" "$package/preparation.json" > "$OUTPUT/uploads.tsv"
+          tools/upload_immutable_packages.sh "$OUTPUT/uploads.tsv"
+          echo "::notice::signed-image disk preparation: $package/preparation.json"

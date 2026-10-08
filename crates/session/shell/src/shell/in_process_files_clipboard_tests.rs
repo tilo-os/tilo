@@ -4,8 +4,74 @@
 mod files_clipboard_tests {
     use super::*;
     use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
+    use std::os::unix::fs::MetadataExt as _;
     use std::path::{Path, PathBuf};
     use tilo_actions::remote::{Pending, PendingPoll};
+
+    struct RetiredOwner {
+        tree: std::sync::Weak<parking_lot::RwLock<crate::shell::state::WorkspaceTree>>,
+        runtime: crate::shell::native_workspace_owner::NativeStateWitness,
+        broker: std::sync::Weak<tilo_action_broker::collab_broker_capnp::CapnpBrokerState>,
+    }
+
+    thread_local! {
+        static RETIRED: std::cell::RefCell<Option<RetiredOwner>> = const { std::cell::RefCell::new(None) };
+    }
+
+    fn restart_lease_diagnostics(profile: &Path) {
+        RETIRED.with(|probe| {
+            if let Some(owner) = &*probe.borrow() {
+                eprintln!(
+                    "retired native owner: tree refs={}, runtime refs={}, broker refs={}",
+                    owner.tree.strong_count(),
+                    owner.runtime.retained_owners(),
+                    owner.broker.strong_count()
+                );
+            }
+        });
+        eprintln!(
+            "peer sync configured: {}",
+            crate::shell::network::collab_host_configured()
+        );
+        let sentinel = std::fs::metadata(profile.join("workspace.json.writer-lock"));
+        if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+            for entry in entries.flatten() {
+                if sentinel.as_ref().is_ok_and(|wanted| {
+                    std::fs::metadata(entry.path()).is_ok_and(|found| {
+                        found.dev() == wanted.dev() && found.ino() == wanted.ino()
+                    })
+                }) {
+                    let info = std::fs::read_to_string(
+                        Path::new("/proc/self/fdinfo").join(entry.file_name()),
+                    );
+                    eprintln!("native lease fd {:?}: {info:?}", entry.file_name());
+                }
+            }
+        }
+        if let Ok(metadata) = sentinel {
+            let inode = format!(":{}", metadata.ino());
+            match std::fs::read_to_string("/proc/locks") {
+                Ok(locks) => {
+                    for line in locks
+                        .lines()
+                        .filter(|line| line.split_whitespace().any(|field| field.ends_with(&inode)))
+                    {
+                        eprintln!("native lease kernel lock: {line}");
+                    }
+                }
+                Err(error) => eprintln!("cannot inspect kernel locks: {error}"),
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir("/proc/self/task") {
+            for entry in entries.flatten() {
+                eprintln!(
+                    "remaining thread {:?}: {:?}",
+                    entry.file_name(),
+                    std::fs::read_to_string(entry.path().join("comm"))
+                );
+            }
+        }
+    }
 
     const APP: &str = "so.tilo.file-explorer";
     const TABS: [u64; 2] = [601, 602];
@@ -180,7 +246,10 @@ mod files_clipboard_tests {
                     {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
-                    Err(error) => panic!("actual session start failed at {stage}: {error}"),
+                    Err(error) => {
+                        restart_lease_diagnostics(profile);
+                        panic!("actual session start failed at {stage}: {error}");
+                    }
                 }
             }
         }
@@ -212,9 +281,8 @@ mod files_clipboard_tests {
             };
             let collab = session.broker.capnp_socket().to_path_buf();
             let identity = session.identity_socket().to_path_buf();
-            let mut apps = InProcessApps::at(&profile.join("apps"), &session.actor)
-                .unwrap()
-                .reaching_broker(Rc::new(move |app, room| {
+            let mut apps =
+                mounted_apps(profile, &session.actor).reaching_broker(Rc::new(move |app, room| {
                     session_connector(collab.clone(), identity.clone(), app, room)
                 }));
             let mut shown = std::array::from_fn(|index| {
@@ -645,7 +713,6 @@ mod files_clipboard_tests {
 
     #[test]
     fn mounted_files_redo_restores_exact_copy_and_cut_objects_and_refuses_replacement() {
-        use std::os::unix::fs::MetadataExt as _;
         const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_redo_restores_exact_copy_and_cut_objects_and_refuses_replacement";
         let Some(profile) = isolated_session_root(TEST) else {
             return;
@@ -921,6 +988,153 @@ mod files_clipboard_tests {
         drop(fixture);
     }
 
+    fn assert_unsaved_undo_intent(fixture: &mut Fixture) {
+        let owner = fixture
+            .apps
+            .owners
+            .open(APP, &fixture.session.room)
+            .unwrap();
+        assert!(
+            owner
+                .read(
+                    &RecordId::for_tab(TABS[1]),
+                    ui::history_source::steps::pending_compensations,
+                )
+                .expect("the real receiving document must be open")
+                .is_empty(),
+            "this crash must precede durable Undo intent; the saved-intent branch has its own journey",
+        );
+    }
+
+    fn mounted_apps(profile: &Path, author: &str) -> InProcessApps {
+        let apps_root = profile.join("apps");
+        if std::env::var_os("TILO_CLIPBOARD_TEST_DEFER_DOC_SAVE").is_none() {
+            return InProcessApps::at(&apps_root, author).unwrap();
+        }
+        // Keep the real native store and its acknowledgements. Only this crash
+        // child's write schedule differs: Paste is explicitly flushed before Undo.
+        std::fs::create_dir_all(&apps_root).unwrap();
+        let native = ui::application::NativeProfile::open(&apps_root, None).unwrap();
+        InProcessApps::new(
+            Rc::new(app_state::FsStore::with_debounce(
+                apps_root,
+                std::time::Duration::from_secs(600),
+            )),
+            native.device_id(),
+            author,
+        )
+    }
+
+    fn kill_after_saving_cross_device_undo(profile: &Path, receiving: PathBuf) -> ! {
+        let mut fixture = Fixture::open_in(profile, true, [profile.join("source"), receiving]);
+        fixture.succeeds(0, "select-all");
+        fixture.succeeds(0, "cut-selection");
+        fixture.succeeds(1, "paste");
+        let owner = fixture
+            .apps
+            .owners
+            .open(APP, &fixture.session.room)
+            .unwrap();
+        owner.try_flush().unwrap();
+        let pause = crate::shell::broker_services::TestTransferPause::new(
+            &fixture.folders[1],
+            "compensation-after-publish",
+        );
+        fixture.start_invoke_at(1, "undo", serde_json::Map::default(), None);
+        let [first, second] = &mut fixture.shown;
+        until(
+            &mut [first, second],
+            "actual Undo target publication",
+            || pause.entered(),
+        );
+        let pending = owner
+            .read(
+                &RecordId::for_tab(TABS[1]),
+                ui::history_source::steps::pending_compensations,
+            )
+            .expect("the real receiving document must be open");
+        assert_eq!(
+            pending.len(),
+            1,
+            "the original Undo must still await its host receipt"
+        );
+        owner.try_flush().unwrap();
+        // Kill only after the real owner's acknowledgement of this pending intent.
+        // The worker is still held after durable publication and before removal.
+        // SAFETY: this phase runs only in its isolated child; the fixed
+        // signal targets that process's own PID and invokes no cleanup.
+        unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+        // The live session must survive until the signal. This cleanup can only
+        // execute if the kill failed, in which case the test must fail too.
+        drop(fixture);
+        unreachable!("the isolated test process must be killed");
+    }
+
+    #[test]
+    fn mounted_files_cold_recovery_settles_a_saved_cross_device_undo() {
+        use std::os::unix::{fs::MetadataExt as _, process::ExitStatusExt as _};
+        const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_cold_recovery_settles_a_saved_cross_device_undo";
+        let Some(profile) = isolated_session_root(TEST) else {
+            return;
+        };
+        if let Some(receiving) = std::env::var_os("TILO_CLIPBOARD_TEST_CROSS_DEVICE") {
+            kill_after_saving_cross_device_undo(&profile, PathBuf::from(receiving));
+        }
+        std::fs::create_dir_all(&profile).unwrap();
+        let remote_mount = tempfile::Builder::new()
+            .prefix("tilo-saved-undo-cross-device-")
+            .tempdir_in("/dev/shm")
+            .expect("a real second filesystem is required");
+        assert_ne!(
+            std::fs::metadata(&profile).unwrap().dev(),
+            std::fs::metadata(remote_mount.path()).unwrap().dev(),
+        );
+        let root = profile.join("interrupted");
+        let receiving = remote_mount.path().join("receiving");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("TILO_IN_PROCESS_TEST_ROOT", &root)
+            .env("TILO_CLIPBOARD_TEST_CROSS_DEVICE", &receiving)
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        assert_eq!(
+            std::fs::read(root.join("source/report")).unwrap(),
+            b"original source"
+        );
+        let mut fixture = Fixture::open_in(&root, false, [root.join("source"), receiving.clone()]);
+        assert_eq!(
+            fixture.succeeds(1, "recover-clipboard-transfers")["completed"],
+            1
+        );
+        assert!(!receiving.join("report").exists());
+        assert_eq!(
+            std::fs::read(root.join("source/report")).unwrap(),
+            b"original source"
+        );
+        let history = fixture.succeeds(1, "history");
+        assert!(
+            history["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["action"] == "Paste files" && entry["undone"] == true),
+            "cold recovery must settle the actual saved Undo: {history}"
+        );
+        let result = fixture.invoke(1, "undo");
+        drop(fixture);
+        assert!(
+            matches!(&result, tilo_actions::InvocationUpdate::Failed { error, .. }
+            if error.message.contains("nothing in effect to undo")),
+            "a second Undo has no in-effect step after recovery: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("source/report")).unwrap(),
+            b"original source"
+        );
+        assert!(!receiving.join("report").exists());
+    }
+
     #[test]
     fn mounted_files_cross_device_undo_recovers_after_process_kill() {
         use std::os::unix::{fs::MetadataExt as _, process::ExitStatusExt as _};
@@ -963,6 +1177,7 @@ mod files_clipboard_tests {
             .args(["--exact", TEST, "--nocapture"])
             .env("TILO_IN_PROCESS_TEST_ROOT", &root)
             .env("TILO_CLIPBOARD_TEST_KILL_AT", "compensation-after-publish")
+            .env("TILO_CLIPBOARD_TEST_DEFER_DOC_SAVE", "1")
             .env("TILO_CLIPBOARD_TEST_CROSS_DEVICE", &receiving)
             .status()
             .unwrap();
@@ -976,6 +1191,7 @@ mod files_clipboard_tests {
             b"original source"
         );
         let mut fixture = Fixture::open_in(&root, false, [root.join("source"), receiving.clone()]);
+        assert_unsaved_undo_intent(&mut fixture);
         let result = fixture.succeeds(1, "recover-clipboard-transfers");
         assert_eq!(
             result["completed"], 1,
@@ -1013,7 +1229,6 @@ mod files_clipboard_tests {
 
     #[test]
     fn mounted_files_clipboard_undo_redo_crosses_real_filesystems() {
-        use std::os::unix::fs::MetadataExt as _;
         const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_clipboard_undo_redo_crosses_real_filesystems";
         let Some(profile) = isolated_session_root(TEST) else {
             return;
@@ -1088,6 +1303,14 @@ mod files_clipboard_tests {
             .unwrap()
             .try_flush()
             .unwrap();
+        let tree = fixture.session.workspace_tree();
+        let probe = RetiredOwner {
+            tree: std::sync::Arc::downgrade(&tree),
+            runtime: tree.read().native_runtime.authority_witness(),
+            broker: std::sync::Arc::downgrade(fixture.broker.state()),
+        };
+        RETIRED.with(|retired| *retired.borrow_mut() = Some(probe));
+        drop(tree);
         drop(fixture);
 
         // Reopen the real session, broker and app records. No source bytes,
@@ -1190,6 +1413,7 @@ mod files_clipboard_tests {
         ));
         let metadata = std::fs::read_to_string(info).unwrap();
         assert!(metadata.contains("[Trash Info]\n"));
+        grant_native_trash(&fixture);
         // Open the existing Trash resource and invoke its declared Restore,
         // rather than restoring through a test-only filesystem helper.
         let mut arguments = serde_json::Map::new();
@@ -1223,6 +1447,447 @@ mod files_clipboard_tests {
             b"original source"
         );
         assert!(!recovery.exists(), "Restore consumes the exact Trash item");
+        drop(fixture);
+    }
+
+    fn grant_native_trash(fixture: &Fixture) -> Vec<String> {
+        fixture.session.workspace_tree().write().workspaces[0].grant_app(
+            APP,
+            &Capability::Filesystem {
+                path: xdg_paths::data_dir().expect("isolated user data root"),
+                mode: FsMode::ReadWrite,
+                scope: GRANT_SESSION,
+            },
+        )
+    }
+
+    fn native_trash_pair(trash: &Path) -> PathBuf {
+        let mut name = trash.file_name().unwrap().to_os_string();
+        name.push(".trashinfo");
+        trash
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("info")
+            .join(name)
+    }
+
+    fn edited_copy_in_native_trash(fixture: &mut Fixture) -> PathBuf {
+        fixture.succeeds(0, "select-all");
+        fixture.succeeds(0, "copy-selection");
+        fixture.succeeds(1, "paste");
+        std::fs::write(
+            fixture.folders[1].join("report"),
+            b"edited after Paste before Undo",
+        )
+        .unwrap();
+        fixture.succeeds(1, "undo");
+        let root = xdg_paths::data_dir().unwrap().join("Trash/files");
+        let entries = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1, "one actual host Trash item");
+        assert_eq!(
+            std::fs::read(&entries[0]).unwrap(),
+            b"edited after Paste before Undo"
+        );
+        entries[0].clone()
+    }
+
+    fn restore_native_entry(fixture: &mut Fixture, trash: &Path) -> tilo_actions::InvocationUpdate {
+        fixture.invoke_at(
+            1,
+            "restore",
+            serde_json::Map::new(),
+            Some(&trash.file_name().unwrap().to_string_lossy()),
+        )
+    }
+
+    #[test]
+    fn mounted_files_native_trash_restore_preserves_edited_bytes_and_cold_history() {
+        const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_native_trash_restore_preserves_edited_bytes_and_cold_history";
+        let Some(profile) = isolated_session_root(TEST) else {
+            return;
+        };
+        let mut fixture = Fixture::new(&profile);
+        let trash = edited_copy_in_native_trash(&mut fixture);
+        let info = native_trash_pair(&trash);
+        grant_native_trash(&fixture);
+        let before = fixture.succeeds(1, "clipboard-status");
+        let listing = fixture.succeeds(1, "open-trash");
+        assert!(
+            listing["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.as_str() == trash.file_name().unwrap().to_str())
+        );
+        let update = restore_native_entry(&mut fixture, &trash);
+        assert!(
+            matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+            "{update:?}"
+        );
+        assert_eq!(
+            std::fs::read(fixture.folders[1].join("report")).unwrap(),
+            b"edited after Paste before Undo"
+        );
+        assert!(!trash.exists());
+        assert!(!info.exists());
+        assert_eq!(
+            fixture.succeeds(1, "clipboard-status"),
+            before,
+            "Restore keeps the workspace clipboard offer"
+        );
+        let history = fixture.succeeds(1, "history");
+        assert!(
+            history["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["action"] == "Restore file"),
+            "{history}"
+        );
+        fixture
+            .apps
+            .owners
+            .open(APP, &fixture.session.room)
+            .unwrap()
+            .try_flush()
+            .unwrap();
+        drop(fixture);
+        let mut fixture = Fixture::resume(&profile);
+        let refused = fixture.invoke(1, "undo");
+        assert!(
+            matches!(refused, tilo_actions::InvocationUpdate::Failed { .. }),
+            "saved Restore cannot create a new Trash grant: {refused:?}"
+        );
+        assert_eq!(
+            std::fs::read(fixture.folders[1].join("report")).unwrap(),
+            b"edited after Paste before Undo"
+        );
+        grant_native_trash(&fixture);
+        fixture.succeeds(1, "undo");
+        assert!(!fixture.folders[1].join("report").exists());
+        assert_eq!(
+            std::fs::read(&trash).unwrap(),
+            b"edited after Paste before Undo"
+        );
+        assert!(info.is_file());
+        fixture
+            .apps
+            .owners
+            .open(APP, &fixture.session.room)
+            .unwrap()
+            .try_flush()
+            .unwrap();
+        drop(fixture);
+        let mut fixture = Fixture::resume(&profile);
+        grant_native_trash(&fixture);
+        fixture.succeeds(1, "redo");
+        assert_eq!(
+            std::fs::read(fixture.folders[1].join("report")).unwrap(),
+            b"edited after Paste before Undo"
+        );
+        assert!(!trash.exists());
+        assert!(!info.exists());
+        drop(fixture);
+    }
+
+    #[test]
+    fn mounted_files_native_trash_restore_recovers_after_process_kill() {
+        const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_native_trash_restore_recovers_after_process_kill";
+        native_trash_restore_kill_journey(TEST, "cut-before-remove");
+    }
+
+    #[test]
+    fn mounted_files_native_trash_restore_recovers_held_metadata_after_process_kill() {
+        const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_native_trash_restore_recovers_held_metadata_after_process_kill";
+        native_trash_restore_kill_journey(TEST, "restore-info-retained");
+    }
+
+    fn native_trash_restore_kill_journey(test: &str, phase: &str) {
+        let Some(profile) = isolated_session_root(test) else {
+            return;
+        };
+        if let Some(receiving) = std::env::var_os("TILO_CLIPBOARD_TEST_CROSS_DEVICE") {
+            let mut fixture = Fixture::open_in(
+                &profile,
+                true,
+                [profile.join("source"), PathBuf::from(receiving)],
+            );
+            let trash = edited_copy_in_native_trash(&mut fixture);
+            grant_native_trash(&fixture);
+            fixture.succeeds(1, "open-trash");
+            fixture
+                .apps
+                .owners
+                .open(APP, &fixture.session.room)
+                .unwrap()
+                .try_flush()
+                .unwrap();
+            std::fs::write(
+                profile.join("restore-trash-path"),
+                trash.as_os_str().as_encoded_bytes(),
+            )
+            .unwrap();
+            restore_native_entry(&mut fixture, &trash);
+            drop(fixture);
+            panic!("the actual cross-device Restore phase was not reached");
+        }
+        std::fs::create_dir_all(&profile).unwrap();
+        let remote_mount = tempfile::Builder::new()
+            .prefix("tilo-restore-cross-device-")
+            .tempdir_in("/dev/shm")
+            .expect("a real second filesystem is required");
+        assert_ne!(
+            std::fs::metadata(&profile).unwrap().dev(),
+            std::fs::metadata(remote_mount.path()).unwrap().dev()
+        );
+        recover_killed_restore(
+            &profile.join("interrupted"),
+            &remote_mount.path().join("receiving"),
+            phase,
+            test,
+        );
+    }
+
+    fn recover_killed_restore(root: &Path, receiving: &Path, phase: &str, test: &str) {
+        use std::os::unix::ffi::OsStringExt as _;
+        use std::os::unix::process::ExitStatusExt as _;
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env("TILO_IN_PROCESS_TEST_ROOT", root)
+            .env("TILO_CLIPBOARD_TEST_CROSS_DEVICE", receiving)
+            .env("TILO_CLIPBOARD_TEST_KILL_AT", phase)
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        let trash = PathBuf::from(std::ffi::OsString::from_vec(
+            std::fs::read(root.join("restore-trash-path")).unwrap(),
+        ));
+        let info = native_trash_pair(&trash);
+        let mut held = info.as_os_str().to_os_string();
+        held.push(".tilo-restore-held");
+        let held = PathBuf::from(held);
+        if phase == "restore-info-retained" {
+            assert!(!info.exists());
+            assert!(held.is_file());
+            assert_eq!(
+                std::fs::read(receiving.join("report")).unwrap(),
+                b"edited after Paste before Undo"
+            );
+        }
+        let mut fixture =
+            Fixture::open_in(root, false, [root.join("source"), receiving.to_path_buf()]);
+        grant_native_trash(&fixture);
+        assert_eq!(
+            fixture.succeeds(1, "recover-clipboard-transfers")["completed"],
+            1
+        );
+        assert!(!receiving.join("report").exists());
+        assert_eq!(
+            std::fs::read(&trash).unwrap(),
+            b"edited after Paste before Undo"
+        );
+        assert!(
+            info.is_file(),
+            "recovery must retain matching standard Trash metadata"
+        );
+        assert!(
+            !held.exists(),
+            "recovery must return its exact held metadata"
+        );
+        fixture.succeeds(1, "open-trash");
+        assert!(matches!(
+            restore_native_entry(&mut fixture, &trash),
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ));
+        assert_eq!(
+            std::fs::read(receiving.join("report")).unwrap(),
+            b"edited after Paste before Undo"
+        );
+        assert!(!trash.exists());
+        assert!(!info.exists());
+        drop(fixture);
+    }
+
+    #[test]
+    fn mounted_files_native_trash_restore_refuses_conflicts_and_revoked_grants() {
+        const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_native_trash_restore_refuses_conflicts_and_revoked_grants";
+        let Some(profile) = isolated_session_root(TEST) else {
+            return;
+        };
+        let mut fixture = Fixture::new(&profile);
+        let trash = edited_copy_in_native_trash(&mut fixture);
+        let info = native_trash_pair(&trash);
+        let metadata = std::fs::read(&info).unwrap();
+        let grants = grant_native_trash(&fixture);
+        let before = fixture.succeeds(1, "clipboard-status");
+        fixture.succeeds(1, "open-trash");
+        let destination = fixture.folders[1].join("report");
+        std::fs::write(&destination, b"new occupant").unwrap();
+        assert!(matches!(
+            restore_native_entry(&mut fixture, &trash),
+            tilo_actions::InvocationUpdate::Failed { .. }
+        ));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new occupant");
+        assert_eq!(
+            std::fs::read(&trash).unwrap(),
+            b"edited after Paste before Undo"
+        );
+        assert_eq!(std::fs::read(&info).unwrap(), metadata);
+        std::fs::remove_file(&destination).unwrap();
+        for grant in grants {
+            assert!(
+                fixture.session.workspace_tree().write().workspaces[0].revoke_capability(&grant)
+            );
+        }
+        assert!(matches!(
+            restore_native_entry(&mut fixture, &trash),
+            tilo_actions::InvocationUpdate::Failed { .. }
+        ));
+        assert!(!destination.exists());
+        assert_eq!(
+            std::fs::read(&trash).unwrap(),
+            b"edited after Paste before Undo"
+        );
+        assert_eq!(std::fs::read(&info).unwrap(), metadata);
+        grant_native_trash(&fixture);
+        assert!(matches!(
+            restore_native_entry(&mut fixture, &trash),
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ));
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"edited after Paste before Undo"
+        );
+        assert_eq!(fixture.succeeds(1, "clipboard-status"), before);
+        drop(fixture);
+    }
+
+    fn paused_restore_refuses(fixture: &mut Fixture, trash: &Path, case: &str) {
+        use crate::shell::broker_services::TestTransferPause;
+        let info = native_trash_pair(trash);
+        let original = std::fs::read(&info).unwrap();
+        let grants = grant_native_trash(fixture);
+        let destination = fixture.folders[1].join("report");
+        let pause = TestTransferPause::new(&fixture.folders[1], "restore-before-transfer");
+        let (job, invocation) = fixture.start_invoke_at(
+            1,
+            "restore",
+            serde_json::Map::new(),
+            Some(&trash.file_name().unwrap().to_string_lossy()),
+        );
+        {
+            let [first, second] = &mut fixture.shown;
+            until(
+                &mut [first, second],
+                "admitted Restore reaches the real transfer boundary",
+                || pause.entered(),
+            );
+        }
+        match case {
+            "revoked" => {
+                for grant in grants {
+                    assert!(
+                        fixture.session.workspace_tree().write().workspaces[0]
+                            .revoke_capability(&grant)
+                    );
+                }
+            }
+            "metadata" => {
+                let mut changed = original.clone();
+                changed.extend_from_slice(b"\n# changed after admission\n");
+                std::fs::write(&info, changed).unwrap();
+            }
+            "occupied" => {
+                std::fs::write(&destination, b"new occupant").unwrap();
+            }
+            "cancel" => {
+                fixture.host.cancel(&invocation).unwrap();
+            }
+            _ => panic!("unknown Restore journey {case}"),
+        }
+        let expected_metadata = std::fs::read(&info).unwrap();
+        pause.release();
+        {
+            let [first, second] = &mut fixture.shown;
+            until(&mut [first, second], "actual Restore worker stops", || {
+                pause.finished()
+            });
+        }
+        let update = fixture.settle_job(job);
+        if case == "cancel" {
+            assert!(
+                matches!(update, tilo_actions::InvocationUpdate::Cancelled { .. }),
+                "{update:?}"
+            );
+        } else {
+            assert!(
+                matches!(update, tilo_actions::InvocationUpdate::Failed { .. }),
+                "{case}: {update:?}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(trash).unwrap(),
+            b"edited after Paste before Undo",
+            "{case}"
+        );
+        assert_eq!(std::fs::read(&info).unwrap(), expected_metadata, "{case}");
+        if case == "occupied" {
+            assert_eq!(std::fs::read(&destination).unwrap(), b"new occupant");
+            std::fs::remove_file(destination).unwrap();
+        } else {
+            assert!(!destination.exists(), "{case} must publish no destination");
+        }
+        if case == "metadata" {
+            std::fs::write(info, original).unwrap();
+        }
+    }
+
+    #[test]
+    fn mounted_files_native_trash_restore_rechecks_admitted_objects_and_cancellation() {
+        const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_native_trash_restore_rechecks_admitted_objects_and_cancellation";
+        let Some(profile) = isolated_session_root(TEST) else {
+            return;
+        };
+        let mut fixture = Fixture::new(&profile);
+        let trash = edited_copy_in_native_trash(&mut fixture);
+        grant_native_trash(&fixture);
+        let before = fixture.succeeds(1, "clipboard-status");
+        fixture.succeeds(1, "open-trash");
+        let page = fixture.host.query(tilo_actions::remote::CatalogueQuery {
+            provider: Some(fixture.providers[1].clone()),
+            needle: "delete-permanently".into(),
+            ..Default::default()
+        });
+        let page = fixture.wait(page).unwrap();
+        assert!(
+            !page.rows.iter().any(|row| {
+                row.resource.kind == "files.entry"
+                    && row.resource.label == trash.file_name().unwrap().to_string_lossy()
+                    && row
+                        .action
+                        .as_ref()
+                        .is_some_and(|action| action.address.action == "delete-permanently")
+            }),
+            "host Trash must not offer a private-namespace purge"
+        );
+        for case in ["revoked", "metadata", "occupied", "cancel"] {
+            paused_restore_refuses(&mut fixture, &trash, case);
+        }
+        grant_native_trash(&fixture);
+        assert!(matches!(
+            restore_native_entry(&mut fixture, &trash),
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ));
+        assert_eq!(fixture.succeeds(1, "clipboard-status"), before);
+        assert_eq!(
+            std::fs::read(fixture.folders[1].join("report")).unwrap(),
+            b"edited after Paste before Undo"
+        );
         drop(fixture);
     }
 
@@ -1457,6 +2122,62 @@ mod files_clipboard_tests {
         drop(fixture);
     }
 
+    fn restore_and_capture_native_copy(
+        fixture: &mut Fixture,
+        renderer: &mut ui::offscreen::OffscreenRenderer,
+        themes: &[(&str, ui::theme::Theme)],
+        edited: &[u8],
+    ) {
+        grant_native_trash(fixture);
+        fixture.succeeds(1, "open-trash");
+        let retained = std::fs::read_dir(xdg_paths::data_dir().unwrap().join("Trash/files"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), 1, "one exact retained native Copy");
+        let retained = &retained[0];
+        assert_eq!(std::fs::read(retained).unwrap(), edited);
+        for (name, theme) in themes {
+            fixture.capture(renderer, theme, &format!("before-trash-restore-{name}"));
+        }
+        let update = restore_native_entry(fixture, retained);
+        assert!(
+            matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+            "actual native entry Restore must complete: {update:?}"
+        );
+        assert_eq!(
+            std::fs::read(fixture.folders[1].join("report")).unwrap(),
+            edited
+        );
+        assert!(!retained.exists());
+        assert!(!native_trash_pair(retained).exists());
+        let receiving = fixture.folders[1].clone();
+        let update = fixture.invoke_with(
+            1,
+            "go-to",
+            serde_json::json!({"path": receiving.to_string_lossy()})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(matches!(
+            update,
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ));
+        for (name, theme) in themes {
+            fixture.capture(renderer, theme, &format!("after-trash-restore-{name}"));
+        }
+        let history = fixture.succeeds(1, "history");
+        assert!(
+            history["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["action"] == "Restore file"),
+            "actual Restore must be in shared history: {history}"
+        );
+    }
+
     #[test]
     fn mounted_files_native_paste_renders_its_receipt_in_three_themes() {
         const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_native_paste_renders_its_receipt_in_three_themes";
@@ -1497,6 +2218,8 @@ mod files_clipboard_tests {
         for (name, theme) in &themes {
             fixture.capture(&mut renderer, theme, &format!("after-redo-{name}"));
         }
+        let edited = b"edited after Paste before Undo";
+        std::fs::write(fixture.folders[1].join("report"), edited).unwrap();
         fixture.succeeds(1, "undo");
         let trash = file_explorer::fileops::trash_dir().expect("the isolated home has Trash");
         let update = fixture.invoke_with(
@@ -1514,6 +2237,7 @@ mod files_clipboard_tests {
         for (name, theme) in &themes {
             fixture.capture(&mut renderer, theme, &format!("trash-recovery-{name}"));
         }
+        restore_and_capture_native_copy(&mut fixture, &mut renderer, &themes, edited);
         drop(fixture);
     }
 

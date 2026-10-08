@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -68,6 +69,18 @@ enum Fault {
     DelaySend,
     SwapOnRead,
     ChangeOnRead,
+    RevokeAfterCreate,
+}
+#[derive(Default)]
+struct SimPermission(AtomicBool);
+impl SimAuthority for SimPermission {
+    fn check(&self) -> Result<(), Error> {
+        if self.0.load(Ordering::Acquire) {
+            Err(Error::WrongAccount)
+        } else {
+            Ok(())
+        }
+    }
 }
 #[derive(Default)]
 struct Evidence {
@@ -85,6 +98,9 @@ struct Evidence {
     timestamp: String,
     state_reads: usize,
     inbox_copies: usize,
+    permission: Arc<SimPermission>,
+    journal_at_revoke: Option<std::path::PathBuf>,
+    revoked_bytes: Option<Vec<u8>>,
 }
 #[derive(Clone)]
 struct Modem(OwnedObjectPath);
@@ -117,6 +133,11 @@ impl Messaging {
         state.text = String::try_from(properties.remove("text").unwrap()).unwrap();
         if state.fault == Fault::SwapAfterCreate {
             state.iccid = "8901000000000000002".into();
+        }
+        if state.fault == Fault::RevokeAfterCreate {
+            state.revoked_bytes =
+                Some(std::fs::read(state.journal_at_revoke.as_ref().unwrap()).unwrap());
+            state.permission.0.store(true, Ordering::Release);
         }
         drop(state);
         MESSAGE_PATH.try_into().unwrap()
@@ -272,7 +293,12 @@ impl Fixture {
                 .unwrap();
         SmsRuntime::new(
             owner(),
-            DbusTransport::new(self.client.clone(), modem),
+            DbusTransport::new(
+                self.client.clone(),
+                modem,
+                self.state.lock().unwrap().permission.clone(),
+            )
+            .unwrap(),
             journal,
         )
         .unwrap()
@@ -300,6 +326,74 @@ fn accounts() -> accounts::AccountStore {
 }
 fn route() -> Route {
     Route::new(Service::Sms, "fixture-sim".into(), "+12025550123".into()).unwrap()
+}
+
+#[tokio::test]
+async fn revoked_sim_permission_refuses_before_hardware_or_journal_writes() {
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let mut runtime = fixture.runtime(root.path());
+    let file = root.path().join(secret_vault::VAULT_FILE);
+    let before = std::fs::read(&file).ok();
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .permission
+        .0
+        .store(true, Ordering::Release);
+    assert!(
+        runtime
+            .send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "revoked",
+                "private fixture text",
+                Duration::from_secs(2)
+            )
+            .await
+            .is_err()
+    );
+    let state = fixture.state.lock().unwrap();
+    assert_eq!((state.creates, state.sends), (0, 0));
+    drop(state);
+    assert_eq!(std::fs::read(file).ok(), before);
+    assert_eq!(runtime.status("revoked"), None);
+}
+
+#[tokio::test]
+async fn revocation_during_create_never_sends_or_rewrites_the_private_journal() {
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let mut runtime = fixture.runtime(root.path());
+    let file = root.path().join(secret_vault::VAULT_FILE);
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.fault = Fault::RevokeAfterCreate;
+        state.journal_at_revoke = Some(file.clone());
+    }
+    assert!(matches!(
+        runtime
+            .send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "interrupted",
+                "private fixture text",
+                Duration::from_secs(2)
+            )
+            .await,
+        Err(CheckedSendError::Transport(SendError::Uncertain))
+    ));
+    let state = fixture.state.lock().unwrap();
+    assert_eq!((state.creates, state.sends), (1, 0));
+    assert_eq!(
+        std::fs::read(file).unwrap(),
+        *state.revoked_bytes.as_ref().unwrap()
+    );
+    drop(state);
+    assert_eq!(runtime.status("interrupted"), Some(Status::Started));
 }
 
 #[tokio::test]
@@ -1090,31 +1184,21 @@ async fn actual_sms_broker_receives_private_durable_exact_route_history_without_
 }
 
 #[cfg(feature = "signal-broker")]
-#[tokio::test]
-async fn actual_sms_arrival_wakes_messages_without_shared_plaintext() {
+fn sms_messages_app(
+    broker: &crate::external_broker::ExternalBroker,
+    route: &tilo_contact_directory::routing::Route,
+) -> (
+    ui::framework::testing::TestApp<messages::MessagesShell>,
+    String,
+) {
     use messages::{MessagesEffect, MessagesShell};
     use tilo_contact_directory::ContactDirectory;
-    let fixture = Fixture::new().await;
-    let root = tempfile::tempdir().unwrap();
-    let route = contact_route();
-    let broker = crate::external_broker::ExternalBroker::new(
-        Box::new(fixture.runtime(&root.path().join("journal"))),
-        crate::signal_broker::History::open(
-            &root.path().join("history"),
-            &owner(),
-            secret_vault::VaultKey::from_bytes([19; 32]),
-        )
-        .unwrap(),
-        route.scope.clone(),
-        Arc::new(ReceiveGate(std::sync::atomic::AtomicBool::new(false))),
-    )
-    .unwrap();
     let mut app = ui::framework::testing::TestApp::<MessagesShell>::for_person_with_lent(
         &owner().principal,
         broker.client(),
     )
     .unwrap();
-    crate::external_broker::tests::project_account_metadata(&owner(), &route, &mut app);
+    crate::external_broker::tests::project_account_metadata(&owner(), route, &mut app);
     let directory = app.shared_person::<ContactDirectory>().unwrap();
     directory
         .invoke(&ContactDirectory::PROJECT_CONTACT.with((route.person.clone(), "Alex".into())))
@@ -1142,7 +1226,34 @@ async fn actual_sms_arrival_wakes_messages_without_shared_plaintext() {
         choice: choice.clone(),
     })
     .unwrap();
-    app.effect(&MessagesEffect::ReadHistory { choice }).unwrap();
+    app.effect(&MessagesEffect::ReadHistory {
+        choice: choice.clone(),
+    })
+    .unwrap();
+    (app, choice)
+}
+
+#[cfg(feature = "signal-broker")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_shared_state() {
+    use messages::MessagesEffect;
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let route = contact_route();
+    let gate = Arc::new(ReceiveGate(std::sync::atomic::AtomicBool::new(false)));
+    let broker = crate::external_broker::ExternalBroker::new(
+        Box::new(fixture.runtime(&root.path().join("journal"))),
+        crate::signal_broker::History::open(
+            &root.path().join("history"),
+            &owner(),
+            secret_vault::VaultKey::from_bytes([19; 32]),
+        )
+        .unwrap(),
+        route.scope.clone(),
+        gate.clone(),
+    )
+    .unwrap();
+    let (mut app, choice) = sms_messages_app(&broker, &route);
     let guard = broker.start_sms_receiver().await.unwrap();
     receive_state(&mut fixture.state.lock().unwrap());
     added(&fixture).await;
@@ -1158,7 +1269,131 @@ async fn actual_sms_arrival_wakes_messages_without_shared_plaintext() {
         "SMS arrival must refresh the selected private view"
     );
     assert!(!app.harness().dump_json().contains("private incoming SMS"));
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (0, 0));
+        drop(state);
+    }
+    // Use the same private Messages view and actual native D-Bus adapter.
+    // The receive-only fixture object becomes the newly created outgoing SMS.
+    drop(guard);
+    fixture.state.lock().unwrap().incoming = false;
+    let reply = MessagesEffect::Send {
+        choice: choice.clone(),
+        operation: "sms-native-ui-reply".into(),
+        text: "private SMS reply".into(),
+    };
+    assert!(
+        app.effect(&reply).is_err(),
+        "submission requires explicit effect confirmation"
+    );
+    let receipt = app.effect_confirmed(&reply).unwrap();
+    assert_eq!(
+        receipt.value.unwrap()["status"],
+        "submitted",
+        "a native Send reply is not evidence of carrier delivery"
+    );
+    assert!(
+        app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label() == Some("private SMS reply"))
+    );
+    assert!(!app.harness().dump_json().contains("private SMS reply"));
+    {
+        let state = fixture.state.lock().unwrap();
+        assert_eq!((state.creates, state.sends), (1, 1));
+        assert_eq!(state.number, route.recipient);
+        assert_eq!(state.text, "private SMS reply");
+        drop(state);
+    }
+    let private_files = |directory: &Path| {
+        let mut files: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                (path.clone(), std::fs::read(path).unwrap())
+            })
+            .collect();
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    };
+    let before = private_files(&root.path().join("history"));
+    gate.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = MessagesEffect::Send {
+        choice,
+        operation: "sms-native-revoked-reply".into(),
+        text: "revoked SMS reply".into(),
+    };
+    assert!(app.effect_confirmed(&refused).is_err());
+    assert_eq!(
+        broker.observe_sms_message(route, MESSAGE_PATH.into()).await,
+        Err(tilo_messaging::SendError::Revoked)
+    );
+    assert_eq!(
+        private_files(&root.path().join("history")),
+        before,
+        "revocation must stop private history writes as well as native submission"
+    );
     let state = fixture.state.lock().unwrap();
-    assert_eq!((state.creates, state.sends), (0, 0));
+    assert_eq!((state.creates, state.sends), (1, 1));
     drop(state);
+}
+
+#[tokio::test]
+async fn encrypted_selected_sim_resume_requires_exact_owner_current_hardware_and_original_permission()
+ {
+    let fixture = Fixture::new().await;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("sim.enc");
+    let key = secret_vault::VaultKey::from_slice(&[0x44; 32]).unwrap();
+    let original = SimBinding::new(
+        fixture.server.unique_name().unwrap().to_string(),
+        MODEM_PATH.into(),
+        SIM_PATH.into(),
+        ICCID.into(),
+        7,
+    )
+    .unwrap();
+    original.save(&path, &owner(), &key).unwrap();
+    let ciphertext = std::fs::read(&path).unwrap();
+    assert!(
+        !ciphertext
+            .windows(ICCID.len())
+            .any(|bytes| bytes == ICCID.as_bytes())
+    );
+    let restored = SimBinding::load(&path, &owner(), &key, &fixture.client)
+        .await
+        .unwrap();
+    let permission = fixture.state.lock().unwrap().permission.clone();
+    DbusTransport::new(fixture.client.clone(), restored, permission.clone())
+        .unwrap()
+        .validate()
+        .await
+        .unwrap();
+    let mut foreign = owner();
+    foreign.account = "foreign-sim-account".into();
+    assert!(matches!(
+        SimBinding::load(&path, &foreign, &key, &fixture.client).await,
+        Err(Error::WrongAccount)
+    ));
+    fixture.state.lock().unwrap().iccid = "8901000000000000002".into();
+    let changed = SimBinding::load(&path, &owner(), &key, &fixture.client)
+        .await
+        .unwrap();
+    assert_eq!(
+        DbusTransport::new(fixture.client.clone(), changed, permission.clone())
+            .unwrap()
+            .validate()
+            .await,
+        Err(Error::WrongAccount)
+    );
+    permission.0.store(true, Ordering::Release);
+    let restored = SimBinding::load(&path, &owner(), &key, &fixture.client)
+        .await
+        .unwrap();
+    assert!(DbusTransport::new(fixture.client.clone(), restored, permission).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), ciphertext);
+    assert_eq!(fixture.state.lock().unwrap().creates, 0);
+    assert_eq!(fixture.state.lock().unwrap().sends, 0);
 }

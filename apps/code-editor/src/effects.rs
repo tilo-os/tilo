@@ -109,6 +109,16 @@ pub enum CodeEditorEffect {
     /// Turn language servers on or off.
     #[effect(permission = "read")]
     ToggleLanguageServers,
+    /// Read file text.
+    #[effect(row, permission = "read", returns, idempotent)]
+    ReadText {
+        #[param("The file record's id")]
+        file: String,
+        #[param("Zero-based position in Unicode scalar values")]
+        start_chars: usize,
+        #[param("Maximum Unicode scalar values to read, between 1 and 4096")]
+        max_chars: usize,
+    },
 }
 
 impl CodeEditorEffect {
@@ -116,7 +126,8 @@ impl CodeEditorEffect {
     /// the command palette's commands.
     pub fn command(&self) -> Option<Command> {
         Some(match self {
-            Self::Open { .. }
+            Self::ReadText { .. }
+            | Self::Open { .. }
             | Self::Reveal { .. }
             | Self::OpenFile { path: Some(_) }
             | Self::OpenFolder { path: Some(_) }
