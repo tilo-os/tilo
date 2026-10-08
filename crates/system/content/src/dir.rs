@@ -234,7 +234,11 @@ impl DirBackend {
         Ok((current, true))
     }
 
+    /// Flush `dir`'s entries to disk, for a durable store; a regenerable one never waits on it.
     fn sync_dir(&self, dir: &Path) -> Result<(), ContentError> {
+        if !self.durable {
+            return Ok(());
+        }
         #[cfg(test)]
         self.probes.dir_syncs.fetch_add(1, Ordering::Relaxed);
         tilo_files::native::atomic::sync_directory(dir)?;
@@ -447,7 +451,7 @@ impl ContentBackend for DirBackend {
             };
             let created_shard = !dir.is_dir();
             std::fs::create_dir_all(dir)?;
-            if self.durable && created_shard {
+            if created_shard {
                 self.sync_dir(&self.root)?;
             }
             std::fs::rename(&tmp, &path)?;
@@ -463,10 +467,8 @@ impl ContentBackend for DirBackend {
                 Ok(meta) => self.remember_intact(path.clone(), FileSig::of(&meta)),
                 Err(_) => self.forget_intact(&path),
             }
-            if self.durable {
-                // The rename is durable only once the directory holding the new name is.
-                self.sync_dir(dir)?;
-            }
+            // The rename is durable only once the directory holding the new name is.
+            self.sync_dir(dir)?;
             drop(root_lock);
             drop(index);
             Ok(())
