@@ -568,7 +568,7 @@ fn serve(server: &FakeDav) -> Served {
         service,
         launcher,
         volume,
-        config_root: config_root,
+        config_root,
         home,
     }
 }
@@ -660,9 +660,9 @@ fn revision_request_resolves_path_and_returns_provider_revisions() {
     let server = FakeDav::nextcloud();
     server.put("Notes/plan.md", b"first draft");
     server.put("Notes/plan.md", b"second draft");
-    let mut served = serve(&server);
+    let mut account = serve(&server);
 
-    let CloudResponse::Mounts(mounts) = served
+    let CloudResponse::Mounts(mounts) = account
         .service
         .request(CloudRequest::List, tilo_test_env::hang_bound())
     else {
@@ -672,13 +672,13 @@ fn revision_request_resolves_path_and_returns_provider_revisions() {
     assert_eq!(mounts[0].account, "files-1");
     assert_eq!(
         mounts[0].mount_point,
-        served.home.path().join("Remote/Work files")
+        account.home.path().join("Remote/Work files")
     );
     assert!(mounts[0].capabilities.revisions);
     assert!(!mounts[0].capabilities.share_links);
     assert!(!mounts[0].paused);
 
-    let response = served.service.request(
+    let response = account.service.request(
         CloudRequest::File {
             account: "files-1".into(),
             request: FileRequest::Revisions {
@@ -692,7 +692,7 @@ fn revision_request_resolves_path_and_returns_provider_revisions() {
     };
     assert_eq!(revisions.len(), 1, "{revisions:?}");
 
-    let restored = served.service.request(
+    let restored = account.service.request(
         CloudRequest::File {
             account: "files-1".into(),
             request: FileRequest::RestoreRevision {
@@ -704,10 +704,10 @@ fn revision_request_resolves_path_and_returns_provider_revisions() {
     );
     assert_eq!(restored, CloudResponse::File(FileReply::Restored));
     assert_eq!(server.get("Notes/plan.md").unwrap(), b"first draft");
-    assert_eq!(read_all(&served.volume, "Notes/plan.md"), b"first draft");
+    assert_eq!(read_all(&account.volume, "Notes/plan.md"), b"first draft");
 
     // Nextcloud has no share links here: the request is refused, not sent.
-    let link = served.service.request(
+    let link = account.service.request(
         CloudRequest::File {
             account: "files-1".into(),
             request: FileRequest::ShareLink {
@@ -721,7 +721,7 @@ fn revision_request_resolves_path_and_returns_provider_revisions() {
         "{link:?}"
     );
     // A path the mount does not know is refused.
-    let missing = served.service.request(
+    let missing = account.service.request(
         CloudRequest::File {
             account: "files-1".into(),
             request: FileRequest::Revisions {
@@ -731,14 +731,14 @@ fn revision_request_resolves_path_and_returns_provider_revisions() {
         tilo_test_env::hang_bound(),
     );
     assert!(matches!(missing, CloudResponse::Error(_)), "{missing:?}");
-    served.service.shutdown();
+    account.service.shutdown();
 }
 
 #[test]
 fn restore_revision_request_is_refused_when_capability_absent() {
     let server = FakeDav::generic();
     server.put("readme.txt", b"hello");
-    let mut served = serve(&server);
+    let mut account = serve(&server);
     let _ = server.requests();
     for request in [
         FileRequest::Revisions {
@@ -749,7 +749,7 @@ fn restore_revision_request_is_refused_when_capability_absent() {
             revision: "1".into(),
         },
     ] {
-        let response = served.service.request(
+        let response = account.service.request(
             CloudRequest::File {
                 account: "files-1".into(),
                 request,
@@ -766,30 +766,30 @@ fn restore_revision_request_is_refused_when_capability_absent() {
         "a refused request reached the server"
     );
     assert_eq!(server.get("readme.txt").unwrap(), b"hello");
-    let CloudResponse::Mounts(mounts) = served
+    let CloudResponse::Mounts(mounts) = account
         .service
         .request(CloudRequest::List, tilo_test_env::hang_bound())
     else {
         panic!("a mount list");
     };
     assert!(!mounts[0].capabilities.revisions);
-    served.service.shutdown();
+    account.service.shutdown();
 }
 
 #[test]
 fn pause_is_remembered_and_sync_now_reaches_the_mount() {
     let server = FakeDav::generic();
     server.put("readme.txt", b"hello");
-    let mut served = serve(&server);
-    let paused = served.service.request(
+    let mut account = serve(&server);
+    let paused = account.service.request(
         CloudRequest::Pause {
             account: "files-1".into(),
         },
         tilo_test_env::hang_bound(),
     );
     assert_eq!(paused, CloudResponse::Done);
-    assert!(served.volume.is_paused());
-    let unknown = served.service.request(
+    assert!(account.volume.is_paused());
+    let unknown = account.service.request(
         CloudRequest::SyncNow {
             account: "nobody".into(),
         },
@@ -798,13 +798,13 @@ fn pause_is_remembered_and_sync_now_reaches_the_mount() {
     assert!(matches!(unknown, CloudResponse::Error(_)));
 
     // A restarted service pauses the account's new mount again.
-    served.service.shutdown();
+    account.service.shutdown();
     let mut service = CloudService::new(
-        service_config(served.config_root.path(), served.home.path()),
-        Box::new(served.launcher.clone()),
+        service_config(account.config_root.path(), account.home.path()),
+        Box::new(account.launcher.clone()),
     );
     service.reconcile();
-    let volume = served.launcher.volume("files-1").unwrap();
+    let volume = account.launcher.volume("files-1").unwrap();
     assert!(volume.is_paused());
     let CloudResponse::Mounts(mounts) =
         service.request(CloudRequest::List, tilo_test_env::hang_bound())
@@ -837,10 +837,10 @@ fn pause_is_remembered_and_sync_now_reaches_the_mount() {
 fn the_control_socket_lists_mounts_without_credentials() {
     let server = FakeDav::nextcloud();
     server.put("a.txt", b"a");
-    let mut served = serve(&server);
+    let mut account = serve(&server);
     let runtime = tempfile::tempdir().unwrap();
     let socket = runtime_fs::cloud::socket_in(runtime.path());
-    served.service.serve_control(&socket).unwrap();
+    account.service.serve_control(&socket).unwrap();
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&socket).unwrap().permissions().mode();
@@ -863,7 +863,7 @@ fn the_control_socket_lists_mounts_without_credentials() {
             started.elapsed() < tilo_test_env::hang_bound(),
             "the control client did not finish"
         );
-        served.service.pump();
+        account.service.pump();
         std::thread::sleep(Duration::from_millis(5));
     }
     let (mounts, raw): (Vec<CloudMount>, CloudResponse) = client.join().unwrap();
@@ -880,7 +880,7 @@ fn the_control_socket_lists_mounts_without_credentials() {
     assert!(!json.contains(PASSWORD));
     assert!(!json.to_lowercase().contains("password"));
     assert!(!json.to_lowercase().contains("token"));
-    served.service.shutdown();
+    account.service.shutdown();
 }
 
 #[test]
