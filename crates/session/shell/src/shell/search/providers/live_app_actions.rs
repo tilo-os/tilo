@@ -803,7 +803,7 @@ impl LiveAppActionsProvider {
         // ancestors, rather than replaying a consumed cursor after eviction.
         let ancestor_keys = self.directory_ancestor_pins.borrow().clone();
         let mut ready = Vec::new();
-        let mut expired = false;
+        let mut retry_needed = false;
         self.directory_pending.borrow_mut().retain(|key, pending| {
             // The UI may have been idle after the reply arrived. The deadline
             // bounds unanswered work, not how soon a completed page is read.
@@ -812,17 +812,21 @@ impl LiveAppActionsProvider {
                     ready.push((key.clone(), page, pending.initial_page));
                     false
                 }
-                PendingPoll::Ready(_) | PendingPoll::Abandoned => false,
+                PendingPoll::Ready(_) | PendingPoll::Abandoned => {
+                    retry_needed = true;
+                    false
+                }
                 PendingPoll::Waiting if pending.deadline <= now => {
-                    expired = true;
+                    retry_needed = true;
                     false
                 }
                 PendingPoll::Waiting => true,
             }
         });
-        if expired {
-            // An empty projection must not prevent another bounded request
-            // after a stalled directory ticket has been cancelled.
+        if retry_needed {
+            // Refused, stale, abandoned and timed-out tickets are not exhausted
+            // directories. Release their retained projection so the next query
+            // can make another bounded, freshly authorized request.
             self.auxiliary_snapshot.borrow_mut().take();
             self.directory_epoch.fetch_add(1, Ordering::Relaxed);
         }
@@ -3265,6 +3269,63 @@ mod tests {
             contract: tilo_actions::ActionContract::view(),
             view: None,
             input: PublishedInput::None,
+        }
+    }
+
+    #[test]
+    fn rejected_directory_ticket_releases_the_retained_empty_projection() {
+        for stale in [false, true] {
+            let provider = LiveAppActionsProvider::new(
+                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+            );
+            let key: DirectoryCacheKey =
+                (7, "actor".into(), String::new(), Vec::new(), String::new());
+            let (sender, receiver) = pending();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            provider.directory_pending.borrow_mut().insert(
+                key,
+                PendingDirectoryPage {
+                    receiver,
+                    deadline,
+                    initial_page: true,
+                },
+            );
+            *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+                revision: "r1".into(),
+                query: String::new(),
+                scope: String::new(),
+                resume: AuxiliaryResume {
+                    root_after: None,
+                    directory: None,
+                },
+                entries: Vec::new(),
+                pending_directory: Vec::new(),
+                next_resume: None,
+                structural_refusal: false,
+            });
+            if stale {
+                let mut reply = page(Vec::new(), Vec::new());
+                reply.stale_cursor = true;
+                sender.complete(Ok(reply));
+            } else {
+                drop(sender);
+            }
+            provider.poll_directory_pages_at(deadline.checked_sub(Duration::from_secs(1)).unwrap());
+            assert!(provider.directory_pending.borrow().is_empty());
+            assert!(
+                provider.directory_pages.borrow().is_empty(),
+                "refused pages cannot be cached"
+            );
+            assert!(
+                provider.auxiliary_snapshot.borrow().is_none(),
+                "same-query discovery must retry after an actual rejected ticket"
+            );
+            assert_eq!(
+                provider
+                    .directory_epoch
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
         }
     }
 
