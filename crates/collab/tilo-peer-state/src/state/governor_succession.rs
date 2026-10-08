@@ -461,3 +461,66 @@ impl StatePeer {
             .is_some_and(|doc| succession::succeeded(doc, author, &current))
     }
 }
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use crate::{Custody, TransportOrigin};
+    use tilo_user_identity::{DeviceCapabilities, RevocationEntry, RevocationReason};
+
+    #[test]
+    fn custody_refuses_governance_written_under_another_actor_after_cutoff() {
+        let (mut peer, writer, _, member, now) = crate::admission_tests::seeded();
+        let identity = SigningKey::from_bytes(&[1; 32]);
+        let mut replacement = member;
+        replacement.device_public_key =
+            SigningKey::from_bytes(&[94; 32]).verifying_key().to_bytes();
+        replacement.capabilities = DeviceCapabilities::primary();
+        tilo_user_identity::sign_device_cert(&mut replacement, &identity).unwrap();
+        let previous = peer.authority().clone();
+        let mut revoked = RevocationEntry {
+            user_public_key: previous.user_public_key,
+            revoked_device_public_key: previous.device_public_key,
+            revoked_at_ns: now_ns(now),
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut revoked, &identity).unwrap();
+        let mut document = peer.admitted_room().unwrap().clone();
+        let heads = document.get_heads();
+        let room = peer.room().to_owned();
+        let record = GovernorSuccession::sign(
+            &room,
+            previous,
+            revoked,
+            replacement,
+            heads.iter().map(|head| head.0).collect(),
+            &identity,
+        )
+        .unwrap();
+        record.verify(&room, peer.authority(), now_ns(now)).unwrap();
+        StatePeer::take_custody(&record, [Custody::Replica(Box::new(peer.clone()))], now).unwrap();
+        // The governor signs before peers hear its revocation, but writes
+        // governance under a different Automerge actor after the root's cutoff.
+        document.set_actor(automerge::ActorId::from(vec![95; 32]));
+        document
+            .put(ROOT, "owner", "untrusted-owner-after-cutoff")
+            .unwrap();
+        document.commit();
+        let changes = document
+            .get_changes(&heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        peer.receive_from(
+            TransportOrigin::RelayDelta(writer.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp { changes, room },
+            now,
+        )
+        .unwrap();
+        assert!(
+            StatePeer::take_custody(&record, [Custody::Replica(Box::new(peer))], now).is_err(),
+            "custody must reject changed governance past the root-signed cutoff regardless of actor id"
+        );
+    }
+}

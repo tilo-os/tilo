@@ -51,3 +51,13 @@ real relay room scenarios, both root/cutoff controls, peer/relay all-target
 Clippy and required shell test compilation pass. This does not qualify the
 known arbitrary-actor governance cutoff gap for integration; #2801 ownership
 coordination and custody/history negative controls remain required.
+
+The production custody regression
+`custody_refuses_governance_written_under_another_actor_after_cutoff` fails on
+this local #2787 recovery source: clean custody passes, a governor's admitted
+post-cutoff owner change under a different Automerge actor is accepted, and
+`StatePeer::take_custody` then accepts that altered history. The strict assertion
+is retained, without ignore or weakened expectations. This local dependent
+branch is unqualified work and must not be pushed or merged until the coordinated
+history repair makes that control pass. Published #3660 remains at its qualified
+revocation-only head.
