@@ -796,17 +796,26 @@ impl Apply for SystemdApply {
         session: &Session,
         args: &[String],
     ) -> Result<ControlResult, DaemonError> {
-        if !Path::new(TILO_CONTROL).exists() {
+        // The session sees its selected CLI and owns its control sockets. Admin
+        // control also verifies the peer's mount namespace, not merely its UID.
+        let pid = self
+            .session_pid(session)
+            .ok_or_else(|| DaemonError::Apply {
+                step: "tilo-control".into(),
+                detail: "the slot has no live session mount namespace".into(),
+            })?;
+        if !Path::new(&format!("/proc/{pid}/root{TILO_CONTROL}")).exists() {
             return Err(DaemonError::ControlMissing(TILO_CONTROL.into()));
         }
-        let output = Command::new("runuser")
-            .args(["-u", &session.user, "--", "env"])
-            .arg(format!(
-                "TILO_TEST_CONTROL={}",
-                session.control_socket.display()
-            ))
-            .arg(TILO_CONTROL)
-            .args(args)
+        let mut env = self.session_environment(session);
+        env.retain(|(key, _)| key != "TILO_TEST_CONTROL");
+        env.push((
+            "TILO_TEST_CONTROL".into(),
+            session.control_socket.display().to_string(),
+        ));
+        let mut command = vec![TILO_CONTROL.to_owned()];
+        command.extend_from_slice(args);
+        let output = crate::exec::in_session(pid, &session.user, &env, &command)
             .output()
             .map_err(|e| DaemonError::Apply {
                 step: "tilo-control".into(),
