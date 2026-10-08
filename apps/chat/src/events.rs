@@ -2074,6 +2074,10 @@ fn run_worker(name: &str, job: impl FnOnce() + Send + 'static, status: &mut Opti
 
 #[cfg(test)]
 mod tests {
+    mod execution_visual_tests {
+        use super::*;
+        include!("events/execution_visual_tests.rs");
+    }
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -2118,11 +2122,25 @@ mod tests {
         message_refused: AtomicBool,
         message_catalogue_mode: AtomicU8,
         task_controls_revoked: AtomicBool,
+        visual_task_reads: Mutex<std::collections::BTreeMap<String, serde_json::Value>>,
     }
 
     impl TaskControlHost {
         fn requests(&self) -> Vec<InvokeRequest> {
             self.requests.lock().unwrap().clone()
+        }
+
+        fn visual_task_value(
+            &self,
+            action: &str,
+            fallback: serde_json::Value,
+        ) -> serde_json::Value {
+            self.visual_task_reads
+                .lock()
+                .unwrap()
+                .get(action)
+                .cloned()
+                .unwrap_or(fallback)
         }
 
         fn query_parents(&self) -> Vec<Option<String>> {
@@ -2479,6 +2497,7 @@ mod tests {
                     }));
                 }
             };
+            let value = self.visual_task_value(&request.target.address.action, value);
             Pending::ready(Ok(InvocationReceipt {
                 invocation: request.invocation,
                 status: ReceiptStatus::Completed {
@@ -7101,6 +7120,7 @@ mod tests {
 
     fn prepare_native_agent_float(
         app_rect: vello::kurbo::Rect,
+        desktop: vello::kurbo::Rect,
         theme: &ui::theme::Theme,
     ) -> PreparedNativeAgentFloat {
         let mut doc = AutoCommit::new();
@@ -7111,6 +7131,7 @@ mod tests {
             .insert("agent:scribe".into(), "Scribe".into());
         app.reload(&doc);
         app.rect = app_rect;
+        ui::widget::FloatingSurfaceWidgetExt::set_floating_surface_bounds(&mut app, desktop);
         let mut attached = vello::Scene::new();
         let mut attached_text = ui::text_render::TextRenderer::new();
         attached_text.set_text_scale(theme.text_scale);
@@ -7171,6 +7192,7 @@ mod tests {
 
     fn native_agent_float_scenes(
         app_rect: vello::kurbo::Rect,
+        desktop: vello::kurbo::Rect,
         theme: &ui::theme::Theme,
     ) -> (
         vello::Scene,
@@ -7188,7 +7210,7 @@ mod tests {
             draft,
             selection,
             revision,
-        } = prepare_native_agent_float(app_rect, theme);
+        } = prepare_native_agent_float(app_rect, desktop, theme);
         let rect = request.initial_rect.expect("prepared geometry");
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut app,
@@ -7204,8 +7226,12 @@ mod tests {
                     ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&app)
                         .into_iter()
                         .find(|presentation| presentation.id == request.id)?;
-                (presentation.content_rect.size() == request.preferred_size)
-                    .then_some(presentation.content_rect)
+                (presentation.content_rect.size() == request.preferred_size
+                    && !app
+                        .agent_surfaces
+                        .values()
+                        .any(|surface| surface.placement.is_handoff_animating()))
+                .then_some(presentation.content_rect)
             },
         );
         assert!(
@@ -7296,7 +7322,11 @@ mod tests {
                 ),
             ] {
                 let (initial, initial_content, settled, settled_content, preferred) =
-                    native_agent_float_scenes(app_rect, &theme);
+                    native_agent_float_scenes(
+                        app_rect,
+                        vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                        &theme,
+                    );
                 assert_eq!(settled_content.size(), preferred);
                 if name != "high-contrast-200" {
                     assert_eq!(
