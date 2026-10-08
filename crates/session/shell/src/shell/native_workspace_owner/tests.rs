@@ -534,10 +534,11 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
     drop(oversized);
     let mut oversized_authority = tree.read().clone();
     // Malformed oversized bytes must be refused before any generic tree clone or publication.
+    // A cap's worth of peer bytes encodes as a third more base64 text than the cap.
     tilo_joined_room::testing::set_stored_peer(
         &mut oversized_authority.native_authority,
         RoomId::parse(ROOM).unwrap(),
-        vec![0; store::MAX_AUTHORITY_BYTES / 2],
+        vec![0; store::MAX_AUTHORITY_BYTES],
     );
     assert!(persist::save_tree_to(&oversized_authority, &path).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), committed);

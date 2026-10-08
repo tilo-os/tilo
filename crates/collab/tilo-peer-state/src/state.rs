@@ -1357,7 +1357,7 @@ impl StatePeer {
                 app: app.into(),
                 record: record.into(),
             })
-            .map(|entry| entry.doc.clone().save())
+            .map(|entry| entry.doc.saved())
     }
     fn certificate(&self, source: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
         self.core.certificate_typed(source, now).map_err(err)
@@ -2623,7 +2623,7 @@ impl StatePeer {
                 self.prepare_signed_mutation(
                     &route.app,
                     &route.record,
-                    DocumentMutation::Snapshot(entry.doc.clone().save()),
+                    DocumentMutation::Snapshot(entry.doc.saved()),
                     key,
                     now,
                 )
@@ -2922,7 +2922,7 @@ impl StatePeer {
                     || old_receipts.get(&route_key) != receipts.get(&route_key)
             });
             if changed {
-                dirty.push((route.clone(), document.doc.clone().save()));
+                dirty.push((route.clone(), document.doc.saved()));
             }
         }
         let snapshots = if dirty.is_empty() {
@@ -3091,7 +3091,7 @@ impl StatePeer {
             .iter()
             .map(|(route, entry)| DurableDocument {
                 route: route.clone(),
-                bytes: entry.doc.clone().save(),
+                bytes: entry.doc.saved(),
                 watermarks: entry
                     .channel
                     .last_seq_per_author
