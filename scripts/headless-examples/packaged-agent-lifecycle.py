@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import hashlib
 import http.server
 import json
@@ -719,19 +720,39 @@ def component_global_center(access, path, geometry, label):
     return center["x"], center["y"]
 
 
-def set_physical_modifiers(socket, *, ctrl=False, shift=False, alt=False, logo=False):
-    require_ok(call(socket, {
-        "op": "modifiers", "ctrl": ctrl, "shift": shift,
-        "alt": alt, "logo": logo,
-    }))
+@contextlib.contextmanager
+def hold_physical_modifiers(socket, *, ctrl=False, shift=False, alt=False, logo=False):
+    """Hold real seat modifier keys and release accepted keys in reverse order."""
+    requested = [
+        key for key, enabled in (
+            ("Control", ctrl), ("Shift", shift), ("Alt", alt), ("Logo", logo)
+        ) if enabled
+    ]
+    held = []
+    body_error = None
+    try:
+        for key in requested:
+            require_ok(call(socket, {"op": "key_down", "key": key}))
+            held.append(key)
+        yield
+    except BaseException as error:
+        body_error = error
+        raise
+    finally:
+        release_error = None
+        while held:
+            try:
+                require_ok(call(socket, {"op": "key_up", "key": held.pop()}))
+            except BaseException as error:
+                if release_error is None:
+                    release_error = error
+        if body_error is None and release_error is not None:
+            raise release_error
 
 
 def physical_chord(socket, key, **modifiers):
-    set_physical_modifiers(socket, **modifiers)
-    try:
+    with hold_physical_modifiers(socket, **modifiers):
         require_ok(call(socket, {"op": "key", "key": key}))
-    finally:
-        set_physical_modifiers(socket)
 
 
 def require_chat_keyboard_focus_after_click(socket, output, *, detached=False):
@@ -1168,12 +1189,9 @@ def native_float_return(socket, room, record, output, size, process):
     # Prove a real physical selection and undo before exercising IME. The
     # control socket emits the compositor's ordinary key path; it never writes
     # the editor or its CRDT directly.
-    set_physical_modifiers(socket, shift=True)
-    try:
+    with hold_physical_modifiers(socket, shift=True):
         for _ in range(5):
             require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
-    finally:
-        set_physical_modifiers(socket)
     selected = wait_for_private_selection(
         socket, access, draft, [len(draft) - 5, len(draft)], process, output)
     if selected["selection"] != [len(draft) - 5, len(draft)]:
@@ -1188,11 +1206,8 @@ def native_float_return(socket, room, record, output, size, process):
     draft += "👍"
     wait_for("real input-method commit in the private editor",
              lambda: private_editor_value_matches(access, draft), process)
-    set_physical_modifiers(socket, shift=True)
-    try:
+    with hold_physical_modifiers(socket, shift=True):
         require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
-    finally:
-        set_physical_modifiers(socket)
     before = wait_for_private_selection(
         socket, access, draft, [len(draft) - 1, len(draft)], process, output)
     if before["selection"] != [len(draft) - 1, len(draft)]:
@@ -1510,7 +1525,7 @@ def preserve_detached_commit_refusal(
         pass
 
 
-def native_ime_float_return(socket, output, size, process, fcitx_identity):
+def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     """Hold a genuine Rime preedit across Float and Return, then commit it."""
     committed_before = "u"
     committed_after = "u你好"
@@ -1533,14 +1548,22 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
         lambda: chat_input_method_ready(socket),
         process,
     )
-    if not same_fcitx_process(fcitx_identity):
-        raise RuntimeError("the compositor-owned Rime process changed before composition")
+    wait_for(
+        "the compositor-owned active Rime engine",
+        lambda: same_fcitx_process(fcitx_identity) and fcitx_rime_active(env),
+        process,
+    )
 
     # Rime's express editor commits its raw composition on Return. Establish
     # one real edit without toggling Fcitx's global active state: bare Shift
     # is an AltTrigger key, whose later toggle depends on intervening focus
     # and input-method state.
     require_ok(call(socket, {"op": "type", "text": committed_before}))
+    wait_for(
+        "a genuine Rime baseline preedit",
+        lambda: chat_input_method_preedit_active(socket),
+        process,
+    )
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     wait_for(
         "the pre-detach committed edit",
@@ -1552,6 +1575,11 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     if before_preedit is None:
         raise RuntimeError("Chat disappeared before genuine Rime preedit")
     require_ok(call(socket, {"op": "type", "text": "nihao"}))
+    wait_for(
+        "Rime's active preedit before Float",
+        lambda: chat_input_method_preedit_active(socket),
+        process,
+    )
 
     def attached_preedit_frame():
         frame = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
@@ -1658,12 +1686,9 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
         output / f"ime-commit-detached-{size}.png"
     )}))
 
-    set_physical_modifiers(socket, shift=True)
-    try:
+    with hold_physical_modifiers(socket, shift=True):
         require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
         require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
-    finally:
-        set_physical_modifiers(socket)
     floating_selection = wait_for_private_selection(
         socket, detached_access, committed_after, [1, 3], process, output
     )
@@ -1927,6 +1952,80 @@ def marker_operation_from_request(request, agent, resource):
     return next(iter(matches))
 
 
+def marker_preceding_invoke_result(request):
+    """Project one exact fixture invoke result; never retain tool/error content."""
+    observation = {"result": "missing", "error_class": "unclassified",
+                   "private_content_recorded": False}
+    messages = request.get("messages") if isinstance(request, dict) else None
+    if not isinstance(messages, list) or len(messages) > 256:
+        return dict(observation, result="invalid")
+    assistants = [index for index, message in enumerate(messages)
+                  if isinstance(message, dict) and message.get("role") == "assistant"]
+    replies = [(index, message) for index, message in enumerate(messages)
+               if isinstance(message, dict) and message.get("role") == "tool"
+               and message.get("tool_call_id") == "proof-plan"]
+    if not assistants or not replies:
+        return observation
+    index = assistants[-1]
+    calls = messages[index].get("tool_calls")
+    if not isinstance(calls, list) or len(calls) != 1 \
+            or not isinstance(calls[0], dict) or calls[0].get("id") != "proof-plan" \
+            or not isinstance(calls[0].get("function"), dict) \
+            or calls[0]["function"].get("name") != "invoke" \
+            or len(replies) != 1 or replies[0][0] != index + 1:
+        return dict(observation, result="invalid")
+    content = replies[0][1].get("content")
+    if not isinstance(content, str) or len(content) > 262144:
+        return dict(observation, result="invalid")
+    try:
+        result = json.loads(content)
+    except (ValueError, RecursionError):
+        return dict(observation, result="invalid")
+    if not isinstance(result, dict) or result.get("result") not in (
+            "succeeded", "failed", "not run"):
+        return dict(observation, result="invalid")
+    observation["result"] = {"not run": "not_run"}.get(
+        result["result"], result["result"]
+    )
+    error = result.get("error")
+    if result["result"] == "failed" and isinstance(error, str):
+        if error == "the action host no longer knows that invocation":
+            observation["error_class"] = "invocation_unknown"
+        elif error in (
+                "the broker did not answer the task action request",
+                "Task action did not reach a terminal state before its deadline",
+                "Task step did not settle before its deadline; its outcome is still unknown"):
+            observation["error_class"] = "uncertain"
+        elif error.startswith("capnp error: "):
+            # RPC failure is NOT evidence that an effect was definitely refused.
+            # NotAvailable wraps capnp::Error Display; RPC decoding adds the
+            # remote-exception prefix, while a local Failed error does not.
+            prefixes = ("capnp error: Failed: remote exception: ",
+                        "capnp error: Failed: ")
+            reasons = {
+                "the application no longer publishes that action": "target_unpublished",
+                "the application has no invocation stream": "invocation_stream_missing",
+                "caller no longer authorized for invocation": "permission_revoked",
+                "only an agent may invoke a task action": "agent_admission_lost",
+                "the task run lease is unknown, expired, or belongs to another agent":
+                    "task_run_stale",
+                "canonical task run is stale": "task_run_stale",
+                "new task direction must be applied before another action":
+                    "direction_pending",
+                "task cancellation was requested before another action": "task_cancelled",
+                "the task was cancelled; no further action may start": "task_cancelled",
+                "task action confirmation evidence is not accepted; request human confirmation outside the run":
+                    "confirmation_unsupported",
+                "durable task steps are not served by this host": "step_unsupported",
+                "accepted task action has no broker state": "invocation_state_missing",
+            }
+            known_errors = {prefix + reason: classification
+                            for prefix in prefixes
+                            for reason, classification in reasons.items()}
+            observation["error_class"] = known_errors.get(error, "rpc_error")
+    return observation
+
+
 class HeldProvider:
     """Bounded host-only HTTP fixture behind the unchanged model gateway.
 
@@ -1946,6 +2045,7 @@ class HeldProvider:
         self.marker_agent = marker_agent
         self.marker_resource = marker_resource
         self.marker_operations = {}
+        self.marker_invoke_result = None
         self.marker_rejections = {reason: 0 for reason in MARKER_OPERATION_REFUSALS}
         self.marker_matching_operations = 0
         self.marker_matching_exact_resources = 0
@@ -2013,6 +2113,8 @@ class HeldProvider:
                         return
                     owner.requests += 1
                     ordinal = owner.requests
+                    if owner.marker_agent is not None and ordinal == 2:
+                        owner.marker_invoke_result = marker_preceding_invoke_result(request)
                     owner.owner_admissions[ordinal] = admission
                     if marker_operation is not None:
                         owner.marker_operations[ordinal] = marker_operation
@@ -2101,6 +2203,14 @@ class HeldProvider:
             "matching_exact_resource_count": matching_exact_resources,
             "private_content_recorded": False,
         }
+
+    def preceding_marker_result(self):
+        """Only the immutable closed observation, never the provider request."""
+        with self.request_lock:
+            return dict(self.marker_invoke_result) if self.marker_invoke_result else {
+                "result": "missing", "error_class": "unclassified",
+                "private_content_recorded": False,
+            }
 
     def original_third_held(self):
         with self.request_lock:
@@ -2566,6 +2676,46 @@ def chat_input_method_ready(socket):
         and text_input.get("app_id") == "so.tilo.chat"
         and all(seat[key] for key in required)
     )
+
+
+def chat_input_method_preedit_active(socket):
+    """Require an accepted compositor preedit on Chat's active text input."""
+    seat = chrome_state(socket).get("seat_focus")
+    if not isinstance(seat, dict) \
+            or type(seat.get("input_method_preedit_active")) is not bool:
+        raise RuntimeError("the compositor preedit state is unobservable")
+    keyboard = seat.get("keyboard")
+    text_input = seat.get("text_input")
+    return bool(
+        seat["input_method_preedit_active"]
+        and seat.get("text_input_active") is True
+        and isinstance(keyboard, dict)
+        and isinstance(text_input, dict)
+        and keyboard.get("app_id") == "so.tilo.chat"
+        and text_input.get("app_id") == "so.tilo.chat"
+    )
+
+
+def fcitx_rime_active(env):
+    """Read the isolated composer's active state and exact current engine."""
+    command = "/usr/bin/fcitx5-remote"
+    try:
+        active = subprocess.run(
+            [command], env=env, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=2,
+        )
+        # fcitx5-remote exits successfully after printing the state: 0 is
+        # closed, 1 inactive and 2 active.  A live Rime engine is not enough;
+        # inactive contexts pass physical keys through as ordinary Latin.
+        if active.returncode != 0 or active.stdout.strip() != "2":
+            return False
+        current = subprocess.run(
+            [command, "-n"], env=env, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return current.returncode == 0 and current.stdout.strip() == "rime"
 
 
 def require_action(socket, action_id, query=""):
@@ -3159,6 +3309,13 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     if second_admission is None:
         raise RuntimeError("marker continuation lacked owner task custody")
 
+    (output / "marker-preceding-invoke-result.json").write_text(
+        json.dumps(provider.preceding_marker_result(), indent=2) + "\n"
+    )
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"agent-marker-second-held-{size}.png"
+    )}))
+
     marker = wait_for("actual compositor Agent action marker",
                       lambda: agent_marker_accessibility(agent), process)
     require_ok(call(socket, {"op": "snapshot", "path": str(
@@ -3578,12 +3735,9 @@ def native_agent_membership_revocation(
     require_chat_keyboard_focus_after_click(socket, output)
     require_ok(call(socket, {"op": "type", "text": draft}))
     wait_for("private revocation draft", lambda: private_editor_value_matches(access, draft), process)
-    set_physical_modifiers(socket, shift=True)
-    try:
+    with hold_physical_modifiers(socket, shift=True):
         for _ in range(10):
             require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
-    finally:
-        set_physical_modifiers(socket)
     before = private_editor_observation(access, draft)
     if before["selection"] != [len(draft) - 10, len(draft)]:
         raise RuntimeError("physical revocation selection did not reach the private editor")
@@ -3753,12 +3907,9 @@ def prepare_private_permission_draft(socket, access, draft, selection_length, ou
     require_ok(call(socket, {"op": "type", "text": draft}))
     wait_for("physical private permission draft", lambda: private_editor_value_matches(
         access, draft), process)
-    set_physical_modifiers(socket, shift=True)
-    try:
+    with hold_physical_modifiers(socket, shift=True):
         for _ in range(selection_length):
             require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
-    finally:
-        set_physical_modifiers(socket)
     return wait_for_private_selection(
         socket, access, draft, [len(draft) - selection_length, len(draft)], process, output
     )
@@ -5098,7 +5249,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                     lambda: owned_fcitx_identity(shell.pid), shell,
                 )
                 proven = native_ime_float_return(
-                    socket, output, size, shell, owned_fcitx
+                    socket, output, size, shell, owned_fcitx, env
                 )
                 (output / "bootstrap.json").write_text(json.dumps({
                     "stage": "native-ime",

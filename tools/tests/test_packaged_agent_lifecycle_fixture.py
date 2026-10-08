@@ -142,16 +142,76 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "physically_click_editor"), \
                 patch.object(PROOF, "require_chat_keyboard_focus_after_click"), \
                 patch.object(PROOF, "physical_chord"), \
-                patch.object(PROOF, "set_physical_modifiers") as modifiers, \
                 patch.object(PROOF, "call", return_value={"ok": {}}) as input_call, \
                 patch.object(PROOF, "wait_for_private_selection", return_value=selected) as observe:
             self.assertEqual(PROOF.prepare_private_permission_draft(
                 "socket", access, "abcdef", 4, output, None,
             ), selected)
-        self.assertEqual(sum(row.args[1] == {"op": "key", "key": "ArrowLeft"}
-                             for row in input_call.call_args_list), 4)
+        selection_input = [
+            row.args[1] for row in input_call.call_args_list
+            if row.args[1]["op"] in {"key_down", "key", "key_up"}
+        ]
+        self.assertEqual(selection_input, [
+            {"op": "key_down", "key": "Shift"},
+            *({"op": "key", "key": "ArrowLeft"} for _ in range(4)),
+            {"op": "key_up", "key": "Shift"},
+        ])
         observe.assert_called_once_with("socket", access, "abcdef", [2, 6], None, output)
-        self.assertEqual(modifiers.call_args_list[-1].kwargs, {})
+
+    def test_physical_chord_holds_real_modifiers_and_always_releases_in_reverse(self):
+        events = []
+
+        def record(_socket, request):
+            events.append(request)
+            return {"ok": {}}
+
+        with patch.object(PROOF, "call", side_effect=record):
+            PROOF.physical_chord(
+                "socket", "x", ctrl=True, shift=True, alt=True, logo=True,
+            )
+        self.assertEqual(events, [
+            {"op": "key_down", "key": "Control"},
+            {"op": "key_down", "key": "Shift"},
+            {"op": "key_down", "key": "Alt"},
+            {"op": "key_down", "key": "Logo"},
+            {"op": "key", "key": "x"},
+            {"op": "key_up", "key": "Logo"},
+            {"op": "key_up", "key": "Alt"},
+            {"op": "key_up", "key": "Shift"},
+            {"op": "key_up", "key": "Control"},
+        ])
+
+        events.clear()
+
+        def fail_key(_socket, request):
+            events.append(request)
+            if request["op"] == "key":
+                return {"err": {"code": "fixture_failure"}}
+            return {"ok": {}}
+
+        with patch.object(PROOF, "call", side_effect=fail_key), \
+                self.assertRaises(RuntimeError):
+            PROOF.physical_chord("socket", "x", ctrl=True, shift=True)
+        self.assertEqual(events[-2:], [
+            {"op": "key_up", "key": "Shift"},
+            {"op": "key_up", "key": "Control"},
+        ])
+
+        events.clear()
+
+        def fail_first_release(_socket, request):
+            events.append(request)
+            if request == {"op": "key_up", "key": "Shift"}:
+                return {"err": {"code": "fixture_failure"}}
+            return {"ok": {}}
+
+        with patch.object(PROOF, "call", side_effect=fail_first_release), \
+                self.assertRaises(RuntimeError):
+            PROOF.physical_chord("socket", "x", ctrl=True, shift=True)
+        self.assertEqual(events[-2:], [
+            {"op": "key_up", "key": "Shift"},
+            {"op": "key_up", "key": "Control"},
+        ])
 
     def test_native_person_inspector_is_private_and_fail_closed(self):
         class Result:
@@ -1494,6 +1554,10 @@ class PresentedEditorTargetTests(unittest.TestCase):
                         source.index("detached undo history in the returned editor"))
         self.assertGreaterEqual(source.count("before = wait_for_private_selection("), 2)
         self.assertIn("before_return_editor = wait_for_private_selection(", source)
+        self.assertGreaterEqual(
+            source.count("with hold_physical_modifiers(socket, shift=True):"), 2
+        )
+        self.assertNotIn("set_physical_modifiers", source)
 
     def test_semantic_float_return_requires_native_pixels_and_retained_editor(self):
         source = inspect.getsource(PROOF.native_semantic_float_return)
@@ -1533,6 +1597,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "text_input_active": True,
             "input_method_connected": True,
             "input_method_keyboard_grabbed": True,
+            "input_method_preedit_active": True,
         }
         for changes, accepted in (
                 ({}, True),
@@ -1550,15 +1615,70 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     self.assertRaises(RuntimeError):
                 PROOF.chat_input_method_ready("socket")
 
+        for changes, accepted in (
+                ({}, True),
+                ({"input_method_preedit_active": False}, False),
+                ({"text_input_active": False}, False),
+                ({"keyboard": {"app_id": "so.tilo.store"}}, False),
+                ({"text_input": {"app_id": "so.tilo.store"}}, False)):
+            with self.subTest(preedit=changes), patch.object(
+                    PROOF, "chrome_state", return_value={"seat_focus": {**ready, **changes}}):
+                self.assertEqual(PROOF.chat_input_method_preedit_active("socket"), accepted)
+        for malformed in (None, {}, {**ready, "input_method_preedit_active": None}):
+            with self.subTest(preedit_malformed=malformed), patch.object(
+                    PROOF, "chrome_state", return_value={"seat_focus": malformed}), \
+                    self.assertRaises(RuntimeError):
+                PROOF.chat_input_method_preedit_active("socket")
+
         source = inspect.getsource(PROOF.native_ime_float_return)
         readiness = source.index("chat_input_method_ready(socket)")
+        engine = source.index("fcitx_rime_active(env)", readiness)
         raw_baseline = source.index('{"op": "type", "text": committed_before}')
+        baseline_preedit = source.index("chat_input_method_preedit_active(socket)", raw_baseline)
         raw_commit = source.index('{"op": "key", "key": "Enter"}', raw_baseline)
         first_preedit = source.index('{"op": "type", "text": "nihao"}', raw_commit)
-        self.assertLess(readiness, raw_baseline)
-        self.assertLess(raw_baseline, raw_commit)
+        composed_preedit = source.index("chat_input_method_preedit_active(socket)", first_preedit)
+        self.assertLess(readiness, engine)
+        self.assertLess(engine, raw_baseline)
+        self.assertLess(raw_baseline, baseline_preedit)
+        self.assertLess(baseline_preedit, raw_commit)
         self.assertLess(raw_commit, first_preedit)
+        self.assertLess(first_preedit, composed_preedit)
         self.assertNotIn('{"op": "key", "key": "Shift"}', source)
+
+    def test_rime_readiness_is_read_only_and_rejects_unknown_or_inactive_engine(self):
+        class Result:
+            def __init__(self, returncode, stdout=""):
+                self.returncode = returncode
+                self.stdout = stdout
+
+        env = {"DBUS_SESSION_BUS_ADDRESS": "fixture-bus"}
+        with patch.object(
+                PROOF.subprocess, "run",
+                side_effect=[Result(0, "2\n"), Result(0, "rime\n")]) as run:
+            self.assertTrue(PROOF.fcitx_rime_active(env))
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["/usr/bin/fcitx5-remote"], ["/usr/bin/fcitx5-remote", "-n"],
+        ])
+        self.assertFalse(any(
+            option in call.args[0] for call in run.call_args_list
+            for option in ("-o", "-t", "-c", "-s")
+        ))
+
+        for results in (
+                [Result(1)],
+                [Result(0, "0\n")],
+                [Result(0, "1\n")],
+                [Result(0, "")],
+                [Result(0), Result(1)],
+                [Result(0), Result(0, "keyboard-us\n")],
+                [Result(0), Result(0, "")]):
+            with self.subTest(results=[result.returncode for result in results]), \
+                    patch.object(PROOF.subprocess, "run", side_effect=results):
+                self.assertFalse(PROOF.fcitx_rime_active(env))
+        with patch.object(PROOF.subprocess, "run", side_effect=OSError("absent")):
+            self.assertFalse(PROOF.fcitx_rime_active(env))
+
 
     def test_attached_preedit_refusal_records_only_closed_fixture_evidence(self):
         private = "private editor text"
@@ -2164,6 +2284,143 @@ class PresentedEditorTargetTests(unittest.TestCase):
             PROOF.atspi.AtspiClient = original_client
             PROOF.atspi.atspi_address = original_address
             PROOF.accessible_subtree = original_subtree
+
+
+class MarkerPrecedingInvokeResultTests(unittest.TestCase):
+    @staticmethod
+    def request(result):
+        return {"messages": [
+            {"role": "assistant", "tool_calls": [{
+                "id": "proof-plan", "function": {"name": "invoke"},
+            }]},
+            {"role": "tool", "tool_call_id": "proof-plan",
+             "content": json.dumps(result)},
+        ]}
+
+    def test_result_projection_never_retains_private_fields(self):
+        for result, expected in [("succeeded", "succeeded"), ("failed", "failed"),
+                                 ("not run", "not_run")]:
+            row = PROOF.marker_preceding_invoke_result(self.request({
+                "result": result, "error": "PRIVATE ERROR", "why": "PRIVATE WHY",
+                "value": "PRIVATE VALUE", "resources": ["PRIVATE RESOURCE"],
+                "changed_view": "PRIVATE VIEW", "newly_available": ["PRIVATE ACTION"],
+            }))
+            self.assertEqual(row, {"result": expected, "error_class": "unclassified",
+                                   "private_content_recorded": False})
+            self.assertNotIn("PRIVATE", json.dumps(row))
+
+    def test_rpc_error_is_not_a_definite_refusal(self):
+        for error in ["capnp error: PRIVATE ONE", "capnp error: PRIVATE TWO"]:
+            row = PROOF.marker_preceding_invoke_result(self.request({
+                "result": "failed", "error": error,
+            }))
+            self.assertEqual(row["result"], "failed")
+            self.assertEqual(row["error_class"], "rpc_error")
+            self.assertNotIn("PRIVATE", json.dumps(row))
+            self.assertNotIn("refused", json.dumps(row))
+
+    def test_exact_static_rpc_reasons_project_only_fixed_classes(self):
+        prefix = "capnp error: Failed: remote exception: "
+        reasons = {
+            "the application no longer publishes that action": "target_unpublished",
+            "the application has no invocation stream": "invocation_stream_missing",
+            "caller no longer authorized for invocation": "permission_revoked",
+            "only an agent may invoke a task action": "agent_admission_lost",
+            "the task run lease is unknown, expired, or belongs to another agent":
+                "task_run_stale",
+            "canonical task run is stale": "task_run_stale",
+            "new task direction must be applied before another action": "direction_pending",
+            "task cancellation was requested before another action": "task_cancelled",
+            "the task was cancelled; no further action may start": "task_cancelled",
+            "task action confirmation evidence is not accepted; request human confirmation outside the run":
+                "confirmation_unsupported",
+            "durable task steps are not served by this host": "step_unsupported",
+            "accepted task action has no broker state": "invocation_state_missing",
+        }
+        for reason, expected in reasons.items():
+            with self.subTest(reason=reason):
+                row = PROOF.marker_preceding_invoke_result(self.request({
+                    "result": "failed", "error": prefix + reason,
+                }))
+                self.assertEqual(row, {
+                    "result": "failed", "error_class": expected,
+                    "private_content_recorded": False,
+                })
+                local = PROOF.marker_preceding_invoke_result(self.request({
+                    "result": "failed", "error": "capnp error: Failed: " + reason,
+                }))
+                self.assertEqual(local, row)
+
+        for changed in (
+                prefix + "the application has no invocation stream PRIVATE",
+                prefix.lower() + "the application has no invocation stream",
+                "capnp error: the application has no invocation stream"):
+            with self.subTest(changed=changed):
+                row = PROOF.marker_preceding_invoke_result(self.request({
+                    "result": "failed", "error": changed,
+                }))
+                self.assertEqual(row["error_class"], "rpc_error")
+                self.assertNotIn("PRIVATE", json.dumps(row))
+
+    def test_exact_observe_unknown_is_distinct_from_rpc_and_never_a_refusal(self):
+        reason = "the action host no longer knows that invocation"
+        row = PROOF.marker_preceding_invoke_result(self.request({
+            "result": "failed", "error": reason,
+        }))
+        self.assertEqual(row, {
+            "result": "failed", "error_class": "invocation_unknown",
+            "private_content_recorded": False,
+        })
+        for changed in (reason + " PRIVATE", "PRIVATE " + reason,
+                        reason.upper(), "capnp error: Failed: " + reason):
+            row = PROOF.marker_preceding_invoke_result(self.request({
+                "result": "failed", "error": changed,
+            }))
+            self.assertIn(row["error_class"], ("unclassified", "rpc_error"))
+            self.assertNotIn("PRIVATE", json.dumps(row))
+            self.assertNotIn("refused", json.dumps(row))
+
+    def test_only_exact_source_timeouts_mean_uncertain(self):
+        for error in ["the broker did not answer the task action request",
+                      "Task action did not reach a terminal state before its deadline",
+                      "Task step did not settle before its deadline; its outcome is still unknown"]:
+            row = PROOF.marker_preceding_invoke_result(self.request({
+                "result": "failed", "error": error,
+            }))
+            self.assertEqual(row["error_class"], "uncertain")
+            changed = PROOF.marker_preceding_invoke_result(self.request({
+                "result": "failed", "error": error + " PRIVATE",
+            }))
+            self.assertEqual(changed["error_class"], "unclassified")
+
+    def test_missing_malformed_ambiguous_and_foreign_results(self):
+        self.assertEqual(PROOF.marker_preceding_invoke_result({"messages": []})["result"],
+                         "missing")
+        baseline = self.request({"result": "succeeded"})
+        malformed = json.loads(json.dumps(baseline))
+        malformed["messages"][1]["content"] = "PRIVATE NON JSON"
+        duplicate = json.loads(json.dumps(baseline))
+        duplicate["messages"].append(duplicate["messages"][1])
+        wrong_call = json.loads(json.dumps(baseline))
+        wrong_call["messages"][0]["tool_calls"][0]["id"] = "other-call"
+        wrong_tool = json.loads(json.dumps(baseline))
+        wrong_tool["messages"][0]["tool_calls"][0]["function"]["name"] = "plan"
+        for request in [malformed, duplicate, wrong_call, wrong_tool,
+                        {"messages": [None] * 257}, self.request({"result": ["PRIVATE"]})]:
+            with self.subTest(request_kind=type(request).__name__):
+                row = PROOF.marker_preceding_invoke_result(request)
+                self.assertEqual(row["result"], "invalid")
+                self.assertNotIn("PRIVATE", json.dumps(row))
+
+    def test_diagnostic_is_captured_before_existing_marker_wait(self):
+        source = inspect.getsource(PROOF.managed_agent_marker_stage)
+        held = source.index('provider.marker_second_held')
+        result = source.index('marker-preceding-invoke-result.json')
+        snapshot = source.index('agent-marker-second-held-')
+        marker = source.index('wait_for("actual compositor Agent action marker"')
+        self.assertLess(held, result)
+        self.assertLess(result, snapshot)
+        self.assertLess(snapshot, marker)
 
 
 if __name__ == "__main__":
