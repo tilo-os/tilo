@@ -788,6 +788,20 @@ impl Compositor {
 
 impl Drop for Compositor {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            // Observe the owned child before cleanup kills it. A client's
+            // BrokenPipe alone cannot distinguish a compositor exit from a
+            // closed Wayland connection. Keep the original panic and never
+            // make diagnostics a second panic during unwinding.
+            use std::io::Write as _;
+            let status = self.child.try_wait();
+            let log: String = self.recent_log().chars().take(16_384).collect();
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "owned compositor status before failure cleanup: {status:?}\n\
+                 compositor log tail (at most 40 lines / 16384 characters):\n{log}"
+            );
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.runtime_dir);
