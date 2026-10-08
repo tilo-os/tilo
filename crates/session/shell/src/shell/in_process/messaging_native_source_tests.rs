@@ -1847,3 +1847,6 @@ fn wait_network_prompt(queue: &crate::portal::PromptQueueHandle) -> crate::porta
 
 #[path = "messaging_sms_first_tests.rs"]
 mod sms_first_journey;
+
+#[path = "messaging_native_first_tests.rs"]
+mod native_first_journey;

@@ -56,3 +56,9 @@ Delegated ownership now reaches the identity, sealing and file helpers from
 the shared desktop model. They join `.config/hakari.toml`'s documented
 exclusions, so the model built alone does not acquire the generated union's
 Tokio dependency. The production dependency boundary checker is unchanged.
+
+Main `7ef34fb12edbb605ff447634dda1e46b3f50031a` is also integrated. Its protected
+private messaging transport and account gates are retained, with both newly
+added revocation call sites using permanent identity-scoped checks. A production
+certificate-verification control refuses even a future-dated root revocation
+and foreign-root entries; unrevoked certificates still pass.

@@ -9,6 +9,7 @@ pub mod invite;
 pub mod lan_discovery;
 pub mod media_caps;
 pub(crate) mod native_media;
+pub mod private_messages;
 pub mod protocol;
 pub mod replica;
 pub mod streaming;

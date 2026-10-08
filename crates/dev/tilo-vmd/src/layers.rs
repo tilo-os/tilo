@@ -145,6 +145,26 @@ impl LayerStore {
         Ok(out)
     }
 
+    /// Recompute the canonical identity; directory names alone are not cache proof.
+    ///
+    /// # Errors
+    /// Missing, damaged or unreadable layers, including missing provenance.
+    pub fn verify(&self, hash: &str) -> Result<LayerInfo, DaemonError> {
+        let path = self.require(hash)?;
+        if !path.join("usr").is_dir() || tree_hash(&path)? != hash {
+            return Err(DaemonError::InvalidLayer(format!(
+                "cached layer {hash} is damaged"
+            )));
+        }
+        let provenance = self.provenance(hash).ok_or_else(|| {
+            DaemonError::InvalidLayer(format!("cached layer {hash} has no valid provenance"))
+        })?;
+        Ok(LayerInfo {
+            hash: hash.to_owned(),
+            provenance,
+        })
+    }
+
     pub fn provenance(&self, hash: &str) -> Option<Provenance> {
         let bytes = fs::read(self.path(hash).join(PROVENANCE)).ok()?;
         serde_json::from_slice(&bytes).ok()
@@ -263,6 +283,7 @@ impl LayerStore {
         let hash = tree_hash(stage)?;
         let target = self.path(&hash);
         if target.is_dir() {
+            self.verify(&hash)?;
             return Ok((hash, true));
         }
         // systemd matches `extension-release.<NAME>` against the image name,
@@ -281,7 +302,10 @@ impl LayerStore {
         match fs::rename(stage, &target) {
             Ok(()) => Ok((hash, false)),
             // A concurrent import of identical content won the rename.
-            Err(_) if target.is_dir() => Ok((hash, true)),
+            Err(_) if target.is_dir() => {
+                self.verify(&hash)?;
+                Ok((hash, true))
+            }
             Err(e) => Err(DaemonError::io("publish layer")(e)),
         }
     }

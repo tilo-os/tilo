@@ -19,5 +19,7 @@
     "memory_max_events": 0,
     "oom_events": 0,
     "oom_kill_events": 0
-  }
+  },
+  "enabled": false,
+  "activation_note": "Resource fit passed; cold quality-slot builder pulls added64-66s in normal CI. Retain general placement until warm-store and busy-load developer latency qualify."
 }

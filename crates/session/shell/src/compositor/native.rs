@@ -8374,8 +8374,11 @@ pub fn run() {
         .set_quick_settings_wake(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
         if let Some(apps) = chrome.hosted_inputs.in_process() {
-            apps.borrow_mut()
-                .bind_messaging_record_wake(Arc::clone(&session_wake));
+            let mut apps = apps.borrow_mut();
+            apps.bind_messaging_record_wake(Arc::clone(&session_wake));
+            if let Some(network) = peer_sync.as_ref() {
+                apps.bind_private_messages_network(network);
+            }
         }
     });
     let chooser_attended = Arc::new(AtomicBool::new(false));
@@ -11205,6 +11208,11 @@ pub fn run() {
                     ));
                     if let Some(net) = peer_sync.as_ref() {
                         net.set_wake(Arc::clone(&session_wake));
+                        frame_builder.with_chrome(|chrome| {
+                            if let Some(apps) = chrome.hosted_inputs.in_process() {
+                                apps.borrow_mut().bind_private_messages_network(net);
+                            }
+                        });
                     }
                     None
                 }

@@ -96,6 +96,9 @@ impl EnrollmentView {
         match effect {
             MessagesEffect::ListSmsSims => self.sims(client, cx),
             MessagesEffect::SelectSmsSim { selection } => self.select_sim(client, selection, cx),
+            MessagesEffect::BeginFirstEnrollment { service } if service == "tilo" => {
+                self.prepare(client, service, cx)
+            }
             MessagesEffect::BeginFirstEnrollment { service } => self.begin(client, service, cx),
             MessagesEffect::CompleteFirstEnrollment {
                 service,
@@ -177,6 +180,36 @@ impl EnrollmentView {
                 state.sims = None;
             });
             epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+            Ok(Effected::value(value))
+        }))
+    }
+    fn prepare(
+        &self,
+        client: EnrollmentClient,
+        service: String,
+        cx: &mut EffectCx<Messages>,
+    ) -> EffectAnswer {
+        if self
+            .state
+            .with(|state| state.pending || state.account.is_some())
+        {
+            return Err(CATALOG.t("messages-setup-active"));
+        }
+        self.state.update(|state| state.pending = true);
+        self.epoch.update(|epoch| *epoch = epoch.saturating_add(1));
+        let admitted = self.epoch.get();
+        let epoch = self.epoch.clone();
+        let projection = self.state.clone();
+        let invalidated = client.clone();
+        Ok(cx.spawn(move |_| async move { client.prepare(service).await }, move |(), result, _| {
+            if epoch.get() != admitted {
+                if let Ok(review) = result { invalidated.cancel(&review.account); }
+                return Err(CATALOG.t("messages-setup-interrupted"));
+            }
+            projection.update(|state| state.pending = false);
+            let review = result.map_err(|_| CATALOG.t("messages-setup-unavailable"))?;
+            let value = serde_json::json!({"state":"review","service":review.account.service,"account":review.account.account});
+            projection.update(|state| { state.account = Some(review.account.clone()); state.review = Some(review); });
             Ok(Effected::value(value))
         }))
     }
@@ -349,6 +382,15 @@ impl EnrollmentView {
             )));
         }
         content = self.sim_panel(content, actions, &state);
+        content =
+            content.push(Box::new(actions.bind_effect_invocation(
+                Button::new("messages.first-tilo", "messages-first-tilo").with_enabled(
+                    self.client.is_some() && !state.pending && state.account.is_none(),
+                ),
+                &MessagesEffect::BeginFirstEnrollment {
+                    service: "tilo".into(),
+                },
+            )));
         content.push(Box::new(
             actions.bind_effect_invocation(
                 Button::new("messages.first-account-start", "messages-first-signal").with_enabled(
