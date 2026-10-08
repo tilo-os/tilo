@@ -424,3 +424,47 @@ hashes, failures and guarded scope receipts are retained in the evidence ledger.
 All seven qualification units stopped and the private fixture was removed. No
 shared cache was deleted, no installation occurred, and the PR remains draft and
 held while renderer, production model admission and physical-device work continue.
+
+## Frozen multilingual streaming comparison
+
+The review worker now accepts the model's trained context3 as an explicit option;
+context1 remains the default. Development comparisons motivated a fixed paired
+validation of every reserved clip. The [configuration and decision thresholds](dictation-holdout-freeze.json)
+were committed before decoding or scoring any reserved speech. All 32 cases ran
+with both contexts, alternating order, empty vocabulary and the same immutable
+model, native library, two-thread worker and confined fresh scope. The original
+temporary builder container disappeared before exposure; reconstructing the
+pinned public corpus reproduced the exact frozen suite hash. No failed case was
+dropped, and no setting was tuned on the reserved references.
+
+The [64-run transcript-free ledger](dictation-native-holdout.json) passes every
+predeclared review criterion. Total worker CPU fell from300.22s to205.28s, a31.6%
+reduction. Clean non-Chinese word errors fell from49/392 to45/392; clean Mandarin
+character errors fell from21/104 to15/104. Synthetic-noise word errors fell
+from29/198 to21/198, while Mandarin remained35/74. English clean errors worsened
+from10/71 to11/71; every language stayed within the predeclared five-percentage-point
+regression limit. All runs produced meaningful stable previews, with median
+paired delay −42.9ms. These are six-language public read/synthetic/assembled
+comparisons on a pressured builder, not natural conversational or physical-device
+acceptance. The remaining noisy Mandarin and Arabic errors are material.
+
+All scopes retained the1GiB worker address-space limit,960MiB observer guard,
+180s observer deadline and existing CPU/memory/swap controls. No max or OOM event
+occurred. Maximum observed worker address space was950836KiB. Profile acceptance
+is for review only: no production default, catalogue admission or deployment changed.
+
+The private fixed-model worker also authenticates the exact expected fs-verity
+digest on its original regular-file descriptor instead of rescanning742MB on
+every start. The materializer previously established the raw SHA/Merkle association
+after immutability; a different verity file is rejected. Linux verifies mapped
+and read bytes against that identity. This fixed review identity does not grant
+production catalogue trust. Same-sized mutable and wrong-verity files, a symlink
+and untrained context2 all refused before Ready in actual worker checks.
+
+Verification itself now takes about0.02ms, but native cold loading still takes
+roughly five seconds. In the paired fresh-worker warm comparison, Ready improved
+from5005ms to2836ms with the exact same final transcript; CPU rose6.20s to6.58s.
+Fast shortcut activation therefore still needs model-service residency and cache
+qualification. Physical microphone, natural noise/code-switch/repair/name speech,
+older-device and installed editable-field journeys remain open, alongside trusted
+model delivery and the renderer owner's qualified SDK and signed consumer.
