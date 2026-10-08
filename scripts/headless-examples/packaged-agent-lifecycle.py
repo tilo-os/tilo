@@ -1082,6 +1082,46 @@ def detached_ime_input_route(response, previous_child, previous_source):
     }
 
 
+def returned_ime_input_route(response, previous_primary, previous_child):
+    """Require primary focus or its exact authenticated child preedit proxy."""
+    primary = current_same_primary_presentation(response, previous_primary)
+    if primary is None:
+        raise RuntimeError("Return's exact native destination is no longer presented")
+    if type(primary.get("keyboard_focused")) is not bool:
+        raise RuntimeError("Return's primary keyboard focus is unobservable")
+    route = primary.get("input_route")
+    source_id = primary.get("input_source_surface_id")
+    if primary["keyboard_focused"] is True:
+        if route is not None or source_id is not None:
+            raise RuntimeError("focused Return destination exposes a contradictory continuation")
+        return primary, {
+            "primary_keyboard_focused": True,
+            "child_preedit_continuation": False,
+        }
+    if route != "floating-preedit-child" or type(source_id) is not int:
+        raise RuntimeError("Return has neither its keyboard seat nor an authenticated preedit continuation")
+    if source_id != native_surface_id(previous_child):
+        raise RuntimeError("Return's preedit continuation names a foreign native child")
+    children = [row for row in foreign_frames(response)
+                if row.get("app_id") == previous_child.get("app_id")
+                and row.get("floating_id") == previous_child.get("floating_id")
+                and row.get("surface_id") == source_id]
+    if len(children) != 1:
+        raise RuntimeError("Return's exact preedit child is absent or ambiguous")
+    child = children[0]
+    if type(child.get("frame_seq")) is not int \
+            or child["frame_seq"] < previous_child["frame_seq"]:
+        raise RuntimeError("Return's preedit child observation is stale")
+    if child.get("suspended") is not True or child.get("transferring") is not False:
+        raise RuntimeError("Return's preedit child is not the retained internal proxy")
+    if child.get("keyboard_focused") is not True:
+        raise RuntimeError("Return's preedit child no longer owns the keyboard seat")
+    return primary, {
+        "primary_keyboard_focused": False,
+        "child_preedit_continuation": True,
+    }
+
+
 def returned_ime_observation(first, current, same_process, text_input_active, same_input_method):
     """Closed Return diagnostics never include native IDs, editor text or errors."""
     return {
@@ -1590,17 +1630,19 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     )
     # AT readiness can follow the first source presentation. Observe the seat
     # now without accepting another primary native source or regressing paint.
-    returned = current_same_primary_presentation(
-        call(socket, {"op": "foreign_frames"}), returned_first
+    returned, returned_input = returned_ime_input_route(
+        call(socket, {"op": "foreign_frames"}), returned_first, frame
     )
-    (output / "ime-returned-native.json").write_text(json.dumps(returned_ime_observation(
+    returned_observation = returned_ime_observation(
         returned_first, returned, returned_access["process"] == chat_process,
         chat_text_input_active(socket), same_fcitx_process(fcitx_identity),
-    ), indent=2) + "\n")
-    if returned is None:
-        raise RuntimeError("Return's exact native source is no longer presented")
-    if returned_access["process"] != chat_process or returned["keyboard_focused"] is not True:
-        raise RuntimeError("Return replaced Chat or failed to transfer its keyboard seat")
+    )
+    returned_observation.update(returned_input)
+    (output / "ime-returned-native.json").write_text(
+        json.dumps(returned_observation, indent=2) + "\n"
+    )
+    if returned_access["process"] != chat_process:
+        raise RuntimeError("Return replaced the Chat process")
     if not private_editor_value_matches(returned_access, committed_before) \
             or not chat_text_input_active(socket):
         raise RuntimeError("Return committed or deactivated the live Rime preedit")
@@ -1609,9 +1651,23 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     )}))
 
     require_ok(call(socket, {"op": "key", "key": "Space"}))
-    wait_for(
-        "Rime's exact post-Return commit",
-        lambda: private_editor_value_matches(returned_access, committed_after), process,
+
+    def returned_committed_frame():
+        current = current_same_primary_presentation(
+            call(socket, {"op": "foreign_frames"}), returned
+        )
+        if current is None or not private_editor_value_matches(returned_access, committed_after):
+            return None
+        if current.get("input_route") is not None \
+                or current.get("input_source_surface_id") is not None:
+            return None
+        return current if current["keyboard_focused"] is True \
+            and chat_text_input_active(socket) else None
+
+    returned = wait_for(
+        "Rime's exact post-Return commit and primary seat",
+        returned_committed_frame,
+        process,
     )
     physical_chord(socket, "z", ctrl=True)
     wait_for(
@@ -1672,6 +1728,8 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
         "floating_rime_selection": True,
         "floating_rime_commit_undo": True,
         "returned_rime_commit": True,
+        "returned_primary_keyboard_focused_after_commit": True,
+        "returned_child_preedit_continuation": returned_input["child_preedit_continuation"],
         "ime_commit_undo": True,
         "pre_detach_undo": True,
         "pointer_float": True,

@@ -1386,6 +1386,79 @@ class PresentedEditorTargetTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             PROOF.detached_ime_input_route(response([source, contradictory]), child, source)
 
+    def test_returned_ime_accepts_only_exact_primary_or_authenticated_child_continuation(self):
+        primary = {
+            "app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 30,
+            "presented": True, "last_error": None, "keyboard_focused": False,
+            "input_route": "floating-preedit-child", "input_source_surface_id": 11,
+        }
+        child = {
+            "app_id": "so.tilo.chat", "floating_id": "float-current",
+            "surface_id": 11, "frame_seq": 22, "presented": False,
+            "pixels_ready": True, "last_error": None, "keyboard_focused": True,
+            "suspended": True, "transferring": False,
+        }
+        response = lambda rows: {"answer": {"frames": rows}}
+        observed, evidence = PROOF.returned_ime_input_route(
+            response([primary, child]), primary, child
+        )
+        self.assertIs(observed, primary)
+        self.assertEqual(evidence, {
+            "primary_keyboard_focused": False,
+            "child_preedit_continuation": True,
+        })
+
+        focused = {
+            **primary, "keyboard_focused": True,
+            "input_route": None, "input_source_surface_id": None,
+        }
+        observed, evidence = PROOF.returned_ime_input_route(
+            response([focused, {**child, "keyboard_focused": False}]), focused, child
+        )
+        self.assertIs(observed, focused)
+        self.assertEqual(evidence, {
+            "primary_keyboard_focused": True,
+            "child_preedit_continuation": False,
+        })
+
+    def test_returned_ime_refuses_foreign_stale_malformed_and_ended_continuations(self):
+        primary = {
+            "app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 30,
+            "presented": True, "last_error": None, "keyboard_focused": False,
+            "input_route": "floating-preedit-child", "input_source_surface_id": 11,
+        }
+        child = {
+            "app_id": "so.tilo.chat", "floating_id": "float-current",
+            "surface_id": 11, "frame_seq": 22, "presented": False,
+            "pixels_ready": True, "last_error": None, "keyboard_focused": True,
+            "suspended": True, "transferring": False,
+        }
+        response = lambda rows: {"answer": {"frames": rows}}
+        invalid = [
+            ({**primary, "input_route": None}, child),
+            ({**primary, "input_source_surface_id": "11"}, child),
+            ({**primary, "keyboard_focused": None}, child),
+            ({**primary, "input_source_surface_id": 12}, child),
+            (primary, {**child, "surface_id": 12}),
+            (primary, {**child, "floating_id": "float-foreign"}),
+            (primary, {**child, "frame_seq": 21}),
+            (primary, {**child, "keyboard_focused": False}),
+            (primary, {**child, "suspended": False}),
+            (primary, {**child, "transferring": True}),
+        ]
+        for destination, source in invalid:
+            with self.subTest(destination=destination, source=source), self.assertRaises(RuntimeError):
+                PROOF.returned_ime_input_route(
+                    response([destination, source]), primary, child
+                )
+        ended = {key: value for key, value in primary.items()
+                 if key not in {"input_route", "input_source_surface_id"}}
+        with self.assertRaises(RuntimeError):
+            PROOF.returned_ime_input_route(response([ended, child]), primary, child)
+        contradictory = {**primary, "keyboard_focused": True}
+        with self.assertRaises(RuntimeError):
+            PROOF.returned_ime_input_route(response([contradictory, child]), primary, child)
+
     def test_return_diagnostics_are_only_closed_counts_and_actual_bools(self):
         private = "private-editor-and-native-identity"
         first = {"frame_seq": 10, "keyboard_focused": False, "surface_id": 7,
@@ -1407,9 +1480,9 @@ class PresentedEditorTargetTests(unittest.TestCase):
     def test_return_reobserves_after_accessibility_before_strict_focus_assertion(self):
         source = inspect.getsource(PROOF.native_ime_float_return)
         ready = source.index('"returned Tide editor during Rime preedit"')
-        refresh = source.index("returned = current_same_primary_presentation(", ready)
+        refresh = source.index("returned, returned_input = returned_ime_input_route(", ready)
         diagnostic = source.index('"ime-returned-native.json"', refresh)
-        assertion = source.index('returned["keyboard_focused"] is not True', diagnostic)
+        assertion = source.index('returned_access["process"] != chat_process', diagnostic)
         self.assertLess(ready, refresh)
         self.assertLess(refresh, diagnostic)
         self.assertLess(diagnostic, assertion)
@@ -1444,7 +1517,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         second_type = source.index('{"op": "type", "text": "nihao"}', floating_undo)
         second_preedit = source.index('"genuine Rime preedit in the detached Chat frame"', second_type)
         returned = source.index('"Rime preedit\'s returned primary frame"', second_preedit)
-        returned_commit = source.index('"Rime\'s exact post-Return commit"', returned)
+        returned_commit = source.index('"Rime\'s exact post-Return commit and primary seat"', returned)
         self.assertLess(detached_ready, floating_commit)
         self.assertLess(floating_commit, floating_select)
         self.assertLess(floating_select, floating_undo)
@@ -1454,7 +1527,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertLess(returned, returned_commit)
         for proof in (
                 '"floating_rime_commit": True', '"floating_rime_selection": True',
-                '"floating_rime_commit_undo": True', '"returned_rime_commit": True'):
+                '"floating_rime_commit_undo": True', '"returned_rime_commit": True',
+                '"returned_primary_keyboard_focused_after_commit": True'):
             self.assertIn(proof, source)
         self.assertEqual(source.count('{"op": "key", "key": "Space"}'), 2)
         self.assertEqual(source.count('{"op": "type", "text": "nihao"}'), 2)
