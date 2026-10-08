@@ -1659,7 +1659,13 @@ mod tests {
         {
             let ws = room_admitting("ada", &bob, collab_types::Verb::Write);
             let labels = PeerLabels::from([(handle, "ada".to_string())]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &Default::default());
+            let rows = room_roster(
+                &ws,
+                &labels,
+                &arrived,
+                1,
+                &std::collections::BTreeMap::new(),
+            );
             assert_eq!(
                 rows[0].role_id.as_deref(),
                 Some(role_id(CapRole::Owner)),
