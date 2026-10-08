@@ -52,13 +52,15 @@ pub struct DocumentShare {
 }
 
 /// Document `record`'s share of run `run`: the band from its first to its
-/// last change grouped under the run. `None` when the run did not change it.
-pub fn document_share(run: RunId, record: &str, doc: &mut AutoCommit) -> Option<DocumentShare> {
+/// last committed change grouped under the run. `None` when the run did not
+/// change it. Reads through a shared reference, so a transaction still open
+/// in the document stays its producer's.
+pub fn document_share(run: RunId, record: &str, doc: &AutoCommit) -> Option<DocumentShare> {
     let mut first: Option<(i64, String)> = None;
     let mut last = None;
     let mut app = String::new();
     let mut labels: Vec<String> = Vec::new();
-    for version in tilo_resource::history::versions(doc) {
+    for version in tilo_resource::history::committed_versions(doc) {
         let Some(context) = made_by_run(version.message.as_deref(), run) else {
             continue;
         };
@@ -140,7 +142,7 @@ pub fn record_shortcut_run(
 ) -> Option<String> {
     let shares = documents
         .iter_mut()
-        .filter_map(|(record, doc)| document_share(finished.report.run, record, doc))
+        .filter_map(|(record, doc)| document_share(finished.report.run, record, &**doc))
         .collect();
     record_run_steps(coordinator, finished, &ordered_steps(shares))
 }
