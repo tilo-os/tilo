@@ -26,6 +26,12 @@ impl channel_handle::Server for Channel {
                 .unwrap();
         self.calls.borrow_mut().push(request.clone());
         let mode = self.mode.get();
+        let observations = self
+            .calls
+            .borrow()
+            .iter()
+            .filter(|frame| matches!(frame.message, RemoteActionMessage::Observe { .. }))
+            .count();
         Promise::from_future(async move {
             if mode == 3 {
                 self.release.notified().await;
@@ -44,13 +50,51 @@ impl channel_handle::Server for Channel {
                 }
                 RemoteActionMessage::Invoke(request) => {
                     RemoteActionMessage::Receipt(InvocationReceipt {
-                        invocation: if mode == 1 {
+                        invocation: if mode == 1 || mode == 7 {
                             InvocationId::new()
                         } else {
                             request.invocation
                         },
-                        status: ReceiptStatus::Accepted,
+                        status: if mode == 7 {
+                            ReceiptStatus::Completed {
+                                output: Default::default(),
+                            }
+                        } else {
+                            ReceiptStatus::Accepted
+                        },
                     })
+                }
+                RemoteActionMessage::Observe { invocation } => {
+                    let state = match mode {
+                        5 => None,
+                        6 => Some(tilo_actions::remote::InvocationState::new(
+                            InvocationId::new(),
+                            tilo_actions::InvocationUpdate::Accepted { invocation },
+                        )),
+                        4 if observations == 1 => Some(tilo_actions::remote::InvocationState::new(
+                            invocation,
+                            tilo_actions::InvocationUpdate::Progress {
+                                invocation,
+                                sequence: 1,
+                                phase: "child-reported".into(),
+                                completed: Some(1),
+                                total: Some(2),
+                                message: None,
+                            },
+                        )),
+                        4 => Some(tilo_actions::remote::InvocationState::new(
+                            invocation,
+                            tilo_actions::InvocationUpdate::Succeeded {
+                                invocation,
+                                output: tilo_actions::ActionOutput {
+                                    value: Some(serde_json::json!({"original": true})),
+                                    resources: vec!["owner-selected-output".into()],
+                                },
+                            },
+                        )),
+                        _ => panic!("unexpected observer mode"),
+                    };
+                    RemoteActionMessage::Update { invocation, state }
                 }
                 _ => panic!("unexpected fixture request"),
             };
@@ -60,6 +104,51 @@ impl channel_handle::Server for Channel {
             Ok(())
         })
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn published_action_wait_retains_one_child_and_returns_only_its_original_terminal() {
+    tokio::task::LocalSet::new().run_until(async {
+        let fixture = crate::invocation_scope::tests::fixture(1843);
+        let time = Arc::new(AtomicU64::new(0));
+        let scope = crate::invocation_scope::tests::scope(&fixture, 1843, "caller", 100, &time);
+        let client = scope.published_actions().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mode = Rc::new(Cell::new(4));
+        let raw = capnp_rpc::new_client(Channel {
+            calls: calls.clone(), mode: mode.clone(), release: Rc::new(tokio::sync::Notify::new()),
+        });
+        let broker = runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(Broker(raw)));
+        let channel = broker.join_channel("fixture", &[]).await.unwrap();
+        let registration = register(scope.route().channel_id(), channel).unwrap();
+        let request = invoke();
+        let answer = client.invoke_and_wait(request.clone()).unwrap().await;
+        assert_eq!(answer, PublishedActionAnswer::Answer(RemoteActionMessage::Receipt(InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Completed { output: tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({"original": true})),
+                resources: vec!["owner-selected-output".into()],
+            } },
+        })));
+        assert_eq!(calls.borrow().len(), 3);
+        assert!(matches!(calls.borrow()[0].message, RemoteActionMessage::Invoke(_)));
+        for frame in calls.borrow().iter().skip(1) {
+            assert_eq!(frame.on_behalf_of, Some(scope.invocation()));
+            assert!(matches!(frame.message, RemoteActionMessage::Observe { invocation } if invocation == request.invocation));
+        }
+        for failed_mode in [1, 2, 5, 6, 7] {
+            calls.borrow_mut().clear();
+            mode.set(failed_mode);
+            let request = invoke();
+            assert_eq!(client.invoke_and_wait(request.clone()).unwrap().await,
+                PublishedActionAnswer::Unknown { invocation: Some(request.invocation) });
+            assert_eq!(calls.borrow().iter().filter(|frame| matches!(frame.message, RemoteActionMessage::Invoke(_))).count(), 1,
+                "unknown admission/observation never dispatches another child");
+        }
+        scope.cancel();
+        assert!(client.invoke_and_wait(invoke()).is_err());
+        drop(registration);
+    }).await;
 }
 struct Broker(channel_handle::Client);
 #[expect(

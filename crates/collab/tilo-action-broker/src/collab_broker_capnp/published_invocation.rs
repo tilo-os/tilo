@@ -38,6 +38,57 @@ pub(super) struct OriginalInvocationData {
     time: crate::peer_actions::PolicyTime,
     execution: Option<tilo_actions::remote::ExecutionLease>,
 }
+
+/// A broker-held relation to an actual admitted parent, never a payload UUID.
+#[derive(Clone)]
+pub(super) struct ContinuationParent {
+    data: Arc<OriginalInvocationData>,
+    peer: u64,
+}
+
+impl ContinuationParent {
+    pub(super) fn matches(&self, wire: u64, pending: &super::PendingInvocation) -> bool {
+        wire == self.data.request.wire_id
+            && pending.peer_id == self.peer
+            && pending
+                .original
+                .as_ref()
+                .is_some_and(|data| Arc::ptr_eq(data, &self.data))
+    }
+
+    /// Pure checks while the caller holds the same registry guard as insertion.
+    /// The immutable relation cannot use a replacement at the same wire or UUID.
+    pub(super) fn check_locked(
+        &self,
+        registry: &std::collections::HashMap<u64, super::PendingInvocation>,
+        actor: &str,
+        room: &str,
+    ) -> Result<(), String> {
+        let mut parent = Some(self);
+        let mut remaining = registry.len();
+        while let Some(link) = parent {
+            remaining = remaining
+                .checked_sub(1)
+                .ok_or("continuation ancestry cycle or limit exceeded")?;
+            let retained = registry
+                .get(&link.data.request.wire_id)
+                .filter(|entry| link.matches(link.data.request.wire_id, entry))
+                .ok_or("original continuation parent retired or replaced")?;
+            if retained.actor != actor
+                || retained.cluster_id != room
+                || retained.update.is_terminal()
+                || retained.cancellation_requested_at.is_some()
+                || retained
+                    .cancellation_fence
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err("original continuation ancestry retired or cancelled".into());
+            }
+            parent = retained.continuation.as_ref();
+        }
+        Ok(())
+    }
+}
 impl OriginalInvocationData {
     pub(super) fn display_caller(
         self: &Arc<Self>,
@@ -668,11 +719,21 @@ impl OriginalInvocation {
                 .original
                 .as_ref()
                 .is_none_or(|data| !Arc::ptr_eq(data, &self.data));
+        if let Some(parent) = &retained.continuation {
+            parent.check_locked(&pending, &retained.actor, &retained.cluster_id)?;
+        }
         drop(pending);
         if invalid {
             return Err("original invocation execution frontier retired or cancelled".into());
         }
         Ok(())
+    }
+
+    pub(super) fn admission_parent(&self) -> ContinuationParent {
+        ContinuationParent {
+            data: self.data.clone(),
+            peer: self.peer,
+        }
     }
 
     /// Reconstruct custody only from an actual retained invocation delivered to

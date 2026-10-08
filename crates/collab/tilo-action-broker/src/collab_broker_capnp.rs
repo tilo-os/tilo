@@ -1327,6 +1327,7 @@ pub struct InvocationJob {
 
 #[derive(Clone)]
 struct PendingInvocation {
+    continuation: Option<published_invocation::ContinuationParent>,
     /// Who it was admitted for, kept so an edit its effect submits is
     /// admitted for them too.
     caller: Option<ContinuingCaller>,
@@ -1935,22 +1936,30 @@ impl CapnpBrokerState {
             .lock()
             .map_err(|_| "invocation registry unavailable")?;
         let pending = registry
-            .get_mut(&record.wire_id)
+            .get(&record.wire_id)
             .filter(|p| p.journal_key.as_ref() == Some(&record.key))
             .ok_or("invocation is not running")?;
         if !pending.cancellable {
             return Err("action did not declare cancellation".into());
         }
+        let pending = registry
+            .get_mut(&record.wire_id)
+            .ok_or("invocation is not running")?;
         self.persist_cancellation(pending)?;
         pending
             .cancellation_requested_at
             .get_or_insert_with(std::time::Instant::now);
+        let descendants =
+            self.request_continuation_descendants_locked(&mut registry, record.wire_id);
+        if let Err(error) = &descendants {
+            self.record_continuation_failure_locked(&registry, record.wire_id, error);
+        }
         self.cancellation_requests
             .lock()
             .map_err(|_| "cancellation registry unavailable")?
             .insert(record.wire_id);
         drop(registry);
-        Ok(())
+        descendants
     }
 
     fn persist_cancellation(&self, pending: &PendingInvocation) -> Result<(), String> {
@@ -2832,6 +2841,7 @@ struct InvocationInputs<'a> {
 /// invocation keeps, and a task-owned durable identity. Each call site names
 /// every field, so no custody input is filled implicitly.
 struct AdmissionProvenance<'a> {
+    continuation: Option<Arc<published_invocation::OriginalInvocation>>,
     durable: Option<DurableContext<'a>>,
     revision: Option<&'a str>,
     origin: Option<InvocationCaller>,
@@ -3321,6 +3331,9 @@ impl CapnpBrokerState {
                     (cancellation_expired || idle_expired).then_some((*id, cancellation_expired))
                 })
                 .collect::<Vec<_>>();
+            for (id, _) in &ids {
+                self.retire_continuation_descendants_locked(&mut pending, *id);
+            }
             ids.into_iter()
                 .filter_map(|(id, cancellation_expired)| {
                     pending
@@ -4816,6 +4829,20 @@ impl CapnpBrokerState {
         inputs: InvocationInputs<'_>,
         origin: Option<InvocationCaller>,
     ) -> Result<InvocationJob, String> {
+        self.start_invocation_confirmed_for_continuation(
+            peer_id, resource, action, inputs, origin, None,
+        )
+    }
+
+    fn start_invocation_confirmed_for_continuation(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        inputs: InvocationInputs<'_>,
+        origin: Option<InvocationCaller>,
+        continuation: Option<Arc<published_invocation::OriginalInvocation>>,
+    ) -> Result<InvocationJob, String> {
         let offered = self
             .surfaces
             .lock()
@@ -4839,6 +4866,7 @@ impl CapnpBrokerState {
             offered,
             inputs,
             AdmissionProvenance {
+                continuation,
                 durable: None,
                 revision: None,
                 origin,
@@ -4878,6 +4906,7 @@ impl CapnpBrokerState {
             offered,
             inputs,
             AdmissionProvenance {
+                continuation: None,
                 durable: None,
                 revision,
                 origin,
@@ -4899,6 +4928,7 @@ impl CapnpBrokerState {
             offered,
             inputs,
             AdmissionProvenance {
+                continuation: None,
                 durable: durable.map(|(caller, request)| DurableContext::Peer(caller, request)),
                 revision,
                 origin: None,
@@ -4928,11 +4958,16 @@ impl CapnpBrokerState {
             context,
         } = inputs;
         let AdmissionProvenance {
+            continuation,
             durable,
             revision,
             origin,
             retained_time,
         } = provenance;
+        if let Some(parent) = &continuation {
+            parent.check_lifecycle()?;
+            parent.check_execution_frontier(self)?;
+        }
         let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
         let owner = durable.map_or_else(
             || InvocationOwner::Local {
@@ -5057,6 +5092,19 @@ impl CapnpBrokerState {
         {
             return Err("application_stable_identity_unavailable".into());
         }
+        // Cancellation and retirement use registry -> journal order too. Keep
+        // the same registry frontier through durable admission and insertion;
+        // a cancelled parent must leave neither a child nor a journal ghost.
+        let mut registry = self
+            .pending_invocations
+            .lock()
+            .map_err(|_| "the invocation registry is unavailable".to_string())?;
+        let continuation = continuation
+            .as_ref()
+            .map(|parent| parent.admission_parent());
+        if let Some(parent) = &continuation {
+            parent.check_locked(&registry, &actor.id, &offered.0.route.cluster_id)?;
+        }
         // A configured but unreadable/corrupt journal disables every new admission.
         let mut journal_guard = self
             .journal
@@ -5157,13 +5205,10 @@ impl CapnpBrokerState {
         // Keep acceptance before an immediately completing application's first
         // update. Sending to the unbounded app queue and bounded observation
         // bus never waits or calls back into the broker.
-        let mut registry = self
-            .pending_invocations
-            .lock()
-            .map_err(|_| "the invocation registry is unavailable".to_string())?;
         registry.insert(
             id,
             PendingInvocation {
+                continuation,
                 caller: continuing,
                 activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
                 owner,
@@ -5231,6 +5276,7 @@ impl CapnpBrokerState {
             })
             .is_err()
         {
+            self.retire_continuation_descendants_locked(&mut registry, id);
             let removed = registry.remove(&id);
             drop(registry);
             self.invocation_generation.fetch_add(1, Ordering::Relaxed);
@@ -5426,12 +5472,102 @@ impl CapnpBrokerState {
             );
             self.invocation_generation.fetch_add(1, Ordering::Relaxed);
         }
-        drop(pending);
+        let descendants = self.request_continuation_descendants_locked(&mut pending, id);
+        if let Err(error) = &descendants {
+            self.record_continuation_failure_locked(&pending, id, error);
+        }
         self.cancellation_requests
             .lock()
             .map_err(|_| "the cancellation registry is unavailable".to_string())?
             .insert(id);
+        drop(pending);
+        descendants
+    }
+
+    /// Fence only actual admitted descendants through their retained parent
+    /// pointers. A noncancellable intermediate remains unchanged, but does not
+    /// hide its cancellable descendants. This requests stopping; each child's
+    /// own update still supplies its terminal outcome and cleanup evidence.
+    fn request_continuation_descendants_locked(
+        &self,
+        registry: &mut HashMap<u64, PendingInvocation>,
+        root: u64,
+    ) -> Result<(), String> {
+        let root_entry = registry
+            .get(&root)
+            .ok_or("continuation root no longer retained")?;
+        let actor = root_entry.actor.clone();
+        let workspace = root_entry.cluster_id.clone();
+        let mut pending = std::collections::VecDeque::from([root]);
+        let mut visited = std::collections::HashSet::from([root]);
+        while let Some(parent) = pending.pop_front() {
+            let parent_entry = registry
+                .get(&parent)
+                .ok_or("continuation parent no longer retained")?;
+            let children = registry
+                .iter()
+                .filter_map(|(wire, child)| {
+                    child
+                        .continuation
+                        .as_ref()
+                        .filter(|link| link.matches(parent, parent_entry))
+                        .filter(|_| child.actor == actor && child.cluster_id == workspace)
+                        .map(|_| *wire)
+                })
+                .collect::<Vec<_>>();
+            for child in children {
+                if visited.len() >= registry.len() || !visited.insert(child) {
+                    return Err("continuation ancestry cycle or limit exceeded".into());
+                }
+                pending.push_back(child);
+                let entry = registry
+                    .get_mut(&child)
+                    .ok_or("continuation child no longer retained")?;
+                if entry.update.is_terminal() || !entry.cancellable {
+                    continue;
+                }
+                self.persist_cancellation(entry)?;
+                if entry.cancellation_requested_at.is_none() {
+                    entry.cancellation_requested_at = Some(std::time::Instant::now());
+                    self.execution_activity.publish_status(
+                        entry.activity.as_ref(),
+                        ExecutionStatus::CancellationRequested,
+                    );
+                    self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+                }
+                self.cancellation_requests
+                    .lock()
+                    .map_err(|_| "the cancellation registry is unavailable")?
+                    .insert(child);
+            }
+        }
         Ok(())
+    }
+
+    fn retire_continuation_descendants_locked(
+        &self,
+        registry: &mut HashMap<u64, PendingInvocation>,
+        root: u64,
+    ) {
+        if let Err(error) = self.request_continuation_descendants_locked(registry, root) {
+            self.record_continuation_failure_locked(registry, root, &error);
+        }
+    }
+
+    fn record_continuation_failure_locked(
+        &self,
+        registry: &HashMap<u64, PendingInvocation>,
+        root: u64,
+        error: &str,
+    ) {
+        // Child delivery failure cannot change an observed parent outcome or
+        // reopen its ancestry. Existing owner health retains the partial failure.
+        if let Some(parent) = registry.get(&root) {
+            parent.cancellation_fence.store(true, Ordering::Release);
+        }
+        if let Ok(mut failure) = self.owner_commit_failure.lock() {
+            failure.get_or_insert_with(|| format!("continuation cancellation failed: {error}"));
+        }
     }
 
     pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
@@ -5820,6 +5956,7 @@ impl CapnpBrokerState {
                 .filter_map(|(id, invocation)| (invocation.peer_id == peer_id).then_some(*id))
                 .collect::<Vec<_>>();
             for id in ids {
+                self.retire_continuation_descendants_locked(&mut pending, id);
                 if let Some(invocation) = pending.remove(&id) {
                     invocation.cancellation_fence.store(true, Ordering::Release);
                     let completion = InvocationCompletion {
@@ -9163,7 +9300,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .pending_invocations
                 .lock()
                 .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
-            let pending = registry
+            registry
                 .get(&id)
                 .filter(|pending| pending.peer_id == peer_id && pending.update == staged.update)
                 .ok_or_else(|| {
@@ -9171,9 +9308,13 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "invocation changed while committing; outcome unknown".into(),
                     )
                 })?;
+            let pending = registry
+                .get(&id)
+                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             state
                 .persist_invocation(pending, update.clone(), false)
                 .map_err(capnp::Error::failed)?;
+            state.retire_continuation_descendants_locked(&mut registry, id);
             let pending = registry
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
@@ -16414,6 +16555,7 @@ pub mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let invocation = tilo_actions::InvocationId::new();
         let pending = PendingInvocation {
+            continuation: None,
             caller: None,
             activity: None,
             owner: InvocationOwner::Local {
@@ -17721,12 +17863,15 @@ impl CapnpBrokerState {
             .pending_invocations
             .lock()
             .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
-        let pending = registry
-            .get_mut(&id)
+        registry
+            .get(&id)
             .filter(|pending| pending.peer_id == peer_id && pending.update == staged.update)
             .ok_or_else(|| {
                 capnp::Error::failed("invocation changed while committing; outcome unknown".into())
             })?;
+        let pending = registry
+            .get_mut(&id)
+            .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
         state
             .persist_invocation(pending, update.clone(), false)
             .map_err(capnp::Error::failed)?;
@@ -17736,25 +17881,8 @@ impl CapnpBrokerState {
         state.publish_pending_activity(pending, &update);
         state.invocation_generation.fetch_add(1, Ordering::Relaxed);
         if update.is_terminal() {
-            let completion = match &update {
-                tilo_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
-                    code: String::new(),
-                    message: String::new(),
-                },
-                tilo_actions::InvocationUpdate::Failed { error, .. } => InvocationCompletion {
-                    code: error.code.clone(),
-                    message: error.message.clone(),
-                },
-                tilo_actions::InvocationUpdate::Cancelled { message, .. } => InvocationCompletion {
-                    code: "action_cancelled".into(),
-                    message: message.clone().unwrap_or_default(),
-                },
-                _ => {
-                    return Err(capnp::Error::failed(
-                        "nonterminal invocation reached terminal handling".into(),
-                    ));
-                }
-            };
+            state.retire_continuation_descendants_locked(&mut registry, id);
+            let completion = terminal_invocation_completion(&update)?;
             let pending = registry
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
@@ -17768,6 +17896,31 @@ impl CapnpBrokerState {
         }
         Ok(())
     }
+}
+
+fn terminal_invocation_completion(
+    update: &tilo_actions::InvocationUpdate,
+) -> Result<InvocationCompletion, capnp::Error> {
+    let completion = match update {
+        tilo_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
+            code: String::new(),
+            message: String::new(),
+        },
+        tilo_actions::InvocationUpdate::Failed { error, .. } => InvocationCompletion {
+            code: error.code.clone(),
+            message: error.message.clone(),
+        },
+        tilo_actions::InvocationUpdate::Cancelled { message, .. } => InvocationCompletion {
+            code: "action_cancelled".into(),
+            message: message.clone().unwrap_or_default(),
+        },
+        _ => {
+            return Err(capnp::Error::failed(
+                "nonterminal invocation reached terminal handling".into(),
+            ));
+        }
+    };
+    Ok(completion)
 }
 
 #[cfg(test)]

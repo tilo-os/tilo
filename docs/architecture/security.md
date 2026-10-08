@@ -311,6 +311,34 @@ A host with no native-person service keeps its ordinary legacy actions without
 original certificate evidence; an installed service that refuses never falls
 back, and missing evidence cannot authorize a privileged continuation.
 
+An admitted resource effect may use `EffectCx::published_actions()` to invoke
+another published action under its retained original caller. Final admission of a directed pending child step
+checks the exact broker-held original data and worker connection together with
+all retained ancestor frontiers while holding the pending-invocation registry
+lock. A matching actor, wire handle, UUID or replacement connection cannot create
+that relation. This check precedes durable admission, so a parent retiring during
+a directory lookup cannot leave an admitted child or a durable admission receipt.
+
+The existing broker cancellation and retirement paths request cancellation of
+active, cancellable descendants through those exact relations. They traverse a
+noncancellable intermediate without changing its execution; retired ancestry
+still refuses its later child admissions. Completed and unrelated invocations
+are untouched. Shortcut supervisors and synchronous workspace operations keep
+their existing completion-store semantics; only their actual directed pending
+steps acquire this relation. An observed parent terminal is persisted before a
+fallible child request, and an authorized root cancellation fences the root
+before the cascade. Partial delivery failures retain existing owner-health
+errors without changing the parent's independently observed outcome. A cancellation request is not a terminal acknowledgement or proof
+of process cleanup: only the child's existing supervisor and terminal update
+establish its outcome. Broker shutdown cannot promise delivery of queued requests.
+
+`PublishedActions::invoke_and_wait` invokes once, retains the chosen child UUID,
+and observes its canonical state at no more than five reads per second. It returns
+the original terminal receipt and resources. Missing observations, lost transport
+or retired custody return unknown with that same child UUID; they never redispatch.
+App code presents the original Jobs and resources rather than copying their status
+into an application-owned scheduler or progress store.
+
 Inspection is read-only. Mutations additionally require the session's protected
 claimed device owner, an exact match to its protected primary device certificate,
 and a current accepted person policy granting Settings Admin. An enrolled room

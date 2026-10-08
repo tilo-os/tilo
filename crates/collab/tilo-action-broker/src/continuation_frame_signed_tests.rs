@@ -187,6 +187,188 @@ async fn continuation_answer(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn continuation_parent_cancellation_requests_its_actual_owned_child_to_stop() {
+    use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let (caller, evidence, parent) = continuation_parent(&env, &rig).await;
+            let mut child = local_host_request(false);
+            child.on_behalf_of = Some(parent.invocation);
+            let bytes = continuation_round_trip(
+                &rig,
+                &RemoteActionFrame::new(RemoteActionMessage::Invoke(child.clone()))
+                    .encode()
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(RemoteActionFrame::decode(&bytes).unwrap().message,
+                RemoteActionMessage::Receipt(receipt) if receipt.invocation == child.invocation
+                    && matches!(receipt.status, ReceiptStatus::Accepted)));
+            let child_wire = rig.state.remote_job(&caller, &child.invocation).unwrap();
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade
+                .certified_local_action_host(&caller, &evidence)
+                .unwrap();
+            host.cancel(&caller, &parent.invocation).unwrap();
+            // This asserts the existing broker's cooperative request, not guest
+            // termination, an acknowledgement, or successful cleanup.
+            let requested = rig.state.cancellation_requests.lock().unwrap().contains(&child_wire);
+            assert!(rig.worker.handle.invocation_cancellation(child_wire).await.unwrap(),
+                "the admitted target RPC delivers the child cancellation request");
+            rig.stop().await;
+            assert!(requested, "cancelling the original parent must request its admitted child to stop before original custody retires");
+        })
+        .await;
+}
+
+struct HeldContinuationChildDirectory {
+    started: Rc<std::cell::Cell<bool>>,
+    release: Rc<tokio::sync::Notify>,
+}
+
+impl crate::collab_broker_capnp::action_directory::Server for HeldContinuationChildDirectory {
+    fn resolve(
+        self: Rc<Self>,
+        params: crate::collab_broker_capnp::action_directory::ResolveParams,
+        mut results: crate::collab_broker_capnp::action_directory::ResolveResults,
+    ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
+        let action = params
+            .get()
+            .unwrap()
+            .get_action()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        capnp::capability::Promise::from_future(async move {
+            if action == "child" {
+                self.started.set(true);
+                self.release.notified().await;
+            }
+            let mut row = directory_state("original-r1").borrow().row();
+            let mut descriptor = continuation_descriptor();
+            descriptor.action = action;
+            row.action = Some(descriptor.action.clone());
+            row.visibility_action = Some(descriptor.action.clone());
+            row.visibility_contract_json
+                .clone_from(&descriptor.contract_json);
+            row.descriptor = Some(descriptor);
+            super::write_directory_row(results.get().init_resolution().init_found(), &row);
+            Ok(())
+        })
+    }
+}
+
+async fn continuation_retire_parent(
+    rig: &Rig,
+    caller: &tilo_actions::remote::Caller,
+    evidence: &[u8],
+    invocation: tilo_actions::InvocationId,
+    retirement: &str,
+) {
+    let facade = crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+    let host = facade
+        .certified_local_action_host(caller, evidence)
+        .unwrap();
+    let parent_wire = rig.state.remote_job(caller, &invocation).unwrap();
+    match retirement {
+        "cancel" => host.cancel(caller, &invocation).unwrap(),
+        "terminal" => {
+            let terminal = tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            };
+            rig.worker
+                .handle
+                .update_invocation(parent_wire, &serde_json::to_string(&terminal).unwrap())
+                .await
+                .unwrap();
+        }
+        "replace" => {
+            let mut registry = rig.state.pending_invocations.lock().unwrap();
+            let retained = registry.get_mut(&parent_wire).unwrap();
+            // Fault injection preserves every wire/payload identity while
+            // replacing the actual broker-held original data allocation.
+            retained.original = retained
+                .original
+                .as_ref()
+                .map(|data| Arc::new((**data).clone()));
+        }
+        "disconnect" => rig.state.remove_connection(903),
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuation_cancelled_parent_cannot_admit_child_after_directory_answer() {
+    use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+    for retirement in ["cancel", "terminal", "replace", "disconnect"] {
+        tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let (caller, evidence, parent) = continuation_parent(&env, &rig).await;
+            let started = Rc::new(std::cell::Cell::new(false));
+            let release = Rc::new(tokio::sync::Notify::new());
+            rig.worker.handle.publish_action_directory(
+                &env.route.app_id,
+                capnp_rpc::new_client(HeldContinuationChildDirectory {
+                    started: started.clone(), release: release.clone(),
+                }),
+            ).await.unwrap();
+            let mut child = local_host_request(true);
+            child.target.address.action = "child".into();
+            child.on_behalf_of = Some(parent.invocation);
+            let bytes = RemoteActionFrame::new(RemoteActionMessage::Invoke(child.clone())).encode().unwrap();
+            let handle = rig.worker.handle.clone();
+            let request = handle.remote_action(&bytes);
+            tokio::pin!(request);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !started.get() {
+                    rig.state.drain_action_directory_bridge(&rig.directories);
+                    tokio::select! {
+                        answer = &mut request => panic!("child answered before held directory: {answer:?}"),
+                        () = tokio::task::yield_now() => {},
+                    }
+                }
+            }).await.unwrap();
+            continuation_retire_parent(&rig, &caller, &evidence, parent.invocation, retirement).await;
+            let journal_frontier = rig.state.journal.lock().unwrap().as_ref().unwrap()
+                .as_ref().unwrap().next_wire_id();
+            release.notify_one();
+            let answer = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    rig.state.drain_action_directory_bridge(&rig.directories);
+                    tokio::select! {
+                        answer = &mut request => break answer,
+                        () = tokio::task::yield_now() => {},
+                    }
+                }
+            }).await.unwrap();
+            let child_admitted = rig.state.pending_invocations.lock().unwrap().values()
+                .any(|entry| entry.update.invocation() == child.invocation);
+            assert_eq!(rig.state.journal.lock().unwrap().as_ref().unwrap()
+                .as_ref().unwrap().next_wire_id(), journal_frontier,
+                "refused late child must not leave a durable ghost admission");
+            rig.stop().await;
+            assert!(!child_admitted, "response refusal alone must not conceal an admitted child after original cancellation: {answer:?}");
+            let refused = match answer {
+                Err(_) => true,
+                Ok(bytes) => matches!(RemoteActionFrame::decode(&bytes).unwrap().message,
+                    RemoteActionMessage::Receipt(receipt)
+                        if receipt.invocation == child.invocation
+                            && matches!(receipt.status, tilo_actions::remote::ReceiptStatus::Rejected { .. })),
+            };
+            assert!(refused, "cancelled continuation must refuse admission through the original protocol");
+        }).await;
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn continuation_frame_actual_child_lifecycle_never_borrows_another_valid_parent() {
     use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
     tokio::task::LocalSet::new()
@@ -506,4 +688,405 @@ async fn continuation_frame_legacy_invoke_rechecks_cancelled_original_before_dis
             rig.stop().await;
         })
         .await;
+}
+
+async fn continuation_admit_child(
+    rig: &Rig,
+    parent: tilo_actions::InvocationId,
+    action: &str,
+) -> tilo_actions::remote::InvokeRequest {
+    use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
+    let mut child = local_host_request(false);
+    child.target.address.action = action.into();
+    child.on_behalf_of = Some(parent);
+    let bytes = continuation_round_trip(
+        rig,
+        &RemoteActionFrame::new(RemoteActionMessage::Invoke(child.clone()))
+            .encode()
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(RemoteActionFrame::decode(&bytes).unwrap().message,
+        RemoteActionMessage::Receipt(receipt) if receipt.invocation == child.invocation
+            && matches!(receipt.status, ReceiptStatus::Accepted)));
+    child
+}
+
+async fn continuation_other_device_job(
+    env: &Environment,
+    rig: &Rig,
+    caller: &tilo_actions::remote::Caller,
+) -> u64 {
+    let facade = crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+    let (other_device, other_evidence) = member_device_evidence(env, 94, false);
+    assert_eq!(other_device.user_public_key(), caller.user_public_key());
+    assert_ne!(other_device.device_public_key(), caller.device_public_key());
+    let other_host = facade
+        .certified_local_action_host(&other_device, &other_evidence)
+        .unwrap();
+    let other = local_host_request(false);
+    local_host_answer(other_host.invoke(&other_device, other.clone()))
+        .await
+        .unwrap();
+    rig.state
+        .remote_job(&other_device, &other.invocation)
+        .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuation_cancel_traverses_non_cancellable_child_and_fences_its_future_children() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let (caller, evidence, parent) = continuation_parent(&env, &rig).await;
+            let mut noncancellable = continuation_descriptor();
+            noncancellable.action = "noncancellable".into();
+            noncancellable.contract_json = serde_json::to_string(&tilo_actions::ActionContract {
+                execution: tilo_actions::ExecutionMode::Background { cancellable: false },
+                result: tilo_actions::ResultSpec::Job,
+                ..tilo_actions::ActionContract::default()
+            })
+            .unwrap();
+            rig.worker
+                .handle
+                .publish_actions(
+                    &env.route.app_id,
+                    &[continuation_descriptor(), noncancellable],
+                )
+                .await
+                .unwrap();
+            let child = continuation_admit_child(&rig, parent.invocation, "noncancellable").await;
+            let grandchild = continuation_admit_child(&rig, child.invocation, "open").await;
+            let child_wire = rig.state.remote_job(&caller, &child.invocation).unwrap();
+            let grandchild_wire = rig
+                .state
+                .remote_job(&caller, &grandchild.invocation)
+                .unwrap();
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade
+                .certified_local_action_host(&caller, &evidence)
+                .unwrap();
+            let unrelated = local_host_request(false);
+            local_host_answer(host.invoke(&caller, unrelated.clone()))
+                .await
+                .unwrap();
+            let unrelated_wire = rig
+                .state
+                .remote_job(&caller, &unrelated.invocation)
+                .unwrap();
+            let other_wire = continuation_other_device_job(&env, &rig, &caller).await;
+            host.cancel(&caller, &parent.invocation).unwrap();
+            {
+                let registry = rig.state.pending_invocations.lock().unwrap();
+                assert!(
+                    registry
+                        .get(&other_wire)
+                        .unwrap()
+                        .cancellation_requested_at
+                        .is_none()
+                );
+                assert!(
+                    registry
+                        .get(&child_wire)
+                        .unwrap()
+                        .cancellation_requested_at
+                        .is_none()
+                );
+                assert!(
+                    registry
+                        .get(&grandchild_wire)
+                        .unwrap()
+                        .cancellation_requested_at
+                        .is_some()
+                );
+                assert!(
+                    registry
+                        .get(&unrelated_wire)
+                        .unwrap()
+                        .cancellation_requested_at
+                        .is_none()
+                );
+            }
+            let count = rig.state.pending_invocations.lock().unwrap().len();
+            let mut refused = local_host_request(false);
+            refused.on_behalf_of = Some(child.invocation);
+            use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
+            let bytes = continuation_round_trip(
+                &rig,
+                &RemoteActionFrame::new(RemoteActionMessage::Invoke(refused.clone()))
+                    .encode()
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(RemoteActionFrame::decode(&bytes).unwrap().message,
+            RemoteActionMessage::Receipt(receipt) if receipt.invocation == refused.invocation
+                && matches!(receipt.status, ReceiptStatus::Rejected { .. })));
+            assert_eq!(rig.state.pending_invocations.lock().unwrap().len(), count);
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuation_parent_terminal_requests_only_active_owned_children() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let (caller, _, parent) = continuation_parent(&env, &rig).await;
+            let active = continuation_admit_child(&rig, parent.invocation, "open").await;
+            let completed = continuation_admit_child(&rig, parent.invocation, "open").await;
+            let active_wire = rig.state.remote_job(&caller, &active.invocation).unwrap();
+            let completed_wire = rig
+                .state
+                .remote_job(&caller, &completed.invocation)
+                .unwrap();
+            let parent_wire = rig.state.remote_job(&caller, &parent.invocation).unwrap();
+            let terminal = |invocation| tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            };
+            rig.worker
+                .handle
+                .update_invocation(
+                    completed_wire,
+                    &serde_json::to_string(&terminal(completed.invocation)).unwrap(),
+                )
+                .await
+                .unwrap();
+            rig.worker
+                .handle
+                .update_invocation(
+                    parent_wire,
+                    &serde_json::to_string(&terminal(parent.invocation)).unwrap(),
+                )
+                .await
+                .unwrap();
+            {
+                let requests = rig.state.cancellation_requests.lock().unwrap();
+                assert!(requests.contains(&active_wire));
+                assert!(!requests.contains(&completed_wire));
+            }
+            assert!(
+                rig.state
+                    .pending_invocations
+                    .lock()
+                    .unwrap()
+                    .get(&parent_wire)
+                    .is_none()
+            );
+            assert!(matches!(
+                rig.state
+                    .action_observe(&caller, &completed.invocation)
+                    .unwrap()
+                    .update,
+                tilo_actions::InvocationUpdate::Succeeded { .. }
+            ));
+            rig.stop().await;
+        })
+        .await;
+}
+
+fn continuation_inject_child_cancellation_failure(rig: &Rig, child: u64, failure: &str) {
+    match failure {
+        "journal" => {
+            let mut registry = rig.state.pending_invocations.lock().unwrap();
+            // Break only the child's journal identity. The production journal's
+            // exact-key cancellation lookup must refuse while parent persistence
+            // remains independently available.
+            registry
+                .get_mut(&child)
+                .unwrap()
+                .journal_key
+                .as_mut()
+                .unwrap()
+                .invocation = tilo_actions::InvocationId::new();
+        }
+        "queue" => {
+            let state = rig.state.clone();
+            assert!(
+                std::thread::spawn(move || {
+                    let _held = state.cancellation_requests.lock().unwrap();
+                    std::panic::resume_unwind(Box::new(
+                        "inject cancellation request queue failure",
+                    ));
+                })
+                .join()
+                .is_err()
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuation_child_delivery_failure_preserves_parent_terminal() {
+    for failure in ["journal", "queue"] {
+        for terminal in ["typed", "legacy"] {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let env = Environment::new();
+                    let rig = Rig::new(&env).await;
+                    let (caller, _, parent) = continuation_parent(&env, &rig).await;
+                    let child = continuation_admit_child(&rig, parent.invocation, "open").await;
+                    let parent_wire = rig.state.remote_job(&caller, &parent.invocation).unwrap();
+                    let child_wire = rig.state.remote_job(&caller, &child.invocation).unwrap();
+                    continuation_inject_child_cancellation_failure(&rig, child_wire, failure);
+                    let observed = tilo_actions::InvocationUpdate::Succeeded {
+                        invocation: parent.invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    };
+                    if terminal == "typed" {
+                        rig.worker
+                            .handle
+                            .update_invocation(
+                                parent_wire,
+                                &serde_json::to_string(&observed).unwrap(),
+                            )
+                            .await
+                            .unwrap();
+                    } else {
+                        rig.worker
+                            .handle
+                            .complete_invocation(parent_wire, "", "")
+                            .await
+                            .unwrap();
+                    }
+                    assert_eq!(
+                        rig.state
+                            .action_observe(&caller, &parent.invocation)
+                            .unwrap()
+                            .update,
+                        observed,
+                        "child request failure cannot replace an observed parent outcome"
+                    );
+                    assert!(
+                        rig.state
+                            .pending_invocations
+                            .lock()
+                            .unwrap()
+                            .get(&parent_wire)
+                            .is_none()
+                    );
+                    assert!(
+                        rig.state
+                            .owner_commit_failure
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .unwrap()
+                            .contains("continuation cancellation failed")
+                    );
+                    assert!(
+                        continuation_query_page(&rig, parent.invocation)
+                            .await
+                            .is_err()
+                    );
+                    // The child remains independently nonterminal; no stop/cleanup
+                    // is inferred from the parent's successful retirement.
+                    assert!(
+                        !rig.state
+                            .action_observe(&caller, &child.invocation)
+                            .unwrap()
+                            .is_terminal()
+                    );
+                    rig.stop().await;
+                })
+                .await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn continuation_partial_cancel_failure_fences_original_parent_before_later_admission() {
+    for failure in ["journal", "queue"] {
+        for entry in ["host", "journal-record"] {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let env = Environment::new();
+                    let rig = Rig::new(&env).await;
+                    let (caller, evidence, parent) = continuation_parent(&env, &rig).await;
+                    let child = continuation_admit_child(&rig, parent.invocation, "open").await;
+                    let parent_wire = rig.state.remote_job(&caller, &parent.invocation).unwrap();
+                    let child_wire = rig.state.remote_job(&caller, &child.invocation).unwrap();
+                    continuation_inject_child_cancellation_failure(&rig, child_wire, failure);
+                    let facade = crate::collab_broker::AppActionBroker::from_state_for_test(
+                        rig.state.clone(),
+                    );
+                    let host = facade
+                        .certified_local_action_host(&caller, &evidence)
+                        .unwrap();
+                    let cancellation = if entry == "host" {
+                        host.cancel(&caller, &parent.invocation)
+                            .map_err(|error| error.to_string())
+                    } else {
+                        let key = rig
+                            .state
+                            .pending_invocations
+                            .lock()
+                            .unwrap()
+                            .get(&parent_wire)
+                            .unwrap()
+                            .journal_key
+                            .clone()
+                            .unwrap();
+                        let record = rig
+                            .state
+                            .journal
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .unwrap()
+                            .as_ref()
+                            .unwrap()
+                            .lookup(&key)
+                            .unwrap()
+                            .unwrap();
+                        rig.state.cancel_durable_record(&record)
+                    };
+                    assert!(
+                        cancellation.is_err(),
+                        "partial request failure remains explicit"
+                    );
+                    {
+                        let registry = rig.state.pending_invocations.lock().unwrap();
+                        let retained = registry.get(&parent_wire).unwrap();
+                        assert!(retained.cancellation_fence.load(Ordering::Acquire));
+                        assert!(retained.cancellation_requested_at.is_some());
+                    }
+                    let before = rig.state.pending_invocations.lock().unwrap().len();
+                    let mut later = local_host_request(false);
+                    later.on_behalf_of = Some(parent.invocation);
+                    use tilo_actions::remote::{
+                        ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+                    };
+                    let answer = continuation_round_trip(
+                        &rig,
+                        &RemoteActionFrame::new(RemoteActionMessage::Invoke(later.clone()))
+                            .encode()
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(
+                        matches!(RemoteActionFrame::decode(&answer).unwrap().message,
+                RemoteActionMessage::Receipt(receipt) if receipt.invocation == later.invocation
+                    && matches!(receipt.status, ReceiptStatus::Rejected { .. }))
+                    );
+                    assert_eq!(rig.state.pending_invocations.lock().unwrap().len(), before);
+                    assert!(
+                        !rig.state
+                            .action_observe(&caller, &child.invocation)
+                            .unwrap()
+                            .is_terminal()
+                    );
+                    rig.stop().await;
+                })
+                .await;
+        }
+    }
 }

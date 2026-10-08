@@ -655,6 +655,7 @@ pub(super) fn invoke(
                     context: None,
                 },
                 AdmissionProvenance {
+                    continuation: None,
                     durable: Some(context),
                     revision: Some(&request.revision),
                     origin: None,

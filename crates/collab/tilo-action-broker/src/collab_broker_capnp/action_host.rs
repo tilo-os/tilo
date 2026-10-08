@@ -133,11 +133,12 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
                 app_id: connection.app_id.clone(),
                 workspace_id: connection.workspace_id.clone(),
             });
-        self.state.action_invoke_with_origin(
+        self.state.action_invoke_with_continuation(
             caller,
             Some(self.own_peer),
             launch.as_ref(),
             Some(&origin),
+            self.continuation.as_ref(),
             &request,
         )
     }
@@ -158,7 +159,10 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
 /// The broker's own door, as the [`ActionHost`](tilo_actions::remote::ActionHost)
 /// a shortcut run invokes its steps through. It stands for no connection:
 /// every step is admitted for the run's caller alone.
-struct BrokerDoor(Arc<CapnpBrokerState>);
+struct BrokerDoor {
+    state: Arc<CapnpBrokerState>,
+    continuation: Option<Arc<super::published_invocation::OriginalInvocation>>,
+}
 
 impl tilo_actions::remote::ActionHost for BrokerDoor {
     fn query(
@@ -166,19 +170,52 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        self.0.action_query(caller, &query)
+        if self.continuation.as_ref().is_some_and(|parent| {
+            parent.check_lifecycle().is_err()
+                || parent.check_execution_frontier(&self.state).is_err()
+        }) {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        self.state.action_query(caller, &query)
     }
 
     fn invoke(
         &self,
         caller: &Caller,
-        request: InvokeRequest,
+        mut request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        self.0.action_invoke(caller, None, None, &request)
+        let Some(parent) = self.continuation.as_ref() else {
+            return self.state.action_invoke(caller, None, None, &request);
+        };
+        if parent.check_lifecycle().is_err()
+            || parent.check_execution_frontier(&self.state).is_err()
+        {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        let Ok((origin, context)) = parent.continuation_origin(&self.state, request.invocation)
+        else {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        };
+        request.on_behalf_of = Some(parent.request().invocation);
+        request.context = Some(context);
+        self.state.action_invoke_with_continuation(
+            caller,
+            None,
+            None,
+            Some(&origin),
+            Some(parent),
+            &request,
+        )
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.0.action_observe(caller, id)
+        if self.continuation.as_ref().is_some_and(|parent| {
+            parent.check_lifecycle().is_err()
+                || parent.check_execution_frontier(&self.state).is_err()
+        }) {
+            return None;
+        }
+        self.state.action_observe(caller, id)
     }
 
     fn cancel(
@@ -186,7 +223,13 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
-        self.0.action_cancel(caller, id)
+        if self.continuation.as_ref().is_some_and(|parent| {
+            parent.check_lifecycle().is_err()
+                || parent.check_execution_frontier(&self.state).is_err()
+        }) {
+            return Err(ActionHostError::NotPermitted);
+        }
+        self.state.action_cancel(caller, id)
     }
 }
 
@@ -1015,6 +1058,18 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        self.action_invoke_with_continuation(caller, own_peer, launch, origin, None, request)
+    }
+
+    pub(super) fn action_invoke_with_continuation(
+        self: &Arc<Self>,
+        caller: &Caller,
+        own_peer: Option<u64>,
+        launch: Option<&LaunchScope>,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        continuation: Option<&Arc<super::published_invocation::OriginalInvocation>>,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
@@ -1044,23 +1099,29 @@ impl CapnpBrokerState {
                 Ok(_) => return Pending::ready(Err(ActionHostError::NotPermitted)),
                 Err(error) => return Pending::ready(Err(error)),
             };
-            return self.invoke_directory(caller, root, origin, request);
+            return self.invoke_directory(caller, root, origin, continuation, request);
         }
         if is_launchable_provider(&request.target.provider)
             || application_provider(&request.target.provider).is_some()
         {
-            return self.invoke_launchable(caller, origin, request);
+            return self.invoke_launchable(caller, origin, continuation, request);
         }
         if let Some(root) = self.directory_target(caller, request) {
-            return self.invoke_directory(caller, root, origin, request);
+            return self.invoke_directory(caller, root, origin, continuation, request);
         }
         if self.services.shortcut_library.is_some()
             && let Some(room) = workspace_provider_room(&request.target.provider)
             && let Some(shortcut) = automation::run_target(&request.target.address)
         {
-            return Pending::ready(self.invoke_shortcut_run(caller, room, shortcut, request));
+            return Pending::ready(self.invoke_shortcut_run(
+                caller,
+                room,
+                shortcut,
+                continuation,
+                request,
+            ));
         }
-        Pending::ready(self.invoke_eager(caller, own_peer, launch, origin, request))
+        Pending::ready(self.invoke_eager(caller, own_peer, launch, origin, continuation, request))
     }
 
     /// Invoke an action retained from a closed application: launch the app,
@@ -1072,6 +1133,7 @@ impl CapnpBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
+        continuation: Option<&Arc<super::published_invocation::OriginalInvocation>>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let reservation = match self.remote_invocations.lock() {
@@ -1101,6 +1163,7 @@ impl CapnpBrokerState {
             }
         };
         let origin = origin.cloned();
+        let continuation = continuation.cloned();
         let (completer, answer) = pending();
         let state = Arc::clone(self);
         let caller = caller.clone();
@@ -1116,6 +1179,7 @@ impl CapnpBrokerState {
                     &caller,
                     &destination,
                     origin.as_ref(),
+                    continuation.as_ref(),
                     &request,
                 );
                 let result = match state.remote_invocations.lock() {
@@ -1239,6 +1303,7 @@ impl CapnpBrokerState {
         caller: &Caller,
         destination: &LaunchDestination,
         origin: Option<&super::published_invocation::InvocationCaller>,
+        continuation: Option<&Arc<super::published_invocation::OriginalInvocation>>,
         request: &InvokeRequest,
     ) -> Result<u64, ActionHostError> {
         const POLL: std::time::Duration = std::time::Duration::from_millis(50);
@@ -1250,6 +1315,10 @@ impl CapnpBrokerState {
         let mut launched = false;
         loop {
             self.check_launch_origin(caller, origin, &room)?;
+            if let Some(parent) = continuation {
+                parent.check_lifecycle().map_err(refusal)?;
+                parent.check_execution_frontier(self).map_err(refusal)?;
+            }
             if completer.is_abandoned() {
                 return Err(ActionHostError::Unavailable {
                     reason: "the caller stopped waiting for admission".into(),
@@ -1260,7 +1329,7 @@ impl CapnpBrokerState {
             {
                 let mut delivered = request.clone();
                 delivered.target.provider = peer_id.to_string();
-                return self.start_for(caller, None, None, origin, &delivered);
+                return self.start_for(caller, None, None, origin, continuation, &delivered);
             }
             if !launched {
                 // Re-read the launch policy immediately before the actual host call.
@@ -1397,6 +1466,7 @@ impl CapnpBrokerState {
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
         origin: Option<&super::published_invocation::InvocationCaller>,
+        continuation: Option<&Arc<super::published_invocation::OriginalInvocation>>,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let mut ledger =
@@ -1406,7 +1476,7 @@ impl CapnpBrokerState {
                     reason: "the invocation ledger is unavailable".into(),
                 })?;
         let (job, _) = ledger.admit(caller, request, || {
-            self.start_for(caller, own_peer, launch, origin, request)
+            self.start_for(caller, own_peer, launch, origin, continuation, request)
         })?;
         let job = *job;
         drop(ledger);
@@ -1449,6 +1519,7 @@ impl CapnpBrokerState {
         caller: &Caller,
         root: ActionDirectoryRoot,
         origin: Option<&super::published_invocation::InvocationCaller>,
+        continuation: Option<&Arc<super::published_invocation::OriginalInvocation>>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let unavailable = || ActionHostError::Unavailable {
@@ -1519,6 +1590,7 @@ impl CapnpBrokerState {
         let caller = caller.clone();
         let request = request.clone();
         let origin = origin.cloned();
+        let continuation = continuation.cloned();
         // Runs on the broker's local set in the same turn the owner answered,
         // so nothing can change between resolution and admission.
         resolved.then(move |reply| {
@@ -1534,6 +1606,7 @@ impl CapnpBrokerState {
                     &root,
                     &request,
                     origin.as_ref(),
+                    continuation.as_ref(),
                     argument.as_deref(),
                     reply,
                 )
@@ -1574,6 +1647,7 @@ impl CapnpBrokerState {
         root: &ActionDirectoryRoot,
         request: &InvokeRequest,
         origin: Option<&super::published_invocation::InvocationCaller>,
+        continuation: Option<&Arc<super::published_invocation::OriginalInvocation>>,
         argument: Option<&str>,
         reply: Option<ActionDirectoryBridgeReply>,
     ) -> Result<u64, ActionHostError> {
@@ -1644,6 +1718,7 @@ impl CapnpBrokerState {
                 context: request.context.clone(),
             },
             super::AdmissionProvenance {
+                continuation: continuation.cloned(),
                 durable: None,
                 revision: request.revision.as_deref(),
                 origin: origin.cloned(),
@@ -1660,11 +1735,16 @@ impl CapnpBrokerState {
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
         origin: Option<&super::published_invocation::InvocationCaller>,
+        continuation: Option<&Arc<super::published_invocation::OriginalInvocation>>,
         request: &InvokeRequest,
     ) -> Result<u64, ActionHostError> {
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
+        if let Some(parent) = continuation {
+            parent.check_lifecycle().map_err(refusal)?;
+            parent.check_execution_frontier(self).map_err(refusal)?;
+        }
         if let Some(room) = workspace_provider_room(provider) {
             return self.start_workspace_action(
                 caller,
@@ -1719,7 +1799,7 @@ impl CapnpBrokerState {
             &actor.id,
             request.confirmation.as_ref(),
         )?;
-        self.start_invocation_confirmed_for_origin(
+        self.start_invocation_confirmed_for_continuation(
             peer_id,
             &address.resource,
             &address.action,
@@ -1733,6 +1813,7 @@ impl CapnpBrokerState {
                 context: request.context.clone(),
             },
             origin.cloned(),
+            continuation.cloned(),
         )
         .map(|job| job.id)
         .map_err(refusal)
@@ -1979,6 +2060,7 @@ impl CapnpBrokerState {
         caller: &Caller,
         room: &str,
         shortcut_id: &str,
+        continuation: Option<&Arc<super::published_invocation::OriginalInvocation>>,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let abandon = |error: ActionHostError| {
@@ -2024,6 +2106,7 @@ impl CapnpBrokerState {
                     inputs,
                 },
                 automation::DoorHooks::new(request.confirmation.clone()),
+                continuation.cloned(),
             )
             .map_err(abandon)?;
         if let Ok(mut ledger) = self.remote_invocations.lock() {
@@ -2062,6 +2145,7 @@ impl CapnpBrokerState {
                 inputs,
             },
             hooks,
+            None,
         )
     }
 
@@ -2136,6 +2220,7 @@ impl CapnpBrokerState {
                     inputs: serde_json::Map::new(),
                 },
                 hooks,
+                None,
             );
         }
         self.start_shortcut_run(
@@ -2149,6 +2234,7 @@ impl CapnpBrokerState {
                 inputs,
             },
             automation::DoorHooks::new(None),
+            None,
         )
     }
 
@@ -2181,6 +2267,7 @@ impl CapnpBrokerState {
         shortcut: tilo_automation::Shortcut,
         start: automation::RunStart,
         hooks: K,
+        continuation: Option<Arc<super::published_invocation::OriginalInvocation>>,
     ) -> Result<u64, ActionHostError>
     where
         K: tilo_automation::RunHooks + Send + 'static,
@@ -2204,7 +2291,10 @@ impl CapnpBrokerState {
             },
             tilo_actions::InvocationUpdate::Accepted { invocation },
         );
-        let host = BrokerDoor(Arc::clone(self));
+        let host = BrokerDoor {
+            state: Arc::clone(self),
+            continuation,
+        };
         let consents = if shortcut.saved_by.as_deref() == Some(actor.as_str()) {
             shortcut.consents.clone()
         } else {

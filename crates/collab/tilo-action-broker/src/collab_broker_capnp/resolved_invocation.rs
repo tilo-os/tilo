@@ -630,6 +630,7 @@ fn invoke_checked(
                     context: None,
                 },
                 AdmissionProvenance {
+                    continuation: None,
                     durable: None,
                     revision: Some(&revision),
                     origin: Some(InvocationCaller::Local {

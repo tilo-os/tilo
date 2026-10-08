@@ -77,6 +77,56 @@ impl PublishedActions {
     pub fn cancel(&self, invocation: InvocationId) -> Result<PublishedActionFuture, String> {
         self.request(RemoteActionMessage::Cancel { invocation })
     }
+    /// Invoke once and retain original custody until the child's canonical
+    /// terminal receipt. Observation never reissues an invocation, and reports
+    /// no copied progress or inferred completion. A lost answer retains the
+    /// original child identity. Parent retirement is owned by the broker.
+    pub fn invoke_and_wait(&self, request: InvokeRequest) -> Result<PublishedActionFuture, String> {
+        let invocation = request.invocation;
+        let admitted = self.invoke(request)?;
+        let actions = self.clone();
+        Ok(Box::pin(async move {
+            let answer = admitted.await;
+            match answer {
+                PublishedActionAnswer::Answer(RemoteActionMessage::Receipt(receipt))
+                    if matches!(
+                        receipt.status,
+                        tilo_actions::remote::ReceiptStatus::Accepted
+                    ) => {}
+                PublishedActionAnswer::Answer(message) => {
+                    return PublishedActionAnswer::Answer(message);
+                }
+                _ => return retained_unknown(invocation),
+            }
+            loop {
+                let observation = match actions.observe(invocation) {
+                    Ok(observation) => observation.await,
+                    Err(_) => return retained_unknown(invocation),
+                };
+                match observation {
+                    PublishedActionAnswer::Answer(RemoteActionMessage::Update {
+                        state: Some(state),
+                        ..
+                    }) if state.invocation() == invocation && state.is_terminal() => {
+                        return PublishedActionAnswer::Answer(RemoteActionMessage::Receipt(
+                            state.receipt(),
+                        ));
+                    }
+                    PublishedActionAnswer::Answer(RemoteActionMessage::Update {
+                        state: Some(state),
+                        ..
+                    }) if state.invocation() == invocation => {}
+                    _ => return retained_unknown(invocation),
+                }
+                // One retained child and at most five read-only observations
+                // per second, through the existing bounded transport lane.
+                #[cfg(feature = "broker-transport")]
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                #[cfg(not(feature = "broker-transport"))]
+                return retained_unknown(invocation);
+            }
+        }))
+    }
     fn request(&self, request: RemoteActionMessage) -> Result<PublishedActionFuture, String> {
         #[cfg(feature = "broker-transport")]
         {
@@ -127,6 +177,12 @@ impl PublishedActions {
                 answer
             }
         }))
+    }
+}
+
+fn retained_unknown(invocation: InvocationId) -> PublishedActionAnswer {
+    PublishedActionAnswer::Unknown {
+        invocation: Some(invocation),
     }
 }
 

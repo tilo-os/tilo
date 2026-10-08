@@ -422,6 +422,7 @@ fn dispatch(
             context: Some(context),
         },
         AdmissionProvenance {
+            continuation: None,
             durable: Some(DurableContext::Enrolled {
                 caller,
                 step: &admission,
