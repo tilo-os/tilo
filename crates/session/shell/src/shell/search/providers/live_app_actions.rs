@@ -286,6 +286,8 @@ pub struct LiveAppActionsProvider {
     #[cfg(test)]
     build_probe: Arc<BuildProbe>,
     #[cfg(test)]
+    auxiliary_service_probe: RefCell<Option<Box<dyn FnOnce()>>>,
+    #[cfg(test)]
     directory_query_probe: RefCell<Option<CatalogueQuery>>,
 }
 
@@ -565,6 +567,8 @@ impl LiveAppActionsProvider {
             projection: Cell::new(QueryProjection::All),
             #[cfg(test)]
             build_probe: Arc::new(BuildProbe::default()),
+            #[cfg(test)]
+            auxiliary_service_probe: RefCell::new(None),
             #[cfg(test)]
             directory_query_probe: RefCell::new(None),
         }
@@ -1201,14 +1205,27 @@ impl LiveAppActionsProvider {
                 }
             }
         }
-        if resume.root_after.is_none()
+        // A queued native writer must be able to run before the provider
+        // callbacks below re-read membership through this same tree.
+        let workspace_room = if resume.root_after.is_none()
             && resume.directory.is_none()
             && ctx.chrome.search_resource_scope.is_none()
-            && let Some(workspace) = ctx.chrome.tree().desktop.active_workspace()
         {
-            let room = workspace.room.to_string();
-            let workspace_actor = ctx.chrome.local_user_for_room(&workspace.room);
+            let tree = ctx.chrome.tree();
+            tree.desktop
+                .active_workspace()
+                .map(|workspace| workspace.room)
+        } else {
+            None
+        };
+        if let Some(workspace_room) = workspace_room {
+            let room = workspace_room.to_string();
+            let workspace_actor = ctx.chrome.local_user_for_room(&workspace_room);
             let key = (room.clone(), workspace_actor.clone(), needle.to_string());
+            #[cfg(test)]
+            if let Some(probe) = self.auxiliary_service_probe.borrow_mut().take() {
+                probe();
+            }
             let current_revision = self.directory_roots(ctx).1;
             if !current_revision.is_empty()
                 && self
@@ -3402,7 +3419,7 @@ pub(crate) fn fixture_with_directory_page(
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -3714,6 +3731,67 @@ mod tests {
         chrome: &crate::shell::chrome_state::Chrome,
     ) -> crate::shell::collab_broker::AppActionBroker {
         crate::shell::broker_services::test_broker_with_membership(chrome.borrow().tree_handle())
+    }
+
+    #[test]
+    fn auxiliary_service_query_releases_tree_before_a_queued_native_writer() {
+        let (completed, observed) = std::sync::mpsc::sync_channel(1);
+        let query = std::thread::spawn(move || {
+            let chrome = chrome();
+            let tree = chrome.borrow().tree_handle();
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker_for(&chrome));
+            let reached = Rc::new(Cell::new(false));
+            let reached_probe = Rc::clone(&reached);
+            *provider.auxiliary_service_probe.borrow_mut() = Some(Box::new(move || {
+                // Hold a test read only until the actual writer is queued.
+                // try_read refusal proves parking_lot writer precedence;
+                // elapsed time bounds a broken test, never proves queuing.
+                let read = tree.read();
+                let writer_tree = Arc::clone(&tree);
+                let (started, starting) = std::sync::mpsc::sync_channel(1);
+                let (written, writing) = std::sync::mpsc::sync_channel(1);
+                let writer = std::thread::spawn(move || {
+                    started.send(()).unwrap();
+                    let mut tree = writer_tree.write();
+                    tree.desktop.external_revision += 1;
+                    drop(tree);
+                    written.send(()).unwrap();
+                });
+                starting.recv_timeout(Duration::from_secs(2)).unwrap();
+                let began = Instant::now();
+                while tree.try_read().is_some() {
+                    assert!(
+                        began.elapsed() < Duration::from_secs(2),
+                        "native writer never queued"
+                    );
+                    std::thread::yield_now();
+                }
+                drop(read);
+                // The old production if-let guard would still pin a read
+                // here, preventing both this writer and the nested query.
+                writing
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("provider retained a tree read across service callbacks");
+                writer.join().unwrap();
+                reached_probe.set(true);
+            }));
+            let doc = AutoCommit::new();
+            let page = provider.query_page(
+                context("", &chrome.borrow(), &doc),
+                None,
+                SearchBudget::PALETTE,
+            );
+            assert!(
+                reached.get(),
+                "actual auxiliary service query was not exercised"
+            );
+            assert!(!page.revision.is_empty());
+            completed.send(()).unwrap();
+        });
+        observed
+            .recv_timeout(Duration::from_secs(8))
+            .expect("actual provider query did not complete after the native writer");
+        query.join().unwrap();
     }
 
     #[test]
