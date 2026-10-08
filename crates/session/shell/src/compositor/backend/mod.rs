@@ -651,6 +651,11 @@ pub trait Backend {
         false
     }
 
+    /// CPU presenters can reuse strip pixels when layout uses whole-pixel pans.
+    fn pixel_aligned_strip_pan(&self) -> bool {
+        false
+    }
+
     /// Whether the presenter consumes empty workspace transition frames by
     /// retaining/replaying its previous pixels, rather than rasterising them.
     fn supports_workspace_clip(&self) -> bool {
