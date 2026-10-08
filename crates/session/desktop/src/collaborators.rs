@@ -15,6 +15,7 @@ use ui::icons::Icon;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace};
+use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_desktop_model::{Collaborator, DesktopTree};
@@ -201,6 +202,9 @@ pub struct CollaboratorsOverlay {
     previous_people: Rect,
     next_people: Rect,
     keyboard_focus: Option<CollaboratorsHit>,
+    targets: ui::widget::PaintedTargets,
+    painted_actions: Vec<(String, CollaboratorsHit)>,
+    held_submit: [bool; 2],
     accessibility_rows: Vec<RosterRow>,
     accessibility_status: Option<String>,
     accessibility_own_activity: Option<String>,
@@ -280,6 +284,7 @@ impl CollaboratorsOverlay {
             }
         }
         self.keyboard_focus = focus.filter(|hit| self.rect_for_hit(*hit).is_some());
+        self.register_targets(model.host);
         let rect = self.panel;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -471,7 +476,249 @@ impl CollaboratorsOverlay {
     }
 
     pub fn clear(&mut self) {
+        self.interrupt();
+        let mut targets = std::mem::take(&mut self.targets);
+        targets.begin_frame();
+        let held_submit = self.held_submit;
         *self = Self::default();
+        self.targets = targets;
+        self.held_submit = held_submit;
+    }
+
+    fn target_id(&self, hit: CollaboratorsHit) -> Option<String> {
+        match hit {
+            CollaboratorsHit::ToggleFollow(index) => {
+                self.follow_target(index).map(|id| format!("follow:{id}"))
+            }
+            other => Some(format!("{other:?}")),
+        }
+    }
+
+    fn interaction(&self, hit: CollaboratorsHit) -> ui::widget::Interaction {
+        self.target_id(hit)
+            .map_or_else(ui::widget::Interaction::default, |id| {
+                self.targets.interaction(&id)
+            })
+    }
+
+    fn register_targets(&mut self, host: Rect) {
+        let armed = self
+            .painted_actions
+            .iter()
+            .find(|(id, _)| self.targets.interaction(id).pressed)
+            .map(|(id, _)| id.clone());
+        self.targets.begin_frame();
+        self.painted_actions.clear();
+        // Non-action regions own the whole gesture too, so an outside click
+        // can dismiss without handing its release to the app behind People.
+        for (hit, rect) in [
+            (CollaboratorsHit::Dismiss, host),
+            (CollaboratorsHit::Absorb, self.panel),
+        ] {
+            if let Some(id) = self.target_id(hit) {
+                self.targets.target(&id, rect, "");
+                self.painted_actions.push((id, hit));
+            }
+        }
+        for hit in self.focus_order() {
+            if let (Some(id), Some(rect)) = (self.target_id(hit), self.rect_for_hit(hit)) {
+                self.targets.target(&id, rect, "");
+                self.painted_actions.push((id, hit));
+            }
+        }
+        if armed.is_some_and(|id| {
+            !self
+                .painted_actions
+                .iter()
+                .any(|(candidate, _)| *candidate == id)
+        }) {
+            self.targets.cancel_pointer_press();
+        }
+    }
+
+    pub fn interrupt(&mut self) {
+        self.targets.cancel_pointer_press();
+        self.targets.set_host_focus(false);
+        self.keyboard_focus = None;
+    }
+
+    pub fn wants_pointer_capture(&self) -> bool {
+        self.targets.wants_pointer_capture()
+    }
+
+    /// Release/repeat edges still belong to People after its action changes
+    /// the active surface. They must be consumed before ordinary modal routing.
+    pub fn consume_sequence_edge(&mut self, event: &WindowEvent, open: bool) -> bool {
+        if !open
+            || matches!(
+                event,
+                WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. }
+            )
+        {
+            self.interrupt();
+        }
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        let index = match key.logical_key {
+            Key::Named(NamedKey::Enter) => 0,
+            Key::Named(NamedKey::Space) => 1,
+            _ => return false,
+        };
+        let Some(held) = self.held_submit.get_mut(index) else {
+            return false;
+        };
+        if *held && (key.repeat || key.state == ElementState::Released) {
+            if key.state == ElementState::Released {
+                *held = false;
+            }
+            return true;
+        }
+        false
+    }
+
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        open: bool,
+        cursor: Option<Point>,
+    ) -> Option<CollaboratorsHit> {
+        if !open {
+            self.interrupt();
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+            ) {
+                self.targets = ui::widget::PaintedTargets::new();
+                return None;
+            }
+            if self.targets.wants_pointer_capture() {
+                self.targets.handle_event(event, ctx);
+                if matches!(
+                    event,
+                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                ) {
+                    *ctx.handled = true;
+                }
+            }
+            return None;
+        }
+        if matches!(event, WindowEvent::MouseInput { .. }) {
+            if let Some(point) = cursor {
+                let moved = WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(
+                        point.x * ctx.scale_factor,
+                        point.y * ctx.scale_factor,
+                    ),
+                };
+                self.targets.handle_event(&moved, ctx);
+            } else {
+                let owned = self.targets.wants_pointer_capture();
+                self.interrupt();
+                if matches!(
+                    event,
+                    WindowEvent::MouseInput {
+                        state: ElementState::Released,
+                        ..
+                    }
+                ) {
+                    self.targets.handle_event(event, ctx);
+                }
+                *ctx.handled = open || owned;
+                return None;
+            }
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            return self.handle_submit(event, key, ctx);
+        }
+        if !matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::Focused(false)
+                | WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    ..
+                }
+        ) {
+            return None;
+        }
+        self.targets.handle_event(event, ctx);
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    ..
+                }
+        ) {
+            *ctx.handled = true;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } = event
+        {
+            self.keyboard_focus = self
+                .targets
+                .focused()
+                .and_then(|id| {
+                    self.painted_actions
+                        .iter()
+                        .find(|(candidate, _)| candidate == id)
+                        .map(|(_, hit)| *hit)
+                })
+                .filter(|hit| !matches!(hit, CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss));
+        }
+        self.take_activated_hit()
+    }
+
+    fn handle_submit(
+        &mut self,
+        event: &WindowEvent,
+        key: &winit::event::KeyEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> Option<CollaboratorsHit> {
+        if key.logical_key == Key::Named(NamedKey::Escape) && key.state == ElementState::Pressed {
+            self.interrupt();
+            *ctx.handled = true;
+            return Some(CollaboratorsHit::Dismiss);
+        }
+        let index = match key.logical_key {
+            Key::Named(NamedKey::Enter) => Some(0),
+            Key::Named(NamedKey::Space) => Some(1),
+            _ => None,
+        };
+        let index = index?;
+        *ctx.handled = true;
+        let held = self.held_submit.get_mut(index)?;
+        if key.state == ElementState::Released {
+            *held = false;
+            return None;
+        }
+        *held = true;
+        if key.repeat {
+            return None;
+        }
+        let focus = self.keyboard_focus.and_then(|hit| self.target_id(hit))?;
+        self.targets.set_host_focus(true);
+        self.targets.focus(&focus);
+        self.targets.handle_event(event, ctx);
+        self.take_activated_hit()
+    }
+
+    fn take_activated_hit(&mut self) -> Option<CollaboratorsHit> {
+        self.targets.take_activated().into_iter().find_map(|id| {
+            self.painted_actions
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .map(|(_, hit)| *hit)
+        })
     }
 
     pub fn panel_rect(&self) -> Rect {
@@ -1008,6 +1255,7 @@ impl CollaboratorsOverlay {
     }
 
     pub fn change_people_page(&mut self, forward: bool, member_count: usize) {
+        self.targets.cancel_pointer_press();
         if forward {
             if self.roster_offset.saturating_add(ROSTER_PAGE_SIZE) < member_count {
                 self.roster_offset = self.roster_offset.saturating_add(ROSTER_PAGE_SIZE);
@@ -1051,16 +1299,18 @@ impl CollaboratorsOverlay {
             None,
             &theme.text(TextRole::Caption),
         );
-        for (rect, icon, name) in [
+        for (rect, icon, name, hit) in [
             (
                 self.previous_people,
                 Icon::ChevronLeft,
                 crate::i18n::t("people-panel-previous-page"),
+                CollaboratorsHit::PreviousPeople,
             ),
             (
                 self.next_people,
                 Icon::ChevronRight,
                 crate::i18n::t("people-panel-next-page"),
+                CollaboratorsHit::NextPeople,
             ),
         ] {
             if rect.area() <= 0.0 {
@@ -1074,6 +1324,7 @@ impl CollaboratorsOverlay {
                 &ButtonFace::new(rect, "")
                     .icon(icon)
                     .accessible_name(&name)
+                    .pressed(self.interaction(hit).pressed)
                     .hovered(cursor.is_some_and(|point| rect.contains(point))),
             );
         }
@@ -1656,6 +1907,11 @@ impl CollaboratorsOverlay {
             });
             let face = ButtonFace::new(action, &label)
                 .control_size(ui::widget::ControlSize::Large)
+                .pressed(
+                    self.targets
+                        .interaction(&format!("follow:{}", row.id))
+                        .pressed,
+                )
                 .focused(matches!(
                     self.keyboard_focus,
                     Some(CollaboratorsHit::ToggleFollow(index))
@@ -1686,6 +1942,7 @@ impl CollaboratorsOverlay {
                 theme,
                 &ButtonFace::new(self.invite, &invite_label)
                     .role(ButtonRole::Primary)
+                    .pressed(self.interaction(CollaboratorsHit::Invite).pressed)
                     .hovered(cursor.is_some_and(|point| self.invite.contains(point))),
             );
             Button::paint(
@@ -1694,6 +1951,7 @@ impl CollaboratorsOverlay {
                 text_renderer,
                 theme,
                 &ButtonFace::new(self.join, &join_label)
+                    .pressed(self.interaction(CollaboratorsHit::Join).pressed)
                     .hovered(cursor.is_some_and(|point| self.join.contains(point))),
             );
         }
