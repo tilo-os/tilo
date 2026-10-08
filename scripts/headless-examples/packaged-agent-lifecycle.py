@@ -1762,15 +1762,22 @@ MARKER_OPERATION_REFUSALS = (
     "no_trusted_catalogue",
     "no_exact_resource_action",
 )
+MARKER_DIAGNOSTIC_COUNT_LIMIT = 64
 
 
 class MarkerOperationRefusal(RuntimeError):
     """Content-free reason the bounded marker provider refused one request."""
 
-    def __init__(self, reason):
+    def __init__(self, reason, *, matching_operations=0, matching_exact_resources=0):
         if reason not in MARKER_OPERATION_REFUSALS:
             raise ValueError("unknown marker operation refusal")
         self.reason = reason
+        self.matching_operation_count = min(
+            max(matching_operations, 0), MARKER_DIAGNOSTIC_COUNT_LIMIT
+        )
+        self.matching_exact_resource_count = min(
+            max(matching_exact_resources, 0), MARKER_DIAGNOSTIC_COUNT_LIMIT
+        )
         super().__init__("marker operation unavailable")
 
 
@@ -1802,16 +1809,24 @@ def marker_operation_from_request(request, agent, resource):
         break
     if catalogue is None:
         raise MarkerOperationRefusal("no_trusted_catalogue")
-    pattern = re.compile(
-        rf"^  (broker:\d+:{re.escape(resource)}#open-agent-conversation) — ",
+    operation_pattern = re.compile(
+        r"^  (broker:\d+:([a-zA-Z0-9._:-]{1,4096})#open-agent-conversation) — ",
     )
-    matches = {
-        match.group(1)
+    operations = {
+        match.group(1): match.group(2)
         for line in catalogue.splitlines()
-        if (match := pattern.match(line)) is not None
+        if (match := operation_pattern.match(line)) is not None
+    }
+    matches = {
+        operation for operation, candidate_resource in operations.items()
+        if candidate_resource == resource
     }
     if len(matches) != 1:
-        raise MarkerOperationRefusal("no_exact_resource_action")
+        raise MarkerOperationRefusal(
+            "no_exact_resource_action",
+            matching_operations=len(operations),
+            matching_exact_resources=len(matches),
+        )
     return next(iter(matches))
 
 
@@ -1835,6 +1850,8 @@ class HeldProvider:
         self.marker_resource = marker_resource
         self.marker_operations = {}
         self.marker_rejections = {reason: 0 for reason in MARKER_OPERATION_REFUSALS}
+        self.marker_matching_operations = 0
+        self.marker_matching_exact_resources = 0
         self.closed = False
         self.request_lock = threading.Condition()
         owner = self
@@ -1873,7 +1890,20 @@ class HeldProvider:
                     except MarkerOperationRefusal as error:
                         with owner.request_lock:
                             owner.refused_requests += 1
-                            owner.marker_rejections[error.reason] += 1
+                            owner.marker_rejections[error.reason] = min(
+                                owner.marker_rejections[error.reason] + 1,
+                                MARKER_DIAGNOSTIC_COUNT_LIMIT,
+                            )
+                            owner.marker_matching_operations = min(
+                                owner.marker_matching_operations
+                                + error.matching_operation_count,
+                                MARKER_DIAGNOSTIC_COUNT_LIMIT,
+                            )
+                            owner.marker_matching_exact_resources = min(
+                                owner.marker_matching_exact_resources
+                                + error.matching_exact_resource_count,
+                                MARKER_DIAGNOSTIC_COUNT_LIMIT,
+                            )
                         self.send_error(409)
                         return
                 probe = owner.owner_admission_probe
@@ -1963,11 +1993,18 @@ class HeldProvider:
         """Return fixed counters only; request and exception content never escape."""
         with self.request_lock:
             counts = dict(self.marker_rejections)
+            matching_operations = self.marker_matching_operations
+            matching_exact_resources = self.marker_matching_exact_resources
         return {
-            "rejection_count": sum(counts.values()),
+            "rejection_count": min(
+                sum(counts.values()), MARKER_DIAGNOSTIC_COUNT_LIMIT
+            ),
             "reasons": counts,
+            "matching_operation_count": matching_operations,
+            "matching_exact_resource_count": matching_exact_resources,
             "private_content_recorded": False,
         }
+
     def original_third_held(self):
         with self.request_lock:
             return self.allowed == 2 and 3 in self.waiting_ordinals
