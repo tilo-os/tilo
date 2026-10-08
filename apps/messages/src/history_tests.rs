@@ -394,6 +394,74 @@ fn repeated_person_and_route_selection_preserves_private_drafts_and_history() {
 }
 
 #[test]
+fn confirmed_account_change_clears_old_draft_and_invalidates_pending_send() {
+    const DRAFT: &str = "draft for the previous service";
+    let pending = Host::new(false, false);
+    let client = tilo_messaging::MessagingClient::new(
+        "11".repeat(32),
+        Arc::new(DelayedSend {
+            pending: pending.clone(),
+            error: tilo_messaging::SendError::Revoked,
+        }),
+    );
+    let mut app = crate::tests::live_messages_with_service(Some(client));
+    let sms = add_sms_route(&mut app);
+    app.effect(&MessagesEffect::SelectRoute { choice: choice() })
+        .expect("select Signal");
+    app.harness()
+        .perform_named(
+            "messages.composer",
+            &ui::a11y::Action::SetValue(DRAFT.into()),
+        )
+        .expect("original service draft");
+    let invocation = app
+        .start_effect(&MessagesEffect::Send {
+            choice: choice(),
+            operation: "fixture-confirmation-send".into(),
+            text: DRAFT.into(),
+        })
+        .expect("pending original service send");
+    app.effect_confirmed(&MessagesEffect::ConfirmAccount {
+        person: "00000000-0000-4000-8000-000000000001".into(),
+        choice: sms.clone(),
+    })
+    .expect("review a different account through the published action");
+    assert!(
+        !app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.value() == Some(DRAFT)),
+        "account confirmation must not carry the old draft into the newly selected service"
+    );
+    app.effect(&MessagesEffect::ReadHistory { choice: sms })
+        .expect("confirmed service history");
+    assert!(has_text(&mut app, PRIVATE));
+    pending.release();
+    assert!(
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                harness
+                    .job_updates(invocation)
+                    .iter()
+                    .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+            }),
+        "the old service result must complete"
+    );
+    assert!(
+        app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| { matches!(update, ui::tilo_actions::InvocationUpdate::Failed { .. }) }),
+        "the original caller must still receive failure"
+    );
+    assert!(
+        has_text(&mut app, PRIVATE),
+        "the confirmed service history must survive an old send result"
+    );
+    assert!(!app.harness().dump_json().contains(DRAFT));
+}
+
+#[test]
 fn sending_text_is_secret_and_history_is_device_bound_read_only() {
     use ui::framework::Effect;
     let specs = MessagesEffect::specs();
