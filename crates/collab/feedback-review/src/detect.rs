@@ -87,34 +87,11 @@ fn matches(pattern: &LazyLock<Option<Regex>>, text: &str) -> Vec<(usize, usize)>
     })
 }
 
-#[derive(Clone, Copy)]
-enum CredentialPrefix {
-    Bearer,
-    Assignment,
-}
-
-// These two patterns end in their credential value. Finding the complete
-// match and slicing its prefix preserves the same UTF-8 spans without asking
-// the regex engine to track capture groups during every privacy review.
-fn credential_values(
-    pattern: &LazyLock<Option<Regex>>,
-    text: &str,
-    prefix: CredentialPrefix,
-) -> Vec<(usize, usize)> {
+fn captures(pattern: &LazyLock<Option<Regex>>, text: &str) -> Vec<(usize, usize)> {
     pattern.as_ref().map_or_else(Vec::new, |regex| {
         regex
-            .find_iter(text)
-            .filter_map(|matched| {
-                let value = match prefix {
-                    CredentialPrefix::Bearer => matched.as_str().get("bearer".len()..)?,
-                    CredentialPrefix::Assignment => {
-                        let separator = matched.as_str().find([':', '='])?;
-                        matched.as_str().get(separator.checked_add(1)?..)?
-                    }
-                }
-                .trim_start_matches(char::is_whitespace);
-                Some((matched.end().checked_sub(value.len())?, matched.end()))
-            })
+            .captures_iter(text)
+            .filter_map(|caps| caps.get(1).map(|m| (m.start(), m.end())))
             .collect()
     })
 }
@@ -274,7 +251,7 @@ pub(crate) fn scan(text: &str) -> Vec<Hit> {
             push(start, end, RedactionCategory::Email, 95);
         }
     }
-    for (start, end) in credential_values(&BEARER, text, CredentialPrefix::Bearer) {
+    for (start, end) in captures(&BEARER, text) {
         push(start, end, RedactionCategory::CredentialLike, 95);
     }
     for (start, end) in matches(&JWT, text) {
@@ -283,7 +260,7 @@ pub(crate) fn scan(text: &str) -> Vec<Hit> {
     for (start, end) in matches(&KEYED_SECRET, text) {
         push(start, end, RedactionCategory::CredentialLike, 95);
     }
-    for (start, end) in credential_values(&ASSIGNED_SECRET, text, CredentialPrefix::Assignment) {
+    for (start, end) in captures(&ASSIGNED_SECRET, text) {
         push(start, end, RedactionCategory::CredentialLike, 90);
     }
     for (start, end) in matches(&OPAQUE, text) {
@@ -420,48 +397,6 @@ mod tests {
     use super::*;
     use crate::StepKind;
     use crate::fixtures::{request, step, text};
-
-    #[test]
-    fn credential_value_spans_match_the_original_capture_search() {
-        let whitespace = [
-            '\t', '\n', '\u{b}', '\u{c}', '\r', ' ', '\u{85}', '\u{a0}', '\u{1680}', '\u{2000}',
-            '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}',
-            '\u{2008}', '\u{2009}', '\u{200a}', '\u{2028}', '\u{2029}', '\u{202f}', '\u{205f}',
-            '\u{3000}',
-        ];
-        let mut cases = vec![
-            "Bearer abcdefgh==; bearer 12345678/token".to_owned(),
-            "token = abcd; token: efgh& token = ijkl#".to_owned(),
-            "API_\u{212a}EY = üñîçødé; ſecret: 密码内容".to_owned(),
-            "token=abcd=efgh:ijkl;Bearer abcdefgh".to_owned(),
-            "préfixe Bearer invalid, password=abc; token=valid-value".to_owned(),
-        ];
-        for space in whitespace {
-            cases.push(format!(
-                "α Bearer{space}abcdefgh== β api-key{space}:{space}密钥內容; TOKEN{space}={space}abcd"
-            ));
-        }
-        for (pattern, prefix) in [
-            (&BEARER, CredentialPrefix::Bearer),
-            (&ASSIGNED_SECRET, CredentialPrefix::Assignment),
-        ] {
-            let regex = pattern.as_ref().unwrap();
-            for input in &cases {
-                let original: Vec<_> = regex
-                    .captures_iter(input)
-                    .map(|captures| {
-                        let value = captures.get(1).unwrap();
-                        (value.start(), value.end())
-                    })
-                    .collect();
-                assert_eq!(
-                    credential_values(pattern, input, prefix),
-                    original,
-                    "{input:?}"
-                );
-            }
-        }
-    }
 
     fn found(text: &str) -> Vec<(&str, RedactionCategory)> {
         scan(text)
