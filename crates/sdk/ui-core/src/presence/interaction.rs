@@ -614,6 +614,12 @@ impl PresenceCtx {
             .get(&user)
             .filter(|name| !name.trim().is_empty())
             .cloned()
+            .or_else(|| {
+                (interaction.actor.kind == InteractionActorKind::Agent)
+                    .then(|| self.authenticated_agent_id(&user))
+                    .flatten()
+                    .map(crate::history_source::agent_display_label)
+            })
             .unwrap_or_else(|| {
                 crate::i18n::widget_format(
                     if interaction.actor.kind == InteractionActorKind::Agent {
@@ -1145,7 +1151,10 @@ fn actor_label(presence: &PresenceCtx, user: &UserId, is_agent: bool) -> String 
         .filter(|name| !name.trim().is_empty());
     match (is_agent, roster_name) {
         (true, Some(name)) => crate::history_source::agent_display_label(name),
-        (true, None) => "Agent".to_string(),
+        (true, None) => presence.authenticated_agent_id(user).map_or_else(
+            || "Agent".to_string(),
+            crate::history_source::agent_display_label,
+        ),
         (false, Some(name)) => name.to_string(),
         (false, None) => "Collaborator".to_string(),
     }
@@ -1927,6 +1936,53 @@ mod tests {
             presence.interaction_next_wake_deadline(at),
             Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON)
         );
+    }
+
+    #[test]
+    fn unnamed_authenticated_agent_interactions_keep_the_canonical_identity() {
+        let mut presence = PresenceCtx::empty();
+        admit_agents(&mut presence, &["tide"]);
+        let user = UserId("agent:tide".into());
+        let value = canonical_interaction(72, "tide");
+        presence.names.remove(&user);
+        assert_eq!(actor_label(&presence, &user, true), "tide · Agent");
+        assert_eq!(
+            presence.interaction_status_label(&value),
+            "Rename (Applying) - tide · Agent"
+        );
+        assert_eq!(
+            presence.interaction_announcement(&value).as_deref(),
+            Some("tide · Agent, Applying: Rename on Draft.md")
+        );
+        presence.names.insert(user.clone(), "Tide helper".into());
+        assert_eq!(actor_label(&presence, &user, true), "Tide helper · Agent");
+        assert_eq!(
+            presence.interaction_status_label(&value),
+            "Rename (Applying) - Tide helper"
+        );
+        presence.names.insert(user.clone(), "  ".into());
+        assert_eq!(actor_label(&presence, &user, true), "tide · Agent");
+        assert_eq!(actor_label(&presence, &user, false), "Collaborator");
+
+        // A descriptive kind or agent-looking spelling cannot supply this fallback.
+        let mut untrusted = PresenceCtx::empty();
+        untrusted.set_participant_kind(&user, true);
+        assert_eq!(actor_label(&untrusted, &user, true), "Agent");
+        assert_eq!(
+            untrusted.interaction_status_label(&value),
+            "Rename (Applying) - Agent"
+        );
+        assert_eq!(actor_label(&untrusted, &user, false), "Collaborator");
+        untrusted.names.insert(user.clone(), "Tide".into());
+        assert_eq!(actor_label(&untrusted, &user, false), "Tide");
+        presence.apply_collaboration_snapshot(&[crate::collaboration::Collaborator {
+            id: "person:viewer".into(),
+            name: "Viewer".into(),
+            colour: None,
+            is_agent: false,
+            is_self: true,
+        }]);
+        assert_eq!(actor_label(&presence, &user, true), "Agent");
     }
 
     #[test]
