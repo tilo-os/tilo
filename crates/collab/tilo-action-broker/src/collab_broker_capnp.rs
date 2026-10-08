@@ -800,7 +800,6 @@ fn admit_agent_delegation(
 ) -> Result<(), String> {
     admit_agent_delegation_at(
         crate::services::room_in(tree, &route.cluster_id),
-        route,
         admitted,
         agent_id,
         tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
@@ -811,7 +810,6 @@ fn admit_agent_delegation(
 /// authority sample that admitted the person.
 fn admit_agent_delegation_at(
     workspace: Option<&tilo_desktop_model::Workspace>,
-    route: &CrdtRoute,
     admitted: &mut AdmittedJoinIdentity,
     agent_id: &str,
     now: u64,
@@ -5855,7 +5853,6 @@ impl CapnpBrokerState {
                 if let Some(agent_id) = &admitted.agent_id {
                     admit_agent_delegation_at(
                         workspace,
-                        route,
                         &mut current,
                         agent_id,
                         now / 1_000_000_000,
@@ -6773,7 +6770,6 @@ impl collab_service::Server for CapnpCollabService {
                         .decide_in_room(&route.cluster_id, |workspace| {
                             admit_agent_delegation_at(
                                 workspace,
-                                &route,
                                 &mut verified_identity,
                                 &participant_handle,
                                 now,
