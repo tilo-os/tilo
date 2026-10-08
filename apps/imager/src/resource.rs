@@ -110,8 +110,24 @@ pub enum ImagerEffect {
     /// Set the owner SSH public key for the next write on this machine.
     #[effect(permission = "admin")]
     SetSshKey {
-        #[param("One OpenSSH public key, without authorized_keys options")]
+        #[param("OpenSSH public keys, one per line, without authorized_keys options")]
         value: String,
+    },
+    /// Customize a regular raw image file through the installed-root path.
+    #[effect(job, returns, permission = "admin")]
+    CustomizeImage {
+        #[param("Path to the regular raw disk image; devices and symlinks are refused")]
+        image: String,
+        #[param("Optional hostname for the image")]
+        hostname: Option<String>,
+        #[param("Optional Wi-Fi network name")]
+        wifi_ssid: Option<String>,
+        #[param("Path to a local file containing the Wi-Fi passphrase")]
+        wifi_psk_file: Option<String>,
+        #[param("Path to an owner public-key file, one OpenSSH key per line")]
+        ssh_keys_file: Option<String>,
+        #[param("Files to place in the image account's home")]
+        home_files: Vec<String>,
     },
     /// Choose a disk image.
     #[effect(job)]
@@ -517,6 +533,7 @@ mod tests {
             "export-config",
             "set-wifi-psk",
             "set-ssh-key",
+            "customize-image",
             "rescan",
             "choose-drive",
             "choose-image",

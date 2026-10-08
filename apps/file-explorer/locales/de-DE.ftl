@@ -355,6 +355,7 @@ files-place-favorites = Favoriten
 files-place-system = Orte
 files-place-root = Wurzelverzeichnis
 files-place-trash = Papierkorb
+files-trash-unavailable = Der Papierkorb ist auf diesem Gerät nicht verfügbar.
 files-place-workspace = Arbeitsbereich
 files-place-documents = Dokumente
 files-place-downloads = Downloads
@@ -611,3 +612,13 @@ files-menu-recover-transfers = Unterbrochene Übertragungen wiederherstellen
 files-clipboard-redone = Einfügen wiederhergestellt.
 
 files-clipboard-cancelled = Dateiübertragung abgebrochen. Unterbrochene Übertragungen vor einem erneuten Versuch wiederherstellen.
+
+files-invalid-destination-name = Das Ziel muss ein einzelner Dateiname sein.
+
+files-native-restore-select-one = Wähle einen Eintrag im persönlichen Papierkorb zum Wiederherstellen. Andere Einträge bleiben unverändert.
+
+files-history-paste-files = Dateien einfügen
+files-history-restore-file = Datei wiederherstellen
+
+files-native-trash-delete-unavailable = Diese Objekte können wiederhergestellt werden. Dauerhaftes Löschen ist hier nicht verfügbar.
+files-user-trash-unavailable = Dein Papierkorb ist in diesem Arbeitsbereich nicht verfügbar.

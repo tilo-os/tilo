@@ -249,6 +249,8 @@ jobs:
     needs: [builder, select, security]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    outputs:
+      cleanup-shared-libraries: ${{ steps.cleanup.outputs.shared-libraries }}
     env:
       # The native ARM runner has enough memory for one of the largest test
       # links, but not four simultaneously. Most compile work is served by
@@ -420,10 +422,15 @@ jobs:
 
       # The shard's test executables are done with; Certify links the apps'
       # own binaries from the same rlibs, and a wide shard does not fit both
-      # in a runner's store.
+      # in a runner's store. Shared libraries can also have executable mode:
+      # keep procedural macros and native dylibs for the later Cargo steps.
       - name: Free the test executables of shard ${{ matrix.shard }}
+        id: cleanup
         if: matrix.test_packages != ''
-        run: find target/debug/deps -maxdepth 1 -type f -perm -u+x -delete
+        run: |
+          libraries=$(find target/debug/deps -maxdepth 1 -type f -perm -u+x \( -name '*.so' -o -name '*.so.*' \) -printf '.' | wc -c)
+          printf 'shared-libraries=%s\n' "$libraries" >> "$GITHUB_OUTPUT"
+          find target/debug/deps -maxdepth 1 -type f -perm -u+x ! -name '*.so' ! -name '*.so.*' -delete
 
       # The shard's affected graphical apps through the same production-root
       # native audit the nightly runs for every app, so a change that breaks
