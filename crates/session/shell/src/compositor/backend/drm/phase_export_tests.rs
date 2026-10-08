@@ -20,7 +20,7 @@ impl DrmPresenter {
             profile_seq: 0,
             frame_phases: None,
             phase_window: PhaseWindow::default(),
-            direct_bypass_reported: false,
+            readback_presenting: Arc::new(AtomicBool::new(false)),
             signal_reports: None,
         }
     }

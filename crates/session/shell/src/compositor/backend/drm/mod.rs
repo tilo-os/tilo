@@ -2705,26 +2705,37 @@ fn drain_page_flip_completions(scanouts: &mut [ScanoutEntry]) -> usize {
     completed.len()
 }
 
-/// Hand each `(device, crtc)` completion to the scanout it belongs to: the
-/// direct targets' ring when the output renders direct, the dumb pair otherwise.
-fn route_flip_completions(
-    scanouts: &mut [ScanoutEntry],
+/// One output's existing completion sink; matching does not alter buffer ownership.
+trait FlipRecipient {
+    fn address(&self) -> (u64, smithay::reexports::drm::control::crtc::Handle);
+    fn complete(&mut self, event: page_flip::Completion);
+}
+
+impl FlipRecipient for ScanoutEntry {
+    fn address(&self) -> (u64, smithay::reexports::drm::control::crtc::Handle) {
+        (self.device_id, self.scanout.crtc())
+    }
+
+    fn complete(&mut self, event: page_flip::Completion) {
+        if let Some(targets) = self.direct_targets.as_mut() {
+            self.scanout.mark_direct_flip_complete(targets, event);
+        } else {
+            self.scanout.mark_flip_complete(event);
+        }
+    }
+}
+
+/// Hand the complete device-scoped event only to outputs with that device and CRTC.
+fn route_flip_completions<T: FlipRecipient>(
+    scanouts: &mut [T],
     completed: &[(u64, page_flip::Completion)],
 ) {
-    let topology: Vec<_> = scanouts
-        .iter()
-        .map(|entry| (entry.device_id, entry.scanout.crtc()))
-        .collect();
     for (device_id, event) in completed {
-        for (index, _) in page_flip_completion_recipients(&topology, &[(*device_id, event.crtc)]) {
-            let Some(entry) = scanouts.get_mut(index) else {
-                continue;
-            };
-            if let Some(targets) = entry.direct_targets.as_mut() {
-                entry.scanout.mark_direct_flip_complete(targets, *event);
-            } else {
-                entry.scanout.mark_flip_complete(*event);
-            }
+        for entry in scanouts
+            .iter_mut()
+            .filter(|entry| entry.address() == (*device_id, event.crtc))
+        {
+            entry.complete(*event);
         }
     }
 }
@@ -2738,27 +2749,6 @@ fn page_flip_representatives(devices: impl IntoIterator<Item = u64>) -> Vec<(u64
         .into_iter()
         .enumerate()
         .filter_map(|(index, device_id)| seen.insert(device_id).then_some((device_id, index)))
-        .collect()
-}
-
-/// Match each card-scoped completion to the one scanout on that same card and
-/// CRTC. CRTC handles may repeat on a different DRM device, so matching the
-/// handle alone would clear the wrong `flip_pending` flag after a hybrid-GPU
-/// frame. Generic handles keep this routing rule testable without DRM fds.
-#[cfg(test)]
-fn page_flip_completion_recipients<T: Copy + Eq>(
-    scanouts: &[(u64, T)],
-    completed: &[(u64, T)],
-) -> Vec<(usize, T)> {
-    completed
-        .iter()
-        .flat_map(|&(device_id, crtc)| {
-            scanouts.iter().enumerate().filter_map(
-                move |(index, &(scanout_device, scanout_crtc))| {
-                    (scanout_device == device_id && scanout_crtc == crtc).then_some((index, crtc))
-                },
-            )
-        })
         .collect()
 }
 
@@ -3406,26 +3396,79 @@ mod tests {
 
     #[test]
     fn page_flip_completion_is_routed_per_card() {
-        // Phase `page_flip_drain_uses_one_representative_per_card`.
-        // A fake scanout inventory: card0 has two CRTCs, card1 has two more
-        // whose handle values may overlap card0's.  No real compositor or
-        // DRM node is involved; this pins the grouping rule used before the
-        // hardware-facing drain.
+        // One safe event-stream reader per card, unchanged.
         assert_eq!(
             page_flip_representatives([100, 100, 200, 100, 200]),
             vec![(100, 0), (200, 2)],
             "each card must drain its own shared event stream exactly once"
         );
-        // Phase `overlapping_crtcs_route_flip_completion_only_within_its_card`.
-        {
-            // Fake card/CRTC topology. CRTC 7 exists on both cards, exactly as
-            // it can in DRM. A completion from card 200 must not clear card 100's
-            // pending flip merely because their local handle values match.
-            let scanouts = [(100, 7u32), (100, 8), (200, 7), (200, 8)];
-            assert_eq!(
-                page_flip_completion_recipients(&scanouts, &[(200, 7)]),
-                vec![(2, 7)],
-                "only the same card's CRTC receives the completion"
+        struct RecordedOutput {
+            device: u64,
+            crtc: smithay::reexports::drm::control::crtc::Handle,
+            completions: Vec<page_flip::Completion>,
+        }
+        impl FlipRecipient for RecordedOutput {
+            fn address(&self) -> (u64, smithay::reexports::drm::control::crtc::Handle) {
+                (self.device, self.crtc)
+            }
+            fn complete(&mut self, event: page_flip::Completion) {
+                self.completions.push(event);
+            }
+        }
+        let mut scanouts: Vec<_> = [(100, 7u32), (100, 8), (200, 7), (200, 8)]
+            .into_iter()
+            .map(|(device, crtc)| RecordedOutput {
+                device,
+                crtc: std::num::NonZeroU32::new(crtc).unwrap().into(),
+                completions: Vec::new(),
+            })
+            .collect();
+        let completion = page_flip::Completion {
+            crtc: std::num::NonZeroU32::new(7).unwrap().into(),
+            cookie: 91,
+            frame: 42,
+            duration: Duration::from_secs(123),
+        };
+        // Exercise the same production route used by draining and physical retirement.
+        route_flip_completions(&mut scanouts, &[(200, completion)]);
+        let recipients: Vec<_> = scanouts
+            .iter()
+            .enumerate()
+            .flat_map(|(index, output)| {
+                output
+                    .completions
+                    .iter()
+                    .map(move |event| (index, u32::from(event.crtc)))
+            })
+            .collect();
+        assert_eq!(
+            recipients,
+            vec![(2, 7)],
+            "only the same card's CRTC receives the completion"
+        );
+        assert_eq!(
+            scanouts[2].completions,
+            vec![completion],
+            "routing preserves the complete cookie, frame and timestamp payload"
+        );
+        route_flip_completions(
+            &mut scanouts,
+            &[
+                (300, completion),
+                (
+                    200,
+                    page_flip::Completion {
+                        crtc: std::num::NonZeroU32::new(9).unwrap().into(),
+                        ..completion
+                    },
+                ),
+            ],
+        );
+        assert_eq!(scanouts[2].completions, vec![completion]);
+        for index in [0, 1, 3] {
+            assert!(
+                scanouts[index].completions.is_empty(),
+                "foreign outputs receive nothing"
             );
         }
     }
