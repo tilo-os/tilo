@@ -80,3 +80,8 @@ thread-budget exception.
 The final hardened source was rebuilt and the same fixture rerun. Its exact
 source hash matches the primary receipt; the earlier completed run is retained
 separately in the ledger. All four owned review services are inactive.
+
+The [compiled existing-V8 follow-up](dictation-whistle-v8-review.md) implements
+that alternative without adding a runtime dependency. Its final profile passes
+the same resource controls and improves French timing substantially, while the
+multilingual/name controls still reject model/default admission.
