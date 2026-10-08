@@ -188,6 +188,44 @@ pub fn speaker_command(
         .map_err(|_| "the speaker service did not respond".to_string())?
 }
 
+static DISPLAY_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::OnceLock::new();
+
+/// Ask the native host to inspect or change its display transaction. Call off
+/// the frame thread; the existing bridge and response wait remain bounded.
+///
+/// # Errors
+/// Reports disconnected authority, refused requests and timed out replies.
+pub fn display_control(
+    command: Vec<u8>,
+    origin: runtime_collab::settings::DisplayOrigin,
+) -> Result<Vec<u8>, String> {
+    if command.len() > 64 * 1024 {
+        return Err("The display request exceeds its wire bound.".into());
+    }
+    let sender = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map_err(|_| "The display service is unavailable.")?
+        .as_ref()
+        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .ok_or("Displays need the certified collaboration service.")?;
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    if !enqueue_sdk_command(
+        &sender,
+        SdkCommand::DisplayControl {
+            origin,
+            command,
+            reply: reply_tx,
+        },
+        DISPLAY_COMMAND_BUDGET.get_or_init(BridgeState::new),
+    ) {
+        return Err("The display request queue is unavailable.".into());
+    }
+    reply_rx
+        .recv_timeout(Duration::from_secs(4))
+        .map_err(|_| "The display service did not respond.".to_string())?
+}
+
 /// Have the connected transport's worker send the app's unsent settings
 /// writes ([`super::channel_settings`]). Without a connected transport they
 /// wait for the primary route, whose join sends them.
@@ -232,6 +270,8 @@ pub(super) struct BrokerTransport {
     /// never delay a stop obligation.
     media: Option<native_media::Sender>,
     inbound_rx: tokio_mpsc::Receiver<QueuedCollabEvent>,
+    // Native read turns remain held through the owner's event batch.
+    document_turns: Vec<tokio::sync::OwnedSemaphorePermit>,
     state: BridgeState,
     /// The receiver stays on the application's owner thread.  RPC servers
     /// own only the cloneable sender, so a Cap'n Proto callback cannot touch
@@ -250,6 +290,18 @@ pub(super) struct BrokerTransport {
     /// transport; done once it has connected.
     wifi_bridge_registered: bool,
     _thread: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(all(test, unix))]
+pub(crate) struct NativeHistoryInvocationFixture {
+    pub manager: CollaborationManager,
+    pub refresh: Box<dyn Fn(Vec<u8>, tokio::sync::oneshot::Receiver<()>)>,
+    pub invoke: Box<dyn Fn(u64, Uuid)>,
+    pub received: Box<dyn Fn() -> usize>,
+    pub execution: Box<dyn Fn(Result<bool, String>)>,
+    pub terminals: Box<dyn Fn() -> usize>,
+    pub updates: Box<dyn Fn() -> Vec<(u64, tilo_actions::InvocationUpdate)>>,
+    pub thread: thread::JoinHandle<()>,
 }
 
 impl BrokerTransport {
@@ -336,15 +388,31 @@ impl CollabTransport for BrokerTransport {
     }
 
     fn drain(&mut self, out: &mut Vec<CollabEvent>) {
+        self.document_turns.clear();
         self.state.begin_poll();
         if !self.wifi_bridge_registered
             && matches!(self.state.connect_phase(), ConnectPhase::Connected)
         {
             self.register_wifi_bridge();
         }
-        while let Ok(evt) = self.inbound_rx.try_recv() {
+        while let Ok(mut evt) = self.inbound_rx.try_recv() {
+            match evt._turn.take() {
+                Some(EventTurn::Document(turns)) => self.document_turns.extend(turns),
+                Some(EventTurn::Snapshot(turn)) => drop(turn),
+                None => {}
+            }
             out.push(evt.event);
         }
+    }
+
+    fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+        self.state
+            .document_reads
+            .set_document_owner_routes(routes.iter().map(RouteSpec::channel_id).collect());
+    }
+
+    fn finish_event_batch(&mut self) {
+        self.document_turns.clear();
     }
 
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
@@ -524,6 +592,11 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::SpeakerCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
+    },
+    DisplayControl {
+        origin: runtime_collab::settings::DisplayOrigin,
+        command: Vec<u8>,
+        reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
     },
     /// Send the app's unsent settings writes over the primary route.
     FlushSettings,
@@ -996,6 +1069,9 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             meter.string_capacity(app_id);
             serialized_bytes(command, &mut meter);
             meter.finish()
+        }
+        SdkCommand::DisplayControl { command, .. } => {
+            std::mem::size_of::<SdkCommand>().checked_add(command.capacity())
         }
         SdkCommand::Speakers {
             app_id, command, ..
@@ -1566,12 +1642,17 @@ struct QueuedSdkCommand {
     _reservation: ByteReservation,
 }
 
+enum EventTurn {
+    Snapshot(tokio::sync::OwnedSemaphorePermit),
+    Document(Vec<tokio::sync::OwnedSemaphorePermit>),
+}
+
 struct QueuedCollabEvent {
     event: CollabEvent,
     _reservation: ByteReservation,
-    /// Held while a superseding snapshot (the action catalogue) is queued;
-    /// released when the owner dequeues it, letting its reader pull the next.
-    _turn: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// Snapshot turns release on dequeue. Native document turns transfer to
+    /// the owner until its dispatch batch ends.
+    _turn: Option<EventTurn>,
 }
 
 impl BridgeState {
@@ -1957,11 +2038,11 @@ impl InboundBridge {
         self.send_durable_turn(event, None, None)
     }
 
-    /// `send_durable` holding `turn` until the owner dequeues the event.
+    /// Retain snapshots through dequeue and document producers through owner acknowledgement.
     fn send_durable_turn(
         &self,
         event: CollabEvent,
-        turn: Option<tokio::sync::OwnedSemaphorePermit>,
+        turn: Option<EventTurn>,
         serialized_bytes: Option<usize>,
     ) -> bool {
         let required_bytes = event_bytes(&event).unwrap_or(usize::MAX);
@@ -2734,6 +2815,13 @@ impl CollaborationManager {
         .map_err(|error| error.to_string())
     }
 
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_history_invocation_fixture_for_test(
+        history: Vec<u8>,
+    ) -> NativeHistoryInvocationFixture {
+        tests::native_history_invocation_fixture(history)
+    }
+
     /// Wire/SDK ordering fixture only; not a native authority proof.
     #[cfg(all(test, unix))]
     pub(crate) fn native_initial_fixture_for_test(
@@ -3212,6 +3300,7 @@ impl CollaborationManager {
             outbound_tx,
             media: Some(media_tx),
             inbound_rx,
+            document_turns: Vec::new(),
             state,
             action_directory_rx,
             action_directory_tx,
@@ -3734,6 +3823,24 @@ async fn drive_shovel(
                 };
                 let _ = reply.send(result);
             }
+            SdkCommand::DisplayControl {
+                command,
+                origin,
+                reply,
+            } => {
+                let result = if let Some(link) = settings_link.as_ref() {
+                    tokio::time::timeout(
+                        Duration::from_secs(3),
+                        link.handle.display_control(&command, origin),
+                    )
+                    .await
+                    .map_err(|_| "The display service timed out.".to_string())
+                    .and_then(|result| result.map_err(|error| error.to_string()))
+                } else {
+                    Err("The admitted settings channel is unavailable.".into())
+                };
+                let _ = reply.send(result);
+            }
             SdkCommand::FlushSettings => {
                 if let Some(link) = settings_link.as_ref() {
                     link.flush(&inbound_tx).await;
@@ -3901,7 +4008,7 @@ async fn ensure_sdk_route(
         },
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
         spawn_action_stream(&channel, inbound_tx),
-        spawn_invocation_stream(&channel, inbound_tx),
+        spawn_invocation_stream(&channel, spec, inbound_tx),
         spawn_realtime_stream(&channel, inbound_tx),
         async {
             // This intentionally fails quietly for person sessions. An
@@ -4088,6 +4195,93 @@ async fn spawn_context_stream(
     }
 }
 
+#[derive(Debug)]
+struct NativeInvocationTurn {
+    permits: Vec<tokio::sync::OwnedSemaphorePermit>,
+    deadline: Instant,
+}
+
+// Use the existing three-second native publication hydration bound. The
+// accepted invocation stays on its original stream task, without another queue.
+async fn native_invocation_delivery_turn(
+    key: &str,
+    state: &BridgeState,
+) -> Result<Option<NativeInvocationTurn>, String> {
+    let Some(generation) = state.document_reads.delivery_generation(key) else {
+        return Ok(None);
+    };
+    let deadline = crate::time::now() + Duration::from_secs(3);
+    loop {
+        if !state.is_healthy() || !state.document_reads.current(key, &generation) {
+            return Err("original invocation document custody was retired".into());
+        }
+        if crate::time::now() >= deadline {
+            return Err("original invocation capture did not become current".into());
+        }
+        let mut turns = Vec::new();
+        let owners = state.document_reads.document_owner_routes(key)?;
+        for owner in &owners {
+            let semaphore = state.document_reads.delivery_turn(owner)?;
+            let remaining = deadline.saturating_duration_since(crate::time::now());
+            let turn = tokio::time::timeout(remaining, semaphore.acquire_owned())
+                .await
+                .map_err(|_| "original invocation capture did not become current")?
+                .map_err(|_| "original invocation delivery turn closed")?;
+            turns.push(turn);
+        }
+        if !state.is_healthy() || !state.document_reads.current(key, &generation) {
+            return Err("original invocation document custody was retired".into());
+        }
+        if crate::time::now() >= deadline {
+            return Err("original invocation capture did not become current".into());
+        }
+        if state.document_reads.document_owner_routes(key)? == owners
+            && owners
+                .iter()
+                .all(|owner| state.document_reads.publishable(owner))
+        {
+            return Ok(Some(NativeInvocationTurn {
+                permits: turns,
+                deadline,
+            }));
+        }
+        drop(turns);
+        if crate::time::now() >= deadline {
+            return Err("original invocation capture did not become current".into());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+// This existing host verb rechecks the original channel's current read
+// custody and exact pending job. A waited delivery cannot reuse stale authority.
+#[allow(
+    clippy::future_not_send,
+    reason = "the original Rc-backed Cap'n Proto channel is driven only on the shovel LocalSet"
+)]
+async fn recheck_native_invocation(
+    channel: &runtime_collab::ChannelHandle,
+    invocation: &runtime_collab::Invocation,
+) -> Result<bool, String> {
+    if !channel
+        .invocation_cancellation(invocation.id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(true);
+    }
+    let update = tilo_actions::InvocationUpdate::Cancelled {
+        invocation: tilo_actions::InvocationId(Uuid::from_bytes(invocation.invocation_uuid)),
+        message: None,
+    };
+    let wire = serde_json::to_string(&update).map_err(|error| error.to_string())?;
+    channel
+        .update_invocation(invocation.id, &wire)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(false)
+}
+
 /// Bridge `channel`'s action stream into [`CollabEvent::ActionArrived`] on
 /// `inbound_tx`.
 #[allow(
@@ -4117,26 +4311,58 @@ async fn spawn_action_stream(channel: &runtime_collab::ChannelHandle, inbound_tx
 )]
 async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
+    spec: &RouteSpec,
     inbound_tx: &InboundBridge,
 ) {
     if let Ok(stream) = channel.subscribe_stable_invocations().await {
         let tx = inbound_tx.clone();
         let cancellation_channel = channel.clone();
+        let key = spec.channel_id();
         tokio::task::spawn_local(async move {
             while let Ok(invocation) = stream.read().await {
+                let turn = match native_invocation_delivery_turn(&key, &tx.state).await {
+                    Ok(turn) => turn,
+                    Err(error) => {
+                        tx.state
+                            .fail_closed("native invocation capture; outcome unknown");
+                        tracing::warn!(%error, "accepted invocation retains unknown outcome");
+                        break;
+                    }
+                };
+                if let Some(turn) = &turn {
+                    match tokio::time::timeout_at(
+                        tokio::time::Instant::from_std(turn.deadline),
+                        recheck_native_invocation(&cancellation_channel, &invocation),
+                    )
+                    .await
+                    {
+                        Ok(Ok(true)) if crate::time::now() < turn.deadline => {}
+                        Ok(Ok(false)) => continue,
+                        result => {
+                            tx.state
+                                .fail_closed("native invocation authority; outcome unknown");
+                            tracing::warn!(?result, "accepted invocation authority unavailable");
+                            break;
+                        }
+                    }
+                }
                 let id = invocation.id;
                 let context = parse_invocation_context(id, &invocation.context_json);
-                if !tx.send_durable(CollabEvent::Invocation {
-                    id,
-                    invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
-                        invocation.invocation_uuid,
-                    )),
-                    resource: invocation.resource,
-                    action: invocation.action,
-                    argument: invocation.argument,
-                    actor: invocation.actor,
-                    context: context.map(Box::new),
-                }) {
+                if !tx.send_durable_turn(
+                    CollabEvent::Invocation {
+                        id,
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
+                            invocation.invocation_uuid,
+                        )),
+                        resource: invocation.resource,
+                        action: invocation.action,
+                        argument: invocation.argument,
+                        actor: invocation.actor,
+                        context: context.map(Box::new),
+                    },
+                    turn.map(|turn| EventTurn::Document(turn.permits)),
+                    None,
+                ) {
                     break;
                 }
                 let cancellation_tx = tx.clone();
@@ -4420,7 +4646,7 @@ fn admit_initial_action_catalogue(
         CollabEvent::ActionCatalogue {
             surfaces: catalogue.surfaces,
         },
-        turn,
+        turn.map(EventTurn::Snapshot),
         Some(initial.len()),
     ) {
         return Err("delivering initial action catalogue failed".to_string());
@@ -4453,7 +4679,7 @@ async fn forward_action_catalogues(
                     CollabEvent::ActionCatalogue {
                         surfaces: catalogue.surfaces,
                     },
-                    Some(turn),
+                    Some(EventTurn::Snapshot(turn)),
                     Some(snapshot.len()),
                 ) {
                     break;
@@ -6530,8 +6756,8 @@ mod tests {
     use runtime_collab::PresencePayload as SdkPayload;
     use runtime_collab::raw::{
         action_catalogue_stream, channel_context, channel_handle, collab_service, context_stream,
-        presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch,
-        stream,
+        invocation_stream, presence_event, presence_handle, presence_payload, presence_stream,
+        scrollback_batch, stream,
     };
 
     #[derive(Default)]
@@ -6545,6 +6771,11 @@ mod tests {
         #[cfg(unix)]
         directory: DirectoryCaptures,
         committed_history_fixture: Option<Vec<u8>>,
+        committed_revision: Option<[u8; 32]>,
+        invocation_fixture_enabled: bool,
+        invocations: std::collections::VecDeque<runtime_collab::Invocation>,
+        received_invocations: usize,
+        invocation_execution: Option<Result<bool, String>>,
         committed_recheck_gate: Option<tokio::sync::oneshot::Receiver<()>>,
         committed_reads: Vec<runtime_collab::committed_document::Request>,
         media_commands: Vec<runtime_collab::native_media::Request>,
@@ -6558,6 +6789,7 @@ mod tests {
         document_gates: std::collections::VecDeque<DocumentSendGate>,
         fail_terminal: bool,
         terminal_updates: usize,
+        invocation_updates: Vec<(u64, tilo_actions::InvocationUpdate)>,
         joined: Vec<(String, Vec<u8>)>,
         joined_record_kinds: Vec<String>,
         signed_ops: Vec<Vec<u8>>,
@@ -6621,6 +6853,41 @@ mod tests {
         earliest_seq: u64,
         latest_seq: u64,
         done: bool,
+    }
+
+    struct FakeInvocationStream(SharedCaptures);
+    impl invocation_stream::Server for FakeInvocationStream {
+        fn read(
+            self: Rc<Self>,
+            _: invocation_stream::ReadParams,
+            mut results: invocation_stream::ReadResults,
+        ) -> Promise<(), capnp::Error> {
+            Promise::from_future(async move {
+                loop {
+                    let invocation = {
+                        let mut captures = self.0.lock().unwrap();
+                        let invocation = captures.invocations.pop_front();
+                        if invocation.is_some() {
+                            captures.received_invocations += 1;
+                        }
+                        invocation
+                    };
+                    if let Some(invocation) = invocation {
+                        let mut wire = results.get();
+                        wire.set_id(invocation.id);
+                        wire.set_invocation_uuid(&invocation.invocation_uuid);
+                        wire.set_resource(&invocation.resource);
+                        wire.set_action(&invocation.action);
+                        wire.set_argument(invocation.argument.as_deref().unwrap_or(""));
+                        wire.set_has_argument(invocation.argument.is_some());
+                        wire.set_actor(&invocation.actor);
+                        wire.set_context_json(&invocation.context_json);
+                        return Ok(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+        }
     }
 
     struct FakePresenceStream {
@@ -6915,6 +7182,40 @@ mod tests {
     }
 
     impl channel_handle::Server for FakeChannel {
+        fn invocation_cancellation(
+            self: Rc<Self>,
+            _: channel_handle::InvocationCancellationParams,
+            mut results: channel_handle::InvocationCancellationResults,
+        ) -> Promise<(), capnp::Error> {
+            match self.captures.lock().unwrap().invocation_execution.as_ref() {
+                Some(Ok(cancelled)) => {
+                    results.get().set_cancelled(*cancelled);
+                    Promise::ok(())
+                }
+                Some(Err(error)) => Promise::err(capnp::Error::failed(error.clone())),
+                None => Promise::err(capnp::Error::unimplemented(
+                    "fixture has no invocation".into(),
+                )),
+            }
+        }
+
+        fn subscribe_invocations(
+            self: Rc<Self>,
+            params: channel_handle::SubscribeInvocationsParams,
+            mut results: channel_handle::SubscribeInvocationsResults,
+        ) -> Promise<(), capnp::Error> {
+            if !self.captures.lock().unwrap().invocation_fixture_enabled {
+                return Promise::err(capnp::Error::unimplemented(
+                    "fixture has no invocation stream".into(),
+                ));
+            }
+            assert!(params.get().unwrap().get_stable_invocation_ids());
+            let stream: invocation_stream::Client =
+                capnp_rpc::new_client(FakeInvocationStream(self.captures.clone()));
+            results.get().set_stream(stream);
+            Promise::ok(())
+        }
+
         fn settings(
             self: Rc<Self>,
             _params: channel_handle::SettingsParams,
@@ -7014,15 +7315,16 @@ mod tests {
                     .map_err(|error| capnp::Error::failed(error.into()))?;
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
+                let current_revision = captures.committed_revision.unwrap_or([7; 32]);
                 let reply = match captures.committed_history_fixture.as_ref() {
                     None => Reply::Legacy,
                     Some(bytes) => match request {
                         Request::Open {
                             known_revision: Some(revision),
-                        } if revision == [7; 32] => Reply::Unchanged { revision },
+                        } if revision == current_revision => Reply::Unchanged { revision },
                         Request::Open { .. } => Reply::Chunk {
                             capture: 1,
-                            revision: [7; 32],
+                            revision: current_revision,
                             total: bytes.len() as u32,
                             offset: 0,
                             bytes: bytes.clone(),
@@ -7115,10 +7417,17 @@ mod tests {
 
         fn update_invocation(
             self: Rc<Self>,
-            _params: channel_handle::UpdateInvocationParams,
+            params: channel_handle::UpdateInvocationParams,
             _results: channel_handle::UpdateInvocationResults,
         ) -> Promise<(), capnp::Error> {
             let mut captures = self.captures.lock().unwrap();
+            if captures.invocation_fixture_enabled {
+                let request = params.get().unwrap();
+                let update =
+                    serde_json::from_str(request.get_update_json().unwrap().to_str().unwrap())
+                        .unwrap();
+                captures.invocation_updates.push((request.get_id(), update));
+            }
             captures.terminal_updates += 1;
             if captures.fail_terminal {
                 return Promise::err(capnp::Error::failed(
@@ -8686,6 +8995,7 @@ mod tests {
             outbound_tx,
             media: None,
             inbound_rx,
+            document_turns: Vec::new(),
             state,
             action_directory_rx,
             action_directory_tx,
@@ -9206,6 +9516,135 @@ mod tests {
                 }
             })
             .await;
+    }
+
+    #[tokio::test]
+    async fn native_invocation_delivery_turn_waits_for_every_live_owner() {
+        let state = BridgeState::new();
+        let primary = state.document_reads.close_for_test("original-route");
+        let owner = state.document_reads.close_for_test("live-owner");
+        state.document_reads.close_for_test("unowned-retained");
+        primary.store(true, Ordering::Release);
+        state
+            .document_reads
+            .set_document_owner_routes(vec!["original-route".into(), "live-owner".into()]);
+        let held = state
+            .document_reads
+            .delivery_turn("live-owner")
+            .unwrap()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let wait = native_invocation_delivery_turn("original-route", &state);
+        tokio::pin!(wait);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        owner.store(true, Ordering::Release);
+        drop(held);
+        let turn = wait.await.unwrap().unwrap();
+        assert_eq!(turn.permits.len(), 2);
+        assert!(!state.document_reads.publishable("unowned-retained"));
+    }
+
+    #[tokio::test]
+    async fn native_invocation_delivery_turn_rejects_original_generation_retirement() {
+        let state = BridgeState::new();
+        let original = state.document_reads.close_for_test("original-route");
+        let held = state
+            .document_reads
+            .delivery_turn("original-route")
+            .unwrap()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let (result, ()) = tokio::join!(
+            native_invocation_delivery_turn("original-route", &state),
+            async {
+                tokio::task::yield_now().await;
+                state.document_reads.close_for_test("original-route");
+                drop(held);
+            }
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "original invocation document custody was retired"
+        );
+        assert!(!original.load(Ordering::Acquire));
+        assert!(!state.document_reads.publishable("original-route"));
+    }
+
+    #[tokio::test]
+    async fn native_invocation_delivery_turn_timeout_preserves_unapplied_original_custody() {
+        let state = BridgeState::new();
+        let original = state.document_reads.close_for_test("original-route");
+        let result = native_invocation_delivery_turn("original-route", &state).await;
+        assert_eq!(
+            result.unwrap_err(),
+            "original invocation capture did not become current"
+        );
+        assert!(state.document_reads.current("original-route", &original));
+        assert!(!original.load(Ordering::Acquire));
+        assert!(!state.document_reads.publishable("original-route"));
+    }
+
+    pub(super) fn native_history_invocation_fixture(
+        history: Vec<u8>,
+    ) -> NativeHistoryInvocationFixture {
+        let captures = Arc::new(std::sync::Mutex::new(Captures {
+            committed_history_fixture: Some(history),
+            invocation_fixture_enabled: true,
+            invocation_execution: Some(Ok(false)),
+            ..Captures::default()
+        }));
+        let broker = FakeBroker {
+            captures,
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let refresh_captures = captures.clone();
+        let invocation_captures = captures.clone();
+        let execution_captures = captures.clone();
+        let terminal_captures = captures.clone();
+        let update_captures = captures.clone();
+        NativeHistoryInvocationFixture {
+            manager: CollaborationManager::from_sdk_fd_for_test(
+                fd,
+                "so.tilo.initial-history-probe",
+                Uuid::new_v4(),
+            ),
+            refresh: Box::new(move |history, gate| {
+                let mut captures = refresh_captures.lock().unwrap();
+                captures.committed_history_fixture = Some(history);
+                captures.committed_revision = Some([8; 32]);
+                captures.committed_recheck_gate = Some(gate);
+            }),
+            invoke: Box::new(move |id, uuid| {
+                invocation_captures.lock().unwrap().invocations.push_back(
+                    runtime_collab::Invocation {
+                        id,
+                        invocation_uuid: *uuid.as_bytes(),
+                        resource: "initial-probe".into(),
+                        action: "inspect".into(),
+                        argument: None,
+                        actor: "fixture-user".into(),
+                        context_json: String::new(),
+                    },
+                )
+            }),
+            received: Box::new(move || captures.lock().unwrap().received_invocations),
+            execution: Box::new(move |state| {
+                execution_captures.lock().unwrap().invocation_execution = Some(state)
+            }),
+            terminals: Box::new(move || terminal_captures.lock().unwrap().terminal_updates),
+            updates: Box::new(move || update_captures.lock().unwrap().invocation_updates.clone()),
+            thread,
+        }
     }
 
     pub(super) fn native_initial_fixture(
