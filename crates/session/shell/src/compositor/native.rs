@@ -2897,11 +2897,15 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn chrome_state_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
+        let native_broker = chrome
+            .native_app_opening
+            .as_ref()
+            .and_then(|opening| opening.0.upgrade().ok());
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         serde_json::json!({
             "seat_focus": self.seat.map(State::seat_focus_json),
-            "native_window_provenance": self.seat.map(|state| state.native_window_input_provenance_json(self.fb)),
+            "native_window_provenance": self.seat.map(|state| state.native_window_input_provenance_with_broker(self.fb, native_broker.as_ref())),
             "mounted_window_geometry": self.fb.host().mounted_window_geometry_json(),
             "host_window_provenance": self.seat.map(State::host_window_provenance_json),
             "overlays": {

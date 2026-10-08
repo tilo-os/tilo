@@ -160,7 +160,16 @@ impl State {
         &self,
         frame: &super::frame::FrameBuilder,
     ) -> serde_json::Value {
-        let mut proof = self.native_window_provenance_json();
+        self.native_window_input_provenance_with_broker(frame, None)
+    }
+
+    /// Keep current certified checkout and measured input geometry in one projection.
+    pub fn native_window_input_provenance_with_broker(
+        &self,
+        frame: &super::frame::FrameBuilder,
+        broker: Option<&tilo_action_broker::collab_broker::AppActionBroker>,
+    ) -> serde_json::Value {
+        let mut proof = self.native_window_provenance_with_broker(broker);
         let tree = self.workspace_tree.read();
         let Some(fields) = proof.as_object_mut() else {
             return proof;
@@ -206,6 +215,14 @@ impl State {
     }
 
     pub fn native_window_provenance_json(&self) -> serde_json::Value {
+        self.native_window_provenance_with_broker(None)
+    }
+
+    /// Join current Wayland custody to the current certified broker checkout.
+    pub fn native_window_provenance_with_broker(
+        &self,
+        broker: Option<&tilo_action_broker::collab_broker::AppActionBroker>,
+    ) -> serde_json::Value {
         let (candidates, omitted) = self.current_window_candidates();
         let mut windows = Vec::new();
         for window in candidates {
@@ -233,7 +250,25 @@ impl State {
             if !self.window_is_current(&window) {
                 continue;
             }
+            let checkout = broker.and_then(|broker| {
+                broker.native_checkout(
+                    &window.package,
+                    &window.room.to_string(),
+                    window.record,
+                    pid,
+                    start,
+                )
+            });
+            if !self.window_is_current(&window)
+                || current_peer(identity, &window.room.to_string(), &window.package)
+                    != Some((pid, start))
+            {
+                continue;
+            }
             windows.push(serde_json::json!({
+                "certified_checkout": checkout.map(|route| serde_json::json!({
+                    "application": route.app_id, "room": route.cluster_id, "record": route.record_id,
+                })),
                 "adoption_id": adoption_id, "room": window.room.to_string(), "tab_id": window.tab,
                 "surface_id": window.surface, "package_id": window.package,
                 "record_instance": window.record, "peer_pid": pid,

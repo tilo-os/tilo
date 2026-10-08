@@ -215,6 +215,33 @@ impl LocalAppConnection {
     pub(super) fn current(&self) -> bool {
         self.connected.load(Ordering::Acquire) && self.process.alive()
     }
+    /// Match the task pinned by the kernel pidfd, never a namespace-local app PID.
+    #[cfg(target_os = "linux")]
+    pub(super) fn matches_process(&self, pid: u32, start: u64) -> bool {
+        if !self.current() {
+            return false;
+        }
+        let info = std::fs::read_to_string(format!(
+            "/proc/self/fdinfo/{}",
+            self.process.task.as_raw_fd()
+        ));
+        let pinned = info.ok().and_then(|info| {
+            info.lines().find_map(|line| {
+                line.strip_prefix("Pid:")
+                    .and_then(|value| value.trim().parse::<u32>().ok())
+            })
+        });
+        let current_start = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat.rsplit_once(") ").map(|(_, fields)| fields.to_owned()))
+            .and_then(|fields| fields.split_whitespace().nth(19)?.parse::<u64>().ok());
+        pinned == Some(pid) && current_start == Some(start) && self.current()
+    }
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn matches_process(&self, _: u32, _: u64) -> bool {
+        let _ = self;
+        false
+    }
     pub(super) fn stop(&self) {
         self.connected.store(false, Ordering::Release);
     }

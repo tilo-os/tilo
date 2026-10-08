@@ -271,16 +271,9 @@ def package_flow(door, spec, local):
 
 
 def mapped_record(state, tab, application):
-    """Resolve a tab through the host's public launch association, never tab ID."""
-    record = state.get("workspace_tree", {}).get("local_app_records", {}).get(tab[1])
-    if record is None:
-        return None  # The toplevel may map before its launch association arrives.
-    require(isinstance(record, dict) and record.get("room") == tab[0]
-            and record.get("app_id") == application, "mapped tab has a foreign launch association")
-    instance = record.get("record_instance")
-    require(isinstance(instance, int) and not isinstance(instance, bool) and 0 < instance < 2**64,
-            "mapped tab record instance unavailable")
-    return f"derived:default@tab:{instance:016x}"
+    """Use the current kernel-bound certified checkout, never continuity aliases."""
+    worker = native_subject(state, tab, application)
+    return None if worker is None else worker["certified_checkout"]["record"]
 
 
 def fresh_browser(vm, out):
@@ -326,9 +319,14 @@ def browser_subject(state, tab):
 
 def native_subject(state, tab, application):
     """Bind an exact public tab/record to its admitted native process lifetime."""
-    record = mapped_record(state, tab, application)
-    if record is None:
+    association = state.get("workspace_tree", {}).get("local_app_records", {}).get(tab[1])
+    if association is None:
         return None
+    require(isinstance(association, dict) and association.get("room") == tab[0]
+            and association.get("app_id") == application
+            and type(association.get("record_instance")) is int
+            and 0 < association["record_instance"] < 2**64,
+            "mapped tab has a foreign or invalid launch association")
     proof = state.get("chrome", {}).get("native_window_provenance")
     require(isinstance(proof, dict) and proof.get("method") == "authenticated-wayland-peer"
             and proof.get("omitted") == 0 and isinstance(proof.get("windows"), list),
@@ -352,6 +350,14 @@ def native_subject(state, tab, application):
             and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", worker["adoption_id"])
             and worker["adoption_id"] != "00000000-0000-0000-0000-000000000000",
             "native process lifetime or adoption unavailable")
+    checkout = worker.get("certified_checkout")
+    if checkout is None:
+        return None  # The admitted worker has not registered a certified directory yet.
+    require(isinstance(checkout, dict) and set(checkout) == {"application", "room", "record"}
+            and checkout["application"] == application and checkout["room"] == tab[0]
+            and isinstance(checkout["record"], str) and 0 < len(checkout["record"].encode()) <= 512
+            and not any(ord(char) < 32 for char in checkout["record"]),
+            "current certified checkout differs from the native worker")
     return worker
 
 

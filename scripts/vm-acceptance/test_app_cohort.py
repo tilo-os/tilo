@@ -266,6 +266,7 @@ class Jobs(unittest.TestCase):
 class AdoptedAppDoor(unittest.TestCase):
     def subject(self):
         return {"room":ROOM, "tab_id":1, "surface_id":101, "package_id":app.STORE,
+                "certified_checkout":{"application":app.STORE,"room":ROOM,"record":"derived:default@tab:000000000000000b"},
                 "record_instance":11, "peer_pid":456, "peer_start_time_ticks":"12345",
                 "adoption_id":"12345678-1234-1234-1234-123456789abc"}
 
@@ -441,6 +442,7 @@ class BrowserWorker(unittest.TestCase):
     def current(self):
         value = state(1, 2)
         worker = {"room":ROOM, "tab_id":2, "surface_id":102, "package_id":app.BROWSER,
+                  "certified_checkout":{"application":app.BROWSER,"room":ROOM,"record":"derived:default@tab:000000000000000c"},
                   "record_instance":12, "peer_pid":456, "peer_start_time_ticks":"12345",
                   "adoption_id":"12345678-1234-1234-1234-123456789abc"}
         value["chrome"] = {"native_window_provenance":{"method":"authenticated-wayland-peer", "omitted":0,
@@ -462,6 +464,26 @@ class BrowserWorker(unittest.TestCase):
         value,_=self.current();value["chrome"]["native_window_provenance"]["omitted"]=1
         with self.assertRaises(VmError):app.browser_subject(value,(ROOM,"2","102"))
 
+    def test_current_saved_checkout_is_not_reconstructed_from_continuity(self):
+        value, worker = self.current()
+        worker["certified_checkout"]["record"] = "saved:restored-notebook"
+        self.assertEqual(app.mapped_record(value, (ROOM,"2","102"), app.BROWSER),
+                         "saved:restored-notebook")
+        self.assertEqual(worker["record_instance"], 12)
+
+    def test_no_checkout_proof_never_falls_back_to_a_derived_record(self):
+        value, worker = self.current()
+        worker.pop("certified_checkout")
+        self.assertIsNone(app.mapped_record(value, (ROOM,"2","102"), app.BROWSER))
+
+    def test_foreign_or_malformed_certified_checkout_refuses(self):
+        for field, bad in [("application",app.STORE),("room","foreign"),
+                           ("record",""),("record","bad\x1froute"),("record",True)]:
+            value, worker = self.current()
+            worker["certified_checkout"][field] = bad
+            with self.assertRaises(VmError):
+                app.mapped_record(value,(ROOM,"2","102"),app.BROWSER)
+
     def test_executable_must_be_unique_in_the_current_selected_signed_layer(self):
         row={"component":"apps+runtime","layer":"a"*64,"path":"/usr/share/tilo-apps/pkg/bin/browser","sha256":"b"*64}
         self.assertEqual(app.browser_executable({"files":[row]},"a"*64),"b"*64)
@@ -480,6 +502,7 @@ class FreshBrowser(unittest.TestCase):
                 value=state(*tabs)
                 value["chrome"]={"session_locked":False,"native_window_provenance":{"method":"authenticated-wayland-peer", "omitted":0,
                     "windows":[{"room":ROOM, "tab_id":tab, "surface_id":tab+100, "package_id":app.BROWSER,
+                                "certified_checkout":{"application":app.BROWSER,"room":ROOM,"record":f"derived:default@tab:{tab+10:016x}"},
                                 "record_instance":tab+10, "peer_pid":400+tab, "peer_start_time_ticks":str(1000+tab),
                                 "adoption_id":f"12345678-1234-1234-1234-{tab:012x}"} for tab in tabs]}}
                 return value
