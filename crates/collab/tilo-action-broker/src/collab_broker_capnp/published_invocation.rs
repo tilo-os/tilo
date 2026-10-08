@@ -414,6 +414,66 @@ pub struct OriginalInvocation {
     data: Arc<OriginalInvocationData>,
 }
 impl OriginalInvocation {
+    /// Re-resolve the accepted parent at its captured revision on the existing
+    /// directory, preserving the original worker and current caller policy.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the existing directory capabilities run on the broker LocalSet"
+    )]
+    pub(super) async fn check_continuation_publication(
+        &self,
+        channel: &super::CapnpChannelHandle,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Result<(), String> {
+        let (surface, offered) = if let Some(revision) = &self.data.spec.directory_revision {
+            let actor = channel
+                .state
+                .caller_actor(caller, &self.data.route.cluster_id);
+            let offer = channel
+                .state
+                .resolve_invocation_offer(
+                    &channel.directories,
+                    &actor,
+                    &self.data.route.cluster_id,
+                    self.peer,
+                    revision,
+                    &self.data.request.address.resource,
+                    &self.data.request.address.action,
+                )
+                .await?;
+            offer.check_registration(&channel.state, &channel.directories, self.peer)?;
+            offer.offered(self.peer)
+        } else {
+            channel
+                .state
+                .published_action(
+                    &self.data.route,
+                    &self.data.request.address.resource,
+                    &self.data.request.address.action,
+                )
+                .ok_or("original continuation action publication retired")?
+        };
+        if !surface.live || surface.peer_id != self.peer || surface.route != self.data.route {
+            return Err("original continuation publication route changed".into());
+        }
+        let current = OriginalInvocationData::capture(
+            self.data.request.clone(),
+            surface.route,
+            &offered,
+            self.data.spec.directory_revision.as_deref(),
+            Some(self.data.caller.clone()),
+            Some(self.data.time.clone()),
+            self.data.execution.clone(),
+        )
+        .ok_or("original continuation declaration unavailable")?;
+        if current.spec != self.data.spec
+            || current.resource_identity.as_ref() != Some(self.resource_identity()?)
+        {
+            return Err("original continuation declaration or semantic identity changed".into());
+        }
+        Ok(())
+    }
+
     pub(super) fn resource_identity(
         &self,
     ) -> Result<&tilo_actions::ResourceSemanticIdentity, String> {
@@ -599,9 +659,11 @@ impl OriginalInvocation {
         Ok(())
     }
 
-    pub(super) fn for_approved_check(
+    /// Reconstruct custody only from an actual retained invocation delivered to
+    /// this certified channel. No payload or matching UUID creates authority.
+    pub(super) fn for_delivered(
         channel: &super::CapnpChannelHandle,
-        request: &runtime_collab::approved_checks::Request,
+        invocation: tilo_actions::InvocationId,
     ) -> Result<Arc<Self>, String> {
         let route = channel.route();
         let admitted = channel
@@ -615,44 +677,23 @@ impl OriginalInvocation {
                 .lock()
                 .map_err(|_| "invocation registry unavailable")?;
             let mut matches = pending.values().filter(|pending| {
-                pending.peer_id == channel.peer_id
-                    && pending.update.invocation().0.to_string() == request.invocation
+                pending.peer_id == channel.peer_id && pending.update.invocation() == invocation
             });
             let selected = matches
                 .next()
-                .ok_or("approved check has no retained target invocation")?;
+                .ok_or("continuation has no retained target invocation")?;
             if matches.next().is_some() {
-                return Err("ambiguous approved-check invocation identity".into());
+                return Err("ambiguous original invocation identity".into());
             }
             let original = selected.original.clone();
             drop(pending);
             original.ok_or("original invocation authority unavailable")?
         };
-        if data.route != route
-            || data.request.address.action != runtime_collab::approved_checks::ACTION_ID
-            || data.spec.kind != tilo_actions::OperationKind::Effect
-            || data.spec.contract.execution
-                != (tilo_actions::ExecutionMode::Background { cancellable: true })
-            || data.spec.contract.permission != tilo_actions::PermissionRequirement::Write
-        {
-            return Err("approved check target action or contract mismatch".into());
-        }
-        let argument = data
-            .request
-            .argument
-            .as_deref()
-            .ok_or("approved check ID argument missing")?;
-        if argument.len() > runtime_collab::approved_checks::MAX_REQUEST_BYTES {
-            return Err("approved check arguments exceed bound".into());
-        }
-        let arguments: ApprovedCheckArguments = serde_json::from_str(
-            argument
-                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-                .unwrap_or(argument),
-        )
-        .map_err(|error| error.to_string())?;
-        if arguments.check_id != request.check_id {
-            return Err("approved check ID differs from accepted action".into());
+        if data.route != route {
+            return Err(
+                "original invocation target action or contract mismatch (record route changed)"
+                    .into(),
+            );
         }
         let worker = if let Some(worker) = admitted.worker_registration.clone() {
             TargetCustody::Registered(worker)
@@ -682,6 +723,45 @@ impl OriginalInvocation {
         });
         original.check_execution_frontier(&channel.state)?;
         original.check_lifecycle()?;
+        Ok(original)
+    }
+
+    pub(super) fn for_approved_check(
+        channel: &super::CapnpChannelHandle,
+        request: &runtime_collab::approved_checks::Request,
+    ) -> Result<Arc<Self>, String> {
+        let invocation = uuid::Uuid::parse_str(&request.invocation)
+            .map(tilo_actions::InvocationId)
+            .map_err(|_| "invalid approved-check invocation identity")?;
+        let original = Self::for_delivered(channel, invocation)?;
+        let route = channel.route();
+        let data = &original.data;
+        if data.route != route
+            || data.request.address.action != runtime_collab::approved_checks::ACTION_ID
+            || data.spec.kind != tilo_actions::OperationKind::Effect
+            || data.spec.contract.execution
+                != (tilo_actions::ExecutionMode::Background { cancellable: true })
+            || data.spec.contract.permission != tilo_actions::PermissionRequirement::Write
+        {
+            return Err("approved check target action or contract mismatch".into());
+        }
+        let argument = data
+            .request
+            .argument
+            .as_deref()
+            .ok_or("approved check ID argument missing")?;
+        if argument.len() > runtime_collab::approved_checks::MAX_REQUEST_BYTES {
+            return Err("approved check arguments exceed bound".into());
+        }
+        let arguments: ApprovedCheckArguments = serde_json::from_str(
+            argument
+                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .unwrap_or(argument),
+        )
+        .map_err(|error| error.to_string())?;
+        if arguments.check_id != request.check_id {
+            return Err("approved check ID differs from accepted action".into());
+        }
         Ok(original)
     }
 

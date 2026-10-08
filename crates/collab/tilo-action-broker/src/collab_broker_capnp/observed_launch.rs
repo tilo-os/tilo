@@ -280,3 +280,18 @@ pub(super) fn launch_author(
         ) == CapDecision::Allow)
         .then(|| actor.id().to_owned())
 }
+
+/// The observed-startup interface cannot stage scoped content. Refuse rather
+/// than report successful startup after discarding the requested file.
+pub(super) fn plain_content(content: capnp::text::Reader<'_>) -> Result<(), capnp::Error> {
+    let content = content
+        .to_str()
+        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+    if content.is_empty() {
+        Ok(())
+    } else {
+        Err(capnp::Error::failed(
+            "content-bearing startup is unavailable; use the scoped application open action".into(),
+        ))
+    }
+}

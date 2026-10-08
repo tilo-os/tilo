@@ -153,6 +153,11 @@ fn initial_history_action_publication_waits_for_actual_owner_application() {
 #[test]
 fn initial_history_accepted_delivery_cannot_run_before_original_owner_application() {
     let (mut app, calls) = initial_history_app();
+    app.refresh_document_routes();
+    assert_eq!(
+        app.published_history_readiness(),
+        super::document_routes::PublishedHistoryReadiness::PrimaryHistoryUnavailable
+    );
     app.invoke_published_action(
         78,
         tilo_actions::InvocationId::new(),
@@ -163,6 +168,10 @@ fn initial_history_accepted_delivery_cannot_run_before_original_owner_applicatio
         None,
     );
     assert_eq!(calls.get(), 0);
+    assert_eq!(
+        app.published_history_readiness(),
+        super::document_routes::PublishedHistoryReadiness::CustodyChanged
+    );
     assert!(!app.collaboration.manager.is_connected());
     assert!(
         app.action_publication_failure
@@ -341,6 +350,10 @@ fn initial_history_public_directory_requires_every_actual_live_record_owner() {
         .manager
         .retire_document_capture_for_test(&second);
     assert!(!fixture.app.published_action_history_ready());
+    assert_eq!(
+        fixture.app.published_history_readiness(),
+        super::document_routes::PublishedHistoryReadiness::OwnedHistoryUnavailable
+    );
     assert!(
         fixture
             .app

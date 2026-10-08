@@ -591,3 +591,67 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
         );
     }
 }
+
+#[test]
+fn published_authorization_history_retirement_fences_existing_worker_scope() {
+    use std::sync::{Arc, atomic::AtomicU64};
+    let request = remote_request(866, "async-bump");
+    let (mut app, store, checkout, _temp) =
+        owned_counter(CounterCard::with_async_post_bump_reset());
+    app.require_published_invocation_authorizer();
+    app.install_published_invocation_authorizer(original_remote_authorizer(
+        request.clone(),
+        original_remote_grant(Arc::new(AtomicU64::new(99))),
+    ))
+    .unwrap();
+    deliver_remote(&mut app, &request);
+    let scope = app
+        .actions
+        .directed_invocations
+        .get(&request.invocation)
+        .and_then(|pending| pending.authorization.as_ref())
+        .unwrap()
+        .clone();
+    let worker = scope.effect_scope().unwrap();
+    assert!(scope.check().is_ok());
+    assert_eq!(owned_count(&store, &checkout), 0);
+    // Replay the exact active original admission, without substituting a
+    // background fixture that has no original worker authorization.
+    deliver_remote(&mut app, &request);
+    assert_eq!(app.actions.directed_invocations.len(), 1);
+    assert!(scope.check().is_ok());
+
+    // A real socket-backed reconnect has original history waiting for owner
+    // application. The old accepted worker is still alive; no authority is
+    // inferred from the new connection or its history bytes.
+    let mut original = automerge::AutoCommit::new();
+    original
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    original.commit();
+    app.collaboration.manager = CollaborationManager::native_initial_fixture_for_test(
+        "test.counter",
+        uuid::Uuid::from_u128(1),
+        original.save(),
+    )
+    .0;
+    assert!(!app.published_action_history_ready());
+    assert!(
+        scope.check().is_ok(),
+        "the original worker was live before retirement"
+    );
+    deliver_remote(&mut app, &request);
+    assert!(!app.collaboration.manager.is_connected());
+    assert!(scope.check().is_err());
+    let result: Result<(), String> = worker.with_effect(|| panic!("retired worker effect started"));
+    assert!(
+        result.is_err(),
+        "retirement must fence the actual derived worker scope"
+    );
+    app.refresh_focus_order();
+    assert_eq!(
+        owned_count(&store, &checkout),
+        0,
+        "the queued original job cannot mutate later"
+    );
+}

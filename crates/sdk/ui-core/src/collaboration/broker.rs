@@ -470,6 +470,55 @@ impl CollabTransport for BrokerTransport {
             .with_disconnect_cause(move || state.publication_result().err()))
     }
 
+    fn retire_invocation_unknown(
+        &mut self,
+        id: u64,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<(), TransportError> {
+        self.enqueue(SdkCommand::Primary(CollabRequest::UpdateInvocation {
+            id,
+            update: tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "action_outcome_unknown".into(),
+                    message: crate::i18n::widget_format("action-history-outcome-unknown", &[]),
+                    details: None,
+                    retryable: false,
+                },
+            },
+        }))?;
+        let receipt = self
+            .publication_barrier()
+            .map_err(|_| TransportError::Closed)?;
+        let sender = self.outbound_tx.clone();
+        let state = self.state.clone();
+        let deadline = crate::time::now() + SHOVEL_INIT_TIMEOUT;
+        thread::Builder::new()
+            .name("ui-collab-retirement".into())
+            .spawn(move || {
+                let result = receipt.wait(Some(deadline));
+                let acknowledgement = match result {
+                    Ok(()) => "acknowledged",
+                    Err(DocumentPublicationError::DeadlineElapsed) => "deadline_elapsed",
+                    Err(_) => "failed",
+                };
+                tracing::warn!(
+                    wire_id = id,
+                    invocation = ?invocation,
+                    acknowledgement,
+                    "original history refusal retired; action outcome unknown"
+                );
+                state.fail_closed("original history refusal retirement; outcome unknown");
+                drop(sender);
+            })
+            .map_err(|_| {
+                self.state
+                    .fail_closed("history refusal retirement observer unavailable");
+                TransportError::Closed
+            })?;
+        Ok(())
+    }
+
     fn document_publishable(&self, channel: Option<&str>) -> bool {
         channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
     }
@@ -1431,6 +1480,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
 struct BridgeState {
     document_reads: committed_document::Reads,
     healthy: Arc<AtomicBool>,
+    closed: tokio::sync::watch::Sender<bool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
     /// The broker refused or failed an action-surface publication; the owner
     /// takes this and republishes.
@@ -1575,6 +1625,7 @@ impl BridgeState {
         Self {
             document_reads: committed_document::Reads::default(),
             healthy: Arc::new(AtomicBool::new(true)),
+            closed: tokio::sync::watch::channel(false).0,
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
             action_surface_failed: Arc::new(AtomicBool::new(false)),
             command_bytes: ByteBudget::with_room_wake(outbound_room.clone()),
@@ -1661,6 +1712,7 @@ impl BridgeState {
         // Latch before withdrawing health or dropping any queued receipt sender.
         self.record_publication_failure(DocumentPublicationError::Failed(direction.into()));
         if self.healthy.swap(false, Ordering::AcqRel) {
+            self.closed.send_replace(true);
             if let Some((invocation_id, error)) = rejected {
                 let (rpc_kind, rpc_error, rpc_error_truncated) = bounded_rpc_diagnostic(error);
                 tracing::error!(
@@ -1669,12 +1721,12 @@ impl BridgeState {
                     rpc_kind,
                     rpc_error,
                     rpc_error_truncated,
-                    "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+                    "collab: bridge failed closed; disabling collaboration"
                 );
             } else {
                 tracing::error!(
                     direction,
-                    "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+                    "collab: bridge failed closed; disabling collaboration"
                 );
             }
             self.notify_events();
@@ -3442,7 +3494,15 @@ fn run_shovel(
         // `PrimaryReady` barrier are the first commands the shovel serves.
         report_init(&state, &init_tx, InitStatus::Ready);
 
-        drive_shovel(client, identity, outbound_rx, media_rx, inbound_tx).await;
+        // A failed bridge must release in-flight RPCs, not only stop reading
+        // later queued commands. Subscribe before checking the shared latch.
+        let mut closed = state.closed.subscribe();
+        if state.is_healthy() {
+            tokio::select! {
+                () = drive_shovel(client, identity, outbound_rx, media_rx, inbound_tx) => {},
+                _ = closed.changed() => {},
+            }
+        }
     });
     // However the shovel ended, the owner must look again: an unanswered
     // primary-route barrier now reads as a stopped worker.
@@ -3851,6 +3911,7 @@ struct SdkJoinContext<'a> {
 }
 
 struct SdkRoute {
+    _published_actions: Option<super::published_actions::Registration>,
     _checks: Option<super::approved_checks::Registration>,
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
@@ -3925,6 +3986,7 @@ async fn ensure_sdk_route(
             channel_id,
             SdkRoute {
                 _checks: None,
+                _published_actions: None,
                 spec: spec.clone(),
                 channel,
                 presence: None,
@@ -4001,6 +4063,12 @@ async fn ensure_sdk_route(
             error
         })
         .ok();
+    let published_actions = super::published_actions::register(channel_id.clone(), channel.clone())
+        .map_err(|error| {
+            tracing::warn!(%error, "collab: published action lane unavailable");
+            error
+        })
+        .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
     if spec.record.is_none()
         && participant_kind == "person"
@@ -4014,6 +4082,7 @@ async fn ensure_sdk_route(
         channel_id,
         SdkRoute {
             _checks: checks,
+            _published_actions: published_actions,
             spec: spec.clone(),
             channel,
             presence,
@@ -6643,6 +6712,9 @@ mod tests {
         document_gates: std::collections::VecDeque<DocumentSendGate>,
         fail_terminal: bool,
         terminal_updates: usize,
+        terminal_acknowledgments: usize,
+        terminal_update_values: Vec<(u64, tilo_actions::InvocationUpdate)>,
+        terminal_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
         joined: Vec<(String, Vec<u8>)>,
         joined_record_kinds: Vec<String>,
         signed_ops: Vec<Vec<u8>>,
@@ -7200,17 +7272,41 @@ mod tests {
 
         fn update_invocation(
             self: Rc<Self>,
-            _params: channel_handle::UpdateInvocationParams,
+            params: channel_handle::UpdateInvocationParams,
             _results: channel_handle::UpdateInvocationResults,
         ) -> Promise<(), capnp::Error> {
-            let mut captures = self.captures.lock().unwrap();
-            captures.terminal_updates += 1;
-            if captures.fail_terminal {
-                return Promise::err(capnp::Error::failed(
-                    "effect receipt barrier failed; outcome unknown".into(),
-                ));
-            }
-            Promise::ok(())
+            let request = match params.get() {
+                Ok(request) => request,
+                Err(error) => return Promise::err(error),
+            };
+            let update = match request.get_update_json().and_then(|json| {
+                serde_json::from_str::<tilo_actions::InvocationUpdate>(json.to_str()?)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))
+            }) {
+                Ok(update) => update,
+                Err(error) => return Promise::err(error),
+            };
+            let (fail, gate) = {
+                let mut captures = self.captures.lock().unwrap();
+                captures.terminal_updates += 1;
+                captures
+                    .terminal_update_values
+                    .push((request.get_id(), update));
+                (captures.fail_terminal, captures.terminal_gates.pop_front())
+            };
+            Promise::from_future(async move {
+                if let Some(gate) = gate {
+                    gate.await
+                        .map_err(|_| capnp::Error::failed("terminal gate closed".into()))?;
+                }
+                if fail {
+                    return Err(capnp::Error::failed(
+                        "effect receipt barrier failed; outcome unknown".into(),
+                    ));
+                }
+                self.captures.lock().unwrap().terminal_acknowledgments += 1;
+                Ok(())
+            })
         }
 
         fn send(
@@ -8052,6 +8148,103 @@ mod tests {
             .unwrap();
 
         (client_fd, captures, handle)
+    }
+
+    fn retirement_fixture() -> (
+        CollaborationManager,
+        Arc<std::sync::Mutex<Captures>>,
+        thread::JoinHandle<()>,
+    ) {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
+        (manager, captures, thread)
+    }
+
+    #[test]
+    fn history_refusal_retirement_waits_for_actual_unknown_terminal_ack() {
+        let (mut manager, captures, thread) = retirement_fixture();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        captures.lock().unwrap().terminal_gates.push_back(gate);
+        let invocation = tilo_actions::InvocationId::new();
+        manager.retire_invocation_unknown(42, invocation);
+        assert!(
+            !manager.is_connected(),
+            "the manager admits no further work"
+        );
+        assert!(!manager.send(CollabRequest::FetchScrollback {
+            artifact: collab_types::ArtifactId::new(),
+            before_seq: 0,
+            max: 1,
+        }));
+        tilo_test_env::wait_until("original terminal RPC delivered", || {
+            captures.lock().unwrap().terminal_updates == 1
+        });
+        {
+            let capture = captures.lock().unwrap();
+            assert_eq!(capture.terminal_acknowledgments, 0);
+            assert!(matches!(&capture.terminal_update_values[..],
+                [(42, tilo_actions::InvocationUpdate::Failed { invocation: actual, error })]
+                if *actual == invocation && error.code == "action_outcome_unknown" && !error.retryable
+            ));
+        }
+        assert!(
+            !thread.is_finished(),
+            "queue admission must not close the original client"
+        );
+        release.send(()).unwrap();
+        tilo_test_env::wait_until("acknowledged original client released", || {
+            thread.is_finished()
+        });
+        thread.join().unwrap();
+        assert_eq!(captures.lock().unwrap().terminal_acknowledgments, 1);
+    }
+
+    #[test]
+    fn history_refusal_failed_ack_releases_original_worker_without_success() {
+        let (mut manager, captures, thread) = retirement_fixture();
+        captures.lock().unwrap().fail_terminal = true;
+        let invocation = tilo_actions::InvocationId::new();
+        manager.retire_invocation_unknown(43, invocation);
+        tilo_test_env::wait_until("refused terminal releases original worker", || {
+            thread.is_finished()
+        });
+        thread.join().unwrap();
+        let capture = captures.lock().unwrap();
+        assert_eq!(capture.terminal_updates, 1);
+        assert_eq!(capture.terminal_acknowledgments, 0);
+        assert!(matches!(&capture.terminal_update_values[..],
+            [(43, tilo_actions::InvocationUpdate::Failed { invocation: actual, error })]
+            if *actual == invocation && error.code == "action_outcome_unknown" && !error.retryable
+        ));
+    }
+
+    #[test]
+    fn history_refusal_deadline_releases_worker_blocked_in_terminal_rpc() {
+        let (mut manager, captures, thread) = retirement_fixture();
+        let (_release, gate) = tokio::sync::oneshot::channel();
+        captures.lock().unwrap().terminal_gates.push_back(gate);
+        manager.retire_invocation_unknown(44, tilo_actions::InvocationId::new());
+        tilo_test_env::wait_until("original terminal RPC is blocked", || {
+            captures.lock().unwrap().terminal_updates == 1
+        });
+        assert!(!thread.is_finished());
+        tilo_test_env::wait_until("retirement deadline releases blocked RPC", || {
+            thread.is_finished()
+        });
+        thread.join().unwrap();
+        let capture = captures.lock().unwrap();
+        assert_eq!(capture.terminal_updates, 1);
+        assert_eq!(
+            capture.terminal_acknowledgments, 0,
+            "deadline is not acknowledgement"
+        );
     }
 
     #[test]

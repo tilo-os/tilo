@@ -51,6 +51,7 @@ pub mod handoff;
 mod history;
 pub mod owner_view;
 pub mod participants;
+pub mod published_actions;
 pub mod record_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
@@ -1788,6 +1789,31 @@ impl CollaborationManager {
             Backend::Transport(transport) => transport.take_action_surface_failed(),
             Backend::Disabled(_) => false,
         }
+    }
+
+    /// Refuse handler admission immediately while retaining only the original
+    /// transport's bounded acknowledgement of a nonretryable unknown outcome.
+    pub(crate) fn retire_invocation_unknown(
+        &mut self,
+        id: u64,
+        invocation: tilo_actions::InvocationId,
+    ) {
+        let retirement = match &mut self.backend {
+            Backend::Transport(transport) => transport.retire_invocation_unknown(id, invocation),
+            Backend::Disabled(_) => Err(TransportError::Closed),
+        };
+        if retirement.is_err() {
+            self.stop_after_publication_failure();
+            return;
+        }
+        // The transport retains only its existing sender until acknowledgement.
+        // Withdrawing the manager immediately prevents further effect admission.
+        self.backend = Backend::Disabled(crate::i18n::widget_format(
+            "action-history-outcome-unknown",
+            &[],
+        ));
+        self.awaiting_primary = false;
+        self.primary_route.accepted = None;
     }
 
     pub(crate) fn stop_after_publication_failure(&mut self) {

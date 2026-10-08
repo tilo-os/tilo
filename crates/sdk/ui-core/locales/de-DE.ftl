@@ -492,3 +492,5 @@ display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
 device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.
 device-display-request-pending = Eine Anfrage zur Bildschirmposition steht bereits aus.
 device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
+
+action-history-outcome-unknown = Der ursprüngliche Verlauf ist nicht verfügbar; das Ergebnis der Aktion ist unbekannt. Verbinde dich erneut, um das ursprüngliche Ergebnis abzugleichen.

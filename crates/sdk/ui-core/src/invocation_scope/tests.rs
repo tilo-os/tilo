@@ -8,7 +8,7 @@ struct OriginalCaller {
     expiry: u64,
 }
 
-fn fixture(id: u64) -> crate::bound_dispatch::legacy_document_tests::Fixture {
+pub(crate) fn fixture(id: u64) -> crate::bound_dispatch::legacy_document_tests::Fixture {
     let fixture = crate::bound_dispatch::legacy_document_tests::Fixture::in_room(
         id,
         "77777777-7777-4777-8777-777777777777",
@@ -20,7 +20,7 @@ fn fixture(id: u64) -> crate::bound_dispatch::legacy_document_tests::Fixture {
     fixture
 }
 
-fn scope(
+pub(crate) fn scope(
     fixture: &crate::bound_dispatch::legacy_document_tests::Fixture,
     id: u64,
     actor: &str,

@@ -1099,7 +1099,9 @@ mod durable_local_matrix {
 
     include!("display_control_tests.rs");
     include!("admitted_local_host_tests.rs");
+    include!("continuation_frame_signed_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
+    include!("native_content_launch_tests.rs");
     include!("keyboard_map_read_authority_tests.rs");
 }

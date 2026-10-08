@@ -446,6 +446,20 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         )
     }
 
+    /// Access other published resources through the admitted original caller.
+    /// History and projection drains have no original invocation custody.
+    ///
+    /// # Errors
+    /// Refuses absent or retired original custody.
+    pub fn published_actions(
+        &self,
+    ) -> Result<ui_core::collaboration::published_actions::PublishedActions, String> {
+        self.custody
+            .as_ref()
+            .ok_or("published actions require original invocation custody")?
+            .published_actions()
+    }
+
     /// Wakes the app from another thread, to draw what a worker changed.
     pub fn waker(&self) -> WakeHandle {
         self.env.wake.clone()

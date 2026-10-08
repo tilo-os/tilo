@@ -27,6 +27,7 @@ pub use execution_activity::{ExecutionActivity, ExecutionStatus};
 mod app_settings_tests;
 mod canonical_route;
 mod committed_document;
+mod continuation_frame;
 mod durable_local_invocation;
 #[path = "enrolled_tasks.rs"]
 mod enrolled_tasks;
@@ -7452,9 +7453,9 @@ impl channel_handle::Server for CapnpChannelHandle {
     fn remote_action(
         self: Rc<Self>,
         params: channel_handle::RemoteActionParams,
-        mut results: channel_handle::RemoteActionResults,
+        results: channel_handle::RemoteActionResults,
     ) -> Promise<(), capnp::Error> {
-        use tilo_actions::remote::{RemoteActionFrame, serve};
+        use tilo_actions::remote::RemoteActionFrame;
         let current = match self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -7469,95 +7470,18 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(frame) => frame,
             Err(error) => return Promise::err(error),
         };
-        let request = match RemoteActionFrame::decode(frame) {
+        let request = match RemoteActionFrame::decode_continuation(frame) {
             Ok(request) => request,
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
         };
-        let route = self.route();
-        let person = current.caller(&route.cluster_id);
-        // An edit an effect submits while running for someone is theirs.
-        let caller =
-            if let Some(continued) = self.state.continued_caller(self.peer_id, &request.message) {
-                match continued {
-                    Ok(caller) => caller,
-                    Err(refused) => return reply_frame(*refused, results),
-                }
-            } else if current.agent_id.is_some() {
-                person.clone()
-            } else {
-                match self
-                    .state
-                    .app_door(&person, &route.app_id, &request.message)
-                {
-                    Ok(caller) => caller,
-                    Err(refusal) => return reply_frame(*refusal, results),
-                }
-            };
-        if let tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation, query } =
-            &request.message
-            && query.view_resource.is_some()
-        {
-            return self.resource_view_query(*correlation, query.clone(), results);
+        if request.on_behalf_of.is_none() {
+            return continuation_frame::serve(self, current, request, None, results);
         }
-
-        let host = action_host::ConnectionActionHost {
-            state: Arc::clone(&self.state),
-            own_peer: self.peer_id,
-            origin: InvocationCaller::Local {
-                route,
-                admitted: Box::new(current),
-            },
-        };
-        // An application reaching for another app's action it holds no
-        // grant for: the person using it is asked first, or it is refused.
-        if let (
-            tilo_actions::remote::CallerPrincipal::App(app_id),
-            tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
-        ) = (caller.principal(), &request.message)
-        {
-            match self.state.app_action_consent(&person, app_id, invoke) {
-                app_consent::ConsentStep::Serve => {}
-                app_consent::ConsentStep::Refuse => {
-                    let refused = tilo_actions::remote::RemoteActionMessage::Receipt(
-                        tilo_actions::remote::InvocationReceipt {
-                            invocation: invoke.invocation,
-                            status: tilo_actions::remote::ReceiptStatus::Rejected {
-                                error: tilo_actions::remote::ActionHostError::NotPermitted,
-                            },
-                        },
-                    );
-                    return reply_frame(refused, results);
-                }
-                app_consent::ConsentStep::Ask(consent) => {
-                    return app_consent::serve_after_consent(
-                        Arc::clone(&self.state),
-                        consent,
-                        host,
-                        caller,
-                        request.message,
-                        results,
-                    );
-                }
-            }
-        }
-        let answer = serve(&host, &caller, request.message);
-        drop(host);
-        let Some(answer) = answer else {
-            return Promise::err(capnp::Error::failed(
-                "only remote-action requests are answered".into(),
-            ));
-        };
-        // Awaited on this local set, which is also where an application's
-        // directory answers; the connection's other calls keep flowing.
         Promise::from_future(async move {
-            let answer = answer.await.ok_or_else(|| {
-                capnp::Error::failed("the action host dropped the request".into())
-            })?;
-            let bytes = RemoteActionFrame::new(answer)
-                .encode()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            results.get().set_frame(&bytes);
-            Ok(())
+            let continuation = continuation_frame::prepare(&self, &request)
+                .await
+                .map_err(capnp::Error::failed)?;
+            continuation_frame::serve(self, current, request, Some(continuation), results).await
         })
     }
 
@@ -9694,6 +9618,12 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(actor) => actor,
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
+        if let Err(error) = request
+            .get_content_hash()
+            .and_then(observed_launch::plain_content)
+        {
+            return Promise::err(error);
+        }
         let app_id = match request.get_app_id() {
             Ok(value) => match value.to_str() {
                 Ok(value) => value.to_owned(),

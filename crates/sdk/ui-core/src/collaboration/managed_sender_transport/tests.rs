@@ -263,6 +263,7 @@ where
                 .await
                 .unwrap();
             let route = SdkRoute {
+                _published_actions: None,
                 _checks: None,
                 spec: RouteSpec {
                     app_id: "notes".into(),

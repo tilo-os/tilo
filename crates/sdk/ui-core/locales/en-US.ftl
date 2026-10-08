@@ -595,3 +595,5 @@ music-recommendations-enabled = Enabled
 music-recommendations-disabled = Disabled
 music-recommendations-enable = Enable input
 music-recommendations-disable = Disable input
+
+action-history-outcome-unknown = Original history is unavailable; action outcome unknown. Reconnect to reconcile the original outcome.

@@ -186,6 +186,22 @@ pub trait CollabTransport: Send {
         Err(DocumentPublicationError::Unsupported)
     }
 
+    /// Retain the original channel only long enough to acknowledge an unknown
+    /// outcome for an already delivered invocation, then retire it. No handler
+    /// may run and no later commands may be admitted through the manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` unless the transport implements bounded,
+    /// acknowledged retirement; queue admission alone is insufficient.
+    fn retire_invocation_unknown(
+        &mut self,
+        _id: u64,
+        _invocation: tilo_actions::InvocationId,
+    ) -> Result<(), TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
     /// Install the callback that schedules the owner's next frame. A
     /// transport that becomes ready outside [`Self::drain`] calls it so the
     /// events are not left waiting for an unrelated frame.

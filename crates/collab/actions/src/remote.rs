@@ -877,6 +877,10 @@ impl RemoteActionMessage {
 pub struct RemoteActionFrame {
     pub version: u16,
     pub message: RemoteActionMessage,
+    /// Existing delivered invocation whose original caller this request
+    /// continues. Only a continuation-aware certified host may accept it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<InvocationId>,
 }
 
 /// Why bytes are not a usable [`RemoteActionFrame`].
@@ -897,6 +901,45 @@ impl RemoteActionFrame {
         Self {
             version: REMOTE_ACTIONS_VERSION,
             message,
+            on_behalf_of: None,
+        }
+    }
+
+    /// Continue the original caller for bounded discovery or child lifecycle
+    /// observation. Ordinary version-one hosts reject this frame outright.
+    ///
+    /// # Errors
+    /// Refuses a nil parent or a message that has no continuation semantics.
+    pub fn continuing(
+        message: RemoteActionMessage,
+        parent: InvocationId,
+    ) -> Result<Self, RemoteFrameError> {
+        let frame = Self {
+            version: 2,
+            message,
+            on_behalf_of: Some(parent),
+        };
+        frame.validate_continuation()?;
+        Ok(frame)
+    }
+
+    fn validate_continuation(&self) -> Result<(), RemoteFrameError> {
+        match (self.version, self.on_behalf_of) {
+            (REMOTE_ACTIONS_VERSION, None) => Ok(()),
+            (2, Some(parent))
+                if !parent.0.is_nil()
+                    && matches!(
+                        self.message,
+                        RemoteActionMessage::CatalogueRequest { .. }
+                            | RemoteActionMessage::Observe { .. }
+                            | RemoteActionMessage::Cancel { .. }
+                    ) =>
+            {
+                Ok(())
+            }
+            _ => Err(RemoteFrameError::Malformed(
+                "frame version, continuation parent and request are inconsistent".into(),
+            )),
         }
     }
 
@@ -908,6 +951,7 @@ impl RemoteActionFrame {
     /// [`MAX_REMOTE_ACTION_FRAME_BYTES`], or `Malformed` if a value cannot
     /// be encoded.
     pub fn encode(&self) -> Result<Vec<u8>, RemoteFrameError> {
+        self.validate_continuation()?;
         let bytes = serde_json::to_vec(self)
             .map_err(|error| RemoteFrameError::Malformed(error.to_string()))?;
         if bytes.len() > MAX_REMOTE_ACTION_FRAME_BYTES {
@@ -925,6 +969,20 @@ impl RemoteActionFrame {
     /// Returns a [`RemoteFrameError`] for oversized, unknown-version or
     /// malformed input.
     pub fn decode(bytes: &[u8]) -> Result<Self, RemoteFrameError> {
+        Self::decode_for_host(bytes, false)
+    }
+
+    /// Decode on a host that explicitly revalidates the delivered original
+    /// parent before serving the request. This method conveys no authority.
+    ///
+    /// # Errors
+    /// Refuses malformed, oversized or unsupported frames. A parent-bearing
+    /// frame is never silently converted into a request as the app owner.
+    pub fn decode_continuation(bytes: &[u8]) -> Result<Self, RemoteFrameError> {
+        Self::decode_for_host(bytes, true)
+    }
+
+    fn decode_for_host(bytes: &[u8], continuation: bool) -> Result<Self, RemoteFrameError> {
         #[derive(Deserialize)]
         struct Version {
             version: u16,
@@ -934,11 +992,13 @@ impl RemoteActionFrame {
         }
         let Version { version } = serde_json::from_slice(bytes)
             .map_err(|error| RemoteFrameError::Malformed(error.to_string()))?;
-        if version != REMOTE_ACTIONS_VERSION {
+        if version != REMOTE_ACTIONS_VERSION && !(continuation && version == 2) {
             return Err(RemoteFrameError::UnsupportedVersion { version });
         }
-        serde_json::from_slice(bytes)
-            .map_err(|error| RemoteFrameError::Malformed(error.to_string()))
+        let frame: Self = serde_json::from_slice(bytes)
+            .map_err(|error| RemoteFrameError::Malformed(error.to_string()))?;
+        frame.validate_continuation()?;
+        Ok(frame)
     }
 }
 
@@ -1212,6 +1272,21 @@ impl<T> InvocationLedger<T> {
             .and_then(|entry| entry.handle.as_ref())
     }
 
+    /// The handle admitted for this caller as a child of this exact original
+    /// parent. The host must separately revalidate the parent's custody.
+    #[must_use]
+    pub fn get_continued(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+        parent: InvocationId,
+    ) -> Option<&T> {
+        self.entries
+            .get(id)
+            .filter(|entry| entry.caller == *caller && entry.request.on_behalf_of == Some(parent))
+            .and_then(|entry| entry.handle.as_ref())
+    }
+
     /// Mutable access to the handle for an invocation `caller` admitted.
     pub fn get_mut(&mut self, caller: &Caller, id: &InvocationId) -> Option<&mut T> {
         self.entries
@@ -1247,6 +1322,102 @@ mod tests {
         let reconnected = retained.in_new_execution();
         assert!(reconnected.execution_is_live());
         assert_ne!(reconnected.execution_id(), first.execution_id());
+    }
+
+    #[test]
+    fn continuation_frame_preserves_legacy_bytes_and_requires_explicit_host_support() {
+        let invocation = InvocationId(uuid::Uuid::from_u128(1));
+        let message = RemoteActionMessage::Observe { invocation };
+        let old = RemoteActionFrame::new(message.clone()).encode().unwrap();
+        assert_eq!(
+            std::str::from_utf8(&old).unwrap(),
+            r#"{"version":1,"message":{"Observe":{"invocation":"00000000-0000-0000-0000-000000000001"}}}"#
+        );
+        assert_eq!(RemoteActionFrame::decode(&old).unwrap().on_behalf_of, None);
+        let parent = InvocationId(uuid::Uuid::from_u128(2));
+        let continued = RemoteActionFrame::continuing(message, parent).unwrap();
+        let wire = continued.encode().unwrap();
+        assert_eq!(
+            RemoteActionFrame::decode(&wire),
+            Err(RemoteFrameError::UnsupportedVersion { version: 2 })
+        );
+        assert_eq!(
+            RemoteActionFrame::decode_continuation(&wire).unwrap(),
+            continued
+        );
+        let mut tampered: serde_json::Value = serde_json::from_slice(&wire).unwrap();
+        tampered["version"] = serde_json::json!(3);
+        assert_eq!(
+            RemoteActionFrame::decode_continuation(&serde_json::to_vec(&tampered).unwrap()),
+            Err(RemoteFrameError::UnsupportedVersion { version: 3 }),
+            "unknown future versions cannot discard continuation authority"
+        );
+        tampered["version"] = serde_json::json!(1);
+        assert!(
+            RemoteActionFrame::decode(&serde_json::to_vec(&tampered).unwrap()).is_err(),
+            "parent cannot be silently ignored on a version-one frame"
+        );
+        tampered["version"] = serde_json::json!(2);
+        tampered.as_object_mut().unwrap().remove("on_behalf_of");
+        assert!(
+            RemoteActionFrame::decode_continuation(&serde_json::to_vec(&tampered).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn continuation_frame_refuses_nil_parent_responses_and_double_invocation_continuations() {
+        let id = InvocationId::new();
+        assert!(
+            RemoteActionFrame::continuing(
+                RemoteActionMessage::Observe { invocation: id },
+                InvocationId(uuid::Uuid::nil())
+            )
+            .is_err()
+        );
+        assert!(
+            RemoteActionFrame::continuing(
+                RemoteActionMessage::Update {
+                    invocation: id,
+                    state: None
+                },
+                id
+            )
+            .is_err()
+        );
+        assert!(
+            RemoteActionFrame::continuing(RemoteActionMessage::Invoke(archive(id)), id).is_err()
+        );
+    }
+
+    #[test]
+    fn continuation_ledger_requires_the_exact_caller_child_and_original_parent() {
+        let caller = alice();
+        let id = InvocationId::new();
+        let parent = InvocationId::new();
+        let mut request = archive(id);
+        request.on_behalf_of = Some(parent);
+        let mut ledger = InvocationLedger::default();
+        ledger.admit(&caller, &request, || Ok(41)).unwrap();
+        assert_eq!(ledger.get_continued(&caller, &id, parent), Some(&41));
+        assert!(ledger.get_continued(&mallory(), &id, parent).is_none());
+        assert!(
+            ledger
+                .get_continued(&caller, &id, InvocationId::new())
+                .is_none()
+        );
+        assert!(
+            ledger
+                .get_continued(&caller, &InvocationId::new(), parent)
+                .is_none()
+        );
+        let unrelated = archive(InvocationId::new());
+        ledger.admit(&caller, &unrelated, || Ok(42)).unwrap();
+        assert!(
+            ledger
+                .get_continued(&caller, &unrelated.invocation, parent)
+                .is_none()
+        );
     }
 
     fn alice() -> Caller {

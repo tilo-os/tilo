@@ -84,6 +84,10 @@ pub(super) struct ConnectionActionHost {
     /// The connection's revalidated admission: an application's own effect,
     /// directed back to it, runs under this original caller's custody.
     pub(super) origin: super::published_invocation::InvocationCaller,
+    /// Only a live connection the native launcher actually authenticated can
+    /// stage content; payload identities and application certificates cannot.
+    pub(super) launch_connection: Option<Arc<super::native_media::LocalAppConnection>>,
+    pub(super) continuation: Option<Arc<super::published_invocation::OriginalInvocation>>,
 }
 
 impl tilo_actions::remote::ActionHost for ConnectionActionHost {
@@ -100,12 +104,30 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        // A channel connection carries no launcher-authenticated scope, so a
-        // content launch by hash is refused rather than widened.
+        // Consent may have completed after the original caller retired.
+        // Recheck retained custody at dispatch, not just at frame admission.
+        if let Some(parent) = request.on_behalf_of {
+            let valid = self.continuation.as_ref().is_some_and(|original| {
+                original.request().invocation == parent
+                    && original.check_lifecycle().is_ok()
+                    && original.check_execution_frontier(&self.state).is_ok()
+            });
+            if !valid {
+                return Pending::ready(Err(ActionHostError::NotPermitted));
+            }
+        }
+        let launch = self
+            .launch_connection
+            .as_ref()
+            .filter(|connection| connection.current())
+            .map(|connection| LaunchScope {
+                app_id: connection.app_id.clone(),
+                workspace_id: connection.workspace_id.clone(),
+            });
         self.state.action_invoke_with_origin(
             caller,
             Some(self.own_peer),
-            None,
+            launch.as_ref(),
             Some(&self.origin),
             &request,
         )

@@ -6,6 +6,16 @@
 use super::*;
 use crate::collaboration::RouteSpec;
 
+/// Categorical admission diagnostics; never contains document or route identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PublishedHistoryReadiness {
+    Ready,
+    CustodyChanged,
+    LiveOwnerUnrouted,
+    PrimaryHistoryUnavailable,
+    OwnedHistoryUnavailable,
+}
+
 /// The user-visible status a transport outcome implies for a route: `Some`
 /// replaces the current one (clearing it on success), `None` leaves it (a
 /// transient refusal is retried silently).
@@ -246,17 +256,21 @@ impl App {
     }
 
     pub(super) fn published_action_history_ready_after_refresh(&self) -> bool {
+        self.published_history_readiness() == PublishedHistoryReadiness::Ready
+    }
+
+    pub(super) fn published_history_readiness(&self) -> PublishedHistoryReadiness {
         // A later event may replace owners or the primary route in this batch.
         // Withhold publication until the normal pump reconciles that new custody.
         if self.document_routes.witness.as_ref() != self.bound_broker_route() {
-            return false;
+            return PublishedHistoryReadiness::CustodyChanged;
         }
         let route = self
             .document_routes
             .witness
             .as_ref()
             .map(|witness| &witness.route);
-        live_document_owners(self.root_widget.as_ref())
+        if !live_document_owners(self.root_widget.as_ref())
             .iter()
             .all(|owner| {
                 self.document_routes.owners.iter().any(|entry| {
@@ -266,12 +280,20 @@ impl App {
                         .any(|installed| installed.same_owner(owner))
                 })
             })
-            && self.collaboration.manager.document_route_ready(route)
-            && self.document_routes.owners.iter().all(|entry| {
-                self.collaboration
-                    .manager
-                    .document_route_ready(Some(&entry.route))
-            })
+        {
+            return PublishedHistoryReadiness::LiveOwnerUnrouted;
+        }
+        if !self.collaboration.manager.document_route_ready(route) {
+            return PublishedHistoryReadiness::PrimaryHistoryUnavailable;
+        }
+        if !self.document_routes.owners.iter().all(|entry| {
+            self.collaboration
+                .manager
+                .document_route_ready(Some(&entry.route))
+        }) {
+            return PublishedHistoryReadiness::OwnedHistoryUnavailable;
+        }
+        PublishedHistoryReadiness::Ready
     }
 
     fn send_owned_document(

@@ -1737,12 +1737,28 @@ impl App {
             return;
         }
         if !self.published_action_history_ready() {
+            tracing::error!(
+                wire_id = id,
+                invocation = ?invocation,
+                readiness = ?self.published_history_readiness(),
+                "published action refused before handler admission; original history unavailable"
+            );
             // An already accepted delivery lost its original owner-history
             // custody. Run no handler; disconnect retains admitted uncertainty.
             self.action_publication_failure = Some(
                 "Original document history is unavailable; action outcome unknown. Reconnect and reconcile before retrying.".into(),
             );
-            self.collaboration.manager.stop_after_publication_failure();
+            // The client is retiring. Cancel every derived scope it owns now,
+            // rather than leave a background worker authorized until the
+            // original terminal RPC is acknowledged by the host.
+            for pending in self.actions.directed_invocations.values() {
+                if let Some(scope) = &pending.authorization {
+                    scope.cancel();
+                }
+            }
+            self.collaboration
+                .manager
+                .retire_invocation_unknown(id, invocation);
             return;
         }
         let address = tilo_actions::ActionAddress::new(resource, action);

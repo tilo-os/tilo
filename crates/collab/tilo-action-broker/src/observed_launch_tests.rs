@@ -454,3 +454,49 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn installed_launch_content_never_becomes_an_unscoped_plain_launch() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let (started, started_rx) = std::sync::mpsc::channel();
+            let (adopt, receiver) = tokio::sync::oneshot::channel();
+            let launcher = Arc::new(ObservedLauncher {
+                started,
+                receiver: Mutex::new(Some(receiver)),
+                requests: Mutex::new(Vec::new()),
+                original: Mutex::new(None),
+            });
+            let rig = Rig::with_services(
+                &env,
+                HostServices {
+                    launcher: Some(launcher.clone()),
+                    ..env.membership.services()
+                },
+            )
+            .await;
+            let caller = rig.caller(&env, 905, None).await;
+            // If the production door silently discards content, plain startup
+            // can complete; the regression must observe that false success.
+            adopt.send(Ok(())).unwrap();
+            let result = caller
+                .handle
+                .launch_installed_application(
+                    "so.tilo.word-processor",
+                    Some(&"ab".repeat(32)),
+                    Some(&format!("tapp:{}", "12".repeat(32))),
+                )
+                .await;
+            let error = result
+                .expect_err("content must not be silently discarded")
+                .to_string();
+            assert!(
+                error.contains("content-bearing startup is unavailable"),
+                "{error}"
+            );
+            assert!(launcher.requests.lock().unwrap().is_empty());
+            assert!(started_rx.try_recv().is_err());
+        })
+        .await;
+}

@@ -629,6 +629,30 @@ impl ResourceInvocationScope {
         self.lease.request.invocation
     }
 
+    /// Access existing published actions under this actual original custody.
+    ///
+    /// # Errors
+    /// Refuses retired custody. Native transport separately checks the route.
+    pub fn published_actions(
+        &self,
+    ) -> Result<crate::collaboration::published_actions::PublishedActions, String> {
+        self.check()?;
+        #[cfg(feature = "broker-transport")]
+        {
+            Ok(
+                crate::collaboration::published_actions::PublishedActions::new(
+                    self.route().channel_id(),
+                    self.invocation(),
+                    self.effect_scope()?,
+                ),
+            )
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            Err("published actions require the admitted native broker transport".into())
+        }
+    }
+
     /// Queue only a check ID under this exact admitted effect's record route.
     /// The host resolves commands and execution bounds and rechecks custody.
     ///
