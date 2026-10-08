@@ -557,6 +557,10 @@ impl Session {
         &mut self,
         surfaces: Vec<ui::collaboration::BrokerActionSurface>,
     ) {
+        tracing::debug!(target: "tilo_agent_catalogue", phase = 3u8,
+            surfaces = surfaces.len(),
+            actions = surfaces.iter().map(|surface| surface.actions.len()).sum::<usize>(),
+            "Agent observed catalogue boundary");
         self.broker_surfaces = surfaces;
         self.broker_revision = self.broker_revision.wrapping_add(1);
     }

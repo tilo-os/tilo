@@ -4615,6 +4615,10 @@ async fn forward_action_catalogues(
         };
         match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
             Ok(catalogue) => {
+                tracing::debug!(target: "tilo_agent_catalogue", phase = 2u8,
+                    surfaces = catalogue.surfaces.len(),
+                    actions = catalogue.surfaces.iter().map(|surface| surface.actions.len()).sum::<usize>(),
+                    "SDK watched catalogue boundary");
                 if !tx.send_durable_turn(
                     CollabEvent::ActionCatalogue {
                         surfaces: catalogue.surfaces,

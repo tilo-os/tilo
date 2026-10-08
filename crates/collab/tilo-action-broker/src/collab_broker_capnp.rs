@@ -562,7 +562,7 @@ struct AdmittedJoinIdentity {
 }
 
 /// Closed, count-only discovery diagnostics. Never serialized into the catalogue.
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 struct CatalogueBoundaryCounts {
     published_surfaces: usize,
     matching_live_surfaces: usize,
@@ -4974,18 +4974,29 @@ impl CapnpBrokerState {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let mut audiences: HashMap<(String, BrokerActor), ActionCatalogueSnapshot> = HashMap::new();
+        let mut audiences = HashMap::new();
         let mut disconnected = Vec::new();
         for (peer, cluster, actor, tx) in subscribers {
             let snapshot = audiences
                 .entry((cluster.clone(), actor.clone()))
                 .or_insert_with(|| {
-                    self.action_catalogue_json_for(&cluster, &actor, None)
+                    self.action_catalogue_with_counts_for(&cluster, &actor, None)
                         .ok()
-                        .map(Arc::<str>::from)
+                        .map(|(snapshot, counts)| (Arc::<str>::from(snapshot), counts))
                 })
                 .clone();
-            if let Some(snapshot) = snapshot {
+            if let Some((snapshot, counts)) = snapshot {
+                // Observe only changed watched snapshots. The ordinary watch
+                // delivery remains unchanged, and no identity or JSON is logged.
+                if tx.borrow().as_ref() != Some(&snapshot) {
+                    tracing::debug!(target: "tilo_agent_catalogue", phase = 1u8,
+                        published_surfaces = counts.published_surfaces,
+                        matching_live_surfaces = counts.matching_live_surfaces,
+                        scoped_actions = counts.scoped_actions,
+                        permission_accepted_actions = counts.permission_accepted_actions,
+                        final_surfaces = counts.final_surfaces,
+                        "broker watched catalogue boundary");
+                }
                 if tx.send(Some(snapshot)).is_err() {
                     disconnected.push(peer);
                 }
