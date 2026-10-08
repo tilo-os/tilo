@@ -21,6 +21,7 @@ struct Connection {
     certificate: tilo_user_identity::DeviceCert,
     route: CrdtRoute,
     peer: Option<u64>,
+    joined: bool,
     subscribed: bool,
     sender: Option<mpsc::Sender<String>>,
 }
@@ -94,6 +95,9 @@ pub(super) fn disconnect(state: &CapnpBrokerState, peer: u64) {
 
 /// Owner cleanup runs on the existing broker turn, including its orderly shutdown.
 pub(super) async fn retire(state: &CapnpBrokerState, all: bool) -> Result<(), String> {
+    if !retirement_needed(state, all)? {
+        return Ok(());
+    }
     let _order = state.owner_commit_order.lock().await;
     let scopes = {
         let registry = state
@@ -151,6 +155,29 @@ pub(super) async fn retire(state: &CapnpBrokerState, all: bool) -> Result<(), St
         .await?;
     }
     Ok(())
+}
+
+// Ordinary owner operations share the order lock, but an empty enrolled
+// registry has no owner cleanup to serialize. On shutdown first drain every
+// in-flight lifecycle admission; accepting=false then prevents new entries.
+fn retirement_needed(state: &CapnpBrokerState, all: bool) -> Result<bool, String> {
+    if all {
+        let guard = state
+            .lifecycle
+            .write()
+            .map_err(|_| "broker lifecycle unavailable")?;
+        if state.is_accepting() {
+            return Err("enrolled shutdown requires retired admission".into());
+        }
+        drop(guard);
+    }
+    let registry = state
+        .enrolled_tasks
+        .lock()
+        .map_err(|_| "enrolled registry unavailable")?;
+    let needed = !registry.connections.is_empty() || !registry.retired.is_empty();
+    drop(registry);
+    Ok(needed)
 }
 
 impl CapnpBrokerState {
@@ -242,6 +269,7 @@ impl CapnpBrokerState {
                 certificate: certificate.clone(),
                 route: route.clone(),
                 peer: None,
+                joined: false,
                 subscribed: false,
                 sender: None,
             },
@@ -389,6 +417,46 @@ pub(super) fn revalidate(
     Ok(identity)
 }
 
+/// Only the consumed, kernel-attested private descriptor supplies this identity.
+/// The SDK's empty Agent presentation cannot supply a certificate or authority.
+pub(super) fn descriptor_identity(
+    state: &CapnpBrokerState,
+    scope: uuid::Uuid,
+    peer: u64,
+    route: &CrdtRoute,
+) -> Result<AdmittedJoinIdentity, String> {
+    let connection = current(state, scope)?;
+    if connection.peer != Some(peer) || route != &connection.route || connection.joined {
+        return Err("enrolled descriptor route, peer or admission changed".into());
+    }
+    let certificate = connection.certificate;
+    let verified = super::VerifiedJoinIdentity::of(
+        &certificate,
+        super::cert_capped_in(
+            state.certificate_authority.get().map(Arc::as_ref),
+            &route.cluster_id,
+            &certificate,
+        ),
+    );
+    Ok(AdmittedJoinIdentity {
+        managed_scope: Some(scope),
+        host_scope: certificate
+            .capabilities
+            .can_act_as_host
+            .then(|| LocalHostWorkerScope {
+                route: route.clone(),
+                certificate: certificate.clone(),
+            }),
+        worker_registration: None,
+        principal_id: super::principal_id_for_root(certificate.user_public_key),
+        certificate: Some(certificate),
+        verified,
+        display_handle: None,
+        role: CapRole::Denied,
+        agent_id: None,
+    })
+}
+
 pub(super) fn join(
     state: &CapnpBrokerState,
     scope: uuid::Uuid,
@@ -407,6 +475,11 @@ pub(super) fn join(
     {
         return Err("enrolled join differs from the actual process".into());
     }
+    // Revalidate the actual Agent role before committing its one channel admission.
+    admitted.managed_scope = Some(scope);
+    admitted.agent_id = Some(facts.binding.agent.clone());
+    admitted.display_handle = Some(facts.binding.agent);
+    *admitted = revalidate(state, route, admitted)?;
     let mut registry = state
         .enrolled_tasks
         .lock()
@@ -415,15 +488,11 @@ pub(super) fn join(
         .connections
         .get_mut(&scope)
         .ok_or("enrolled custody retired")?;
-    if entry.peer.is_some_and(|id| id != peer) {
-        return Err("enrolled socket already joined".into());
+    if entry.peer != Some(peer) || entry.joined {
+        return Err("enrolled socket already joined or changed".into());
     }
-    entry.peer = Some(peer);
+    entry.joined = true;
     drop(registry);
-    admitted.managed_scope = Some(scope);
-    admitted.agent_id = Some(facts.binding.agent.clone());
-    admitted.display_handle = Some(facts.binding.agent);
-    *admitted = revalidate(state, route, admitted)?;
     Ok(())
 }
 
