@@ -37,6 +37,29 @@ fn canonical_caller(room: &signed_worker::OriginalRoom) -> tilo_actions::remote:
     .in_new_execution()
 }
 
+fn provider_query(provider: String) -> tilo_actions::remote::CatalogueQuery {
+    tilo_actions::remote::CatalogueQuery {
+        provider: Some(provider),
+        ..Default::default()
+    }
+}
+
+fn exact_query(
+    page: &tilo_actions::remote::CataloguePage,
+) -> (
+    tilo_actions::remote::RemoteActionTarget,
+    tilo_actions::remote::CatalogueQuery,
+) {
+    let target = page
+        .rows
+        .first()
+        .expect("listed exact row")
+        .target()
+        .expect("listed exact target");
+    let query = tilo_actions::remote::CatalogueQuery::resolve(&target, page.revision.clone());
+    (target, query)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn canonical_route_rechecks_registration_certificate_and_stream_after_resolve_await() {
     use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
@@ -317,6 +340,106 @@ async fn canonical_route_uses_signed_directory_admission_order_and_fences_replac
                     .unwrap()
                     .peer_id,
                 99
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canonical_exact_resolution_echoes_only_its_validated_revision() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = signed_worker::OriginalRoom::new(
+                tilo_user_identity::DeviceCapabilities::primary(),
+                None,
+                None,
+            );
+            let (worker, _) = room.join_worker(77).await;
+            let _stream = worker.handle.subscribe_stable_invocations().await.unwrap();
+            let directory = signed_worker::directory_state("directory-r1");
+            worker
+                .handle
+                .publish_action_directory(
+                    &room.route.app_id,
+                    signed_worker::directory_server(&directory),
+                )
+                .await
+                .unwrap();
+            let caller = canonical_caller(&room);
+            let host = room
+                .state
+                .certified_local_action_host(
+                    &caller,
+                    &signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key),
+                )
+                .unwrap();
+            let providers = canonical_pending(&room, host.query(&caller, canonical_query(&room)))
+                .await
+                .unwrap();
+            let original_token = providers.providers[0].provider.clone();
+            let listed = canonical_pending(
+                &room,
+                host.query(&caller, provider_query(original_token.clone())),
+            )
+            .await
+            .unwrap();
+            let (target, exact) = exact_query(&listed);
+            let resolved = canonical_pending(&room, host.query(&caller, exact.clone()))
+                .await
+                .unwrap();
+            assert_eq!(resolved.revision, "directory-r1");
+            assert!(resolved.exhausted);
+            assert!(!resolved.stale_cursor);
+            assert_eq!(resolved.rows.len(), 1);
+            assert_eq!(resolved.rows[0].target().as_ref(), Some(&target));
+
+            {
+                let mut changed = directory.borrow_mut();
+                changed.revision = "directory-r2".into();
+                changed.resolve_mode = DirectoryResolveMode::Stale;
+            }
+            let stale = canonical_pending(&room, host.query(&caller, exact.clone()))
+                .await
+                .unwrap();
+            assert!(stale.stale_cursor);
+            assert!(stale.rows.is_empty());
+            assert!(stale.revision.is_empty());
+            directory.borrow_mut().resolve_mode = DirectoryResolveMode::Found;
+            worker
+                .handle
+                .publish_action_directory(
+                    &room.route.app_id,
+                    signed_worker::directory_server(&directory),
+                )
+                .await
+                .unwrap();
+            assert!(
+                canonical_pending(&room, host.query(&caller, exact))
+                    .await
+                    .is_err(),
+                "a validated revision cannot rescue a replaced canonical token"
+            );
+            let replacement = canonical_pending(&room, host.query(&caller, canonical_query(&room)))
+                .await
+                .unwrap();
+            assert_ne!(replacement.providers[0].provider, original_token);
+            let current = canonical_pending(
+                &room,
+                host.query(
+                    &caller,
+                    provider_query(replacement.providers[0].provider.clone()),
+                ),
+            )
+            .await
+            .unwrap();
+            let (current_target, current_exact) = exact_query(&current);
+            let current_resolved = canonical_pending(&room, host.query(&caller, current_exact))
+                .await
+                .unwrap();
+            assert_eq!(current_resolved.revision, "directory-r2");
+            assert_eq!(
+                current_resolved.rows[0].target().as_ref(),
+                Some(&current_target)
             );
         })
         .await;

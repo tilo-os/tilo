@@ -959,12 +959,14 @@ impl CapnpBrokerState {
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         let actor = self.caller_actor(caller, &root.cluster_id);
         let queue = self.action_directory_request_queue();
-        let reply = if let Some(target) = &query.target {
-            let Some(revision) = query
+        let resolution_revision = query.target.as_ref().and_then(|_| {
+            query
                 .revision
                 .clone()
                 .filter(|revision| !revision.is_empty())
-            else {
+        });
+        let reply = if let Some(target) = &query.target {
+            let Some(revision) = resolution_revision.clone() else {
                 return Pending::ready(Err(ActionHostError::InvalidRequest {
                     reason: "resolving a target needs the revision it was chosen at".into(),
                 }));
@@ -1001,7 +1003,7 @@ impl CapnpBrokerState {
         match reply {
             Ok(reply) => reply.map(move |reply| {
                 check_execution(&caller)?;
-                directory_page(&root, reply)
+                directory_page(&root, reply, resolution_revision.as_deref())
             }),
             Err(error) => Pending::ready(Err(bridge_error(error))),
         }
@@ -2738,6 +2740,7 @@ fn directory_row(
 fn directory_page(
     root: &ActionDirectoryRoot,
     reply: ActionDirectoryBridgeReply,
+    resolution_revision: Option<&str>,
 ) -> Result<CataloguePage, ActionHostError> {
     match reply.map_err(bridge_error)? {
         ActionDirectoryBridgeResponse::Page(page) => Ok(CataloguePage {
@@ -2761,6 +2764,12 @@ fn directory_page(
             };
             match resolution {
                 runtime_collab::ActionDirectoryResolution::Found(row) => {
+                    let Some(revision) = resolution_revision else {
+                        return Err(ActionHostError::Unavailable {
+                            reason: "directory resolution lost its requested revision".into(),
+                        });
+                    };
+                    revision.clone_into(&mut page.revision);
                     page.rows.extend(directory_row(root, &row));
                 }
                 runtime_collab::ActionDirectoryResolution::StaleRevision => {
