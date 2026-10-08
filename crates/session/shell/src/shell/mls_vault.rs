@@ -178,8 +178,10 @@ fn clear_retired_registry(path: &Path) {
 }
 
 /// Remove what the retired MLS lifecycle authority and its snapshot receipts
-/// left in `root`: the authority's ledger directory and every compaction
-/// envelope copied to `snapshot-*.op`. Nothing reads them. Best-effort, so a
+/// left in `root`: the authority's ledger directory, every compaction
+/// envelope copied to `snapshot-*.op`, and the `group-*.mls` and
+/// `key-package-*.mls` files its registry named. Nothing reads them. Sealed
+/// channel state lives under `channels/` and is untouched. Best-effort, so a
 /// file that cannot be removed never keeps the vault from opening.
 fn remove_retired_files(root: &Path) {
     let authority = root.join("authority");
@@ -192,16 +194,29 @@ fn remove_retired_files(root: &Path) {
         return;
     };
     for entry in entries.flatten() {
-        let name = entry.file_name();
-        let is_snapshot = name
-            .to_str()
-            .is_some_and(|name| name.starts_with("snapshot-") && name.ends_with(".op"));
-        if is_snapshot
+        let path = entry.path();
+        if is_retired_file(&path)
             && entry.file_type().is_ok_and(|kind| kind.is_file())
-            && let Err(error) = fs::remove_file(entry.path())
+            && let Err(error) = fs::remove_file(&path)
         {
-            tracing::warn!(%error, "retired MLS snapshot copy could not be removed");
+            tracing::warn!(%error, "retired MLS vault file could not be removed");
         }
+    }
+}
+
+/// A top-level file only the retired authority wrote: `snapshot-*.op`,
+/// `group-*.mls` or `key-package-*.mls`.
+fn is_retired_file(path: &Path) -> bool {
+    let (Some(stem), Some(extension)) = (
+        path.file_stem().and_then(|stem| stem.to_str()),
+        path.extension().and_then(|extension| extension.to_str()),
+    ) else {
+        return false;
+    };
+    match extension {
+        "op" => stem.starts_with("snapshot-"),
+        "mls" => stem.starts_with("group-") || stem.starts_with("key-package-"),
+        _ => false,
     }
 }
 
@@ -342,6 +357,8 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("snapshot-aa.op"), [5]).unwrap();
+        fs::write(root.join("group-11.mls"), [8]).unwrap();
+        fs::write(root.join("key-package-22.mls"), [9]).unwrap();
         fs::create_dir_all(root.join("channels")).unwrap();
         fs::write(root.join("channels/group.sealed"), [6]).unwrap();
         fs::write(root.join("snapshot-notes.txt"), [7]).unwrap();
@@ -350,6 +367,8 @@ mod tests {
         SecretServiceMlsVault::open(root.clone()).unwrap();
 
         assert!(!root.join("snapshot-aa.op").exists());
+        assert!(!root.join("group-11.mls").exists());
+        assert!(!root.join("key-package-22.mls").exists());
         assert!(!root.join("authority").exists());
         assert!(root.join("channels/group.sealed").exists());
         assert!(root.join("snapshot-notes.txt").exists());
