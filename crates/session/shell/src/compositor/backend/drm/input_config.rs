@@ -10,6 +10,7 @@
 //! most-reported "this feels broken" first impression — so the default here is on, with palm
 //! detection and disable-while-typing turned on alongside it to buy back what libinput was cautious about; the setting remains the user's to flip.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -17,6 +18,9 @@ use settings_store::hardware::{InputDeviceKind, TouchpadClickMethod, TouchpadScr
 
 /// Settings section these values live in.
 pub const SECTION: &str = "input";
+
+/// Settings section of [`AccessibilityInputSettings`].
+pub const ACCESSIBILITY_SECTION: &str = "accessibility";
 
 pub const NATURAL_SCROLL_KEY: &str = "natural_scroll";
 pub const TAP_TO_CLICK_KEY: &str = "tap_to_click";
@@ -179,7 +183,7 @@ pub const MOUSE_KEYS_KEY: &str = "mouse_keys";
 
 impl AccessibilityInputSettings {
     pub fn load() -> Self {
-        Self::from_section(&settings_store::load_section("accessibility"))
+        Self::from_section(&settings_store::load_section(ACCESSIBILITY_SECTION))
     }
 
     /// Parse the `accessibility` section; every field falls back to its
@@ -477,16 +481,25 @@ impl InputSettings {
 
 /// How often the settings file is stat'ed for changes.
 ///
-/// A poll rather than an inotify watch: the compositor already loops at the display's cadence, and one `stat` a second on a page-cached file is far less machinery than a filesystem watcher, for a change a human makes at most a few times a session.
+/// The fallback behind the settings file watch (`settings_store::watch`,
+/// which wakes the loop and calls [`SettingsWatch::check_now`]): a write that
+/// lands while that watch is unavailable is still noticed within this
+/// interval, for one `stat` of a page-cached file.
 pub const SETTINGS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Notices when the settings file changes, so a preference just flipped in Settings takes effect without restarting the session.
+/// Notices when the settings file changes, and which of its top-level
+/// sections did, so a preference just flipped in Settings takes effect
+/// without restarting the session — and a write to one section (a theme, a
+/// notification toggle) never pays for the work another needs (a display
+/// re-probe, an input device reconfiguration).
 pub struct SettingsWatch {
     path: Option<PathBuf>,
     /// Modification time as of the last check. `None` before the first check, and while the file doesn't exist.
     last: Option<SystemTime>,
     /// Whether a check has happened at all — distinguishes "no file yet" from "not looked yet", so the file appearing for the first time counts as a change rather than the baseline.
     primed: bool,
+    /// Each section's fingerprint as of the last read.
+    sections: settings_store::SectionDigest,
     next_check: Option<Instant>,
     interval: Duration,
 }
@@ -509,6 +522,7 @@ impl SettingsWatch {
             path,
             last: None,
             primed: false,
+            sections: settings_store::SectionDigest::default(),
             next_check: None,
             interval: SETTINGS_POLL_INTERVAL,
         }
@@ -521,32 +535,110 @@ impl SettingsWatch {
         self
     }
 
-    /// Whether the settings file has changed since the last time this returned `true`. Rate-limited to [`Self::with_interval`]; calls in between are free.
-    pub fn changed(&mut self, now: Instant) -> bool {
+    /// The top-level sections that changed since the last look. Empty means
+    /// there is nothing to re-apply: the check was rate-limited
+    /// ([`Self::with_interval`]; calls in between are free), the file's mtime
+    /// did not move, or it moved without any section changing. The document
+    /// is read only when the mtime moved.
+    pub fn changed_sections(&mut self, now: Instant) -> BTreeSet<String> {
         if let Some(next) = self.next_check
             && now < next
         {
-            return false;
+            return BTreeSet::new();
         }
         // `checked_add` sidesteps a theoretical `Instant` overflow (would
         // need centuries of uptime); falling back to "now" just makes the
-        // next `changed()` call re-check immediately instead of panicking.
+        // next call re-check immediately instead of panicking.
         self.next_check = Some(now.checked_add(self.interval).unwrap_or(now));
         let Some(path) = self.path.as_ref() else {
-            return false;
+            return BTreeSet::new();
         };
         let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         let first_look = !self.primed;
         self.primed = true;
-        let moved = mtime != self.last;
+        if mtime == self.last && !first_look {
+            return BTreeSet::new();
+        }
         self.last = mtime;
+        let sections = settings_store::SectionDigest::of(&settings_store::load_at(path));
+        let changed = sections.changed_since(&self.sections);
+        self.sections = sections;
         // The first look establishes the baseline rather than reporting a change — otherwise every session start would re-apply settings already applied at construction.
-        moved && !first_look
+        if first_look { BTreeSet::new() } else { changed }
     }
 
-    /// Let the next [`Self::changed`] look regardless of the rate limit — for when a file-change notification says there is something to see.
+    /// Let the next [`Self::changed_sections`] look regardless of the rate limit — for when a file-change notification says there is something to see.
     pub fn check_now(&mut self) {
         self.next_check = None;
+    }
+}
+
+/// What one settings write asks the compositor to re-apply, decided by the
+/// top-level sections it changed ([`SettingsWatch::changed_sections`]).
+/// Sections the compositor does not consume (`notifications`, `audio`,
+/// `region`, `quick_settings`, …) ask for nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SettingsChange(BTreeSet<String>);
+
+impl From<BTreeSet<String>> for SettingsChange {
+    fn from(sections: BTreeSet<String>) -> Self {
+        Self(sections)
+    }
+}
+
+impl SettingsChange {
+    fn touches(&self, sections: &[&str]) -> bool {
+        sections.iter().any(|section| self.0.contains(*section))
+    }
+
+    /// Nothing changed.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The backend's input devices: pointer and keyboard preferences
+    /// (`input`), accessibility filters and cursor size (`accessibility`),
+    /// and the shortcut chords tablet buttons press (`shortcuts`).
+    pub fn input_devices(&self) -> bool {
+        self.touches(&[SECTION, ACCESSIBILITY_SECTION, "shortcuts"])
+    }
+
+    /// The seat and Xwayland keymaps and the input-method owner: keyboard
+    /// sources (`input`) and the on-screen keyboard (`accessibility`).
+    pub fn keyboard(&self) -> bool {
+        self.touches(&[SECTION, ACCESSIBILITY_SECTION])
+    }
+
+    /// The display arrangement, scale, modes and the pending display
+    /// transaction. The only change that reconciles outputs.
+    pub fn displays(&self) -> bool {
+        self.touches(&["display", "display_transaction", "display_profiles"])
+    }
+
+    /// A request to show each output's identity badge.
+    pub fn display_identify(&self) -> bool {
+        self.touches(&["display_identify"])
+    }
+
+    /// The shortcut table the compositor matches before a client sees a key.
+    pub fn shortcuts(&self) -> bool {
+        self.touches(&["shortcuts"])
+    }
+
+    /// Which desktop controls the chrome offers.
+    pub fn desktop_controls(&self) -> bool {
+        self.touches(&["desktop_controls"])
+    }
+
+    /// The theme: `appearance`, and the contrast and text-size layers in
+    /// `accessibility`. The only change that wakes every window to repaint.
+    pub fn appearance(&self) -> bool {
+        self.touches(&[settings_store::day_schedule::SECTION, ACCESSIBILITY_SECTION])
+    }
+
+    /// Idle blank, lock and suspend timeouts.
+    pub fn power(&self) -> bool {
+        self.touches(&["power"])
     }
 }
 
@@ -1442,15 +1534,31 @@ mod tests {
         SettingsWatch::at(Some(path.to_path_buf())).with_interval(Duration::ZERO)
     }
 
+    fn sections(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    /// Move the mtime explicitly: a same-second rewrite can keep the old
+    /// mtime on filesystems with coarse timestamps, and the watch's contract
+    /// starts at "the mtime moved".
+    fn bump_mtime(path: &Path, seconds: u64) {
+        let f = std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open for times");
+        f.set_modified(std::time::SystemTime::now() + Duration::from_secs(seconds))
+            .expect("set mtime");
+    }
+
     #[test]
     fn settings_watch_reports_each_real_change_once_and_rate_limits() {
         // Phase `the_first_look_is_a_baseline_not_a_change`.
         {
             // Otherwise every session start re-applies settings already applied while constructing the backend.
             let path = scratch("baseline");
-            std::fs::write(&path, "{}").expect("write");
+            std::fs::write(&path, r#"{"input":{"tap_to_click":true}}"#).expect("write");
             let mut w = watch(&path);
-            assert!(!w.changed(Instant::now()));
+            assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
             let _ = std::fs::remove_file(&path);
         }
         // Phase `a_write_is_noticed_once`.
@@ -1458,21 +1566,23 @@ mod tests {
             let path = scratch("write");
             std::fs::write(&path, r#"{"input":{"tap_to_click":true}}"#).expect("write");
             let mut w = watch(&path);
-            assert!(!w.changed(Instant::now()), "baseline");
+            assert_eq!(
+                w.changed_sections(Instant::now()),
+                sections(&[]),
+                "baseline"
+            );
 
-            // A same-second rewrite can land on the same mtime on filesystems with coarse timestamps, so move it explicitly rather than racing the clock — the watch's contract is "the mtime moved".
             std::fs::write(&path, r#"{"input":{"tap_to_click":false}}"#).expect("rewrite");
-            let moved = std::time::SystemTime::now() + Duration::from_secs(2);
-            let f = std::fs::File::options()
-                .write(true)
-                .open(&path)
-                .expect("open for times");
-            f.set_modified(moved).expect("set mtime");
-            drop(f);
+            bump_mtime(&path, 2);
 
-            assert!(w.changed(Instant::now()), "the rewrite must be noticed");
-            assert!(
-                !w.changed(Instant::now()),
+            assert_eq!(
+                w.changed_sections(Instant::now()),
+                sections(&["input"]),
+                "the rewrite must be noticed"
+            );
+            assert_eq!(
+                w.changed_sections(Instant::now()),
+                sections(&[]),
                 "and only once — re-applying every tick would fight the user"
             );
             let _ = std::fs::remove_file(&path);
@@ -1483,31 +1593,41 @@ mod tests {
             let path = scratch("appear");
             let _ = std::fs::remove_file(&path);
             let mut w = watch(&path);
-            assert!(!w.changed(Instant::now()), "baseline: no file");
-            std::fs::write(&path, "{}").expect("write");
-            assert!(w.changed(Instant::now()));
+            assert_eq!(
+                w.changed_sections(Instant::now()),
+                sections(&[]),
+                "baseline: no file"
+            );
+            std::fs::write(&path, r#"{"input":{"tap_to_click":false}}"#).expect("write");
+            assert_eq!(w.changed_sections(Instant::now()), sections(&["input"]));
             let _ = std::fs::remove_file(&path);
         }
         // Phase `checks_are_rate_limited`.
         {
             // The loop runs at the display's cadence; stat'ing 144 times a second for a rarely-edited file is waste.
             let path = scratch("ratelimit");
-            std::fs::write(&path, "{}").expect("write");
+            std::fs::write(&path, r#"{"power":{"auto_suspend":false}}"#).expect("write");
             let mut w =
                 SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
             let now = Instant::now();
-            assert!(!w.changed(now), "baseline");
+            assert_eq!(w.changed_sections(now), sections(&[]), "baseline");
             std::fs::remove_file(&path).expect("remove");
-            assert!(
-                !w.changed(now),
+            assert_eq!(
+                w.changed_sections(now),
+                sections(&[]),
                 "a second call inside the interval must not even look"
             );
             // Phase `a_notified_write_is_seen_inside_the_interval`.
             // An idle compositor wakes only for the notification; waiting out the interval would drop the write until unrelated input arrived.
             w.check_now();
-            assert!(w.changed(now), "the removal must be seen on demand");
-            assert!(
-                !w.changed(now),
+            assert_eq!(
+                w.changed_sections(now),
+                sections(&["power"]),
+                "the removal must be seen on demand"
+            );
+            assert_eq!(
+                w.changed_sections(now),
+                sections(&[]),
                 "and the rate limit resumes after the forced look"
             );
         }
@@ -1515,9 +1635,133 @@ mod tests {
         {
             // No config directory at all — a container with no HOME. The compositor must not spin on it.
             let mut w = SettingsWatch::at(None).with_interval(Duration::ZERO);
-            assert!(!w.changed(Instant::now()));
-            assert!(!w.changed(Instant::now()));
+            assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
+            assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
         }
+    }
+
+    #[test]
+    fn settings_watch_reports_changed_sections() {
+        // Writers go through the shared merge-and-replace path, which
+        // rewrites the whole document: the mtime alone cannot say whether a
+        // theme or the display arrangement changed.
+        let path = scratch("sections");
+        let _ = std::fs::remove_file(&path);
+        let mut values = serde_json::Map::new();
+        values.insert("tap_to_click".into(), json!(true));
+        settings_store::update_section_at(&path, "input", values).expect("seed input");
+        let mut values = serde_json::Map::new();
+        values.insert("do_not_disturb".into(), json!(false));
+        settings_store::update_section_at(&path, "notifications", values).expect("seed dnd");
+        let mut w = watch(&path);
+        assert_eq!(
+            w.changed_sections(Instant::now()),
+            sections(&[]),
+            "baseline"
+        );
+
+        let mut values = serde_json::Map::new();
+        values.insert("theme".into(), json!("light"));
+        settings_store::update_section_at(&path, "appearance", values).expect("theme");
+        bump_mtime(&path, 2);
+        assert_eq!(
+            w.changed_sections(Instant::now()),
+            sections(&["appearance"]),
+            "a theme write names only its own section"
+        );
+
+        let mut values = serde_json::Map::new();
+        values.insert("do_not_disturb".into(), json!(true));
+        settings_store::update_section_at(&path, "notifications", values).expect("dnd");
+        bump_mtime(&path, 4);
+        assert_eq!(
+            w.changed_sections(Instant::now()),
+            sections(&["notifications"])
+        );
+
+        // A rewrite that moves the mtime but no value is nothing to do.
+        let mut values = serde_json::Map::new();
+        values.insert("do_not_disturb".into(), json!(true));
+        settings_store::update_section_at(&path, "notifications", values).expect("same dnd");
+        bump_mtime(&path, 6);
+        assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn only_display_sections_reconcile_outputs_and_only_theme_sections_wake_windows() {
+        let change = |names: &[&str]| SettingsChange::from(sections(names));
+
+        // Sections the compositor does not consume ask for no work at all —
+        // above all no input device reconfiguration and no output
+        // reconciliation on the input thread.
+        for unrelated in [
+            "notifications",
+            "audio",
+            "region",
+            "quick_settings",
+            "app_personal",
+        ] {
+            let c = change(&[unrelated]);
+            assert!(!c.is_empty(), "{unrelated}");
+            assert!(!c.input_devices(), "{unrelated}");
+            assert!(!c.keyboard(), "{unrelated}");
+            assert!(!c.displays(), "{unrelated}");
+            assert!(!c.display_identify(), "{unrelated}");
+            assert!(!c.shortcuts(), "{unrelated}");
+            assert!(!c.desktop_controls(), "{unrelated}");
+            assert!(!c.appearance(), "{unrelated}");
+            assert!(!c.power(), "{unrelated}");
+        }
+
+        // A theme write re-themes and nothing else.
+        let theme = change(&["appearance"]);
+        assert!(theme.appearance());
+        assert!(!theme.input_devices());
+        assert!(!theme.displays());
+        assert!(!theme.keyboard());
+
+        // Each display section, and only those, reconciles outputs.
+        for display in ["display", "display_transaction", "display_profiles"] {
+            let c = change(&[display]);
+            assert!(c.displays(), "{display}");
+            assert!(!c.input_devices(), "{display}");
+            assert!(!c.appearance(), "{display}");
+            assert!(!c.keyboard(), "{display}");
+        }
+        for other in [
+            "input",
+            "accessibility",
+            "shortcuts",
+            "appearance",
+            "power",
+            "display_identify",
+        ] {
+            assert!(!change(&[other]).displays(), "{other}");
+        }
+
+        let input = change(&["input"]);
+        assert!(input.input_devices() && input.keyboard());
+        assert!(
+            !input.appearance(),
+            "a pointer setting must not repaint every window"
+        );
+
+        // Accessibility carries input filters, the on-screen keyboard and
+        // the contrast/text-size theme layers.
+        let accessibility = change(&["accessibility"]);
+        assert!(accessibility.input_devices() && accessibility.keyboard());
+        assert!(accessibility.appearance());
+
+        // Tablet buttons press shortcut chords, so the device side follows.
+        let shortcuts = change(&["shortcuts"]);
+        assert!(shortcuts.shortcuts() && shortcuts.input_devices());
+        assert!(!shortcuts.keyboard());
+
+        assert!(change(&["display_identify"]).display_identify());
+        assert!(change(&["desktop_controls"]).desktop_controls());
+        assert!(change(&["power"]).power());
+        assert!(change(&[]).is_empty());
     }
 
     #[test]
