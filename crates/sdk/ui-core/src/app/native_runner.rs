@@ -4007,6 +4007,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             if sync_scheduled_deadline(app) {
                 request_primary_redraw();
             }
+            if self.physical_input_trace.is_some() {
+                crate::native_scenario::log::emit_json(
+                    "tilo-physical-poll",
+                    crate::physical_input_trace::Trace::polled(app.native_input_snapshot()),
+                );
+            }
         }
 
         // The poll above already ran. Re-read what it published so a deadline

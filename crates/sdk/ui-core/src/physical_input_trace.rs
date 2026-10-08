@@ -73,6 +73,11 @@ impl Trace {
         row
     }
 
+    /// A genuine model poll, not input, drawing or presentation completion.
+    pub fn polled(snapshot: Option<Value>) -> Value {
+        serde_json::json!({"state": safe_snapshot(snapshot)})
+    }
+
     pub fn drawn(&mut self, cpu_frame_id: Option<u64>, snapshot: Option<Value>) -> Option<Value> {
         if self.pending.is_empty() {
             return None;
@@ -96,7 +101,7 @@ fn safe_snapshot(snapshot: Option<Value>) -> Value {
             .get("agent_task")
             .map_or(Some(Value::Null), safe_chat_agent_task)
             .unwrap_or(Value::Null);
-        return serde_json::json!({
+        let mut safe = serde_json::json!({
             "app": "so.tilo.chat",
             "agent_task": agent_task,
             "agent_message_progress": snapshot.get("agent_message_progress")
@@ -104,6 +109,24 @@ fn safe_snapshot(snapshot: Option<Value>) -> Value {
             "agent_message_submission": snapshot.get("agent_message_submission")
                 .and_then(safe_chat_message_submission).unwrap_or(Value::Null),
         });
+        if let Some(control) = snapshot.get("keyboard_control").and_then(Value::as_str)
+            && matches!(
+                control,
+                "none" | "send" | "return" | "float" | "editor" | "other"
+            )
+        {
+            safe["keyboard_control"] = control.into();
+        }
+        if let Some(focused) = snapshot.get("composer_focused").and_then(Value::as_bool) {
+            safe["composer_focused"] = focused.into();
+        }
+        if let Some(poll) = snapshot
+            .get("agent_message_submission")
+            .and_then(safe_chat_message_poll)
+        {
+            safe["agent_message_poll"] = poll;
+        }
+        return safe;
     }
     if snapshot["app"] != "so.tilo.notes" {
         return Value::Null;
@@ -243,6 +266,34 @@ fn safe_chat_message_progress(value: &Value) -> Option<Value> {
     Some(Value::Array(safe))
 }
 
+fn safe_chat_message_poll(value: &Value) -> Option<Value> {
+    let phase = value.get("phase")?.as_str()?;
+    let count = value.get("pending_count")?.as_u64()?;
+    if count > 64
+        || !matches!(
+            phase,
+            "providers"
+                | "launch_rows"
+                | "launch_confirm"
+                | "launch_invoke"
+                | "await_publisher"
+                | "rows"
+                | "confirm"
+                | "invoke"
+                | "uninitialized"
+        )
+    {
+        return None;
+    }
+    Some(serde_json::json!({
+        "phase": phase,
+        "pending_count": count,
+        "poll_scheduled": value.get("poll_scheduled")?.as_bool()?,
+        "poll_due": value.get("poll_due")?.as_bool()?,
+        "resolve_expired": value.get("resolve_expired")?.as_bool()?,
+    }))
+}
+
 fn safe_chat_message_submission(value: &Value) -> Option<Value> {
     Some(serde_json::json!({
         "draft_revision": value.get("draft_revision")?.as_u64()?,
@@ -333,6 +384,134 @@ mod tests {
         unknown["generation"] = Value::Null;
         unknown["unavailable"] = Value::Bool(true);
         assert!(safe_chat_message_progress(&serde_json::json!([unknown])).is_some());
+    }
+
+    #[test]
+    fn chat_input_effect_preserves_closed_poll_evidence_without_changing_revision_shape() {
+        for phase in [
+            "providers",
+            "launch_rows",
+            "launch_confirm",
+            "launch_invoke",
+            "await_publisher",
+            "rows",
+            "confirm",
+            "invoke",
+            "uninitialized",
+        ] {
+            for control in ["none", "send", "return", "float", "editor", "other"] {
+                let effect = Trace::effect(
+                    serde_json::json!({}),
+                    Some(serde_json::json!({
+                        "app": "so.tilo.chat", "keyboard_control": control, "composer_focused": true,
+                        "agent_message_submission": {
+                            "phase": phase, "pending_count": 64, "poll_scheduled": true,
+                            "poll_due": false, "resolve_expired": false,
+                            "draft_revision": 3, "current_revision": 4, "draft_empty": false,
+                            "text": "PRIVATE-CANARY", "task_id": "PRIVATE-ID",
+                        },
+                    })),
+                );
+                let safe = &effect["after"];
+                assert_eq!(safe["keyboard_control"], control);
+                assert_eq!(safe["composer_focused"], true);
+                assert_eq!(
+                    safe["agent_message_poll"],
+                    serde_json::json!({
+                        "phase": phase, "pending_count": 64, "poll_scheduled": true,
+                        "poll_due": false, "resolve_expired": false,
+                    })
+                );
+                assert_eq!(
+                    safe["agent_message_submission"],
+                    serde_json::json!({
+                        "draft_revision": 3, "current_revision": 4, "draft_empty": false,
+                    })
+                );
+                assert!(!effect.to_string().contains("PRIVATE"));
+            }
+        }
+    }
+
+    #[test]
+    fn chat_input_effect_drops_private_or_malformed_poll_fields() {
+        let snapshot = serde_json::json!({
+            "app": "so.tilo.chat", "keyboard_control": "send", "composer_focused": true,
+            "agent_message_submission": {
+                "phase": "rows", "pending_count": 1, "poll_scheduled": true,
+                "poll_due": false, "resolve_expired": false,
+                "draft_revision": 3, "current_revision": 4, "draft_empty": false,
+            },
+        });
+        for (key, invalid) in [
+            ("phase", serde_json::json!("PRIVATE-PHASE")),
+            ("phase", Value::Null),
+            ("pending_count", serde_json::json!(65)),
+            ("pending_count", serde_json::json!(u64::MAX)),
+            ("pending_count", serde_json::json!(-1)),
+            ("pending_count", serde_json::json!(1.5)),
+            ("pending_count", serde_json::json!(true)),
+            ("poll_scheduled", serde_json::json!("PRIVATE-FLAG")),
+            ("poll_due", serde_json::json!(1)),
+            ("resolve_expired", Value::Null),
+        ] {
+            let mut changed = snapshot.clone();
+            changed["agent_message_submission"][key] = invalid;
+            let effect = Trace::effect(serde_json::json!({}), Some(changed));
+            assert!(effect["after"].get("agent_message_poll").is_none());
+            assert_eq!(
+                effect["after"]["agent_message_submission"]
+                    .as_object()
+                    .unwrap()
+                    .len(),
+                3
+            );
+            assert!(!effect.to_string().contains("PRIVATE"));
+        }
+        for invalid in [
+            serde_json::json!("PRIVATE-CONTROL"),
+            serde_json::json!(7),
+            Value::Null,
+        ] {
+            let mut changed = snapshot.clone();
+            changed["keyboard_control"] = invalid.clone();
+            changed["composer_focused"] = invalid;
+            let effect = Trace::effect(serde_json::json!({}), Some(changed));
+            assert!(effect["after"].get("keyboard_control").is_none());
+            assert!(effect["after"].get("composer_focused").is_none());
+            assert!(!effect.to_string().contains("PRIVATE"));
+        }
+    }
+
+    #[test]
+    fn silent_poll_uses_identical_closed_snapshot_without_consuming_input_or_claiming_frames() {
+        let snapshot = serde_json::json!({
+            "app": "so.tilo.chat", "keyboard_control": "send", "composer_focused": true,
+            "agent_message_submission": {
+                "phase": "rows", "pending_count": 1, "poll_scheduled": true,
+                "poll_due": false, "resolve_expired": false,
+                "draft_revision": 3, "current_revision": 4, "draft_empty": false,
+                "text": "PRIVATE-CANARY", "task_id": "PRIVATE-ID",
+            },
+        });
+        let mut trace = Trace::default();
+        trace.pending.push(7);
+        let polled = Trace::polled(Some(snapshot.clone()));
+        let effect = Trace::effect(serde_json::json!({}), Some(snapshot));
+        assert_eq!(polled["state"], effect["after"]);
+        assert_eq!(polled.as_object().unwrap().len(), 1);
+        assert!(polled.get("cpu_frame_id").is_none());
+        assert!(polled.get("input_ids").is_none());
+        assert!(trace.has_pending());
+        assert_eq!(trace.pending, [7]);
+        assert!(!polled.to_string().contains("PRIVATE"));
+        assert!(Trace::polled(None)["state"].is_null());
+        let mut invalid = effect["after"].clone();
+        invalid["agent_message_submission"]["phase"] = "PRIVATE-PHASE".into();
+        invalid["agent_message_submission"]["pending_count"] = serde_json::json!(u64::MAX);
+        let refused = Trace::polled(Some(invalid));
+        assert!(refused["state"].get("agent_message_poll").is_none());
+        assert!(!refused.to_string().contains("PRIVATE"));
     }
 
     #[test]
