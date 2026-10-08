@@ -468,7 +468,7 @@ fn glob_one(root: &Path, pattern: &str) -> io::Result<Option<PathBuf>> {
                 };
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_dir() {
+                    if fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir()) {
                         next.push(path);
                     }
                 }
@@ -478,7 +478,7 @@ fn glob_one(root: &Path, pattern: &str) -> io::Result<Option<PathBuf>> {
             current = current
                 .into_iter()
                 .map(|dir| dir.join(part))
-                .filter(|path| path.exists())
+                .filter(|path| fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()))
                 .collect();
         }
         if current.is_empty() {
@@ -506,19 +506,23 @@ fn refuse_human_root_secret(staged_var: &Path) -> io::Result<()> {
 /// side and replaced on the target side, so the copy never writes through a
 /// link planted on either disk.
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    if !fs::symlink_metadata(from)?.is_dir() {
+        return Err(io::Error::other("handoff source is not a real directory"));
+    }
+    ensure_copy_directory(to, Path::new(""))?;
     for entry in walkdir(from)? {
         let relative = entry.strip_prefix(from).map_err(io::Error::other)?;
         let dest = to.join(relative);
         let meta = fs::symlink_metadata(&entry)?;
         if meta.is_dir() {
-            fs::create_dir_all(&dest)?;
+            ensure_copy_directory(to, relative)?;
             continue;
         }
         if !meta.is_file() {
             continue;
         }
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
+        if let Some(parent) = relative.parent() {
+            ensure_copy_directory(to, parent)?;
         }
         if fs::symlink_metadata(&dest).is_ok_and(|meta| meta.file_type().is_symlink()) {
             fs::remove_file(&dest)?;
@@ -528,6 +532,33 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
         {
             use std::os::unix::fs::MetadataExt;
             set_mode(&dest, meta.mode() & 0o777)?;
+        }
+    }
+    Ok(())
+}
+
+/// Verify every destination component before copying, including pre-existing
+/// directories; create_dir_all alone follows an image's planted parent link.
+fn ensure_copy_directory(root: &Path, relative: &Path) -> io::Result<()> {
+    let mut current = root.to_path_buf();
+    for component in std::iter::once(None).chain(relative.components().map(Some)) {
+        if let Some(component) = component {
+            let std::path::Component::Normal(name) = component else {
+                return Err(io::Error::other(
+                    "handoff directory escapes its destination",
+                ));
+            };
+            current.push(name);
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                return Err(io::Error::other(
+                    "handoff destination is not a real directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => fs::create_dir(&current)?,
+            Err(error) => return Err(error),
         }
     }
     Ok(())
@@ -816,6 +847,30 @@ mod tests {
         ] {
             assert!(validate_bringup_ssh_key(bad).is_err(), "{bad}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handoff_copy_refuses_a_planted_destination_parent() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir_all(source.path().join("NetworkManager/system-connections")).unwrap();
+        fs::write(
+            source
+                .path()
+                .join("NetworkManager/system-connections/tilo-setup.nmconnection"),
+            b"wifi-secret",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), target.path().join("NetworkManager")).unwrap();
+        let error = copy_tree(source.path(), target.path())
+            .expect_err("a planted parent must refuse the copy");
+        assert!(
+            error.to_string().contains("not a real directory"),
+            "{error}"
+        );
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
     #[test]
