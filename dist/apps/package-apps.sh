@@ -95,6 +95,7 @@ fi
 runtime_dylib="$thin_app_dir/libruntime_dylib.so"
 rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)
 [[ -f $runtime_dylib && -f $rust_libstd ]]
+printf '%s\n' "${app_binaries[@]}" > "$out/work/runtime-dependency-objects"
 # Keep the public runtime and publisher key under the root transported by
 # release-apps.yml and consumed by assemble-collection.sh. Private identities
 # stay in work/ (or the caller's external identity files), outside that root.
@@ -104,10 +105,13 @@ OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
     EXTRA_LIBS="$runtime_dylib $rust_libstd" \
+    DEPENDENCY_OBJECTS_FILE="$out/work/runtime-dependency-objects" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
 # Every app below links this exact runtime build and names it.
 runtime_version=$(<"$out/work/runtime-version")
 runtime_id="tilo-runtime/$runtime_version"
+"$repo_root/os/scripts/verify-runtime-bundle-closure.sh" \
+    "$out/runtime/tilo-runtime/$runtime_version" "${app_binaries[@]}"
 
 if [[ -z $identity ]]; then
     identity="$out/work/publisher.json"
