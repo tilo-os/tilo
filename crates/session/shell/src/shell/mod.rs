@@ -872,7 +872,7 @@ impl file_explorer::open_with::OpenWithRoute for ShellOpenWithRoute {
 }
 
 /// The production entry point: threads the *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle)
-/// (the same `Arc<RwLock<_>>` the portal's `GrantStoreHandle` and
+/// (the same handle the portal's `GrantStoreHandle` and
 /// peer-sync's `WorkspaceTreeReplica` hold) so chrome mutations land on the
 /// tree other subsystems read from. Reads it once for the initial widget
 /// tree; later rebuilds run `sync_from_tree` on each chrome widget.
@@ -1413,9 +1413,8 @@ mod legacy_files_opener_regressions {
         root: &std::path::Path,
         records: ui::record::RecordStore,
     ) -> chrome_state::Chrome {
-        let tree = std::sync::Arc::new(parking_lot::RwLock::new(
-            state::WorkspaceTree::bootstrap_demo(),
-        ));
+        let tree =
+            crate::shell::state::WorkspaceTreeHandle::new(state::WorkspaceTree::bootstrap_demo());
         let chrome = chrome_state::ChromeState::new_with_handle(tree);
         chrome.borrow_mut().hosted_inputs =
             hosted_inputs::HostedTileInputs::for_host_directory_privately(root)

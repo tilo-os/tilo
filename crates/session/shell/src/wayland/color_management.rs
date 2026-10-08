@@ -100,6 +100,11 @@ pub struct ColorManagerState {
     /// output's signal reaches clients with `image_description_changed`.
     #[cfg(target_os = "linux")]
     outputs: Arc<Mutex<Vec<(WpColorManagementOutputV1, ColorManagementOutputData)>>>,
+    /// How many output objects clients have created, so the compositor can
+    /// skip [`Self::update_outputs`] while neither the outputs nor the
+    /// objects describing them changed.
+    #[cfg(target_os = "linux")]
+    output_objects: Arc<std::sync::atomic::AtomicU64>,
     /// Every live surface feedback object, told when the preferred
     /// description changes.
     #[cfg(target_os = "linux")]
@@ -146,6 +151,8 @@ impl Default for ColorManagerState {
             #[cfg(target_os = "linux")]
             outputs: Arc::default(),
             #[cfg(target_os = "linux")]
+            output_objects: Arc::default(),
+            #[cfg(target_os = "linux")]
             feedbacks: Arc::default(),
             preferred: Arc::new(Mutex::new(OutputDescription::sdr())),
         }
@@ -174,6 +181,14 @@ impl ColorManagerState {
         self.preferred
             .lock()
             .map_or_else(|_| OutputDescription::sdr(), |preferred| *preferred)
+    }
+
+    /// Output objects created so far. A new value means some object has not
+    /// been told its output's description yet.
+    #[cfg(target_os = "linux")]
+    pub fn output_objects(&self) -> u64 {
+        self.output_objects
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Update what each output tells clients it displays. `describe` maps a
@@ -987,6 +1002,10 @@ where
                 if let Ok(mut outputs) = state.as_ref().outputs.lock() {
                     outputs.push((resource, data));
                 }
+                state
+                    .as_ref()
+                    .output_objects
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
             }
             wp_color_manager_v1::Request::GetSurface { id, surface } => {
                 let already_taken = wl_compositor::with_states(&surface, |states| {
