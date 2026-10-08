@@ -5,7 +5,7 @@ use super::super::continuity_policy::{ContinuityCapability, ContinuityPolicySnap
 use super::super::device_fabric::{DeviceFabric, FabricStamp};
 use super::super::network::ShellNetwork;
 use super::super::personal_continuity::DeviceId;
-use settings_store::person_displays::{ArrangedDisplay, Arrangement, Layout};
+use settings_store::person_displays::{Arrangement, Layout};
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone, Debug)]
@@ -41,10 +41,11 @@ fn cache() -> &'static Mutex<Option<Arc<PersonLayoutView>>> {
 pub(super) fn resolve(
     fabric: &DeviceFabric,
     local: &DeviceId,
-    mut arrangement: Arrangement,
+    arrangement: &Arrangement,
     devices: &[settings_store::person_displays::PersonDevice],
 ) -> PersonLayoutView {
     let mut revisions = Vec::new();
+    let mut origins = std::collections::BTreeMap::new();
     for device in devices {
         if device.outputs.is_empty() {
             continue;
@@ -60,34 +61,7 @@ pub(super) fn resolve(
             continue;
         };
         revisions.push((id, display.stamp.clone()));
-        if device.outputs.iter().any(|output| {
-            arrangement
-                .entry(&device.device, &output.id)
-                .is_some_and(|entry| entry.placed)
-        }) {
-            continue;
-        }
-        let Some(output) = device.outputs.iter().find(|output| output.active()) else {
-            continue;
-        };
-        let entry = arrangement.entry(&device.device, &output.id).cloned();
-        let mut anchor = entry.unwrap_or_else(|| ArrangedDisplay {
-            device: device.device.clone(),
-            output: output.id.clone(),
-            enabled: true,
-            order: i64::try_from(arrangement.displays.len()).unwrap_or(0),
-            placed: false,
-            x: 0,
-            y: 0,
-            rev: 0,
-        });
-        anchor.placed = true;
-        anchor.x = display.rect.x.saturating_add(output.x);
-        anchor.y = display.rect.y.saturating_add(output.y);
-        arrangement
-            .displays
-            .retain(|entry| !(entry.device == anchor.device && entry.output == anchor.output));
-        arrangement.displays.push(anchor);
+        origins.insert(device.device.clone(), (display.rect.x, display.rect.y));
     }
     let legacy_targets = fabric
         .snapshots()
@@ -103,7 +77,7 @@ pub(super) fn resolve(
     PersonLayoutView {
         legacy_targets,
         local: local.clone(),
-        layout: Layout::resolve(devices, &arrangement),
+        layout: Layout::resolve_at_device_origins(devices, arrangement, &origins),
         revisions,
     }
 }
@@ -116,7 +90,7 @@ pub(super) fn refresh(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
             Arc::new(resolve(
                 &network.device_fabric(),
                 &local,
-                Arrangement::load(),
+                &Arrangement::load(),
                 &network.person_display_devices(&local),
             ))
         });

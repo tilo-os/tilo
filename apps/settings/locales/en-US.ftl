@@ -2065,3 +2065,16 @@ settings-disk-unlock-gone = That disk no longer unlocks with your other devices.
 settings-disk-unlock-bad-request = That request names no usable disk or network.
 settings-disk-unlock-too-many = The disk unlock answer lists more disks than this computer can have.
 settings-disk-unlock-malformed = The disk unlock answer could not be read: { $error }
+
+# Shared display arrangement, independent of device input permission.
+display-shared-title = Your shared display layout
+display-shared-description = Displays keep their device's layout. Inclusion and order follow you across devices; remote input requires separate permission.
+display-shared-include = Include in the shared layout
+display-shared-order = Display number
+display-shared-read-only = Shared display inspection is read-only.
+display-shared-unavailable = That display is no longer observed.
+display-shared-stale = The arrangement changed. Refresh this display and try again.
+display-shared-order-invalid = Choose a display number from the current list.
+display-shared-save-failed = The arrangement could not be saved: { $error }
+display-shared-saved = Shared display arrangement saved.
+display-shared-move-stale = The device confirmed its position, but the shared arrangement changed. Refresh and try again.
