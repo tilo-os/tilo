@@ -10,7 +10,7 @@ use governor::{
     state::keyed::DefaultKeyedStateStore,
 };
 use http::{Uri, header::HeaderValue};
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::{HeaderMap, Request, Response, StatusCode, body::Incoming, header::USER_AGENT};
 use hyper_proxy2::{Intercept, Proxy, ProxyConnector};
 use hyper_util::{
@@ -44,50 +44,98 @@ pub const RATE_LIMIT_CALLS_PER_INTERVAL: u32 = 300;
 pub enum HttpClientError {
     #[error("Response status code: {0}")]
     StatusCode(hyper::StatusCode),
+    #[error("Response status code: {status}; provider reason: {reason}")]
+    Rejected {
+        status: hyper::StatusCode,
+        reason: &'static str,
+    },
+}
+
+const ERROR_BODY_LIMIT: usize = 8 * 1024;
+
+impl HttpClientError {
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::StatusCode(status) | Self::Rejected { status, .. } => *status,
+        }
+    }
+
+    pub fn reason(&self) -> Option<&'static str> {
+        match self {
+            Self::StatusCode(_) => None,
+            Self::Rejected { reason, .. } => Some(reason),
+        }
+    }
+
+    /// Classify a bounded response using fixed codes only. Neither unknown
+    /// messages nor any other response fields survive into the error.
+    pub fn from_status_body(status: StatusCode, body: &[u8]) -> Self {
+        let reason = if body.len() > ERROR_BODY_LIMIT {
+            "body-limit-exceeded"
+        } else if body.is_empty() {
+            "empty-body"
+        } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
+            let error = value.get("error");
+            let code = error.and_then(serde_json::Value::as_str).or_else(|| {
+                error
+                    .and_then(|value| value.get("reason"))
+                    .and_then(serde_json::Value::as_str)
+            });
+            match code {
+                Some("invalid_token") => "invalid_token",
+                Some("insufficient_scope") => "insufficient_scope",
+                Some("invalid_client") => "invalid_client",
+                Some("unauthorized_client") => "unauthorized_client",
+                Some("access_denied") => "access_denied",
+                Some("PREMIUM_REQUIRED") => "PREMIUM_REQUIRED",
+                Some("USER_NOT_REGISTERED_IN_DEVELOPER_DASHBOARD") => {
+                    "USER_NOT_REGISTERED_IN_DEVELOPER_DASHBOARD"
+                }
+                _ => "unclassified-json",
+            }
+        } else {
+            "non-json-body"
+        };
+        Self::Rejected { status, reason }
+    }
 }
 
 impl From<HttpClientError> for Error {
     fn from(err: HttpClientError) -> Self {
-        match err {
-            HttpClientError::StatusCode(code) => {
-                // not exhaustive, but what reasonably could be expected
-                match code {
-                    StatusCode::GATEWAY_TIMEOUT | StatusCode::REQUEST_TIMEOUT => {
-                        Error::deadline_exceeded(err)
-                    }
-                    StatusCode::GONE
-                    | StatusCode::NOT_FOUND
-                    | StatusCode::MOVED_PERMANENTLY
-                    | StatusCode::PERMANENT_REDIRECT
-                    | StatusCode::TEMPORARY_REDIRECT => Error::not_found(err),
-                    StatusCode::FORBIDDEN | StatusCode::PAYMENT_REQUIRED => {
-                        Error::permission_denied(err)
-                    }
-                    StatusCode::NETWORK_AUTHENTICATION_REQUIRED
-                    | StatusCode::PROXY_AUTHENTICATION_REQUIRED
-                    | StatusCode::UNAUTHORIZED => Error::unauthenticated(err),
-                    StatusCode::EXPECTATION_FAILED
-                    | StatusCode::PRECONDITION_FAILED
-                    | StatusCode::PRECONDITION_REQUIRED => Error::failed_precondition(err),
-                    StatusCode::RANGE_NOT_SATISFIABLE => Error::out_of_range(err),
-                    StatusCode::INTERNAL_SERVER_ERROR
-                    | StatusCode::MISDIRECTED_REQUEST
-                    | StatusCode::SERVICE_UNAVAILABLE
-                    | StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS => Error::unavailable(err),
-                    StatusCode::BAD_REQUEST
-                    | StatusCode::HTTP_VERSION_NOT_SUPPORTED
-                    | StatusCode::LENGTH_REQUIRED
-                    | StatusCode::METHOD_NOT_ALLOWED
-                    | StatusCode::NOT_ACCEPTABLE
-                    | StatusCode::PAYLOAD_TOO_LARGE
-                    | StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE
-                    | StatusCode::UNSUPPORTED_MEDIA_TYPE
-                    | StatusCode::URI_TOO_LONG => Error::invalid_argument(err),
-                    StatusCode::TOO_MANY_REQUESTS => Error::resource_exhausted(err),
-                    StatusCode::NOT_IMPLEMENTED => Error::unimplemented(err),
-                    _ => Error::unknown(err),
-                }
+        // Preserve the existing status-to-error-kind mapping.
+        match err.status() {
+            StatusCode::GATEWAY_TIMEOUT | StatusCode::REQUEST_TIMEOUT => {
+                Error::deadline_exceeded(err)
             }
+            StatusCode::GONE
+            | StatusCode::NOT_FOUND
+            | StatusCode::MOVED_PERMANENTLY
+            | StatusCode::PERMANENT_REDIRECT
+            | StatusCode::TEMPORARY_REDIRECT => Error::not_found(err),
+            StatusCode::FORBIDDEN | StatusCode::PAYMENT_REQUIRED => Error::permission_denied(err),
+            StatusCode::NETWORK_AUTHENTICATION_REQUIRED
+            | StatusCode::PROXY_AUTHENTICATION_REQUIRED
+            | StatusCode::UNAUTHORIZED => Error::unauthenticated(err),
+            StatusCode::EXPECTATION_FAILED
+            | StatusCode::PRECONDITION_FAILED
+            | StatusCode::PRECONDITION_REQUIRED => Error::failed_precondition(err),
+            StatusCode::RANGE_NOT_SATISFIABLE => Error::out_of_range(err),
+            StatusCode::INTERNAL_SERVER_ERROR
+            | StatusCode::MISDIRECTED_REQUEST
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS => Error::unavailable(err),
+            StatusCode::BAD_REQUEST
+            | StatusCode::HTTP_VERSION_NOT_SUPPORTED
+            | StatusCode::LENGTH_REQUIRED
+            | StatusCode::METHOD_NOT_ALLOWED
+            | StatusCode::NOT_ACCEPTABLE
+            | StatusCode::PAYLOAD_TOO_LARGE
+            | StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE
+            | StatusCode::UNSUPPORTED_MEDIA_TYPE
+            | StatusCode::URI_TOO_LONG => Error::invalid_argument(err),
+            StatusCode::TOO_MANY_REQUESTS => Error::resource_exhausted(err),
+            StatusCode::NOT_IMPLEMENTED => Error::unimplemented(err),
+            _ => Error::unknown(err),
         }
     }
 }
@@ -210,13 +258,31 @@ impl HttpClient {
                         continue;
                     }
                 }
-
-                if !code.is_success() {
-                    return Err(HttpClientError::StatusCode(code).into());
-                }
             }
 
             let response = response?;
+            let code = response.status();
+            if !code.is_success() {
+                // Refusal is terminal. Bound both bytes and read time; never
+                // log a body, headers, URL, account identifier or bearer.
+                let body = tokio::time::timeout(
+                    Duration::from_secs(1),
+                    Limited::new(response.into_body(), ERROR_BODY_LIMIT).collect(),
+                )
+                .await;
+                let error = match body {
+                    Ok(Ok(body)) => HttpClientError::from_status_body(code, &body.to_bytes()),
+                    Ok(Err(_)) => HttpClientError::Rejected {
+                        status: code,
+                        reason: "body-unavailable-or-over-limit",
+                    },
+                    Err(_) => HttpClientError::Rejected {
+                        status: code,
+                        reason: "body-read-timeout",
+                    },
+                };
+                return Err(error.into());
+            }
             return Ok(response);
         }
     }
