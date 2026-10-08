@@ -24,7 +24,8 @@ def words(text):
     return any(unicodedata.category(char)[0] in 'LN' for char in text)
 
 
-def command_for(root, prefix, language, mode, name_cues):
+def command_for(root, prefix, language, options):
+    mode, name_cues, threads = options
     command = ['bwrap', '--unshare-all', '--die-with-parent', '--ro-bind', '/usr', '/usr',
                '--symlink', 'usr/lib64', '/lib64', '--symlink', 'usr/lib', '/lib',
                '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/review']
@@ -37,7 +38,7 @@ def command_for(root, prefix, language, mode, name_cues):
                       'DO_NOT_TRACK', '1', '--chdir', '/', '/usr/bin/time', '-f',
                       'ASR_RESOURCE {"user":%U,"system":%S}', '/review/needle', '--model',
                       '/review/whistle.cact', '--audio', '/audio.wav', '--audio-language',
-                      language, '--threads', '2']
+                      language, '--threads', str(threads)]
     if mode == 'replay':
         command += ['--audio-stream', '--audio-chunk', '2']
     if name_cues:
@@ -46,7 +47,7 @@ def command_for(root, prefix, language, mode, name_cues):
 
 
 def run_prefixes(root, fixture, language, directory, options):
-    mode, name_cues = options
+    mode, name_cues, _ = options
     if name_cues:
         (directory / 'keywords.txt').write_text('Hongkong\nKowloon\n')
     with wave.open(str(fixture), 'rb') as source:
@@ -67,7 +68,7 @@ def run_prefixes(root, fixture, language, directory, options):
             audio.setparams((1, 2, 16000, end, 'NONE', 'not compressed'))
             audio.writeframes(pcm[:end * 2])
         launch = time.monotonic() - start
-        result = probe.observe(command_for(root, prefix, language, mode, name_cues), cpus,
+        result = probe.observe(command_for(root, prefix, language, options), cpus,
                                (executable.st_dev, executable.st_ino), max_threads=2,
                                capture_lines=True)
         prefix.unlink()
@@ -113,6 +114,7 @@ def main():
     parser.add_argument('--case', choices=scope.PUBLIC_CASES, required=True)
     parser.add_argument('--mode', choices=['replay', 'single-pass'], required=True)
     parser.add_argument('--public-name-cues', action='store_true')
+    parser.add_argument('--decoder-threads', type=int, choices=[1, 2], default=2)
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     if os.geteuid() == 0 or os.geteuid() != os.getuid():
@@ -131,9 +133,11 @@ def main():
         return dict((line.split()[0], int(line.split()[1]))
                     for line in (cg / 'memory.events').read_text().splitlines())
     before = events()
-    result = run_prefixes(root, fixture, language, args.out, (args.mode, args.public_name_cues))
+    result = run_prefixes(root, fixture, language, args.out,
+                          (args.mode, args.public_name_cues, args.decoder_threads))
     after = events()
     result.update(case=args.case, language=language, mode=args.mode,
+                  decoder_threads=args.decoder_threads, native_thread_limit=2,
                   public_name_cues=args.public_name_cues, fixture_sha256=sha,
                   input_pcm_sha256=pcm_sha, materialization=receipts,
                   reference_words=len(units(reference)),
