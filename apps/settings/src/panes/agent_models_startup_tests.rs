@@ -65,19 +65,23 @@ fn mounted_model_hold(deadline: std::time::Duration) {
         area.model.take();
         area.control = control;
         area.device = true;
+        app.harness().begin_profiling();
         let started = std::time::Instant::now();
         app.harness().relayout();
         let publication = started.elapsed();
         let started = std::time::Instant::now();
         let address = crate::effects::open_pane_address(crate::categories::Category::Appearance);
-        let outcome = app
-            .harness()
-            .invoke_action(&address, &serde_json::Map::new(), false, None)
-            .unwrap();
+        let (outcome, invocation_phases) = ui::framework::profiling::observe(|| {
+            app.harness()
+                .invoke_action(&address, &serde_json::Map::new(), false, None)
+                .unwrap()
+        });
         let invocation = started.elapsed();
+        let invocation_layout = app.harness().last_relayout();
         let started = std::time::Instant::now();
-        app.harness().relayout();
+        let ((), adoption_phases) = ui::framework::profiling::observe(|| app.harness().relayout());
         let adoption = started.elapsed();
+        let adoption_layout = app.harness().last_relayout();
         let started = std::time::Instant::now();
         let selected = Some(app.surface_mut::<SettingsApp>().selected());
         println!(
@@ -90,6 +94,20 @@ fn mounted_model_hold(deadline: std::time::Duration) {
             returned.load(std::sync::atomic::Ordering::Acquire),
         ))
         .unwrap();
+        println!("MODEL-LAYOUT invocation={invocation_layout:?} adoption={adoption_layout:?}");
+        let frame_phases = app.harness().take_profile_samples();
+        println!(
+            "MODEL-FRAMES {}",
+            serde_json::to_string(&frame_phases).unwrap()
+        );
+        println!(
+            "MODEL-INVOKE {}",
+            serde_json::to_string(&invocation_phases).unwrap()
+        );
+        println!(
+            "MODEL-ADOPT {}",
+            serde_json::to_string(&adoption_phases).unwrap()
+        );
     });
     properties
         .recv_timeout(std::time::Duration::from_secs(5))

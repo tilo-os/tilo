@@ -463,6 +463,8 @@ pub struct AppearancePane {
     status_shown: Option<String>,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
+    composition_dirty: bool,
+    locale_revision: u64,
     rect: Rect,
 }
 
@@ -481,6 +483,8 @@ impl AppearancePane {
             status_shown,
             structure_dirty: false,
             composed: None,
+            composition_dirty: true,
+            locale_revision: ui::i18n::I18nManager::revision(),
             rect: Rect::ZERO,
         }
     }
@@ -762,14 +766,19 @@ impl AppearancePane {
 
 impl Widget for AppearancePane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        if self.prefs.refresh() {
+        let locale_revision = ui::i18n::I18nManager::revision();
+        let locale_changed = self.locale_revision != locale_revision;
+        self.locale_revision = locale_revision;
+        if self.prefs.refresh() || locale_changed {
             self.shown.show(self.prefs.get());
             // The schedule's rows and the applied theme follow the values.
+            self.composition_dirty = true;
             self.structure_dirty = true;
         }
         let status = self.wallpaper_status.get();
         if status != self.status_shown {
             self.status_shown = status;
+            self.composition_dirty = true;
             self.structure_dirty = true;
         }
         if let Some(c) = &mut self.composed {
@@ -782,7 +791,13 @@ impl Widget for AppearancePane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
+        // Parent reflow reuses these controls and their measurement/focus caches.
+        // Structural model changes replace them only inside the layout pass.
+        let mut composed = match self.composed.take() {
+            Some(composed) if !self.composition_dirty => composed,
+            _ => self.build_composition(),
+        };
+        self.composition_dirty = false;
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
         let style = taffy::Style {
@@ -907,6 +922,144 @@ mod tests {
     fn set(app: &mut TestApp<SettingsShell>, effect: AppearanceEffect) {
         app.effect(&SettingsEffect::from(effect))
             .expect("the appearance effect is answered");
+    }
+
+    #[test]
+    fn mounted_appearance_reflows_keep_current_controls_across_themes_and_viewports() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let address = crate::effects::open_pane_address(crate::categories::Category::Appearance);
+        app.harness()
+            .invoke_action(&address, &serde_json::Map::new(), false, None)
+            .unwrap();
+        app.harness()
+            .perform_semantic_named("appearance.high_contrast", None, &ui::a11y::Action::Focus)
+            .unwrap();
+        let focused_owner = app.harness().inspection().keyboard_focus_owner.unwrap();
+        let focused_control = app.harness().focused_access_node().unwrap();
+        assert!(focused_control.name.is_some());
+        assert!(focused_control.state.focused);
+        for theme in [
+            ui::Theme::light(),
+            ui::Theme::dark(),
+            ui::Theme::high_contrast(),
+        ] {
+            for viewport in [(1472, 920), (440, 820)] {
+                app.harness()
+                    .relayout_themed(viewport, theme.clone())
+                    .unwrap();
+                app.harness().verify_retained_geometry().unwrap();
+                assert_eq!(
+                    app.harness().inspection().keyboard_focus_owner.as_deref(),
+                    Some(focused_owner.as_str())
+                );
+                let focused = app.harness().focused_access_node().unwrap();
+                assert_eq!(focused.name, focused_control.name);
+                assert_eq!(focused.semantic_key, focused_control.semantic_key);
+                assert!(focused.state.focused);
+                let audit = app.harness().native_app_audit();
+                assert!(audit.is_certified(), "{audit:?}");
+                let wanted = !app.settings::<AppearancePrefs>().get().high_contrast;
+                app.harness()
+                    .perform_semantic_named(
+                        "appearance.high_contrast",
+                        None,
+                        &ui::a11y::Action::Activate,
+                    )
+                    .unwrap();
+                app.settle();
+                assert_eq!(
+                    app.settings::<AppearancePrefs>().get().high_contrast,
+                    wanted
+                );
+                let audit = app.harness().native_app_audit();
+                assert!(audit.is_certified(), "{audit:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn mounted_appearance_reflow_refreshes_localized_controls() {
+        use ui::i18n::{I18nManager, PseudoLocale};
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let address = crate::effects::open_pane_address(crate::categories::Category::Appearance);
+        app.harness()
+            .invoke_action(&address, &serde_json::Map::new(), false, None)
+            .unwrap();
+        let before = app.harness().inspection_json().unwrap();
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        app.settle();
+        let after = app.harness().inspection_json().unwrap();
+        let localized = t("settings-appearance-high-contrast");
+        let announced = ui::widget::Text::new(&localized)
+            .accessibility()
+            .unwrap()
+            .name
+            .unwrap();
+        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+        assert_ne!(before, after);
+        assert!(after.contains(&announced), "{after}");
+        assert_ne!(localized, t("settings-appearance-high-contrast"));
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+    }
+
+    #[test]
+    fn mounted_appearance_reflow_follows_new_schedule_and_wallpaper_status() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let address = crate::effects::open_pane_address(crate::categories::Category::Appearance);
+        app.harness()
+            .invoke_action(&address, &serde_json::Map::new(), false, None)
+            .unwrap();
+        set(
+            &mut app,
+            AppearanceEffect::SetTheme {
+                theme: "Automatic".into(),
+            },
+        );
+        set(
+            &mut app,
+            AppearanceEffect::SetDayNightSchedule {
+                schedule: "custom".into(),
+            },
+        );
+        assert!(
+            app.effect(&SettingsEffect::from(AppearanceEffect::SetDayStart {
+                time: "06:15".into(),
+            }))
+            .is_err(),
+            "reflow preserves the declared half-hour choices"
+        );
+        set(
+            &mut app,
+            AppearanceEffect::SetDayStart {
+                time: "06:30".into(),
+            },
+        );
+        app.surface_mut::<crate::settings_app::SettingsApp>()
+            .wallpaper_status()
+            .set(Some("Owned wallpaper fixture ready".into()));
+        app.settle();
+        app.harness().recompose().unwrap();
+        app.harness().verify_retained_geometry().unwrap();
+        let targets = app.harness().targets();
+        assert!(targets.contains_key("appearance.sunrise"), "{targets:?}");
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(inspection.contains("06:30"), "{inspection}");
+        assert!(
+            inspection.contains("Owned wallpaper fixture ready"),
+            "{inspection}"
+        );
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        set(
+            &mut app,
+            AppearanceEffect::SetDayNightSchedule {
+                schedule: "sun".into(),
+            },
+        );
+        app.settle();
+        assert!(!app.harness().targets().contains_key("appearance.sunrise"));
     }
 
     /// Every appearance control's effect writes the person's `appearance`
