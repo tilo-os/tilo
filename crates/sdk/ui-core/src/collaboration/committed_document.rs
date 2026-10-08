@@ -11,6 +11,7 @@ pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, CommittedDocument>>>,
     Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     Arc<std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>>,
+    Arc<std::sync::Mutex<Option<Vec<String>>>>,
 );
 #[derive(Clone)]
 enum Gate {
@@ -33,26 +34,18 @@ impl Reads {
             .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
             .clone())
     }
-    pub(super) fn required_delivery_turns(
-        &self,
-    ) -> Result<Vec<Arc<tokio::sync::Semaphore>>, String> {
-        let keys: Vec<_> = self
-            .0
-            .lock()
-            .map_err(|_| "document reads poisoned")?
-            .iter()
-            .filter_map(|(key, gate)| matches!(gate, Gate::Required(..)).then_some(key.clone()))
-            .collect();
-        keys.iter().map(|key| self.delivery_turn(key)).collect()
+    pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>) {
+        keys.sort();
+        keys.dedup();
+        if let Ok(mut owners) = self.4.lock() {
+            *owners = Some(keys);
+        }
     }
-    pub(super) fn required_routes_ready(&self) -> bool {
-        self.0.lock().is_ok_and(|rows| {
-            rows.values().all(|gate| match gate {
-                Gate::Joining => false,
-                Gate::Legacy => true,
-                Gate::Required(ready, _) => ready.load(Ordering::Acquire),
-            })
-        })
+    pub(super) fn document_owner_routes(&self, original: &str) -> Result<Vec<String>, String> {
+        self.4
+            .lock()
+            .map_err(|_| "document owner routes poisoned".into())
+            .map(|owners| owners.clone().unwrap_or_else(|| vec![original.into()]))
     }
     #[cfg(test)]
     pub(super) fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {

@@ -258,7 +258,7 @@ pub(super) struct BrokerTransport {
 pub(crate) struct NativeHistoryInvocationFixture {
     pub manager: CollaborationManager,
     pub refresh: Box<dyn Fn(Vec<u8>, tokio::sync::oneshot::Receiver<()>)>,
-    pub invoke: Box<dyn Fn()>,
+    pub invoke: Box<dyn Fn(u64, Uuid)>,
     pub received: Box<dyn Fn() -> usize>,
     pub execution: Box<dyn Fn(Result<bool, String>)>,
     pub terminals: Box<dyn Fn() -> usize>,
@@ -365,6 +365,12 @@ impl CollabTransport for BrokerTransport {
             }
             out.push(evt.event);
         }
+    }
+
+    fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+        self.state
+            .document_reads
+            .set_document_owner_routes(routes.iter().map(RouteSpec::channel_id).collect());
     }
 
     fn finish_event_batch(&mut self) {
@@ -4037,7 +4043,7 @@ async fn spawn_context_stream(
 #[derive(Debug)]
 struct NativeInvocationTurn {
     permits: Vec<tokio::sync::OwnedSemaphorePermit>,
-    deadline: tokio::time::Instant,
+    deadline: Instant,
 }
 
 // Use the existing three-second native publication hydration bound. The
@@ -4049,17 +4055,19 @@ async fn native_invocation_delivery_turn(
     let Some(generation) = state.document_reads.delivery_generation(key) else {
         return Ok(None);
     };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let deadline = crate::time::now() + Duration::from_secs(3);
     loop {
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
             return Err("original invocation document custody was retired".into());
         }
-        if tokio::time::Instant::now() >= deadline {
+        if crate::time::now() >= deadline {
             return Err("original invocation capture did not become current".into());
         }
         let mut turns = Vec::new();
-        for semaphore in state.document_reads.required_delivery_turns()? {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let owners = state.document_reads.document_owner_routes(key)?;
+        for owner in &owners {
+            let semaphore = state.document_reads.delivery_turn(owner)?;
+            let remaining = deadline.saturating_duration_since(crate::time::now());
             let turn = tokio::time::timeout(remaining, semaphore.acquire_owned())
                 .await
                 .map_err(|_| "original invocation capture did not become current")?
@@ -4069,17 +4077,21 @@ async fn native_invocation_delivery_turn(
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
             return Err("original invocation document custody was retired".into());
         }
-        if tokio::time::Instant::now() >= deadline {
+        if crate::time::now() >= deadline {
             return Err("original invocation capture did not become current".into());
         }
-        if state.document_reads.required_routes_ready() {
+        if state.document_reads.document_owner_routes(key)? == owners
+            && owners
+                .iter()
+                .all(|owner| state.document_reads.publishable(owner))
+        {
             return Ok(Some(NativeInvocationTurn {
                 permits: turns,
                 deadline,
             }));
         }
         drop(turns);
-        if tokio::time::Instant::now() >= deadline {
+        if crate::time::now() >= deadline {
             return Err("original invocation capture did not become current".into());
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -4164,12 +4176,12 @@ async fn spawn_invocation_stream(
                 };
                 if let Some(turn) = &turn {
                     match tokio::time::timeout_at(
-                        turn.deadline,
+                        tokio::time::Instant::from_std(turn.deadline),
                         recheck_native_invocation(&cancellation_channel, &invocation),
                     )
                     .await
                     {
-                        Ok(Ok(true)) if tokio::time::Instant::now() < turn.deadline => {}
+                        Ok(Ok(true)) if crate::time::now() < turn.deadline => {}
                         Ok(Ok(false)) => continue,
                         result => {
                             tx.state
@@ -9339,6 +9351,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_invocation_delivery_turn_waits_for_every_live_owner() {
+        let state = BridgeState::new();
+        let primary = state.document_reads.close_for_test("original-route");
+        let owner = state.document_reads.close_for_test("live-owner");
+        state.document_reads.close_for_test("unowned-retained");
+        primary.store(true, Ordering::Release);
+        state
+            .document_reads
+            .set_document_owner_routes(vec!["original-route".into(), "live-owner".into()]);
+        let held = state
+            .document_reads
+            .delivery_turn("live-owner")
+            .unwrap()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let wait = native_invocation_delivery_turn("original-route", &state);
+        tokio::pin!(wait);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        owner.store(true, Ordering::Release);
+        drop(held);
+        let turn = wait.await.unwrap().unwrap();
+        assert_eq!(turn.permits.len(), 2);
+        assert!(!state.document_reads.publishable("unowned-retained"));
+    }
+
+    #[tokio::test]
     async fn native_invocation_delivery_turn_rejects_original_generation_retirement() {
         let state = BridgeState::new();
         let original = state.document_reads.close_for_test("original-route");
@@ -9413,11 +9456,11 @@ mod tests {
                 captures.committed_revision = Some([8; 32]);
                 captures.committed_recheck_gate = Some(gate);
             }),
-            invoke: Box::new(move || {
+            invoke: Box::new(move |id, uuid| {
                 invocation_captures.lock().unwrap().invocations.push_back(
                     runtime_collab::Invocation {
-                        id: 10,
-                        invocation_uuid: *Uuid::from_u128(10).as_bytes(),
+                        id,
+                        invocation_uuid: *uuid.as_bytes(),
                         resource: "initial-probe".into(),
                         action: "inspect".into(),
                         argument: None,

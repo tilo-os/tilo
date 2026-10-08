@@ -543,7 +543,7 @@ fn initial_history_external_job10_waits_for_subsequent_capture_on_original_live_
         std::thread::yield_now();
     }
     assert!(!app.published_action_history_ready());
-    (fixture.invoke)();
+    (fixture.invoke)(10, uuid::Uuid::from_u128(10));
     while (fixture.received)() == 0 {
         app.pump_collab_presence();
         assert!(crate::time::now() < deadline);
@@ -626,7 +626,7 @@ fn initial_history_waited_external_job_rechecks_cancelled_or_refused_original_ex
             std::thread::yield_now();
         }
         assert!(!app.published_action_history_ready());
-        (fixture.invoke)();
+        (fixture.invoke)(10, uuid::Uuid::from_u128(10));
         while (fixture.received)() == 0 {
             app.pump_collab_presence();
             assert!(crate::time::now() < deadline);
@@ -677,4 +677,87 @@ fn initial_history_waited_external_job_rechecks_cancelled_or_refused_original_ex
         drop(app);
         fixture.thread.join().unwrap();
     }
+}
+
+#[test]
+fn initial_history_job2_does_not_wait_for_unowned_retained_native_route() {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let fixture = CollaborationManager::native_history_invocation_fixture_for_test(history.save());
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(
+            calls.clone(),
+            std::rc::Rc::new(std::cell::Cell::new(false)),
+        )),
+    );
+    app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    app.collaboration.manager = fixture.manager;
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.published_action_history_ready() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    let original = app
+        .collaboration
+        .manager
+        .primary_route()
+        .unwrap()
+        .route
+        .clone();
+    let unowned = crate::collaboration::RouteSpec::record(
+        &original.app_id,
+        original.cluster_id,
+        "retained-unowned",
+    );
+    app.collaboration.manager.join_route(unowned.clone());
+    while !app
+        .committed_documents
+        .iter()
+        .any(|(route, _)| route == &unowned)
+    {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(
+        app.published_action_history_ready(),
+        "the production live owner map is ready"
+    );
+    assert!(
+        !app.collaboration
+            .manager
+            .document_route_ready(Some(&unowned))
+    );
+    let id = uuid::Uuid::parse_str("fb32a166-6569-490e-a585-6c7a8207ed06").unwrap();
+    (fixture.invoke)(2, id);
+    while calls.get() == 0 && app.collaboration.manager.is_connected() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(
+        app.collaboration.manager.is_connected(),
+        "unowned retained capture cannot close the original live owner"
+    );
+    assert_eq!(calls.get(), 1);
+    assert_eq!((fixture.received)(), 1);
+    assert!(app.action_publication_failure.is_none());
+    assert!(
+        app.committed_documents
+            .iter()
+            .any(|(route, read)| route == &unowned && read.is_current())
+    );
+    assert!(
+        !app.collaboration
+            .manager
+            .document_route_ready(Some(&unowned))
+    );
+    drop(app);
+    fixture.thread.join().unwrap();
 }
