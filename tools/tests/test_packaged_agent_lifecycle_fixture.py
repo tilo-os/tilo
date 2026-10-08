@@ -2121,6 +2121,48 @@ class PresentedEditorTargetTests(unittest.TestCase):
             with self.subTest(resource=stale), self.assertRaises(RuntimeError):
                 PROOF.marker_operation_from_request(request, "tide", stale)
 
+    def test_marker_governance_grants_only_the_discovered_resource(self):
+        resource = "tilo-ui-bound:v1:host:current:opaque-category"
+        target = {"application": "so.tilo.chat", "room": "room-a",
+                  "operation": "rename", "resource": resource}
+        rows = [{"application": "tilo.workspace", "room": "room-a",
+                 "resource": "workspace.permissions:room-a", "operation": operation,
+                 "id": operation} for operation in ("profile.save", "profile.assign")]
+        requests = []
+
+        def invoked(socket, action, arguments):
+            requests.append((action["operation"], arguments))
+            return {"update": {"invocation": action["operation"]}}
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "actions", return_value=rows), \
+                patch.object(PROOF, "wait_for", side_effect=lambda label, probe, process: probe()), \
+                patch.object(PROOF, "invoke", side_effect=invoked), \
+                patch.object(PROOF, "wait_terminal", side_effect=lambda socket, receipt, process: receipt):
+            PROOF.grant_exact_marker_action("socket", "room-a", "tide", target,
+                                           object(), pathlib.Path(directory))
+        self.assertEqual([operation for operation, _ in requests], ["profile.save", "profile.assign"])
+        self.assertEqual(requests[0][1]["rules"], [{
+            "scope": {"Action": {"app": "so.tilo.chat", "resource": resource, "action": "rename"}},
+            "effect": "Grant", "verb": "Write",
+        }])
+        self.assertEqual(requests[1][1]["subject"], "tide")
+        self.assertEqual(requests[1][1]["subject_kind"], "agent")
+        stage = inspect.getsource(PROOF.managed_agent_marker_stage)
+        self.assertIn("grant_exact_marker_action(socket, room, agent, target, process, output)", stage)
+
+    def test_marker_governance_refuses_missing_or_foreign_discovered_target(self):
+        target = {"application": "so.tilo.chat", "room": "room-a",
+                  "operation": "rename", "resource": "opaque-category"}
+        for invalid in (None, {}, {**target, "application": "other"},
+                        {**target, "room": "room-b"}, {**target, "operation": "message"},
+                        {**target, "resource": ""}, {**target, "resource": None}):
+            with self.subTest(target=invalid), patch.object(PROOF, "actions") as actions, \
+                    self.assertRaises(RuntimeError):
+                PROOF.grant_exact_marker_action("socket", "room-a", "tide", invalid,
+                                               object(), pathlib.Path("unused"))
+            actions.assert_not_called()
+
     def test_marker_stage_uses_real_governance_and_accessibility_doors(self):
         rows = [{
             "application": "tilo.workspace", "room": "room-a",

@@ -6245,6 +6245,7 @@ impl CapnpBrokerState {
         self.authorize_invocation_permission(
             &offered.0.route.cluster_id,
             &offered.0.app_id,
+            &offered.1.resource,
             &offered.1.action,
             offered.1.contract.permission,
             actor,

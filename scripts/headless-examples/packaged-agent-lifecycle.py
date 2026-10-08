@@ -4130,8 +4130,12 @@ def offered_chat_category_action(socket, room, record, label, operation):
     return matches[0] if matches else None
 
 
-def grant_exact_marker_action(socket, room, agent, process, output):
+def grant_exact_marker_action(socket, room, agent, target, process, output):
     """Assign one expiring action rule through the real owner governance surface."""
+    if not isinstance(target, dict) or target.get("application") != "so.tilo.chat" \
+            or target.get("room") != room or target.get("operation") != "rename" \
+            or not isinstance(target.get("resource"), str) or not target["resource"]:
+        raise RuntimeError("marker grant requires its exact discovered Chat rename resource")
     profile_name = "Agent marker proof"
     save = wait_for("owner profile.save action", lambda: offered_governance_action(
         socket, room, "profile.save"), process)
@@ -4140,7 +4144,7 @@ def grant_exact_marker_action(socket, room, agent, process, output):
         "description": "May rename one Chat category for the marker proof",
         "rules": [{
             "scope": {"Action": {
-                "app": "so.tilo.chat", "action": "rename",
+                "app": "so.tilo.chat", "resource": target["resource"], "action": "rename",
             }},
             "effect": "Grant",
             "verb": "Write",
@@ -4846,7 +4850,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     # Preserve the discovered opaque address verbatim. Never reconstruct or
     # decode a mounted component's transport alias from its semantic Person id.
     provider.marker_resource = target["resource"]
-    grant = grant_exact_marker_action(socket, room, agent, process, output)
+    grant = grant_exact_marker_action(socket, room, agent, target, process, output)
     queue = wait_for("owner-published Queue task action", lambda: offered_desktop_action(
         socket, room, "tasks", "desktop:tasks", "queue"), process)
     queued_receipt = wait_terminal(socket, invoke(socket, queue, {
