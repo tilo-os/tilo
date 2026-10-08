@@ -883,11 +883,14 @@ fn request_window_shortcut(
     Ok(())
 }
 
+/// Store an appearance change the action `action` made, then apply it.
 fn persist_appearance(
     st: &mut ChromeState,
-    values: serde_json::Map<String, serde_json::Value>,
+    action: &str,
+    write: settings_store::SectionWrite,
 ) -> Result<(), ActionError> {
-    settings_store::update_section("appearance", values)
+    write
+        .commit_by(&settings_store::ChangeOrigin::action(action))
         .map_err(|err| ActionError::Refused(err.to_string()))?;
     crate::shell::i18n::apply_configured_locale();
     st.note_appearance_change();
@@ -896,21 +899,19 @@ fn persist_appearance(
 
 /// Dark or light mode, keeping whichever theme the person chose for it.
 /// Choosing a mode leaves high contrast.
-fn set_mode(st: &mut ChromeState, mode: &str) -> Result<(), ActionError> {
-    let mut values = serde_json::Map::new();
-    values.insert(
-        ui::theme::MODE_KEY.into(),
-        serde_json::Value::String(mode.into()),
-    );
-    values.insert("high_contrast".into(), serde_json::Value::Bool(false));
-    persist_appearance(st, values)
+fn set_mode(st: &mut ChromeState, action: &str, mode: &str) -> Result<(), ActionError> {
+    use settings_store::appearance::{HIGH_CONTRAST, MODE};
+    let write = settings_store::SectionWrite::new()
+        .set(&MODE, &Some(mode.to_string()))
+        .set(&HIGH_CONTRAST, &false);
+    persist_appearance(st, action, write)
 }
 
 /// High contrast in the current mode's polarity.
 fn set_high_contrast(st: &mut ChromeState) -> Result<(), ActionError> {
-    let mut values = serde_json::Map::new();
-    values.insert("high_contrast".into(), serde_json::Value::Bool(true));
-    persist_appearance(st, values)
+    let write =
+        settings_store::SectionWrite::new().set(&settings_store::appearance::HIGH_CONTRAST, &true);
+    persist_appearance(st, "appearance.high-contrast", write)
 }
 
 fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError> {
@@ -923,12 +924,11 @@ fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError
             )));
         }
     };
-    let mut values = serde_json::Map::new();
-    values.insert(
-        "language".into(),
-        serde_json::Value::String(language.into()),
+    let write = settings_store::SectionWrite::new().set(
+        &settings_store::appearance::LANGUAGE,
+        &Some(language.to_string()),
     );
-    persist_appearance(st, values)
+    persist_appearance(st, "appearance.language", write)
 }
 
 /// One action row. `id` is the palette command id (`overview.toggle`,
@@ -1919,13 +1919,13 @@ impl Action {
             "appearance.theme.dark",
             "search-action-appearance-theme-dark",
             "search-action-appearance-theme-dark-subtitle",
-            |st, _| set_mode(st, "dark"),
+            |st, _| set_mode(st, "appearance.theme.dark", "dark"),
         ),
         chrome(
             "appearance.theme.light",
             "search-action-appearance-theme-light",
             "search-action-appearance-theme-light-subtitle",
-            |st, _| set_mode(st, "light"),
+            |st, _| set_mode(st, "appearance.theme.light", "light"),
         ),
         chrome(
             "appearance.high-contrast",
@@ -5355,6 +5355,71 @@ mod tests {
         assert_eq!(
             settings_store::str_at(&settings_store::load(), "appearance", "language"),
             Some("de-DE")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_theme_action_records_its_action_id_with_both_leaves_it_sets() {
+        struct Uninstall;
+        impl Drop for Uninstall {
+            fn drop(&mut self) {
+                settings_store::install_source(None);
+            }
+        }
+        let config = tempfile::tempdir().expect("isolated settings");
+        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
+        let records = settings_store::SessionSettings::open(paths.clone()).expect("records");
+        settings_store::install_source(Some(std::sync::Arc::new(records)));
+        let _uninstall = Uninstall;
+
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let rows = {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "light theme",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        invoke_action(&rows, "appearance.theme.light", &chrome);
+
+        let log = std::fs::read_to_string(paths.change_log()).expect("change log");
+        let entries: Vec<serde_json::Value> = log
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
+            .collect();
+        let mut leaves: Vec<_> = entries
+            .iter()
+            .map(|entry| {
+                assert_eq!(entry["section"], "appearance");
+                assert_eq!(entry["action"], "appearance.theme.light");
+                assert_eq!(entry["via"], "session");
+                (
+                    entry["leaf"].as_str().unwrap_or_default(),
+                    entry["after"].clone(),
+                )
+            })
+            .collect();
+        leaves.sort_by_key(|(leaf, _)| *leaf);
+        assert_eq!(
+            leaves,
+            [
+                ("high_contrast", serde_json::json!(false)),
+                ("mode", serde_json::json!("light")),
+            ],
+            "one merge sets both leaves, each attributed to the action"
+        );
+        assert_eq!(
+            settings_store::load_at(&paths.copy)["appearance"]["mode"],
+            "light",
+            "processes reading the copy see the typed write"
         );
     }
 
