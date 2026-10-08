@@ -45,8 +45,9 @@
 pub use tilo_relay_client::coedit::{
     AttributedPresence, CoeditError, CoeditPayload, Inbound, VoiceEvent,
 };
+// The daemon classifies retained frames with these (`tilo_relay::coedit::*`).
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use tilo_relay_client::coedit::{RetentionKind, retention_metadata};
+pub use tilo_relay_client::coedit::{RetentionKind, retention_metadata};
 
 use crate::client::RelayClient;
 use crate::transport::Envelope;
