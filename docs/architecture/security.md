@@ -356,8 +356,12 @@ grant. The originating broker enumerates at most 64 genuine candidates through
 custody while the attended governor's existing search palette chooses an inert
 token from those candidates. The governor never substitutes its own catalogue
 or receives delegated execution authority. The origin re-resolves the chosen
-canonical provider, address and semantic identity before returning the original
-typed reference. Missing resources, changed publication and retired custody
+exact originally advertised provider, address and semantic identity before returning
+the original typed reference. Ordinary native publishers use the original caller's
+browsable provider catalogue, not the private host-worker canonical route index.
+The selected provider must remain present with identical app, workspace, record
+and peer metadata before and after asynchronous row resolution; another publisher
+of the same record is never substituted. Missing resources, changed publication and retired custody
 refuse; a dismissed choice returns no reference and is never replayed.
 
 The installed handoff uses the existing authenticated room action connection.
