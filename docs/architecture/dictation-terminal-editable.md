@@ -92,3 +92,58 @@ before and after acknowledgment, duplicate transactions, cancellation and
 repeated sessions. Assert the actual producer buffer and accepted revision;
 capturing PTY bytes or testing a host-only helper is insufficient. Include hosted,
 standalone and embedded Terminal surfaces and preserve own-shell agent refusal.
+
+## Qualified native editor feasibility fixture
+
+`dictation-bash-editor-review.json` records ten actual Bash/readline journeys in
+an isolated namespace with a controlling PTY, plus refusal to run qualification
+with Python assertions disabled. The source fixture is
+`tools/release/fixtures/bash_editor_review.c`; its runner is
+`tools/release/fixtures/bash_editor_journey.py`. They are review inputs, not an
+installed Terminal backend or an extension of the current ush launch protocol.
+
+The fixture edits the real native buffer through Readline, replaces a Unicode
+active selection, groups one native Undo and restores the selection. Actual
+keypress and redisplay hooks invalidate an older revision even when text and
+caret return to their original state. Newline and escape payloads are rejected;
+the replacement never submits a command. A real child exec verifies that the
+editor descriptor is close-on-exec. Interactive `read -e`, silent `read`, and a startup
+`read -e` prompt, are refused. Crucially, the startup case failed when the
+prototype checked only Bash's top-level `executing` flag: startup builtin input
+occurs outside that loop. The corrected fixture also checks the actual builtin
+execution witness. The failing receipt remains in private review evidence.
+
+The installed idle event-hook route failed to consume typed input in this
+review; the positive fixture polls the owned editor FD through the supported
+Readline input-function hook instead. It initializes Bash's own Readline
+integration before capturing hooks. The active selection is produced with
+Readline's actual exchange-point-and-mark command, rather than assuming that
+setting a mark creates a visible selection.
+
+Reproduce only on the isolated review builder. Extract the exact ledger-pinned
+signed development packages into a private directory, retaining their licence
+files; do not install them or change RPM trust. Compile the fixture with the
+ledger's compiler flags and private `usr/include`, `usr/include/bash`, and
+`usr/include/bash/include` system include paths. Name the output
+`editor-proof.so` inside that review directory, then run:
+
+```sh
+python3 tools/release/fixtures/bash_editor_journey.py \
+  --review-root <private-review-directory> \
+  --receipt <new-private-receipt.json>
+```
+
+The runner binds exactly the module and synthetic rc file, a read-only system
+`/usr`, and private proc/dev/tmp. It exposes neither the user's home nor a
+microphone, display, clipboard or external network. Receipts include exact
+module, runner and installed Bash digests and cannot overwrite earlier evidence.
+The fixture source carries the repository's AGPL-3.0-only licence; packaged GNU
+Bash/readline licences and their exact source-package receipt are in the ledger.
+No GNU source implementation was copied into the fixture.
+
+This establishes native editing feasibility, not trusted delivery. Producer
+authentication, finite leases, focus/actor binding, a stable versioned protocol,
+queryable idempotent receipts, complete signal/unload handling, the existing ush
+FD custody route, participant-private resources and system Undo/Redo still need
+production implementation and acceptance. The fixture must not be installed or
+enabled in a user shell. Arbitrary shells and TUIs remain unavailable.
