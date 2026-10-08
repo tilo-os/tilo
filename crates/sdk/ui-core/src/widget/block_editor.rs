@@ -6150,6 +6150,13 @@ impl BlockEditor {
                 if text.chars().all(char::is_control) {
                     false
                 } else {
+                    // This path owns the replacement, so TextInput's normal
+                    // Commit handler will not run to retire its preedit.
+                    if let Some(index) = self.focused_index()
+                        && let Some(block) = self.blocks.get_mut(index)
+                    {
+                        block.line.inner_mut().finish_preedit();
+                    }
                     self.replace_document_selection(text)
                 }
             }

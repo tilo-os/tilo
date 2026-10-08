@@ -1220,6 +1220,12 @@ impl TextInput {
         self.core.has_preedit()
     }
 
+    /// A composite editor accepted the IME commit through its document-wide
+    /// selection path, rather than this field's insertion path.
+    pub(crate) fn finish_preedit(&mut self) {
+        self.core.clear_preedit();
+    }
+
     /// Register an app-local callback for committed user edits.
     ///
     /// Keyboard input, paste, accessibility edits, and committed IME text

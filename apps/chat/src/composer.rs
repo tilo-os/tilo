@@ -207,6 +207,44 @@ impl ComposerSource {
 }
 
 impl RichTextSource for ComposerSource {
+    fn owns_local_history(&self) -> bool {
+        self.private_key.is_some()
+    }
+    fn begin_local_edit(&mut self, metadata: Option<String>) {
+        if let Some(key) = &self.private_key {
+            self.private.update(|drafts| {
+                if let Some(draft) = drafts.get_mut(key) {
+                    draft.begin_local_edit(metadata);
+                }
+            });
+        }
+    }
+
+    fn finish_local_edit(&mut self) {
+        if let Some(key) = &self.private_key {
+            self.private.update(|drafts| {
+                if let Some(draft) = drafts.get_mut(key) {
+                    draft.finish_local_edit();
+                }
+            });
+        }
+    }
+
+    fn local_undo(
+        &mut self,
+        request: ui::undo::UndoRequest,
+        metadata: Option<String>,
+    ) -> Option<Option<String>> {
+        let key = self.private_key.as_ref()?;
+        let mut result = None;
+        self.private.update(|drafts| {
+            if let Some(draft) = drafts.get_mut(key) {
+                result = draft.local_undo(request, metadata);
+            }
+        });
+        self.observe();
+        result
+    }
     fn read_only(&self) -> bool {
         self.read_only || (self.private_key.is_none() && self.shared.read_only())
     }
@@ -544,6 +582,10 @@ impl<S: RichTextSource + 'static> Composer<S> {
 
     pub fn is_focused(&self) -> bool {
         Widget::is_focused(self.host.widget())
+    }
+
+    pub(crate) fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        ui::undo::LocalUndo::handle_local_undo_request(self.host.widget_mut(), request)
     }
 
     #[cfg(test)]

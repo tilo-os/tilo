@@ -162,18 +162,22 @@ impl<S: RichTextSource> RichTextSurface<S> {
     /// Put `text` at the caret as the person typing would (an emoji picked
     /// from a menu), through the source's edits.
     pub fn insert_text(&mut self, edits: &mut Edits<'_>, text: &str) {
+        self.begin_local_edit();
         if self.editor.insert_text(text) {
             self.commit(edits);
         }
+        self.source.finish_local_edit();
     }
 
     /// Put a mention of the participant `id`, shown as `label`, at the caret
     /// (replacing a selection, such as the typed query the person picked it
     /// from), through the source's edits.
     pub fn insert_mention(&mut self, edits: &mut Edits<'_>, id: &str, label: &str) {
+        self.begin_local_edit();
         if self.editor.insert_mention(id, label) {
             self.commit(edits);
         }
+        self.source.finish_local_edit();
     }
 
     /// Whether the person sent or cancelled since the last call.
@@ -785,6 +789,12 @@ impl<S: RichTextSource> RichTextSurface<S> {
         let local = (presented_end == edited_end).then_some(start..edited_end);
         self.present_state(local.as_ref());
     }
+
+    fn begin_local_edit(&mut self) {
+        if self.source.owns_local_history() {
+            self.source.begin_local_edit(editor_metadata(&self.editor));
+        }
+    }
 }
 
 /// What the editor was last shown, reused for paragraphs that did not
@@ -888,7 +898,7 @@ impl ResourceSurface<RichText> for RichTextSurface {
 }
 
 impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
-    ui::provides!(dyn ui::undo::CommittedActions; inner = editor);
+    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::LocalUndo; inner = editor);
 
     type Inner = BlockEditor;
 
@@ -953,10 +963,12 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             *ctx.handled = true;
             return;
         }
+        self.begin_local_edit();
         self.editor.handle_event(event, ctx);
         let mut edits = ctx.edits();
         self.commit(&mut edits);
         self.drain_find_replace(&mut edits);
+        self.source.finish_local_edit();
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -1088,11 +1100,86 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     }
 }
 
-// Every edit is a dispatcher's, whose undo boundaries the app's root
-// reports; the editor itself never brackets a step.
+// Shared edits are a dispatcher's; private drafts own local history. Neither
+// may accidentally bracket an unrelated change in the application document.
 impl<S: RichTextSource + 'static> ui::undo::CommittedActions for RichTextSurface<S> {
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         None
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EditorMetadata {
+    focused: Option<usize>,
+    line: Option<String>,
+    selection: Option<[usize; 4]>,
+}
+
+fn editor_metadata(editor: &BlockEditor) -> Option<String> {
+    ui::serde_json::to_string(&EditorMetadata {
+        focused: editor.focused_index(),
+        line: editor
+            .focused_index()
+            .and_then(|index| editor.blocks().get(index))
+            .and_then(|block| ui::undo::get_state(block.line.inner())),
+        selection: editor.document_selection().map(|selection| {
+            [
+                selection.anchor.block,
+                selection.anchor.byte,
+                selection.cursor.block,
+                selection.cursor.byte,
+            ]
+        }),
+    })
+    .ok()
+}
+
+impl<S: RichTextSource + 'static> ui::undo::LocalUndo for RichTextSurface<S> {
+    fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        if !self.editor.is_focused() || !self.source.owns_local_history() {
+            return false;
+        }
+        // A composing or view-only private field must not fall through and
+        // undo an unrelated shared application action.
+        if self.source.read_only() || self.editor.is_composing() {
+            return true;
+        }
+        let Some(metadata) = self
+            .source
+            .local_undo(request, editor_metadata(&self.editor))
+        else {
+            return false;
+        };
+        self.present_state(None);
+        if let Some(metadata) =
+            metadata.and_then(|value| ui::serde_json::from_str::<EditorMetadata>(&value).ok())
+        {
+            self.editor.clear_document_selection();
+            if let Some(index) = metadata.focused {
+                self.editor
+                    .focus_block(index, ui::widget::CursorPlacement::Start);
+            }
+            if let Some(index) = metadata.focused
+                && let Some(saved) = metadata.line
+                && let Some(block) = self.editor.blocks_mut().get_mut(index)
+            {
+                ui::undo::set_state(block.line.inner_mut(), &saved);
+            }
+            if let Some([anchor_block, anchor_byte, cursor_block, cursor_byte]) = metadata.selection
+            {
+                self.editor.select_document_range(
+                    ui::widget::DocumentPosition {
+                        block: anchor_block,
+                        byte: anchor_byte,
+                    },
+                    ui::widget::DocumentPosition {
+                        block: cursor_block,
+                        byte: cursor_byte,
+                    },
+                );
+            }
+        }
+        true
     }
 }
 

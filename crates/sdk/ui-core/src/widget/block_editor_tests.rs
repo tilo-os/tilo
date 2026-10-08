@@ -2480,6 +2480,59 @@ fn focused_solid_caret_settles_after_paint_and_focus_changes_redraw() {
 }
 
 #[test]
+fn document_selection_ime_commit_retires_preedit_without_double_insertion() {
+    for paragraphs in [vec!["Original draft"], vec!["Original", " draft"]] {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(
+            paragraphs
+                .iter()
+                .map(|text| Block::paragraph(text))
+                .collect(),
+        );
+        editor.set_focus(true);
+        let end = paragraphs.len().saturating_sub(1);
+        editor.select_document_range(
+            DocumentPosition { block: 0, byte: 0 },
+            DocumentPosition {
+                block: end,
+                byte: paragraphs[end].len(),
+            },
+        );
+        for (event, composing) in [
+            (
+                WindowEvent::Ime(winit::event::Ime::Preedit("ni".into(), Some((0, 2)))),
+                true,
+            ),
+            (
+                WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+                false,
+            ),
+        ] {
+            let mut handled = false;
+            editor.handle_event(
+                &event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: crate::widget::Edits::lend(&mut AutoCommit::new()),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: NodeId::new(0),
+                    taffy: &TaffyTree::new(),
+                },
+            );
+            assert!(handled);
+            assert_eq!(editor.is_composing(), composing);
+        }
+        assert_eq!(editor.blocks().len(), 1);
+        assert_eq!(editor.blocks()[0].text(), "東京");
+        assert_eq!(editor.blocks()[0].line.cursor_pos(), "東京".len());
+        assert_eq!(editor.document_selection(), None);
+    }
+}
+
+#[test]
 fn focused_block_ime_repaints_after_an_idle_paint() {
     let mut editor = BlockEditor::new();
     editor.set_blocks(vec![Block::paragraph("text")]);

@@ -5288,12 +5288,32 @@ impl ChatApp {
     }
 }
 
+impl ui::undo::LocalUndo for ChatApp {
+    fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        if let Some(id) = self.focused_agent_surface.as_deref()
+            && let Some(surface) = self
+                .agent_surfaces
+                .values_mut()
+                .find(|surface| surface.id == id)
+        {
+            return ui::undo::LocalUndo::handle_local_undo_request(surface.view.as_mut(), request);
+        }
+        if self.editing.is_some() {
+            self.edit_input.handle_local_undo_request(request)
+        } else {
+            self.focused_composer_mut()
+                .handle_local_undo_request(request)
+        }
+    }
+}
+
 impl Widget for ChatApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::widget::Collaborative,
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::undo::LocalUndo,
         dyn ui::collaboration::participants::Participants,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::application_view::ApplicationViewState,

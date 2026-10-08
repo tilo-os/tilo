@@ -50,6 +50,29 @@ pub trait RichTextSource {
     /// Returns the refusal; nothing is written.
     fn apply(&mut self, edits: &mut Edits<'_>, edit: &RichTextAction) -> Result<(), ActionError>;
 
+    /// Bracket one local editor interaction, including its caret/selection.
+    /// Shared resource sources leave history to their dispatcher.
+    fn begin_local_edit(&mut self, _metadata: Option<String>) {}
+
+    /// Whether the source owns private editing history rather than dispatching
+    /// to the document. Avoid collecting editor metadata for shared sources.
+    fn owns_local_history(&self) -> bool {
+        false
+    }
+
+    /// Close the interaction's local history boundary.
+    fn finish_local_edit(&mut self) {}
+
+    /// `None` means history belongs to the application document. `Some`
+    /// consumes the request, with saved editor metadata when a step moved.
+    fn local_undo(
+        &mut self,
+        _request: ui::undo::UndoRequest,
+        _metadata: Option<String>,
+    ) -> Option<Option<String>> {
+        None
+    }
+
     /// The presence keys collaborators address paragraphs by.
     fn presence_keys(&self) -> Option<PresenceKeyFn> {
         None
@@ -330,6 +353,24 @@ impl RichTextSource for RichTextField {
 /// A shared handle, for an app that keeps the source to change it later
 /// (its permissions) while the surface holds it.
 impl<S: RichTextSource> RichTextSource for Rc<std::cell::RefCell<S>> {
+    fn owns_local_history(&self) -> bool {
+        self.borrow().owns_local_history()
+    }
+    fn begin_local_edit(&mut self, metadata: Option<String>) {
+        self.borrow_mut().begin_local_edit(metadata);
+    }
+
+    fn finish_local_edit(&mut self) {
+        self.borrow_mut().finish_local_edit();
+    }
+
+    fn local_undo(
+        &mut self,
+        request: ui::undo::UndoRequest,
+        metadata: Option<String>,
+    ) -> Option<Option<String>> {
+        self.borrow_mut().local_undo(request, metadata)
+    }
     fn read_only(&self) -> bool {
         self.borrow().read_only()
     }

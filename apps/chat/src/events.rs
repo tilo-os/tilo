@@ -4486,6 +4486,172 @@ mod tests {
         );
         assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
         assert_eq!(app.composer_main.value(), "東京");
+        assert!(ui::undo::handle_local_undo_request(
+            app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(app.composer_main.value(), "Original draft");
+        assert_eq!(app.composer_main.selection(), (0, "Original draft".len()));
+        assert!(ui::undo::handle_local_undo_request(
+            app,
+            ui::undo::UndoRequest::Redo
+        ));
+        assert_eq!(app.composer_main.value(), "東京");
+    }
+
+    fn assert_detached_private_history(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        channel: &str,
+        id: &str,
+    ) {
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            app,
+            Some(id),
+            true,
+        );
+        app.agent_surfaces
+            .get_mut(channel)
+            .unwrap()
+            .view
+            .composer_main
+            .insert_text(&mut ui::widget::Edits::lend(doc), "!");
+        assert_eq!(
+            app.agent_surfaces[channel].view.composer_main.value(),
+            "東京!"
+        );
+        assert!(ui::undo::handle_local_undo_request(
+            app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(
+            app.agent_surfaces[channel].view.composer_main.value(),
+            "東京"
+        );
+        assert!(ui::undo::handle_local_undo_request(
+            app,
+            ui::undo::UndoRequest::Redo
+        ));
+        assert_eq!(
+            app.agent_surfaces[channel].view.composer_main.value(),
+            "東京!"
+        );
+        assert!(ui::undo::handle_local_undo_request(
+            app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(
+            app.agent_surfaces[channel].view.composer_main.value(),
+            "東京"
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            app,
+            Some(id),
+            false,
+        );
+    }
+
+    fn commit_detached_ime_and_undo(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        channel: &str,
+        id: &str,
+    ) {
+        feed_root_mods(
+            app,
+            doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+            Modifiers::default(),
+        );
+        assert_eq!(
+            app.agent_surfaces[channel].view.composer_main.value(),
+            "東京",
+            "the primary source commits once into the retained detached editor"
+        );
+        assert!(
+            !app.agent_surfaces[channel]
+                .view
+                .composer_main
+                .is_composing()
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            app,
+            Some(id),
+            true,
+        );
+        feed_root_mods(app, doc, &key_char("!"), Modifiers::default());
+        assert_eq!(
+            app.agent_surfaces[channel].view.composer_main.value(),
+            "東京!"
+        );
+        assert!(ui::undo::handle_local_undo_request(
+            app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(
+            app.agent_surfaces[channel].view.composer_main.value(),
+            "東京"
+        );
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_ime(app, id).is_some(),
+            "the source-held detached editor exports its actual IME caret"
+        );
+    }
+
+    #[test]
+    fn private_agent_draft_is_reached_by_the_hosts_local_undo_door() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.reload(&doc);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "draft");
+        assert_eq!(app.composer_main.value(), "draft");
+        assert!(ui::undo::handle_local_undo_request(
+            &mut app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(app.composer_main.value(), "draf");
+        assert_eq!(app.composer_main.selection(), (4, 4));
+        assert!(ui::undo::handle_local_undo_request(
+            &mut app,
+            ui::undo::UndoRequest::Redo
+        ));
+        assert_eq!(app.composer_main.value(), "draft");
+        assert_eq!(app.composer_main.selection(), (5, 5));
+        app.composer_main.select(1, 4);
+        app.composer_main
+            .insert_text(&mut ui::widget::Edits::lend(&mut doc), "x");
+        assert_eq!(app.composer_main.value(), "dxt");
+        assert!(ui::undo::handle_local_undo_request(
+            &mut app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(app.composer_main.value(), "draft");
+        assert_eq!(app.composer_main.selection(), (1, 4));
+        app.room_agents.push("other".into());
+        app.on_hit(
+            Hit::Agent("other".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "B");
+        assert_eq!(app.composer_main.value(), "B");
+        assert!(ui::undo::handle_local_undo_request(
+            &mut app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(app.composer_main.value(), "");
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.composer_main.sync(&doc);
+        assert_eq!(app.composer_main.value(), "draft");
     }
 
     #[test]
@@ -4563,28 +4729,8 @@ mod tests {
             "Original draft",
             "the live preedit stays composition-only on the same detached editor"
         );
-        feed_root_mods(
-            &mut app,
-            &mut doc,
-            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
-            Modifiers::default(),
-        );
-        assert_eq!(
-            app.agent_surfaces[&channel].view.composer_main.value(),
-            "東京",
-            "the primary source commits once into the retained detached editor"
-        );
-        feed_root_mods(&mut app, &mut doc, &key_char("!"), Modifiers::default());
-        feed_root_mods(&mut app, &mut doc, &key_char("z"), mods(true, false));
-        assert_eq!(
-            app.agent_surfaces[&channel].view.composer_main.value(),
-            "東京"
-        );
-        assert!(
-            ui::widget::FloatingSurfaceWidgetExt::floating_surface_ime(&app, &id).is_some(),
-            "the source-held detached editor exports its actual IME caret"
-        );
-
+        commit_detached_ime_and_undo(&mut app, &mut doc, &channel, &id);
+        assert_detached_private_history(&mut app, &mut doc, &channel, &id);
         assert_invalid_ime_source_retires_composition(&mut app, &mut doc, &channel, &id);
         return_detached_editor_through_accessibility(&mut app, &mut doc, id);
     }

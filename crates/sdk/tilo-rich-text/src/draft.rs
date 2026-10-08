@@ -19,6 +19,8 @@ pub struct Draft {
     doc: AutoCommit,
     field: Option<FieldState>,
     revision: u64,
+    history: ui::UndoLog,
+    interaction: Option<(Vec<ui::automerge::ChangeHash>, Option<String>)>,
 }
 
 impl Default for Draft {
@@ -35,6 +37,8 @@ impl Draft {
             doc: AutoCommit::new(),
             field: None,
             revision: 0,
+            history: ui::UndoLog::default(),
+            interaction: None,
         };
         draft.reset(&[]);
         draft
@@ -60,6 +64,8 @@ impl Draft {
         self.revision = self.revision.wrapping_add(1);
         self.field = FieldState::read(&doc, ROOT, self.revision).ok();
         self.doc = doc;
+        self.history = ui::UndoLog::new(&mut self.doc);
+        self.interaction = None;
     }
 
     /// Clear what was written.
@@ -104,6 +110,46 @@ impl Draft {
 }
 
 impl RichTextSource for Draft {
+    fn owns_local_history(&self) -> bool {
+        true
+    }
+    fn begin_local_edit(&mut self, metadata: Option<String>) {
+        if self.interaction.is_none() {
+            self.interaction = Some((self.doc.get_heads(), metadata));
+        }
+    }
+
+    fn finish_local_edit(&mut self) {
+        if let Some((before, metadata)) = self.interaction.take() {
+            self.history
+                .record_committed_action(&mut self.doc, before, None, metadata);
+        }
+    }
+
+    fn local_undo(
+        &mut self,
+        request: ui::undo::UndoRequest,
+        metadata: Option<String>,
+    ) -> Option<Option<String>> {
+        self.finish_local_edit();
+        let entry = match request {
+            ui::undo::UndoRequest::Undo => {
+                self.history.undo_as(&mut self.doc, None, None, metadata)
+            }
+            ui::undo::UndoRequest::Redo => {
+                self.history.redo_as(&mut self.doc, None, None, metadata)
+            }
+        };
+        if entry.is_some() {
+            self.revision = self
+                .field
+                .as_ref()
+                .map_or(self.revision, FieldState::revision)
+                .wrapping_add(1);
+            self.field = FieldState::read(&self.doc, ROOT, self.revision).ok();
+        }
+        Some(entry.and_then(|entry| entry.widget_metadata))
+    }
     fn read_only(&self) -> bool {
         false
     }
@@ -134,8 +180,13 @@ impl RichTextSource for Draft {
         _edits: &mut ui::widget::Edits<'_>,
         edit: &RichTextAction,
     ) -> Result<(), ActionError> {
+        let before = self.doc.get_heads();
         edit.apply(&mut self.doc)?;
         self.doc.commit();
+        if self.interaction.is_none() {
+            self.history
+                .record_committed_action(&mut self.doc, before, None, None);
+        }
         Ok(())
     }
 }
