@@ -84,3 +84,9 @@ messages-first-sms = Choose an SMS SIM
 messages-select-sim = Use this SIM
 messages-no-sims = No available SIMs were found on this device.
 messages-select-sim-name = Use { $sim }
+
+messages-first-whatsapp = Link a WhatsApp account
+messages-whatsapp-show-code = Show private linking code
+messages-whatsapp-review-storage = Review protected storage access
+messages-whatsapp-refresh-code = Refresh private linking code
+messages-whatsapp-storage-explanation = Review private encrypted storage access before linking. After linking, confirm the identity reported by WhatsApp.
