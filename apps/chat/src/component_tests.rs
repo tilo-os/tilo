@@ -15,6 +15,82 @@ fn projection(doc: &AutoCommit, identity: LocalIdentity) -> ChatApp {
 }
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ui::Widget;
+
+#[test]
+fn browser_media_reply_enables_voice_without_native_attachment_access() {
+    use ui::native_media::{Command, Snapshot, State};
+    use ui::widget::Collaborative;
+    let identity = LocalIdentity::demo();
+    let mut doc = AutoCommit::new();
+    ChatDoc::seed_starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    let channel = ChatDoc::list_channels(&doc)
+        .into_iter()
+        .find(|channel| channel.kind == crate::model::ChannelKind::Voice)
+        .unwrap();
+    let mut app = projection(&doc, identity);
+    assert!(!app.call_allows(crate::call::CallAction::Join));
+    let request_id = app
+        .take_collab_requests()
+        .into_iter()
+        .find_map(|request| match request {
+            ui::collaboration::CollabRequest::NativeMediaCommand {
+                request_id,
+                command,
+            } if matches!(command.command, Command::Status) => Some(request_id),
+            _ => None,
+        })
+        .expect("the portable Chat surface polls its real media host");
+    let mut idle = Snapshot::unavailable();
+    idle.state = State::Idle;
+    idle.issue = None;
+    app.handle_collab_event(&ui::collaboration::CollabEvent::NativeMediaCommandResult {
+        request_id,
+        result: Ok(idle),
+    });
+    assert!(
+        app.call_allows(crate::call::CallAction::Join),
+        "a validated browser media reply enables voice without native file access"
+    );
+    let unavailable = app.effect_statuses();
+    assert!(
+        !unavailable.contains(&ui::framework::EffectStatus::unavailable(
+            crate::effects::ChatEffect::JOIN_CALL,
+            "no_services",
+            crate::i18n::t("chat-voice-unavailable"),
+        ))
+    );
+    assert!(
+        unavailable.contains(&ui::framework::EffectStatus::unavailable(
+            crate::effects::ChatEffect::ATTACH_FILE,
+            "no_services",
+            crate::i18n::t("chat-attachment-import-unavailable"),
+        ))
+    );
+    app.native_voice_command(
+        &channel.id,
+        Command::Join {
+            channel_id: channel.id.clone(),
+        },
+    )
+    .unwrap();
+    assert!(
+        !app.external_services,
+        "a media reply must not grant native paths"
+    );
+    assert!(!app.begin_attachment_import(std::path::Path::new("/fixture/private-file")));
+    app.perms = crate::permissions::ChatPermissions::from_context(
+        ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), "reader"),
+            vec![],
+        ),
+    );
+    assert!(app.call_allows(crate::call::CallAction::Join));
+    assert!(
+        !app.call_allows(crate::call::CallAction::Speak),
+        "the live room role still gates publication"
+    );
+}
+
 #[test]
 fn component_projection_never_seeds_or_marks_read() {
     let identity = LocalIdentity {
@@ -292,8 +368,7 @@ fn component_mount_in_room(
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
     let checkout = component.record().clone();
-    let font_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/sdk/ui-core/assets/fonts");
+    let font_root = ui::font_catalog::checkout_root();
     let fonts = ui::font_catalog::FontCatalog::controlled_fixture(&font_root, "en-US");
     let frame = ui::headless::FrameHarness::from_component(
         component,

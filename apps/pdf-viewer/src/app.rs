@@ -6235,7 +6235,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let a = dir.path().join("a.pdf");
         let b = dir.path().join("b.pdf");
-        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+        let fixture = concat!(env!("OUT_DIR"), "/sample.pdf");
         std::fs::copy(fixture, &a).expect("copy fixture to a.pdf");
         std::fs::copy(fixture, &b).expect("copy fixture to b.pdf");
         (dir, a, b)
@@ -6367,6 +6367,13 @@ mod tests {
             // A bare window opening a file marks it up on the file's own
             // record, the one a launch on the file opens.
             let mut bare = app.relaunch(&[]).expect("a bare window");
+            assert!(
+                bare.harness()
+                    .wait_until(tilo_test_env::hang_bound(), |harness| {
+                        harness.a11y_node_named("Page 1 of 3").is_some()
+                    }),
+                "the bare window finishes reopening its pinned document"
+            );
             bare.effect_confirmed(&open(&b))
                 .expect("the bare window opens b.pdf");
             bare.harness().relayout();
@@ -6450,10 +6457,7 @@ mod tests {
         // moving the PDF reopens the same annotations; a copy starts clean.
         let dir = tempfile::tempdir().expect("temp dir");
         let original = dir.path().join("paper.pdf");
-        let fixture = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"
-        );
+        let fixture = concat!(env!("OUT_DIR"), "/latin.pdf");
         std::fs::copy(fixture, &original).expect("copy the Typst fixture");
 
         let mut app = launched(&original);
@@ -6976,7 +6980,7 @@ mod tests {
         // assertion so release review can catch a misleading fallback render.
         eprintln!("phase drive_import_unavailable_shot");
         {
-            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+            let path = concat!(env!("OUT_DIR"), "/sample.pdf");
             let mut app = PdfApp::open(path);
             let mut state = ui::State::new();
             app.perform_action(
@@ -7018,7 +7022,7 @@ mod tests {
         // the on-screen page size and that horizontal pan reaches new content.
         eprintln!("phase drive_review_zoom_pan_annotate_shots");
         {
-            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+            let path = concat!(env!("OUT_DIR"), "/sample.pdf");
             let app = PdfApp::open(path);
             assert!(app.has_document, "sample.pdf must load");
             eprintln!(
@@ -8569,7 +8573,7 @@ mod tests {
     // the case that wants it.
     // ----------------------------------------------------------------
 
-    const SAMPLE_PDF: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+    const SAMPLE_PDF: &str = concat!(env!("OUT_DIR"), "/sample.pdf");
 
     /// Why these tests cannot run, in the words the operator needs.
     const NO_PDFIUM: &str = "no usable libpdfium.so — install one (e.g. \
@@ -8887,10 +8891,7 @@ mod tests {
     }
 
     /// The Typst-typeset text fixture shared with the engine's tests.
-    const LATIN_PDF: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"
-    );
+    const LATIN_PDF: &str = concat!(env!("OUT_DIR"), "/latin.pdf");
 
     fn open_latin_raster() -> Option<PdfApp> {
         let app = PdfApp::open(LATIN_PDF);

@@ -280,6 +280,7 @@ pub struct SeedCx<'a> {
     pub(crate) me: &'a str,
     pub(crate) device: &'a str,
     pub(crate) host: Option<&'a HostContext>,
+    pub(crate) room: Option<&'a str>,
 }
 
 impl SeedCx<'_> {
@@ -292,6 +293,16 @@ impl SeedCx<'_> {
     /// The device creating the record.
     pub fn device(&self) -> &str {
         self.device
+    }
+
+    /// The host-selected room of a new record, and its display name. An
+    /// ordinary restore has no creation scope. A windowless room participant
+    /// carries its explicit route without supplying device services or secrets.
+    pub fn creation_workspace(&self) -> Option<(&str, &str)> {
+        self.host
+            .and_then(HostContext::creation_workspace)
+            .map(|workspace| (workspace.id.as_str(), workspace.name.as_str()))
+            .or_else(|| self.room.map(|room| (room, room)))
     }
 
     /// The app's host on this device; `None` for a participant without a
@@ -440,7 +451,8 @@ pub(crate) fn build_root<A: ResourceApp>(
 pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry {
     let mut registry = tilo_actions::ActionRegistry::new();
     tilo_resource::group::register::<A::Resource>(&mut registry);
-    registry.register::<super::history::HistoryEdit>(super::history::EDIT_TYPE);
+    registry
+        .register::<super::history::ResourceHistoryEdit<A::Resource>>(super::history::EDIT_TYPE);
     registry
 }
 
@@ -537,6 +549,7 @@ fn create<A: ResourceApp>(
             me: &author,
             device: context.device_id(),
             host: Some(&context),
+            room: None,
         });
         context
             .initialize_new_record_seeded(
@@ -564,15 +577,14 @@ fn create<A: ResourceApp>(
     if let Some(file) = &file {
         file.report_opened(<A::Resource as Resource>::KIND);
     }
-    let handoff = context.take_handoff();
-    let lent = super::scenario::Lent::new(context.take_lent());
     let run = run
         .launched(Launched {
+            record: Some(context.record().id.clone()),
             arguments,
             options,
             file,
-            handoff,
-            lent,
+            handoff: context.take_handoff(),
+            lent: super::scenario::Lent::new(context.take_lent()),
         })
         .opening_with(opener)
         .showing_file_history(

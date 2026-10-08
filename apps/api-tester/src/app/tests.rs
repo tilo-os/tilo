@@ -549,6 +549,19 @@ fn auth_fields_edit_the_request() {
     );
 }
 
+#[test]
+fn actual_form_capture_settles_on_the_executor_clock_without_wall_time() {
+    let pumped = ui::background::Pumped::new();
+    let _entered = pumped.background().enter();
+    let mut app =
+        TestApp::<ApiTesterShell>::capture_at(Some("form-new-variable"), (1280, 800)).unwrap();
+    assert!(
+        !app.harness().frame_schedule().needs_animation_frame,
+        "the actual form capture must settle even when CPU rendering consumes no toolkit time: {:?}",
+        app.harness().frame_requesters()
+    );
+}
+
 /// Every named `--shots` scenario stages, renders, and leaves an accessibility
 /// tree with no findings.
 #[test]
@@ -568,7 +581,8 @@ fn every_scenario_stages_and_renders_an_accessible_frame() {
         let d = app.harness();
         assert!(
             !d.frame_schedule().needs_animation_frame,
-            "{scenario}: the actual capture waits for navigation headings and rows to settle"
+            "{scenario}: the actual capture waits for navigation headings and rows to settle; requesting frames: {:?}",
+            d.frame_requesters()
         );
         assert!(
             d.render_rgba().iter().any(|byte| *byte != 0),

@@ -25,6 +25,18 @@ tapp=$(find "$dir" -maxdepth 1 -name '*.tapp' -print -quit)
 [[ -n $tapp ]] || { printf 'no runtime package in %s\n' "$dir" >&2; exit 1; }
 provides=$("$REGISTRY_CLI" inspect "$tapp" \
   | sed -n 's/^provides *= *"\(tilo-runtime\/[^"]*\)".*/\1/p' | head -1)
+service_version=
+if [[ $package_id == so.tilo.signal-provider ]]; then
+  # This explicitly selected executable consumes a runtime. Registry admission
+  # still owns publisher and package authority, exactly as for runtime packages.
+  inspection=$("$REGISTRY_CLI" inspect "$tapp")
+  provides=$(printf '%s\n' "$inspection" | sed -n 's/^runtime *= *"\(tilo-runtime\/[^" ]*\)".*/\1/p' | head -1)
+  service_version=$(printf '%s\n' "$inspection" | sed -n 's/^version *= *"\([^" ]*\)".*/\1/p' | head -1)
+  [[ $provides =~ ^tilo-runtime/2026\.10\.1-signal\+native\.[0-9a-f]{32}$ && -n $service_version ]] || {
+    printf 'Signal provider runtime must name its exact native build\n' >&2
+    exit 1
+  }
+fi
 [[ -n $provides ]] || { printf '%s names no runtime it provides\n' "$tapp" >&2; exit 1; }
 
 snapshot="$temp/tilo-runtime-snapshot.json"
@@ -35,9 +47,10 @@ fetch_snapshot() {
   jq -e '.entries | type == "array"' "$snapshot" >/dev/null
 }
 fetch_snapshot
-if jq -e --arg pkg "$package_id" --arg id "$provides" --arg arch "$arch" \
+if jq -e --arg pkg "$package_id" --arg id "$provides" --arg arch "$arch" --arg version "$service_version" \
     '[.entries[] | select(.package_id == $pkg) | .versions[]
-      | select(.target.runtime == $id and .target.architecture == $arch)] | length > 0' \
+      | select(.target.runtime == $id and .target.architecture == $arch)
+      | select($version == "" or .version == $version)] | length > 0' \
     "$snapshot" >/dev/null; then
   echo "::notice::the Tilo registry already offers $provides for $arch"
   exit 0

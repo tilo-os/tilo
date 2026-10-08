@@ -666,9 +666,14 @@ impl DesktopSurface {
                 let Some(live) = row.groups.iter_mut().find(|g| g.id == group.id) else {
                     continue;
                 };
-                changed |=
-                    live.width() != ui_width(group.width) || live.maximized != group.maximized;
-                live.set_width(ui_width(group.width));
+                // Width is a local intent committed on release. An unrelated
+                // snapshot revision must not reset a captured edge to its saved
+                // width or re-arm the width spring underneath the pointer.
+                if !live.edge_resize_in_flight() || live.maximized != group.maximized {
+                    changed |= live.width() != ui_width(group.width);
+                    live.set_width(ui_width(group.width));
+                }
+                changed |= live.maximized != group.maximized;
                 live.maximized = group.maximized;
                 let stale: Vec<_> = live
                     .tabs()

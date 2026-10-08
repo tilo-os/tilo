@@ -96,10 +96,8 @@ mod identity_fs_tests {
             permissions.set_mode(0o700);
             std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
             let acl = temp.path().join("fs-capabilities.json");
-            let cache = temp.path().join("cache");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
-            env.set("TILO_FS_AUTHORITY_CACHE_DIR", &cache);
             env.set("TILO_FS_AUTHORITY_TEST_LOG", &log);
             env.set("TILO_FS_AUTHORITY_TEST_STARTED", &started);
             env.set("TILO_FS_AUTHORITY_TEST_RELEASE", &release);
@@ -131,9 +129,11 @@ mod identity_fs_tests {
             wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound())
                 .unwrap_or_else(|report| panic!("the released publisher never finished: {report}"));
             let arguments = std::fs::read_to_string(&log).expect("background publication");
-            assert!(arguments.contains("publish-authority"));
-            assert!(arguments.contains(cache.to_str().unwrap()));
-            assert!(arguments.contains(acl.to_str().unwrap()));
+            assert_eq!(
+                arguments.lines().collect::<Vec<_>>(),
+                ["publish-authority", "--acl", acl.to_str().unwrap()],
+                "the publisher needs no path into the daemon's root-only cache"
+            );
         }
 
         // Phase `capability_export_retries_until_a_late_authority_service_is_ready`.
@@ -181,6 +181,41 @@ mod identity_fs_tests {
                     .parse::<u8>()
                     .expect("numeric attempt count")
                     > 3
+            );
+        }
+
+        // Phase `a_device_without_the_governor_key_publishes_once_and_settles`.
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let temp = tempfile::tempdir().expect("temp");
+            let publisher = temp.path().join("joined-device-publisher.sh");
+            let count = temp.path().join("attempts");
+            std::fs::write(
+                &publisher,
+                "#!/bin/sh\nprintf x >> \"$TILO_FS_AUTHORITY_TEST_COUNT\"\nexit 77\n",
+            )
+            .expect("publisher script");
+            let mut permissions = std::fs::metadata(&publisher)
+                .expect("metadata")
+                .permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
+            env.set("TILO_FS_AUTHORITY_TEST_COUNT", &count);
+            let tree = WorkspaceTree {
+                fs_acl_path: Some(temp.path().join("fs-capabilities.json")),
+                ..WorkspaceTree::default()
+            };
+            tree.export_fs_capabilities();
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
+                |report| panic!("a joined device kept retrying publication: {report}"),
+            );
+            assert_eq!(
+                std::fs::read_to_string(&count).expect("attempt count"),
+                "x",
+                "a device that does not govern the workspace asks once"
             );
         }
     }
@@ -917,7 +952,9 @@ impl WorkspaceTree {
             if let Some(owner) = owner {
                 ws.owner = Some(owner);
             }
+            let local = self.native_runtime.preserve_files_home_consent(ws, peer);
             ws.capabilities = caps;
+            ws.capabilities.extend(local);
             ws.tasks = tasks;
             ws.effect_receipts = receipts;
         }
@@ -3292,6 +3329,8 @@ impl WorkspaceTree {
     /// revoke would mutate only the local cache, so a peer would keep
     /// using a capability the owner took away.
     pub fn doc_revoke_capability(&mut self, workspace_id: WorkspaceId, cap_id: &str) {
+        self.native_runtime
+            .forget_files_home_consent(workspace_id, cap_id);
         if tilo_desktop_model::desktop_doc::revoke_capability(&mut self.doc, workspace_id, cap_id) {
             self.commit_room_change();
         }

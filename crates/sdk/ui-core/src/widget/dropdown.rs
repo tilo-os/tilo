@@ -214,6 +214,8 @@ pub struct Dropdown {
     list_width: f64,
     /// One row of the open list: a menu row, grown with its text.
     item_h: f64,
+    /// Host-owned pointer precision controls direct-touch target geometry.
+    interaction: crate::interaction::InteractionEnvironment,
     /// An option, the placeholder, the caption or the icon changed since the
     /// last layout, so the measured width may have.
     layout_dirty: bool,
@@ -334,6 +336,7 @@ impl Dropdown {
             chooser_cap: f64::from(crate::tokens::Metrics::BASE.chooser_width),
             list_width: 0.0,
             item_h: ITEM_HEIGHT,
+            interaction: crate::interaction::InteractionEnvironment::default(),
             layout_dirty: true,
             drawn: None,
         }
@@ -359,6 +362,7 @@ impl Dropdown {
         [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1]
             .map(f64::to_bits)
             .hash(&mut hasher);
+        self.item_h.to_bits().hash(&mut hasher);
         self.scrollbar.is_active().hash(&mut hasher);
         (self.filter_selection.anchor, self.filter_selection.cursor).hash(&mut hasher);
         crate::i18n::I18nManager::revision().hash(&mut hasher);
@@ -655,16 +659,28 @@ impl Dropdown {
     /// the styles the width is measured with.
     fn adopt_theme(&mut self, theme: &Theme) {
         self.field_height = self.control_size.height(theme);
+        // Preserve compact pointer controls; coarse direct input needs real
+        // non-overlapping targets, not inflated neighbouring hit rectangles.
+        let touch_minimum =
+            if self.interaction.pointer_precision == crate::interaction::PointerPrecision::Coarse {
+                f64::from(self.interaction.minimum_target())
+            } else {
+                0.0
+            };
+        self.field_height = self.field_height.max(touch_minimum);
         self.label_style = self.control_size.label_style(theme);
         self.caption_style = theme.text(TextRole::Caption);
         self.theme_caption_height =
             caption_height_in(&self.caption_style, f64::from(theme.tokens.spacing.s1));
         self.chooser_cap = f64::from(theme.tokens.metrics.chooser_width * theme.text_growth());
-        self.item_h = f64::from(theme.tokens.metrics.menu_row_height).max(
-            (f64::from(theme.text(TextRole::Body).line_height_px())
-                + 2.0 * f64::from(theme.tokens.spacing.s1))
-            .ceil(),
-        );
+        self.item_h = f64::from(theme.tokens.metrics.menu_row_height)
+            .max(
+                (f64::from(theme.text(TextRole::Body).line_height_px())
+                    + 2.0 * f64::from(theme.tokens.spacing.s1))
+                .ceil(),
+            )
+            .max(touch_minimum);
+        self.scroll = self.scroll.min(self.max_scroll(self.visible_count()));
     }
 
     /// The narrowest field that shows every option, the placeholder and the
@@ -1220,6 +1236,17 @@ impl Widget for Dropdown {
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            self.is_hovered &= environment.supports_hover();
+            self.layout_dirty = true;
+        }
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -2317,6 +2344,58 @@ mod tests {
             n += 1;
         }
         options
+    }
+
+    #[test]
+    fn dropdown_touch_choices_use_host_targets_and_select_stable_values() {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for scale in [1.0, 1.5] {
+                let selected = crate::LocalState::new(String::new());
+                let mut frame = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(Dropdown::from_state(zones(), &selected).with_id("language-picker")),
+                    (420, 320),
+                    theme.clone().with_ui_scale(scale),
+                );
+                let pointer_geometry = frame
+                    .with_widget_mut::<Dropdown, _>(|dropdown| {
+                        (dropdown.rect.height(), dropdown.item_h)
+                    })
+                    .unwrap();
+                frame.tap_named("language-picker").unwrap();
+                let point = frame
+                    .with_widget_mut::<Dropdown, _>(|dropdown| {
+                        assert!(dropdown.is_open());
+                        let minimum = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
+                        assert!(dropdown.rect.height() >= minimum,
+                            "the actual touch field must use the host minimum target");
+                        assert!(dropdown.item_h >= minimum,
+                            "each actual painted and hit-tested choice must use the host touch target");
+                        let rows = dropdown.option_rows(dropdown.list_rect(dropdown.visible_count()), dropdown.visible_count());
+                        Point::new(rows.center().x, rows.y0 + dropdown.item_h * 1.5)
+                    })
+                    .unwrap();
+                frame.tap_at(point.x, point.y);
+                frame
+                    .with_widget_mut::<Dropdown, _>(|dropdown| {
+                        assert!(!dropdown.is_open());
+                        assert_eq!(dropdown.selected(), "Europe/Amsterdam");
+                    })
+                    .unwrap();
+                assert_eq!(selected.get(), "Europe/Amsterdam");
+                frame.set_interaction_environment(crate::InteractionEnvironment::default());
+                frame
+                    .with_widget_mut::<Dropdown, _>(|dropdown| {
+                        assert_eq!(
+                            (dropdown.rect.height(), dropdown.item_h),
+                            pointer_geometry,
+                            "returning to a fine pointer restores the theme's compact geometry"
+                        );
+                        assert_eq!(dropdown.selected(), "Europe/Amsterdam");
+                    })
+                    .unwrap();
+            }
+        }
     }
 
     #[test]

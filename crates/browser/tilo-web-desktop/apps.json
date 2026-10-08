@@ -38,6 +38,12 @@
       "version": "0.1.0"
     },
     {
+      "id": "so.tilo.chip-design",
+      "name": "Chip Design",
+      "category": "Development",
+      "version": "0.1.0"
+    },
+    {
       "id": "so.tilo.clocks",
       "name": "Clocks",
       "category": "Utility",
@@ -77,6 +83,12 @@
       "id": "so.tilo.maps",
       "name": "Maps",
       "category": "Utility",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.messages",
+      "name": "Messages",
+      "category": "Network",
       "version": "0.1.0"
     },
     {

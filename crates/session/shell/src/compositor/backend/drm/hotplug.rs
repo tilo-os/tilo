@@ -37,7 +37,7 @@ pub struct ConnectedOutput {
     pub key: DrmOutputKey,
     pub size: (u32, u32),
     /// Physical panel size in millimetres, when the connector reports one.
-    /// Feeds [`super::scale::derive_scale`].
+    /// Feeds [`settings_store::display_scale::derive_scale`].
     pub mm: Option<(u32, u32)>,
 }
 

@@ -46,13 +46,20 @@ test('two leases, only one background, fair owners and queued cancellation',asyn
   workers[1].reply();workers[2].reply();await Promise.all([p3,p4]);await tick();workers[3].reply();await p2;
   assert.equal(pool.snapshot().jobs,0);
 });
-test('active abort, stale generation, worker failures and timeout leave no pending job',async()=>{
+test('active abort, stale generation, worker failures and timeout leave no pending job',async(t)=>{
+  // Cancellation is ordered before timeout; an event-loop stall must not race
+  // that order. Advance the actual production timer explicitly below.
+  t.mock.timers.enable({apis:['setTimeout']});
   const {pool,workers,owner,request}=setup({timeoutMs:20});const abort=new AbortController();
   const p=request(owner('a','foreground',abort.signal));const rejected=assert.rejects(p,/closed/);await tick();
   const stale=workers[0].listeners.get('message');abort.abort();await rejected;
   const next=request(owner('b'));await tick();stale({data:{bad:true}});workers[1].reply();await next;
   for(const kind of ['error','messageerror']){const q=request(owner(kind));const failed=assert.rejects(q,/worker/);await tick();workers.at(-1).fail(kind);await failed;}
-  await assert.rejects(request(owner('timeout')),/timeout/);assert.equal(pool.snapshot().jobs,0);
+  const timedOut=assert.rejects(request(owner('timeout')),/timeout/);await tick();
+  t.mock.timers.tick(19);await tick();assert.equal(pool.snapshot().jobs,1);
+  assert.equal(workers.at(-1).dead,false);
+  t.mock.timers.tick(1);await timedOut;assert.equal(pool.snapshot().jobs,0);
+  assert.equal(workers.at(-1).dead,true);
 });
 test('cached subviews use intrinsic fields and bounded yielded exact copies',async()=>{
   let yields=0;const {workers,owner,request}=setup({yieldTask:async()=>{yields++;await tick();}});

@@ -111,10 +111,43 @@ fn causal_scope_sdk_queue_retains_original_custody_through_host_await_and_termin
             !manager.send(CollabRequest::document_incremental(vec![1])),
             "required manager rejects missing custody before queue admission"
         );
-        assert!(manager.send(CollabRequest::Document {
-            mutation,
-            authorization: Some(authorization)
-        }));
+        if mode == 0 {
+            let state = broker_state(&manager);
+            let ready = state.document_reads.close_for_test(&route.channel_id());
+            assert_eq!(
+                manager
+                    .try_send_to_route(route.clone(), CollabRequest::document_incremental(vec![1])),
+                Err(crate::collaboration::CollabSendError::Unavailable),
+                "pending readiness cannot bypass required original custody"
+            );
+            assert!(
+                manager
+                    .try_send_to_route(
+                        route.clone(),
+                        CollabRequest::Document {
+                            mutation,
+                            authorization: Some(authorization)
+                        }
+                    )
+                    .is_ok(),
+                "a known pending committed route retains original authorized custody"
+            );
+            let pending = manager.begin_document_publication_barrier().unwrap();
+            std::thread::sleep(Duration::from_millis(60));
+            assert!(
+                host.received.lock().unwrap().is_none(),
+                "owner commit cannot precede route readiness"
+            );
+            assert_eq!(observed.try_recv(), Err(mpsc::TryRecvError::Empty));
+            assert_eq!(pending.try_complete(), Ok(None));
+            assert!(captures.lock().unwrap().signed_ops.is_empty());
+            ready.store(true, Ordering::Release);
+        } else {
+            assert!(manager.send(CollabRequest::Document {
+                mutation,
+                authorization: Some(authorization)
+            }));
+        }
         tilo_test_env::recv("the gated invocation RPC", &observed);
         assert!(host.received.lock().unwrap().is_some());
         assert!(manager.send(CollabRequest::UpdateInvocation {
