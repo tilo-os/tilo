@@ -14013,6 +14013,7 @@ dependencies = [
  "hex",
  "launcher",
  "os-actions",
+ "osk",
  "package-store",
  "quick-xml 0.41.0",
  "rcgen",

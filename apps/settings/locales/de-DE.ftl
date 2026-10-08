@@ -1173,7 +1173,7 @@ settings-bluetooth-forgot = { $name } vergessen.
 settings-bluetooth-forget-failed = { $name } konnte nicht vergessen werden: { $error }
 settings-bluetooth-forget-ask = { $name } vergessen? Das entfernt Bindung und Schlüssel.
 input-keyboard-title = Tastatur
-input-keyboard-caption = Passe die Tastenwiederholung, die Compose-Taste und die Feststelltaste an.
+input-keyboard-caption = Wähle, wie schnell gehaltene Tasten wiederholt werden.
 input-active-source = Aktive Eingabequelle
 input-key-repeat = Wiederholgeschwindigkeit
 input-key-repeat-off = Wiederholung ist aus — Schieberegler bewegen, um sie einzuschalten
@@ -1986,3 +1986,25 @@ input-dictionary-remove = Entfernen
 input-dictionary-reset = Alle Wörter entfernen
 input-dictionary-word-placeholder = Ein Wort eingeben
 input-dictionary-all-languages = Alle Sprachen
+
+input-scope-all = Alle Tastaturen
+input-scope-inheritance = Physische Tastaturen nutzen diese Quellen, bis du die eigene Liste einer Tastatur änderst. Die Bildschirmtastatur hat eigene Quellen.
+input-keyboard-scope = Tastatur
+input-source-activate = Aktivieren
+input-sources-selection-description = Wähle eine Quelle zum Ansehen oder Bearbeiten. Ziehe sie, um die Reihenfolge zu ändern.
+input-sources-back = Zurück zu den Eingabequellen
+input-sources-cancel = Abbrechen
+input-sources-unavailable = Die Liste der Eingabequellen konnte nicht angezeigt werden.
+input-osk-qwerty = Englisch (QWERTY)
+input-osk-azerty = Französisch (AZERTY)
+input-osk-preview-description = Die Bildschirmtastatur verwendet diese Buchstabenanordnung. Compose- und Feststelltastenoptionen gelten für physische Tastaturen.
+input-source-options = Layout-Optionen
+input-source-inspection = Tasten untersuchen
+
+input-keyboard-numbered = { $name } ({ $number })
+
+input-source-show = Anzeigen
+input-source-hide = Ausblenden
+
+input-source-add-short = Hinzufügen
+input-source-add-title = Eingabequelle hinzufügen

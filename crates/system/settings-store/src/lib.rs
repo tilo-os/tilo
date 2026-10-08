@@ -66,6 +66,7 @@ pub mod display_scale;
 pub mod display_tools;
 pub mod hardware;
 pub mod keyboard_shortcuts;
+pub mod keyboard_sources;
 pub mod magnifier;
 pub mod notification_policy;
 pub mod personal_dictionary;

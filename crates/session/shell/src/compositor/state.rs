@@ -1522,6 +1522,13 @@ impl State {
     /// working keymap in place.
     pub fn reload_keyboard_settings(&mut self) {
         let settings = crate::compositor::backend::drm::input_config::KeyboardSettings::load();
+        self.apply_keyboard_settings(settings);
+    }
+
+    pub(crate) fn apply_keyboard_settings(
+        &mut self,
+        settings: crate::compositor::backend::drm::input_config::KeyboardSettings,
+    ) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };

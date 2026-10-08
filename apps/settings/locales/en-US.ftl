@@ -1173,7 +1173,7 @@ settings-bluetooth-forgot = Forgot { $name }.
 settings-bluetooth-forget-failed = Could not forget { $name }: { $error }
 settings-bluetooth-forget-ask = Forget { $name }? This removes its bond and keys.
 input-keyboard-title = Keyboard
-input-keyboard-caption = Adjust key repeat, the Compose key and the Caps Lock key.
+input-keyboard-caption = Choose how quickly held keys repeat.
 input-active-source = Active input source
 input-key-repeat = Key repeat speed
 input-key-repeat-off = Repeat is off — move the slider to turn it on
@@ -1986,3 +1986,25 @@ input-dictionary-remove = Remove
 input-dictionary-reset = Remove all words
 input-dictionary-word-placeholder = Enter a word
 input-dictionary-all-languages = All languages
+
+input-scope-all = All keyboards
+input-scope-inheritance = Physical keyboards share these sources until you change a keyboard's own list. The on-screen keyboard has its own sources.
+input-keyboard-scope = Keyboard
+input-source-activate = Make active
+input-sources-selection-description = Select a source to preview or edit. Drag to reorder.
+input-sources-back = Back to sources
+input-sources-cancel = Cancel
+input-sources-unavailable = The configured source list could not be displayed.
+input-osk-qwerty = English (QWERTY)
+input-osk-azerty = French (AZERTY)
+input-osk-preview-description = The touch keyboard uses this letter layout; physical compose and Caps Lock options are separate.
+input-source-options = Source options
+input-source-inspection = Key inspection
+
+input-keyboard-numbered = { $name } ({ $number })
+
+input-source-show = Show
+input-source-hide = Hide
+
+input-source-add-short = Add
+input-source-add-title = Add an input source
