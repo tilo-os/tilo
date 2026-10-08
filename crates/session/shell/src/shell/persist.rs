@@ -267,9 +267,11 @@ impl TreeSnapshot {
         // the snapshot that superseded it may have been cut before them.
         write_document(&self.runtime, path);
         #[cfg(test)]
-        if published == super::native_workspace_owner::store::Publication::Written {
-            WRITES_ON_THIS_THREAD.with(|writes| writes.set(writes.get().saturating_add(1)));
-        }
+        WRITES_ON_THIS_THREAD.with(|writes| {
+            if published == super::native_workspace_owner::store::Publication::Written {
+                writes.set(writes.get().saturating_add(1));
+            }
+        });
         Ok(published)
     }
 }
@@ -470,15 +472,13 @@ fn attach_saved_doc(tree: &mut WorkspaceTree, path: &Path) {
         .and_then(|meta| hex::decode(&meta.actor).ok())
         .filter(|actor| !actor.is_empty())
         .map(automerge::ActorId::from);
-    if let Some(actor) = &actor {
-        doc.set_actor(actor.clone());
+    let meta_actor = actor.as_ref().map(automerge::ActorId::to_hex_string);
+    if let Some(actor) = actor {
+        doc.set_actor(actor);
     }
-    tree.native_runtime.document_log().attach(
-        &doc_path,
-        &doc,
-        loaded.extent,
-        actor.map(|actor| actor.to_hex_string()),
-    );
+    tree.native_runtime
+        .document_log()
+        .attach(&doc_path, &doc, loaded.extent, meta_actor);
     tree.doc = doc;
 }
 
@@ -1650,7 +1650,8 @@ mod tests {
         tree.commit_room_change();
         let snapshot = TreeSnapshot::of(&tree);
         let handed = tree.native_runtime.document_log().pending_bytes();
-        let history = tree.doc.save().len();
+        // What handing over the whole history would cost, change by change.
+        let history: usize = tree.export_changes_since(&[]).iter().map(Vec::len).sum();
         assert!(handed > 0, "the switch is handed to the writer");
         assert!(
             handed.saturating_mul(20) < history,
