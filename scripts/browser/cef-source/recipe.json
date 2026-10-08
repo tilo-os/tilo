@@ -191,6 +191,18 @@
       "public_header_parity": "PASS",
       "required_runtime_files": "PASS",
       "ELF_architecture": "x86_64"
+    },
+    "mounted_fixed": {
+      "qualification_checks": "PASS",
+      "receipt_path": "scripts/browser/cef-source/mounted-revision-two-receipt.json",
+      "receipt_sha256": "604c20fba1862c2f35ab5b6a4481e4fcf0e25e3694fb1910aa6e3d40ef47e594",
+      "original_ui_binary_source_revision": "1196d1340bfef9c6b72305e4b1677f108add04bc",
+      "original_ui_binary_sha256": "9632cd2d215929820930f3e4a154fc770004fd8194291e6c719828ba94356f28",
+      "executed_direct_scenarios": 24,
+      "executed_decorated_scenarios": 24,
+      "binary_rebuilt": false,
+      "binary_relabelled": false,
+      "zero_retries": true
     }
   },
   "artifact": null,
