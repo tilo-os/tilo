@@ -3157,6 +3157,59 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertNotIn('"op": "key"', between)
         self.assertIn("keyboard=True", between)
 
+    def test_return_editor_wait_bounds_transient_accessibility_publication_by_exact_native_route(self):
+        primary, child, access, before, expected = self.return_editor_continuity_subjects()
+        ready = {**primary, "keyboard_focused": True}
+        retired = {**child, "keyboard_focused": False, "transferring": False}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "agent_conversation_accessibility", side_effect=[None, access]), \
+                patch.object(PROOF, "private_editor_observation", return_value=before) as editor, \
+                patch.object(PROOF, "call", side_effect=[
+                    {"answer": {"frames": [primary, child]}},
+                    {"answer": {"frames": [ready, retired]}}]):
+            output = pathlib.Path(directory)
+            self.assertEqual(PROOF.wait_for_return_editor_continuity(
+                "socket", output, primary, child, expected, None), (ready, access, before))
+            editor.assert_called_once_with(access, "draft-secret")
+            receipt = json.loads((output / "return-editor-adoption-observations.json").read_text())
+            self.assertTrue(receipt["initial"]["pending_accessibility_publication"])
+            self.assertTrue(receipt["initial"]["exact_primary_present"])
+            self.assertTrue(receipt["initial"]["exact_child_exists"])
+            self.assertFalse(receipt["initial"]["accepted"])
+            self.assertTrue(receipt["last"]["accepted"])
+            self.assertTrue(receipt["last"]["accessibility_observable"])
+            self.assertNotIn("draft-secret", json.dumps(receipt))
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=None), \
+                patch.object(PROOF, "private_editor_observation") as editor, \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [ready, retired]}}):
+            output = pathlib.Path(directory)
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_return_editor_continuity(
+                    "socket", output, primary, child, expected, None)
+            editor.assert_not_called()
+            receipt = json.loads((output / "return-editor-adoption-observations.json").read_text())
+            self.assertTrue(receipt["last"]["pending_accessibility_publication"])
+            self.assertFalse(receipt["last"]["accepted"])
+        for rows in ([ready], [{**ready, "surface_id": 9976}, retired],
+                     [primary, {**child, "keyboard_focused": False}],
+                     [ready, {**retired, "suspended": None}],
+                     [{**ready, "input_route": "foreign"}, retired]):
+            with self.subTest(rows=rows), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF.time, "sleep") as sleep, \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=None) as accessibility, \
+                    patch.object(PROOF, "private_editor_observation") as editor, \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": rows}}):
+                with self.assertRaises(RuntimeError):
+                    PROOF.wait_for_return_editor_continuity(
+                        "socket", pathlib.Path(directory), primary, child, expected, None)
+                accessibility.assert_not_called()
+                editor.assert_not_called()
+                sleep.assert_not_called()
+
     def test_return_editor_wait_never_accepts_unpublished_focus_or_masks_later_mutation(self):
         primary, child, access, before, expected = self.return_editor_continuity_subjects()
         ready = {**primary, "keyboard_focused": True}

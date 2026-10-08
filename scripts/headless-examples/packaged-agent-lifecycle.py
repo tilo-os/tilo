@@ -1492,27 +1492,12 @@ def wait_for_return_editor_continuity(socket, output, primary, child, expected, 
                                 "exact_child_exists", "child_keyboard_focused",
                                 "child_presented", "child_suspended", "child_transferring",
                                 "ordinary_route", "pending_adoption", "pending_focus_publication",
+                                "accessibility_observable", "pending_accessibility_publication",
                                 "content_matches", "caret_equal", "selection_equal",
                                 "accessibility_focus_equal", "accessibility_focused_before",
                                 "accessibility_focused_after", "accepted"), False)
         evidence["observation_count"] += 1
         try:
-            access = agent_conversation_accessibility(expected["access"]["agent"])
-            if access is None:
-                raise RuntimeError("Return's exact private editor is unobservable")
-            sample["same_chat_process"] = access["process"] == expected["access"]["process"]
-            if not sample["same_chat_process"] or access.get("detached") is not False \
-                    or access.get("agent") != expected["access"]["agent"]:
-                raise RuntimeError("Return replaced the private editor's native owner or route")
-            attached = private_editor_observation(access, expected["draft"])
-            continuity = closed_editor_continuity(expected["observation"], attached)
-            sample.update(continuity)
-            if not all(continuity[name] for name in (
-                    "content_matches", "caret_equal", "selection_equal")):
-                raise RuntimeError("Return changed private editor content, caret or selection")
-            if any(type(attached.get(name)) is not bool for name in (
-                    "draft_matches", "accessibility_focused")):
-                raise RuntimeError("Return's private editor continuity is malformed")
             response = call(socket, {"op": "foreign_frames"})
             current = current_same_primary_presentation(response, primary)
             children = [row for row in foreign_frames(response)
@@ -1549,13 +1534,35 @@ def wait_for_return_editor_continuity(socket, output, primary, child, expected, 
             if current["keyboard_focused"]:
                 if returned_child["keyboard_focused"] or returned_child["transferring"]:
                     raise RuntimeError("Return's primary seat contradicts the retained child")
-                sample["pending_focus_publication"] = not continuity["accessibility_focus_equal"]
-                sample["accepted"] = continuity["accessibility_focus_equal"]
             else:
                 if not returned_child["keyboard_focused"]:
                     raise RuntimeError("Return lost both exact native keyboard seats")
                 sample["pending_adoption"] = True
             sample["observation_valid"] = True
+            # An AT transaction can replace the tree during this exact native
+            # handoff. Missing AT is never success: only the validated native
+            # subjects above permit another read within the existing deadline.
+            access = agent_conversation_accessibility(expected["access"]["agent"])
+            if access is None:
+                sample["pending_accessibility_publication"] = True
+                return None
+            sample["accessibility_observable"] = True
+            sample["same_chat_process"] = access["process"] == expected["access"]["process"]
+            if not sample["same_chat_process"] or access.get("detached") is not False \
+                    or access.get("agent") != expected["access"]["agent"]:
+                raise RuntimeError("Return replaced the private editor's native owner or route")
+            attached = private_editor_observation(access, expected["draft"])
+            continuity = closed_editor_continuity(expected["observation"], attached)
+            sample.update(continuity)
+            if not all(continuity[name] for name in (
+                    "content_matches", "caret_equal", "selection_equal")):
+                raise RuntimeError("Return changed private editor content, caret or selection")
+            if any(type(attached.get(name)) is not bool for name in (
+                    "draft_matches", "accessibility_focused")):
+                raise RuntimeError("Return's private editor continuity is malformed")
+            if current["keyboard_focused"]:
+                sample["pending_focus_publication"] = not continuity["accessibility_focus_equal"]
+                sample["accepted"] = continuity["accessibility_focus_equal"]
             return (current, access, attached) if sample["accepted"] else None
         finally:
             if evidence["initial"] is None:
