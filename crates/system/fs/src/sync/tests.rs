@@ -3539,7 +3539,7 @@ async fn a_host_refuses_a_namespace_request_for_another_workspace() {
 /// the test's device came from that device's pass.
 async fn session_member(
     workspace: uuid::Uuid,
-    namespace: Namespace,
+    namespace: Arc<Mutex<Namespace>>,
 ) -> (Router, EndpointAddr, IdentityKey) {
     let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
     let person = identity.user_public_key();
@@ -3548,7 +3548,7 @@ async fn session_member(
         endpoint: endpoint.clone(),
         identity,
         policy: None,
-        namespace: Arc::new(Mutex::new(namespace)),
+        namespace,
         store: Arc::new(ContentStore::memory()),
         records: None,
         workspace_id: workspace,
@@ -3647,7 +3647,7 @@ async fn idle_pass_is_bounded_with_unreachable_peer() {
     );
     let mut peers = vec![stalled_endpoint.addr()];
     for fork in forks {
-        let (router, addr, _person) = session_member(workspace, fork).await;
+        let (router, addr, _person) = session_member(workspace, Arc::new(Mutex::new(fork))).await;
         routers.push(router);
         peers.push(addr);
     }
@@ -3700,7 +3700,8 @@ async fn read_only_member_never_downloads_full_snapshot() {
     let (base, mut forks) = forks_of_a_shared_tree(&["hosts-later", "legacy-only"]);
     let legacy_tree = forks.pop().unwrap();
     let host_tree = forks.pop().unwrap();
-    let (host_router, host, host_person) = session_member(workspace, host_tree).await;
+    let (host_router, host, host_person) =
+        session_member(workspace, Arc::new(Mutex::new(host_tree))).await;
     let documents_served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let serve = serve_document_of(workspace, legacy_tree);
     let counted = Arc::clone(&documents_served);
