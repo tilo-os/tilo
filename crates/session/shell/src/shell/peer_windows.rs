@@ -39,6 +39,137 @@ impl From<String> for Refusal {
 
 /// Tabs whose card's install button was pressed, drained by [`examine`].
 static INSTALL_REQUESTS: std::sync::Mutex<Vec<TabId>> = std::sync::Mutex::new(Vec::new());
+#[derive(PartialEq, Eq)]
+struct RetryRequest {
+    tab: TabId,
+    app_id: String,
+}
+
+/// Explicit recovery requests from retained cards, drained on reconciliation.
+#[cfg(not(test))]
+static RETRY_REQUESTS: std::sync::Mutex<Vec<RetryRequest>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+thread_local! {
+    // Each test owns a desktop session, like the launcher's placement registry.
+    static TEST_RETRY_REQUESTS: std::cell::RefCell<Vec<RetryRequest>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn with_retry_requests<R>(apply: impl FnOnce(&mut Vec<RetryRequest>) -> R) -> R {
+    #[cfg(test)]
+    {
+        TEST_RETRY_REQUESTS.with(|requests| apply(&mut requests.borrow_mut()))
+    }
+    #[cfg(not(test))]
+    {
+        apply(
+            &mut RETRY_REQUESTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}
+
+pub(crate) fn request_retry(tab: TabId, app_id: &str) {
+    let request = RetryRequest {
+        tab,
+        app_id: app_id.to_owned(),
+    };
+    with_retry_requests(|requests| {
+        if !requests.contains(&request) {
+            requests.push(request);
+        }
+    });
+}
+
+/// Admit an explicit retry of this exact saved window. Reuse its tab and
+/// record; a stale card, a changed app or an already accepted retry is inert.
+pub(crate) fn retry_local_restore(
+    tree: &mut WorkspaceTree,
+    tab_id: TabId,
+    expected_app: &str,
+) -> bool {
+    reset_local_restore(tree, tab_id, expected_app).unwrap_or(false)
+}
+
+/// Normal app activation also acknowledges an already queued/opening saved
+/// window. It must not launch another window while this exact one is pending.
+pub(crate) fn reopen_local_restore(
+    tree: &mut WorkspaceTree,
+    tab_id: TabId,
+    expected_app: &str,
+) -> bool {
+    reset_local_restore(tree, tab_id, expected_app).is_some()
+}
+
+/// None is a stale/nonlocal target; Some says whether this exact local card
+/// changed. Queued and opening cards are accepted without another reset.
+fn reset_local_restore(
+    tree: &mut WorkspaceTree,
+    tab_id: TabId,
+    expected_app: &str,
+) -> Option<bool> {
+    let changed = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+        .flat_map(|strip| &mut strip.window_groups)
+        .flat_map(|group| &mut group.tabs)
+        .find(|tab| tab.id == tab_id)
+        .and_then(|tab| match &mut tab.tile {
+            TileContent::LocalApp { app_id, note, .. } if app_id == expected_app => {
+                let changed = !note.is_empty() && note != OPENING;
+                if changed {
+                    note.clear();
+                }
+                Some(changed)
+            }
+            _ => None,
+        });
+    if changed == Some(true) {
+        tree.queue_save();
+    }
+    changed
+}
+
+fn start_requested_retries(tree: &mut WorkspaceTree) -> bool {
+    let requests = with_retry_requests(std::mem::take);
+    let mut changed = false;
+    for request in requests {
+        changed |= retry_local_restore(tree, request.tab, &request.app_id);
+    }
+    changed
+}
+
+/// An opening message belongs to this saved tab's launch, not to any window
+/// of the same app. A retired/missing claim leaves a recoverable card rather
+/// than a permanent promise or an automatic process loop.
+fn settle_orphaned_local_restores(tree: &mut WorkspaceTree) -> bool {
+    let live = launcher::pending_restore_tabs();
+    let detail = crate::shell::i18n::t("shell-window-restore-interrupted");
+    let mut changed = false;
+    for workspace in &mut tree.desktop.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                for tab in &mut group.tabs {
+                    if let TileContent::LocalApp { note, .. } = &mut tab.tile
+                        && note == OPENING
+                        && !live.contains(&tab.id)
+                    {
+                        note.clone_from(&detail);
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    if changed {
+        tree.queue_save();
+    }
+    changed
+}
+
 /// The catalogue generation the cards' [`MissingApp`] answers were read at.
 static MISSING_READ_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -83,9 +214,11 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
     let released = release_brought_over(tree);
     let installing = start_requested_installs(tree);
     let reread = reread_missing_apps(tree);
+    let retried = start_requested_retries(tree);
+    let interrupted = settle_orphaned_local_restores(tree);
     let todo = pending(tree);
     if todo.is_empty() {
-        return released || installing || reread;
+        return released || installing || reread || retried || interrupted;
     }
     let mut started: Vec<String> = Vec::new();
     let mut decided = false;
@@ -138,7 +271,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
             decided = true;
         }
     }
-    decided || released || installing || reread
+    decided || released || installing || reread || retried || interrupted
 }
 
 /// Answer every card whose app is missing again once the catalogue has
@@ -297,6 +430,15 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
 /// Whether any peer window is still waiting to be examined.
 pub fn any_pending(tree: &WorkspaceTree) -> bool {
     !pending(tree).is_empty()
+        || tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .any(|tab| matches!(&tab.tile, TileContent::LocalApp { note, .. } if note == OPENING))
+        || with_retry_requests(|requests| !requests.is_empty())
 }
 
 /// Settle a persisted app card whose process started but never produced
@@ -844,6 +986,246 @@ mod tests {
     }
 
     #[test]
+    fn orphaned_local_opening_card_settles_once_without_losing_its_saved_record() {
+        let app = "dev.tilo.orphaned-saved-card";
+        let (mut tree, orphan) = tree_with_local_app(app);
+        set_note(&mut tree, orphan, OPENING.into());
+        tree.remember_local_app_record(orphan, 8123);
+        let live = next_id();
+        tree.desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .push(Tab {
+                id: live,
+                title: "Still launching".into(),
+                tile: TileContent::LocalApp {
+                    app_id: app.into(),
+                    label: "Still launching".into(),
+                    note: OPENING.into(),
+                },
+            });
+        tree.remember_local_app_record(live, 8124);
+        let records = tree.local_app_records.clone();
+        launcher::set_pending_placement(app, Placement::IntoTab(live));
+        assert!(
+            examine(&mut tree),
+            "an opening card with no exact launch must become recoverable"
+        );
+        assert_eq!(
+            local_app_note(&tree, orphan),
+            crate::shell::i18n::t("shell-window-restore-interrupted")
+        );
+        assert_eq!(
+            local_app_note(&tree, live),
+            OPENING,
+            "the live sibling's ticket cannot keep the orphan opening"
+        );
+        assert_eq!(tree.local_app_records, records);
+        assert!(
+            !examine(&mut tree),
+            "settlement must not relaunch or keep changing the saved card"
+        );
+        launcher::clear_pending_placements();
+    }
+
+    #[test]
+    fn saved_local_card_exposes_an_exact_semantic_recovery_control() {
+        let app = "dev.tilo.saved-card-recovery";
+        let (mut tree, tab) = tree_with_local_app(app);
+        set_note(&mut tree, tab, "A launch failed".into());
+        tree.remember_local_app_record(tab, 8181);
+        let records = tree.local_app_records.clone();
+        let inputs = crate::shell::hosted_inputs::HostedTileInputs::fixture().unwrap();
+        let tile = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0]
+            .tile
+            .clone();
+        let ui::widget::TileContent::App(mut card) =
+            crate::shell::to_ui_tile_for_tab_with_inputs(&tile, tab, &inputs)
+        else {
+            panic!("the saved failure card must offer recovery, not only static text");
+        };
+        assert!(
+            !card.uses_host_record(),
+            "a recovery control does not acquire scratch custody"
+        );
+        let id = format!("reopen-window:{tab}");
+        assert!(
+            ui::widget::controls::control_action_bindings(card.as_ref())
+                .iter()
+                .any(|binding| binding.control_id == id)
+        );
+        let mut doc = automerge::AutoCommit::new();
+        assert!(!card.perform_semantic_action(
+            "reopen-window:wrong",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert!(card.perform_semantic_action(
+            &id,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert!(card.perform_semantic_action(
+            &id,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert!(
+            examine(&mut tree),
+            "explicit recovery examines this saved tab"
+        );
+        assert_eq!(
+            local_app_note(&tree, tab),
+            NOT_INSTALLED,
+            "the synthetic missing app is answered without spawning"
+        );
+        assert_eq!(
+            tree.local_app_records, records,
+            "recovery retains the selected saved record"
+        );
+        assert_eq!(
+            tree.desktop.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .len(),
+            1
+        );
+        assert_eq!(
+            tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id,
+            tab
+        );
+        assert!(
+            !examine(&mut tree),
+            "a repeated activation cannot leave another retry queued"
+        );
+        launcher::clear_pending_placements();
+    }
+
+    #[test]
+    fn every_distinct_saved_card_recovery_is_drained_and_stale_requests_are_inert() {
+        let app = "dev.tilo.recovery-batch-fixture";
+        let (mut tree, first) = tree_with_local_app(app);
+        set_note(&mut tree, first, "Interrupted".into());
+        let second = next_id();
+        tree.desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .push(Tab {
+                id: second,
+                title: "Second saved window".into(),
+                tile: TileContent::LocalApp {
+                    app_id: app.into(),
+                    label: "Second".into(),
+                    note: "Interrupted".into(),
+                },
+            });
+        tree.remember_local_app_record(first, 8191);
+        tree.remember_local_app_record(second, 8192);
+        let records = tree.local_app_records.clone();
+        request_retry(first, app);
+        request_retry(first, app);
+        request_retry(second, app);
+        request_retry(second, "dev.tilo.wrong");
+        request_retry(next_id(), app);
+        assert!(examine(&mut tree));
+        assert_eq!(local_app_note(&tree, first), NOT_INSTALLED);
+        assert_eq!(
+            local_app_note(&tree, second),
+            NOT_INSTALLED,
+            "do not short-circuit the request batch"
+        );
+        assert_eq!(tree.local_app_records, records);
+        assert!(
+            !examine(&mut tree),
+            "requests including closed/mismatched cards are consumed"
+        );
+    }
+
+    #[test]
+    fn saved_card_keyboard_pointer_cancel_and_resize_use_the_shared_control() {
+        for input in ["keyboard", "pointer", "semantic"] {
+            let app = "dev.tilo.recovery-input-fixture";
+            let (mut tree, tab) = tree_with_local_app(app);
+            set_note(&mut tree, tab, "The launch was interrupted.".into());
+            let card = crate::shell::app_notice_card::AppNoticeCard::retry(
+                tab,
+                app,
+                "Saved window",
+                "The launch was interrupted.",
+            );
+            let theme = std::env::var("TILO_SHOTS_THEME")
+                .ok()
+                .and_then(|name| ui::Theme::named(&name))
+                .unwrap_or_else(ui::Theme::dark)
+                .with_text_scale(
+                    std::env::var("TILO_SHOTS_TEXT_SCALE")
+                        .ok()
+                        .and_then(|scale| scale.parse().ok())
+                        .unwrap_or(1.0),
+                );
+            let mut harness = ui::headless::FrameHarness::new_with_theme(
+                ui::State::new(),
+                Box::new(card),
+                (456, 500),
+                theme,
+            );
+            harness.key("Tab");
+            if input == "keyboard"
+                && let Some(directory) = std::env::var_os("TILO_LOCALAPP_NOTICE_EVIDENCE")
+            {
+                let directory = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&directory).unwrap();
+                harness.render_png(&directory.join("recovery-focused.png"));
+            }
+            harness.key("Escape");
+            assert!(!examine(&mut tree), "Escape must not request recovery");
+            harness.resize((620, 400)).unwrap();
+            if input == "keyboard"
+                && let Some(directory) = std::env::var_os("TILO_LOCALAPP_NOTICE_EVIDENCE")
+            {
+                harness
+                    .render_png(&std::path::PathBuf::from(directory).join("recovery-resized.png"));
+            }
+            harness.resize((456, 500)).unwrap();
+            if input == "keyboard" {
+                harness.key("Enter");
+            } else if input == "semantic" {
+                let resource = harness
+                    .resources()
+                    .into_iter()
+                    .find(|resource| {
+                        resource.label == crate::shell::i18n::t("shell-window-retry")
+                            && resource
+                                .actions
+                                .iter()
+                                .any(|action| action.id == "activate")
+                    })
+                    .expect("recovery is published through the native resource door");
+                harness
+                    .invoke_action(
+                        &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
+                        &serde_json::Map::new(),
+                        false,
+                        None,
+                    )
+                    .expect("advertised saved-window recovery");
+            } else {
+                let button = harness
+                    .root_widget()
+                    .synthetic_accessibility_rect(&[0])
+                    .expect("shared recovery button rectangle");
+                harness.click_at(button.center().x, button.center().y);
+            }
+            assert!(
+                examine(&mut tree),
+                "{input} must reach the saved card action"
+            );
+            assert_eq!(local_app_note(&tree, tab), NOT_INSTALLED);
+            assert!(!examine(&mut tree), "activation must be consumed once");
+        }
+    }
+
+    #[test]
     fn restored_sibling_waits_across_frames_until_the_first_window_maps() {
         let app = "dev.tilo.restore-sibling-waits";
         let (mut tree, first) = tree_with_local_app(app);
@@ -1328,8 +1710,11 @@ mod tests {
         assert_eq!(missing_of(&tree, tab), Some(MissingApp::Unavailable));
 
         // Pressing the card's button queues exactly that tab.
-        let mut card =
-            crate::shell::install_card::InstallCard::new(tab, "Word Processor", "Word Processor");
+        let mut card = crate::shell::app_notice_card::AppNoticeCard::install(
+            tab,
+            "Word Processor",
+            "Word Processor",
+        );
         card.press_for_test();
         let queued = std::mem::take(
             &mut *INSTALL_REQUESTS

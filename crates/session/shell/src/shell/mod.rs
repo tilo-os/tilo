@@ -23,6 +23,7 @@ pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
 pub mod app_close;
+pub mod app_notice_card;
 pub mod app_tabs;
 pub(crate) mod audio_output;
 pub mod automation_folders;
@@ -89,7 +90,6 @@ pub mod i18n;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
-pub mod install_card;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub(crate) mod launch_readiness;
@@ -485,7 +485,7 @@ fn try_to_ui_tile_for_tab(
             label,
             missing: Some(tilo_desktop_model::MissingApp::Installable { display_name }),
             ..
-        } if tab.is_some() => UiTile::App(Box::new(install_card::InstallCard::new(
+        } if tab.is_some() => UiTile::App(Box::new(app_notice_card::AppNoticeCard::install(
             tab.unwrap_or_default(),
             label,
             display_name,
@@ -527,6 +527,18 @@ fn try_to_ui_tile_for_tab(
                 )],
             ),
         },
+        ShellTile::LocalApp {
+            app_id,
+            label,
+            note,
+        } if tab.is_some() && !note.is_empty() && note != peer_windows::OPENING => {
+            UiTile::App(Box::new(app_notice_card::AppNoticeCard::retry(
+                tab.unwrap_or_default(),
+                app_id,
+                label,
+                note,
+            )))
+        }
         ShellTile::LocalApp { label, note, .. } => UiTile::Notice {
             title: label.clone(),
             detail: if note.is_empty() {

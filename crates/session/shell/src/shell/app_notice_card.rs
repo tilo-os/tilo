@@ -1,7 +1,5 @@
-//! The card a tab shows while the app another device has open in it is not
-//! installed here but can be: the window's name, why it is not open, and one
-//! button that installs the app into this tab. Pressing it is the consent;
-//! nothing installs without it.
+//! App status cards share the toolkit `EmptyState`: install a missing peer app
+//! or explicitly reopen a failed saved window in its existing tab.
 
 use std::collections::HashMap;
 
@@ -17,16 +15,17 @@ use ui::widget::{AppKind, AppWidget, EmptyState, EventCtx, IconDescriptor, Model
 
 use crate::shell::state::TabId;
 
-pub struct InstallCard {
+pub struct AppNoticeCard {
     tab: TabId,
     title: String,
+    retry_app: Option<String>,
     card: EmptyState,
 }
 
-impl InstallCard {
+impl AppNoticeCard {
     /// The card for `tab`, whose window is called `title` and whose app the
     /// catalogue offers as `display_name`.
-    pub fn new(tab: TabId, title: &str, display_name: &str) -> Self {
+    pub fn install(tab: TabId, title: &str, display_name: &str) -> Self {
         let card = EmptyState::new(title)
             .with_message(crate::shell::i18n::t("peer-window-not-installed"))
             .with_action(crate::shell::i18n::t_args(
@@ -37,14 +36,32 @@ impl InstallCard {
         Self {
             tab,
             title: title.to_owned(),
+            retry_app: None,
             card,
         }
     }
 
-    /// Hand a pressed install button to the shell's next reconciliation.
-    fn forward_install(&mut self) {
+    /// Reopen the exact saved window; this card owns no document itself.
+    pub fn retry(tab: TabId, app_id: &str, title: &str, detail: &str) -> Self {
+        Self {
+            tab,
+            title: title.to_owned(),
+            retry_app: Some(app_id.to_owned()),
+            card: EmptyState::new(title)
+                .with_message(detail)
+                .with_action(crate::shell::i18n::t("shell-window-retry"))
+                .with_action_id(format!("reopen-window:{tab}")),
+        }
+    }
+
+    /// Hand an explicit card action to the shell's next reconciliation.
+    fn forward_action(&mut self) {
         if self.card.take_action() {
-            crate::shell::peer_windows::request_install(self.tab);
+            if let Some(app_id) = &self.retry_app {
+                crate::shell::peer_windows::request_retry(self.tab, app_id);
+            } else {
+                crate::shell::peer_windows::request_install(self.tab);
+            }
         }
     }
 
@@ -60,14 +77,26 @@ impl InstallCard {
     }
 }
 
-impl Widget for InstallCard {
+impl Widget for AppNoticeCard {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.card.build_layout(taffy, theme, node_map)
+        let node = self.card.build_layout(taffy, theme, node_map);
+        // The wrapper is the action owner; the shared face measures and paints.
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        self.card.measure(known, available, text_renderer)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -88,7 +117,7 @@ impl Widget for InstallCard {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.card.handle_event(event, ctx);
-        self.forward_install();
+        self.forward_action();
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -114,7 +143,7 @@ impl Widget for InstallCard {
         path: &ModelPath,
     ) -> bool {
         let performed = self.card.perform_action(action, state, path);
-        self.forward_install();
+        self.forward_action();
         performed
     }
 
@@ -128,12 +157,16 @@ impl Widget for InstallCard {
         let performed = self
             .card
             .perform_semantic_action(target, action, state, path);
-        self.forward_install();
+        self.forward_action();
         performed
     }
 
+    fn test_id(&self) -> Option<&str> {
+        self.card.test_id()
+    }
+
     fn name(&self) -> &'static str {
-        "InstallCard"
+        "AppNoticeCard"
     }
 
     fn get_rect(&self) -> Rect {
@@ -141,7 +174,9 @@ impl Widget for InstallCard {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.card.accessibility()
+        self.card
+            .accessibility()
+            .map(|node| node.with_semantic_key(format!("app-notice:{}", self.tab)))
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
@@ -153,7 +188,7 @@ impl Widget for InstallCard {
     }
 }
 
-impl AppWidget for InstallCard {
+impl AppWidget for AppNoticeCard {
     fn uses_host_record(&self) -> bool {
         false
     }
