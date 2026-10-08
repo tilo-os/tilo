@@ -114,10 +114,14 @@ struct LaunchedProcess {
     /// identity. Host/Flatpak launches are attributed to a room for placement
     /// and portals but their Wayland app ids remain compatibility-owned.
     confined: bool,
+    /// The last native toplevel is closing, but the supervisor has not
+    /// observed process exit and completed writer retirement yet.
+    retiring: bool,
 }
 
 static LAUNCHED_PROCESSES: std::sync::LazyLock<Mutex<HashMap<u32, LaunchedProcess>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static LAUNCH_RETIREMENT_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceLaunchIdentity {
@@ -179,6 +183,7 @@ fn register_launched_process(
                 workspace_id: workspace_id.map(str::to_string),
                 start_time,
                 confined,
+                retiring: false,
             },
         );
     }
@@ -476,6 +481,77 @@ fn unregister_launched_process(pid: u32) {
         map.remove(&pid);
     }
     lock(&TRUSTED_SERVICE_LAUNCHES).remove(&pid);
+    LAUNCH_RETIREMENT_CHANGED.notify_all();
+}
+
+/// A native app's last toplevel is closing. Attribute retirement through
+/// the kernel peer's exact live launcher ancestor, never its claimed app id.
+pub(crate) fn note_native_writer_retiring(mut pid: u32) {
+    for _ in 0..32 {
+        let Some((parent, start_time)) = proc_stat(pid) else {
+            return;
+        };
+        if let Ok(mut processes) = LAUNCHED_PROCESSES.lock()
+            && let Some(process) = processes.get_mut(&pid)
+            && process.start_time == start_time
+        {
+            if process.confined {
+                process.retiring = true;
+                eprintln!(
+                    "app-writer-retiring: package={} room={:?} launcher_pid={pid}",
+                    process.package_id, process.workspace_id
+                );
+            }
+            return;
+        }
+        if parent == 0 || parent == pid {
+            return;
+        }
+        pid = parent;
+    }
+}
+
+/// Wait on the launch worker, before spawning a replacement. Surface
+/// disappearance is not process exit: a native app may still checkpoint its
+/// canonical record. Never remove its lock or race a second writer into it.
+fn wait_for_retiring_app(
+    package_id: &str,
+    command: &LaunchCommand,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let Some(identity) = &command.service_identity else {
+        return Ok(());
+    };
+    let started = std::time::Instant::now();
+    let mut processes = LAUNCHED_PROCESSES
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("shell-launch-registry-unavailable"))?;
+    let retiring = |processes: &HashMap<u32, LaunchedProcess>| {
+        processes.values().any(|process| {
+            process.confined
+                && process.retiring
+                && process.package_id == package_id
+                && process.workspace_id.as_deref() == Some(identity.workspace_id.as_str())
+        })
+    };
+    if retiring(&processes) {
+        eprintln!(
+            "app-writer-retirement-wait: package={package_id} room={}",
+            identity.workspace_id
+        );
+    }
+    while retiring(&processes) {
+        let remaining = timeout
+            .checked_sub(started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| crate::shell::i18n::t("shell-launch-writer-still-closing"))?;
+        let (next, _) = LAUNCH_RETIREMENT_CHANGED
+            .wait_timeout(processes, remaining)
+            .map_err(|_| crate::shell::i18n::t("shell-launch-registry-unavailable"))?;
+        processes = next;
+    }
+    drop(processes);
+    Ok(())
 }
 
 /// Host-owned identity of a process descended from a launcher supervised by
@@ -3573,6 +3649,21 @@ fn start_launch(
         let mut authority_lease = authority;
         let events = worker_events;
         events.clone().adopt();
+        if let Err(detail) = wait_for_retiring_app(
+            &app.package_id,
+            &command,
+            std::time::Duration::from_secs(30),
+        ) {
+            events.startup.fail(startup_token, detail.clone());
+            events.push(LaunchEvent {
+                package_id: app.package_id.clone(),
+                display_name: app.display_name.clone(),
+                managed_agent_id: app.managed_agent_id.clone(),
+                managed_workspace_id: app.managed_workspace_id.clone(),
+                kind: LaunchEventKind::SpawnFailed { detail },
+            });
+            return;
+        }
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
         apply_launch_env(&mut cmd, &command.env);
@@ -6305,6 +6396,7 @@ mod tests {
                     workspace_id: Some("room-spoof".into()),
                     start_time: u64::MAX,
                     confined: true,
+                    retiring: false,
                 },
             );
             assert_eq!(verified_package_for_descendant(pid), None);
@@ -6469,6 +6561,119 @@ mod tests {
         fn drop(&mut self) {
             self.stop();
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn locked_canonical_writer(canonical: &Path) -> LauncherStandIn {
+        use std::io::BufRead as _;
+        let mut child = Command::new("flock")
+            .arg("--exclusive")
+            .arg(canonical)
+            .args(["sh", "-c", "echo locked; read -r _"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(
+            line.trim(),
+            "locked",
+            "the old process owns the real kernel gate"
+        );
+        LauncherStandIn {
+            descendant: child.id(),
+            child,
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn retiring_native_writer_delays_real_replacement_spawn() {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical = directory.path().join("canonical.lock");
+        let replacement = directory.path().join("replacement-opened");
+        let package = format!("so.tilo.retirement.{}", uuid::Uuid::new_v4());
+        let room = uuid::Uuid::new_v4().to_string();
+        let mut writer = locked_canonical_writer(&canonical);
+        register_launched_process(writer.pid(), &package, Some(&room), true);
+        note_native_writer_retiring(writer.pid());
+        let command = LaunchCommand {
+            program: PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".into(),
+                "exec flock --exclusive --nonblock \"$1\" sh -c 'touch \"$1\"' sh \"$2\"".into(),
+                "sh".into(),
+                canonical.to_str().unwrap().into(),
+                replacement.to_str().unwrap().into(),
+            ],
+            env: Vec::new(),
+            service_identity: Some(ServiceLaunchIdentity {
+                app_id: package.clone(),
+                workspace_id: room,
+                allowed_compat_entry_ids: Vec::new(),
+                compat_entry_generation: 0,
+                application_creation: None,
+            }),
+            portal_workspace_id: None,
+            managed_agent_id: None,
+        };
+        let mut other_room = command.clone();
+        other_room.service_identity.as_mut().unwrap().workspace_id = "other-room".into();
+        assert!(wait_for_retiring_app(&package, &other_room, std::time::Duration::ZERO).is_ok());
+        assert!(wait_for_retiring_app("another-app", &command, std::time::Duration::ZERO).is_ok());
+        assert!(
+            wait_for_retiring_app(&package, &command, std::time::Duration::from_millis(1)).is_err()
+        );
+        let session = LaunchSession::current();
+        start_launch(package.clone(), package.clone(), command, &session, None).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert!(
+            !replacement.exists(),
+            "the replacement cannot start while the old writer owns the gate"
+        );
+        assert!(
+            !drain_events()
+                .iter()
+                .any(|event| event.package_id == package
+                    && matches!(
+                        event.kind,
+                        LaunchEventKind::Started { .. }
+                            | LaunchEventKind::Exited
+                            | LaunchEventKind::Failed { .. }
+                            | LaunchEventKind::SpawnFailed { .. }
+                    ))
+        );
+        writer.stop();
+        unregister_launched_process(writer.pid());
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let events = drain_events();
+            assert!(
+                !events.iter().any(|event| event.package_id == package
+                    && matches!(
+                        event.kind,
+                        LaunchEventKind::Failed { .. } | LaunchEventKind::SpawnFailed { .. }
+                    )),
+                "replacement must not race the canonical gate: {events:?}"
+            );
+            if events.iter().any(|event| {
+                event.package_id == package && matches!(event.kind, LaunchEventKind::Exited)
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "replacement must settle after writer retirement"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            replacement.exists(),
+            "the replacement acquired the unchanged canonical lock after retirement"
+        );
     }
 
     #[cfg(target_os = "linux")]

@@ -127,6 +127,32 @@ pub trait SettingsSource: Send + Sync {
         ))
     }
 
+    /// Compare a host-owned display transaction, including an absent section.
+    /// Main's atomic display update also protects the observed profile state.
+    ///
+    /// # Errors
+    /// Refuses stale intent, unsupported sources or failed durable persistence.
+    fn compare_display_transaction(
+        &self,
+        expected: Option<&Value>,
+        transaction: Map<String, Value>,
+    ) -> std::io::Result<()> {
+        let document = self.load();
+        if document.get("display_transaction") != expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "The settings transaction changed.",
+            ));
+        }
+        match self.compare_display_update(DisplayUpdate::new(&document, transaction, None))? {
+            ConditionalUpdate::Stored | ConditionalUpdate::StoredWithCopyRepair(_) => Ok(()),
+            ConditionalUpdate::Superseded => Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "The settings transaction changed.",
+            )),
+        }
+    }
+
     /// Changes whenever the document does, so readers can cache it.
     fn revision(&self) -> u64;
 
@@ -265,6 +291,27 @@ impl SettingsSource for HostDocument {
         drop(doc);
         self.changes.ring();
         Ok(())
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the document lock covers comparison, persistence and revision publication"
+    )]
+    fn compare_display_update(&self, update: DisplayUpdate) -> std::io::Result<ConditionalUpdate> {
+        let mut doc = self.doc.lock().unwrap_or_else(PoisonError::into_inner);
+        if !update.matches(&doc) {
+            return Ok(ConditionalUpdate::Superseded);
+        }
+        let mut next = doc.clone();
+        for (section, values) in update.sections() {
+            merge_section(&mut next, section, values);
+        }
+        (self.persist)(&next)?;
+        *doc = next;
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        drop(doc);
+        self.changes.ring();
+        Ok(ConditionalUpdate::Stored)
     }
 
     fn revision(&self) -> u64 {

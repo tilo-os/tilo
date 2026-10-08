@@ -573,6 +573,15 @@ impl Daemon {
         }
         match request {
             Request::Hello(_) => Err(DaemonError::HelloRequired),
+            Request::DeviceActions(p) => self.device_actions(&p.line),
+            Request::DeviceUnlockEnrol(p) => {
+                p.validate().map_err(DaemonError::InvalidParams)?;
+                let _locks = self.slot_locks(DEVICE_SLOT)?;
+                let (_, session) = self.user_slot(DEVICE_SLOT)?;
+                self.require_device_action_owner(&session)?;
+                let uid = self.apply.account_uid(&session.user)?;
+                to_value(&self.apply.enroll_device_unlock(uid, &p)?)
+            }
             Request::Status(p) => to_value(&self.status(p.slot)?),
             Request::SlotCreate(p) => {
                 let _locks = self.slot_locks(&p.name)?;
@@ -678,6 +687,21 @@ impl Daemon {
         expect_version: Option<&str>,
     ) -> Result<BootConfirmResult, DaemonError> {
         self.apply.confirm_boot(expect_version)
+    }
+
+    pub(crate) fn user_device_action_session(&mut self) -> Result<(), DaemonError> {
+        let (_, session) = self.user_slot(DEVICE_SLOT)?;
+        self.require_device_action_owner(&session)
+    }
+
+    fn require_device_action_owner(&mut self, session: &Session) -> Result<(), DaemonError> {
+        if self.apply.device_action_owner(session) {
+            Ok(())
+        } else {
+            Err(DaemonError::InvalidParams(
+                "the device owner's signed-in session is required".into(),
+            ))
+        }
     }
 
     fn input(&mut self, name: &str, actions: &[InputAction]) -> Result<InputResult, DaemonError> {

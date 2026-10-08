@@ -1273,8 +1273,8 @@ fn apply(
                 dial_for_id(&action).ok_or_else(|| format!("`{action}` is not a dial choice"))?;
             tablet_entry(input, &device)?.set_dial_action(dial, mode, action);
         }
-        E::InspectKeyboardMap
-        | E::InspectInputSources { .. }
+        E::InspectInputSources { .. }
+        | E::InspectKeyboardMap
         | E::SetSpellChecking { .. }
         | E::SetAutoCorrect { .. }
         | E::SetSpellingLanguage { .. }
@@ -1300,6 +1300,10 @@ pub(crate) fn answer(
     effect: InputEffect,
     _cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if let InputEffect::InspectInputSources { query, page } = &effect {
+        return inspect_input_sources(app, query.as_deref(), page.unwrap_or(0))
+            .map(Effected::value);
+    }
     if effect == InputEffect::InspectKeyboardMap {
         return app.keyboard_inspection().map(Effected::value);
     }

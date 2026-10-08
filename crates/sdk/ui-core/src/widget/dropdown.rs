@@ -1234,6 +1234,10 @@ impl Dropdown {
 impl Widget for Dropdown {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,

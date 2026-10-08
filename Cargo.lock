@@ -16656,6 +16656,7 @@ dependencies = [
  "tilo-user-identity",
  "tokio",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -18359,6 +18360,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "toml 1.0.6+spec-1.1.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -18368,6 +18370,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "console-control",
  "hex",
  "launcher",
  "libc",
@@ -18380,16 +18383,20 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-advisory-lock",
  "tilo-app-package",
  "tilo-clock",
  "tilo-files",
+ "tilo-identity-host",
  "tilo-test-env",
+ "tilo-user-identity",
  "tilo-vm",
  "tilo-vm-protocol",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

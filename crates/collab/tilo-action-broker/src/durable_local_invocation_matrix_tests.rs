@@ -120,7 +120,7 @@ mod durable_local_matrix {
             let (worker, authorize) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
             let handle = &worker.handle;
-            publish(handle).await;
+            publish_for(handle, &env.route.app_id).await;
             let stream = handle.subscribe_stable_invocations().await.unwrap();
             let (_, binding) = handle
                 .resolve_published_action_for_invocation(
@@ -198,10 +198,16 @@ mod durable_local_matrix {
         }
     }
     async fn publish(handle: &runtime_collab::ChannelHandle) -> Rc<RefCell<TestActionDirectory>> {
+        publish_for(handle, "so.tilo.word-processor").await
+    }
+    async fn publish_for(
+        handle: &runtime_collab::ChannelHandle,
+        app: &str,
+    ) -> Rc<RefCell<TestActionDirectory>> {
         let state = directory_state("original-r1");
         handle
             .publish_action_directory(
-                "so.tilo.word-processor",
+                app,
                 capnp_rpc::new_client(DurableDirectory {
                     state: state.clone(),
                 }),
@@ -1091,6 +1097,7 @@ mod durable_local_matrix {
             .await;
     }
 
+    include!("display_control_tests.rs");
     include!("admitted_local_host_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
