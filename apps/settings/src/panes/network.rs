@@ -124,7 +124,7 @@ pub enum NetworkEffect {
         on: bool,
     },
     /// Open VPN Studio, at one VPN or at its overview.
-    #[effect(label = "Open VPN Studio")]
+    #[effect(job, label = "Open VPN Studio")]
     OpenVpnStudio {
         #[param("The VPN's name; the overview when omitted")]
         vpn: Option<String>,
@@ -792,6 +792,7 @@ pub(crate) enum Landed {
     Shared(Result<String, String>),
     Diagnosed(Result<os_actions::ConnectionDiagnostics, String>),
     SignedIn(Result<(), String>),
+    ToolOpened(Result<(), String>),
 }
 
 /// The fields of one saved Wi-Fi network's policy form.
@@ -1503,8 +1504,7 @@ impl NetworkModel {
                         profile: None,
                     },
                 };
-                self.service.open_tool(intent)?;
-                Begun::Done
+                Begun::work(move || Landed::ToolOpened(service.open_tool(intent)))
             }
             NetworkEffect::RunDiagnostics => {
                 Begun::work(move || Landed::Diagnosed(service.diagnostics()))
@@ -1894,6 +1894,7 @@ impl NetworkModel {
                 }
                 Err(error) => Err(format!("Diagnostics unavailable: {error}")),
             },
+            Landed::ToolOpened(result) => result.map(|()| String::new()),
             Landed::SignedIn(result) => result
                 .map(|()| String::new())
                 .map_err(|error| format!("Could not open network sign-in: {error}")),
@@ -3232,6 +3233,11 @@ mod tests {
         Ok(())
     }
 
+    struct ToolGate {
+        entered: std::sync::mpsc::Sender<std::thread::ThreadId>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+
     struct SnapshotGate {
         started: std::sync::mpsc::Sender<()>,
         release: std::sync::mpsc::Receiver<()>,
@@ -3338,6 +3344,8 @@ mod tests {
         snapshot_gate: Mutex<Option<SnapshotGate>>,
         snapshot_reads: std::sync::atomic::AtomicUsize,
         scan_error: Mutex<Option<String>>,
+        tool_gate: Mutex<Option<ToolGate>>,
+        tool_intents: Mutex<Vec<ToolIntent>>,
     }
 
     impl NetworkService for FakeNetwork {
@@ -3430,9 +3438,16 @@ mod tests {
         }
 
         fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
-            let _ = intent;
+            let pending = self.tool_gate.lock().unwrap().take();
+            if let Some(gate) = pending {
+                gate.entered.send(std::thread::current().id()).unwrap();
+                gate.release
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .unwrap();
+            }
+            self.tool_intents.lock().unwrap().push(intent);
             self.changes.lock().unwrap().push("tool".into());
-            Ok(())
+            self.refuse.lock().unwrap().clone().map_or(Ok(()), Err)
         }
     }
 
@@ -3455,6 +3470,148 @@ mod tests {
         app.with_surface::<SettingsApp, _>(|settings| {
             *settings.network().model().borrow_mut() = observed;
         })
+    }
+
+    #[test]
+    fn mounted_vpn_studio_open_does_not_wait_for_the_tool_service_on_ui() {
+        use std::time::{Duration, Instant};
+
+        let fake = Arc::new(FakeNetwork::default());
+        let observed = model(&fake);
+        let (entered, entries) = std::sync::mpsc::channel();
+        let (release, releases) = std::sync::mpsc::channel();
+        *fake.tool_gate.lock().unwrap() = Some(ToolGate {
+            entered,
+            release: releases,
+        });
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        mount_network(&mut app, observed).unwrap();
+        let open = crate::effects::open_pane_address(crate::categories::Category::Network);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        let service_task = std::thread::spawn(move || {
+            let reader = entries.recv_timeout(Duration::from_secs(3)).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            release.send(()).unwrap();
+            reader
+        });
+        let effect = SettingsEffect::from(NetworkEffect::OpenVpnStudio { vpn: None });
+        let started = Instant::now();
+        let receipt = app
+            .operate(ui::tilo_resource::Invoke::effect(&effect))
+            .unwrap();
+        let elapsed = started.elapsed();
+        let reader = service_task.join().unwrap();
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "mounted VPN launch blocked the UI on its service reply: {elapsed:?}, reader={reader:?}"
+        );
+        assert_ne!(reader, std::thread::current().id());
+        assert!(
+            receipt.is_none(),
+            "the held tool reply cannot already complete"
+        );
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |_| {
+                    fake.changes.lock().unwrap().as_slice() == ["tool"]
+                })
+        );
+    }
+
+    fn assert_published_vpn_tool_completion(refusal: Option<&str>) {
+        use ui::tilo_actions::InvocationUpdate;
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.refuse.lock().unwrap() = refusal.map(str::to_owned);
+        let observed = model(&fake);
+        let (entered, entries) = std::sync::mpsc::channel();
+        let (release, releases) = std::sync::mpsc::channel();
+        *fake.tool_gate.lock().unwrap() = Some(ToolGate {
+            entered,
+            release: releases,
+        });
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        mount_network(&mut app, observed).unwrap();
+        let effect = SettingsEffect::from(NetworkEffect::OpenVpnStudio {
+            vpn: Some("owned-profile".into()),
+        });
+        let invocation = app.start_effect(&effect).unwrap();
+        let reader = entries
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_ne!(reader, std::thread::current().id());
+        app.settle();
+        assert!(
+            !app.harness()
+                .job_updates(invocation)
+                .iter()
+                .any(InvocationUpdate::is_terminal),
+            "launch acceptance must wait for the real tool receipt"
+        );
+        assert!(fake.tool_intents.lock().unwrap().is_empty());
+        release.send(()).unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| {
+                    h.job_updates(invocation)
+                        .iter()
+                        .any(InvocationUpdate::is_terminal)
+                })
+        );
+        let updates = app.harness().job_updates(invocation);
+        match (refusal, updates.last()) {
+            (
+                None,
+                Some(InvocationUpdate::Succeeded {
+                    invocation: id,
+                    output,
+                    ..
+                }),
+            ) => {
+                assert_eq!(*id, invocation);
+                assert!(output.value.is_none());
+            }
+            (
+                Some(error),
+                Some(InvocationUpdate::Failed {
+                    invocation: id,
+                    error: actual,
+                    ..
+                }),
+            ) => {
+                assert_eq!(*id, invocation);
+                assert_eq!(actual.message, error);
+            }
+            _ => panic!("the real tool result must complete exactly its original published job"),
+        }
+        app.settle();
+        assert_eq!(fake.changes.lock().unwrap().as_slice(), ["tool"]);
+        assert_eq!(
+            fake.tool_intents.lock().unwrap().as_slice(),
+            [ToolIntent::Vpn {
+                route: VpnRoute::Profile,
+                profile: Some("owned-profile".into()),
+            }]
+        );
+        if let Some(error) = refusal {
+            let notice = app
+                .surface::<SettingsApp, _>(|settings| {
+                    settings.network().model().borrow().notice.clone()
+                })
+                .unwrap();
+            assert_eq!(notice.as_deref(), Some(error));
+        }
+    }
+
+    #[test]
+    fn published_vpn_studio_job_waits_for_the_actual_tool_receipt() {
+        assert_published_vpn_tool_completion(None);
+    }
+
+    #[test]
+    fn published_vpn_studio_job_preserves_the_actual_tool_refusal() {
+        assert_published_vpn_tool_completion(Some("fixture tool launch refused"));
     }
 
     #[test]
