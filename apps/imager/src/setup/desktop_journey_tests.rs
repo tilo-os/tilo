@@ -180,10 +180,8 @@ fn desktop_journey_usb_opens_existing_writer_without_alongside_authority() {
         .unwrap()
         .value
         .unwrap();
-    assert_eq!(status["methods"]["usb"], cfg!(target_os = "macos"));
-    if !cfg!(target_os = "macos") {
-        assert!(unsupported.effect(&SetupEffect::OpenUsbWizard).is_err());
-    }
+    assert_eq!(status["methods"]["usb"], false);
+    assert!(unsupported.effect(&SetupEffect::OpenUsbWizard).is_err());
     drop(unsupported);
     let setup = SetupApp::with_capabilities(SetupCapabilities {
         platform: Capabilities {
