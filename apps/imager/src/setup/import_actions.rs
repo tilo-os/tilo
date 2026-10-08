@@ -25,6 +25,12 @@ pub enum ImportEffect {
     /// For the person at this computer it includes the chosen folders.
     #[effect(returns, permission = "read")]
     ReadStatus,
+    /// Open Accounts to explicitly connect providers after trusted identity setup.
+    #[effect(view, returns, permission = "read")]
+    OpenAccounts,
+    /// Open Store to choose apps; installation remains a separate action.
+    #[effect(view, returns, permission = "read")]
+    OpenStore,
     /// Choose source folder.
     #[effect(returns, permission = "read")]
     ChooseSource,
@@ -238,6 +244,7 @@ pub struct ImportProjection {
     pub picker_available: bool,
     pub clear_available: bool,
     pub prepare_review_available: bool,
+    pub journey_available: bool,
 }
 
 impl ImportProjection {
@@ -250,6 +257,8 @@ impl ImportProjection {
 /// Each effect's label, as a message key.
 const LABELS: &[(&str, &str)] = &[
     ("read-status", "imager-import-action-read-status"),
+    ("open-accounts", "imager-journey-accounts"),
+    ("open-store", "imager-journey-store"),
     ("choose-source", "imager-import-action-choose-source"),
     (
         "choose-destination",
@@ -306,7 +315,24 @@ pub struct Blocked {
 #[must_use]
 pub fn blocked(state: &ImportProjection) -> Vec<Blocked> {
     let continuation = state.continuation.as_ref();
+    let journey_reason = if continuation.is_some_and(|c| c.identity_ready) {
+        "imager-journey-navigation-pending"
+    } else {
+        "imager-journey-identity-required"
+    };
     [
+        (
+            ImportEffect::OPEN_ACCOUNTS.id,
+            state.journey_available,
+            "journey_unavailable",
+            journey_reason,
+        ),
+        (
+            ImportEffect::OPEN_STORE.id,
+            state.journey_available,
+            "journey_unavailable",
+            journey_reason,
+        ),
         (
             ImportEffect::CHOOSE_SOURCE.id,
             state.picker_available,
@@ -541,6 +567,29 @@ pub fn row(state: &ImportProjection) -> LiveRow {
         badge: Some(strings::t("imager-import-badge-root")),
         preview: None,
     });
+    let ready = state.journey_available;
+    let reason = if state
+        .continuation
+        .as_ref()
+        .is_some_and(|c| c.identity_ready)
+    {
+        "imager-journey-navigation-pending"
+    } else {
+        "imager-journey-identity-required"
+    };
+    row = row
+        .operation(offer(
+            &ImportEffect::OpenAccounts,
+            ready,
+            "journey_unavailable",
+            reason,
+        ))
+        .operation(offer(
+            &ImportEffect::OpenStore,
+            ready,
+            "journey_unavailable",
+            reason,
+        ));
     if let Some(continuation) = &state.continuation {
         for folder in &continuation.folders {
             row = row.row(folder_row(folder));
@@ -662,6 +711,7 @@ imager-import-action-prepare-review = FR review
             picker_available: true,
             clear_available: false,
             prepare_review_available: false,
+            journey_available: false,
         };
 
         let published = row(&projection).into_resource();

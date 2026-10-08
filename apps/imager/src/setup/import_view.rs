@@ -161,6 +161,8 @@ struct PendingPrepareInvocation {
 pub struct ImportApp {
     continuation: Option<Continuation>,
     identity_ready: bool,
+    navigation: super::journey_navigation::Navigation,
+    actions: Option<ui::framework::Actions<Imager>>,
     review_request: Option<(usize, mpsc::Receiver<Result<Continuation, String>>)>,
     gate_request: Option<(ImportCommand, mpsc::Receiver<Result<(), String>>)>,
     batch: Vec<usize>,
@@ -230,6 +232,8 @@ impl ImportApp {
         Self {
             continuation: None,
             identity_ready: false,
+            navigation: super::journey_navigation::Navigation::default(),
+            actions: None,
             gate_request: None,
             review_request: None,
             batch: Vec::new(),
@@ -580,6 +584,8 @@ impl ImportApp {
         Ok(Self {
             continuation,
             identity_ready: false,
+            navigation: super::journey_navigation::Navigation::default(),
+            actions: None,
             gate_request: None,
             review_request: None,
             batch: Vec::new(),
@@ -824,6 +830,9 @@ impl ImportApp {
             }
         });
         ImportProjection {
+            journey_available: self.identity_ready
+                && self.continuation.is_some()
+                && self.navigation.available(),
             phase: self.import_phase(),
             status_is_error: self.status_is_error,
             selection: SelectionProjection {
@@ -928,6 +937,25 @@ impl ImportApp {
         operation: ImportEffect,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let command = match operation {
+            ImportEffect::OpenAccounts | ImportEffect::OpenStore => {
+                if !self.identity_ready || self.continuation.is_none() {
+                    return self
+                        .refuse_semantic(super::strings::t("imager-journey-identity-required"));
+                }
+                let uri = if matches!(operation, ImportEffect::OpenAccounts) {
+                    super::journey_navigation::ACCOUNTS
+                } else {
+                    super::journey_navigation::STORE
+                };
+                self.navigation.request(uri)?;
+                self.status = super::strings::t("imager-journey-navigation-pending");
+                self.status_is_error = false;
+                self.structure_dirty = true;
+                return Ok(tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({"requested": true})),
+                    resources: Vec::new(),
+                });
+            }
             ImportEffect::ReadStatus => {
                 return Ok(tilo_actions::ActionOutput {
                     value: Some(self.local_status_value()),
@@ -1829,6 +1857,14 @@ impl ImportApp {
 
     fn poll_background(&mut self) -> bool {
         let mut changed = self.poll_continued_review();
+        if let Some(outcome) = self.navigation.poll() {
+            self.status_is_error = outcome.is_err();
+            self.status = outcome
+                .err()
+                .unwrap_or_else(|| super::strings::t("imager-journey-navigation-opened"));
+            self.structure_dirty = true;
+            changed = true;
+        }
         self.poll_identity_gate(&mut changed);
         let mut terminal = false;
         // At most one latest progress update and one terminal event per frame.
@@ -2088,6 +2124,34 @@ impl ImportApp {
 
     /// Copy one more folder: where from, where to, and the review that
     /// prepares the copy.
+    fn journey_choices(&self) -> Section {
+        let t = super::strings::t;
+        let button = |id: &str, key: &str, effect: ImportEffect| {
+            let control = Button::new(id, &t(key)).control_size(ui::widget::ControlSize::Regular);
+            match &self.actions {
+                Some(actions) => actions.bind_effect_invocation(control, &effect),
+                None => control.with_enabled(false),
+            }
+        };
+        Section::new(vec![
+            Box::new(Text::new(&t("imager-journey-body"))),
+            Box::new(
+                Row::new()
+                    .push(Box::new(button(
+                        "import.journey.accounts",
+                        "imager-journey-accounts",
+                        ImportEffect::OpenAccounts,
+                    )))
+                    .push(Box::new(button(
+                        "import.journey.store",
+                        "imager-journey-store",
+                        ImportEffect::OpenStore,
+                    ))),
+            ),
+        ])
+        .with_header(SectionHeader::heading(t("imager-journey-heading")))
+    }
+
     fn selection_card(&self) -> Section {
         let source = self
             .source
@@ -2516,6 +2580,9 @@ impl ImportApp {
             body = body.push(Box::new(
                 Section::new(copies).with_header(SectionHeader::heading("Copies")),
             ));
+        }
+        if self.continuation.is_some() {
+            body = body.push(Box::new(self.journey_choices()));
         }
         body = body.push(Box::new(self.selection_card()));
         // A copy's own outcome already stands on its row; the notice is for
@@ -3168,13 +3235,16 @@ impl ResourceSurface<Imager, ImportEffect> for ImportApp {
         if cx.mode().is_live() && self.opens_when_live {
             self.open_live();
         }
+        self.actions = Some(cx.actions());
     }
 
     /// Pose the scenario's imports from real worker runs over disposable
     /// fixture folders; nothing of this computer's own imports is read.
     fn stage(&mut self, scenario: Option<&str>) {
         if let Some(scenario) = scenario.filter(|name| SCENARIOS.contains(name)) {
+            let actions = self.actions.take();
             *self = Self::for_shot(scenario);
+            self.actions = actions;
         }
     }
 
@@ -3230,6 +3300,8 @@ mod tests {
 
     use super::import_actions::IMPORT_ROW_ID;
     use super::*;
+
+    include!("journey_import_tests.rs");
 
     fn fixture() -> (tempfile::TempDir, ImportApp, PathBuf, PathBuf) {
         let temp = super::disposable_fixture_dir().unwrap();
