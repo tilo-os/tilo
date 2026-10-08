@@ -1,7 +1,10 @@
 //! Shared private feedback presentation. Desktop hosts lend the system-owned
 //! controller into a private component; no draft is a workspace record.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use crate::feedback::{Composer, Consent, DeliveryState};
 use crate::i18n::EmbeddedCatalog;
@@ -18,14 +21,29 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
 pub struct FeedbackServices {
     controller: Rc<RefCell<Composer>>,
     presentation: Rc<RefCell<Option<LocalState<String>>>>,
+    mounted: Rc<Cell<bool>>,
 }
 
 impl FeedbackServices {
+    /// Private outbox writes need a wake independently of the ephemeral draft.
+    /// Transport retries remain explicit; only pending local persistence polls.
+    #[must_use]
+    pub fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let controller = self.controller.try_borrow().ok()?;
+        match controller.state().ok()? {
+            Some(DeliveryState::Saving) => {
+                crate::time::now().checked_add(crate::time::Duration::from_millis(100))
+            }
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn new(controller: Rc<RefCell<Composer>>) -> Self {
         Self {
             controller,
             presentation: Rc::default(),
+            mounted: Rc::default(),
         }
     }
 
@@ -51,6 +69,20 @@ impl FeedbackServices {
             }
         }
         result
+    }
+}
+
+/// The host retains the outbox, while exactly one private presentation owns
+/// its raw review. Retirement drops this lease with the actual effect owner.
+struct PresentationLease(FeedbackServices);
+
+impl Drop for PresentationLease {
+    fn drop(&mut self) {
+        self.0.presentation.borrow_mut().take();
+        self.0.mounted.set(false);
+        if let Ok(mut controller) = self.0.controller.try_borrow_mut() {
+            controller.abandon_review();
+        }
     }
 }
 
@@ -156,6 +188,12 @@ pub fn prepare(
     )?;
     context.provide_private();
     if let Some(services) = services {
+        if services.mounted.replace(true) {
+            return Err(crate::launch::LaunchError::Operation(
+                "feedback-busy".into(),
+            ));
+        }
+        context.lend(PresentationLease(services.clone()));
         context.lend(services);
     }
     definition.instantiate(context, target, RestoreInput::None)
@@ -264,6 +302,7 @@ fn install_effects(
         .is_private()
         .then(|| cx.take_lent::<FeedbackServices>())
         .flatten();
+    let presentation = cx.take_lent::<PresentationLease>();
     if let Some(services) = &services {
         *services.presentation.borrow_mut() = Some(status.clone());
         restore_progress(services, status);
@@ -273,6 +312,7 @@ fn install_effects(
     let reviewed_pixels = pixels.clone();
     let progress = status.clone();
     cx.effects(move |effect: FeedbackEffect, effect_cx| {
+        let _presentation = &presentation;
         let Some(services) = &services else {
             progress.set("feedback-unconfigured".to_owned());
             return Err("feedback-unconfigured".to_owned());
@@ -426,6 +466,71 @@ mod tests {
     }
 
     #[test]
+    fn private_storage_wake_sends_only_after_host_acknowledges_approval() {
+        let transport = Rc::new(RefCell::new(Transport::default()));
+        let storage = Rc::new(MemoryStore::queued());
+        let controller = Composer::new(
+            Destination {
+                room: "private-fixture".into(),
+                provider: "record:chat:feedback".into(),
+                channel: "feedback".into(),
+            },
+            Outbox::open(storage.clone(), StorageKey::package("feedback-outbox"))
+                .expect("private outbox"),
+            Box::new(Host(transport.clone())),
+        )
+        .expect("admitted destination");
+        let services = FeedbackServices::new(Rc::new(RefCell::new(controller)));
+        let component =
+            prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
+        let mut frame = FrameHarness::from_component(
+            component,
+            (720, 720),
+            ComponentRunnerInputs::from_native_process(),
+        )
+        .expect("production component");
+        call(
+            &mut frame,
+            "describe",
+            &json!({"issue":"Opening the book failed"}),
+        )
+        .expect("describe");
+        call(&mut frame, "review", &json!({})).expect("review");
+        call(&mut frame, "submit", &json!({})).expect("queue approval");
+        frame.relayout();
+        assert!(
+            frame
+                .inspection_json()
+                .expect("inspection")
+                .contains("Saving on this device")
+        );
+        assert!(services.next_wake_deadline().is_some());
+        services.pump().expect("storage still pending");
+        assert!(transport.borrow().submissions.is_empty());
+        let pending = storage.drain();
+        assert_eq!(pending.len(), 1);
+        storage
+            .acknowledge(pending[0].revision, Ok(()))
+            .expect("host commit");
+        services.pump().expect("durable approval sends");
+        frame.relayout();
+        assert_eq!(transport.borrow().submissions.len(), 1);
+        assert!(services.next_wake_deadline().is_none());
+        assert!(
+            frame
+                .inspection_json()
+                .expect("inspection")
+                .contains("Waiting for destination confirmation")
+        );
+        assert!(
+            !frame
+                .inspection_json()
+                .expect("inspection")
+                .contains("Feedback received")
+        );
+    }
+
+    #[test]
     fn semantic_composer_reviews_queues_and_waits_for_destination_receipt() {
         let transport = Rc::new(RefCell::new(Transport::default()));
         let controller = Rc::new(RefCell::new(
@@ -447,6 +552,10 @@ mod tests {
         let services = FeedbackServices::new(controller.clone());
         let component =
             prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
+        assert!(
+            prepare(Some(services.clone()), "device", "guest", 43).is_err(),
+            "one approved outbox must not have competing private editors"
+        );
         let mut frame = FrameHarness::from_component(
             component,
             (720, 720),
@@ -513,6 +622,14 @@ mod tests {
             })
         );
         assert_literal_second_review(&mut frame, &transport);
+        frame.close_components();
+        assert!(
+            controller.borrow().preview().is_none(),
+            "closing discards the unapproved review"
+        );
+        let reopened = prepare(Some(services), "device", "guest", 42)
+            .expect("closed editor releases its private lease");
+        drop(reopened);
     }
 
     fn find(node: &crate::headless::InspectionNode) -> Option<&crate::headless::InspectionNode> {
