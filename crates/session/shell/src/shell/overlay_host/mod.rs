@@ -1470,8 +1470,11 @@ impl CollaborationPreferences {
         }
     }
 
+    /// The settings section these preferences own as a whole.
+    const SECTION: &'static str = "collaboration";
+
     fn load() -> Self {
-        Self::from_values(&settings_store::load_section("collaboration"))
+        Self::from_values(&settings_store::load_section(Self::SECTION))
     }
 
     fn values(&self) -> serde_json::Map<String, serde_json::Value> {
@@ -14309,7 +14312,9 @@ impl ShellOverlayHost {
             sharing: self.status_sharing,
             manual_status,
         };
-        if let Err(error) = settings_store::update_section("collaboration", preferences.values()) {
+        if let Err(error) =
+            settings_store::update_section(CollaborationPreferences::SECTION, preferences.values())
+        {
             tracing::warn!(%error, "collaboration preferences save failed");
         }
     }
@@ -15891,9 +15896,8 @@ impl ShellOverlayHost {
     /// Persist the rotation lock; the compositor's accelerometer worker
     /// reads it from the same settings document.
     fn save_rotation_lock(locked: bool) {
-        let mut values = serde_json::Map::new();
-        values.insert("rotation_lock".into(), serde_json::Value::Bool(locked));
-        if let Err(e) = settings_store::update_section("display", values) {
+        let origin = settings_store::ChangeOrigin::local("qs.rotation-lock");
+        if let Err(e) = settings_store::hardware::ROTATION_LOCK.set_by(locked, &origin) {
             tracing::warn!(error = %e, "rotation lock preference save failed");
         }
     }
@@ -15959,9 +15963,8 @@ impl ShellOverlayHost {
             );
         }
         if let Some(v) = pending.night_light {
-            let mut values = serde_json::Map::new();
-            values.insert("night_light".into(), serde_json::Value::Bool(v));
-            if let Err(e) = settings_store::update_section("display", values) {
+            let origin = settings_store::ChangeOrigin::local("qs.night-light");
+            if let Err(e) = settings_store::hardware::NIGHT_LIGHT.set_by(v, &origin) {
                 tracing::warn!(error = %e, "night light preference save failed");
             }
         }

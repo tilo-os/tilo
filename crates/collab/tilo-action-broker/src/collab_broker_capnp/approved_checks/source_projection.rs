@@ -158,6 +158,7 @@ impl SourceGuard {
         self.state.authorize_invocation_permission(
             &self.binding.workspace,
             &self.binding.app_id,
+            &self.action.resource,
             &self.binding.action,
             PermissionRequirement::Read,
             &self.origin.actor()?,

@@ -113,6 +113,27 @@ impl super::App {
         })
     }
 
+    /// Independently sample the existing owner and read gates for diagnosis.
+    /// These observations never admit a mutation or acknowledge a capture.
+    /// A missing owner or refused guard is reported as an unavailable merge phase.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_document_merge_phase_for_test(&self) -> Vec<serde_json::Value> {
+        self.document_routes.owners.iter().map(|entry| {
+            let merge_ready = entry.owners.first().and_then(|owner| {
+                let (store, checkout) = owner.store_checkout();
+                crate::bound_dispatch::can_merge_remote_owned_document(store, checkout).ok()
+            });
+            serde_json::json!({
+                "owners": entry.owners.len(),
+                "merge_ready": merge_ready,
+                "pending_remote": !entry.pending.is_empty(),
+                "committed_read_ready": self.collaboration.manager.document_route_ready(Some(&entry.route)),
+                "committed_read_phase": self.collaboration.manager.controlled_document_read_phase_for_test(&entry.route),
+                "committed_queue": self.committed_documents.iter().filter(|(route, _)| route == &entry.route).count(),
+            })
+        }).collect()
+    }
+
     /// Observe the production guard for acknowledged private continuity.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn controlled_private_continuity_route_for_test(

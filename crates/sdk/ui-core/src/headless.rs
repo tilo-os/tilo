@@ -6884,10 +6884,13 @@ impl FrameHarness {
                     crate::bound_dispatch::resolve_resource_invocation(
                         &resources, address, argument, json, confirmed,
                     )?;
-                if !self
-                    .permissions
-                    .permits_invocation(&app_id, spec, arguments.as_ref(), argument)
-                {
+                if !self.permissions.permits_invocation(
+                    &app_id,
+                    &address.resource,
+                    spec,
+                    arguments.as_ref(),
+                    argument,
+                ) {
                     return Err(crate::bound_dispatch::denied(spec));
                 }
                 crate::invocation_scope::check_continuation(
@@ -7029,6 +7032,7 @@ impl FrameHarness {
                 if !crate::bound_dispatch::permits_local_value(
                     &self.permissions,
                     &crate::collaboration::local_app_id(),
+                    &intent.address.resource,
                     spec,
                     arguments.as_ref(),
                     None,
@@ -7139,6 +7143,7 @@ impl FrameHarness {
         if !crate::bound_dispatch::permits_local_value(
             &self.permissions,
             &crate::collaboration::local_app_id(),
+            &address.resource,
             spec,
             arguments.as_ref(),
             None,

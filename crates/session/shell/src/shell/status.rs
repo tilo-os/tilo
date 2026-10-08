@@ -1,19 +1,17 @@
 //! Live system status for the top bar: battery, network, volume.
 //!
-//! Two of the three readings cost a subprocess (`nmcli`, `wpctl`), and
-//! the frame loop must never wait on one — a 200ms `fork`/`exec` is a
-//! dropped frame. So reads happen on a plain OS thread (not a tokio
-//! task, which would stall the notification service behind the
-//! blocking `Command::output`), and the frame loop only copies a
+//! The network is followed, not polled: [`tilo_nm::watch`] on the session
+//! runtime publishes `NetworkManager`'s state as its signals arrive. Volume
+//! still costs a subprocess (`wpctl`), and the frame loop must never wait on
+//! one — a 200ms `fork`/`exec` is a dropped frame. So reads happen on a
+//! plain OS thread (not a tokio task, which would stall the session services
+//! behind the blocking `Command::output`), and the frame loop only copies a
 //! mutex-guarded snapshot.
 //!
 //! [`StatusBridge::spawn`] is called from real-session constructors
 //! only — a `--shots` render must produce the same pixels everywhere,
 //! so with no poller the readings stay `None`, rendered as *nothing*.
 
-use std::io::{BufRead, BufReader};
-use std::os::unix::process::CommandExt as _;
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex};
@@ -22,26 +20,27 @@ use std::time::Duration;
 use crate::shell::i18n::{t, t_args};
 
 use os_actions::{LinkKind, LinkStatus, VolumeState};
+use tilo_nm::{NetworkState, NmState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
-/// When `nmcli monitor` is silent, still refresh battery, volume and
-/// missed events. Thirty seconds is slow enough that idle does not fork
-/// `nmcli`/`wpctl` twice a second, and fast enough that a charger still
-/// shows up while the user is looking at the tray.
+/// Between network changes, still refresh battery, volume and the Wi-Fi
+/// bars. Thirty seconds is slow enough that idle does not fork `wpctl`
+/// twice a second, and fast enough that a charger still shows up while the
+/// user is looking at the tray. A missing system bus is retried on the same
+/// interval.
+///
+/// Nothing else wakes the poller. `pw-dump --monitor` in particular does
+/// not: `PipeWire` reprints the graph on client and parameter churn, so a
+/// line-oriented watch never goes quiet, and each line forked `wpctl`. Volume
+/// arrives on the media-key path and on this interval. The privacy worker
+/// owns the only `pw-dump --monitor`, and it exits once the device graph is
+/// unchanged.
 const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Change monitors that may wake the status poller.
-///
-/// `pw-dump --monitor` is not one of them. `PipeWire` reprints the graph on
-/// client and parameter churn, so a line-oriented watch never goes quiet:
-/// each line forked `wpctl`, and that client kept the dump, `WirePlumber` and
-/// `PipeWire` awake. The shell's reader burned CPU on that stream while the
-/// frame loop stayed asleep. Volume still arrives on the media-key path and
-/// on [`FALLBACK_INTERVAL`]. The privacy worker owns the only `pw-dump
-/// --monitor`, and it exits once the device graph is unchanged.
-pub(crate) fn status_change_monitors() -> &'static [&'static [&'static str]] {
-    &[&["nmcli", "monitor"]]
-}
+/// The latest `NetworkManager` reading: written by the follower on the
+/// session runtime, read by the poller thread. `None` while the system bus
+/// cannot be reached.
+type NetworkSlot = Arc<Mutex<Option<NetworkState>>>;
 
 /// Every field is `Option` because "not read yet" and "this machine
 /// has none" are both real and both drawn as absence, not a zero.
@@ -201,16 +200,18 @@ impl StatusBridge {
             return;
         }
         let (wake_tx, wake_rx) = mpsc::channel();
-        for argv in status_change_monitors() {
-            spawn_change_monitor("tilo-nm-watch", argv, wake_tx.clone());
-        }
-        drop(wake_tx);
+        let network = NetworkSlot::default();
+        spawn_network_follower(Arc::clone(&network), wake_tx.clone());
         let bridge = self.clone();
         let spawned = std::thread::Builder::new()
             .name("tilo-status".to_string())
             .spawn(move || {
+                // Held so a follower that never started cannot disconnect the
+                // channel and turn the wait below into a spin.
+                let _wake_tx = wake_tx;
                 loop {
-                    bridge.set(read_once());
+                    let reading = network.lock().ok().and_then(|slot| slot.clone());
+                    bridge.set(read_once(reading.as_ref()));
                     if wake_rx.recv_timeout(FALLBACK_INTERVAL).is_ok() {
                         while wake_rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
                     }
@@ -302,72 +303,75 @@ pub(crate) fn privacy_frame_interest(was_requested: bool, frame_requested: bool)
     (frame_requested, frame_requested && !was_requested)
 }
 
-fn spawn_change_monitor(name: &'static str, argv: &'static [&'static str], tx: Sender<()>) {
-    let Some((program, rest)) = argv.split_first() else {
-        return;
-    };
-    let _ = std::thread::Builder::new()
-        .name(name.to_string())
-        .spawn(move || {
-            loop {
-                if monitor_until_exit(program, rest, &tx).is_err() {
-                    std::thread::sleep(FALLBACK_INTERVAL);
+/// Follow `NetworkManager` on the session runtime and wake the poller on
+/// each change. Never on the compositor thread: the frame loop only reads
+/// the poller's snapshot.
+fn spawn_network_follower(slot: NetworkSlot, wake: Sender<()>) {
+    match crate::session_runtime::runtime() {
+        Ok(runtime) => {
+            runtime.spawn(follow_network(slot, wake));
+        }
+        Err(error) => {
+            tracing::warn!(target: "tilo::status", %error, "network status not followed");
+        }
+    }
+}
+
+async fn follow_network(slot: NetworkSlot, wake: Sender<()>) {
+    loop {
+        match tilo_nm::watch().await {
+            Ok(mut watch) => {
+                if !publish_network(&slot, &wake, Some(watch.current())) {
+                    return;
+                }
+                while let Some(state) = watch.changed().await {
+                    if !publish_network(&slot, &wake, Some(state)) {
+                        return;
+                    }
                 }
             }
-        });
+            Err(error) => {
+                tracing::debug!(target: "tilo::status", %error, "NetworkManager not followed");
+            }
+        }
+        // No system bus, or it went away: draw no link rather than a guess.
+        if !publish_network(&slot, &wake, None) {
+            return;
+        }
+        tokio::time::sleep(FALLBACK_INTERVAL).await;
+    }
 }
 
-fn monitor_until_exit(program: &str, args: &[&str], tx: &Sender<()>) -> Result<(), ()> {
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0);
-    #[cfg(target_os = "linux")]
-    {
-        let owner = i32::try_from(std::process::id()).map_err(|_| ())?;
-        // SAFETY: the post-fork hook uses only async-signal-safe kernel calls.
-        // No lock, allocation or application state is accessed before exec.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                // Close the race where the shell exits before prctl is armed.
-                if libc::getppid() != owner {
-                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
-                }
-                Ok(())
-            });
-        }
+/// Store a reading and wake the poller. `false` once the poller is gone.
+fn publish_network(slot: &NetworkSlot, wake: &Sender<()>, state: Option<NetworkState>) -> bool {
+    if let Ok(mut current) = slot.lock() {
+        *current = state;
     }
-    let mut child = command.spawn().map_err(|_| ())?;
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(());
-    };
-    for line in BufReader::new(stdout).lines() {
-        if line.is_err() {
-            break;
-        }
-        if tx.send(()).is_err() {
-            break;
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    Err(())
+    wake.send(()).is_ok()
 }
 
-/// Public so a diagnostic or a test can take a reading without owning a poller.
-pub fn read_once() -> SystemStatus {
+/// The top bar's link for a `NetworkManager` reading: the primary
+/// connection, with Wi-Fi bars from `wireless_quality_pct`. `None` when
+/// `NetworkManager` cannot be read — the glyph is omitted rather than
+/// claiming a state.
+pub(crate) fn link_from_network_state(
+    state: Option<&NetworkState>,
+    wireless_quality_pct: Option<u8>,
+) -> Option<LinkStatus> {
+    let state = state.filter(|state| state.state != NmState::Unknown)?;
+    Some(os_actions::link_status_from_state(
+        state,
+        wireless_quality_pct,
+    ))
+}
+
+/// Public so a diagnostic or a test can take a reading without owning a
+/// poller; `network` is the latest `NetworkManager` reading.
+pub fn read_once(network: Option<&NetworkState>) -> SystemStatus {
     let battery = Some(tilo_power_mgmt::sysfs_battery_snapshot());
     // Allowed to fail — a machine without NetworkManager or PipeWire
     // omits the glyph rather than claiming a state.
-    let link = os_actions::get_link_status().ok();
+    let link = link_from_network_state(network, os_actions::wireless_link_quality_pct());
     let volume = os_actions::get_volume_state().ok();
     SystemStatus {
         battery,
@@ -544,6 +548,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn link_from_network_state() {
+        use tilo_nm::{LinkKind as NmLinkKind, NmConnectivity, PrimaryLink};
+        let home = NetworkState {
+            state: NmState::ConnectedGlobal,
+            connectivity: NmConnectivity::Full,
+            metered: Some(false),
+            primary: Some(PrimaryLink {
+                kind: NmLinkKind::Wifi,
+                name: Some("Home".into()),
+                device: Some("wlp2s0".into()),
+            }),
+        };
+        let link = super::link_from_network_state(Some(&home), Some(49));
+        assert_eq!(
+            link,
+            Some(LinkStatus {
+                kind: LinkKind::Wifi,
+                name: Some("Home".into()),
+                signal: 3,
+            })
+        );
+        let status = SystemStatus {
+            link,
+            ..Default::default()
+        };
+        assert_eq!(status.summary(), "Wi-Fi: Home");
+
+        let disconnected = NetworkState {
+            state: NmState::Disconnected,
+            ..NetworkState::unknown()
+        };
+        assert_eq!(
+            super::link_from_network_state(Some(&disconnected), None),
+            Some(LinkStatus::offline()),
+            "NetworkManager saying nothing is connected reads as offline"
+        );
+        assert_eq!(
+            super::link_from_network_state(Some(&NetworkState::unknown()), None),
+            None,
+            "an unanswering NetworkManager omits the glyph instead of claiming offline"
+        );
+        assert_eq!(super::link_from_network_state(None, None), None);
+    }
+
     // The probe observes Linux task scheduling through /proc/self/task.
     #[cfg(target_os = "linux")]
     #[test]
@@ -579,12 +628,6 @@ mod tests {
             os_actions::MonitorDisposition::Stop,
             "the shell must not keep a pw-dump monitor running once the device graph is unchanged"
         );
-        assert!(
-            status_change_monitors()
-                .iter()
-                .all(|argv| !argv.contains(&"pw-dump")),
-            "the status poller must not keep pw-dump --monitor; a quiet graph still emits client lines, and waking wpctl on each one held WirePlumber and PipeWire in the idle budget"
-        );
         assert_eq!(
             privacy_watch_followup(false),
             PrivacyWatchFollowup::Park,
@@ -602,7 +645,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(all(test, target_os = "linux"))]
-#[path = "status_monitor_tests.rs"]
-mod monitor_tests;

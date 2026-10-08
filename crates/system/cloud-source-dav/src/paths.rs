@@ -107,9 +107,7 @@ pub fn percent_decode(raw: &str) -> Option<String> {
 /// Parse an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`), the format
 /// `getlastmodified` uses.
 pub fn parse_http_date(value: &str) -> Option<SystemTime> {
-    chrono::DateTime::parse_from_rfc2822(value.trim())
-        .ok()
-        .map(SystemTime::from)
+    cloud_source::http::parse_http_date(value)
 }
 
 /// Format a time as an IMF-fixdate.

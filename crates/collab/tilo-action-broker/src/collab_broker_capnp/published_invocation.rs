@@ -193,6 +193,10 @@ impl OriginalInvocationData {
     pub(super) fn clipboard_action(&self) -> &str {
         &self.request.address.action
     }
+    pub(super) fn clipboard_resource(&self) -> &str {
+        &self.request.address.resource
+    }
+
     pub(super) fn revalidate_clipboard_origin(
         &self,
         state: &CapnpBrokerState,
@@ -310,6 +314,7 @@ impl OriginalInvocationData {
                 &actor,
                 &ResourceRef::Action {
                     app: self.route.app_id.clone(),
+                    resource: self.request.address.resource.clone(),
                     action: self.request.address.action.clone(),
                 },
                 verb,
@@ -975,6 +980,7 @@ impl OriginalInvocation {
                 &actor,
                 &ResourceRef::Action {
                     app: self.data.route.app_id.clone(),
+                    resource: self.data.request.address.resource.clone(),
                     action: self.data.request.address.action.clone(),
                 },
                 verb,

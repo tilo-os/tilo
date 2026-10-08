@@ -975,22 +975,33 @@ pub(super) async fn install(
                 }
                 Ok(Ok(reply @ Reply::Chunk { .. })) => {
                     set_read_ready(&inbound, &ready, false);
-                    match read_capture(&channel, reply).await {
-                        Ok((read, next)) => {
-                            current = Some(read);
-                            revision = Some(next);
-                            continue;
-                        }
-                        Err(_) => {
-                            revision = None;
-                        }
+                    if let Ok((read, next)) = read_capture(&channel, reply).await {
+                        current = Some(read);
+                        revision = Some(next);
+                        continue;
                     }
+                    #[cfg(any(test, feature = "test-support"))]
+                    tracing::warn!("committed document capture failed");
+                    revision = None;
                 }
                 Ok(Ok(Reply::Unavailable)) => {
                     set_read_ready(&inbound, &ready, false);
                     revision = None;
                 }
                 _ => {
+                    #[cfg(any(test, feature = "test-support"))]
+                    tracing::warn!(
+                        timed_out = result.is_err(),
+                        rpc_failed = matches!(&result, Ok(Err(_))),
+                        unexpected_reply = matches!(&result, Ok(Ok(_))),
+                        "committed document polling stopped"
+                    );
+                    // An expired Open may have allocated a broker capture. Its
+                    // outcome is unknown: do not replay it or leave a stopped
+                    // reader advertising a connected, publishable route.
+                    inbound
+                        .state
+                        .fail_closed("committed document read outcome unknown");
                     set_read_ready(&inbound, &ready, false);
                     break;
                 }

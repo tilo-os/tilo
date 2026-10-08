@@ -599,7 +599,9 @@ impl Daemon {
                 to_value(&self.remove(&p.name)?)
             }
             Request::SlotShow(p) => to_value(&self.show(&p.name)?),
-            Request::LayerUploadBegin(_) => to_value(&self.upload_begin()?),
+            Request::LayerUploadBinary(_) | Request::LayerUploadBegin(_) => {
+                to_value(&self.upload_begin()?)
+            }
             Request::LayerUploadChunk(p) => to_value(&self.upload_chunk(&p.upload, &p.data)?),
             Request::LayerImport(p) => {
                 let _vm = self.locks.vm_shared()?;
@@ -846,6 +848,36 @@ impl Daemon {
         fs::File::create(&path).map_err(DaemonError::io("create upload"))?;
         self.uploads.insert(id.clone(), path);
         Ok(LayerUploadBeginResult { upload: id })
+    }
+
+    pub(crate) fn cancel_upload(&mut self, id: &str) {
+        if let Some(path) = self.uploads.remove(id) {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    pub(crate) fn receive_binary(
+        &mut self,
+        id: &str,
+        input: impl std::io::Read,
+    ) -> (std::io::Result<u64>, bool) {
+        let Some(path) = self.uploads.get(id) else {
+            return (Err(std::io::Error::other("binary upload missing")), false);
+        };
+        let mut reader = tilo_vm_protocol::binary::Reader::new(input);
+        let result = fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .and_then(|mut file| {
+                let bytes = std::io::copy(&mut reader, &mut file)?;
+                file.flush()?;
+                Ok(bytes)
+            });
+        let boundary = reader.decoder.at_boundary();
+        if result.is_err() {
+            self.cancel_upload(id);
+        }
+        (result, boundary)
     }
 
     fn upload_chunk(
