@@ -572,6 +572,11 @@ impl SettingsApp {
     }
 
     /// This device's clock.
+    #[cfg(test)]
+    pub(crate) fn time_date_mut(&mut self) -> &mut panes::time_date::TimeDateArea {
+        &mut self.time_date
+    }
+
     pub(crate) fn time_date(&self) -> &panes::time_date::TimeDateArea {
         &self.time_date
     }

@@ -163,6 +163,7 @@ pub(crate) fn statuses(app: &SettingsApp) -> Vec<ui::framework::EffectStatus> {
     let software = app.software();
     let mut statuses = crate::panes::accessibility::statuses(software.speech.is_some());
     statuses.extend(app.bluetooth().statuses());
+    statuses.extend(app.time_date().statuses());
     statuses
 }
 
