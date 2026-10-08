@@ -15,6 +15,106 @@ struct CertifiedLocalActionHost {
 }
 
 impl CapnpBrokerState {
+    /// Invoke through the native seat's existing palette/control provider.
+    /// This process-owned door is never used by network, MCP or app transports.
+    pub fn action_invoke_local_person(
+        self: &Arc<Self>,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if request.on_behalf_of.is_some()
+            || caller.is_foreign_device()
+            || !matches!(caller.principal(), CallerPrincipal::Person(_))
+        {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        // Hosts without a native-seat service retain the pre-existing ordinary
+        // action door. It supplies no original certificate custody, so no
+        // privileged continuation can mistake it for native-person evidence.
+        // An installed service that refuses NEVER takes this compatibility path.
+        if self.services.local_person.is_none() {
+            return self.action_invoke(caller, None, None, request);
+        }
+        let origin = (|| {
+            if !self.is_accepting() || request.on_behalf_of.is_some() || caller.is_foreign_device()
+            {
+                return Err(ActionHostError::NotPermitted);
+            }
+            let CallerPrincipal::Person(person) = caller.principal() else {
+                return Err(ActionHostError::NotPermitted);
+            };
+            let room = caller.room().ok_or(ActionHostError::NotPermitted)?;
+            let certificate = self
+                .services
+                .local_person
+                .as_ref()
+                .ok_or(ActionHostError::NotPermitted)?
+                .certificate(room, person)
+                .map_err(|_| ActionHostError::NotPermitted)?;
+            if caller
+                .user_public_key()
+                .is_some_and(|key| key != &certificate.user_public_key)
+                || caller
+                    .device_public_key()
+                    .is_some_and(|key| key != &certificate.device_public_key)
+            {
+                return Err(ActionHostError::NotPermitted);
+            }
+            self.current_native_person(room, &certificate)
+                .map_err(|_| ActionHostError::NotPermitted)?;
+            if super::principal_id_for_root(certificate.user_public_key) != *person {
+                return Err(ActionHostError::NotPermitted);
+            }
+            let time = self
+                .registered_policy_time()
+                .map_err(|_| ActionHostError::NotPermitted)?
+                .ok_or(ActionHostError::NotPermitted)?;
+            Ok(InvocationCaller::NativePerson {
+                invocation: request.invocation,
+                room: room.into(),
+                certificate,
+                time,
+            })
+        })();
+        match origin {
+            Ok(origin) => {
+                self.action_invoke_with_origin(caller, None, None, Some(&origin), request)
+            }
+            Err(error) => Pending::ready(Err(error)),
+        }
+    }
+
+    pub(super) fn current_native_person(
+        &self,
+        room: &str,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        if !self.is_accepting() {
+            return Err("native person host retired".into());
+        }
+        let time = self
+            .registered_policy_time()?
+            .ok_or("native person policy origin unavailable")?;
+        tilo_user_identity::verify_device_cert_at(
+            certificate,
+            time.now_ns().map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let current = self
+            .services
+            .local_person
+            .as_ref()
+            .ok_or("native person authority unavailable")?
+            .certificate(
+                room,
+                &super::principal_id_for_root(certificate.user_public_key),
+            )?;
+        if current != *certificate {
+            return Err("native person identity replaced".into());
+        }
+        Ok(())
+    }
+
     /// Bind one host-issued execution to an existing signed, room-bound presentation.
     /// The verifier, not the caller's labels or UUID, establishes authority.
     ///

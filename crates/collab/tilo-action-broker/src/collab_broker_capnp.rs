@@ -1516,6 +1516,13 @@ impl CapnpBrokerState {
 /// the caller an edit its effect submits is admitted as.
 #[derive(Clone)]
 enum ContinuingCaller {
+    /// Host-admitted native person, revalidated for every continuation.
+    NativePerson {
+        room: String,
+        certificate: Box<tilo_user_identity::DeviceCert>,
+        time: crate::peer_actions::PolicyTime,
+        direct: tilo_actions::remote::Caller,
+    },
     /// A caller the door knew directly.
     Caller(tilo_actions::remote::Caller),
     /// A certified caller, its certificate checked again each time.
@@ -1554,6 +1561,20 @@ impl ContinuingCaller {
 
     fn from_origin(origin: &InvocationCaller) -> Self {
         match origin {
+            InvocationCaller::NativePerson {
+                room,
+                certificate,
+                time,
+                ..
+            } => Self::NativePerson {
+                room: room.clone(),
+                certificate: Box::new(certificate.clone()),
+                time: time.clone(),
+                direct: tilo_actions::remote::Caller::local_person(principal_id_for_root(
+                    certificate.user_public_key,
+                ))
+                .in_room(room.clone()),
+            },
             InvocationCaller::Certified {
                 caller,
                 foreign_restriction,
@@ -1579,6 +1600,20 @@ impl ContinuingCaller {
         match (caller, origin) {
             (
                 Some(direct),
+                Some(InvocationCaller::NativePerson {
+                    room,
+                    certificate,
+                    time,
+                    ..
+                }),
+            ) => Some(Self::NativePerson {
+                room: room.clone(),
+                certificate: Box::new(certificate.clone()),
+                time: time.clone(),
+                direct: direct.clone(),
+            }),
+            (
+                Some(direct),
                 Some(InvocationCaller::Certified {
                     caller,
                     foreign_restriction,
@@ -1601,6 +1636,17 @@ impl ContinuingCaller {
     /// foreign-device cap wherever that device does not govern the room.
     fn current(&self, state: &CapnpBrokerState) -> Option<tilo_actions::remote::Caller> {
         match self {
+            Self::NativePerson {
+                room,
+                certificate,
+                time,
+                direct,
+            } => {
+                state.checked_policy_time(Some(time)).ok()?;
+                state.current_native_person(room, certificate).ok()?;
+                (direct.execution_id().is_none() || direct.execution_is_live())
+                    .then(|| direct.clone())
+            }
             Self::Caller(caller) => Some(caller.clone()),
             Self::Certified {
                 caller,
@@ -4934,6 +4980,23 @@ impl CapnpBrokerState {
                     .as_ref()
                     .ok_or("original policy clock unavailable")?,
             )
+        } else if let Some(InvocationCaller::NativePerson {
+            room,
+            certificate,
+            time,
+            ..
+        }) = &origin
+        {
+            self.current_native_person(room, certificate)?;
+            if room != &offered.0.route.cluster_id
+                || actor.is_agent
+                || actor.id != principal_id_for_root(certificate.user_public_key)
+            {
+                return Err(
+                    "original native person does not match the invocation route or actor".into(),
+                );
+            }
+            Some(time)
         } else {
             None
         };
@@ -5055,7 +5118,11 @@ impl CapnpBrokerState {
             .map_err(|_| "invocation handle space exhausted")?;
         let authoritative = durable
             .map(DurableContext::invocation)
-            .or_else(|| execution.as_ref().map(ExecutionScope::invocation));
+            .or_else(|| execution.as_ref().map(ExecutionScope::invocation))
+            .or(match &origin {
+                Some(InvocationCaller::NativePerson { invocation, .. }) => Some(*invocation),
+                _ => None,
+            });
         if requested.is_some_and(|requested| {
             requested.0.is_nil() || authoritative.is_some_and(|held| held != requested)
         }) {
@@ -6926,6 +6993,7 @@ fn app_settings_capability(
         ));
     };
     let app_id = route.app_id.clone();
+    let display = private_display_control(state, &route, &identity);
     // Personal vocabulary stays on this device. Admission to a workspace is
     // insufficient: only the host's private local worker descriptor of the
     // authenticated person receives the read/edit projection.
@@ -6942,8 +7010,106 @@ fn app_settings_capability(
         Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
     Ok(capnp_rpc::new_client(
         runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
-            .with_dictionary_owner(dictionary_owner),
+            .with_dictionary_owner(dictionary_owner)
+            .with_display(display),
     ))
+}
+
+fn private_display_control(
+    state: &Arc<CapnpBrokerState>,
+    route: &CrdtRoute,
+    identity: &AdmittedJoinIdentity,
+) -> Option<runtime_collab::settings::host::DisplayControl> {
+    if route.app_id != "so.tilo.settings" || identity.agent_id.is_some() {
+        return None;
+    }
+    let registration = identity.worker_registration.clone()?;
+    if registration.route != *route
+        || identity.certificate.as_ref() != Some(&registration.certificate)
+    {
+        return None;
+    }
+    let service = state.services.display_control.clone()?;
+    let state = state.clone();
+    let route = route.clone();
+    let identity = identity.clone();
+    Some(Arc::new(move |command, origin| {
+        if !state.is_accepting() {
+            return Err("The display host has closed.".into());
+        }
+        state
+            .revalidate_admission(&route, &identity)
+            .map_err(|error| error.to_string())?;
+        if !state
+            .host_workers
+            .lock()
+            .map_err(|_| "Settings worker registry is unavailable.")?
+            .values()
+            .any(|worker| worker.worker_registration.as_ref() == Some(&registration))
+        {
+            return Err("The admitted Settings worker has closed.".into());
+        }
+        if command.len() > 64 * 1024 {
+            return Err("The display request exceeds its wire bound.".into());
+        }
+        let certificate = match origin {
+            runtime_collab::settings::DisplayOrigin::LocalHost => registration.certificate.clone(),
+            runtime_collab::settings::DisplayOrigin::Published(bytes) => {
+                let invocation = tilo_actions::InvocationId(uuid::Uuid::from_bytes(bytes));
+                let (peer, original) = {
+                    let workers = state
+                        .host_workers
+                        .lock()
+                        .map_err(|_| "Settings worker registry is unavailable.")?;
+                    let peer = workers
+                        .iter()
+                        .find_map(|(peer, worker)| {
+                            (worker.worker_registration.as_ref() == Some(&registration))
+                                .then_some(*peer)
+                        })
+                        .ok_or("The admitted Settings worker has closed.")?;
+                    drop(workers);
+                    let pending = state
+                        .pending_invocations
+                        .lock()
+                        .map_err(|_| "Original display invocation registry is unavailable.")?;
+                    let mut matching = pending.values().filter(|value| {
+                        value.peer_id == peer && value.update.invocation() == invocation
+                    });
+                    let entry = matching
+                        .next()
+                        .ok_or("The original display invocation is not retained.")?;
+                    if matching.next().is_some() || entry.cancellation_requested_at.is_some() {
+                        return Err("The original display invocation is no longer live.".into());
+                    }
+                    let original = entry
+                        .original
+                        .clone()
+                        .ok_or("Original display authority is unavailable.")?;
+                    drop(pending);
+                    (peer, original)
+                };
+                original.display_caller(
+                    &state,
+                    peer,
+                    &registration,
+                    serde_json::from_slice::<settings_store::display_control::DisplayCommand>(
+                        command,
+                    )
+                    .map_err(|_| "The display command is invalid.")?
+                    .mutates(),
+                )?
+            }
+        };
+        service.command(
+            &crate::services::DisplayControlContext {
+                room: route.cluster_id.clone(),
+                root: certificate.user_public_key,
+                device: certificate.device_public_key,
+            },
+            command,
+        )
+    }))
 }
 
 /// The `LiveActivity` capability of the app `route` certifies, over the
