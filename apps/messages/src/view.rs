@@ -202,10 +202,12 @@ fn answer(
             {
                 return Err(CATALOG.t("messages-contact-missing"));
             }
-            state.set(Selection {
-                person,
-                choice: String::new(),
-            });
+            if state.get().person != person {
+                state.set(Selection {
+                    person,
+                    choice: String::new(),
+                });
+            }
         }
         MessagesEffect::SelectRoute { choice } => {
             let selected = state.get();
@@ -497,13 +499,15 @@ fn register_effects(
                 effect,
                 MessagesEffect::OpenPerson { .. } | MessagesEffect::Back
             );
+        let before = state.get();
         let result = answer(&effect_sources, &state, effect)?;
-        if clear {
+        let changed = state.get() != before;
+        if clear && changed {
             effect_sending.clear();
             effect_history.clear();
             jobs.cancel("messages.history");
         }
-        if refresh && effect_history.available() {
+        if refresh && changed && effect_history.available() {
             let choice = state.get().choice;
             jobs.start::<()>("messages.history", |cx| {
                 effect_history.read(&effect_sources, &state, &choice, cx)

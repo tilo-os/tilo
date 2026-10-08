@@ -338,6 +338,62 @@ fn forged_history_requests_fail_before_reading_the_host() {
 }
 
 #[test]
+fn repeated_person_and_route_selection_preserves_private_drafts_and_history() {
+    const DRAFT: &str = "private unsent draft";
+    for reopen_person in [false, true] {
+        let client = tilo_messaging::MessagingClient::new(
+            "11".repeat(32),
+            Arc::new(DelayedSend {
+                pending: Host::new(false, false),
+                error: tilo_messaging::SendError::Unavailable,
+            }),
+        );
+        let mut app = crate::tests::live_messages_with_service(Some(client));
+        let sms = add_sms_route(&mut app);
+        app.effect(&MessagesEffect::SelectRoute { choice: choice() })
+            .expect("select original route");
+        app.effect(&MessagesEffect::ReadHistory { choice: choice() })
+            .expect("original private history");
+        app.harness()
+            .perform_named(
+                "messages.composer",
+                &ui::a11y::Action::SetValue(DRAFT.into()),
+            )
+            .expect("shared accessible composer");
+        let repeated = if reopen_person {
+            MessagesEffect::OpenPerson {
+                person: "00000000-0000-4000-8000-000000000001".into(),
+            }
+        } else {
+            MessagesEffect::SelectRoute { choice: choice() }
+        };
+        app.effect(&repeated)
+            .expect("repeat the declared idempotent selection");
+        assert!(
+            app.harness()
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.value() == Some(DRAFT)),
+            "reselecting the same person or service must preserve the draft"
+        );
+        assert!(
+            has_text(&mut app, PRIVATE),
+            "idempotent selection must preserve private history"
+        );
+        app.effect(&MessagesEffect::SelectRoute { choice: sms })
+            .expect("change the actual service");
+        assert!(
+            !app.harness()
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.value() == Some(DRAFT)),
+            "the old service draft must not cross into the new service"
+        );
+        assert!(!app.harness().dump_json().contains(DRAFT));
+    }
+}
+
+#[test]
 fn sending_text_is_secret_and_history_is_device_bound_read_only() {
     use ui::framework::Effect;
     let specs = MessagesEffect::specs();
