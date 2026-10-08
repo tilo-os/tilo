@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import os
 import shlex
 import shutil
@@ -307,9 +308,17 @@ def output_specs(outputs: list[str]) -> list[dict]:
     specs = []
     for output in outputs:
         try:
-            mode, _, scale = output.partition("@")
-            width, height = mode.split("x")
-            specs.append({"width": int(width), "height": int(height), "scale": float(scale or 1)})
+            mode, separator, scale = output.strip().lower().partition("@")
+            if separator and not scale:
+                raise ValueError("missing scale after @")
+            width, height = (int(value) for value in mode.split("x"))
+            scale = float(scale or 1)
+            # The canonical protocol serializes OutputSpec as WIDTHxHEIGHT@SCALE strings.
+            # Apply its bounds before crediting an observed mode or scale.
+            if (not 1 <= width <= 8192 or not 1 <= height <= 8192
+                    or not math.isfinite(scale) or not 0.5 <= scale <= 4):
+                raise ValueError("outside the protocol's extent or scale bounds")
+            specs.append({"width": width, "height": height, "scale": scale})
         except (AttributeError, ValueError) as exc:
             raise VmError("display bootstrap received an invalid output specification") from exc
     return specs
@@ -329,7 +338,8 @@ def source_owner(source: Path) -> dict:
 def verify_slot(slot: dict | None, name: str, outputs: list[str], owner: dict) -> None:
     if (not isinstance(slot, dict) or slot.get("name") != name or slot.get("kind") != "headful"
             or slot.get("session") != "active" or not slot.get("user") or not slot.get("seat")
-            or slot.get("owner") != owner or slot.get("outputs") != output_specs(outputs)):
+            or slot.get("owner") != owner or not isinstance(slot.get("outputs"), list)
+            or output_specs(slot["outputs"]) != output_specs(outputs)):
         raise VmError("display bootstrap could not observe the exact owned active headful slot")
 
 

@@ -30,8 +30,7 @@ class BootstrapTest(unittest.TestCase):
                     "user": "owned-user", "seat": "seat-owned",
                     "owner": {"host": "owned-host", "worktree": str(source),
                               "branch": "codex/test"},
-                    "outputs": [{"width": 1920, "height": 1080, "scale": 1.0},
-                                {"width": 1280, "height": 800, "scale": 1.25}]}
+                    "outputs": ["1920x1080@1", "1280x800@1.25"]}
             error = {"error": "slot 'acceptance' outputs could not be set: exit status: 1: "
                               "the compositor did not pick up the display change",
                      "hint": "rerun tilo-vm slot create acceptance --headful --outputs <same list> "
@@ -200,6 +199,19 @@ class BootstrapTest(unittest.TestCase):
             with self.subTest(key=key):
                 calls, _ = self.run_bootstrap(
                     lambda slot, error, settings: slot.update({key: value}),
+                    expect_failure="bootstrap")
+                self.assertFalse(any(args[:1] == ["swap"] for args, _ in calls))
+
+    def test_unparseable_or_nonprotocol_output_observations_are_refused(self):
+        values = [None, [{"width": 1920, "height": 1080, "scale": 1}],
+                  ["1920x1080@NaN", "1280x800@1.25"], ["1920x1080@inf"],
+                  ["-1920x1080@1"], ["0x1080@1"], ["8193x1080@1"],
+                  ["1920x1080@0.4"], ["1920x1080@4.1"], ["1920x1080@"], ["garbage"],
+                  ["1920x1080@1", "1280x800@1"]]
+        for outputs in values:
+            with self.subTest(outputs=outputs):
+                calls, _ = self.run_bootstrap(
+                    lambda slot, error, settings: slot.update(outputs=outputs),
                     expect_failure="bootstrap")
                 self.assertFalse(any(args[:1] == ["swap"] for args, _ in calls))
 
