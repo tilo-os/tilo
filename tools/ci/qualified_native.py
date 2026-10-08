@@ -12,6 +12,13 @@ INPUTS = (
     "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
     ".config/nextest.toml", ".forgejo/workflows/check.yml", "tools/test-env.sh",
     "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "tools/cargo-runner.sh",
+    ".config/nextest-filters.toml", "tools/ci/nextest_filters.py", "tools/ci/clippy-check.sh",
+    "tools/ci/compiler_inputs.py", "tools/ci/measure.sh", "tools/ci/process_progress.py",
+    "tools/ci/cgroup_memory.py", "scripts/ci-run.sh", "tools/ensure-headless-audio.sh",
+    "os/dev/assert-native-arch.sh", "tools/font-catalog.py",
+    ".forgejo/actions/prepare-rust-build/action.yml",
+    ".forgejo/actions/restore-cargo-downloads/action.yml",
+    ".forgejo/actions/merge-main/action.yml",
 )
 PACKAGES = ("crates/collab/collab-types", "crates/platform/tilo-clock", "crates/system/wire-frame")
 
