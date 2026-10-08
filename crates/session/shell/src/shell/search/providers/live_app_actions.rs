@@ -3635,6 +3635,48 @@ mod tests {
         }));
     }
 
+    fn cold_directory_local_fixture(
+        broker: crate::shell::collab_broker::AppActionBroker,
+        ctx: &SearchContext<'_>,
+    ) -> (LiveAppActionsProvider, PublishedSurface, DirectoryCacheKey) {
+        let cluster_id = ctx.chrome.tree().desktop.workspaces[0].room.to_string();
+        let actor = ctx
+            .chrome
+            .local_user_for_room(&ctx.chrome.tree().desktop.workspaces[0].room);
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.fixture".into(),
+            route: CrdtRoute::app("so.tilo.fixture", &cluster_id),
+            actions: vec![
+                local_action("Inspect playback", "inspect"),
+                local_action("Inspect playback", "inspect-other"),
+            ],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: surface.peer_id,
+            app_id: surface.app_id.clone(),
+            cluster_id,
+            record_id: surface.route.record_id.clone(),
+        }]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(ctx),
+                &provider.build_probe,
+            ));
+        let key: DirectoryCacheKey = (
+            7,
+            actor,
+            "inspect playback".into(),
+            Vec::new(),
+            String::new(),
+        );
+        (provider, surface, key)
+    }
+
     #[test]
     fn cold_directory_keeps_local_progress_until_reply_stales_the_cursor() {
         for budget in [
@@ -3648,41 +3690,9 @@ mod tests {
             let chrome = chrome();
             let broker = broker_for(&chrome);
             let state = chrome.borrow();
-            let cluster_id = state.tree().desktop.workspaces[0].room.to_string();
-            let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room);
-            let surface = PublishedSurface {
-                peer_id: 7,
-                app_id: "so.tilo.fixture".into(),
-                route: CrdtRoute::app("so.tilo.fixture", &cluster_id),
-                actions: vec![
-                    local_action("Inspect playback", "inspect"),
-                    local_action("Inspect playback", "inspect-other"),
-                ],
-                live: true,
-            };
-            broker.replace_published_surfaces_for_test(vec![surface.clone()]);
-            broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
-                peer_id: surface.peer_id,
-                app_id: surface.app_id.clone(),
-                cluster_id,
-                record_id: surface.route.record_id.clone(),
-            }]);
-            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
             let doc = AutoCommit::new();
             let ctx = context("Inspect playback", &state, &doc);
-            *provider.surface_snapshot.borrow_mut() =
-                Some(LiveAppActionsProvider::build_local_snapshot(
-                    &broker,
-                    &LiveAppActionsProvider::build_scope(&ctx),
-                    &provider.build_probe,
-                ));
-            let key: DirectoryCacheKey = (
-                7,
-                actor,
-                "inspect playback".into(),
-                Vec::new(),
-                String::new(),
-            );
+            let (provider, surface, key) = cold_directory_local_fixture(broker, &ctx);
             // An actual pending receiver, never a seeded or synthetic cache page.
             let reply = pending_directory_reply(&provider, key.clone());
             let first = provider.query_page(ctx, None, budget);
@@ -3735,12 +3745,12 @@ mod tests {
             )));
             provider.poll_directory_pages();
             assert!(provider.directory_pending.borrow().is_empty());
-            let stale = provider.query_page(ctx, Some(&first_cursor), budget);
+            let invalidated_page = provider.query_page(ctx, Some(&first_cursor), budget);
             assert!(
-                stale.stale_cursor,
+                invalidated_page.stale_cursor,
                 "a completed reply still invalidates the old revision"
             );
-            assert!(stale.results.is_empty());
+            assert!(invalidated_page.results.is_empty());
             let fresh = provider.query_page(ctx, None, SearchBudget::PALETTE);
             assert_eq!(fresh.results.len(), 2);
             assert_eq!(
