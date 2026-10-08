@@ -211,7 +211,7 @@ pub(crate) fn search_resource() -> Resource {
     );
     // Opening search asks nothing first: a menu item, the shortcut and the
     // palette run it at once; a control or an agent passes the arguments.
-    open.input = ActionInput::Immediate(SearchRequest::default().encode());
+    open.input = ActionInput::Immediate(SearchRequest::default().encode().into());
     Resource::new(SEARCH_RESOURCE, "tilo.host.search", label).with_action(open)
 }
 

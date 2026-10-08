@@ -1388,6 +1388,14 @@ impl Widget for TypstApp {
         self.rect
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        self.compiling()
+            || self
+                .children()
+                .iter()
+                .any(|child| child.has_pending_visual_work())
+    }
+
     fn next_wake_deadline(&self) -> Option<Instant> {
         if self.io.is_none() && self.pending_resource_io.is_none() && !self.compiling() {
             return None;
@@ -1852,6 +1860,68 @@ mod tests {
             .and_then(|file| crate::resource::source_text(doc, &file.id))
             .and_then(|text| doc.text(&text).ok())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn hosted_capture_finishes_the_real_preview_compile_before_its_first_render() {
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::TypstEditorShell>::capture_at(
+                None,
+                (1280, 800),
+            )
+            .unwrap();
+        assert_compiled_welcome(&mut app);
+    }
+
+    #[test]
+    fn live_preview_finishes_the_real_compile_after_published_source_actions() {
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::TypstEditorShell>::new().unwrap();
+        let file = app.state().files[0].id.clone();
+        let crate::resource::TypstAction::AddFile { source, .. } =
+            crate::resource::sample_files(None).remove(0)
+        else {
+            panic!("the welcome scenario adds a source file");
+        };
+        app.invoke_child::<ui::tilo_resource::PlainText>(
+            &crate::resource::source_resource_id(&file),
+            ui::tilo_resource::Invoke::apply(&ui::tilo_resource::TextEdit::Splice {
+                at: 0,
+                delete: 0,
+                insert: source,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.harness().resize((1280, 800)).unwrap();
+        app.harness()
+            .wait_for_visuals(ui::time::Duration::from_secs(10))
+            .unwrap();
+        assert_compiled_welcome(&mut app);
+    }
+
+    fn assert_compiled_welcome(
+        app: &mut ui::framework::testing::TestApp<crate::resource::TypstEditorShell>,
+    ) {
+        app.with_surface::<TypstApp, _>(|view| {
+            assert!(
+                !view.compiling(),
+                "capture returned while the real source compilation was pending"
+            );
+            assert!(view.editor.text().contains("Getting started with Typst"));
+            assert_eq!(view.err_count, 0);
+            view.preview.select_all();
+            let compiled = view
+                .preview
+                .selected_text()
+                .expect("the rendered page has real selectable glyphs");
+            view.preview.clear_selection();
+            assert!(
+                compiled.contains("Getting started with Typst"),
+                "actual compiled text: {compiled}"
+            );
+        })
+        .unwrap();
     }
 
     #[test]

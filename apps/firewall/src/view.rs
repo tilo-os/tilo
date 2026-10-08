@@ -609,12 +609,16 @@ fn rule_table(
                 (row.action.title().to_string(), tone)
             }),
         ColumnDef::new("rule", "Rule", ColumnWidth::Flex(1.0))
+            .min_width(160.0)
             .sortable(true)
             .with_text(|row: &RuleRow| row.title.clone()),
         ColumnDef::new("protocol", "Protocol", ColumnWidth::Auto)
+            .priority(1)
             .sortable(true)
             .with_text(|row: &RuleRow| row.protocol.to_string()),
         ColumnDef::new("source", "Source", ColumnWidth::Flex(1.0))
+            .min_width(160.0)
+            .priority(2)
             .sortable(true)
             .with_kind(TextKind::Identifier)
             .with_optional_text(|row: &RuleRow| row.source.clone(), "Anywhere"),

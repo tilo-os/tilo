@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -38,6 +39,29 @@ def effective_overrides(config: dict, profile_name: str) -> list[dict]:
 
 
 class NextestPolicyTests(unittest.TestCase):
+    def test_cleanup_keeps_executable_shared_libraries_for_later_cargo_steps(self) -> None:
+        workflow = (WORKFLOWS / "check.yml").read_text(encoding="utf-8")
+        cleanup = workflow.split("- name: Free the test executables", 1)[1].split("- name:", 1)[0]
+        command = "\n".join(line.removeprefix("          ")
+                            for line in cleanup.split("run: |\n", 1)[1].splitlines())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            deps = root / "target/debug/deps"
+            deps.mkdir(parents=True)
+            names = {"app-test-123": 0o755, "libderive-123.so": 0o755,
+                     "libnative.so.1": 0o755, "libapp-123.rlib": 0o644}
+            for name, mode in names.items():
+                path = deps / name
+                path.write_bytes(b"fixture")
+                path.chmod(mode)
+            output = root / "outputs"
+            subprocess.run(["bash", "-c", command], cwd=root, check=True,
+                           env={"PATH": "/usr/bin:/bin", "GITHUB_OUTPUT": str(output)})
+            self.assertEqual(output.read_text(), "shared-libraries=2\n")
+            self.assertFalse((deps / "app-test-123").exists())
+            for name in ("libderive-123.so", "libnative.so.1", "libapp-123.rlib"):
+                self.assertTrue((deps / name).exists(), name)
+
     def test_ci_does_not_retry(self) -> None:
         ci = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))["profile"]["ci"]
         self.assertEqual(ci.get("retries", 0), 0)
