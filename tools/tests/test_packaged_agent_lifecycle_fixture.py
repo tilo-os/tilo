@@ -1682,7 +1682,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
     def test_attached_preedit_refusal_records_only_closed_fixture_evidence(self):
         private = "private editor text"
-        values = {"u": False, "unihao": True, "u你好": False}
+        values = {"nihao": False, "nihaonihao": True, "nihao你好": False}
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(PROOF, "call", return_value={"ok": {}}), \
                 patch.object(PROOF, "require_ok"), \
@@ -1693,7 +1693,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "same_fcitx_process", return_value=True):
             output = pathlib.Path(directory)
             PROOF.preserve_attached_preedit_refusal(
-                "socket", output, "1600x900", {"private": private}, "u", "u你好", {},
+                "socket", output, "1600x900", {"private": private},
+                "nihao", "nihao你好", {},
             )
             evidence = json.loads((output / "ime-attached-preedit-refused.json").read_text())
         self.assertFalse(evidence["baseline_retained"])
@@ -1711,7 +1712,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "same_fcitx_process", return_value=True):
             output = pathlib.Path(directory)
             PROOF.preserve_attached_preedit_refusal(
-                "socket", output, "1600x900", {}, "u", "u你好", {},
+                "socket", output, "1600x900", {}, "nihao", "nihao你好", {},
             )
             evidence = json.loads((output / "ime-attached-preedit-refused.json").read_text())
         self.assertNotIn("diagnostic_unavailable", evidence)
@@ -1720,11 +1721,11 @@ class PresentedEditorTargetTests(unittest.TestCase):
     def test_detached_commit_refusal_records_only_closed_fixture_evidence(self):
         private = "private editor text"
         values = {
-            "u": True,
-            "u你好": False,
-            "unihao ": False,
-            "u你": True,
-            "u ": False,
+            "nihao": True,
+            "nihao你好": False,
+            "nihaonihao ": False,
+            "nihao你": True,
+            "nihao ": False,
         }
         current = {
             "keyboard_focused": False,
@@ -1743,7 +1744,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
             output = pathlib.Path(directory)
             PROOF.preserve_detached_commit_refusal(
                 "socket", output, "1600x900", {"private": private},
-                "u", "u你好", {"surface_id": 91}, {},
+                "nihao", "nihao你好", {"surface_id": 91}, {},
             )
             evidence = json.loads(
                 (output / "ime-detached-commit-refused.json").read_text()
@@ -1970,7 +1971,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
         for forbidden in ("Ime::Preedit", "TrustedInputMethod", "SetText", "AddSelection"):
             self.assertNotIn(forbidden, source)
         for required in (
-                '"text": "nihao"', '"key": "Space"', 'committed_after = "u你好"',
+                '"text": "nihao"', '"key": "Space"',
+                'committed_after = "nihao你好"',
                 "same_fcitx_process", "chat_text_input_active",
                 "detached_ime_input_route",
                 "ime-preedit-attached-", "ime-preedit-detached-",

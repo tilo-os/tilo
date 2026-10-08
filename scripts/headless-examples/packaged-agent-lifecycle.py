@@ -1527,8 +1527,8 @@ def preserve_detached_commit_refusal(
 
 def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     """Hold a genuine Rime preedit across Float and Return, then commit it."""
-    committed_before = "u"
-    committed_after = "u你好"
+    committed_before = "nihao"
+    committed_after = "nihao你好"
     access = wait_for(
         "attached Tide editor for Rime handoff",
         lambda: agent_conversation_accessibility(
@@ -1555,9 +1555,9 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     )
 
     # Rime's express editor commits its raw composition on Return. Establish
-    # one real edit without toggling Fcitx's global active state: bare Shift
-    # is an AltTrigger key, whose later toggle depends on intervening focus
-    # and input-method state.
+    # one real edit without toggling Fcitx's global active state.  Use a
+    # complete pinyin spelling: a lone `u` is not a valid luna-pinyin syllable
+    # and may pass through without ever creating a composition.
     require_ok(call(socket, {"op": "type", "text": committed_before}))
     wait_for(
         "a genuine Rime baseline preedit",
@@ -1689,10 +1689,11 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     with hold_physical_modifiers(socket, shift=True):
         require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
         require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
+    committed_selection = [len(committed_before), len(committed_after)]
     floating_selection = wait_for_private_selection(
-        socket, detached_access, committed_after, [1, 3], process, output
+        socket, detached_access, committed_after, committed_selection, process, output
     )
-    if floating_selection["selection"] != [1, 3]:
+    if floating_selection["selection"] != committed_selection:
         raise RuntimeError("detached physical selection did not cover the Rime commit")
     require_ok(call(socket, {"op": "key", "key": "ArrowRight"}))
     physical_chord(socket, "z", ctrl=True)
