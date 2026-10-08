@@ -1708,6 +1708,137 @@ mod history_integration_tests {
             Some(collab_types::ContentHash(*original_hash.as_bytes()))
         );
     }
+
+    fn history_fs(
+        dir: &tempfile::TempDir,
+        endpoint: &Endpoint,
+        namespace: Namespace,
+    ) -> (QuickFS, Arc<crate::history::FileHistoryStore>) {
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(crate::store::ContentStore::memory()),
+        ));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+        let history = Arc::new(
+            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
+        );
+        let actor = FileActor {
+            person: Ed25519PublicKey([1; 32]),
+            device: Ed25519PublicKey([2; 32]),
+        };
+        let fs = QuickFS::new(Arc::new(Mutex::new(namespace)), hydrator, heuristics)
+            .with_history(history.clone(), actor)
+            .unwrap();
+        (fs, history)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn document_versions_are_fetchable() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let mut namespace = Namespace::new("documents").unwrap();
+        let doc = namespace
+            .create_document(crate::namespace::ROOT_INO, "notes.md", "md", 1)
+            .unwrap();
+        let record_id = namespace.record_id_for(doc).unwrap();
+        let (fs, history) = history_fs(&dir, &endpoint, namespace);
+        assert!(fs.is_document(doc));
+
+        let edits: [&[u8]; 2] = [b"# One\n\nfirst\n", b"# Two\n\nsecond\n"];
+        for edit in edits {
+            assert_eq!(fs.commit_bytes(doc, edit), Ok(()));
+        }
+        let snapshot = history.snapshot(record_id).unwrap();
+        let edited = snapshot
+            .versions
+            .iter()
+            .filter(|version| version.provenance == FileProvenance::Edit)
+            .count();
+        assert_eq!(edited, edits.len());
+        let mut read = Vec::new();
+        for version in &snapshot.versions {
+            let Some(hash) = version.content_hash else {
+                assert_ne!(version.provenance, FileProvenance::Edit);
+                continue;
+            };
+            let bytes = fs
+                .hydrator
+                .read(Hash::from(hash.0), 0, u64::MAX)
+                .await
+                .expect("every recorded document version is fetchable");
+            assert_eq!(
+                fs.history_version_preview(doc, version.id).unwrap(),
+                bytes,
+                "history previews the version's own payload"
+            );
+            read.push(bytes);
+        }
+        for edit in edits {
+            assert!(
+                read.iter().any(|bytes| bytes == edit),
+                "{:?} is readable from history",
+                String::from_utf8_lossy(edit)
+            );
+        }
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restoring_a_qdoc_appends_a_crdt_revision_of_the_current_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let mut namespace = Namespace::new("documents").unwrap();
+        let ino = namespace
+            .create_file(crate::namespace::ROOT_INO, "notes.qdoc", None, 0, 1)
+            .unwrap();
+        let record_id = namespace.record_id_for(ino).unwrap();
+        let (fs, history) = history_fs(&dir, &endpoint, namespace);
+
+        let mut document = tilo_doc::Document::new();
+        let block = document.insert_block(None, "paragraph");
+        document.splice_text(&block, 0, 0, "first");
+        let first = document.save();
+        assert_eq!(fs.commit_bytes(ino, &first), Ok(()));
+        let first_version = history.snapshot(record_id).unwrap().heads[0];
+        document.splice_text(&block, 5, 0, " and second");
+        let second = document.save();
+        assert_eq!(fs.commit_bytes(ino, &second), Ok(()));
+
+        fs.restore_version(ino, first_version).unwrap();
+
+        let restored = fs.read_full_blocking(ino).unwrap();
+        assert_ne!(
+            restored, first,
+            "a restore is a new revision, not old bytes"
+        );
+        assert_eq!(
+            tilo_doc::Document::load(&restored).unwrap().materialize(),
+            tilo_doc::Document::load(&first).unwrap().materialize()
+        );
+        let mut restored_doc = automerge::AutoCommit::load(&restored).unwrap();
+        for head in automerge::AutoCommit::load(&second).unwrap().get_heads() {
+            assert!(
+                restored_doc.get_change_by_hash(&head).is_some(),
+                "the restore continues the current document's history"
+            );
+        }
+        let snapshot = history.snapshot(record_id).unwrap();
+        let head = snapshot
+            .versions
+            .iter()
+            .find(|version| snapshot.heads.contains(&version.id))
+            .unwrap();
+        assert_eq!(
+            head.provenance,
+            FileProvenance::Restore {
+                from: first_version
+            }
+        );
+        assert_eq!(fs.history_version_preview(ino, head.id).unwrap(), restored);
+        drop(fs);
+        endpoint.close().await;
+    }
 }
 
 #[cfg(test)]
