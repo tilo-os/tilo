@@ -809,19 +809,73 @@ class PresentedEditorTargetTests(unittest.TestCase):
             (profile / "launcher-debug-output.log").write_text(
                 "managed Agent enrolled subscription acknowledged\n"
                 "managed Agent enrolled task execution entered\n"
+                "DEBUG tilo_agent_catalogue: SDK watched catalogue boundary "
+                "phase=2 surfaces=3 actions=5\n"
+                "DEBUG tilo_agent_catalogue: Agent observed catalogue boundary "
+                "phase=3 surfaces=3 actions=5\n"
                 + private_content + "\n"
+            )
+            (output / "shell.log").write_text(
+                "DEBUG tilo_agent_catalogue: broker watched catalogue boundary "
+                "phase=1 published_surfaces=7 matching_live_surfaces=6 "
+                "scoped_actions=5 permission_accepted_actions=4 final_surfaces=3\n"
+                + private_content
+                + " DEBUG tilo_agent_catalogue: broker watched catalogue boundary "
+                "phase=1 published_surfaces=99 matching_live_surfaces=99 "
+                "scoped_actions=99 permission_accepted_actions=99 final_surfaces=99\n"
             )
             PROOF.finalize_fixture(profile, output, [], [], None, None)
             retained = (output / "managed-child-final.json").read_text()
             evidence = json.loads(retained)
             self.assertEqual(evidence["log_count"], 1)
-            self.assertEqual(evidence["line_count"], 3)
+            self.assertEqual(evidence["line_count"], 5)
             self.assertTrue(evidence["subscription_acknowledged"])
             self.assertTrue(evidence["execution_entered"])
             self.assertFalse(evidence["model_turn_entered"])
+            self.assertEqual(evidence["catalogue_boundaries"], [
+                {"phase": 2, "surfaces": 3, "actions": 5},
+                {"phase": 3, "surfaces": 3, "actions": 5},
+            ])
+            self.assertEqual(evidence["broker_catalogue_boundaries"], [{
+                "phase": 1,
+                "published_surfaces": 7,
+                "matching_live_surfaces": 6,
+                "scoped_actions": 5,
+                "permission_accepted_actions": 4,
+                "final_surfaces": 3,
+            }])
             self.assertIsNone(evidence["first_error_kind"])
             self.assertNotIn(private_content, retained)
             self.assertFalse(profile.exists())
+
+    def test_catalogue_boundary_parser_is_exact_and_bounded(self):
+        private = "private catalogue text must not become evidence"
+        lines = [
+            "DEBUG tilo_agent_catalogue: SDK watched catalogue boundary "
+            f"phase=2 surfaces={index} actions={index + 1}"
+            for index in range(20)
+        ]
+        lines.extend([
+            private + " DEBUG tilo_agent_catalogue: Agent observed catalogue boundary "
+            "phase=3 surfaces=9 actions=9",
+            "DEBUG another_target: Agent observed catalogue boundary "
+            "phase=3 surfaces=9 actions=9",
+            "DEBUG tilo_agent_catalogue: Agent observed catalogue boundary "
+            "phase=3 surfaces=999999 actions=1",
+        ])
+        rows = PROOF.catalogue_boundary_rows(lines, (2, 3))
+        self.assertEqual(len(rows), PROOF.CATALOGUE_BOUNDARY_ROW_LIMIT)
+        self.assertEqual(rows[0], {"phase": 2, "surfaces": 4, "actions": 5})
+        self.assertEqual(rows[-1], {"phase": 2, "surfaces": 19, "actions": 20})
+        retained = json.dumps(rows)
+        self.assertNotIn(private, retained)
+        self.assertNotIn("another_target", retained)
+        self.assertNotIn("999999", retained)
+
+    def test_fixture_enables_catalogue_debug_for_managed_children(self):
+        self.assertIn(
+            '"tilo_agent_catalogue=debug,"', inspect.getsource(PROOF.bootstrap)
+        )
 
     def test_normal_descriptor_transport_is_not_a_managed_failure(self):
         with tempfile.TemporaryDirectory() as directory:

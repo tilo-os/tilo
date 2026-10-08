@@ -3850,11 +3850,94 @@ def native_person_permission_downgrades(
     return evidence
 
 
+CATALOGUE_BOUNDARY_ROW_LIMIT = 16
+CATALOGUE_BOUNDARY_COUNT_LIMIT = 65535
+
+
+def catalogue_boundary_rows(lines, phases):
+    """Extract only closed phases and bounded counts from exact trace records."""
+    ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+    prefix = r"(?:\d{4}-\d\d-\d\dT\S+\s+)?(?:INFO|DEBUG)\s+tilo_agent_catalogue:\s+"
+    patterns = {
+        1: re.compile(
+            "^" + prefix
+            + r"broker watched catalogue boundary phase=1 "
+            + r"published_surfaces=(\d{1,6}) matching_live_surfaces=(\d{1,6}) "
+            + r"scoped_actions=(\d{1,6}) permission_accepted_actions=(\d{1,6}) "
+            + r"final_surfaces=(\d{1,6})$"
+        ),
+        2: re.compile(
+            "^" + prefix
+            + r"SDK watched catalogue boundary phase=2 "
+            + r"surfaces=(\d{1,6}) actions=(\d{1,6})$"
+        ),
+        3: re.compile(
+            "^" + prefix
+            + r"Agent observed catalogue boundary phase=3 "
+            + r"surfaces=(\d{1,6}) actions=(\d{1,6})$"
+        ),
+    }
+    rows = []
+    for raw in lines:
+        line = ansi.sub("", raw)
+        for phase in phases:
+            matched = patterns[phase].fullmatch(line)
+            if matched is None:
+                continue
+            counts = [int(value) for value in matched.groups()]
+            if any(value > CATALOGUE_BOUNDARY_COUNT_LIMIT for value in counts):
+                break
+            if phase == 1:
+                row = {
+                    "phase": 1,
+                    "published_surfaces": counts[0],
+                    "matching_live_surfaces": counts[1],
+                    "scoped_actions": counts[2],
+                    "permission_accepted_actions": counts[3],
+                    "final_surfaces": counts[4],
+                }
+            else:
+                row = {"phase": phase, "surfaces": counts[0], "actions": counts[1]}
+            rows.append(row)
+            break
+    return rows[-CATALOGUE_BOUNDARY_ROW_LIMIT:]
+
+
+def broker_catalogue_boundary_diagnostic(output):
+    """Read bounded shell windows and retain only exact phase-one counters."""
+    path = output / "shell.log"
+    if not path.is_file():
+        return []
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        length = stream.tell()
+        window = 512 * 1024
+        if length <= 2 * window:
+            stream.seek(0)
+            chunks = [(stream.read(2 * window), False, False)]
+        else:
+            stream.seek(0)
+            head = stream.read(window)
+            stream.seek(length - window)
+            tail = stream.read(window)
+            chunks = [(head, False, True), (tail, True, False)]
+    lines = []
+    for chunk, drop_first, drop_last in chunks:
+        chunk_lines = chunk.decode(errors="replace").splitlines()
+        if drop_first and chunk_lines:
+            chunk_lines = chunk_lines[1:]
+        if drop_last and chunk_lines and not chunk.endswith((b"\n", b"\r")):
+            chunk_lines = chunk_lines[:-1]
+        lines.extend(chunk_lines[-4096:])
+    return catalogue_boundary_rows(lines, (1,))
+
+
 def managed_child_diagnostic(profile):
     """Classify bounded managed output without retaining task/model content."""
     logs = list(profile.rglob("launcher-debug-output.log"))
     if len(logs) != 1:
-        return {"log_count": len(logs), "line_count": 0, "first_error_kind": None}
+        return {"log_count": len(logs), "line_count": 0,
+                "catalogue_boundaries": [], "first_error_kind": None}
     lines = logs[0].read_text(errors="replace").splitlines()
     folded_lines = [line.casefold() for line in lines]
     error_kind = None
@@ -4048,6 +4131,7 @@ def managed_child_diagnostic(profile):
             "managed agent model turn entered" in line
             for line in folded_lines
         ),
+        "catalogue_boundaries": catalogue_boundary_rows(lines, (2, 3)),
         "first_error_kind": error_kind,
     }
 
@@ -4137,8 +4221,10 @@ def finalize_fixture(
             # Marker and IME runs can stop before the full lifecycle's
             # first-request diagnostic. Classify the managed child before
             # deleting its private profile; never retain its raw output.
+            managed = managed_child_diagnostic(profile)
+            managed["broker_catalogue_boundaries"] = broker_catalogue_boundary_diagnostic(output)
             (output / "managed-child-final.json").write_text(
-                json.dumps(managed_child_diagnostic(profile), indent=2) + "\n"
+                json.dumps(managed, indent=2) + "\n"
             )
         except OSError:
             raise RuntimeError("native delivery diagnostic unavailable") from None
@@ -4669,7 +4755,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
         shell_env["RUST_LOG"] = (
             "warn,tilo_action_broker::collab_broker_capnp=debug,"
             "tilo_ui::collaboration::broker=info,"
-            "tilo_agent_catalogue=info,"
+            "tilo_agent_catalogue=debug,"
             "tilo_agent=info,"
             "tilo_agent_delivery=debug,"
             "shell::shell::search::providers::live_app_actions=debug,"
