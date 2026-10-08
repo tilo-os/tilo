@@ -336,10 +336,11 @@ jobs:
           # tests consume this dedicated location.
           printf 'TILO_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
 
-      # app-cli registry and app-host local-package integration tests execute the installer;
+      # app-cli registry and app-host local trust integration tests execute the installer;
       # it is deliberately not a Rust dependency, so an affected-only Cargo
       # invocation does not otherwise produce that binary.
-      - name: Build installer used by package integration tests
+      - name: Build installer used by app-cli and app-host integration tests
+
         if: contains(matrix.test_packages, '-p app-cli') || contains(matrix.test_packages, '-p app-host')
         run: >-
           bash tools/ci/measure.sh "build tilo-install test fixture" --

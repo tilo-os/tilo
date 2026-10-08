@@ -1022,14 +1022,14 @@ notification-remote-input-stopped-shares = { $count ->
    *[other] Remote control was removed from { $count } shares; sharing was stopped.
 }
 
-# Media codec pack notices
+# Media formats notices
 codec-hardware-ready = Hardware H.264/HEVC is ready
-codec-installed = Media codecs installed
-codec-installed-mesa-waiting = { $applies } Hardware H.264/HEVC follows once RPM Fusion publishes a Mesa build matching this system.
-codec-failed = Media codecs could not be installed
+codec-installed = More video and audio formats are on
+codec-installed-mesa-waiting = { $applies } Hardware H.264/HEVC follows once a matching driver is published.
+codec-failed = More video and audio formats could not be turned on
 codec-failed-retry = Open Settings, Updates, to try again.
 codec-failed-with-error = { $error } Open Settings, Updates, to try again.
-codec-app-name = Media codecs
+codec-app-name = Video and audio formats
 
 # Screen capture surfaces
 capture-live-alt = Live capture: { $title }
@@ -1781,31 +1781,25 @@ onboarding-done-system-care-body = Tilo checks signed system updates automatical
 onboarding-tour-take = Take a quick tour
 onboarding-finish = Continue to desktop
 
-# First-login setup: media codecs
-onboarding-codecs-title = Install media codecs?
-onboarding-codecs-body = H.264 and HEVC, the formats most videos, cameras and calls use, are patented and not part of Tilo. You can add them now with one click.
-onboarding-codecs-enables-title = What it enables
-onboarding-codecs-enables-hardware = Hardware-accelerated video on AMD and Intel graphics.
-onboarding-codecs-enables-playback = H.264 and HEVC playback in videos you open.
-onboarding-codecs-enables-encoding = H.264 and HEVC encoding for screen sharing, recording and calls.
-onboarding-codecs-source-title = Where it comes from
-onboarding-codecs-source = This computer downloads them directly from RPM Fusion and from Cisco (OpenH264), under those projects' own licences, and checks every package's signature. Tilo does not host or distribute them. You can remove them at any time in Settings, Updates. OpenH264 Video Codec provided by Cisco Systems, Inc. The complete Cisco binary license is in /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt and at https://www.openh264.org/BINARY_LICENSE.txt.
-onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when the codecs are ready.
+# First-login setup: more video and audio formats
+onboarding-codecs-title = Play more video and audio formats
+onboarding-codecs-note = Downloaded to this device from the formats' publishers. You can turn it off in Settings.
+onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when it is ready.
 onboarding-codecs-progress = Progress: { $percent }%
 onboarding-codecs-starting = Starting…
-onboarding-codecs-installing-title = Installing media codecs
-onboarding-codecs-installing-message = { $status } Setup can continue while the download runs. You will get a notification when the codecs are ready.
-onboarding-codecs-offline-title = Media codecs will install once you are online
-onboarding-codecs-offline-message = This computer is not connected to the internet. Your choice is saved: the codecs install automatically as soon as it is online, and you will get a notification.
-onboarding-codecs-installed-title = Media codecs installed
-onboarding-codecs-failed-title = Media codecs could not be installed
-onboarding-codecs-failed-message = Try again, or install them later from Settings, Updates.
-onboarding-codecs-failed-message-detail = { $error } Try again, or install them later from Settings, Updates.
-onboarding-codecs-installer-failed = The installer could not start: { $error }
+onboarding-codecs-installing-title = Installing more formats
+onboarding-codecs-installing-message = { $status } Setup can continue while the download runs. You will get a notification when it is ready.
+onboarding-codecs-offline-title = Installs once you are online
+onboarding-codecs-offline-message = This device is not connected to the internet. Your choice is saved: the download starts by itself once it is online, and you will get a notification.
+onboarding-codecs-installed-title = More video and audio formats are on
+onboarding-codecs-failed-title = Could not install more formats
+onboarding-codecs-failed-message = Try again, or later from Settings, Updates.
+onboarding-codecs-failed-message-detail = { $error } Try again, or later from Settings, Updates.
+onboarding-codecs-installer-failed = The download could not start: { $error }
 onboarding-codecs-skip = Skip
 onboarding-codecs-not-now = Not now
 onboarding-codecs-retry = Try again
-onboarding-codecs-install = Install media codecs
+onboarding-codecs-install = Install
 
 # Desktop tour
 onboarding-tour-eyebrow = Desktop tour
