@@ -1525,7 +1525,16 @@ impl Widget for AgentQuickComposer {
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        self.tick() | self.popover.update(state, path)
+        let changed = self.tick();
+        if changed {
+            // `tick` projects asynchronous offer/receipt state into bound
+            // LocalState after the frame's ordinary sync pass. Refresh the
+            // retained children now so layout measures the new status in
+            // this frame rather than painting it into the previous label's
+            // one-line rect with no later wake guaranteed.
+            self.popover.sync(state, path);
+        }
+        changed | self.popover.update(state, path)
     }
 
     fn name(&self) -> &'static str {
@@ -3168,12 +3177,19 @@ mod tests {
                 Theme::high_contrast().with_text_scale(2.0),
             ),
         ] {
-            let mut composer = AgentQuickComposer::default();
-            composer.status.set(unavailable.clone());
+            let (mut composer, _applied_revision) = task_composer_with_applied(4);
+            composer.status.set(t("agent-quick-checking"));
             composer.popover.set_anchor(anchor);
             composer.popover.set_viewport(viewport);
             composer.popover.set_open(true);
-            composer.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
+            let document = automerge::AutoCommit::new();
+            composer.sync(&document, &automerge::ROOT);
+            composer.permission_refused = true;
+            assert!(
+                composer.update(&document, &automerge::ROOT),
+                "the refused offer changes the visible status"
+            );
+            assert_eq!(composer.status.get(), unavailable);
             assert_eq!(
                 widget_with_id(&composer, "agent-quick-status")
                     .and_then(Widget::accessibility)
