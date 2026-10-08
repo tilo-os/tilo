@@ -28,6 +28,10 @@ class SelectTest(unittest.TestCase):
     def test_docs_and_unit_tests_only_prove_the_run(self):
         self.assertEqual(select([S + "README.md", S + "test_frames.py"]), "provenance")
 
+    def test_standalone_evidence_auditor_does_not_change_live_suite_results(self):
+        self.assertEqual(select([S + "component-replacement.py", S + "acceptance/replacement.py"]),
+                         "provenance")
+
     def test_the_runner_or_the_vm_door_runs_everything(self):
         self.assertEqual(select([S + "acceptance/checks/ui.py", S + "run.py"]), "")
         self.assertEqual(select([S + "acceptance/vm.py"]), "")

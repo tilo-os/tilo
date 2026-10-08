@@ -1040,7 +1040,11 @@ impl Daemon {
         let record = self.load_slot(name)?;
         let generation = self.slots.generation(name, record.current)?;
         let mut files = Vec::new();
+        let mut provenance = BTreeMap::new();
         for (component, entry) in &generation.components {
+            if let Some(imported) = self.layers.provenance(&entry.layer) {
+                provenance.insert(component.clone(), imported);
+            }
             for file in self.layers.files(&entry.layer)? {
                 files.push(SlotFile {
                     component: component.clone(),
@@ -1055,6 +1059,7 @@ impl Daemon {
         Ok(SlotShowResult {
             slot: self.info(&record)?,
             files,
+            provenance,
         })
     }
 
@@ -1737,6 +1742,75 @@ impl Daemon {
 mod tests {
     use super::*;
     use crate::apply::session_unit;
+
+    #[test]
+    fn slot_show_reads_imported_provenance_and_keeps_it_after_failed_activation() {
+        let root = tempfile::tempdir().unwrap();
+        let payload = tempfile::tempdir().unwrap();
+        fs::create_dir_all(payload.path().join("usr/bin")).unwrap();
+        let binary = payload.path().join("usr/bin/shell");
+        fs::write(&binary, "baseline").unwrap();
+        let mut original = Provenance::local("shell");
+        original.source_commit = Some("ab".repeat(20));
+        original.target = Some("x86_64-unknown-linux-gnu".into());
+        original.cargo_lock_hash = Some("cd".repeat(32));
+        let store = LayerStore::new(root.path());
+        let (baseline, _) = store
+            .import_path(payload.path(), &original, &mut |_| Ok(()))
+            .unwrap();
+        fs::write(&binary, "candidate").unwrap();
+        let mut candidate = original.clone();
+        candidate.source_commit = Some("ef".repeat(20));
+        let (next, _) = store
+            .import_path(payload.path(), &candidate, &mut |_| Ok(()))
+            .unwrap();
+        let mut apply = RecordingApply::default();
+        apply.readiness_replies.extend([
+            Ok(()), // fresh slot
+            Ok(()), // baseline
+            Err("candidate failed readiness".into()),
+            Ok(()), // recovered baseline
+        ]);
+        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+        daemon
+            .create("proof", SlotKind::Headless, Owner::default(), &[], false)
+            .unwrap();
+        assert!(daemon.show("proof").unwrap().provenance.is_empty());
+        let info = Some(ComponentInfo::new(Scope::Session, vec![]));
+        daemon
+            .swap("proof", "shell", &baseline, info.clone())
+            .unwrap();
+        let before = daemon.show("proof").unwrap();
+        assert_eq!(before.provenance["shell"], original);
+        assert!(
+            before
+                .files
+                .iter()
+                .any(|file| file.path == "/usr/bin/shell")
+        );
+        let error = daemon.swap("proof", "shell", &next, info).unwrap_err();
+        assert!(error.to_string().contains("restored generation 1"));
+        let recovered = daemon.show("proof").unwrap();
+        assert_eq!(recovered.slot.components["shell"], baseline);
+        assert_eq!(recovered.provenance, before.provenance);
+        // Old imports without metadata remain observable as unknown, rather
+        // than inventing provenance from the component name or swap request.
+        fs::remove_file(
+            root.path()
+                .join("layers")
+                .join(&baseline)
+                .join("provenance.json"),
+        )
+        .unwrap();
+        let unknown = daemon.show("proof").unwrap();
+        assert!(unknown.provenance.is_empty());
+        assert_eq!(unknown.slot.components["shell"], baseline);
+        assert!(!unknown.files.is_empty());
+        let mut legacy = serde_json::to_value(&unknown).unwrap();
+        legacy.as_object_mut().unwrap().remove("provenance");
+        let legacy: SlotShowResult = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.provenance.is_empty());
+    }
 
     #[test]
     fn failed_swap_restores_generation_and_reports_failed_recovery() {

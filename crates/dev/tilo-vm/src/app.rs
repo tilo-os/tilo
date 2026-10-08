@@ -8041,6 +8041,7 @@ mod tests {
         // Phase: slot_show_lists_files_by_component_with_digests.
         {
             let shown = SlotShowResult {
+                provenance: std::collections::BTreeMap::new(),
                 slot: slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]),
                 files: vec![
                     tilo_vm_protocol::SlotFile {
