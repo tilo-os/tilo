@@ -2511,6 +2511,31 @@ impl ForeignFrameStore {
         size
     }
 
+    /// Numeric, read-only evidence for diagnosing client-buffer scaling.
+    /// `frame_size` describes the cropped image; this also preserves the raw
+    /// allocation and the protocol sizes that determine that crop and fit.
+    pub fn frame_geometry(&self, id: SurfaceId) -> Option<serde_json::Value> {
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = guard.get(&id)?;
+        let (x, y, w, h) = entry.content();
+        Some(serde_json::json!({
+            "raw_buffer": {"w": entry.width, "h": entry.height},
+            "content_crop": {"x": x, "y": y, "w": w, "h": h},
+            "configured_extent": entry.configured_extent.map(|(w, h)| serde_json::json!({"w": w, "h": h})),
+            "min_size": {"w": entry.min_size.0, "h": entry.min_size.1},
+            "max_size": {"w": entry.max_size.0, "h": entry.max_size.1},
+            "window_geometry": entry.geometry.map(|geometry| serde_json::json!({
+                "x": geometry.x, "y": geometry.y,
+                "w": geometry.width, "h": geometry.height,
+                "viewport_destination": geometry.logical_size.map(|(w, h)| serde_json::json!({"w": w, "h": h})),
+                "buffer_scale": geometry.buffer_scale,
+            })),
+        }))
+    }
+
     /// Whether `id`'s window has been shown — the latched answer from [`Self::mark_presented`], read without changing it.
     pub fn is_presented(&self, id: SurfaceId) -> bool {
         let guard = self
@@ -4776,6 +4801,42 @@ mod tests {
             None,
             "geometry outside the buffer must not blank the window"
         );
+    }
+
+    #[test]
+    fn frame_geometry_observes_raw_crop_and_configure_without_resizing() {
+        let id = sid(63);
+        store().forget(id);
+        let tile = Rect::new(16.0, 180.0, 528.0, 540.0);
+        store().publish_rgba(id, &numbered_frame(240, 180), 240, 180);
+        store().note_placement(id, tile);
+        store().note_size_limits(id, (0, 0), (240, 180));
+        store().note_window_geometry(
+            id,
+            Some(WindowGeometry {
+                buffer_scale: 2,
+                ..geometry(10, 5, 100, 80)
+            }),
+        );
+        assert_eq!(store().take_pending_configure(id), Some((240, 180)));
+        let observed = store().frame_geometry(id).unwrap();
+        assert_eq!(
+            observed["raw_buffer"],
+            serde_json::json!({"w": 240, "h": 180})
+        );
+        assert_eq!(
+            observed["content_crop"],
+            serde_json::json!({"x": 20, "y": 10, "w": 200, "h": 160})
+        );
+        assert_eq!(
+            observed["configured_extent"],
+            serde_json::json!({"w": 240.0, "h": 180.0})
+        );
+        assert_eq!(observed["window_geometry"]["buffer_scale"], 2);
+        assert_eq!(store().frame_size(id), Some((200, 160)));
+        assert_eq!(store().placement(id), Some(tile));
+        assert_eq!(store().take_pending_configure(id), None);
+        store().forget(id);
     }
 
     /// Pixels are drawn with the window geometry at the tile corner, so input

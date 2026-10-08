@@ -2989,6 +2989,9 @@ impl ControlState for FrameBuilderControlState<'_> {
                         "w": surface.rect.width(), "h": surface.rect.height(),
                     },
                     "content_rect": rect_json(surface.content_rect),
+                    "target_rect": rect_json(store.target_box(surface.surface_id, surface.rect)),
+                    "frame_geometry": store.frame_geometry(surface.surface_id),
+                    "device_scale": seat.surface_scale(surface.surface_id),
                     "content_origin": {
                         "x": surface.content_rect.x0,
                         "y": surface.content_rect.y0,
