@@ -92,3 +92,7 @@ only the CLI controls passed admission. All five new owned services are inactive
 No production runtime, publication, permission, model catalogue or microphone
 boundary changed. The image and live microphone gates are separate from this
 completed source/runtime investigation.
+
+The [resident WebAssembly follow-up](dictation-whistle-wasm-review.md) implements
+the publisher’s browser speech interface without the native startup pool. It
+completes one bounded French stream but rejects interpreted execution for latency.

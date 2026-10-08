@@ -16,6 +16,8 @@ default = ["whisper"]
 whisper = []
 # Explicit isolated native qualification; never selected by normal consumers.
 nemo-review = []
+# Isolated public-module interpretation; never selected by the speech worker.
+whistle-wasm-review = []
 
 [[bin]]
 name = "tilo-speech-worker"
@@ -33,6 +35,10 @@ required-features = ["whisper"]
 [[example]]
 name = "nemo_speech_worker"
 required-features = ["nemo-review"]
+
+[[example]]
+name = "whistle_wasm_review"
+required-features = ["whistle-wasm-review"]
 
 [lib]
 name = "local_model_service"
@@ -68,6 +74,7 @@ zstd.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+wasmi = { version = "=1.1.0", default-features = false, features = ["std", "simd"] }
 tempfile.workspace = true
 
 [build-dependencies]
