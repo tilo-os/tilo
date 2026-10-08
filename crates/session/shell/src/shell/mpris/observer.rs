@@ -694,18 +694,25 @@ mod tests {
         }
     }
 
-    struct FakeRoot;
+    struct FakeRoot {
+        identity: String,
+    }
 
     #[zbus::interface(name = "org.mpris.MediaPlayer2")]
     impl FakeRoot {
         #[zbus(property)]
         fn identity(&self) -> String {
-            "Probe".to_string()
+            self.identity.clone()
         }
     }
 
+    /// A player that reports what its fields say, and signals only when the
+    /// test makes it.
     struct FakePlayer {
         status: String,
+        title: String,
+        position_us: i64,
+        controllable: bool,
     }
 
     #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
@@ -717,24 +724,24 @@ mod tests {
 
         #[zbus(property)]
         fn position(&self) -> i64 {
-            12_000_000
+            self.position_us
         }
 
         #[zbus(property)]
         fn can_play(&self) -> bool {
-            true
+            self.controllable
         }
 
         #[zbus(property)]
         fn can_pause(&self) -> bool {
-            true
+            self.controllable
         }
 
         #[zbus(property)]
         fn metadata(&self) -> HashMap<String, OwnedValue> {
             HashMap::from([(
                 "xesam:title".to_string(),
-                OwnedValue::try_from(zbus::zvariant::Value::from("Song")).unwrap(),
+                OwnedValue::try_from(zbus::zvariant::Value::from(self.title.clone())).unwrap(),
             )])
         }
     }
@@ -771,7 +778,9 @@ mod tests {
     }
 
     async fn eventually(what: &str, mut condition: impl FnMut() -> bool + Send) {
-        let deadline = Instant::now() + tilo_test_env::hang_bound();
+        let deadline = Instant::now()
+            .checked_add(tilo_test_env::hang_bound())
+            .unwrap();
         while !condition() {
             assert!(Instant::now() < deadline, "{what} never happened");
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -787,12 +796,20 @@ mod tests {
             .unwrap()
             .name(PROBE)
             .unwrap()
-            .serve_at(MPRIS_PATH, FakeRoot)
+            .serve_at(
+                MPRIS_PATH,
+                FakeRoot {
+                    identity: "Probe".into(),
+                },
+            )
             .unwrap()
             .serve_at(
                 MPRIS_PATH,
                 FakePlayer {
                     status: "Playing".into(),
+                    title: "Song".into(),
+                    position_us: 12_000_000,
+                    controllable: true,
                 },
             )
             .unwrap()
