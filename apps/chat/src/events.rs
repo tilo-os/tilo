@@ -4476,14 +4476,10 @@ mod tests {
         app: &mut ChatApp,
         doc: &mut AutoCommit,
         id: String,
+        parent_float_target: usize,
     ) {
         let return_target = format!("agent-surface:{id}|{}", Hit::AgentWindow.semantic_id());
-        let parent_target = app
-            .semantic_hits()
-            .iter()
-            .position(|(_, hit, ..)| matches!(hit, Hit::Inbox))
-            .expect("the parent keeps its own keyboard ring");
-        app.keyboard_target = Some(parent_target);
+        app.keyboard_target = Some(parent_float_target);
         assert!(
             !ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
                 app,
@@ -4519,7 +4515,7 @@ mod tests {
         );
         assert_eq!(
             app.keyboard_target,
-            Some(parent_target),
+            Some(parent_float_target),
             "focusing the child does not contaminate the parent keyboard ring"
         );
         feed_root_mods(app, doc, &key_named(NamedKey::Enter), Modifiers::default());
@@ -4532,6 +4528,20 @@ mod tests {
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             app,
             &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
+        );
+        assert!(
+            app.keyboard_target.is_none(),
+            "returning the exact retained editor retires the parent's Float-control focus"
+        );
+        let composer = ui::Widget::accessibility(app)
+            .expect("Chat keeps its accessibility root after Return")
+            .children
+            .into_iter()
+            .find(|node| node.action_target.as_deref() == Some("chat.composer"))
+            .expect("the returned main editor is accessible");
+        assert!(
+            composer.state.focused,
+            "the exact returned editor regains truthful accessibility focus"
         );
         assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
         assert_eq!(app.composer_main.value(), "東京");
@@ -4726,6 +4736,12 @@ mod tests {
             Modifiers::default(),
         );
         assert!(app.composer_main.is_composing());
+        render_frame(&mut app, 1200.0, 800.0);
+        let parent_float_target = app
+            .semantic_hits()
+            .iter()
+            .position(|(_, hit, ..)| matches!(hit, Hit::AgentWindow))
+            .expect("the attached conversation exposes its Float control");
         app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
         let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
             .expect("Float publishes the shared-host request");
@@ -4781,7 +4797,7 @@ mod tests {
         commit_detached_ime_and_undo(&mut app, &mut doc, &channel, &id);
         assert_detached_private_history(&mut app, &mut doc, &channel, &id);
         assert_invalid_ime_source_retires_composition(&mut app, &mut doc, &channel, &id);
-        return_detached_editor_through_accessibility(&mut app, &mut doc, id);
+        return_detached_editor_through_accessibility(&mut app, &mut doc, id, parent_float_target);
     }
 
     #[test]
