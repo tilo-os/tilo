@@ -3979,6 +3979,29 @@ impl App {
 
     // ---- swap -----------------------------------------------------------------
 
+    /// Use the imported replacement's mount logic for the ordinary VM swap.
+    fn handoff_daemon(
+        &mut self,
+        vm: &Resolved,
+        remote: Remote,
+        layer: &str,
+    ) -> Result<Remote, CliError> {
+        let command =
+            remote::imported_daemon_command(vm.entry.daemon.as_deref(), &remote.hello.root, layer)?;
+        let command: Vec<String> = command.iter().map(|word| vmbuild::sh_quote(word)).collect();
+        let endpoint = self.endpoint(vm)?;
+        let line = remote::ssh_command(&endpoint, vm.entry.key.as_deref(), &command, false);
+        let adapter = Self::adapter(vm)?;
+        let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
+        let imported = self.receipt.phase("daemon-handoff", || {
+            remote.handoff(&vm.name, &line, &endpoint, debug)
+        })?;
+        // End the old RPC only after the replacement handshake succeeded.
+        drop(remote);
+        self.receipt.set("applying_daemon_layer", layer);
+        Ok(imported)
+    }
+
     fn swap(
         &mut self,
         slot: Option<String>,
@@ -4063,6 +4086,9 @@ impl App {
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
         remote = self.connect(&vm)?;
+        if component == "vmd" {
+            remote = self.handoff_daemon(&vm, remote, &layer)?;
+        }
         let info = entry.map(|c| c.info);
         let result = self.receipt.phase("apply", || {
             remote.call(Swap {
