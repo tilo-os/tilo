@@ -143,3 +143,14 @@ results; protected landing and exact merged-main checks remain pending.
 Remaining primary-bar work is separate: collisions at 320 px, retained shared
 overflow controls and status/offline states. The qualified top-bar editor
 increment remains frozen while the Files CI prerequisite is resolved.
+
+## Emoji picker measured-layout follow-up
+
+The enlarged-text footer and narrow group glyph defects observed during #3719
+are repaired through shared Caption shaping and SegmentedFace target metrics.
+Names and hints stack only when needed; narrow group controls wrap while
+preserving keyboard/pointer identity and localized accessible bounds. Resize
+keeps the selected emoji visible. [Focused evidence](evidence/emoji-picker-responsive/README.md)
+reuses the unchanged inspected hints and qualifies the failing 200% / 320 px
+states plus normal comparison. Installed-device and extremely small viewport
+coverage remain separate from this source layout correction.
