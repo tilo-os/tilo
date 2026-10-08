@@ -1283,6 +1283,9 @@ search-app-job-streaming = streaming
 search-app-job-succeeded = succeeded
 search-app-job-failed = failed
 search-app-job-cancelled = cancelled
+search-app-job-routing-unavailable = Action job routing is unavailable.
+search-app-job-routing-already-retained = This action job is already being tracked.
+search-app-job-routing-capacity-exhausted = Too many action jobs are being tracked.
 search-app-resource-contains = { $app } · contains resources
 search-app-action-launches = { $resource } · { $app } · launches application
 
@@ -2485,3 +2488,6 @@ task-review-cancel = Cancel task run
 task-review-retry = Retry task
 task-review-status = Inspect task review availability
 task-review-provider = Task review
+
+shell-launch-registry-unavailable = The app process registry is unavailable.
+shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.

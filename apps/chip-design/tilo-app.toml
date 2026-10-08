@@ -61,5 +61,5 @@ splash-segments = ["bin/chip-design[0x0:0x400000]"]
 splash-budget   = 250
 
 [providers]
-mime = []
-ext  = []
+mime = ["application/json", "application/octet-stream"]
+ext  = ["json"]

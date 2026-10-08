@@ -372,11 +372,11 @@ struct JobReservation(Arc<Mutex<JobRoutes>>);
 impl JobReservation {
     fn retain(self, id: u64, route: RetainedJob) -> Result<(), ActionHostError> {
         let mut routes = self.0.lock().map_err(|_| ActionHostError::Unavailable {
-            reason: "certified job routing unavailable".into(),
+            reason: t("search-app-job-routing-unavailable"),
         })?;
         if routes.admitted.contains_key(&id) {
             return Err(ActionHostError::Unavailable {
-                reason: "certified job routing identity already retained".into(),
+                reason: t("search-app-job-routing-already-retained"),
             });
         }
         routes.admitted.insert(id, route);
@@ -402,9 +402,9 @@ impl JobObserver {
         let mut routes = self
             .routes
             .lock()
-            .map_err(|_| "certified job routing unavailable")?;
+            .map_err(|_| t("search-app-job-routing-unavailable"))?;
         if routes.admitted.len().saturating_add(routes.reserved) >= MAX_RETAINED_JOB_ROUTES {
-            return Err("certified job routing capacity exhausted before admission".into());
+            return Err(t("search-app-job-routing-capacity-exhausted"));
         }
         routes.reserved = routes.reserved.saturating_add(1);
         drop(routes);
@@ -417,7 +417,7 @@ impl JobObserver {
         let routes = self
             .routes
             .lock()
-            .map_err(|_| "certified job routing unavailable")?;
+            .map_err(|_| t("search-app-job-routing-unavailable"))?;
         let route = routes.admitted.get(&id).cloned();
         drop(routes);
         Ok(route)

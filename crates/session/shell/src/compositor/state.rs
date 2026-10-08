@@ -1021,6 +1021,26 @@ impl State {
         let now = std::time::Instant::now();
         let until = now.checked_add(CLOSING_FRAME_GRACE).unwrap_or(now);
         self.closing_toplevels.insert(id, until);
+        if let Some(pid) = toplevel
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+            && !self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .any(|other| {
+                    other.wl_surface() != toplevel.wl_surface()
+                        && !self
+                            .closing_toplevels
+                            .contains_key(&crate::compositor::state::surface_id(other.wl_surface()))
+                        && other.wl_surface().client().and_then(|client| {
+                            client.get_data::<ClientState>().and_then(|state| state.pid)
+                        }) == Some(pid)
+                })
+        {
+            crate::shell::launcher::note_native_writer_retiring(pid);
+        }
         toplevel.send_close();
         self.release_frame_callbacks(toplevel.wl_surface());
     }
@@ -1056,13 +1076,11 @@ impl State {
         fired
     }
 
-    /// The user or the shell closed the window showing `surface_id`: its tab
-    /// goes, and the client and every sheet over it are asked to close.
+    /// Ask the client showing `surface_id` to close. Its tab remains available
+    /// for a deferred save decision until actual destruction removes it.
     pub fn close_surface_on_request(&mut self, surface_id: u64) {
-        let _ = {
-            let mut tree = self.workspace_tree.write();
-            tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id)
-        };
+        // xdg close is a request, not admission. Destruction owns durable
+        // removal so a client's save/refusal decision stays visible.
         if let Some(toplevel) = self
             .xdg_shell_state
             .toplevel_surfaces()
@@ -5488,6 +5506,23 @@ impl XdgShellHandler for State {
         let person_reached_it = self
             .clients_given_input
             .contains(&client_index_of(surface_id));
+        if let Some(pid) = surface
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+            && !self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .any(|other| {
+                    other.wl_surface() != surface.wl_surface()
+                        && other.wl_surface().client().and_then(|client| {
+                            client.get_data::<ClientState>().and_then(|state| state.pid)
+                        }) == Some(pid)
+                })
+        {
+            crate::shell::launcher::note_native_writer_retiring(pid);
+        }
         crate::shell::launcher::note_surface_gone(surface_id, asked_to_close || person_reached_it);
         self.release_sheets_of_destroyed(surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);

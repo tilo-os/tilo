@@ -5007,6 +5007,12 @@ impl ShellOverlayHost {
                 {
                     return false;
                 }
+                // A foreign client's close request can be refused. Keep its
+                // live tab visible until the compositor sees destruction.
+                if Self::tab_still_present(&chrome, tab_id) {
+                    g.cancel_tab_close(tab_id);
+                    return true;
+                }
                 // The durable tree/document mutation must succeed before the
                 // widget begins its close animation. A visual-only close is
                 // precisely what allowed the next resync to restore a window.
@@ -5019,6 +5025,19 @@ impl ShellOverlayHost {
             }
         }
         false
+    }
+
+    fn tab_still_present(chrome: &Chrome, tab_id: u64) -> bool {
+        chrome
+            .borrow()
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .any(|tab| tab.id == tab_id)
     }
 
     /// Drain close buttons from the rendered rows into the same lifecycle
@@ -5044,7 +5063,29 @@ impl ShellOverlayHost {
                 );
             }
         }
-        Self::dispatch_desktop_intents(&chrome, intents) > 0
+        let changed = Self::dispatch_desktop_intents(&chrome, intents) > 0;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: the pointers belong to this exclusively borrowed host.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                let retained: Vec<_> = chrome
+                    .borrow()
+                    .tree()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .filter(|model| model.id == group.id)
+                    .flat_map(|model| model.tabs.iter())
+                    .map(|tab| tab.id)
+                    .collect();
+                for tab in retained {
+                    group.cancel_tab_close(tab);
+                }
+            }
+        }
+        changed
     }
 
     fn harvest_pending_width_changes(&self) {
@@ -8758,6 +8799,15 @@ impl ShellOverlayHost {
             // the pointer is captured from a `Box<GroupRow>` owned through the
             // content tree, and the host outlives it.
             .map_or(0.0, |ptr| unsafe { (&*ptr).canvas_shift() })
+    }
+
+    /// [`GroupRow::canvas_pad`] of `strip`'s row, in layout pixels.
+    pub fn strip_canvas_pad(&self, strip: StripId) -> f64 {
+        self.group_row_ptrs.get(&strip).map_or(0.0, |&ptr| {
+            // SAFETY: same contract as every other `group_row_ptrs` accessor.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.canvas_pad()
+        })
     }
 
     /// Where on screen `strip` pans when it is drawn in canvas coordinates:

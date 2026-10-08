@@ -114,10 +114,14 @@ struct LaunchedProcess {
     /// identity. Host/Flatpak launches are attributed to a room for placement
     /// and portals but their Wayland app ids remain compatibility-owned.
     confined: bool,
+    /// The last native toplevel is closing, but the supervisor has not
+    /// observed process exit and completed writer retirement yet.
+    retiring: bool,
 }
 
 static LAUNCHED_PROCESSES: std::sync::LazyLock<Mutex<HashMap<u32, LaunchedProcess>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static LAUNCH_RETIREMENT_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceLaunchIdentity {
@@ -134,6 +138,7 @@ struct TrustedServiceLaunch {
     start_time: u64,
     identity: ServiceLaunchIdentity,
     registered_at: Instant,
+    continuation_instance: Option<u64>,
 }
 
 static TRUSTED_SERVICE_LAUNCHES: std::sync::LazyLock<Mutex<HashMap<u32, TrustedServiceLaunch>>> =
@@ -178,6 +183,7 @@ fn register_launched_process(
                 workspace_id: workspace_id.map(str::to_string),
                 start_time,
                 confined,
+                retiring: false,
             },
         );
     }
@@ -258,7 +264,16 @@ pub(crate) fn verified_running_packages() -> Vec<String> {
 }
 
 #[cfg(any(test, target_os = "linux"))]
+#[cfg(test)]
 fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
+    register_trusted_window_launch(pid, identity, None);
+}
+
+fn register_trusted_window_launch(
+    pid: u32,
+    identity: ServiceLaunchIdentity,
+    continuation_instance: Option<u64>,
+) {
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
     };
@@ -270,6 +285,7 @@ fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
             start_time,
             identity,
             registered_at: Instant::now(),
+            continuation_instance,
         },
     );
 }
@@ -277,40 +293,91 @@ fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
 /// Launch records of the apps the session shows inside its own process: the
 /// app and room each is about to connect for, until its collaboration
 /// connection is attested or the record expires.
-static IN_PROCESS_LAUNCHES: Mutex<Vec<(ServiceLaunchIdentity, Instant)>> = Mutex::new(Vec::new());
+struct InProcessLaunch {
+    identity: ServiceLaunchIdentity,
+    registered_at: Instant,
+    continuation_instance: Option<u64>,
+}
+static IN_PROCESS_LAUNCHES: Mutex<Vec<InProcessLaunch>> = Mutex::new(Vec::new());
 
 /// Record that the session itself is about to connect `app_id` in room
 /// `workspace_id`, as it records a process it launched.
 pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
+    register_in_process_window(app_id, workspace_id, None);
+}
+
+pub(crate) fn register_in_process_window(
+    app_id: &str,
+    workspace_id: &str,
+    continuation_instance: Option<u64>,
+) {
     let mut launches = lock(&IN_PROCESS_LAUNCHES);
-    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
-    launches.push((
-        ServiceLaunchIdentity {
+    launches.retain(|launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
+    launches.push(InProcessLaunch {
+        identity: ServiceLaunchIdentity {
             app_id: app_id.to_owned(),
             workspace_id: workspace_id.to_owned(),
             allowed_compat_entry_ids: Vec::new(),
             compat_entry_generation: 0,
             application_creation: None,
         },
-        Instant::now(),
-    ));
+        registered_at: Instant::now(),
+        continuation_instance,
+    });
 }
 
 /// Spend the session's launch record for a connection from its own process
 /// naming `app_id` in room `workspace_id`.
 pub fn consume_in_process_launch(pid: u32, app_id: &str, workspace_id: &str) -> bool {
+    take_in_process_window_launch(pid, app_id, workspace_id).is_some()
+}
+
+pub(crate) fn authenticated_window_launch(
+    pid: u32,
+    app: &str,
+    room: &str,
+) -> Option<tilo_action_broker::services::AuthenticatedApplicationLaunch> {
+    let (_, start_time) = proc_stat(pid)?;
+    {
+        let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
+        launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
+        if let Some(launch) = launches.get(&pid)
+            && launch.start_time == start_time
+            && launch.identity.app_id == app
+            && launch.identity.workspace_id == room
+        {
+            return Some(
+                tilo_action_broker::services::AuthenticatedApplicationLaunch {
+                    creation: launch.identity.application_creation.clone(),
+                    continuation_instance: launch.continuation_instance,
+                },
+            );
+        }
+    }
+    take_in_process_window_launch(pid, app, room)
+}
+
+fn take_in_process_window_launch(
+    pid: u32,
+    app: &str,
+    room: &str,
+) -> Option<tilo_action_broker::services::AuthenticatedApplicationLaunch> {
     if pid != std::process::id() {
-        return false;
+        return None;
     }
     let mut launches = lock(&IN_PROCESS_LAUNCHES);
-    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
-    let Some(index) = launches.iter().position(|(identity, _)| {
-        identity.app_id == app_id && identity.workspace_id == workspace_id
-    }) else {
-        return false;
-    };
-    launches.remove(index);
-    true
+    launches.retain(|launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
+    let index = launches
+        .iter()
+        .position(|launch| launch.identity.app_id == app && launch.identity.workspace_id == room)?;
+    let launch = launches.remove(index);
+    drop(launches);
+    Some(
+        tilo_action_broker::services::AuthenticatedApplicationLaunch {
+            creation: launch.identity.application_creation,
+            continuation_instance: launch.continuation_instance,
+        },
+    )
 }
 
 /// Consume the compositor's one-shot authority record for a launcher child.
@@ -414,6 +481,77 @@ fn unregister_launched_process(pid: u32) {
         map.remove(&pid);
     }
     lock(&TRUSTED_SERVICE_LAUNCHES).remove(&pid);
+    LAUNCH_RETIREMENT_CHANGED.notify_all();
+}
+
+/// A native app's last toplevel is closing. Attribute retirement through
+/// the kernel peer's exact live launcher ancestor, never its claimed app id.
+pub(crate) fn note_native_writer_retiring(mut pid: u32) {
+    for _ in 0..32 {
+        let Some((parent, start_time)) = proc_stat(pid) else {
+            return;
+        };
+        if let Ok(mut processes) = LAUNCHED_PROCESSES.lock()
+            && let Some(process) = processes.get_mut(&pid)
+            && process.start_time == start_time
+        {
+            if process.confined {
+                process.retiring = true;
+                eprintln!(
+                    "app-writer-retiring: package={} room={:?} launcher_pid={pid}",
+                    process.package_id, process.workspace_id
+                );
+            }
+            return;
+        }
+        if parent == 0 || parent == pid {
+            return;
+        }
+        pid = parent;
+    }
+}
+
+/// Wait on the launch worker, before spawning a replacement. Surface
+/// disappearance is not process exit: a native app may still checkpoint its
+/// canonical record. Never remove its lock or race a second writer into it.
+fn wait_for_retiring_app(
+    package_id: &str,
+    command: &LaunchCommand,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let Some(identity) = &command.service_identity else {
+        return Ok(());
+    };
+    let started = std::time::Instant::now();
+    let mut processes = LAUNCHED_PROCESSES
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("shell-launch-registry-unavailable"))?;
+    let retiring = |processes: &HashMap<u32, LaunchedProcess>| {
+        processes.values().any(|process| {
+            process.confined
+                && process.retiring
+                && process.package_id == package_id
+                && process.workspace_id.as_deref() == Some(identity.workspace_id.as_str())
+        })
+    };
+    if retiring(&processes) {
+        eprintln!(
+            "app-writer-retirement-wait: package={package_id} room={}",
+            identity.workspace_id
+        );
+    }
+    while retiring(&processes) {
+        let remaining = timeout
+            .checked_sub(started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| crate::shell::i18n::t("shell-launch-writer-still-closing"))?;
+        let (next, _) = LAUNCH_RETIREMENT_CHANGED
+            .wait_timeout(processes, remaining)
+            .map_err(|_| crate::shell::i18n::t("shell-launch-registry-unavailable"))?;
+        processes = next;
+    }
+    drop(processes);
+    Ok(())
 }
 
 /// Host-owned identity of a process descended from a launcher supervised by
@@ -3504,6 +3642,21 @@ fn start_launch(
         let mut authority_lease = authority;
         let events = worker_events;
         events.clone().adopt();
+        if let Err(detail) = wait_for_retiring_app(
+            &app.package_id,
+            &command,
+            std::time::Duration::from_secs(30),
+        ) {
+            events.startup.fail(startup_token, detail.clone());
+            events.push(LaunchEvent {
+                package_id: app.package_id.clone(),
+                display_name: app.display_name.clone(),
+                managed_agent_id: app.managed_agent_id.clone(),
+                managed_workspace_id: app.managed_workspace_id.clone(),
+                kind: LaunchEventKind::SpawnFailed { detail },
+            });
+            return;
+        }
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
         apply_launch_env(&mut cmd, &command.env);
@@ -3551,7 +3704,14 @@ fn start_launch(
             }
         };
         if let Some(identity) = command.service_identity.clone() {
-            register_trusted_service_launch(child.id(), identity);
+            // Capture compositor-authored launch input before releasing the
+            // child gate. Never read window authority back from the sandbox.
+            let instance = command
+                .env
+                .iter()
+                .find(|(key, _)| key == "TILO_CONTINUITY_INSTANCE")
+                .and_then(|(_, value)| value.parse::<u64>().ok());
+            register_trusted_window_launch(child.id(), identity, instance);
         }
         let workspace_id = command
             .service_identity
@@ -6219,6 +6379,7 @@ mod tests {
                     workspace_id: Some("room-spoof".into()),
                     start_time: u64::MAX,
                     confined: true,
+                    retiring: false,
                 },
             );
             assert_eq!(verified_package_for_descendant(pid), None);
@@ -6277,6 +6438,62 @@ mod tests {
         direct_launcher_pid_has_no_service_authority_to_redeem();
     }
 
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn private_window_launch_binding_is_exact_live_and_host_retained() {
+        let launcher = LauncherStandIn::spawn();
+        let pid = launcher.pid();
+        let identity = ServiceLaunchIdentity {
+            app_id: "so.tilo.code".into(),
+            workspace_id: "private-window-room".into(),
+            allowed_compat_entry_ids: Vec::new(),
+            compat_entry_generation: 0,
+            application_creation: None,
+        };
+        register_trusted_window_launch(pid, identity, Some(42));
+        assert!(authenticated_window_launch(pid, "so.tilo.notes", "private-window-room").is_none());
+        assert!(authenticated_window_launch(pid, "so.tilo.code", "other-room").is_none());
+        assert!(
+            authenticated_window_launch(
+                launcher.descendant(),
+                "so.tilo.code",
+                "private-window-room"
+            )
+            .is_none()
+        );
+        let bound = authenticated_window_launch(pid, "so.tilo.code", "private-window-room")
+            .expect("original exact launcher record");
+        assert_eq!(bound.continuation_instance, Some(42));
+        // Kernel start time is part of the retained record, not app-reported identity.
+        lock(&TRUSTED_SERVICE_LAUNCHES)
+            .get_mut(&pid)
+            .unwrap()
+            .start_time = u64::MAX;
+        assert!(authenticated_window_launch(pid, "so.tilo.code", "private-window-room").is_none());
+        lock(&TRUSTED_SERVICE_LAUNCHES).remove(&pid);
+        assert!(authenticated_window_launch(pid, "so.tilo.code", "private-window-room").is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn in_process_private_window_binding_is_single_use_and_exact() {
+        let app = format!("so.tilo.code.{}", uuid::Uuid::new_v4());
+        let room = uuid::Uuid::new_v4().to_string();
+        register_in_process_window(&app, &room, Some(42));
+        assert!(authenticated_window_launch(std::process::id(), &app, "other-room").is_none());
+        assert!(authenticated_window_launch(u32::MAX, &app, &room).is_none());
+        let bound = authenticated_window_launch(std::process::id(), &app, &room).unwrap();
+        assert_eq!(bound.continuation_instance, Some(42));
+        assert!(authenticated_window_launch(std::process::id(), &app, &room).is_none());
+        register_in_process_launch(&app, &room);
+        assert_eq!(
+            authenticated_window_launch(std::process::id(), &app, &room)
+                .unwrap()
+                .continuation_instance,
+            None
+        );
+    }
+
     /// A live process standing in for a started `tilo-launcher`, with one
     /// descendant of its own. The pid registries are keyed by process and
     /// resolve a process through its ancestors, so each test registers a
@@ -6327,6 +6544,119 @@ mod tests {
         fn drop(&mut self) {
             self.stop();
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn locked_canonical_writer(canonical: &Path) -> LauncherStandIn {
+        use std::io::BufRead as _;
+        let mut child = Command::new("flock")
+            .arg("--exclusive")
+            .arg(canonical)
+            .args(["sh", "-c", "echo locked; read -r _"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(
+            line.trim(),
+            "locked",
+            "the old process owns the real kernel gate"
+        );
+        LauncherStandIn {
+            descendant: child.id(),
+            child,
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn retiring_native_writer_delays_real_replacement_spawn() {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical = directory.path().join("canonical.lock");
+        let replacement = directory.path().join("replacement-opened");
+        let package = format!("so.tilo.retirement.{}", uuid::Uuid::new_v4());
+        let room = uuid::Uuid::new_v4().to_string();
+        let mut writer = locked_canonical_writer(&canonical);
+        register_launched_process(writer.pid(), &package, Some(&room), true);
+        note_native_writer_retiring(writer.pid());
+        let command = LaunchCommand {
+            program: PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".into(),
+                "exec flock --exclusive --nonblock \"$1\" sh -c 'touch \"$1\"' sh \"$2\"".into(),
+                "sh".into(),
+                canonical.to_str().unwrap().into(),
+                replacement.to_str().unwrap().into(),
+            ],
+            env: Vec::new(),
+            service_identity: Some(ServiceLaunchIdentity {
+                app_id: package.clone(),
+                workspace_id: room,
+                allowed_compat_entry_ids: Vec::new(),
+                compat_entry_generation: 0,
+                application_creation: None,
+            }),
+            portal_workspace_id: None,
+            managed_agent_id: None,
+        };
+        let mut other_room = command.clone();
+        other_room.service_identity.as_mut().unwrap().workspace_id = "other-room".into();
+        assert!(wait_for_retiring_app(&package, &other_room, std::time::Duration::ZERO).is_ok());
+        assert!(wait_for_retiring_app("another-app", &command, std::time::Duration::ZERO).is_ok());
+        assert!(
+            wait_for_retiring_app(&package, &command, std::time::Duration::from_millis(1)).is_err()
+        );
+        let session = LaunchSession::current();
+        start_launch(package.clone(), package.clone(), command, &session, None).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert!(
+            !replacement.exists(),
+            "the replacement cannot start while the old writer owns the gate"
+        );
+        assert!(
+            !drain_events()
+                .iter()
+                .any(|event| event.package_id == package
+                    && matches!(
+                        event.kind,
+                        LaunchEventKind::Started { .. }
+                            | LaunchEventKind::Exited
+                            | LaunchEventKind::Failed { .. }
+                            | LaunchEventKind::SpawnFailed { .. }
+                    ))
+        );
+        writer.stop();
+        unregister_launched_process(writer.pid());
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let events = drain_events();
+            assert!(
+                !events.iter().any(|event| event.package_id == package
+                    && matches!(
+                        event.kind,
+                        LaunchEventKind::Failed { .. } | LaunchEventKind::SpawnFailed { .. }
+                    )),
+                "replacement must not race the canonical gate: {events:?}"
+            );
+            if events.iter().any(|event| {
+                event.package_id == package && matches!(event.kind, LaunchEventKind::Exited)
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "replacement must settle after writer retirement"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            replacement.exists(),
+            "the replacement acquired the unchanged canonical lock after retirement"
+        );
     }
 
     #[cfg(target_os = "linux")]
