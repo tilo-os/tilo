@@ -68,7 +68,7 @@ impl PrivateFeedback {
 
 /// The desktop catalogue's internal component, not an installed application.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    tilo_app::framework::definition::<feedback_composer::FeedbackComposer>()
+    feedback_composer::definition()
 }
 
 /// An unconfigured desktop still opens private controls and explicitly refuses

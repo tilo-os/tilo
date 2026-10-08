@@ -144,6 +144,15 @@ pub enum FeedbackEffect {
 /// Mounted inside desktop chrome, never as an overlapping application window.
 pub struct FeedbackComposer;
 
+/// The shared composer definition, instantiated by the SDK once.
+/// Hosts use this entry point to avoid another copy of its generic resource,
+/// history and effect machinery in each host crate.
+#[must_use]
+#[inline(never)]
+pub fn definition() -> &'static crate::application::ApplicationDefinition {
+    crate::framework::definition::<FeedbackComposer>()
+}
+
 /// Prepare the chrome component over an isolated, ephemeral store. The host's
 /// durable outbox is lent separately; raw drafts cannot reach profile records,
 /// history or room synchronization through this preparation path.
@@ -156,7 +165,7 @@ pub fn prepare(
     author: &str,
     instance: u64,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
-    let definition = crate::framework::definition::<FeedbackComposer>();
+    let definition = definition();
     let store = Rc::new(crate::feedback::MemoryStore::new());
     let room = "feedback-private-draft";
     let records = crate::record::RecordOwners::with_store(store.clone())
