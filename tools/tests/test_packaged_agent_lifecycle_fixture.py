@@ -604,7 +604,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         activate = stage.index('activate_shell_accessibility_control(marker, marker["label"])')
         snapshot = stage.index('agent-action-marker-activated-', activate)
         wait = stage.index("reopen_marker_composer_while_live(", activate)
-        self.assertLess(snapshot, wait)
+        self.assertLess(wait, snapshot)
 
     def test_marker_direct_children_decode_wire_names_and_refuse_ambiguity(self):
         class Client:
@@ -2867,6 +2867,120 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     PROOF.private_editor_value_matches(access, "nihao")
                 self.assertEqual(access, cached)
                 self.assertNotIn("recycled-heading", payload_paths)
+
+    def return_editor_continuity_subjects(self):
+        primary = {"app_id": "so.tilo.chat", "surface_id": 9973, "frame_seq": 40,
+                   "presented": True, "pixels_ready": True, "last_error": None,
+                   "keyboard_focused": False}
+        child = {"app_id": "so.tilo.chat", "surface_id": 9974, "frame_seq": 22,
+                 "floating_id": "private-native-child", "presented": False,
+                 "keyboard_focused": True, "suspended": True, "transferring": True,
+                 "last_error": None}
+        access = {"agent": "Tide", "process": 9975, "detached": False}
+        before = {"draft_matches": True, "caret": 5, "selection": [4, 5],
+                  "accessibility_focused": True}
+        expected = {"access": {**access, "detached": True},
+                    "draft": "draft-secret", "observation": before}
+        return primary, child, access, before, expected
+
+    def test_return_editor_wait_observes_adoption_then_real_focus_publication(self):
+        primary, child, access, before, expected = self.return_editor_continuity_subjects()
+        ready = {**primary, "keyboard_focused": True}
+        retired = {**child, "keyboard_focused": False, "transferring": False}
+        response = lambda rows: {"answer": {"frames": rows}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "private_editor_observation", side_effect=[
+                    {**before, "accessibility_focused": False},
+                    {**before, "accessibility_focused": False}, before.copy()]), \
+                patch.object(PROOF, "call", side_effect=[response([primary, child]),
+                    response([ready, retired]), response([ready, retired])]) as observe_native:
+            output = pathlib.Path(directory)
+            observed = PROOF.wait_for_return_editor_continuity(
+                "socket", output, primary, child, expected, None)
+            self.assertEqual(observed, (ready, access, before))
+            self.assertEqual(observe_native.call_args_list,
+                             [call("socket", {"op": "foreign_frames"})] * 3)
+            receipt = json.loads((output / "return-editor-adoption-observations.json").read_text())
+            self.assertEqual(receipt["observation_count"], 3)
+            self.assertTrue(receipt["initial"]["pending_adoption"])
+            self.assertFalse(receipt["initial"]["accessibility_focus_equal"])
+            self.assertTrue(receipt["last"]["accepted"])
+            self.assertTrue(receipt["last"]["accessibility_focus_equal"])
+            for sample in (receipt["initial"], receipt["last"]):
+                self.assertTrue(all(type(value) is bool for value in sample.values()))
+                self.assertTrue(sample["content_matches"] and sample["caret_equal"]
+                                and sample["selection_equal"])
+            for secret in ("draft-secret", "private-native-child", "9973", "9974", "9975"):
+                self.assertNotIn(secret, json.dumps(receipt))
+        source = inspect.getsource(PROOF.native_float_return)
+        wait = source.index("wait_for_return_editor_continuity(")
+        assertion = source.index("if attached != before_return_editor:", wait)
+        repair = source.index("physically_click_editor(", assertion)
+        self.assertLess(wait, assertion)
+        self.assertLess(assertion, repair)
+
+    def test_return_editor_wait_refuses_mutation_and_foreign_or_lost_native_seats(self):
+        primary, child, access, before, expected = self.return_editor_continuity_subjects()
+        response = lambda rows: {"answer": {"frames": rows}}
+        cases = [
+            ({**before, "draft_matches": False}, access, primary, child),
+            ({**before, "caret": 4}, access, primary, child),
+            ({**before, "selection": None}, access, primary, child),
+            (before, {**access, "process": 9976}, primary, child),
+            (before, {**access, "detached": True}, primary, child),
+            (before, access, {**primary, "surface_id": 9976}, child),
+            (before, access, {**primary, "frame_seq": 39}, child),
+            (before, access, primary, {**child, "floating_id": "foreign"}),
+            (before, access, primary, {**child, "frame_seq": 21}),
+            (before, access, primary, {**child, "keyboard_focused": False}),
+            (before, access, primary, {**child, "suspended": False}),
+            (before, access, primary, {**child, "presented": True}),
+            (before, access, {**primary, "input_route": "floating-preedit-child"}, child),
+            (before, access, primary, {**child, "keyboard_focused": None}),
+            (before, access, {**primary, "keyboard_focused": True}, child),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for observation, current_access, current_primary, current_child in cases:
+                with self.subTest(case=(observation, current_access, current_primary, current_child)), \
+                        patch.object(PROOF, "agent_conversation_accessibility", return_value=current_access), \
+                        patch.object(PROOF, "private_editor_observation", return_value=observation), \
+                        patch.object(PROOF, "call", return_value=response([current_primary, current_child])), \
+                        patch.object(PROOF.time, "sleep") as sleep:
+                    with self.assertRaises(RuntimeError):
+                        PROOF.wait_for_return_editor_continuity(
+                            "socket", pathlib.Path(directory), primary, child, expected, None)
+                    sleep.assert_not_called()
+
+    def test_return_editor_wait_never_accepts_unpublished_focus_or_masks_later_mutation(self):
+        primary, child, access, before, expected = self.return_editor_continuity_subjects()
+        ready = {**primary, "keyboard_focused": True}
+        retired = {**child, "keyboard_focused": False, "transferring": False}
+        response = {"answer": {"frames": [ready, retired]}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "call", return_value=response), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "private_editor_observation", return_value={
+                    **before, "accessibility_focused": False}), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]):
+            output = pathlib.Path(directory)
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_return_editor_continuity(
+                    "socket", output, primary, child, expected, None)
+            receipt = json.loads((output / "return-editor-adoption-observations.json").read_text())
+            self.assertTrue(receipt["last"]["pending_focus_publication"])
+            self.assertFalse(receipt["last"]["accepted"])
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "call", return_value=response), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "private_editor_observation", side_effect=[
+                    {**before, "accessibility_focused": False}, {**before, "caret": 4}]):
+            with self.assertRaisesRegex(RuntimeError, "content, caret or selection"):
+                PROOF.wait_for_return_editor_continuity(
+                    "socket", pathlib.Path(directory), primary, child, expected, None)
 
     def test_keyboard_return_wait_requires_exact_ordinary_child_seat_before_enter(self):
         child = {"app_id": "so.tilo.chat", "surface_id": 11, "floating_id": "private",

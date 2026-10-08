@@ -1476,6 +1476,91 @@ def wait_for_floating_keyboard_seat(socket, previous, output, process):
     return wait_for("keyboard Return's exact ordinary detached seat", observe, process)
 
 
+def wait_for_return_editor_continuity(socket, output, primary, child, expected, process):
+    """Observe real Return adoption/focus publication without repairing editor state."""
+    evidence = {"observation_count": 0, "initial": None, "last": None}
+
+    def observe():
+        sample = dict.fromkeys(("observation_valid", "same_chat_process",
+                                "exact_primary_present", "primary_keyboard_focused",
+                                "exact_child_exists", "child_keyboard_focused",
+                                "child_presented", "child_suspended", "child_transferring",
+                                "ordinary_route", "pending_adoption", "pending_focus_publication",
+                                "content_matches", "caret_equal", "selection_equal",
+                                "accessibility_focus_equal", "accessibility_focused_before",
+                                "accessibility_focused_after", "accepted"), False)
+        evidence["observation_count"] += 1
+        try:
+            access = agent_conversation_accessibility(expected["access"]["agent"])
+            if access is None:
+                raise RuntimeError("Return's exact private editor is unobservable")
+            sample["same_chat_process"] = access["process"] == expected["access"]["process"]
+            if not sample["same_chat_process"] or access.get("detached") is not False \
+                    or access.get("agent") != expected["access"]["agent"]:
+                raise RuntimeError("Return replaced the private editor's native owner or route")
+            attached = private_editor_observation(access, expected["draft"])
+            continuity = closed_editor_continuity(expected["observation"], attached)
+            sample.update(continuity)
+            if not all(continuity[name] for name in (
+                    "content_matches", "caret_equal", "selection_equal")):
+                raise RuntimeError("Return changed private editor content, caret or selection")
+            if any(type(attached.get(name)) is not bool for name in (
+                    "draft_matches", "accessibility_focused")):
+                raise RuntimeError("Return's private editor continuity is malformed")
+            response = call(socket, {"op": "foreign_frames"})
+            current = current_same_primary_presentation(response, primary)
+            children = [row for row in foreign_frames(response)
+                        if row.get("app_id") == child["app_id"]
+                        and row.get("floating_id") == child["floating_id"]
+                        and row.get("surface_id") == native_surface_id(child)]
+            sample["exact_primary_present"] = current is not None
+            sample["exact_child_exists"] = len(children) == 1
+            if current is None or len(children) != 1:
+                raise RuntimeError("Return lost its exact native primary or child")
+            returned_child = children[0]
+            if any(type(current.get(name)) is not bool for name in (
+                    "presented", "pixels_ready", "keyboard_focused")) \
+                    or any(type(returned_child.get(name)) is not bool for name in (
+                        "presented", "keyboard_focused", "suspended", "transferring")) \
+                    or type(returned_child.get("frame_seq")) is not int \
+                    or returned_child["frame_seq"] < child["frame_seq"]:
+                raise RuntimeError("Return's native adoption state is malformed or stale")
+            sample.update({
+                "primary_keyboard_focused": current["keyboard_focused"],
+                "child_keyboard_focused": returned_child["keyboard_focused"],
+                "child_presented": returned_child["presented"],
+                "child_suspended": returned_child["suspended"],
+                "child_transferring": returned_child["transferring"],
+                "ordinary_route": all(row.get("input_route") is None
+                                      and row.get("input_source_surface_id") is None
+                                      for row in (current, returned_child)),
+            })
+            if not current["presented"] or not current["pixels_ready"] \
+                    or any(row.get("last_error") is not None for row in (current, returned_child)) \
+                    or not sample["ordinary_route"] or not returned_child["suspended"] \
+                    or returned_child["presented"]:
+                raise RuntimeError("Return has no exact ordinary native adoption route")
+            if current["keyboard_focused"]:
+                if returned_child["keyboard_focused"] or returned_child["transferring"]:
+                    raise RuntimeError("Return's primary seat contradicts the retained child")
+                sample["pending_focus_publication"] = not continuity["accessibility_focus_equal"]
+                sample["accepted"] = continuity["accessibility_focus_equal"]
+            else:
+                if not returned_child["keyboard_focused"]:
+                    raise RuntimeError("Return lost both exact native keyboard seats")
+                sample["pending_adoption"] = True
+            sample["observation_valid"] = True
+            return (current, access, attached) if sample["accepted"] else None
+        finally:
+            if evidence["initial"] is None:
+                evidence["initial"] = sample.copy()
+            evidence["last"] = sample
+            (output / "return-editor-adoption-observations.json").write_text(
+                json.dumps(evidence, indent=2, allow_nan=False) + "\n")
+
+    return wait_for("Return's exact native seat and retained editor focus", observe, process)
+
+
 def float_return_evidence_proven(evidence):
     """Require the structured success field, not arbitrary container truthiness."""
     return isinstance(evidence, dict) and evidence.get("proven") is True
@@ -1933,8 +2018,12 @@ def native_float_return(socket, room, record, output, size, process):
         return primary if primary is not None and primary["frame_seq"] > before_return["frame_seq"] else None
 
     primary = wait_for("Chat's primary window to repaint after Return", repainted_primary, process)
-    access = wait_for("returned Tide editor", lambda: agent_conversation_accessibility("Tide"), process)
-    attached = private_editor_observation(access, draft)
+    if native_surface_id(primary) != native_surface_id(before_return):
+        raise RuntimeError("Return replaced Chat's exact native primary surface")
+    primary, access, attached = wait_for_return_editor_continuity(
+        socket, output, primary, current_frame,
+        {"access": access, "draft": draft, "observation": before_return_editor}, process,
+    )
     (output / "return-editor-continuity.json").write_text(
         json.dumps(closed_editor_continuity(before_return_editor, attached), indent=2) + "\n")
     if attached != before_return_editor:
@@ -4588,12 +4677,12 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
             )
         raise
     activate_shell_accessibility_control(marker, marker["label"])
-    require_ok(call(socket, {"op": "snapshot", "path": str(
-        output / f"agent-action-marker-activated-{size}.png"
-    )}))
     reopened_message_draft = reopen_marker_composer_while_live(
         socket, agent, marker, shell_windows, process, output=output,
     )
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"agent-action-marker-activated-{size}.png"
+    )}))
 
     preceding_result = provider.preceding_marker_result()
     (output / "marker-preceding-invoke-result.json").write_text(
