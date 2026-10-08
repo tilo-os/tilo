@@ -18,11 +18,11 @@ pub(crate) const READER: RegisteredSemanticReader =
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Request {
-    id: String,
+pub(super) struct Request {
+    pub(super) id: String,
 }
 
-fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
+pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
     if payload.len() > MAX_REQUEST_BYTES {
         return Err(SemanticReadError::Limit);
     }
@@ -69,6 +69,18 @@ fn project(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<ReadPage, SemanticReadError> {
+    let (receipt, _) = snapshot(document, heads, payload)?;
+    Ok(ReadPage {
+        content: serde_json::to_value(receipt).map_err(|_| SemanticReadError::Malformed)?,
+        next_cursor: None,
+    })
+}
+
+pub(super) fn snapshot(
+    document: &automerge::AutoCommit,
+    heads: &[automerge::ChangeHash],
+    payload: &[u8],
+) -> Result<(ui::feedback::Receipt, Vec<super::TriageEntry>), SemanticReadError> {
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
     let document = document
@@ -84,13 +96,10 @@ fn project(
     }
     let receipt = super::receipt_content(&document, &request.id, destination)
         .map_err(|_| SemanticReadError::Malformed)?;
-    Ok(ReadPage {
-        content: serde_json::to_value(receipt).map_err(|_| SemanticReadError::Malformed)?,
-        next_cursor: None,
-    })
+    Ok((receipt, report.triage))
 }
 
-fn schema() -> &'static serde_json::Value {
+pub(super) fn schema() -> &'static serde_json::Value {
     static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
     SCHEMA.get_or_init(|| {
         let mut schema = crate::semantic_read::action::result_schema().clone();
