@@ -197,8 +197,15 @@ selection restoration, exact expiry, receipt idempotence/query, Undo/Redo/Undo,
 net-zero caret changes, revocation and repeated editor generations. It also
 asserts that external commands do not inherit the editor capability.
 
+The acknowledgement worker, packet polling, monotonic deadlines and PTY-role
+validation live in the platform layer (`tilo-process::editor`). Unsupported
+hosts expose no editor capability through the same API. Terminal retains only
+caller authority and UI receipt adapters; no portability baseline was raised.
+The shared `ui::text_input` receipt facade requests no WebView capability.
+
 Focused tests separately prove the Terminal redisplay/input boundary, menu and
-read-only refusal, repeated ordinary IME input, exact acknowledgement correlation,
+read-only refusal, repeated ordinary IME input, canceled original captures,
+exact acknowledgement correlation,
 resource secrecy, and the generic SDK history route's original acknowledgement
 and cancellation behavior. These packet-boundary fixtures are not a substitute
 for the actual Bash qualification or a managed desktop journey.
@@ -210,8 +217,16 @@ trusted OS asset, and no installation or deployment was authorized. The browser
 adapter remains with its existing owner. Mic/catalogue activation and acceptable
 speech recognition latency remain independent delivery blockers.
 
-Final strict all-target Clippy passed for Terminal, ush, runtime-portal, tilo-ui
-and tilo-relay. An earlier `shell --tests` compile passed. The final shell
-compile attempt was refused before compilation because the existing builder's
-volume was 95.3% full, above its 80% admission watermark. It is recorded as
-blocked, not passed; no local compilation fallback or shared cleanup was used.
+Strict all-target Clippy passed for Terminal, ush, runtime-portal, tilo-ui
+and tilo-relay. After moving the worker into the platform layer, Terminal and
+tilo-process all-target Clippy and all four focused native boundary regressions
+passed. The final `check --locked -p shell --tests` passed in 1m 29s. This
+supersedes the earlier builder capacity refusal; no local compilation fallback
+or shared cleanup was used. Portability, capability declaration, generated web
+desktop and both Containerfile copy checks passed, with no policy baseline raised.
+
+The OS image CI remains blocked on the unpublished signed RPM snapshot
+`set-4cee6ac4651b25573a4c65e1dba081d96f0ecc825daa76e7cfa53c0eed58a63c`.
+The existing build-rpms workflow restricts signing and snapshot publication to
+main. This held source candidate cannot satisfy that gate without integration;
+no merge, signing-policy change or image deployment was authorized.

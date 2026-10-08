@@ -36,7 +36,6 @@
 
 pub mod actions;
 mod graphics;
-#[cfg(target_os = "linux")]
 mod native_editor;
 pub mod resource;
 mod scenarios;

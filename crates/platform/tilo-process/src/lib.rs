@@ -8,6 +8,8 @@
 //! This crate is the platform layer's home for process capabilities; child
 //! processes, process groups and PTYs (today's `bounded-command`) move here.
 
+#[cfg(feature = "native-editor")]
+pub mod editor;
 pub mod rendezvous;
 
 /// A capability of this crate.
