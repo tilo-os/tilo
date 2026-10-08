@@ -491,6 +491,8 @@ settings-category-about-subtitle = Device identity and transfer
 
 # Users pane
 settings-users-error-title = Could not apply that change
+settings-users-loading-accounts = Loading this device’s accounts…
+settings-users-read-disconnected = The account read ended before reporting its result.
 settings-users-add = Add user
 settings-users-empty-accounts = No regular login accounts found on this device.
 settings-users-login-accounts = Login accounts
@@ -1030,6 +1032,8 @@ agent-location-hosted = Hosted provider
 agent-location-this-device = This device (local)
 agent-location-private = Private network
 sound-output = Output
+sound-reading-device = Reading audio devices…
+sound-read-failed = Audio devices could not be read.
 sound-input = Input
 sound-output-device = Output device
 sound-input-device = Input device
@@ -1115,6 +1119,8 @@ sound-notice-profile-err = Audio device profile could not be changed: { $error }
 sound-notice-vol-err = Volume could not be changed: { $error }
 sound-notice-test-started = { $channel } speaker test started.
 settings-bluetooth-card = Bluetooth
+settings-bluetooth-reading = Reading Bluetooth state…
+settings-bluetooth-read-disconnected = Bluetooth state reader stopped before answering.
 settings-bluetooth-cancel-pairing = Cancel pairing
 settings-bluetooth-pair = Pair
 settings-bluetooth-disconnect = Disconnect
@@ -1173,7 +1179,7 @@ settings-bluetooth-forgot = Forgot { $name }.
 settings-bluetooth-forget-failed = Could not forget { $name }: { $error }
 settings-bluetooth-forget-ask = Forget { $name }? This removes its bond and keys.
 input-keyboard-title = Keyboard
-input-keyboard-caption = Adjust key repeat, the Compose key and the Caps Lock key.
+input-keyboard-caption = Choose how quickly held keys repeat.
 input-active-source = Active input source
 input-key-repeat = Key repeat speed
 input-key-repeat-off = Repeat is off — move the slider to turn it on
@@ -1427,6 +1433,9 @@ perm-capture-audio = Capture audio
 perm-stream-workspace = Stream this workspace
 perm-inject-input = Inject pointer & keyboard
 power-source-title = Power source
+power-reading = Reading the device power state…
+power-read-disconnected = The power reader stopped answering.
+power-read-error = Could not read the device power state: { $error }
 power-source = Source
 power-source-ac = AC power
 power-source-caption = This device has no battery — it runs on mains power, so charge and battery-saver settings don't apply.
@@ -1618,6 +1627,8 @@ settings-storage-backups = Backups
 settings-storage-backups-desc = Backup history, schedules, retention, and restore
 settings-storage-open-backups = Open Backups
 time-clock-title = Clock
+time-reading = Reading the device clock…
+time-read-disconnected = The clock reader stopped answering.
 time-auto = Set time automatically
 time-24h = 24-hour clock
 time-timezone = Time zone
@@ -1959,7 +1970,6 @@ input-map-inspect-key = Inspect a physical key
 input-map-inspection-unavailable = This physical key’s current symbols are unavailable. Focus Settings or choose a layout preview.
 input-map-current-symbols = Current symbols
 
-settings-appearance-text-scale = Text scale
 
 display-devices-title = Screens on your devices
 display-device-screen = { $device } · { $screen } · { $status }
@@ -1989,19 +1999,8 @@ input-dictionary-reset = Remove all words
 input-dictionary-word-placeholder = Enter a word
 input-dictionary-all-languages = All languages
 
-sound-reading-device = Reading audio devices…
-sound-read-failed = Audio devices could not be read.
-settings-bluetooth-reading = Reading Bluetooth state…
-settings-bluetooth-read-disconnected = Bluetooth state reader stopped before answering.
 
-time-reading = Reading the device clock…
-time-read-disconnected = The clock reader stopped answering.
-settings-users-loading-accounts = Loading this device’s accounts…
-settings-users-read-disconnected = The account read ended before reporting its result.
 
-power-reading = Reading the device power state…
-power-read-disconnected = The power reader stopped answering.
-power-read-error = Could not read the device power state: { $error }
 
 upd-reading = Reading this device’s update state…
 upd-read-disconnected = The update reader stopped answering.
@@ -2010,6 +2009,51 @@ agent-reading-status = Reading local models and provider key status…
 agent-read-disconnected = The model status read ended before reporting its result.
 agent-key-reading-status = Reading this device’s key status…
 agent-key-status-unknown = This device’s key status is unavailable.
+
+
+
+input-scope-all = All keyboards
+input-scope-inheritance = Physical keyboards share these sources until you change a keyboard's own list. The on-screen keyboard has its own sources.
+input-keyboard-scope = Keyboard
+input-source-activate = Make active
+input-sources-selection-description = Select a source to preview or edit. Drag to reorder.
+input-sources-back = Back to sources
+input-sources-cancel = Cancel
+input-sources-unavailable = The configured source list could not be displayed.
+input-osk-qwerty = English (QWERTY)
+input-osk-azerty = French (AZERTY)
+input-osk-preview-description = The touch keyboard uses this letter layout; physical compose and Caps Lock options are separate.
+input-source-options = Source options
+input-source-inspection = Key inspection
+
+input-keyboard-numbered = { $name } ({ $number })
+
+input-source-show = Show
+input-source-hide = Hide
+
+input-source-add-short = Add
+input-source-add-title = Add an input source
+
+# Keyboard source editing errors.
+input-error-keyboard-retained = the keyboard is no longer available; its assignment has been retained
+input-error-keyboard-unavailable = the keyboard is not currently available
+input-error-source-unconfigured = the source is not configured for this keyboard
+input-error-source-add-unavailable = the source is not available in the Add screen
+input-error-source-choose = choose a source to add
+input-error-source-physical-options = physical keyboard options do not apply to the on-screen keyboard
+input-error-source-compose = invalid compose key
+input-error-source-caps = invalid Caps Lock behaviour
+input-error-source-option = invalid keyboard option
+input-error-source-missing = the source is not configured
+input-error-source-add = the source cannot be added to this keyboard
+input-error-source-last = the last source cannot be removed
+input-error-source-empty = no source remains
+input-error-source-first = the source is already first
+input-error-source-end = the source is already last
+input-error-source-overflow = source index overflow
+input-error-source-operation = this is not a source operation
+input-error-live-map-physical = Live physical-keyboard inspection is unavailable for the on-screen keyboard.
+
 settings-disk-unlock-title = Disk unlock
 settings-disk-unlock-intro = After a restart, an encrypted disk enrolled here can open with the approval of one of your other devices instead of the passphrase.
 settings-disk-unlock-refresh = Refresh

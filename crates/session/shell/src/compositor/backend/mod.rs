@@ -407,6 +407,11 @@ pub enum BackendEvent {
     /// previously reported (keyboard unplug, VT pause, or keymap replacement).
     /// The compositor must retire its seat state before accepting new input.
     InputStateReset,
+    /// A discovered typing keyboard's effective source assignment, before its key event.
+    KeyboardConfiguration {
+        scope: String,
+        settings: Box<drm::input_config::KeyboardSettings>,
+    },
     /// A gesture the shell did **not** claim, for forwarding to the
     /// focused client over `zwp_pointer_gestures_v1`.
     Gesture(GestureEvent),
