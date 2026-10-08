@@ -4719,6 +4719,7 @@ mod tests {
         let state = chrome.borrow();
         provider.query(SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle,
             wanted: &[ResourceKind::Action],
@@ -4750,6 +4751,7 @@ mod tests {
                     needle,
                     scope: crate::shell::search::SearchScope::All,
                     active_provider_id: None,
+                    action_scope: None,
                     wanted_kinds: &[],
                     chrome: &state,
                     doc: &doc,
@@ -4797,6 +4799,7 @@ mod tests {
         let state = chrome.borrow();
         let ctx = |needle| SearchContext {
             query_scope: None,
+            action_scope: None,
             include_programmatic: false,
             needle,
             wanted: &[ResourceKind::Action],
