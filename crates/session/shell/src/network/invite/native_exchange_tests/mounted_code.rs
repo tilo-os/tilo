@@ -24,7 +24,7 @@ async fn native_mounted_code_has_acknowledged_private_continuity() {
 
 fn trace_publication_hops() {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,tilo_joined_room::session::cursor=debug,tilo_joined_room::testing::governor=debug")
+        .with_env_filter("warn,tilo_joined_room::session::cursor=debug,tilo_joined_room::testing::governor=debug,tilo_relay::native_publication=debug")
         .try_init();
 }
 

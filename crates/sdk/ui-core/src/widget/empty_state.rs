@@ -821,6 +821,17 @@ impl EmptyState {
         paint_empty_state(ctx, rect, content, hover, false, false, None)
     }
 
+    /// Paint a state whose action has keyboard focus, using the shared focus ring.
+    pub fn paint_focused(
+        ctx: &mut PaintCtx<'_>,
+        rect: Rect,
+        content: &EmptyStateContent<'_>,
+        hover: Point,
+        focused: bool,
+    ) -> Option<Rect> {
+        paint_empty_state(ctx, rect, content, hover, focused, false, None)
+    }
+
     fn content(&self) -> EmptyStateContent<'_> {
         EmptyStateContent {
             icon: if self.busy {
