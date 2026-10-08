@@ -374,6 +374,7 @@ impl PeerPresence {
                     .iter()
                     .find(|workspace| workspace.id == tree.desktop.active)
                     .map(|workspace| workspace.room.to_string());
+                drop(tree);
                 (rooms, here)
             };
             self.set_rooms(rooms);
