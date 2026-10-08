@@ -105,6 +105,7 @@ settings_effects! {
     Input(crate::panes::mouse_keyboard::InputEffect) => crate::panes::mouse_keyboard::answer,
     Power(crate::panes::power::PowerEffect) => crate::panes::power::answer,
     Updates(crate::panes::updates::UpdatesEffect) => crate::panes::updates::answer,
+    DiskUnlock(crate::panes::disk_unlock::DiskUnlockEffect) => crate::panes::disk_unlock::answer,
     Storage(crate::panes::storage::StorageEffect) => crate::panes::storage::answer,
     About(crate::panes::about::AboutEffect) => crate::panes::about::answer,
     Permissions(crate::panes::permissions::PermissionsEffect) => crate::panes::permissions::answer,
@@ -147,6 +148,7 @@ pub(crate) fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
     rows.extend(app.accounts().rows());
     rows.extend(app.displays().rows());
     rows.extend(app.network().rows());
+    rows.extend(app.disk_unlock().rows());
     rows
 }
 

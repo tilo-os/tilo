@@ -1984,9 +1984,13 @@ COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.c
 COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
     /usr/lib/NetworkManager/conf.d/20-tilo-wake.conf
 COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
-COPY os/usr/share/polkit-1/actions/org.tilo.home-peer.policy /usr/share/polkit-1/actions/org.tilo.home-peer.policy
+COPY \
+    os/usr/share/polkit-1/actions/org.tilo.home-peer.policy \
+    os/usr/share/polkit-1/actions/org.tilo.disk-unlock.policy \
+    /usr/share/polkit-1/actions/
 COPY \
     os/etc/polkit-1/rules.d/49-tilo-home-peer.rules \
+    os/etc/polkit-1/rules.d/49-tilo-disk-unlock.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules \
     /etc/polkit-1/rules.d/

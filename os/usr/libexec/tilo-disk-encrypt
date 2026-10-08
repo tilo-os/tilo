@@ -11,6 +11,7 @@
 #   tilo-disk-encrypt enrol    <luks-part> --reseal   # currently fails closed
 #   tilo-disk-encrypt enrol    <luks-part> --sibling [--key-file F] [--network NAME]...
 #                              [--session-uid UID]
+#   tilo-disk-encrypt enrol    <luks-part> --sibling --replace-networks [--network NAME]...
 #   tilo-disk-encrypt finish   <luks-part> [--key-file F] [--mnt DIR]
 #   tilo-disk-encrypt teardown <disk> [--mnt DIR]
 #
@@ -49,6 +50,8 @@
 # /dev/tpmrm0 exists, otherwise in the clear, readable by anyone holding the
 # disk, which Settings tells the owner. The sibling half is never stored
 # here. `tilo-sibling-unlock remove <luks-part>` takes the slot and token away.
+# `--replace-networks` keeps an existing sibling unlock and only chooses its
+# networks again (Settings does the same through polkit).
 #
 # ## Why the volume is not created by `bootc install --block-setup tpm2-luks`
 #
@@ -421,6 +424,7 @@ cmd_enrol() {
       --sibling) sibling=1; shift ;;
       --network) sibling_args+=(--network "${2:?--network needs a connection name}"); shift 2 ;;
       --session-uid) sibling_args+=(--session-uid "${2:?--session-uid needs a uid}"); shift 2 ;;
+      --replace-networks) sibling_args+=(--replace-networks); shift ;;
       # Compatibility flag for callers; passphrase mode is also the default.
       --passphrase) shift ;;
       # Re-bind an already-installed volume to a TPM: after a cleared or replaced
@@ -442,7 +446,7 @@ cmd_enrol() {
     log "  sibling unlock enrolled: $(tilo-sibling-unlock status "$dev" | tr -d '\n' | tr -s ' ')"
     return 0
   fi
-  [ "${#sibling_args[@]}" -eq 0 ] || die "enrol: --network and --session-uid go with --sibling"
+  [ "${#sibling_args[@]}" -eq 0 ] || die "enrol: --network, --session-uid and --replace-networks go with --sibling"
   [ -n "$key" ] || key="$(default_key_file)"
   if [ -n "$store_part$store_key" ]; then
     [ -b "$store_part" ] && [ -f "$store_key" ] \
