@@ -19,6 +19,7 @@ const VERIFICATION_PREFIX: &str = "verification:";
 pub struct ProjectState {
     pub reports: BTreeMap<String, StorageReport>,
     pub experiments: BTreeMap<String, crate::project_links::Experiment>,
+    pub experiments_truncated: bool,
     pub experiment_name: String,
     pub experiment_check_id: String,
     pub operator_graph: crate::operator_graph::OperatorState,
@@ -248,7 +249,7 @@ impl Resource for ChipProject {
             return state
                 .experiments
                 .get(name)
-                .ok_or_else(|| "experiment no longer exists".into())
+                .ok_or_else(|| crate::view::tr("chip-project-unavailable"))
                 .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()));
         }
         if let Some(anchor) = item.and_then(|item| item.strip_prefix("chip_design.flow:")) {
@@ -264,7 +265,7 @@ impl Resource for ChipProject {
         }
         match item {
             None => Ok(
-                serde_json::json!({"kind": Self::KIND, "experiments": state.experiments, "experiment_setup":{"name":state.experiment_name,"check_id":state.experiment_check_id}, "operator_graph": {"resource":crate::operator_graph::RESOURCE_ID,"qualification":"structural_design_only","nodes":state.operator_graph.nodes.len(),"active_edges":state.operator_graph.active.len(),"rejected_candidates":state.operator_graph.rejected.len()}, "reports": state.reports.iter().map(|(id, report)| serde_json::json!({
+                serde_json::json!({"kind": Self::KIND, "experiments": state.experiments, "experiments_truncated":state.experiments_truncated, "experiment_setup":{"name":state.experiment_name,"check_id":state.experiment_check_id}, "operator_graph": {"resource":crate::operator_graph::RESOURCE_ID,"qualification":"structural_design_only","nodes":state.operator_graph.nodes.len(),"active_edges":state.operator_graph.active.len(),"rejected_candidates":state.operator_graph.rejected.len()}, "reports": state.reports.iter().map(|(id, report)| serde_json::json!({
                 "resource": report_resource_id(id), "model": report.model,
                 "revision": report.revision, "evidence": report.evidence,
             })).collect::<Vec<_>>(), "verifications": state.verifications.iter().map(|(id, record)| serde_json::json!({
@@ -296,10 +297,15 @@ impl Resource for ChipProject {
             experiment_check_id: crate::project_setup::read_field(doc, "experiment-check")?,
             ..ProjectState::default()
         };
-        for key in doc
+        for (index, key) in doc
             .keys(ROOT)
             .filter(|key| key.starts_with(crate::project_links::PREFIX))
+            .enumerate()
         {
+            if index == crate::project_links::MAX_PROJECTS {
+                state.experiments_truncated = true;
+                break;
+            }
             let Some((value, _)) = doc.get(ROOT, &key)? else {
                 continue;
             };

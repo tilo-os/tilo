@@ -183,7 +183,7 @@ pub fn run(name: String, cx: &mut EffectCx<ChipProject>) -> Result<Effected, Str
     let experiment = cx
         .live()
         .with(|state| state.experiments.get(&name).cloned())
-        .ok_or("experiment no longer exists")?;
+        .ok_or_else(|| crate::view::tr("chip-project-unavailable"))?;
     experiment.validate()?;
     let actions = cx.published_actions()?;
     let parent = cx
@@ -219,7 +219,7 @@ pub fn run(name: String, cx: &mut EffectCx<ChipProject>) -> Result<Effected, Str
             let current = cx
                 .live()
                 .with(|state| state.experiments.get(&name).cloned())
-                .ok_or("experiment no longer exists")?;
+                .ok_or_else(|| crate::view::tr("chip-project-unavailable"))?;
             if current.source != experiment.source
                 || current.check != experiment.check
                 || current.check_id != experiment.check_id
@@ -256,7 +256,7 @@ pub fn open(name: &str, source: bool, cx: &mut EffectCx<ChipProject>) -> Result<
     let experiment = cx
         .live()
         .with(|state| state.experiments.get(name).cloned())
-        .ok_or("experiment no longer exists")?;
+        .ok_or_else(|| crate::view::tr("chip-project-unavailable"))?;
     let link = if source {
         experiment.source
     } else {
@@ -333,6 +333,12 @@ pub fn open(name: &str, source: bool, cx: &mut EffectCx<ChipProject>) -> Result<
 
 pub fn body(cx: &ViewCx<ChipProject>, state: &ProjectState) -> Element {
     let mut body = Column::new().with_intrinsic_height();
+    if state.experiments_truncated {
+        body = body.push(Box::new(PropertyList::new(vec![Property::new(
+            crate::view::tr("chip-projects-truncated-label"),
+            crate::view::tr("chip-projects-truncated"),
+        )])));
+    }
     for experiment in state.experiments.values() {
         let mut properties = vec![
             Property::new(

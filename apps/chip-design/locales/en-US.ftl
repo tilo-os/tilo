@@ -252,3 +252,6 @@ chip-project-name-used = Choose a new experiment name, or remove the existing li
 chip-project-references-truncated = Some reported links exceed display bounds; inspect original Jobs.
 
 chip-project-references-truncated-label = Additional reported links
+chip-projects-truncated-label = Additional project bindings
+chip-projects-truncated = Only 16 bindings are shown. Remove a displayed binding to reveal others.
+chip-project-unavailable = Experiment links are unavailable. Review the current project bindings.

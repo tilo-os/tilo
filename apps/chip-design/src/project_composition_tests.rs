@@ -181,6 +181,120 @@ fn concurrent_original_references_survive_existing_crdt_sync() {
 }
 
 #[test]
+fn concurrent_project_boundary_preserves_original_bindings_with_bounded_view() {
+    use ui::automerge::{ROOT, ReadDoc};
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    for index in 0..15 {
+        let mut value = binding();
+        value["name"] = serde_json::json!(format!("project-{index:02}"));
+        bind(&mut app, &value).unwrap();
+    }
+    let mut peer = app.peer_document();
+    let mut local = binding();
+    local["name"] = serde_json::json!("project-15");
+    bind(&mut app, &local).unwrap();
+    let mut remote = binding();
+    remote["name"] = serde_json::json!("project-16");
+    ProjectAction::BindExperiment {
+        json: remote.to_string(),
+    }
+    .apply(&mut peer)
+    .unwrap();
+    app.merge_peer(&mut peer).unwrap();
+    app.read_document(|doc| {
+        assert_eq!(
+            doc.keys(ROOT)
+                .filter(|key| key.starts_with(crate::project_links::PREFIX))
+                .count(),
+            17
+        );
+        let live = <crate::ChipProject as ui::tilo_resource::Resource>::read(doc).unwrap();
+        assert_eq!(live.experiments.len(), crate::project_links::MAX_PROJECTS);
+        assert!(live.experiments_truncated);
+        assert!(
+            <crate::ChipProject as ui::tilo_resource::Resource>::child(
+                &live,
+                "chip_design.experiment:project-16"
+            )
+            .is_none()
+        );
+        assert_eq!(
+            <crate::ChipProject as ui::tilo_resource::Resource>::children(&live)
+                .iter()
+                .filter(|child| child.kind == "chip_design.experiment")
+                .count(),
+            crate::project_links::MAX_PROJECTS
+        );
+        assert_eq!(
+            <crate::ChipProject as ui::tilo_resource::Resource>::search(&live).len(),
+            crate::project_links::MAX_PROJECTS
+        );
+    });
+    assert_eq!(
+        app.state().experiments.len(),
+        crate::project_links::MAX_PROJECTS
+    );
+    let read = app.call("read", serde_json::json!({})).unwrap().unwrap();
+    assert_eq!(read["experiments_truncated"], true);
+    assert_eq!(read["experiments"].as_object().unwrap().len(), 16);
+    let nodes = app.harness().a11y_nodes();
+    let notice = nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Additional project bindings"))
+        .unwrap();
+    assert_eq!(
+        notice.1.value(),
+        Some("Only 16 bindings are shown. Remove a displayed binding to reveal others.")
+    );
+    assert!(!app.state().experiments.contains_key("project-16"));
+    assert_overflow_actions_unavailable(&mut app);
+    app.call(
+        "remove-experiment",
+        serde_json::json!({"name":"project-00"}),
+    )
+    .unwrap();
+    assert!(!app.state().experiments_truncated);
+    assert_eq!(
+        app.state().experiments["project-16"],
+        crate::project_links::Experiment::parse(&remote.to_string()).unwrap()
+    );
+    assert!(app.undo());
+    assert!(app.state().experiments_truncated);
+    app.read_document(|doc| {
+        let (original, _) = doc.get(ROOT, "experiment:project-16").unwrap().unwrap();
+        assert_eq!(original.as_str(), Some(remote.to_string().as_str()));
+        assert_eq!(
+            doc.keys(ROOT)
+                .filter(|key| key.starts_with(crate::project_links::PREFIX))
+                .count(),
+            17
+        );
+    });
+}
+
+fn assert_overflow_actions_unavailable(app: &mut TestApp<ChipDesignShell>) {
+    let unavailable = app
+        .call("run-experiment", serde_json::json!({"name":"project-16"}))
+        .unwrap_err();
+    assert!(
+        matches!(unavailable, ui::tilo_actions::DoorError::Failed(ref reason)
+            if reason == "Experiment links are unavailable. Review the current project bindings."),
+        "{unavailable:?}"
+    );
+    let unavailable_read = app
+        .call(
+            "read",
+            serde_json::json!({"item":"chip_design.experiment:project-16"}),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(unavailable_read, ui::tilo_actions::DoorError::Failed(ref reason)
+            if reason == "Experiment links are unavailable. Review the current project bindings."),
+        "{unavailable_read:?}"
+    );
+}
+
+#[test]
 fn permission_revocation_blocks_both_binding_and_audited_reference_mutations() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     bind(&mut app, &binding()).unwrap();

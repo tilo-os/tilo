@@ -167,6 +167,15 @@ in the independent inference-hardware repository.
 
 ## Original project actions
 
+The project view and resource tree offer at most 16 actionable bindings. Concurrent
+collaborator edits can retain more; the semantic root read and shared property
+view indicate truncation without deleting those bindings. Removing a displayed
+binding reveals the next original entry, and system undo restores the removal.
+Bindings outside this published set cannot be opened or run. A concurrent edit
+that moves a binding outside it can refuse a continuation after source inspection;
+the existing publication and custody checks remain in force. Its original Jobs
+and canonical binding remain retained.
+
 An experiment links an existing Code file and Git repository in the same
 workspace to one host-approved `check_id`. `bind-experiment` accepts a bounded
 named configuration containing the original record routes, published action
