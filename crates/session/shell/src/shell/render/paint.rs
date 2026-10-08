@@ -4412,6 +4412,7 @@ impl VelloDrmBridge {
         // that changed its output model but failed to complete reallocation from reusing an
         // ambiguous target on the next frame.
         self.invalidate_retained();
+        self.invalidate_output_surfaces();
         self.bump_xrgb_history_epoch();
         // A poisoned target refuses to resize; rebuilding it at the new size is what a failed
         // frame followed by a display change needs. Refusing instead left the presenter asking
