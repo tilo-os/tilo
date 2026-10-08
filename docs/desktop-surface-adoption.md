@@ -153,3 +153,17 @@ focus painting. [Qualification](evidence/roster-follow-identity/README.md) cover
 stale pointer/keyboard activation, accessible focus, repeated Follow/Stop and
 Escape/reopen. Broader People text scaling, status-entry controls, paging and
 installed-device acceptance remain in the inventory.
+
+## People completed activation follow-up
+
+People now uses shared PaintedTargets for completed pointer gestures and
+ButtonFace pressed states. Stable person targets cancel across movement,
+departure/return, resize, focus loss and dismissal/reopen. Held Enter/Space
+repeat and key-up stay owned after Activity opens; a repeat cannot reverse
+Follow's existing local-key handoff. [Qualification](evidence/people-completed-activation/README.md)
+records native baseline failures, actual post-input screenshots and reuse of
+unaffected light/dark/high-contrast identity captures. Existing prompt and
+capability-gate tests retain their assertions at release. Follow-label elision
+at 125% text, status-entry controls, broader viewport/paging and installed-device
+acceptance remain open; protected landing and exact merged-main postchecks are
+independent integration gates.
