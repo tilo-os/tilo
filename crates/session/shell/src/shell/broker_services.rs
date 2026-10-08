@@ -1533,13 +1533,13 @@ pub fn native_services(
         .zip(settings_store::installed_source())
         .map(|(tree, source)| {
             Arc::new(super::display_control::NativeDisplayControl {
-                tree: Arc::downgrade(tree),
+                tree: tree.downgrade(),
                 source,
             }) as Arc<dyn tilo_action_broker::services::DisplayControlServices>
         });
     let local_person = membership.as_ref().map(|tree| {
         Arc::new(super::local_person::NativeLocalPerson {
-            tree: Arc::downgrade(tree),
+            tree: tree.downgrade(),
         }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
     });
     HostServices {

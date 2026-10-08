@@ -5,11 +5,13 @@ use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
+mod tree_handle;
 mod window_hosting;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
+pub use tree_handle::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard};
 pub use window_hosting::WindowHosting;
 
 fn now_unix_nanos() -> u64 {
@@ -877,15 +879,7 @@ impl FsExport {
     }
 }
 
-/// Shared handle to a single [`WorkspaceTree`], cloned by the
-/// compositor, portal and peer-sync so every mutation lands on the same
-/// tree. `parking_lot::RwLock` rather than a `Mutex`: readers vastly
-/// outnumber writers at ~60 Hz repaint, and an uncontended read lock is
-/// ~10 ns.
-pub type WorkspaceTreeHandle = std::sync::Arc<parking_lot::RwLock<WorkspaceTree>>;
-
-/// Constructors for [`WorkspaceTreeHandle`] — Rust won't let us add
-/// inherent methods to a type alias, so they live on this trait instead.
+/// Constructors for [`WorkspaceTreeHandle`] used by tests across modules.
 pub trait WorkspaceTreeHandleExt: Sized {
     /// A handle wrapped around a default (empty) tree.
     fn test_default() -> Self;
@@ -906,7 +900,7 @@ impl std::ops::DerefMut for WorkspaceTree {
 
 impl WorkspaceTreeHandleExt for WorkspaceTreeHandle {
     fn test_default() -> Self {
-        std::sync::Arc::new(parking_lot::RwLock::new(WorkspaceTree::default()))
+        Self::new(WorkspaceTree::default())
     }
 }
 
@@ -915,7 +909,7 @@ impl WorkspaceTree {
     /// (there should only ever be one instance) and returns the shared
     /// handle every subsystem clones from.
     pub fn shared(self) -> WorkspaceTreeHandle {
-        std::sync::Arc::new(parking_lot::RwLock::new(self))
+        WorkspaceTreeHandle::new(self)
     }
 }
 
