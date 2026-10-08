@@ -1129,6 +1129,7 @@ lock-screen-help = Gib dein Passwort ein und drücke die Eingabetaste
 lock-screen-verifying-password = Passwort wird geprüft
 lock-screen-prompt-elsewhere = Die Passwortabfrage ist auf dem Hauptbildschirm
 lock-screen-enter-password = Passwort eingeben
+lock-screen-discovery-unavailable = Die Anwendungssuche ist nicht verfügbar, solange die Sitzung gesperrt ist
 lock-screen-verifying = Wird geprüft …
 lock-screen-press-enter = Zum Entsperren Eingabetaste drücken
 lock-screen-cannot-verify = Prüfung nicht möglich · Gib dein Passwort erneut ein
@@ -2523,4 +2524,3 @@ quick-settings-network-inspect-subtitle = Die auf diesem Gerät angezeigten Netz
 quick-settings-network-inspect-denied = Nur die entsperrte Gerätebesitzerin oder der entsperrte Gerätebesitzer kann diesen privaten Netzwerkstatus prüfen.
 quick-settings-network-inspect-limit = Der zwischengespeicherte Netzwerkstatus ist zu groß für eine sichere Prüfung.
 
-lock-screen-discovery-unavailable = Die Anwendungssuche ist nicht verfügbar, solange die Sitzung gesperrt ist

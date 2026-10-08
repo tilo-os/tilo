@@ -1126,6 +1126,7 @@ lock-screen-help = Type your password and press Enter
 lock-screen-verifying-password = Verifying password
 lock-screen-prompt-elsewhere = Password prompt is on the primary display
 lock-screen-enter-password = Enter password
+lock-screen-discovery-unavailable = Application discovery is unavailable while the session is locked
 lock-screen-verifying = Verifying…
 lock-screen-press-enter = Press Enter to unlock
 lock-screen-cannot-verify = Can't verify · Enter your password to try again
@@ -2520,4 +2521,3 @@ quick-settings-network-inspect-subtitle = Read the cached network labels and net
 quick-settings-network-inspect-denied = Only the unlocked device owner can inspect this private network state.
 quick-settings-network-inspect-limit = The cached network state is too large to inspect safely.
 
-lock-screen-discovery-unavailable = Application discovery is unavailable while the session is locked
