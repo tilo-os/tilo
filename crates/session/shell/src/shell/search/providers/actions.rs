@@ -2096,6 +2096,15 @@ impl SharedQsDispatcher {
         pending.take()
     }
 
+    /// What the Quick Settings rows are built from; see [`QuickSettingsKey`].
+    fn catalogue_key(&self) -> QuickSettingsKey {
+        QuickSettingsKey {
+            backend: Rc::as_ptr(&*self.actions.borrow()).cast::<()>().addr(),
+            availability: self.availability.get(),
+            radio_pending: self.radio_job.borrow().is_some(),
+        }
+    }
+
     fn action_available(&self, id: &str) -> bool {
         let available = self.availability.get();
         match id {
@@ -2497,6 +2506,66 @@ pub struct ActionsProvider {
     ranker: ListIndex,
     search_preferences: Option<crate::shell::search::SearchPreferencesHandle>,
     provider_catalog: Option<crate::shell::search::SearchProviderCatalogHandle>,
+    /// Every row this provider offers, built once per state they are built
+    /// from rather than once per keystroke or lookup.
+    catalogue: std::cell::RefCell<Option<Rc<Catalogue>>>,
+    /// How many times the catalogue has been built.
+    #[cfg(test)]
+    builds: Rc<std::cell::Cell<usize>>,
+}
+
+/// The shell's action rows for one [`CatalogueKey`], before any query
+/// narrows them.
+struct Catalogue {
+    key: CatalogueKey,
+    rows: Vec<SearchResult>,
+    /// Each row's searchable text, in row order.
+    fields: Vec<Vec<(String, FieldWeight)>>,
+    /// The first row with each id.
+    by_id: std::collections::HashMap<String, usize>,
+    /// The per-source on/off switches, offered only to a query about search
+    /// itself ([`asks_about_search_sources`]).
+    source_switches: std::ops::Range<usize>,
+}
+
+/// Everything the catalogue's rows are built from: whether a row exists,
+/// what it says, its contract, its parameters and what its callbacks hold.
+/// Invocation still rechecks authority against the live workspace.
+#[derive(Clone, PartialEq, Eq)]
+struct CatalogueKey {
+    state: CatalogueState,
+    /// Whose ownership and role actions the governance rows offer.
+    actor: crate::shell::state::UserId,
+}
+
+/// The part of [`CatalogueKey`] that is cheap to read on every palette
+/// refresh, and so also the provider's search revision.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CatalogueState {
+    chrome: u64,
+    /// Workspaces, their names and governance: the chrome bumps this on every
+    /// tree mutation it makes...
+    chrome_revision: u64,
+    /// ...and mutations from outside the chrome bump this, until the next
+    /// tick folds them into `chrome_revision`.
+    external_tree_revision: u64,
+    locale: String,
+    peer_sync: bool,
+    collab: bool,
+    active_workspace: Option<crate::shell::state::WorkspaceId>,
+    quick_settings: QuickSettingsKey,
+    /// The search sources and whether each is on, for their switches.
+    search_sources: Vec<(String, String, bool)>,
+}
+
+/// The Quick Settings backend the rows call, what it can do, and whether a
+/// radio change is pending. The backend is named by address: the rows hold
+/// it, so it cannot be freed and another take its place while they live.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct QuickSettingsKey {
+    backend: usize,
+    availability: crate::shell::quick_settings::actions::QsActionAvailability,
+    radio_pending: bool,
 }
 
 impl ActionsProvider {
@@ -2509,6 +2578,9 @@ impl ActionsProvider {
                 crate::shell::quick_settings::actions::QsActionAvailability::default(),
             )),
             ranker: ListIndex::default(),
+            catalogue: std::cell::RefCell::default(),
+            #[cfg(test)]
+            builds: Rc::default(),
         }
     }
 
@@ -2522,6 +2594,9 @@ impl ActionsProvider {
             provider_catalog: Some(provider_catalog),
             qs_actions,
             ranker: ListIndex::default(),
+            catalogue: std::cell::RefCell::default(),
+            #[cfg(test)]
+            builds: Rc::default(),
         }
     }
 
@@ -2577,13 +2652,150 @@ impl SearchProvider for ActionsProvider {
     /// actions than one palette page shows, so the first page of an empty
     /// query would leave the later ones unreachable by id.
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
-        self.query(ctx).into_iter().find(|result| result.id == id)
+        if !ctx.wanted.contains(&ResourceKind::Action) {
+            return None;
+        }
+        let catalogue = self.catalogue(&ctx);
+        let found = match catalogue.by_id.get(id) {
+            Some(&at) => catalogue.rows.get(at).cloned(),
+            None => crate::shell::notification::alarm_action_rows(ctx.chrome)
+                .into_iter()
+                .find(|row| row.id == id),
+        };
+        found.map(|mut row| {
+            // What an empty query scores it.
+            row.score = crate::shell::search::provider_score(0);
+            row
+        })
     }
+
+    fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.catalogue_state(ctx).hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
+
+    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::Action) {
+            return Vec::new();
+        }
+        let catalogue = self.catalogue(&ctx);
+        // Alarm actions follow the notification log, so they are read fresh.
+        let alarms = crate::shell::notification::alarm_action_rows(ctx.chrome);
+        let mut alarm_fields = ActionCandidates::default();
+        for row in &alarms {
+            alarm_fields.record(
+                &row.title.to_lowercase(),
+                &row.subtitle.clone().unwrap_or_default().to_lowercase(),
+                &row.id,
+            );
+        }
+        let withheld = if asks_about_search_sources(ctx.needle) {
+            0..0
+        } else {
+            catalogue.source_switches.clone()
+        };
+        let offered = || {
+            catalogue
+                .rows
+                .iter()
+                .zip(&catalogue.fields)
+                .enumerate()
+                .filter(|(at, _)| !withheld.contains(at))
+                .map(|(_, offered)| offered)
+        };
+        let mut ranks = self
+            .ranker
+            .ranks(
+                ctx.needle,
+                offered()
+                    .map(|(_, fields)| fields)
+                    .chain(&alarm_fields.0)
+                    .map(|fields| fields.iter().map(|(text, weight)| (text.as_str(), *weight))),
+            )
+            .into_iter();
+        let mut out = Vec::new();
+        for (row, _) in offered() {
+            if let Some(rank) = ranks.next().flatten() {
+                out.push(SearchResult {
+                    score: crate::shell::search::provider_score(rank),
+                    ..row.clone()
+                });
+            }
+        }
+        for (mut row, rank) in alarms.into_iter().zip(ranks) {
+            if let Some(rank) = rank {
+                row.score = crate::shell::search::provider_score(rank);
+                out.push(row);
+            }
+        }
+        out
+    }
+}
+
+impl ActionsProvider {
+    /// The catalogue for the current state, built only if that is not the
+    /// state the retained one was built from.
+    fn catalogue(&self, ctx: &SearchContext<'_>) -> Rc<Catalogue> {
+        let key = CatalogueKey {
+            state: self.catalogue_state(ctx),
+            actor: ctx.chrome.active_local_user(),
+        };
+        let retained = self.catalogue.borrow().clone();
+        if let Some(catalogue) = retained.filter(|catalogue| catalogue.key == key) {
+            return catalogue;
+        }
+        let catalogue = Rc::new(self.build_catalogue(*ctx, key));
+        *self.catalogue.borrow_mut() = Some(Rc::clone(&catalogue));
+        catalogue
+    }
+
+    fn catalogue_state(&self, ctx: &SearchContext<'_>) -> CatalogueState {
+        let tree = ctx.chrome.tree();
+        let external_tree_revision = tree.desktop.external_revision;
+        let active_workspace = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.id);
+        drop(tree);
+        CatalogueState {
+            chrome: ctx.chrome.instance(),
+            chrome_revision: ctx.chrome.revision,
+            external_tree_revision,
+            locale: crate::shell::i18n::current_locale(),
+            peer_sync: ctx.chrome.peer_sync_enabled,
+            collab: ctx.chrome.collab_available(),
+            active_workspace,
+            quick_settings: self.qs_actions.catalogue_key(),
+            search_sources: self.search_sources(),
+        }
+    }
+
+    /// Each search source and whether it is on: what its switch says and
+    /// does. Empty without the preferences the switches write.
+    fn search_sources(&self) -> Vec<(String, String, bool)> {
+        let (Some(preferences), Some(catalog)) = (&self.search_preferences, &self.provider_catalog)
+        else {
+            return Vec::new();
+        };
+        let preferences = preferences.borrow();
+        let sources = catalog
+            .borrow()
+            .iter()
+            .map(|(id, name)| (id.clone(), name.clone(), preferences.provider_enabled(id)))
+            .collect();
+        drop(preferences);
+        sources
+    }
+
+    /// Build every row the provider offers, whatever the needle; see
+    /// [`CatalogueKey`] for what they are built from.
     #[expect(
         clippy::too_many_lines,
         reason = "the catalog lists every shell action with its contract in one table-like pass"
     )]
-    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+    fn build_catalogue(&self, ctx: SearchContext<'_>, key: CatalogueKey) -> Catalogue {
         const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
             (
                 QS_BRIGHTNESS_ID,
@@ -2621,12 +2833,11 @@ impl SearchProvider for ActionsProvider {
                 "search-action-quick-settings-airplane-mode-set-enabled-subtitle",
             ),
         ];
-        if !ctx.wanted.contains(&ResourceKind::Action) {
-            return Vec::new();
-        }
+        #[cfg(test)]
+        self.builds.set(self.builds.get().wrapping_add(1));
         let mut out = Vec::new();
-        // Every row is built with its searchable text; ranking them together
-        // then keeps the matches and scores them.
+        // Every row is built with its searchable text; a query ranks them
+        // together to keep the matches and score them.
         let mut candidates = ActionCandidates::default();
         for action in Action::ALL {
             // A session not running peer sync has nothing to invite into.
@@ -3146,7 +3357,7 @@ impl SearchProvider for ActionsProvider {
                 on_begin_invoke,
             });
         }
-        let actor = ctx.chrome.active_local_user();
+        let actor = key.actor.clone();
         let ownership_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
@@ -3242,6 +3453,7 @@ impl SearchProvider for ActionsProvider {
                 }
             }
         }
+        let mut source_switches = 0..0;
         if let Some(preferences) = &self.search_preferences {
             let id = "search.provider.set";
             let label = t("search-action-search-provider-set");
@@ -3289,9 +3501,8 @@ impl SearchProvider for ActionsProvider {
                     on_begin_invoke: None,
                 });
             }
-            if let Some(catalog) = &self.provider_catalog
-                && asks_about_search_sources(ctx.needle)
-            {
+            if let Some(catalog) = &self.provider_catalog {
+                source_switches.start = out.len();
                 for (provider_id, provider_name) in catalog.borrow().iter() {
                     if provider_id == "actions" {
                         continue;
@@ -3353,113 +3564,20 @@ impl SearchProvider for ActionsProvider {
                         on_begin_invoke: None,
                     });
                 }
+                source_switches.end = out.len();
             }
         }
-        let actor = ctx.chrome.active_local_user();
-        let ownership_resource = {
-            let tree = ctx.chrome.tree();
-            tree.desktop.active_workspace().map(|workspace| {
-                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
-            })
-        };
-        if let Some(resource) = ownership_resource {
-            for action in resource.actions {
-                let subtitle = action
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| t("search-action-governance-subtitle"));
-                {
-                    candidates.record(
-                        &action.label.to_lowercase(),
-                        &subtitle.to_lowercase(),
-                        &action.id,
-                    );
-                    let score = 0;
-                    let action_id = action.id.clone();
-                    let params = action.params().to_vec();
-                    out.push(SearchResult {
-                        kind: ResourceKind::Action,
-                        operation_kind: tilo_actions::OperationKind::Document,
-                        provider_id: self.id().to_string(),
-                        id: format!("{}#{}", resource.id.as_str(), action.id),
-                        title: action.label,
-                        subtitle: Some(subtitle),
-                        badge: None,
-                        score,
-                        params,
-                        contract: Some(action.contract),
-                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
-                            let mut state = chrome.borrow_mut();
-                            apply_ownership_action(&state, &action_id, arguments)?;
-                            state.bump();
-                            Ok(())
-                        }),
-                        on_invoke: None,
-                        on_begin_invoke: None,
-                    });
-                }
-            }
+        let mut by_id = std::collections::HashMap::with_capacity(out.len());
+        for (at, row) in out.iter().enumerate() {
+            by_id.entry(row.id.clone()).or_insert(at);
         }
-        let profile_resource = {
-            let tree = ctx.chrome.tree();
-            tree.desktop.active_workspace().map(|workspace| {
-                tilo_desktop::workspace_settings::permission_profile_resource(workspace, &actor)
-            })
-        };
-        if let Some(resource) = profile_resource {
-            let mut surfaces = vec![(resource.id.as_str().to_string(), resource.actions)];
-            surfaces.extend(
-                resource
-                    .children
-                    .into_iter()
-                    .map(|child| (child.id.as_str().to_string(), child.actions)),
-            );
-            for (resource_id, actions) in surfaces {
-                for action in actions {
-                    let subtitle = action
-                        .description
-                        .clone()
-                        .unwrap_or_else(|| t("search-action-permission-roles-subtitle"));
-                    candidates.record(
-                        &action.label.to_lowercase(),
-                        &subtitle.to_lowercase(),
-                        &action.id,
-                    );
-                    let score = 0;
-                    let action_id = action.id.clone();
-                    let params = action.params().to_vec();
-                    out.push(SearchResult {
-                        kind: ResourceKind::Action,
-                        operation_kind: tilo_actions::OperationKind::Document,
-                        provider_id: self.id().to_string(),
-                        id: format!("{}#{}", resource_id, action.id),
-                        title: action.label,
-                        subtitle: Some(subtitle),
-                        badge: None,
-                        score,
-                        params,
-                        contract: Some(action.contract),
-                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
-                            let mut state = chrome.borrow_mut();
-                            apply_permission_profile_action(&state, &action_id, arguments)?;
-                            state.bump();
-                            Ok(())
-                        }),
-                        on_invoke: None,
-                        on_begin_invoke: None,
-                    });
-                }
-            }
+        Catalogue {
+            key,
+            rows: out,
+            fields: candidates.0,
+            by_id,
+            source_switches,
         }
-        for row in crate::shell::notification::alarm_action_rows(ctx.chrome) {
-            candidates.record(
-                &row.title.to_lowercase(),
-                &row.subtitle.clone().unwrap_or_default().to_lowercase(),
-                &row.id,
-            );
-            out.push(row);
-        }
-        crate::shell::search::rank_rows(&self.ranker, ctx.needle, out, &candidates.0)
     }
 }
 
@@ -4351,6 +4469,375 @@ mod tests {
                 "{id} is offered but does not resolve"
             );
         }
+    }
+
+    /// The rows `provider` offers for `needle` against `chrome` as it is now.
+    fn rows_for(
+        provider: &ActionsProvider,
+        chrome: &Chrome,
+        needle: &str,
+    ) -> Vec<crate::shell::search::SearchResult> {
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle,
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        })
+    }
+
+    fn row<'a>(
+        rows: &'a [crate::shell::search::SearchResult],
+        id: &str,
+    ) -> Option<&'a crate::shell::search::SearchResult> {
+        rows.iter().find(|row| row.id == id)
+    }
+
+    #[test]
+    fn empty_palette_builds_the_catalogue_once() {
+        let provider = Rc::new(ActionsProvider::new());
+        let builds = Rc::clone(&provider.builds);
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(provider);
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let grouped = |needle: &str| {
+            registry.query_grouped(
+                &crate::shell::search::QueryArgs {
+                    needle,
+                    scope: crate::shell::search::SearchScope::All,
+                    active_provider_id: None,
+                    wanted_kinds: &[],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                },
+                // The palette's row budget.
+                8,
+            )
+        };
+
+        let empty = grouped("");
+        let suggestions = empty
+            .iter()
+            .filter(|group| group.kind == ResourceKind::Action)
+            .flat_map(|group| group.results.iter().map(|result| result.id.as_str()))
+            .collect::<Vec<_>>();
+        assert!(
+            suggestions.contains(&"room.activity.open")
+                && suggestions.contains(&"shortcut-help.toggle"),
+            "the empty palette looks its suggestions up: {suggestions:?}"
+        );
+        assert_eq!(
+            builds.get(),
+            1,
+            "one fan-out query and its suggestion lookups share one build"
+        );
+        grouped("");
+        assert_eq!(builds.get(), 1, "nothing changed, so nothing is rebuilt");
+        for needle in ["d", "da", "dar", "dark"] {
+            let found = grouped(needle)
+                .into_iter()
+                .flat_map(|group| group.results)
+                .any(|result| result.id == "appearance.theme.dark");
+            assert!(found, "{needle:?} finds the dark theme");
+        }
+        assert_eq!(builds.get(), 1, "typing narrows the retained rows");
+    }
+
+    #[test]
+    fn resolve_does_not_rank() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let ctx = |needle| SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle,
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let tour = provider
+            .resolve("desktop-tour.open", ctx(""))
+            .expect("the tour resolves by its address");
+        assert_eq!(tour.id, "desktop-tour.open");
+        assert_eq!(tour.title, t("search-action-desktop-tour-open"));
+        assert_eq!(provider.builds.get(), 1);
+        assert!(
+            provider.resolve("shortcut-help.toggle", ctx("")).is_some()
+                && provider.resolve("no.such.action", ctx("")).is_none()
+        );
+        assert!(
+            provider
+                .resolve("desktop-tour.open", ctx("something else entirely"))
+                .is_some(),
+            "an address is not a search"
+        );
+        assert_eq!(
+            provider
+                .query(ctx("tour"))
+                .first()
+                .map(|row| row.id.as_str()),
+            Some("desktop-tour.open")
+        );
+        assert_eq!(
+            provider.builds.get(),
+            1,
+            "lookups and queries in one state share one build"
+        );
+        assert!(
+            provider
+                .resolve(
+                    "desktop-tour.open",
+                    SearchContext {
+                        wanted: &[ResourceKind::File],
+                        ..ctx("")
+                    }
+                )
+                .is_none(),
+            "a lookup that does not want actions finds none"
+        );
+    }
+
+    #[test]
+    fn catalogue_rebuilds_on_locale_and_workspace_change() {
+        struct RestoreLocale;
+        impl Drop for RestoreLocale {
+            fn drop(&mut self) {
+                ui::i18n::I18nManager::set_locale("en-US");
+            }
+        }
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let language = |provider: &ActionsProvider| {
+            row(&rows_for(provider, &chrome, ""), "appearance.language")
+                .map(|row| row.title.clone())
+        };
+
+        // Locale.
+        assert_eq!(language(&provider).as_deref(), Some("Set language"));
+        let _restore = RestoreLocale;
+        ui::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(crate::shell::i18n::current_locale(), "de-DE");
+        assert_eq!(language(&provider).as_deref(), Some("Sprache festlegen"));
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(language(&provider).as_deref(), Some("Set language"));
+
+        // Active workspace: governance rows address the workspace now active.
+        let (first_room, second, second_room) = {
+            use crate::shell::state::{Workspace, WorkspaceId};
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let first_room = tree.desktop.active_workspace().expect("fixture").room;
+            let id = WorkspaceId::new();
+            let mut workspace = Workspace::new(id, "Second");
+            workspace.set_owner("shell-fixture");
+            let room = workspace.room;
+            tree.desktop.workspaces.push(workspace);
+            drop(tree);
+            (first_room, id, room)
+        };
+        assert_ne!(first_room, second_room);
+        let proposal = |provider: &ActionsProvider| {
+            rows_for(provider, &chrome, "ownership")
+                .into_iter()
+                .find(|row| row.id.ends_with("#ownership.propose"))
+                .map(|row| row.id)
+        };
+        assert_eq!(
+            proposal(&provider),
+            Some(format!("workspace:{first_room}#ownership.propose"))
+        );
+        chrome.borrow().tree_mut().desktop.active = second;
+        assert_eq!(
+            proposal(&provider),
+            Some(format!("workspace:{second_room}#ownership.propose")),
+            "switching workspace rebuilds its governance rows"
+        );
+
+        // A tree mutation the chrome made, which it bumps the revision for.
+        let switch_to = |provider: &ActionsProvider| {
+            row(
+                &rows_for(provider, &chrome, ""),
+                &format!("workspace.select.{}", second.0),
+            )
+            .map(|row| row.title.clone())
+            .expect("every workspace can be switched to")
+        };
+        assert!(switch_to(&provider).contains("Second"));
+        {
+            let mut state = chrome.borrow_mut();
+            state
+                .tree_mut()
+                .desktop
+                .active_workspace_mut()
+                .expect("workspace")
+                .name = "Renamed".into();
+            state.bump();
+        }
+        assert!(switch_to(&provider).contains("Renamed"));
+
+        // A mutation from outside the chrome, before a tick folds it in.
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            tree.desktop.active_workspace_mut().expect("workspace").name = "Remote".into();
+            tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+        }
+        assert!(switch_to(&provider).contains("Remote"));
+
+        // Another desktop that differs only in being another: the same
+        // workspace id and revisions, its own room.
+        let other = {
+            use crate::shell::state::Workspace;
+            let mut tree = WorkspaceTree::default();
+            let mut workspace = Workspace::new(second, "Remote");
+            workspace.set_owner("shell-fixture");
+            tree.desktop.workspaces.push(workspace);
+            tree.desktop.active = second;
+            tree.desktop.external_revision = chrome.borrow().tree().desktop.external_revision;
+            ChromeState::new_with_fixture_handle(
+                Arc::new(RwLock::new(tree)),
+                crate::shell::hosted_inputs::HostedTileInputs::default(),
+            )
+        };
+        other.borrow_mut().revision = chrome.borrow().revision;
+        let other_room = other
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("fixture")
+            .room;
+        assert_ne!(other_room, second_room);
+        let other_proposal = rows_for(&provider, &other, "ownership")
+            .into_iter()
+            .find(|row| row.id.ends_with("#ownership.propose"))
+            .map(|row| row.id);
+        assert_eq!(
+            other_proposal,
+            Some(format!("workspace:{other_room}#ownership.propose")),
+            "one provider asked about two desktops answers for each"
+        );
+    }
+
+    #[test]
+    fn catalogue_rebuilds_on_collaboration_quick_settings_and_search_sources() {
+        // Peer sync and the collaboration broker.
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let offers = |provider: &ActionsProvider, id: &str| {
+            row(&rows_for(provider, &chrome, ""), id).is_some()
+        };
+        assert!(!offers(&provider, "peer.invite"));
+        chrome.borrow_mut().peer_sync_enabled = true;
+        assert!(offers(&provider, "peer.invite"), "peer sync started");
+        assert!(offers(&provider, "agent.invite"));
+        chrome
+            .borrow_mut()
+            .set_collab_unavailable("the broker could not start");
+        assert!(!offers(&provider, "agent.invite"), "the broker went away");
+
+        // The Quick Settings backend, what it can do, and a swap of either.
+        let first = Rc::new(RecordingQsActions::default());
+        let slot = Rc::new(SharedQsDispatcher::new(
+            first.clone(),
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        ));
+        let provider = ActionsProvider::with_shared_qs_actions(Rc::clone(&slot));
+        let chrome = chrome_with_room();
+        let set_volume = |provider: &ActionsProvider| {
+            let rows = rows_for(provider, &chrome, "");
+            let volume = row(&rows, QS_VOLUME_ID).expect("volume action");
+            let args = ActionArgs::bind(
+                &volume.params,
+                [(
+                    "percent".into(),
+                    crate::shell::search::action_api::ArgValue::Number(40.0),
+                )],
+            )
+            .expect("volume arguments");
+            let mut doc = AutoCommit::new();
+            (volume.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &args,
+            )
+        };
+        set_volume(&provider).expect("the first backend sets the volume");
+        assert_eq!(*first.calls.borrow(), ["volume:40"]);
+        let second = Rc::new(RecordingQsActions::default());
+        slot.replace(
+            second.clone(),
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        );
+        set_volume(&provider).expect("the second backend sets the volume");
+        assert_eq!(
+            *first.calls.borrow(),
+            ["volume:40"],
+            "a replaced backend is not called"
+        );
+        assert_eq!(*second.calls.borrow(), ["volume:40"]);
+        let volume_available = |provider: &ActionsProvider| {
+            row(&rows_for(provider, &chrome, ""), QS_VOLUME_ID)
+                .and_then(|row| row.contract.as_ref())
+                .expect("volume contract")
+                .availability
+                .is_available()
+        };
+        assert!(volume_available(&provider));
+        slot.replace(
+            second,
+            crate::shell::quick_settings::actions::QsActionAvailability {
+                volume: false,
+                ..crate::shell::quick_settings::actions::QsActionAvailability::all()
+            },
+        );
+        assert!(!volume_available(&provider), "the volume control went away");
+
+        // Search sources: one registered, and one turned off.
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        let provider = ActionsProvider::with_preferences_and_catalog(
+            registry.preferences_handle(),
+            registry.provider_catalog_handle(),
+        );
+        let chrome = chrome_rc();
+        let switch = |provider: &ActionsProvider, id: &str| {
+            row(
+                &rows_for(provider, &chrome, ""),
+                &format!("search.provider.toggle:{id}"),
+            )
+            .map(|row| row.title.clone())
+        };
+        let windows = super::super::desktop_windows::DesktopWindowsProvider::new();
+        let windows_id = windows.id().to_string();
+        let windows_name = windows.display_name();
+        assert_eq!(switch(&provider, &windows_id), None);
+        registry.register(Rc::new(windows));
+        let source: &[(&str, ui::i18n::ArgValue)] = &[
+            ("source", windows_name.clone().into()),
+            ("id", windows_id.clone().into()),
+        ];
+        assert_eq!(
+            switch(&provider, &windows_id),
+            Some(t_args("search-action-provider-disable", source)),
+            "a newly registered source gets its switch"
+        );
+        registry.set_provider_enabled(&windows_id, false);
+        assert_eq!(
+            switch(&provider, &windows_id),
+            Some(t_args("search-action-provider-enable", source)),
+            "a source turned off is offered to turn back on"
+        );
     }
 
     #[test]

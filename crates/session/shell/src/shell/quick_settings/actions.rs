@@ -10,7 +10,7 @@ pub use os_actions::{BatteryInfo, PowerProfile, PrivacyStatus, WiredInfo};
 pub use os_actions::Dispatcher as QsActions;
 pub use os_actions::RealDispatcher as RealQsActions;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each flag independently records whether one Quick Settings backend is present"
