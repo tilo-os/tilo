@@ -466,6 +466,14 @@ impl State {
 }
 
 impl State {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn controlled_merge_gate_snapshot_for_test(&self) -> serde_json::Value {
+        serde_json::json!({
+            "pending_ops": self.doc.pending_ops(),
+            "history_clean": same_frontier(&self.undo.last_heads, &self.doc.base_heads()),
+        })
+    }
+
     pub(crate) fn merge_remote_committed(
         &mut self,
         mutation: &collab_types::DocumentMutation,
