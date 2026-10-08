@@ -158,5 +158,25 @@
     "minimum_available_memory_bytes": 206158430208,
     "owned_growth_estimate_bytes": 68719476736
   },
-  "cleanup_policy": "No sharedcache deletion, GCpolicy change or newcapacity; oldpartial B and failed A artifact preserved"
+  "cleanup_policy": "No sharedcache deletion, GCpolicy change or newcapacity; oldpartial B and failed A artifact preserved",
+  "corrected_SDK_A": {
+    "source_patch_sha256": "40a39125d44e97d1e0373573fbe77a28ec1254d58f6bb7e2c14eb200614726fc",
+    "compile_receipt_sha256": "96f1f53a299c114eb898192c3fe55f26a03ea7aeb0049d694a0435f9615077a9",
+    "link_token": "1922d6ea599c48c68cabf266c27439f9",
+    "link_seconds": 384.0867564450018,
+    "link_cgroup_peak_bytes": 16339812352,
+    "link_cap_bytes": 137438953472,
+    "resource_token": "68385cc754844f87922a2b7fe4f5ccd7",
+    "packaging_token": "66adc3b74f59447b98b5412d5ce3d306",
+    "packaging_cgroup_peak_bytes": 909774848,
+    "memory_pressure_OOM_events": 0,
+    "cleanup_verified": true,
+    "private_unqualified_archive_sha256": "cece35681a153ef16446214a8be35a766a2f9f64a5b9149c63c900857a70c57f",
+    "native_unittest_passes": 62,
+    "native_smoke_scenarios": 1,
+    "native_original_outer_harness_exit": 1,
+    "native_evidence_parser_corrected_without_rerun": true,
+    "independent_B": "ACTIVE remote8CPU/100GiB caps; no A objects or LTO cache reused",
+    "published": false
+  }
 }

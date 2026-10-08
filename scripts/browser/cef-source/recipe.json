@@ -38,7 +38,7 @@
     }
   },
   "qualification": {
-    "status": "REVISION_TWO_SOURCE165_PASS_SDK_NATIVE_RUNTIME_PENDING",
+    "status": "REVISION_TWO_SOURCE165_AND_NATIVE62_PLUS_SHORTCUT_PASS_REPRO_MOUNTED_SIGNED_PENDING",
     "added_controller_regressions": 30,
     "existing_controller_tests_unchanged": 135,
     "upstream_baseline": {
@@ -107,8 +107,21 @@
       "retry_limit": 0,
       "batch_limit": 1
     },
-    "native_fixed": "PENDING revised SDK; previous source artifact14of16PASS with two commit failures",
-    "unchanged_owner_guard_and_undo_tests": "PENDING unchanged owner snapshot",
+    "native_fixed": {
+      "qualification_checks": "PASS",
+      "receipt_path": "scripts/browser/cef-source/native-revision-two-receipt.json",
+      "receipt_sha256": "766038465e0440dc5a3d920e87671e6fc59d4bb4d383db3970ab6ef658c18484",
+      "executed_unittest_tests": 62,
+      "executed_smoke_scenarios": 1,
+      "renderer_matrix": 16,
+      "owner_native_composition": 4,
+      "owner_guarded_text_input_undo": 42,
+      "candidate_libcef_sha256": "c8c3c51ebcb086b5b22cfdcdc07115826332ed3c6e038b316ec593951cf4e3da",
+      "zero_retries": true,
+      "original_outer_harness_exit": 1,
+      "evidence_parser_corrected_without_rerun": true
+    },
+    "unchanged_owner_guard_and_undo_tests": "PASS all42 unchanged guards/Undo, four native composition tests and one unchanged platform SelectAll smoke scenario; 95 owner source hashes unchanged",
     "repeat_build": "PENDING revised-source A/B full byte comparison",
     "signed_browser": "PENDING normal trusted main release and actual signed regression",
     "previous_revision": {
@@ -142,7 +155,10 @@
         ],
         "fixture_sha256": "732af0aba12f30e3d23d8fa42d5ad2d18ca0e9a5ba35b9385999291d300b5ada",
         "log_sha256": "e4403c7fb8ba4a78c005acc93d01608fb827652e3aae122f5d3bde302bc3c17a",
-        "qualified": false
+        "qualified": false,
+        "log_sha256_scope": "Original raw builder log retained in owned evidence; review copy normalizes only four traceback path prefixes",
+        "review_log_path": "scripts/browser/cef-source/native-revision-one-failures.log",
+        "review_log_sha256": "9e11e50cf8c610700c6410a8bf0c234553d9f95aec59bb8a999f2a458813989a"
       }
     },
     "qualification_only_adapters": "Unchanged exact test-support compatibility and Chromium tracing restorations; reverse before production",
@@ -161,6 +177,20 @@
       "failure_receipt_sha256": "62b9f7b8b5bb8aabef387133a40753931e0dfb9c8f8c1ae1699018a41e2e8757",
       "test_source_unchanged": true,
       "compiler_checks_unchanged": true
+    },
+    "private_candidate_A": {
+      "status": "UNQUALIFIED_DO_NOT_PUBLISH_OR_CONSUME",
+      "source_patch_sha256": "40a39125d44e97d1e0373573fbe77a28ec1254d58f6bb7e2c14eb200614726fc",
+      "producer_profile_sha256": "a1abc2cfe4a8ae1f4b631d8ab7304a625ef52ab7834f46e2280a12d301bbb6fb",
+      "archive": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_linux64_tilo-40a39125d44e97d1_minimal.tar.bz2",
+      "archive_size": 167327081,
+      "archive_sha256": "cece35681a153ef16446214a8be35a766a2f9f64a5b9149c63c900857a70c57f",
+      "archive_sha1": "f43ecdec645a57bf4562ee8be281ffc993abc1d1",
+      "license_sha256": "058c3827ffb827ff3edda471ae7e1bb1d1aa5931985f0126043ccd33409e792f",
+      "license_parity": "PASS_PINNED_CEF_SOURCE_BYTES",
+      "public_header_parity": "PASS",
+      "required_runtime_files": "PASS",
+      "ELF_architecture": "x86_64"
     }
   },
   "artifact": null,
