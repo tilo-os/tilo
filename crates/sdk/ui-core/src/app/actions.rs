@@ -2653,6 +2653,7 @@ impl App {
             && !crate::bound_dispatch::permits_local_value(
                 &self.permission_ctx,
                 &crate::collaboration::local_app_id(),
+                &address.resource,
                 resolved,
                 typed_arguments.as_ref(),
                 argument,
@@ -4282,10 +4283,12 @@ impl App {
         &self,
         mut resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
+        let resource_id = resource.id.as_str().to_owned();
         resource.actions.retain(|action| {
             crate::bound_dispatch::permits_local_action(
                 &self.permission_ctx,
                 &crate::collaboration::local_app_id(),
+                &resource_id,
                 action,
             )
         });

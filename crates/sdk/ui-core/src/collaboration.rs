@@ -1752,6 +1752,19 @@ impl CollaborationManager {
             }
     }
 
+    /// Independently sample the existing transport read gates without admission.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub(crate) fn controlled_document_read_phase_for_test(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<serde_json::Value> {
+        if let Backend::Transport(transport) = &self.backend {
+            transport.controlled_document_read_phase_for_test(&route.channel_id())
+        } else {
+            None
+        }
+    }
+
     /// Test-only: whether `route` has resolved its document mode, so a
     /// document mutation on it would be admitted rather than refused.
     #[cfg(test)]

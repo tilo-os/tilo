@@ -517,6 +517,7 @@ fn apply_permission_profile_action(
                     PermissionProfileOperation::GrantAppAction {
                         app: text("app"),
                         target_app: text("target_app"),
+                        resource: text("resource"),
                         action: text("action"),
                         lifetime: text("lifetime"),
                     }
@@ -524,6 +525,7 @@ fn apply_permission_profile_action(
                     PermissionProfileOperation::RevokeAppAction {
                         app: text("app"),
                         target_app: text("target_app"),
+                        resource: text("resource"),
                         action: text("action"),
                     }
                 };
@@ -6509,6 +6511,7 @@ mod tests {
         let rules = serde_json::to_string(&vec![collab_types::PermissionProfileRule::grant(
             collab_types::Scope::Action {
                 app: "so.tilo.notes".into(),
+                resource: "notes.page:1".into(),
                 action: "note.open".into(),
             },
             collab_types::Verb::Read,
@@ -6594,6 +6597,7 @@ mod tests {
             &workspace.actor_for_agent("researcher"),
             &crate::shell::state::ResourceRef::Action {
                 app: "so.tilo.notes".into(),
+                resource: "notes.page:1".into(),
                 action: "note.open".into(),
             },
             crate::shell::state::Verb::Read,

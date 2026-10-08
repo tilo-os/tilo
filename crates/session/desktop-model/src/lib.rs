@@ -68,5 +68,6 @@ pub use width::WindowWidth;
 pub use workspace::{
     APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, PROFILE_ASSIGN_ACTION_ID,
     PROFILE_SAVE_ACTION_ID, PermissionProfileMutationError, UserId, WORKSPACE_GOVERNANCE_APP_ID,
-    Workspace, WorkspaceDefaultError, role_from_id, role_id,
+    Workspace, WorkspaceDefaultError, governance_resource_id, permission_profile_resource_id,
+    role_from_id, role_id,
 };

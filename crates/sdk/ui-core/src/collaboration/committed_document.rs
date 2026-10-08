@@ -1202,11 +1202,31 @@ pub(super) async fn install(
                         revision = Some(next);
                         continue;
                     }
-                    inbound.state.document_reads.unavailable(&key, &ready);
+                    #[cfg(any(test, feature = "test-support"))]
+                    tracing::warn!("committed document capture failed");
+                    revision = None;
+                }
+                Ok(Ok(Reply::Unavailable)) => {
+                    if !inbound.state.document_reads.applying(&key, &ready) {
+                        break;
+                    }
                     inbound.state.notify_events();
-                    break;
+                    revision = None;
                 }
                 _ => {
+                    #[cfg(any(test, feature = "test-support"))]
+                    tracing::warn!(
+                        timed_out = result.is_err(),
+                        rpc_failed = matches!(&result, Ok(Err(_))),
+                        unexpected_reply = matches!(&result, Ok(Ok(_))),
+                        "committed document polling stopped"
+                    );
+                    // An expired Open may have allocated a broker capture. Its
+                    // outcome is unknown: do not replay it or leave a stopped
+                    // reader advertising a connected, publishable route.
+                    inbound
+                        .state
+                        .fail_closed("committed document read outcome unknown");
                     inbound.state.document_reads.unavailable(&key, &ready);
                     inbound.state.notify_events();
                     break;

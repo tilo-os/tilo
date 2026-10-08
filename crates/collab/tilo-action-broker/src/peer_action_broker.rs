@@ -14,14 +14,14 @@ impl CapnpBrokerState {
 
     pub(super) fn verify_network_action_caller(
         &self,
-        evidence: &tilo_relay::client::CertifiedAction,
+        evidence: &tilo_relay_session::client::CertifiedAction,
     ) -> Result<VerifiedActionCaller, String> {
         let registered = self.registered_policy_time()?;
         self.verify_network_action_caller_with_policy_time(evidence, registered.as_ref())
     }
     pub(super) fn verify_network_action_caller_with_policy_time(
         &self,
-        evidence: &tilo_relay::client::CertifiedAction,
+        evidence: &tilo_relay_session::client::CertifiedAction,
         submitted: Option<&crate::peer_actions::PolicyTime>,
     ) -> Result<VerifiedActionCaller, String> {
         let cert = evidence.certificate();
@@ -159,7 +159,7 @@ impl CapnpBrokerState {
     async fn peer_action(
         &self,
         directories: &LocalActionDirectoryRegistry,
-        evidence: &tilo_relay::client::CertifiedAction,
+        evidence: &tilo_relay_session::client::CertifiedAction,
         poll: Option<tilo_actions::InvocationId>,
         notification: Option<tilo_actions::InvocationUpdate>,
         policy_time: Option<&crate::peer_actions::PolicyTime>,

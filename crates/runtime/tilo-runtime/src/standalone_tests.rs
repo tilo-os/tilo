@@ -608,7 +608,9 @@ fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActi
         person: person.into(),
         app_id: "so.tilo.caller".into(),
         target_app: "so.tilo.target-app".into(),
+        resource: "target.document".into(),
         action: "open".into(),
+        resource_label: "Document".into(),
         action_label: "Open".into(),
         risk: tilo_actions::RiskLevel::default(),
         needs_confirmation: false,
@@ -621,6 +623,7 @@ fn app_grant() -> collab_types::caps::CapOverride {
         Subject::app("so.tilo.caller"),
         Scope::Action {
             app: "so.tilo.target-app".into(),
+            resource: "target.document".into(),
             action: "open".into(),
         },
         Verb::Write,

@@ -2023,7 +2023,7 @@ impl LiveAppActionsProvider {
 
     pub fn capability_target(
         id: &str,
-    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str)> {
+    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str, &str)> {
         let mut service = id.split(ID_SEPARATOR);
         if service.next() == Some("service") {
             let _provider = service.next()?;
@@ -2040,10 +2040,10 @@ impl LiveAppActionsProvider {
             {
                 return None;
             }
-            return Some((app, permission, action));
+            return Some((app, permission, resource, action));
         }
-        let (app, permission, _cluster, _record, _resource, action) = Self::result_parts(id)?;
-        Some((app, Self::permission_from_id(permission)?, action))
+        let (app, permission, _cluster, _record, resource, action) = Self::result_parts(id)?;
+        Some((app, Self::permission_from_id(permission)?, resource, action))
     }
 
     fn permission_from_id(permission: &str) -> Option<tilo_actions::PermissionRequirement> {
@@ -3906,6 +3906,18 @@ mod tests {
         assert_eq!(hierarchy.operation, "profile.save");
 
         let resource = ResourceRef::new(PROVIDER_ID, row.id.clone());
+        assert_eq!(
+            crate::shell::search::visibility::required_capability(&resource, &ResourceKind::Action),
+            Some((
+                crate::shell::state::ResourceRef::Action {
+                    app: hierarchy.application.clone(),
+                    resource: hierarchy.resource.clone(),
+                    action: hierarchy.operation.clone(),
+                },
+                crate::shell::state::Verb::Admin,
+            )),
+            "the service capability must retain the exact published resource"
+        );
         let mut registry = SearchRegistry::new();
         registry.register(provider.clone());
         let chrome_state = chrome.borrow();
@@ -3985,7 +3997,7 @@ mod tests {
         supplied.insert(
             "rules".into(),
             serde_json::json!([{
-                "scope": {"Action": {"app": "so.tilo.chat", "action": "open-agent-conversation"}},
+                "scope": {"Action": {"app": "so.tilo.chat", "resource": "chat.person:tide", "action": "open-agent-conversation"}},
                 "effect": "Grant",
                 "verb": "Write"
             }]),

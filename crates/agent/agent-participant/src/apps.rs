@@ -411,6 +411,7 @@ fn discover_views(
                 && descriptor.kind == tilo_actions::OperationKind::View
                 && permissions.check(&ui::permissions::PermissionScope::action(
                     app_id,
+                    descriptor.address.resource.clone(),
                     descriptor.address.action.clone(),
                     collab_types::caps::Verb::Read,
                 ))

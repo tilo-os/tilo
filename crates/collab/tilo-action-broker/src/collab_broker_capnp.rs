@@ -1369,7 +1369,7 @@ struct PendingInvocation {
     managed_interaction: Option<ManagedInteractionTarget>,
     managed_interaction_sequence: u64,
     owner: InvocationOwner,
-    network_evidence: Option<tilo_relay::client::CertifiedAction>,
+    network_evidence: Option<tilo_relay_session::client::CertifiedAction>,
     original: Option<Arc<OriginalInvocationData>>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
     journal_key: Option<InvocationKey>,
@@ -1407,7 +1407,7 @@ struct PreparedEffectCommit {
 pub(crate) struct VerifiedActionCaller {
     room: String,
     presentation: Vec<u8>,
-    network: Option<tilo_relay::client::CertifiedAction>,
+    network: Option<tilo_relay_session::client::CertifiedAction>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
     admitted: AdmittedJoinIdentity,
 }
@@ -1839,6 +1839,11 @@ impl CapnpBrokerState {
             .get("app_id")
             .and_then(serde_json::Value::as_str)
             .ok_or("journal app invalid")?;
+        let resource = record
+            .intent
+            .get("resource")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("journal resource invalid")?;
         let action = record
             .intent
             .get("action")
@@ -1847,6 +1852,7 @@ impl CapnpBrokerState {
         self.authorize_invocation_permission(
             &caller.room,
             app,
+            resource,
             action,
             contract.permission,
             &current.broker_actor(),
@@ -4744,6 +4750,7 @@ impl CapnpBrokerState {
         cluster_id: &str,
         actor: &BrokerActor,
         app_id: &str,
+        resource: &str,
         action: &str,
         contract_json: &str,
     ) -> Result<bool, capnp::Error> {
@@ -4783,6 +4790,7 @@ impl CapnpBrokerState {
             &caller,
             &ResourceRef::Action {
                 app: app_id.to_string(),
+                resource: resource.to_string(),
                 action: action.to_string(),
             },
             verb,
@@ -4884,6 +4892,7 @@ impl CapnpBrokerState {
                             &caller,
                             &ResourceRef::Action {
                                 app: surface.app_id.clone(),
+                                resource: action.resource.clone(),
                                 action: action.action.clone(),
                             },
                             verb,
@@ -5431,6 +5440,7 @@ impl CapnpBrokerState {
         self.authorize_invocation_permission(
             &offered.0.route.cluster_id,
             &offered.0.app_id,
+            &offered.1.resource,
             &offered.1.action,
             offered.1.contract.permission,
             actor,
@@ -5552,7 +5562,8 @@ impl CapnpBrokerState {
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
                 "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
-                "action": offered.1.action, "revision": revision });
+                "resource": offered.1.resource, "action": offered.1.action,
+                "revision": revision });
             if let Some(context) = durable {
                 context.before_admission(self, journal.host(), peer_id, &offered, &sender)?;
             }
@@ -11164,6 +11175,7 @@ fn permits_directory_row(
                 cluster_id,
                 actor,
                 app_id,
+                &row.resource,
                 action,
                 &descriptor.contract_json,
             )
@@ -11185,6 +11197,7 @@ fn permits_directory_row(
                 cluster_id,
                 actor,
                 app_id,
+                &row.resource,
                 visibility_action,
                 &row.visibility_contract_json,
             )
@@ -15907,6 +15920,7 @@ pub mod tests {
             state.authorize_invocation_permission(
                 &room,
                 "so.tilo.settings",
+                "settings.workspace",
                 "workspace.rename",
                 permission,
                 &admitted.broker_actor(),
@@ -15980,6 +15994,7 @@ pub mod tests {
             let admin = state.authorize_invocation_permission(
                 &room,
                 "so.tilo.settings",
+                "settings.workspace",
                 "workspace.rename",
                 tilo_actions::PermissionRequirement::Admin,
                 &actor,

@@ -3181,6 +3181,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         &self,
         actor: &str,
         app: &str,
+        resource: &str,
         action: &str,
         verb: &str,
         destructive: bool,
@@ -3215,6 +3216,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         registry.declare(decl);
         let resource = ResourceRef::Action {
             app: app.to_string(),
+            resource: resource.to_string(),
             action: action.to_string(),
         };
         let outcome = check_action(ws, &registry, &actor, app, action, &resource);

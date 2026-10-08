@@ -7,15 +7,26 @@
 
 use collab_types::{PermissionProfileRule, Scope, Verb};
 use tilo_automation::{
-    AGENT_APP_ID, AGENT_TRANSFORM_KIND, ActionCatalog, ResourceTarget, Selector, Step, StepKind,
-    required_verb,
+    AGENT_APP_ID, AGENT_TRANSFORM_KIND, ActionCatalog, Binding, ResourceTarget, Selector, Step,
+    StepKind, required_verb,
 };
 use ui::tilo_actions::PermissionRequirement;
+
+/// The resources a permission reaches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// The one resource a step names.
+    Resource(String),
+    /// Every resource of a kind, for a step that picks its resource when it
+    /// runs.
+    Kind(String),
+}
 
 /// One permission the shortcut will use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Permission {
     pub app_id: String,
+    pub reach: Reach,
     pub action: String,
     pub verb: Verb,
     /// How the catalogue names it: "List notes in Inbox".
@@ -25,13 +36,19 @@ pub struct Permission {
 impl Permission {
     #[must_use]
     pub fn rule(&self) -> PermissionProfileRule {
-        PermissionProfileRule::grant(
-            Scope::Action {
+        let scope = match &self.reach {
+            Reach::Resource(resource) => Scope::Action {
                 app: self.app_id.clone(),
+                resource: resource.clone(),
                 action: self.action.clone(),
             },
-            self.verb,
-        )
+            Reach::Kind(kind) => Scope::ActionOnKind {
+                app: self.app_id.clone(),
+                kind: kind.clone(),
+                action: self.action.clone(),
+            },
+        };
+        PermissionProfileRule::grant(scope, self.verb)
     }
 }
 
@@ -60,7 +77,10 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
                 ..
             } => {
                 let target = match resource {
-                    Selector::Fixed(id) => ResourceTarget::Id(id),
+                    Selector::Fixed(id)
+                    | Selector::FromBinding(Binding::Literal(serde_json::Value::String(id))) => {
+                        ResourceTarget::Id(id)
+                    }
                     Selector::FirstOfKind(kind) => ResourceTarget::Kind(kind),
                     Selector::FromBinding(_) => ResourceTarget::Any,
                 };
@@ -93,25 +113,44 @@ fn add(
     out: &mut Vec<Permission>,
 ) {
     let row = catalog.find(app_id, target, action);
+    let descriptor = row.and_then(|row| row.action.as_ref());
+    let reach = match target {
+        ResourceTarget::Id(id) => Reach::Resource(id.to_owned()),
+        // The kind of the resource the step finds, which may be a sub-kind
+        // of the one it names: a grant covers exactly that kind.
+        ResourceTarget::Kind(kind) => Reach::Kind(descriptor.map_or_else(
+            || kind.to_owned(),
+            |descriptor| descriptor.resource_kind.clone(),
+        )),
+        // A bound resource is only known when the shortcut runs; the kind
+        // of the resource the catalogue offers the action on is what it
+        // may reach. Without one there is nothing to grant.
+        ResourceTarget::Any => match descriptor {
+            Some(descriptor) => Reach::Kind(descriptor.resource_kind.clone()),
+            None => return,
+        },
+    };
     let requirement = row
         .and_then(|row| row.action.as_ref())
         .map_or(PermissionRequirement::Write, |descriptor| {
             descriptor.contract.permission
         });
     let verb = required_verb(requirement);
-    let label = row.and_then(|row| row.action.as_ref()).map_or_else(
-        || format!("{action} in {}", crate::editor::app_label(app_id)),
-        |descriptor| {
-            format!(
-                "{} in {}",
-                descriptor.action_label, descriptor.resource_label
-            )
-        },
-    );
-    if let Some(existing) = out
-        .iter_mut()
-        .find(|existing| existing.app_id == app_id && existing.action == action)
-    {
+    let label = match (&reach, descriptor) {
+        (Reach::Resource(_), Some(descriptor)) => format!(
+            "{} in {}",
+            descriptor.action_label, descriptor.resource_label
+        ),
+        (Reach::Kind(kind), Some(descriptor)) => {
+            format!("{} in {kind}", descriptor.action_label)
+        }
+        (Reach::Resource(resource) | Reach::Kind(resource), None) => {
+            format!("{action} in {resource}")
+        }
+    };
+    if let Some(existing) = out.iter_mut().find(|existing| {
+        existing.app_id == app_id && existing.reach == reach && existing.action == action
+    }) {
         if verb.implies(existing.verb) {
             existing.verb = verb;
         }
@@ -119,6 +158,7 @@ fn add(
     }
     out.push(Permission {
         app_id: app_id.to_owned(),
+        reach,
         action: action.to_owned(),
         verb,
         label,

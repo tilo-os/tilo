@@ -259,7 +259,7 @@ fn network_follows_the_egress_decision() {
 
     // A host allowlist: the launcher's gate is the only way out, through the
     // proxy environment, and it carries only the granted hosts.
-    let filtered = EgressDecision::Filtered(EgressPolicy::new(vec!["localhost".into()]));
+    let filtered = EgressDecision::Filtered(EgressPolicy::from_grants(["localhost"]));
     let mut tcp_gated = request_with(&f, &f.probe, "tcp", port.clone());
     tcp_gated.egress = filtered.clone();
     assert_eq!(

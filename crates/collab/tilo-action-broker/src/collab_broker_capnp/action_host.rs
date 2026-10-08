@@ -527,6 +527,7 @@ impl CapnpBrokerState {
         policy: &Actor,
         now: u64,
         app: &str,
+        resource: &str,
         action: &str,
         permission: tilo_actions::PermissionRequirement,
     ) -> bool {
@@ -542,6 +543,7 @@ impl CapnpBrokerState {
                 policy,
                 &ResourceRef::Action {
                     app: app.to_string(),
+                    resource: resource.to_string(),
                     action: action.to_string(),
                 },
                 verb,
@@ -614,6 +616,7 @@ impl CapnpBrokerState {
                                 &policy,
                                 now,
                                 &surface.app_id,
+                                &action.resource,
                                 &action.action,
                                 action.contract.permission,
                             )
@@ -666,6 +669,7 @@ impl CapnpBrokerState {
                                 &policy,
                                 now,
                                 governance.app_id(),
+                                &descriptor.address.resource,
                                 &descriptor.address.action,
                                 descriptor.contract.permission,
                             )
@@ -685,6 +689,7 @@ impl CapnpBrokerState {
                                 &policy,
                                 now,
                                 SHORTCUTS_APP_ID,
+                                &descriptor.address.resource,
                                 &descriptor.address.action,
                                 descriptor.contract.permission,
                             )
@@ -706,6 +711,7 @@ impl CapnpBrokerState {
                                     &policy,
                                     now,
                                     service.app_id(),
+                                    &descriptor.address.resource,
                                     &descriptor.address.action,
                                     descriptor.contract.permission,
                                 )
@@ -803,6 +809,7 @@ impl CapnpBrokerState {
                                 policy,
                                 now,
                                 &surface.app_id,
+                                &action.resource,
                                 &action.action,
                                 action.contract.permission,
                             )
@@ -1236,6 +1243,7 @@ impl CapnpBrokerState {
                 &policy,
                 now,
                 &app_id,
+                &action.resource,
                 &action.action,
                 action.contract.permission,
             ) {
@@ -1747,6 +1755,7 @@ impl CapnpBrokerState {
                     &policy,
                     now,
                     &surface.app_id,
+                    &action.resource,
                     &action.action,
                     action.contract.permission,
                 )
@@ -1897,6 +1906,7 @@ impl CapnpBrokerState {
             policy,
             now,
             SHORTCUTS_APP_ID,
+            &descriptor.address.resource,
             action,
             descriptor.contract.permission,
         ) {
@@ -1967,6 +1977,7 @@ impl CapnpBrokerState {
             policy,
             now,
             service.app_id(),
+            &address.resource,
             &address.action,
             descriptor.contract.permission,
         ) {
