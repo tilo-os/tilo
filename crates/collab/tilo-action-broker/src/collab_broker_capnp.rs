@@ -8256,7 +8256,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             }
             let rows = request.get_actions()?;
             let mut actions = Vec::with_capacity(rows.len() as usize);
-            for row in rows.iter() {
+            for row in rows {
                 let published = runtime_collab::decode_exported_action(row)?;
                 if published.resource.is_empty()
                     || published.action.is_empty()
