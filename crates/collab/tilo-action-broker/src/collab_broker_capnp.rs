@@ -11215,12 +11215,22 @@ fn filter_directory_page(
         .map(published_directory_action)
         .collect::<Result<Vec<_>, _>>()?;
     validate_resource_view_descriptors(&page_actions)?;
+    let input_count = page.rows.len();
+    let input_children = page.rows.iter().filter(|row| row.has_children).count();
     let mut visible = Vec::with_capacity(page.rows.len());
     for row in page.rows {
         if permits_directory_row(state, cluster_id, actor, app_id, &row)? {
             visible.push(row);
         }
     }
+    tracing::debug!(
+        target: "tilo_agent_delivery",
+        input_count,
+        visible_count = visible.len(),
+        input_children,
+        visible_children = visible.iter().filter(|row| row.has_children).count(),
+        "native-delivery:directory-filter:complete"
+    );
     page.rows = visible;
     Ok(page)
 }

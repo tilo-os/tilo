@@ -99,6 +99,9 @@ thread_local! {
     static PROVIDERS_FAILURE_ROWS: std::cell::RefCell<Option<Vec<serde_json::Value>>> = const {
         std::cell::RefCell::new(None)
     };
+    static INGEST_PAGE_COUNTS: std::cell::RefCell<Option<Vec<serde_json::Value>>> = const {
+        std::cell::RefCell::new(None)
+    };
 }
 
 #[derive(Clone)]
@@ -916,11 +919,38 @@ fn is_message_row(row: &tilo_actions::remote::CatalogueRow, agent: &str) -> bool
         })
 }
 
+fn observe_ingest_page(page: &CataloguePage, agent: &str) {
+    let limit = usize::try_from(tilo_actions::remote::MAX_CATALOGUE_PAGE).unwrap_or(256);
+    let row_count = page.rows.len().min(limit);
+    let (mut child_count, mut action_count, mut message_match_count) = (0usize, 0usize, 0usize);
+    for row in page.rows.iter().take(limit) {
+        child_count = child_count.saturating_add(usize::from(row.has_children));
+        action_count = action_count.saturating_add(usize::from(row.action.is_some()));
+        message_match_count =
+            message_match_count.saturating_add(usize::from(is_message_row(row, agent)));
+    }
+    #[cfg(test)]
+    INGEST_PAGE_COUNTS.with_borrow_mut(|rows| {
+        if let Some(rows) = rows {
+            rows.push(serde_json::json!({
+                "phase": "rows", "row_count": row_count, "child_count": child_count,
+                "action_count": action_count, "message_match_count": message_match_count,
+            }));
+        }
+    });
+    tracing::debug!(
+        target: "tilo_agent_delivery",
+        phase = "rows", row_count, child_count, action_count, message_match_count,
+        "native-message-page"
+    );
+}
+
 fn ingest_page(
     state: &mut AgentMessageRows,
     page: CataloguePage,
     agent: &str,
 ) -> Result<(), &'static str> {
+    observe_ingest_page(&page, agent);
     let Some(provider) = state.provider.as_deref() else {
         return Err("missing_provider");
     };
@@ -1289,6 +1319,59 @@ mod tests {
                 Some("remote_refused"),
                 Some("refused"),
             );
+        }
+    }
+
+    #[test]
+    fn actual_rows_poll_emits_only_bounded_page_counts() {
+        let mut matching = confirmed_page("scribe", "PRIVATE-REVISION");
+        matching.rows[0].resource.label = "PRIVATE-LABEL".into();
+        let mut container = matching.clone();
+        container.rows[0].action = None;
+        container.rows[0].has_children = true;
+        let oversized = CataloguePage {
+            rows: vec![matching.rows[0].clone(); 257],
+            ..matching.clone()
+        };
+        for (page, expected, advances) in [
+            (
+                CataloguePage {
+                    revision: "PRIVATE-REVISION".into(),
+                    exhausted: true,
+                    ..CataloguePage::default()
+                },
+                (0, 0, 0, 0),
+                false,
+            ),
+            (matching, (1, 0, 1, 1), true),
+            (container, (1, 1, 0, 0), true),
+            (oversized, (256, 0, 256, 256), false),
+        ] {
+            INGEST_PAGE_COUNTS.with_borrow_mut(|rows| *rows = Some(Vec::new()));
+            let result = poll(
+                &RemoteActions::session(),
+                "room-a",
+                "scribe",
+                "PRIVATE-TEXT",
+                &diagnostic_catalogue_submission("rows", RemoteCall::Done(page)),
+                crate::time::now() + RESOLVE_WINDOW,
+                MAX_PAGES,
+            );
+            assert!(if advances {
+                matches!(result, AgentMessagePoll::Advance { .. })
+            } else {
+                matches!(result, AgentMessagePoll::Failed)
+            });
+            let rows = INGEST_PAGE_COUNTS.with_borrow_mut(|rows| rows.take().unwrap());
+            let (row_count, child_count, action_count, message_match_count) = expected;
+            assert_eq!(
+                rows,
+                vec![serde_json::json!({
+                    "phase": "rows", "row_count": row_count, "child_count": child_count,
+                    "action_count": action_count, "message_match_count": message_match_count,
+                })]
+            );
+            assert!(!serde_json::to_string(&rows).unwrap().contains("PRIVATE"));
         }
     }
 
