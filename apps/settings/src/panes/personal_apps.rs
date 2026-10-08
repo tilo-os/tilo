@@ -11,7 +11,7 @@ use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, Resourc
 use serde::{Deserialize, Serialize};
 use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, LiveRow};
+use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::theme::Theme;
 use ui::tilo_actions::ResourcePresentation;
@@ -57,6 +57,9 @@ impl DefaultApps {
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum DefaultAppsEffect {
+    /// Open the apps and files policy of the caller's workspace.
+    #[effect(job, label = "Open workspace apps and files")]
+    OpenWorkspaceAppsFiles,
     /// Open a kind of file or link with an installed app.
     #[effect(idempotent)]
     SetDefaultApp {
@@ -71,9 +74,26 @@ pub enum DefaultAppsEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: DefaultAppsEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
-    let DefaultAppsEffect::SetDefaultApp { kind, app: package } = effect;
+    let (kind, package) = match effect {
+        DefaultAppsEffect::OpenWorkspaceAppsFiles => {
+            if !app.host().is_live() {
+                return Err("only a window someone uses opens workspace settings".into());
+            }
+            return Ok(cx.thread(
+                move |_| {
+                    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+                        route: os_actions::WorkspaceSettingsRoute::AppsFiles,
+                    })
+                },
+                |_: &mut SettingsApp, opened: Result<(), String>, _| {
+                    opened.map(|()| Effected::done())
+                },
+            ));
+        }
+        DefaultAppsEffect::SetDefaultApp { kind, app } => (kind, app),
+    };
     let resource =
         parse_kind(&kind).ok_or_else(|| format!("`{kind}` is not a kind of file or link"))?;
     let area = app.default_apps();
@@ -352,17 +372,13 @@ impl PersonalAppsPane {
                     &t("settings-personal-apps-applies-value"),
                 ),
                 caption(&t("settings-personal-apps-scope-caption")),
-                Box::new(
+                Box::new(self.cx.bind(
                     Button::new(
                         "open-workspace-app-defaults",
                         &t("settings-personal-apps-open-workspace"),
-                    )
-                    .on_effect(|| {
-                        let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-                            route: os_actions::WorkspaceSettingsRoute::AppsFiles,
-                        });
-                    }),
-                ),
+                    ),
+                    effect(DefaultAppsEffect::OPEN_WORKSPACE_APPS_FILES),
+                )),
             ]),
         );
         crate::widgets::cards(vec![
@@ -528,6 +544,179 @@ mod tests {
             display_name: id.into(),
             resources: [ResourceKind::extension(ext).unwrap()].into(),
         }
+    }
+
+    #[cfg(unix)]
+    fn tool_child(test: &str, accepted: bool) -> bool {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::fd::OwnedFd;
+        use std::os::unix::net::UnixStream;
+        use std::process::{Command, Stdio};
+        use std::time::Duration;
+
+        if std::env::var_os("TILO_SETTINGS_APPS_TOOL_CHILD").is_some() {
+            return true;
+        }
+        let (client, mut server) = UnixStream::pair().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let service = std::thread::spawn(move || {
+            let mut line = String::new();
+            BufReader::new(server.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: os_actions::ToolRequest = serde_json::from_str(&line).unwrap();
+            assert_eq!(request.protocol, os_actions::TOOL_PROTOCOL_VERSION);
+            assert_eq!(request.workspace_id, "original-owned-workspace");
+            assert_eq!(
+                request.intent,
+                os_actions::ToolIntent::WorkspaceSettings {
+                    route: os_actions::WorkspaceSettingsRoute::AppsFiles,
+                }
+            );
+            std::thread::sleep(Duration::from_millis(300));
+            serde_json::to_writer(
+                &mut server,
+                &os_actions::ToolReply {
+                    accepted,
+                    message: if accepted {
+                        String::new()
+                    } else {
+                        "original caller refused".into()
+                    },
+                },
+            )
+            .unwrap();
+            server.write_all(b"\n").unwrap();
+        });
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env("TILO_SETTINGS_APPS_TOOL_CHILD", "1")
+            .env("TILO_WORKSPACE_ID", "original-owned-workspace")
+            .env("TILO_SVC_TOOLS_FD", "0")
+            .stdin(Stdio::from(OwnedFd::from(client)))
+            .status()
+            .unwrap();
+        service.join().unwrap();
+        assert!(
+            status.success(),
+            "isolated mounted tool invocation failed: {status}"
+        );
+        false
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mounted_workspace_apps_button_does_not_wait_for_real_tool_ack() {
+        if !tool_child(
+            "panes::personal_apps::tests::mounted_workspace_apps_button_does_not_wait_for_real_tool_ack",
+            true,
+        ) {
+            return;
+        }
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let open = crate::effects::open_pane_address(crate::categories::Category::DefaultApps);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        let started = std::time::Instant::now();
+        app.harness()
+            .click_named("open-workspace-app-defaults")
+            .unwrap();
+        app.settle();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "mounted Apps & Files blocked on the actual tool ACK: {elapsed:?}"
+        );
+        // Keep the original caller alive until its actual service reply arrives.
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        app.settle();
+    }
+
+    #[cfg(unix)]
+    fn published_workspace_tool(accepted: bool, test: &str) {
+        use ui::tilo_actions::InvocationUpdate;
+        if !tool_child(test, accepted) {
+            return;
+        }
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let open = crate::effects::open_pane_address(crate::categories::Category::DefaultApps);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        let effect = SettingsEffect::from(DefaultAppsEffect::OpenWorkspaceAppsFiles);
+        let started = std::time::Instant::now();
+        let invocation = app.start_effect(&effect).unwrap();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "published Apps & Files blocked on the actual tool ACK: {elapsed:?}"
+        );
+        assert!(
+            !app.harness()
+                .job_updates(invocation)
+                .iter()
+                .any(InvocationUpdate::is_terminal),
+            "the original published caller must wait for its actual tool ACK"
+        );
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| {
+                    h.job_updates(invocation)
+                        .iter()
+                        .any(InvocationUpdate::is_terminal)
+                })
+        );
+        let updates = app.harness().job_updates(invocation);
+        assert_eq!(
+            updates.iter().filter(|update| update.is_terminal()).count(),
+            1
+        );
+        match (accepted, updates.last()) {
+            (
+                true,
+                Some(InvocationUpdate::Succeeded {
+                    invocation: actual,
+                    output,
+                    ..
+                }),
+            ) => {
+                assert_eq!(*actual, invocation);
+                assert!(output.value.is_none());
+            }
+            (
+                false,
+                Some(InvocationUpdate::Failed {
+                    invocation: actual,
+                    error,
+                    ..
+                }),
+            ) => {
+                assert_eq!(*actual, invocation);
+                assert_eq!(error.message, "original caller refused");
+            }
+            _ => panic!("the original published caller must receive its actual tool outcome"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn published_workspace_apps_job_waits_for_real_tool_ack() {
+        published_workspace_tool(
+            true,
+            "panes::personal_apps::tests::published_workspace_apps_job_waits_for_real_tool_ack",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn published_workspace_apps_job_preserves_real_tool_refusal() {
+        published_workspace_tool(
+            false,
+            "panes::personal_apps::tests::published_workspace_apps_job_preserves_real_tool_refusal",
+        );
     }
 
     #[test]

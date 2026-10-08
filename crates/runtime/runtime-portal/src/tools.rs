@@ -13,6 +13,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::fd::BorrowedFd;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +22,10 @@ pub const TOOL_PROTOCOL_VERSION: u32 = 1;
 pub const TOOL_SERVICE_FD_ENV: &str = "TILO_SVC_TOOLS_FD";
 pub const TOOL_CONTEXT_ENV: &str = "TILO_TOOL_CONTEXT";
 const MAX_WIRE_BYTES: usize = 4 * 1024;
+// Every caller duplicates the same launcher-owned stream. Keep both frame
+// writes and the complete reply together; no request has an independent ACK id.
+#[cfg(unix)]
+static TOOL_EXCHANGE: Mutex<()> = Mutex::new(());
 const MAX_DIRECTORY_BYTES: usize = 2 * 1024;
 const MAX_CONTAINER_NAME_BYTES: usize = 255;
 const TERMINAL_PACKAGE_ID: &str = "so.tilo.terminal";
@@ -289,6 +295,9 @@ fn send_tool_request(intent: ToolIntent) -> Result<(), String> {
     if encoded.len() > MAX_WIRE_BYTES {
         return Err("tool request is too large".into());
     }
+    let exchange = TOOL_EXCHANGE
+        .lock()
+        .map_err(|_| "The shell tool service exchange is unavailable".to_string())?;
     stream
         .write_all(&encoded)
         .and_then(|()| stream.write_all(b"\n"))
@@ -301,6 +310,7 @@ fn send_tool_request(intent: ToolIntent) -> Result<(), String> {
     if reply.len() > MAX_WIRE_BYTES {
         return Err("tool reply is too large".into());
     }
+    drop(exchange);
     let reply: ToolReply =
         serde_json::from_str(&reply).map_err(|e| format!("decoding tool reply: {e}"))?;
     if reply.accepted {
@@ -390,6 +400,141 @@ mod tests {
             assert_eq!(json["tool"], "identity_backup");
             assert!(json.get("program").is_none());
         }
+    }
+
+    #[cfg(unix)]
+    fn serve_concurrent_tools(mut service: std::os::unix::net::UnixStream) -> bool {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+        let mut reader = BufReader::new(service.try_clone().unwrap());
+        let read_request = |reader: &mut BufReader<UnixStream>| {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: ToolRequest = serde_json::from_str(&line).unwrap();
+            assert_eq!(request.workspace_id, "original-owned-workspace");
+            assert_eq!(request.protocol, TOOL_PROTOCOL_VERSION);
+            request.intent
+        };
+        let reply = |service: &mut UnixStream, intent: &ToolIntent| {
+            let accepted = matches!(
+                intent,
+                ToolIntent::WorkspaceSettings {
+                    route: WorkspaceSettingsRoute::AppsFiles,
+                }
+            );
+            assert!(
+                accepted
+                    || matches!(
+                        intent,
+                        ToolIntent::WorkspaceSettings {
+                            route: WorkspaceSettingsRoute::PrivacySecurity,
+                        }
+                    )
+            );
+            serde_json::to_writer(
+                &mut *service,
+                &ToolReply {
+                    accepted,
+                    message: if accepted {
+                        String::new()
+                    } else {
+                        "original privacy caller refused".into()
+                    },
+                },
+            )
+            .unwrap();
+            service.write_all(b"\n").unwrap();
+        };
+        let first = read_request(&mut reader);
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(150)))
+            .unwrap();
+        let mut early = String::new();
+        let overlapping = match reader.read_line(&mut early) {
+            Ok(0) => panic!("both actual callers must retain the inherited connection"),
+            Ok(_) => true,
+            Err(error) => {
+                assert!(matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ));
+                false
+            }
+        };
+        reply(&mut service, &first);
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let second = if overlapping {
+            serde_json::from_str::<ToolRequest>(&early).unwrap().intent
+        } else {
+            read_request(&mut reader)
+        };
+        assert_ne!(first, second);
+        reply(&mut service, &second);
+        overlapping
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_tool_exchanges_keep_concurrent_requests_and_acknowledgements_serialized() {
+        use std::os::fd::OwnedFd;
+        use std::os::unix::net::UnixStream;
+        use std::process::{Command, Stdio};
+        use std::sync::{Arc, Barrier};
+        use std::time::Duration;
+
+        const CHILD: &str = "TILO_TOOL_CONCURRENCY_CHILD";
+        const WORKSPACE: &str = "original-owned-workspace";
+        if std::env::var_os(CHILD).is_some() {
+            let ready = Arc::new(Barrier::new(2));
+            let privacy_ready = Arc::clone(&ready);
+            let privacy = std::thread::spawn(move || {
+                privacy_ready.wait();
+                open_tool(ToolIntent::WorkspaceSettings {
+                    route: WorkspaceSettingsRoute::PrivacySecurity,
+                })
+            });
+            ready.wait();
+            let apps = open_tool(ToolIntent::WorkspaceSettings {
+                route: WorkspaceSettingsRoute::AppsFiles,
+            });
+            let privacy = privacy.join().unwrap();
+            assert_eq!(apps, Ok(()), "Apps & Files must own its actual success ACK");
+            assert_eq!(
+                privacy,
+                Err("original privacy caller refused".into()),
+                "Privacy must own its actual refusal ACK"
+            );
+            return;
+        }
+        let (client, service) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        service
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let server = std::thread::spawn(move || serve_concurrent_tools(service));
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tools::tests::inherited_tool_exchanges_keep_concurrent_requests_and_acknowledgements_serialized", "--nocapture"])
+            .env(CHILD, "1")
+            .env("TILO_WORKSPACE_ID", WORKSPACE)
+            .env(TOOL_SERVICE_FD_ENV, "0")
+            .stdin(Stdio::from(OwnedFd::from(client)))
+            .status().unwrap();
+        let overlapping = server.join().unwrap();
+        assert!(
+            status.success(),
+            "actual inherited tool callers lost their own ACK: {status}"
+        );
+        assert!(
+            !overlapping,
+            "a second real request reached the inherited stream before the first reply"
+        );
     }
 
     #[test]

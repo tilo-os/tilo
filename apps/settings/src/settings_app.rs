@@ -156,6 +156,7 @@ pub struct SettingsApp {
     accounts: panes::accounts::AccountsArea,
     displays: panes::display::DisplayArea,
     network: panes::network::NetworkArea,
+    privacy: panes::permissions::PrivacyArea,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -209,6 +210,7 @@ impl SettingsApp {
                 .with_account_root(account_root.clone()),
             displays: panes::display::DisplayArea::new(&cx),
             network: panes::network::NetworkArea::new(&cx),
+            privacy: panes::permissions::PrivacyArea::new(&cx),
             selected: Category::DEFAULT,
             last_drawn_navigation: None,
             last_drawn_hover: None,
@@ -382,7 +384,13 @@ impl SettingsApp {
     /// Picking the category that is already selected still opens it: on the
     /// narrow list screen that row is the checked one, and choosing it must
     /// show its content rather than do nothing.
+    #[cfg(test)]
+    pub(crate) fn privacy_mut(&mut self) -> &mut panes::permissions::PrivacyArea {
+        &mut self.privacy
+    }
+
     pub fn select(&mut self, category: Category) {
+        self.privacy.set_visible(category == Category::Permissions);
         if category != Category::MouseKeyboard {
             self.keyboard_map_input.clear();
         }
@@ -548,6 +556,7 @@ impl SettingsApp {
             panes::accounts::AccountsArea::new(&cx).with_account_root(self.account_root.clone());
         self.displays = panes::display::DisplayArea::new(&cx);
         self.network = panes::network::NetworkArea::new(&cx);
+        self.privacy = panes::permissions::PrivacyArea::new(&cx);
         self.software = panes::accessibility::Software::for_host(&cx);
         self.cx = cx;
         self.structure_dirty = true;
@@ -763,7 +772,7 @@ impl SettingsApp {
             ))),
             Category::RegionFormats => Box::new(panes::region::RegionPane::new(self.cx.clone())),
             Category::Permissions => panes::permissions::build_with_disk_unlock(
-                &self.cx,
+                self.privacy.pane(),
                 Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                     self.disk_unlock.model(),
                 ))),
@@ -962,6 +971,7 @@ impl Widget for SettingsApp {
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();
+        self.privacy.poll();
         // A sidebar row opens its pane through the pane row's open effect;
         // only a bare app outside a host selects here. Search is local
         // presentation state: no CRDT text, collaboration traffic or undo.

@@ -2097,3 +2097,10 @@ settings-storage-scan-failed = Could not read storage: { $error }
 
 settings-storage-cleaning = Removing app caches…
 settings-storage-clean-worker-ended = Cache cleanup worker stopped before completing.
+
+perm-read-loading = Reading this device’s privacy and security state…
+perm-read-error = Privacy and security state could not be read: { $error }
+perm-read-disconnected = The privacy status reader disconnected.
+perm-read-preview = Device privacy and security state is unavailable in this preview.
+
+perm-read-refreshing = Refreshing this device’s privacy state. The values below are from the previous observation.

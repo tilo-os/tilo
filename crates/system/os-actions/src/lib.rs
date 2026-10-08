@@ -130,7 +130,8 @@ pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_p
 pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
 pub use privacy::{
     ActiveMediaUse, DeviceGraphWatch, KillState, MediaKind, MonitorDisposition, PrivacyStatus,
-    active_media_uses, get_privacy_status, monitor_media_usage, revoke_media_client,
+    active_media_uses, get_privacy_status, get_privacy_status_checked, monitor_media_usage,
+    revoke_media_client,
 };
 pub use session::{
     SessionAction, perform_session_action, request_logout, take_logout_request,
