@@ -7872,7 +7872,7 @@ mod tests {
         let unknown = person_layout::resolve(
             &fabric,
             &local,
-            Arrangement::default(),
+            &Arrangement::default(),
             &fabric.person_devices(&local),
         );
         assert!(unknown.layout.displays.is_empty());
@@ -7916,7 +7916,7 @@ mod tests {
         let view = person_layout::resolve(
             &fabric,
             &local,
-            Arrangement::default(),
+            &Arrangement::default(),
             &fabric.person_devices(&local),
         );
         assert!(view.legacy_targets.is_empty());
@@ -7954,7 +7954,7 @@ mod tests {
         let moved = person_layout::resolve(
             &fabric,
             &local,
-            Arrangement::default(),
+            &Arrangement::default(),
             &fabric.person_devices(&local),
         );
         assert!(moved.is_current(&fabric, &local));
