@@ -26,7 +26,7 @@ pub struct OskPreferences {
     /// The letter layout text fields open in.
     pub layout: String,
     /// Configured letter layouts, in their user-selected switching order.
-    /// An absent list preserves the historic single active layout.
+    /// An absent list preserves the historic bundled letter layouts.
     pub layouts: Vec<String>,
     /// Whether the suggestion bar offers words.
     pub suggestions: bool,

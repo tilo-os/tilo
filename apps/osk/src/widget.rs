@@ -879,6 +879,7 @@ impl OskWidget {
         {
             order.push(preferences.layout.clone());
         }
+        let mut changed = false;
         for layout in self.layouts.values_mut() {
             if !crate::actions::LAYOUT_NAMES.contains(&layout.name.as_str()) {
                 continue;
@@ -894,6 +895,7 @@ impl OskWidget {
             };
             for key in layout.rows.iter_mut().flatten() {
                 if matches!(key.action, KeyAction::Layout(_)) {
+                    changed |= key.action != KeyAction::Layout(next.clone());
                     key.action = KeyAction::Layout(next.clone());
                     key.label = match next.as_str() {
                         "qwerty" => "EN".into(),
@@ -902,6 +904,9 @@ impl OskWidget {
                     };
                 }
             }
+        }
+        if changed {
+            self.cancel_contacts();
         }
     }
 

@@ -146,8 +146,10 @@ mod tests {
 
     #[test]
     fn keyboard_assignments_keep_defaults_and_disconnected_profiles() {
-        let mut input = RichInputConfig::default();
-        input.keyboard_layouts = vec!["us".into(), "fr".into()];
+        let mut input = RichInputConfig {
+            keyboard_layouts: vec!["us".into(), "fr".into()],
+            ..Default::default()
+        };
         input.keyboard_assignments.insert(
             "external".into(),
             KeyboardProfile {

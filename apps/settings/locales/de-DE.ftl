@@ -2008,3 +2008,23 @@ input-source-hide = Ausblenden
 
 input-source-add-short = Hinzufügen
 input-source-add-title = Eingabequelle hinzufügen
+
+# Keyboard source editing errors.
+input-error-keyboard-retained = Die Tastatur ist nicht mehr verfügbar; ihre Zuordnung bleibt gespeichert.
+input-error-keyboard-unavailable = Die Tastatur ist derzeit nicht verfügbar.
+input-error-source-unconfigured = Die Quelle ist für diese Tastatur nicht eingerichtet.
+input-error-source-add-unavailable = Die Quelle ist in der Ansicht zum Hinzufügen nicht verfügbar.
+input-error-source-choose = Wähle eine Quelle zum Hinzufügen.
+input-error-source-physical-options = Optionen für physische Tastaturen gelten nicht für die Bildschirmtastatur.
+input-error-source-compose = Ungültige Compose-Taste.
+input-error-source-caps = Ungültiges Verhalten der Feststelltaste.
+input-error-source-option = Ungültige Tastaturoption.
+input-error-source-missing = Die Quelle ist nicht eingerichtet.
+input-error-source-add = Die Quelle kann dieser Tastatur nicht hinzugefügt werden.
+input-error-source-last = Die letzte Quelle kann nicht entfernt werden.
+input-error-source-empty = Es ist keine Quelle mehr vorhanden.
+input-error-source-first = Die Quelle steht bereits an erster Stelle.
+input-error-source-end = Die Quelle steht bereits an letzter Stelle.
+input-error-source-overflow = Die Position der Quelle liegt außerhalb des gültigen Bereichs.
+input-error-source-operation = Dieser Vorgang ist keine Quellenaktion.
+input-error-live-map-physical = Die Live-Ansicht einer physischen Tastatur ist für die Bildschirmtastatur nicht verfügbar.

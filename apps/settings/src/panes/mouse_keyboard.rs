@@ -298,8 +298,6 @@ fn ids<T>(table: &'static [(&'static str, &'static str, T)]) -> impl Iterator<It
     table.iter().map(|(id, _, _)| *id)
 }
 
-/// The source id a shown label names, among `catalog`'s.
-
 /// A dropdown whose values are stable ids and whose rows are translated.
 fn id_dropdown(
     choices: Vec<(String, String)>,
@@ -1697,7 +1695,7 @@ impl MouseKeyboardPane {
         .with_input(self.map_input.clone());
         *cache = Some(KeyboardPreviewCache {
             source: source.to_owned(),
-            model: input.keyboard_model.clone(),
+            model: input.keyboard_model,
             options,
             map: map.clone(),
         });
@@ -1742,17 +1740,12 @@ impl MouseKeyboardPane {
                 .bound(&self.cx, effect(InputEffect::INSPECT_KEYBOARD_KEY)),
             ),
         ));
-        let details = map.clone().with_live_layout(
-            self.editor.get().selected.is_none()
-                && self.editor.get().scope == settings_store::keyboard_sources::ALL
-                && !self.editor.get().adding
-                && self.last.keyboard_preview.is_none(),
-        );
-        let selected = inspected.clone();
         let live = self.editor.get().selected.is_none()
-            && self.editor.get().scope == settings_store::keyboard_sources::ALL
+            && self.editor.get().view == keyboard_editor::SourceView::Live
             && !self.editor.get().adding
             && self.last.keyboard_preview.is_none();
+        let details = map.clone().with_live_layout(live);
+        let selected = inspected.clone();
         content.push(Box::new(
             Text::dynamic(move || match details.inspection_values(&selected) {
                 Some(values) if values.iter().any(|value| !value.is_empty()) => {
@@ -1781,18 +1774,17 @@ impl MouseKeyboardPane {
             map.with_inspected_key(&inspected)
                 .with_extra_levels(self.last.keyboard_preview_extra_levels)
                 .with_preview_level(level)
-                .with_live_layout(
-                    self.editor.get().selected.is_none()
-                        && self.editor.get().scope == settings_store::keyboard_sources::ALL
-                        && !self.editor.get().adding
-                        && self.last.keyboard_preview.is_none(),
-                )
+                .with_live_layout(live)
                 .selectable()
                 .bound(&self.cx, effect(InputEffect::INSPECT_KEYBOARD_KEY)),
         ));
         let Some(map) = content.pop() else {
             return content;
         };
+        vec![map, self.keyboard_inspection_section(content)]
+    }
+
+    fn keyboard_inspection_section(&self, content: Vec<El>) -> El {
         let open = self.editor.get().inspection_open;
         let button = self.cx.bind_invocation(
             Button::new(
@@ -1805,14 +1797,11 @@ impl MouseKeyboardPane {
             ),
             InputEffect::SetSourceInspectionVisible { visible: !open },
         );
-        vec![
-            map,
-            crate::widgets::card_with_action(
-                &t("input-source-inspection"),
-                Box::new(button),
-                rows(if open { content } else { Vec::new() }),
-            ),
-        ]
+        crate::widgets::card_with_action(
+            &t("input-source-inspection"),
+            Box::new(button),
+            rows(if open { content } else { Vec::new() }),
+        )
     }
 
     fn source_label(&self, id: &str) -> String {
@@ -2610,7 +2599,7 @@ impl Widget for MouseKeyboardPane {
         {
             self.next_device_poll = Some(ui::time::now() + DEVICE_POLL_INTERVAL);
             let snapshot = InputHardwareSnapshot::load();
-            self.hardware.borrow_mut().1 = snapshot.clone();
+            self.hardware.borrow_mut().1.clone_from(&snapshot);
             self.observe_devices(snapshot.as_ref());
         }
         if !self.hardware_live {

@@ -163,33 +163,6 @@ pub fn staged(scenario: Option<&str>) -> Staged {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Each scenario names one layout: its pane, its screen, its size.
-    #[test]
-    fn scenarios_name_their_pane_and_size() {
-        assert_eq!(names().len(), Category::ALL.len() + 6);
-        for category in Category::ALL {
-            assert_eq!(staged(Some(category.slug())), Staged::Pane(*category));
-            assert_eq!(viewport(Some(category.slug())), WIDE_VIEWPORT);
-        }
-        assert_eq!(staged(None), Staged::Pane(Category::Appearance));
-        assert_eq!(
-            staged(Some("narrow")),
-            Staged::Pane(Category::RegionFormats)
-        );
-        assert_eq!(viewport(Some("narrow")), NARROW_VIEWPORT);
-        assert_eq!(
-            staged(Some("narrow-list")),
-            Staged::List(Category::RegionFormats)
-        );
-        assert_eq!(staged(Some("search")), Staged::Search(Category::Appearance));
-        assert_eq!(viewport(Some("accounts-narrow")), NARROW_VIEWPORT);
-    }
-}
-
 /// Synthetic input observations use the same snapshot contract as the compositor.
 pub(crate) fn keyboard_fixture(
     scenario: Option<&str>,
@@ -197,7 +170,11 @@ pub(crate) fn keyboard_fixture(
     use settings_store::hardware::{InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot};
     let kinds: &[InputDeviceKind] = match scenario? {
         "keyboard-single" => &[InputDeviceKind::Keyboard],
-        "keyboard-many" => &[InputDeviceKind::Keyboard, InputDeviceKind::Keyboard],
+        "keyboard-many" => &[
+            InputDeviceKind::Keyboard,
+            InputDeviceKind::Keyboard,
+            InputDeviceKind::Touchscreen,
+        ],
         "keyboard-touch" => &[InputDeviceKind::Keyboard, InputDeviceKind::Touchscreen],
         "keyboard-osk" => &[InputDeviceKind::Touchscreen],
         _ => return None,
@@ -219,4 +196,31 @@ pub(crate) fn keyboard_fixture(
             .collect(),
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each scenario names one layout: its pane, its screen, its size.
+    #[test]
+    fn scenarios_name_their_pane_and_size() {
+        assert_eq!(names().len(), Category::ALL.len() + 10);
+        for category in Category::ALL {
+            assert_eq!(staged(Some(category.slug())), Staged::Pane(*category));
+            assert_eq!(viewport(Some(category.slug())), WIDE_VIEWPORT);
+        }
+        assert_eq!(staged(None), Staged::Pane(Category::Appearance));
+        assert_eq!(
+            staged(Some("narrow")),
+            Staged::Pane(Category::RegionFormats)
+        );
+        assert_eq!(viewport(Some("narrow")), NARROW_VIEWPORT);
+        assert_eq!(
+            staged(Some("narrow-list")),
+            Staged::List(Category::RegionFormats)
+        );
+        assert_eq!(staged(Some("search")), Staged::Search(Category::Appearance));
+        assert_eq!(viewport(Some("accounts-narrow")), NARROW_VIEWPORT);
+    }
 }

@@ -48,6 +48,10 @@ impl SetPreference {
                 if !LAYOUT_NAMES.contains(&layout.as_str()) {
                     return Err(format!("no letter layout named {layout:?}"));
                 }
+                if preferences.layouts.is_empty() {
+                    preferences.layouts =
+                        LAYOUT_NAMES.iter().map(|name| (*name).to_owned()).collect();
+                }
                 if !preferences.layouts.contains(&preferences.layout)
                     && LAYOUT_NAMES.contains(&preferences.layout.as_str())
                 {
@@ -212,4 +216,36 @@ pub(crate) fn preference_rows(preferences: &OskPreferences) -> Vec<LiveRow> {
         },
     ));
     vec![layout, suggestions, emoji]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_action_preserves_legacy_choices_and_explicit_single_source() {
+        let mut preferences = OskPreferences {
+            layout: "azerty".into(),
+            suggestions: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            SetPreference::Layout("azerty".into()).apply(&mut preferences),
+            Ok(())
+        );
+        assert_eq!(preferences.layouts, ["qwerty", "azerty"]);
+        assert_eq!(preferences.layout, "azerty");
+        assert!(!preferences.suggestions);
+        preferences.layouts = vec!["azerty".into()];
+        assert_eq!(
+            SetPreference::Layout("azerty".into()).apply(&mut preferences),
+            Ok(())
+        );
+        assert_eq!(preferences.layouts, ["azerty"]);
+        assert_eq!(
+            SetPreference::Layout("qwerty".into()).apply(&mut preferences),
+            Ok(())
+        );
+        assert_eq!(preferences.layouts, ["azerty", "qwerty"]);
+    }
 }
