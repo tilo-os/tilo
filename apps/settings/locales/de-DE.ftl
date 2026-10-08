@@ -2048,3 +2048,5 @@ settings-disk-unlock-malformed = Die Antwort zum Entsperren der Festplatte war n
 upd-policy-busy = Eine andere Aktualisierungsänderung wird noch ausgeführt.
 upd-policy-unobserved = Das System hat die angeforderte Aktualisierungsrichtlinie nicht bestätigt.
 upd-policy-disconnected = Der Dienst für Aktualisierungsrichtlinien antwortet nicht mehr.
+settings-storage-scan-loading = Speicher wird gelesen…
+settings-storage-scan-failed = Speicher konnte nicht gelesen werden: { $error }

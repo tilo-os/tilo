@@ -7,6 +7,7 @@ use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
 use runtime_fs::storage::{
     DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, StorageClient, SyncStorageSnapshot,
 };
+use std::sync::Arc;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected};
 use ui::i18n::ArgValue;
 use ui::tilo_resource::{self, Effect};
@@ -67,6 +68,8 @@ pub(crate) fn answer(
 pub struct StorageArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<StorageModel>>,
+    reader: Option<Arc<dyn StorageReadSource>>,
+    device: bool,
 }
 
 impl StorageArea {
@@ -74,6 +77,8 @@ impl StorageArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            reader: None,
+            device: cx.reaches_devices(),
         }
     }
 
@@ -81,8 +86,11 @@ impl StorageArea {
     /// no storage service.
     pub fn model(&self) -> &Shared<StorageModel> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                StorageModel::new(self.cx.clone())
+            let model = if self.device {
+                self.reader.as_ref().map_or_else(
+                    || StorageModel::new(self.cx.clone()),
+                    |reader| StorageModel::with_reader(self.cx.clone(), Arc::clone(reader)),
+                )
             } else {
                 StorageModel::with_roots(
                     self.cx.clone(),
@@ -101,13 +109,54 @@ impl StorageArea {
     /// Take in finished background work, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
-            let _ = model.borrow_mut().poll();
+            let mut model = model.borrow_mut();
+            if model.poll() {
+                model.changed = true;
+            }
         }
     }
 }
 
+struct StorageRead {
+    roots: StorageRoots,
+    snapshot: StorageSnapshot,
+    cleanup: Option<CleanupPreview>,
+}
+
+trait StorageReadSource: Send + Sync {
+    fn read(&self) -> Result<StorageRead, String>;
+}
+
+struct DeviceStorageRead;
+
+impl StorageReadSource for DeviceStorageRead {
+    fn read(&self) -> Result<StorageRead, String> {
+        Ok(read_roots(StorageRoots::discover()))
+    }
+}
+
+fn read_roots(roots: StorageRoots) -> StorageRead {
+    let snapshot = desktop_policy::scan_storage(&roots);
+    let cleanup = roots
+        .app_cache
+        .as_deref()
+        .and_then(|path| desktop_policy::preview_cache_cleanup(path).ok());
+    StorageRead {
+        roots,
+        snapshot,
+        cleanup,
+    }
+}
+
+enum InitialStorageRead {
+    Pending(std::sync::mpsc::Receiver<Result<StorageRead, String>>),
+    Ready,
+    Failed(String),
+}
+
 pub struct StorageModel {
     cx: PaneCx,
+    initial: InitialStorageRead,
     roots: StorageRoots,
     snapshot: StorageSnapshot,
     cleanup: Option<CleanupPreview>,
@@ -121,23 +170,54 @@ pub struct StorageModel {
 }
 
 impl StorageModel {
-    /// This device's storage, scanned now, with the synced-file accounting
-    /// asked of the storage service.
+    /// Start this device's scan off the UI thread, independently of synced
+    /// storage accounting.
     pub fn new(cx: PaneCx) -> Self {
-        let roots = StorageRoots::discover();
-        let mut model = Self::with_roots(cx, roots);
+        Self::with_reader(cx, Arc::new(DeviceStorageRead))
+    }
+
+    fn with_reader(cx: PaneCx, reader: Arc<dyn StorageReadSource>) -> Self {
+        let mut model = Self::from_read(
+            cx,
+            StorageRead {
+                roots: StorageRoots {
+                    app_payloads: None,
+                    room_data: None,
+                    app_cache: None,
+                    sync_replica: None,
+                },
+                snapshot: StorageSnapshot::default(),
+                cleanup: None,
+            },
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let wake = ui::WakeHandle::new();
+        model.initial =
+            match ui::background::Background::current().spawn("storage_snapshot", move || {
+                if sender.send(reader.read()).is_ok() {
+                    wake.wake();
+                }
+            }) {
+                Ok(()) => InitialStorageRead::Pending(receiver),
+                Err(error) => InitialStorageRead::Failed(error.to_string()),
+            };
         model.refresh_sync();
         model
     }
 
     pub fn with_roots(cx: PaneCx, roots: StorageRoots) -> Self {
-        let snapshot = desktop_policy::scan_storage(&roots);
-        let cleanup = roots
-            .app_cache
-            .as_deref()
-            .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
+        Self::from_read(cx, read_roots(roots))
+    }
+
+    fn from_read(cx: PaneCx, read: StorageRead) -> Self {
+        let StorageRead {
+            roots,
+            snapshot,
+            cleanup,
+        } = read;
         Self {
             cx,
+            initial: InitialStorageRead::Ready,
             roots,
             snapshot,
             cleanup,
@@ -148,6 +228,42 @@ impl StorageModel {
             snapshot_result: None,
             replies: Replies::default(),
             changed: false,
+        }
+    }
+
+    fn initial_message(&self) -> Option<String> {
+        match &self.initial {
+            InitialStorageRead::Ready => None,
+            InitialStorageRead::Pending(_) => Some(t("settings-storage-scan-loading")),
+            InitialStorageRead::Failed(error) => Some(t_args(
+                "settings-storage-scan-failed",
+                &[("error", error.clone().into())],
+            )),
+        }
+    }
+
+    fn poll_initial(&mut self) {
+        let outcome = match &self.initial {
+            InitialStorageRead::Pending(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(t("settings-storage-service-ended")))
+                }
+            },
+            _ => None,
+        };
+        if let Some(outcome) = outcome {
+            self.initial = match outcome {
+                Ok(read) => {
+                    self.roots = read.roots;
+                    self.snapshot = read.snapshot;
+                    self.cleanup = read.cleanup;
+                    InitialStorageRead::Ready
+                }
+                Err(error) => InitialStorageRead::Failed(error),
+            };
+            self.changed = true;
         }
     }
 
@@ -170,6 +286,14 @@ impl StorageModel {
         let id = effect.id();
         self.replies.wait(id, reply);
         self.changed = true;
+        if matches!(
+            effect,
+            StorageEffect::CleanUpCaches | StorageEffect::FreeSyncedFiles
+        ) && let Some(message) = self.initial_message()
+        {
+            self.replies.finish(id, Err(message));
+            return;
+        }
         match effect {
             StorageEffect::CleanUpCaches => self.clean_up_caches(),
             StorageEffect::FreeSyncedFiles => self.free_synced_files(),
@@ -255,6 +379,9 @@ impl StorageModel {
     }
 
     fn overview_card(&self) -> El {
+        if let Some(message) = self.initial_message() {
+            return card(&t("settings-storage-use"), rows(vec![caption(&message)]));
+        }
         let totals = self.snapshot.totals();
         card(
             &t("settings-storage-use"),
@@ -363,6 +490,12 @@ impl StorageModel {
     }
 
     fn apps_card(&self) -> El {
+        if let Some(message) = self.initial_message() {
+            return card(
+                &t("settings-storage-largest"),
+                rows(vec![caption(&message)]),
+            );
+        }
         let mut largest = self.snapshot.entries.clone();
         largest.sort_by_key(|e| std::cmp::Reverse(e.bytes));
         let largest_rows = largest
@@ -392,6 +525,12 @@ impl StorageModel {
     }
 
     fn cleanup_card(&self) -> El {
+        if let Some(message) = self.initial_message() {
+            return card(
+                &t("settings-storage-cleanup"),
+                rows(vec![caption(&message)]),
+            );
+        }
         match &self.cleanup {
             Some(preview) if !preview.items.is_empty() => {
                 let remove = t_args(
@@ -454,12 +593,17 @@ impl StorageModel {
     }
 }
 
+#[cfg(test)]
+#[path = "storage_startup_tests.rs"]
+mod startup_tests;
+
 impl PaneModel for StorageModel {
     fn compose(&self) -> Box<dyn Widget> {
         self.build_composition()
     }
 
     fn poll(&mut self) -> bool {
+        self.poll_initial();
         let waiting = (self.snapshot_result.is_some(), self.sync_result.is_some());
         if let Some(receiver) = &self.snapshot_result {
             match receiver.try_recv() {
@@ -555,7 +699,9 @@ impl PaneModel for StorageModel {
     }
 
     fn busy(&self) -> bool {
-        self.sync_busy || self.snapshot_result.is_some()
+        self.sync_busy
+            || self.snapshot_result.is_some()
+            || matches!(self.initial, InitialStorageRead::Pending(_))
     }
 }
 

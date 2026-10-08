@@ -617,6 +617,11 @@ impl SettingsApp {
         &self.storage
     }
 
+    #[cfg(test)]
+    pub(crate) fn storage_mut(&mut self) -> &mut panes::storage::StorageArea {
+        &mut self.storage
+    }
+
     pub(crate) fn printers(&self) -> &panes::printers::PrintersArea {
         &self.printers
     }
