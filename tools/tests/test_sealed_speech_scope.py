@@ -9,6 +9,18 @@ SCRIPT = Path(__file__).resolve().parents[1] / "release" / "qualify_sealed_speec
 
 
 class SealedSpeechScopeTests(unittest.TestCase):
+    def test_attention_proof_cannot_be_inferred_without_review_diagnostics(self):
+        for options, error in [
+            (["--whisper-diagnostics"], "Whisper diagnostics require explicit public review"),
+            (["--whisper-public-review", "--expect-attention", "flash"],
+             "attention expectation requires actual worker diagnostics"),
+        ]:
+            result = subprocess.run([sys.executable, str(SCRIPT), *options],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(error, result.stderr)
+            self.assertNotIn("SEALED_WORKER_SCOPE_BEFORE", result.stdout)
+
     def test_public_whisper_review_rejects_native_and_frozen_modes_before_execution(self):
         for options in [
             ["--native-review"], ["--lifecycle"], ["--identity-review"],

@@ -13,6 +13,32 @@ spec.loader.exec_module(probe)
 
 
 class PublicSpeechStressTests(unittest.TestCase):
+    def test_attention_observation_requires_bounded_typed_preparation(self):
+        import json
+        good = {'verify_ms': 12.5, 'native_ms': 30, 'flash_attention': True}
+        self.assertEqual(probe.preparation_diagnostics(
+            b'SPEECH_PREPARATION ' + json.dumps(good).encode(), True), good)
+        native = {'verify_ms': 12.5, 'native_ms': 30}
+        self.assertEqual(probe.preparation_diagnostics(
+            b'NATIVE_PREPARATION ' + json.dumps(native).encode()), native)
+        for changes in [
+            {'flash_attention': 1}, {'flash_attention': 'true'},
+            {'verify_ms': True}, {'native_ms': -1}, {'native_ms': float('nan')},
+            {'path': 'PRIVATE MODEL PATH'},
+        ]:
+            with self.assertRaises(RuntimeError):
+                probe.preparation_diagnostics(
+                    b'SPEECH_PREPARATION ' + json.dumps(dict(good, **changes)).encode(), True)
+        for data in [b'', b'PRIVATE TRANSCRIPT', b'SPEECH_PREPARATION ' + b' ' * 4097]:
+            with self.assertRaises(RuntimeError):
+                probe.preparation_diagnostics(data, True)
+
+    def test_first_words_metric_refuses_punctuation_without_excluding_languages(self):
+        for text in ['', '   ', '...', '…', '؟', '👋']:
+            self.assertFalse(probe.has_lexical_text(text), repr(text))
+        for text in ["L'accident", 'العربية', '中文', 'é', '25', '👋 hello']:
+            self.assertTrue(probe.has_lexical_text(text), repr(text))
+
     def test_small_review_model_reaches_private_namespace_gate_without_execution(self):
         import os
         import subprocess

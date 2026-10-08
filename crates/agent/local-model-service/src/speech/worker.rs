@@ -75,7 +75,24 @@ pub fn serve(
     input: &mut impl Read,
     output: &mut impl Write,
 ) -> Result<(), SpeechError> {
+    serve_with_diagnostics(root, verified, input, output, false)
+}
+
+/// Run the same handler with explicitly requested aggregate preparation
+/// diagnostics. No model path, vocabulary, audio or transcript is logged.
+/// # Errors
+/// The same receipt, protocol and confinement checks as [`serve`].
+#[cfg(feature = "whisper")]
+pub fn serve_with_diagnostics(
+    root: &Path,
+    verified: &VerifiedCatalog,
+    input: &mut impl Read,
+    output: &mut impl Write,
+    diagnostics: bool,
+) -> Result<(), SpeechError> {
+    let verification_started = std::time::Instant::now();
     let sealed = speech_model_file(root, verified)?;
+    let verify_ms = verification_started.elapsed().as_secs_f64() * 1000.0;
     let model = sealed.id().to_owned();
     let revision = sealed.revision().to_owned();
     let (session, config) = configure(input)?;
@@ -83,12 +100,23 @@ pub fn serve(
     // Native parsing has no path access; failures precede Ready and capture.
     let threads = std::thread::available_parallelism().map_or(1, |count| count.get().min(2));
     super::confine_worker()?;
+    let native_started = std::time::Instant::now();
     let mut engine = SpeechEngine::load_file(&sealed)?;
     drop(sealed);
     engine.set_threads(threads)?;
     engine.set_vocabulary(&config.vocabulary)?;
     engine.prepare()?;
     let language = engine.language(&config.language)?;
+    if diagnostics {
+        eprintln!(
+            "SPEECH_PREPARATION {}",
+            serde_json::json!({
+                "verify_ms": verify_ms,
+                "native_ms": native_started.elapsed().as_secs_f64() * 1000.0,
+                "flash_attention": engine.flash_attention_enabled(),
+            })
+        );
+    }
     drop(config);
     let mut decoder = WhisperDecoder {
         engine,

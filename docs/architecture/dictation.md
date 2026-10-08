@@ -255,8 +255,11 @@ on the older laptop and Arm board before choosing defaults.
 ### Pinned Whistle interface review (2026-10-08)
 
 The [source review ledger](dictation-whistle-review.json) records exact model,
-runtime, header and wrapper revisions, artifact sizes and hashes. This review
-executed no upstream code and installed no model. The pinned C interface includes
+runtime, header and wrapper revisions, artifact sizes and hashes. That interface
+review executed no upstream code. The subsequent
+[CLI comparison](dictation-whistle-cli-qualification.json) executed only the
+pinned native CLI in a network-free, hardware-free review namespace; no model
+was installed. The pinned C interface includes
 streaming process and stop calls: each call remains bounded to 30 seconds of
 16 kHz audio, while successive calls maintain a stream. Its process-global state
 requires serialized worker ownership; the header exposes no asynchronous
@@ -272,6 +275,24 @@ Use the existing confined speech worker and catalogue delivery rather than the
 wrapper's automatic downloads. Preserve network denial independently of any
 telemetry setting. Small artifact size alone does not qualify startup, recognition
 quality, physical memory use or older-device performance.
+
+The four exposed CLI cases measured 4/19 English, 7/18 German, 0/20 French and
+2/29 Spanish raw word errors under the same conservative scorer as the baseline.
+Peak resident memory was 43968–54220 KiB, with two observed threads and no guard
+or high/max/OOM events. Accuracy improved in French and Spanish and regressed in
+English and German; this does not justify a default change. The CLI emits only
+committed pieces and suppresses early uncommitted drafts. Its first emitted
+pieces refer to 4–6 seconds of already available audio. Offline pass and wall
+timings do not measure microphone or source-paced first-word latency.
+
+`tools/release/qualify_whistle_cli_scope.py` reproduces the pinned review inside
+the unchanged transient-service envelope. It reads only four receipt-checked
+runtime/model/licence files and one pinned public fixture in its native namespace.
+Executable-inode tracking observes the owned decoder even when it changes its
+thread name; missing process observation still fails. A direct static-library
+C API adapter failed to link because the builder lacks the archive's libc++
+closure. The C API, cancellation, resident repeats, silence/noise, dictionary,
+physical devices and production trust remain unqualified.
 
 ## Release integration dependency
 
@@ -2043,12 +2064,15 @@ physical cores; the decoder thread setting and observed process thread peak are
 recorded separately. The 1 GiB worker address-space cap, 960 MiB guard and bounded
 transient service remain unchanged. The collected service is inactive with no PID.
 
-The debug-worker control completed with 7/20 raw word errors, first draft at
-7.953 seconds, 870556 KiB peak virtual space and 868438016 bytes scope peak.
+The debug-worker control completed with 7/20 raw word errors, punctuation at
+7.953 seconds and its first actual words at **15.316 seconds**, 870556 KiB peak
+virtual space and 868438016 bytes scope peak. The earlier first-draft figure
+counted an ellipsis. The corrected metric is derived from the unchanged raw log;
+new probes report visible and lexical replies separately.
 No high/max/OOM events occurred. This is materially slower than the roughly
-3.1-second builder control and does not meet the intended interaction latency.
+builder controls and does not meet the intended interaction latency.
 Native inference kernels already use effective `-O3` in this profile. The full
-release worker built successfully via rcargo in 9m19s, with a separately pinned
+release worker built successfully through a remote Cargo drop-in in 9m19s, with a separately pinned
 binary receipt. Physical comparison stopped before decoding at fresh headroom
 checks of 7667608 and 7291344 KiB, below the unchanged 8388608 KiB requirement. The inherited raw tools label their
 runs as builder experiments; the separate physical receipt corrects environment
@@ -2059,3 +2083,32 @@ This single exposed prerecorded case does not establish natural speech, live
 capture, microphone denial/removal, 4–8 GiB or Arm acceptance. A fresh scope
 requires at least 8 GiB available host memory; insufficient current headroom
 stops comparison before decoding rather than weakening admission.
+
+### Startup, first words and bounded Base attention
+
+The [latency ledger](dictation-latency-qualification.json) distinguishes visible
+punctuation from lexical replies and records matched optimized/debug controls,
+failed experiments and the actual native attention mode. On the shared builder,
+the optimized control reached words at about 5.8 seconds and the debug control
+at about 4.4 seconds. Both already use optimized native kernels; changing Cargo
+profile alone does not explain the physical-laptop delay.
+
+Actual Base Flash preparation measured about 102 ms verification and 90 ms
+native load/allocation; its first inference took 1464 ms. The dominant observed
+delay is inference. The reviewed header gate now checks heads and layers in
+their separate pinned slots. Optional bounded worker diagnostics report the
+attention parameter actually supplied to the loaded engine, without paths,
+vocabulary, audio or transcript text. The private worker wire protocol is unchanged.
+
+Base Flash retained the six exposed final error counts and reduced peak virtual
+and resident space by about 85 MiB. Its French first words at 4.922 seconds do
+not establish a speedup over the warmed standard control at 4.604 seconds.
+Warmed scope page-cache charges likewise do not prove an allocator improvement.
+No memory admission, address-space, artifact-size or thread guard changed.
+
+The short-encoder-context experiment was reverted: it produced punctuation
+quickly, but its first actual phrase contained 14 prefix errors across 16 words.
+An earlier Base gate experiment never enabled Flash because it confused layer
+and head slots; its apparent timing gain is excluded from qualification. All
+recorded measurements here remain development evidence, with no physical
+shipping-profile, live microphone or release acceptance claim.
