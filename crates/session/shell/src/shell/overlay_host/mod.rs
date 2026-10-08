@@ -689,6 +689,7 @@ pub struct ShellOverlayHost {
     /// the content for the rest of the process lifetime, so the pointer
     /// remains valid as long as `&mut self` does.
     group_row_ptrs: HashMap<StripId, *mut GroupRow>,
+    pixel_aligned_strip_pan: bool,
     /// Workspace id the current `content` was built for.
     /// [`Self::resync_workspace_content`] rebuilds when this disagrees
     /// with `tree.active`. `None` means unbuilt/test stub: the
@@ -2238,6 +2239,7 @@ impl ShellOverlayHost {
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
+            pixel_aligned_strip_pan: false,
             content_built_for_ws: None,
             content_built_empty: None,
             workspace_content_layout_dirty: false,
@@ -5699,7 +5701,7 @@ impl ShellOverlayHost {
         };
         let mut posted = false;
         for package_id in timed_out {
-            if crate::shell::peer_windows::mark_timed_out_host_restore(
+            if crate::shell::peer_windows::mark_timed_out_restore(
                 &mut chrome_handle.borrow().tree_mut(),
                 &package_id,
             ) {
@@ -5877,6 +5879,13 @@ impl ShellOverlayHost {
             let Some(notice) = event.failure_notice() else {
                 continue;
             };
+            if crate::shell::peer_windows::settle_local_restore(
+                &mut chrome_handle.borrow().tree_mut(),
+                &event.package_id,
+                &notice.body,
+            ) {
+                chrome_handle.borrow_mut().bump();
+            }
             let mut st = chrome_handle.borrow_mut();
             st.push_notification_full(
                 tilo_desktop::notifications::Notification::new(notice.title, notice.body)
@@ -8925,6 +8934,14 @@ impl ShellOverlayHost {
         Some(rect)
     }
 
+    /// Use whole-pixel strip positions only when the presenter requests them.
+    pub fn set_pixel_aligned_strip_pan(&mut self, enabled: bool) {
+        if self.pixel_aligned_strip_pan != enabled {
+            self.pixel_aligned_strip_pan = enabled;
+            self.content_rebuild_owes_scene = true;
+        }
+    }
+
     /// Every strip's horizontal pan, keyed by strip id, paired with its
     /// max — on a strip whose content fits the display the pan is pinned
     /// at zero, so "the viewport didn't move" needs the bound to mean
@@ -8938,7 +8955,7 @@ impl ShellOverlayHost {
                 // accessor — the pointer is captured from a `Box<GroupRow>`
                 // owned through the content tree, and the host outlives it.
                 let row: &GroupRow = unsafe { &*ptr };
-                (sid.0, row.scroll_x(), row.max_scroll_x())
+                (sid.0, row.drawn_scroll_x(), row.max_scroll_x())
             })
             .collect();
         out.sort_by_key(|(sid, _, _)| *sid);
@@ -17855,6 +17872,7 @@ impl Widget for ShellOverlayHost {
             // &mut self → unaliased mutable access.
             unsafe {
                 let row = &mut *ptr;
+                row.set_pixel_aligned_scroll(self.pixel_aligned_strip_pan);
                 row.set_leading_inset(wheel_w);
                 row.set_output_spans(&settled_spans);
                 // App-owned call/navigation surfaces cross into this same
@@ -17897,14 +17915,14 @@ impl Widget for ShellOverlayHost {
                 // accessors — pointer captured from a `Box<GroupRow>`
                 // we own through the content tree, host outlives
                 // content, &mut self → unaliased read.
-                Some(unsafe { (&**ptr).scroll_x() })
+                Some(unsafe { (&**ptr).drawn_scroll_x() })
             };
             let active_scroll_x: f64 = scroll_of(top_strip)
                 .or_else(|| {
                     self.group_row_ptrs
                         .values()
                         .next()
-                        .map(|&ptr| unsafe { (&*ptr).scroll_x() })
+                        .map(|&ptr| unsafe { (&*ptr).drawn_scroll_x() })
                 })
                 .unwrap_or(0.0);
             // A summoned wheel places itself around the pointer in screen

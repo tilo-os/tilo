@@ -42,15 +42,20 @@ check_rpmbuild() { "$repo_root/dist/rpm/rpmbuild.sh" --check; }
 if (( run_cargo )); then
     check_rpmbuild
     say "cargo build --release (session and app support)"
-    ( cd "$repo_root" && cargo build --release --locked \
+    # Resolve support, imager and relay helpers together. Separate Cargo
+    # graphs repeatedly rebuild feature-unified dependencies; keep every
+    # shipped target, and leave the compositor's no-default-features graph
+    # separate below. Explicit bins avoid developer-only relay/launcher tools.
+    ( cd "$repo_root" && cargo build --release --locked --lib \
         -p launcher -p tilo-unlock-helper -p tilo-app-package-cli -p install -p runtime-bundle \
-        -p cli-shim -p app-host -p app-cli -p ush -p local-model-service -p tilo-model-gateway )
-    ( cd "$repo_root" && cargo build --release --locked -p imager --bin imager )
-    # What the ush supervisor runs: a relay environment's pty bridge, the
-    # relay picker's asker, and the legacy VM service its app shims reach.
-    ( cd "$repo_root" && cargo build --release --locked \
-        -p tilo-relay --bin tilo-relay-environment --bin tilo-relay-offers \
-        -p legacy-vm --bin tilo-legacy )
+        -p cli-shim -p app-host -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
+        -p imager -p tilo-relay -p legacy-vm \
+        --bin tilo-launcher --bin tilo-signal-provider --bin tilo-unlock-helper \
+        --bin tilo-app-package --bin tilo-install --bin tilo-runtime-bundle \
+        --bin tilo-cli-shim --bin tilo-app-host --bin app --bin tilo-ush \
+        --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
+        --bin tilo-model-gateway --bin imager \
+        --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy )
     say "cargo build --release (compositor, no default features)"
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links

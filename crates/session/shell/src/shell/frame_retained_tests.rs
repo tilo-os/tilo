@@ -1377,6 +1377,57 @@ fn acknowledged_notes_canvas(frame: &mut PopulatedShellFixture) -> FramePaint {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn a_cpu_presenter_rounds_strip_layout_and_retains_the_same_screen() {
+    const SIZE: (u32, u32) = (1280, 720);
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let mut frame = wide_retained_fixture(SIZE);
+    frame.host_mut().set_pixel_aligned_strip_pan(true);
+    frame.set_retained_layer_width(Some(8192));
+    let rest = acknowledged_notes_canvas(&mut frame);
+    let offsets = rest
+        .cache
+        .as_ref()
+        .expect("CPU canvas")
+        .strips
+        .iter()
+        .map(|strip| strip.scroll_x)
+        .collect::<Vec<_>>();
+    assert_eq!(offsets.len(), 1);
+    frame.host_mut().set_strip_scroll_for_test(120.5);
+    frame.relayout();
+    assert_eq!(
+        frame.host().strip_scroll_offsets()[0].1,
+        121.0,
+        "the presenter receives the same pan as the laid-out input geometry"
+    );
+    let panned = frame.paint_with_damage();
+    assert_eq!(
+        panned
+            .cache
+            .as_ref()
+            .expect("CPU canvas")
+            .strips
+            .iter()
+            .map(|strip| strip.scroll_x)
+            .collect::<Vec<_>>(),
+        offsets
+            .iter()
+            .map(|offset| offset + 121)
+            .collect::<Vec<_>>()
+    );
+    frame.set_retained_layer_width(None);
+    acknowledge_notes_saves(&mut frame);
+    let dense = frame.paint();
+    assert_layer_cpu_pixels_match(&panned.scene, &dense, SIZE);
+    // A policy transition restores fractional layout rather than rounding state.
+    frame.host_mut().set_pixel_aligned_strip_pan(false);
+    frame.relayout();
+    assert_eq!(frame.host().strip_scroll_offsets()[0].1, 120.5);
+}
+
+#[test]
 fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same_screen() {
     const SIZE: (u32, u32) = (1280, 720);
     let mut clock = tilo_test_env::ScopedEnv::new();

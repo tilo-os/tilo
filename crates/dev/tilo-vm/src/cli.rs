@@ -118,6 +118,9 @@ pub enum Command {
     #[command(subcommand)]
     Image(ImageCommand),
     /// Build and verify the matched userspace on its remote builder before the device is reachable.
+    #[command(
+        after_help = "Examples:\n  tilo-vm prepare-userspace --arch aarch64\n  tilo-vm prepare-userspace --arch x86_64 --json\n\nBuilds and verifies source-matched userspace without contacting a device.\nThe run receipt is recorded under target/dev-runs/<run>/run.json.\nUse the normal userspace swap when the target is reachable."
+    )]
     PrepareUserspace {
         /// Architecture of the device that will receive the normal userspace swap.
         #[arg(long, value_parser = ["aarch64", "x86_64"])]

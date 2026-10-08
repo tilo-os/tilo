@@ -1323,7 +1323,7 @@ struct PendingInvocation {
     caller: Option<ContinuingCaller>,
     activity: Option<ActivityTarget>,
     owner: InvocationOwner,
-    network_evidence: Option<tilo_relay::client::CertifiedAction>,
+    network_evidence: Option<tilo_relay_session::client::CertifiedAction>,
     original: Option<Arc<OriginalInvocationData>>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
     journal_key: Option<InvocationKey>,
@@ -1361,7 +1361,7 @@ struct PreparedEffectCommit {
 pub(crate) struct VerifiedActionCaller {
     room: String,
     presentation: Vec<u8>,
-    network: Option<tilo_relay::client::CertifiedAction>,
+    network: Option<tilo_relay_session::client::CertifiedAction>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
     admitted: AdmittedJoinIdentity,
 }

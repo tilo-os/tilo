@@ -2231,8 +2231,6 @@ speaker-calibration-cancelled = Calibration was cancelled
 
 # Wireless display projection
 projection-service-unavailable-detail = Projection service is unavailable ({ $error }). Check the Tilo projector service.
-projection-service-exited = Projection service exited with { $status }
-projection-service-invalid-discovery = Projection service returned invalid discovery data: { $error }
 projection-mode-unsupported = { $device } does not support { $mode } mode
 projection-service-unavailable = Projection service is unavailable
 projection-service-stopped = Projection service stopped
@@ -2519,3 +2517,6 @@ quick-settings-network-inspect-limit = The cached network state is too large to 
 
 shell-launch-registry-unavailable = The app process registry is unavailable.
 shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.
+
+shell-window-restore-interrupted = This saved window did not finish reopening.
+shell-window-retry = Reopen window

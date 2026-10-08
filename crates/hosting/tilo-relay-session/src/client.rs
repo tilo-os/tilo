@@ -872,7 +872,7 @@ impl RelayClient {
                     match event {
                         ClientEvent::State(Some(env)) => {
                             #[cfg(not(target_arch = "wasm32"))]
-                            if crate::persistence::correlated_diagnostics()
+                            if crate::correlated_diagnostics()
                                 && let Envelope::Delta {
                                     workspace_id,
                                     authored_at_ns,
@@ -905,7 +905,7 @@ impl RelayClient {
                         }
                         ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(env)))) => {
                             #[cfg(not(target_arch = "wasm32"))]
-                            if crate::persistence::correlated_diagnostics()
+                            if crate::correlated_diagnostics()
                                 && let Envelope::Delta {
                                     workspace_id,
                                     authored_at_ns,
@@ -993,7 +993,7 @@ impl RelayClient {
             return Err(Box::new(env));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if crate::persistence::correlated_diagnostics()
+        if crate::correlated_diagnostics()
             && let Envelope::Delta {
                 workspace_id,
                 authored_at_ns,
@@ -1165,12 +1165,12 @@ where
         match next_v2_outbound_event(states, actions, &mut schedule).await {
             ClientEvent::State(Some(env)) => {
                 #[cfg(not(target_arch = "wasm32"))]
-                crate::peer::trace_native_publication("client_write_started", &env, None);
+                crate::trace_native_publication("client_write_started", &env, None);
                 if scope.is_some_and(|scope| !state_in_scope(scope, &env)) {
                     return false;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                if crate::persistence::correlated_diagnostics()
+                if crate::correlated_diagnostics()
                     && let Envelope::Delta {
                         workspace_id,
                         authored_at_ns,
@@ -1190,7 +1190,7 @@ where
                     return false;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                crate::peer::trace_native_publication("client_written", &env, None);
+                crate::trace_native_publication("client_written", &env, None);
             }
             ClientEvent::State(None) => return true,
             ClientEvent::Action(Some(action)) => {
@@ -1230,7 +1230,7 @@ async fn run_v2_reader<R>(
                     return;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                if crate::persistence::correlated_diagnostics()
+                if crate::correlated_diagnostics()
                     && let Envelope::Delta {
                         workspace_id,
                         authored_at_ns,
