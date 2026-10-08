@@ -1533,6 +1533,12 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
 }
 
 impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
+    fn control_action_bindings(&self) -> Vec<ui_core::widget::ControlBindingMetadata> {
+        // The decorator stands in for its content; traversal does not visit
+        // that widget separately, so preserve its explicit action inventory.
+        ui_core::widget::controls::control_action_bindings(self.content.as_ref())
+    }
+
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.take_attributed_control_invocation()
             .map(|(invocation, _)| invocation)

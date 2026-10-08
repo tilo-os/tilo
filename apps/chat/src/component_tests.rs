@@ -419,6 +419,220 @@ fn semantic_target_rect(
         })
 }
 
+fn semantic_target_name(node: &ui::headless::InspectionNode, target: &str) -> Option<String> {
+    fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<String> {
+        if node.action_target.as_deref() == Some(target) {
+            return node.name.clone();
+        }
+        node.children.iter().find_map(|child| find(child, target))
+    }
+    node.semantics
+        .as_ref()
+        .and_then(|semantic| find(semantic, target))
+        .or_else(|| {
+            node.children
+                .iter()
+                .find_map(|child| semantic_target_name(child, target))
+        })
+}
+
+fn semantic_target_count(node: &ui::headless::InspectionNode, target: &str) -> usize {
+    fn count(node: &ui::a11y::AccessNode, target: &str) -> usize {
+        usize::from(node.action_target.as_deref() == Some(target))
+            + node
+                .children
+                .iter()
+                .map(|child| count(child, target))
+                .sum::<usize>()
+    }
+    node.semantics
+        .as_ref()
+        .map_or(0, |node| count(node, target))
+        + node
+            .children
+            .iter()
+            .map(|child| semantic_target_count(child, target))
+            .sum::<usize>()
+}
+
+fn semantic_activate_address(
+    frame: &ui::headless::FrameHarness,
+    target: &str,
+) -> Option<tilo_actions::ActionAddress> {
+    fn visit(
+        frame: &ui::headless::FrameHarness,
+        target: &str,
+        resources: &[tilo_actions::Resource],
+    ) -> Option<tilo_actions::ActionAddress> {
+        for resource in resources {
+            for action in &resource.actions {
+                let address =
+                    tilo_actions::ActionAddress::new(resource.id.as_str(), action.id.as_str());
+                if action.id == "activate"
+                    && frame
+                        .action_ui_routes(&address)
+                        .iter()
+                        .any(|route| route.control_id == target)
+                {
+                    return Some(address);
+                }
+            }
+            if let Some(address) = visit(frame, target, &resource.children) {
+                return Some(address);
+            }
+        }
+        None
+    }
+    visit(frame, target, &frame.resources())
+}
+
+#[test]
+fn category_domain_actions_resolve_only_to_their_exact_visible_header() {
+    let identity = LocalIdentity::demo();
+    let mut doc = AutoCommit::new();
+    ChatDoc::seed_starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    let app = projection(&doc, identity);
+    let bindings = ui::widget::controls::ActionControls::control_action_bindings(&app);
+    let rename = tilo_actions::ActionAddress::new("chat.category:cat_home_text", "rename");
+    assert_eq!(
+        bindings
+            .iter()
+            .filter(|binding| {
+                matches!(&binding.kind, ui::widget::ControlBindingKind::Action(address) if address == &rename)
+            })
+            .count(),
+        1,
+        "Chat publishes the exact category binding once"
+    );
+    let (mut frame, _records, checkout) = semantic_component_harness("chat-category-locus");
+    frame.relayout();
+    let category = "cat_home_text";
+    let target = format!("chat.category-toggle:{category}");
+    let inspection = frame.inspection();
+    assert_eq!(semantic_target_count(&inspection.root, &target), 1);
+    let expected = semantic_target_rect(&inspection.root, &target)
+        .expect("the category header must be present in the semantic UI");
+    assert_eq!(
+        semantic_target_name(&inspection.root, &target).as_deref(),
+        Some("Collapse Channels")
+    );
+    for action in ["open-category", "rename", "toggle-category", "delete"] {
+        let routes = frame.action_ui_routes(&tilo_actions::ActionAddress::new(
+            format!("chat.category:{category}"),
+            action,
+        ));
+        assert_eq!(routes.len(), 1, "{action} has one explicit UI route");
+        assert_eq!(routes[0].control_id, target);
+        assert_eq!(routes[0].bounds, Some(expected));
+    }
+    let bound_rename = tilo_actions::door::survey(
+        &frame
+            .published_bound_resources_of(Some(1))
+            .expect("the mounted Chat publication is current"),
+    )
+    .into_iter()
+    .find(|descriptor| {
+        descriptor.resource_kind == "chat.category"
+            && descriptor.resource_label == "Channels"
+            && descriptor.address.action == "rename"
+    })
+    .expect("the exact mounted category rename is published")
+    .address;
+    assert_eq!(
+        frame.published_action_locus(1, "so.tilo.chat", checkout.id.as_str(), &bound_rename,),
+        Some(expected),
+        "the owner-translated mounted publication resolves the exact header"
+    );
+    assert!(
+        frame
+            .published_action_locus(2, "so.tilo.chat", checkout.id.as_str(), &bound_rename,)
+            .is_none()
+    );
+    assert!(
+        frame
+            .published_action_locus(1, "so.tilo.chat", "foreign-record", &bound_rename)
+            .is_none()
+    );
+    assert!(
+        frame
+            .published_action_locus(1, "foreign-app", checkout.id.as_str(), &bound_rename)
+            .is_none()
+    );
+    frame.open_caller_search("").unwrap();
+    assert!(
+        frame
+            .published_action_locus(1, "so.tilo.chat", checkout.id.as_str(), &bound_rename)
+            .is_none(),
+        "a covering system surface hides the mounted category's locus"
+    );
+    frame.key("Escape");
+    assert_eq!(
+        frame.published_action_locus(1, "so.tilo.chat", checkout.id.as_str(), &bound_rename),
+        Some(expected),
+        "dismissing search restores the exact current header"
+    );
+    let semantic_activate = semantic_activate_address(&frame, &target)
+        .expect("the category header retains its native semantic activation route");
+    assert_eq!(frame.action_ui_routes(&semantic_activate).len(), 1);
+    frame
+        .invoke_action(&semantic_activate, &serde_json::Map::new(), false, None)
+        .unwrap();
+    let toggled = frame.inspection();
+    assert_eq!(
+        semantic_target_name(&toggled.root, &target).as_deref(),
+        Some("Expand Channels"),
+        "native header activation toggles rather than invoking a domain alias"
+    );
+    assert_eq!(frame.action_ui_routes(&semantic_activate).len(), 1);
+    assert_eq!(
+        frame
+            .action_ui_routes(&tilo_actions::ActionAddress::new(
+                format!("chat.category:{category}"),
+                "rename",
+            ))
+            .len(),
+        1,
+        "toggling neither renames nor retires the category resource"
+    );
+    assert!(
+        frame
+            .action_ui_routes(&tilo_actions::ActionAddress::new(
+                "chat.category:another-category",
+                "rename",
+            ))
+            .is_empty(),
+        "a category header cannot lend its rectangle to another resource"
+    );
+    frame
+        .invoke_action(
+            &tilo_actions::ActionAddress::new(format!("chat.category:{category}"), "delete"),
+            &serde_json::Map::new(),
+            true,
+            None,
+        )
+        .unwrap();
+    assert!(
+        semantic_target_rect(&frame.inspection().root, &target).is_none(),
+        "the removed category has no retained header"
+    );
+    assert!(
+        frame
+            .action_ui_routes(&tilo_actions::ActionAddress::new(
+                format!("chat.category:{category}"),
+                "rename",
+            ))
+            .is_empty(),
+        "a stale category binding retires with its actual header"
+    );
+    assert!(
+        frame
+            .published_action_locus(1, "so.tilo.chat", checkout.id.as_str(), &bound_rename,)
+            .is_none(),
+        "the mounted publication cannot retain a deleted category's locus"
+    );
+    frame.close_components();
+}
+
 #[test]
 fn semantic_composer_and_send_mutate_the_canonical_component_once() {
     let (mut frame, records, checkout) = semantic_component_harness("chat-semantic-route");

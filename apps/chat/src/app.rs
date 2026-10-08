@@ -5102,6 +5102,28 @@ impl ui::widget::controls::ActionControls for ChatApp {
                 .find_map(ui::widget::controls::take_control_invocation)
         })
     }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        use ui::widget::Widget as _;
+
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        self.for_each_child(&mut |child| {
+            bindings.extend(ui::widget::controls::control_action_bindings(child));
+        });
+        for category in self.ws_categories() {
+            let control_id = Hit::CategoryToggle(category.id.clone()).semantic_id();
+            let resource = format!("chat.category:{}", category.id);
+            for action in ["open-category", "rename", "toggle-category", "delete"] {
+                bindings.push(ui::widget::ControlBindingMetadata {
+                    control_id: control_id.clone(),
+                    kind: ui::widget::ControlBindingKind::Action(tilo_actions::ActionAddress::new(
+                        &resource, action,
+                    )),
+                });
+            }
+        }
+        bindings
+    }
 }
 
 impl ChatApp {
@@ -5268,6 +5290,7 @@ impl ChatApp {
 
 impl Widget for ChatApp {
     ui::provides!(
+        dyn ui::widget::controls::ActionControls,
         dyn ui::widget::Collaborative,
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
@@ -5877,6 +5900,7 @@ impl Widget for ChatApp {
             .into_iter()
             .enumerate()
             .map(|(index, (rect, hit, name, role, selected))| {
+                let semantic_id = hit.semantic_id();
                 let input = self.text_field_access(&hit);
                 let focused = self.host_focused
                     && self.keyboard_target.map_or_else(
@@ -5897,8 +5921,12 @@ impl Widget for ChatApp {
                     .with_name(name)
                     .with_state(state)
                     .with_bounds(rect)
-                    .with_key(index as u64)
-                    .with_action_target(hit.semantic_id());
+                    .with_action_target(semantic_id.clone());
+                node = if matches!(hit, Hit::CategoryToggle(_)) {
+                    node.with_hashed_key(semantic_id)
+                } else {
+                    node.with_key(index as u64)
+                };
                 if let Some((_, value, (anchor, focus))) = input {
                     node = node.with_value(&value).with_text_selection(anchor, focus);
                 }

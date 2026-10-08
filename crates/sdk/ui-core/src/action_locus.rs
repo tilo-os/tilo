@@ -118,14 +118,6 @@ fn visit_action_ui_routes<'tree>(
     visit: &mut ActionRouteVisitor<'tree, '_>,
 ) {
     for binding in bindings {
-        if bindings
-            .iter()
-            .filter(|candidate| candidate.control_id == binding.control_id)
-            .count()
-            != 1
-        {
-            continue;
-        }
         let paths = tree.control_paths_unranked(&binding.control_id);
         let leaves = paths
             .iter()
@@ -158,6 +150,44 @@ fn visit_action_ui_routes<'tree>(
                     crate::widget::ControlBindingKind::Action(candidate) if candidate == address
                 );
             if !matches_address {
+                continue;
+            }
+            let semantic_bindings = bindings
+                .iter()
+                .filter(|candidate| candidate.control_id == binding.control_id)
+                .filter(|candidate| {
+                    matches!(
+                        &candidate.kind,
+                        crate::widget::ControlBindingKind::SemanticAction(target)
+                            if target == binding.control_id.as_str()
+                    )
+                })
+                .count();
+            let matching_bindings = bindings
+                .iter()
+                .filter(|candidate| candidate.control_id == binding.control_id)
+                .filter(|candidate| {
+                    if semantic_address {
+                        semantic_bindings == 0
+                            || matches!(
+                                &candidate.kind,
+                                crate::widget::ControlBindingKind::SemanticAction(target)
+                                    if target == binding.control_id.as_str()
+                            )
+                    } else {
+                        matches!(
+                            &candidate.kind,
+                            crate::widget::ControlBindingKind::Action(candidate_address)
+                                if candidate_address == address
+                        )
+                    }
+                })
+                .count();
+            // One retained control may explicitly present several distinct
+            // domain actions. Only bindings for this exact address establish
+            // its route; duplicate declarations of the same address remain
+            // ambiguous and fail closed.
+            if matching_bindings != 1 {
                 continue;
             }
             let Some(node) = tree.node(semantic_id) else {

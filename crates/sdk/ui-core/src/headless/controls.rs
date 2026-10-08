@@ -799,6 +799,84 @@ mod locus_tests {
     }
 
     #[test]
+    fn one_control_may_explicitly_present_distinct_actions_but_not_duplicate_one() {
+        let mut resource = resource_actions::resource("shared", "Shared", "edit", "Edit");
+        let mut inspect = resource.actions[0].clone();
+        inspect.id = "inspect".into();
+        inspect.label = "Inspect".into();
+        resource.actions.push(inspect);
+        let edit = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let invoked = calls.clone();
+        let root = resource_actions::immediate(
+            Box::new(Button::new("shared-control", "Shared").on_action(edit)),
+            resource,
+            move |_| {
+                invoked.set(invoked.get() + 1);
+                Ok(tilo_actions::ActionOutput::default())
+            },
+        );
+        let frame = FrameHarness::new(State::new(), root, (400, 240));
+        let (tree, mut bindings) = frame.retained_action_geometry().unwrap();
+        let semantic_id = tree.control_paths_unranked("shared-control")[0]
+            .last()
+            .unwrap()
+            .as_str()
+            .to_owned();
+        let semantic_address = tilo_actions::ActionAddress::new(
+            format!(
+                "ui:{}",
+                percent_encoding::utf8_percent_encode(
+                    &semantic_id,
+                    percent_encoding::NON_ALPHANUMERIC,
+                )
+            ),
+            "activate",
+        );
+        assert_eq!(
+            crate::action_locus::action_ui_routes(&tree, &bindings, &semantic_address).len(),
+            1,
+            "an ordinary action-bound button retains its native semantic route"
+        );
+        bindings.push(crate::widget::ControlBindingMetadata::semantic(
+            "shared-control",
+        ));
+        let inspect = crate::widget::ControlBindingMetadata {
+            control_id: "shared-control".into(),
+            kind: crate::widget::ControlBindingKind::Action(tilo_actions::ActionAddress::new(
+                "shared:root",
+                "inspect",
+            )),
+        };
+        bindings.push(inspect.clone());
+        let edit_address = tilo_actions::ActionAddress::new("shared:root", "edit");
+        let inspect_address = tilo_actions::ActionAddress::new("shared:root", "inspect");
+        let edit_route = crate::action_locus::action_ui_routes(&tree, &bindings, &edit_address);
+        let inspect_route =
+            crate::action_locus::action_ui_routes(&tree, &bindings, &inspect_address);
+        assert_eq!(edit_route.len(), 1);
+        assert_eq!(inspect_route.len(), 1);
+        assert_eq!(edit_route[0].bounds, inspect_route[0].bounds);
+        assert_eq!(
+            crate::action_locus::action_ui_routes(&tree, &bindings, &semantic_address).len(),
+            1,
+            "explicit aliases cannot hide the control's native semantic route"
+        );
+
+        bindings.push(inspect);
+        assert!(
+            crate::action_locus::action_ui_routes(&tree, &bindings, &inspect_address).is_empty(),
+            "the same address declared twice remains ambiguous"
+        );
+        assert_eq!(
+            crate::action_locus::action_ui_routes(&tree, &bindings, &edit_address).len(),
+            1,
+            "another action's duplicate cannot hide this exact binding"
+        );
+        assert_eq!(calls.get(), 0, "locus metadata cannot activate the control");
+    }
+
+    #[test]
     fn semantic_locus_refuses_control_id_reuse_across_distinct_resources() {
         let mut root = Column::new();
         for kind in ["one", "two"] {

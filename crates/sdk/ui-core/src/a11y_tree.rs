@@ -502,7 +502,11 @@ impl SemanticTree {
         }
         let marker = format!("~k:{control_id}");
         self.iter()
-            .filter(|node| !node.id.0.starts_with("r:") && node.id.0.ends_with(&marker))
+            .filter(|node| {
+                !node.id.0.starts_with("r:")
+                    && (node.id.0.ends_with(&marker)
+                        || node.semantic_target.as_deref() == Some(control_id))
+            })
             .filter_map(|node| {
                 let mut path = vec![node.id.clone()];
                 let mut cursor = node.id.clone();
@@ -1307,6 +1311,36 @@ mod tests {
                 "a keyed scroll group keeps its controls durable, got {keyed:?}"
             );
         }
+    }
+
+    #[test]
+    fn synthetic_action_target_resolves_independently_of_its_hashed_key() {
+        let mut tree = SemanticTree::new();
+        let id = SemanticId("root~k:1844674407370955161".into());
+        tree.nodes.insert(
+            id.clone(),
+            SemanticNode {
+                id: id.clone(),
+                durable_identity: true,
+                role: Role::ToggleButton,
+                name: Some("Collapse Channels".into()),
+                value: None,
+                state: AccessState::default(),
+                bounds: Some(Rect::new(8.0, 8.0, 120.0, 32.0)),
+                actions: Vec::new(),
+                children: Vec::new(),
+                widget_taffy_id: Some(1),
+                semantic_target: Some("chat.category-toggle:channels".into()),
+            },
+        );
+        tree.nodes.get_mut(&tree.root).unwrap().children = vec![id.clone()];
+        tree.order = vec![tree.root.clone(), id.clone()];
+
+        assert_eq!(
+            tree.control_paths_unranked("chat.category-toggle:channels"),
+            vec![vec![tree.root.clone(), id]],
+            "the opaque action target, not a guessed hash rendering, binds the synthetic node"
+        );
     }
 
     #[test]
