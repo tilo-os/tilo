@@ -5358,6 +5358,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dropped_direct_frame_makes_the_output_render_in_full() {
+        // Two 100x100 outputs side by side; damage falls only on the left one.
+        let mut bridge = required_bridge(200, 100);
+        let scene = Scene::new();
+        let left = OutputView::at(crate::shell::render::OutputId(0), (0, 0), (100, 100));
+        let right = OutputView::at(crate::shell::render::OutputId(1), (100, 0), (100, 100));
+        paint_output_pixels(&mut bridge, &scene, &left, 1);
+        paint_output_pixels(&mut bridge, &scene, &right, 1);
+        let left_only = [vello::FineDamageRect {
+            x: 10,
+            y: 10,
+            width: 20,
+            height: 20,
+        }];
+        let damage = |revision| SceneDamage {
+            revision,
+            previous_revision: Some(revision - 1),
+            regions: Some(&left_only),
+        };
+        assert!(
+            !bridge.keep_unchanged_output(&left, damage(2)),
+            "the damaged output renders"
+        );
+        assert!(
+            bridge.keep_unchanged_output(&right, damage(2)),
+            "an undamaged output holding the previous revision keeps its image"
+        );
+        // A busy flip dropped the right output's frame: its surface is ahead of KMS.
+        bridge.invalidate_output_view(right.id);
+        assert!(
+            !bridge.keep_unchanged_output(&right, damage(3)),
+            "after a dropped flip the output must not count as unchanged"
+        );
+    }
+
     impl VelloDrmBridge {
         /// Test-only CPU oracle from the exact staging image settled by the preceding render.
         /// It adds no GPU render or copy, and is deliberately unavailable to normal callers.
