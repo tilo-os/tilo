@@ -29,7 +29,7 @@ pub mod contribution;
 pub mod hdr_metadata;
 pub mod retention;
 
-pub use retention::{Retention, retention};
+pub use retention::{Retention, app_document_channel, retention};
 
 use serde::{Deserialize, Serialize};
 

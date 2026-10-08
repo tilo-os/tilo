@@ -280,7 +280,9 @@ impl Scope {
                                 session.publish_retained_delta(channel, bytes.to_vec())
                             }
                             // Members never republish a governor checkpoint with
-                            // their own relay author, even if a producer errs.
+                            // their own relay author, even if a producer errs. A
+                            // sealed checkpoint already arrives here as a delta
+                            // (`publication::member_publishes_as_delta`).
                             tilo_peer_state::transport::Retention::Checkpoint => {
                                 return Err("native member checkpoint publication refused".into());
                             }
