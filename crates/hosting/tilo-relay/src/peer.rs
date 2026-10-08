@@ -4463,17 +4463,21 @@ async fn enqueue_state_inner(
         tracing::info!(phase = "server_delta_admit", workspace_id, authored_at_ns);
     }
     let charge = delta.len().saturating_add(256).saturating_mul(3);
+    trace_native_publication("admission_started", &envelope, None);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
     if source
         .as_ref()
         .is_some_and(|source| !source.authorized(&runtime))
     {
+        trace_native_publication("admission_source_changed", &envelope, None);
         return Err(PeerError::Protocol(
             "state source authorization changed".into(),
         ));
     }
+    trace_native_publication("admission_authorized", &envelope, None);
     drop(runtime);
     let owner = crate::persistence::handle(workspace).await;
+    trace_native_publication("persistence_admission_wait", &envelope, None);
     let workers = owner.workers();
     let workspace = workspace.clone();
     let failure = source.clone();
@@ -5091,6 +5095,7 @@ async fn handle_delta(
         ));
     }
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+        trace_native_publication("server_source_refused", &env, None);
         // A live revoke already pushed NotAuthorised and dropped this
         // subscriber; a follow-up write must close rather than refuse twice.
         if !current_session(&*ws.lock().await, peer, session.outbound) {
@@ -5103,6 +5108,7 @@ async fn handle_delta(
             reason: "workspace membership changed".into(),
         }));
     };
+    trace_native_publication("server_authorized", &env, None);
     let observed = match (&env, session.compactor) {
         (Envelope::Delta { delta, .. }, Some(_)) => crate::compaction::Compactor::observe(delta),
         _ => None,
@@ -5560,6 +5566,9 @@ async fn handle_delta_prefix(
         ));
     }
     let Some(source) = authorized_state_source(&workspace, peer, session).await? else {
+        for envelope in &envelopes {
+            trace_native_publication("server_source_refused", envelope, None);
+        }
         if !current_session(&*workspace.lock().await, peer, session.outbound) {
             return Err(PeerError::Protocol(
                 "subscriber authorization changed".into(),
@@ -5570,6 +5579,9 @@ async fn handle_delta_prefix(
             reason: "workspace membership changed".into(),
         }));
     };
+    for envelope in &envelopes {
+        trace_native_publication("server_authorized", envelope, None);
+    }
     let governed_source = {
         let runtime = workspace.lock().await;
         checkpoint_prefix_recovery_allowed(&runtime, peer, *author_device_public_key, &source)
