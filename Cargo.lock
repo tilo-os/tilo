@@ -17261,6 +17261,7 @@ dependencies = [
  "web-transport-quinn",
  "wire-frame",
  "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
