@@ -173,9 +173,9 @@ class PresentedEditorTargetTests(unittest.TestCase):
             {"op": "key_down", "key": "Control"},
             {"op": "key_down", "key": "Shift"},
             {"op": "key_down", "key": "Alt"},
-            {"op": "key_down", "key": "Logo"},
+            {"op": "key_down", "key": "Super"},
             {"op": "key", "key": "x"},
-            {"op": "key_up", "key": "Logo"},
+            {"op": "key_up", "key": "Super"},
             {"op": "key_up", "key": "Alt"},
             {"op": "key_up", "key": "Shift"},
             {"op": "key_up", "key": "Control"},
@@ -347,6 +347,48 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertEqual(target, {
             "client_rect": {"x": 40, "y": 20, "w": 30, "h": 10},
             "global_center": {"x": 155.0, "y": 225.0},
+        })
+
+    def test_marker_binding_requires_actual_category_extent_intersection(self):
+        class Client:
+            def __init__(self, rect):
+                self.rect = rect
+
+            def call(self, _path, _interface, _coord_type):
+                return f"(({', '.join(str(value) for value in self.rect)}),)"
+
+        geometry = {
+            "origin": {"x": 100.0, "y": 200.0},
+            "content": {"x": 100.0, "y": 200.0, "w": 400.0, "h": 300.0},
+            "placement": {"x": 90.0, "y": 190.0, "w": 420.0, "h": 320.0},
+        }
+        category = {"bus": "chat", "control": "/category"}
+        marker = {"bus": "shell", "control": "/marker"}
+
+        def client(_address, bus):
+            return Client((40, 20, 60, 30) if bus == "chat" else (155, 225, 22, 20))
+
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", side_effect=client):
+            bound = PROOF.marker_binds_presented_category(marker, category, geometry)
+        self.assertEqual(bound, {
+            "marker_rect": {"x": 155, "y": 225, "w": 22, "h": 20},
+            "category_rect": {"x": 140.0, "y": 220.0, "w": 60, "h": 30},
+            "category_bound": True,
+            "private_content_recorded": False,
+        })
+
+        def separated(_address, bus):
+            return Client((40, 20, 60, 30) if bus == "chat" else (300, 400, 22, 20))
+
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", side_effect=separated):
+            refused = PROOF.marker_binds_presented_category(marker, category, geometry)
+        self.assertEqual(refused, {
+            "marker_rect": {"x": 300, "y": 400, "w": 22, "h": 20},
+            "category_rect": {"x": 140.0, "y": 220.0, "w": 60, "h": 30},
+            "category_bound": False,
+            "private_content_recorded": False,
         })
 
     def test_ime_drag_refusal_exports_only_closed_public_geometry(self):
@@ -1254,11 +1296,12 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 provider.close()
 
     def test_marker_provider_invokes_one_discovered_exact_chat_action(self):
-        provider = PROOF.HeldProvider(marker_agent="tide", marker_resource="chat.person:tide")
+        resource = "tilo-ui-bound:v1:current-category"
+        provider = PROOF.HeldProvider(marker_agent="tide", marker_resource=resource)
         provider.require_owner_admission(
             lambda: {"phase": "planning", "sequence": 1, "run_epoch": 7}
         )
-        operation = "broker:42:chat.person:tide#open-agent-conversation"
+        operation = f"broker:42:{resource}#rename"
 
         def post(payload):
             request = urllib.request.Request(
@@ -1275,9 +1318,10 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     "model": "bounded-fixture",
                     "messages": [{"role": "user", "content":
                                   "Operations published right now:\n\n"
-                                  "In so.tilo.chat: Tide (chat.agent) — resource chat.person:tide\n"
-                                  f"  {operation} — Open conversation\n"
-                                  "The request:\n\nOpen that conversation."}],
+                                  "In so.tilo.chat: Lifecycle proof (chat.category) — "
+                                  f"resource {resource}\n"
+                                  f"  {operation} — Rename category\n"
+                                  "The request:\n\nRename that category."}],
                 })
                 PROOF.wait_for("one marker provider request",
                                lambda: provider.request_count() == 1, timeout=5)
@@ -1286,25 +1330,30 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 self.assertEqual(tool["function"]["name"], "invoke")
                 arguments = json.loads(tool["function"]["arguments"])
                 self.assertEqual(arguments["operation"], operation)
-                self.assertEqual(arguments["parameters"], {})
+                self.assertEqual(arguments["parameters"], {
+                    "value": "Agent marker proof",
+                })
+                self.assertNotIn("reply", arguments)
                 self.assertEqual(provider.request_count(), 1)
                 self.assertEqual(provider.overflow_count(), 0)
             finally:
                 provider.close()
 
     def test_marker_provider_finishes_third_turn_without_releasing_superseded_second(self):
-        provider = PROOF.HeldProvider(marker_agent="tide", marker_resource="chat.person:tide")
+        resource = "tilo-ui-bound:v1:current-category"
+        provider = PROOF.HeldProvider(marker_agent="tide", marker_resource=resource)
         provider.require_owner_admission(
             lambda: {"phase": "planning", "sequence": 1, "run_epoch": 7}
         )
-        operation = "broker:42:chat.person:tide#open-agent-conversation"
+        operation = f"broker:42:{resource}#rename"
         payload = {
             "model": "bounded-fixture",
             "messages": [{"role": "user", "content":
                           "Operations published right now:\n\n"
-                          "In so.tilo.chat: Tide (chat.agent) — resource chat.person:tide\n"
-                          f"  {operation} — Open conversation\n"
-                          "The request:\n\nOpen that conversation."}],
+                          "In so.tilo.chat: Lifecycle proof (chat.category) — "
+                          f"resource {resource}\n"
+                          f"  {operation} — Rename category\n"
+                          "The request:\n\nRename that category."}],
         }
 
         def post():
@@ -1353,59 +1402,62 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 provider.close()
 
     def test_marker_operation_refuses_absent_ambiguous_or_noncanonical_targets(self):
-        expected = "broker:9:chat.person:tide#open-agent-conversation"
+        resource = "tilo-ui-bound:v1:current-category"
+        expected = f"broker:9:{resource}#rename"
         self.assertEqual(PROOF.marker_operation_from_request(
             {"messages": [{"role": "user", "content":
                             "Operations published right now:\n\n"
-                            "In so.tilo.chat: Tide (chat.agent) — resource chat.person:tide\n"
-                            "  " + expected + " — Open conversation\n"
-                            "  " + expected + " — Open conversation\n" +
-                            "\nThe request:\n\nOpen it."}]}, "tide", "chat.person:tide"
+                            "In so.tilo.chat: Lifecycle proof (chat.category) — resource "
+                            + resource + "\n"
+                            "  " + expected + " — Rename category\n"
+                            "  " + expected + " — Rename category\n" +
+                            "\nThe request:\n\nRename it."}]}, "tide", resource
         ), expected)
         for request in (
                 {"messages": [{"role": "user", "content":
                                 "Operations published right now:\n\nno operation\nThe request:\n\n"}]},
                 {"messages": [{"role": "user", "content":
                                 "Operations published right now:\n\n"
-                                "  " + expected + " — Open conversation\n"
-                                "  broker:8:chat.person:tide#open-agent-conversation — Open conversation\n"
+                                "  " + expected + " — Rename category\n"
+                                f"  broker:8:{resource}#rename — Rename category\n"
                                 "The request:\n\n"}]},
                 {"messages": [{"role": "user", "content":
                                 "Operations published right now:\n\n"
-                                "  broker:9:chat.person:reed#open-agent-conversation — Open conversation\n"
+                                "  broker:9:tilo-ui-bound:v1:other-category#rename — Rename category\n"
                                 "The request:\n\n"}]},
                 {"messages": [{"role": "user", "content":
                                 "Operations published right now:\n\n"
-                                "In so.tilo.chat: " + expected + " (chat.agent) — resource chat.person:tide\n"
+                                "In so.tilo.chat: " + expected + " (chat.category) — resource "
+                                + resource + "\n"
                                 "  broker:9:somewhere#else — label " + expected + "\n"
                                 "The request:\n\n" + expected}]}):
             with self.subTest(request=request), self.assertRaises(RuntimeError):
-                PROOF.marker_operation_from_request(request, "tide", "chat.person:tide")
+                PROOF.marker_operation_from_request(request, "tide", resource)
         with self.assertRaises(RuntimeError):
-            PROOF.marker_operation_from_request({"messages": []}, "Tide with spaces", "chat.person:tide")
+            PROOF.marker_operation_from_request({"messages": []}, "Tide with spaces", resource)
 
     def test_marker_operation_refusals_are_closed_and_content_free(self):
         private = "private marker request text must not escape"
         cases = [
-            ({"messages": []}, "Tide with spaces", "chat.person:tide",
+            ({"messages": []}, "Tide with spaces", "tilo-ui-bound:v1:category",
              "invalid_configured_address", 0, 0),
             ({"messages": [{"role": "user", "content": private}]},
-             "tide", "chat.person:tide", "no_trusted_catalogue", 0, 0),
+             "tide", "tilo-ui-bound:v1:category", "no_trusted_catalogue", 0, 0),
             ({"messages": [{"role": "user", "content":
                              "Operations published right now:\n\n" + private +
                              "\nThe request:\n\n" + private}]},
-             "tide", "chat.person:tide", "no_exact_resource_action", 0, 0),
+             "tide", "tilo-ui-bound:v1:category", "no_exact_resource_action", 0, 0),
             ({"messages": [{"role": "user", "content":
                              "Operations published right now:\n\n"
-                             "  broker:8:chat.person:other#open-agent-conversation — Open\n"
+                             "  broker:8:tilo-ui-bound:v1:other#rename — Rename\n"
                              "The request:\n\n" + private}]},
-             "tide", "chat.person:tide", "no_exact_resource_action", 1, 0),
+             "tide", "tilo-ui-bound:v1:category", "no_exact_resource_action", 1, 0),
             ({"messages": [{"role": "user", "content":
                              "Operations published right now:\n\n"
-                             "  broker:8:chat.person:tide#open-agent-conversation — Open\n"
-                             "  broker:9:chat.person:tide#open-agent-conversation — Open\n"
+                             "  broker:8:tilo-ui-bound:v1:category#rename — Rename\n"
+                             "  broker:9:tilo-ui-bound:v1:category#rename — Rename\n"
                              "The request:\n\n" + private}]},
-             "tide", "chat.person:tide", "no_exact_resource_action", 2, 2),
+             "tide", "tilo-ui-bound:v1:category", "no_exact_resource_action", 2, 2),
         ]
         for request, agent, resource, expected, operation_count, exact_count in cases:
             with self.subTest(reason=expected), \
@@ -1421,16 +1473,16 @@ class PresentedEditorTargetTests(unittest.TestCase):
         private = "private provider body must not be retained"
         cases = [
             (private, private, "invalid_configured_address", 0, 0),
-            ("chat.person:tide", private, "no_trusted_catalogue", 0, 0),
-            ("chat.person:tide",
+            ("tilo-ui-bound:v1:category", private, "no_trusted_catalogue", 0, 0),
+            ("tilo-ui-bound:v1:category",
              "Operations published right now:\n\n"
-             "  broker:8:chat.person:other#open-agent-conversation — Open\n"
+             "  broker:8:tilo-ui-bound:v1:other#rename — Rename\n"
              "The request:\n\n" + private,
              "no_exact_resource_action", 1, 0),
-            ("chat.person:tide",
+            ("tilo-ui-bound:v1:category",
              "Operations published right now:\n\n"
-             "  broker:8:chat.person:tide#open-agent-conversation — Open\n"
-             "  broker:9:chat.person:tide#open-agent-conversation — Open\n"
+             "  broker:8:tilo-ui-bound:v1:category#rename — Rename\n"
+             "  broker:9:tilo-ui-bound:v1:category#rename — Rename\n"
              "The request:\n\n" + private,
              "no_exact_resource_action", 2, 2),
         ]
@@ -1454,7 +1506,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     self.assertTrue(PROOF.retain_marker_rejection_diagnostic(provider, output))
                     retained = (output / "marker-provider-rejection.json").read_text()
                 self.assertNotIn(private, retained)
-                self.assertNotIn("chat.person:tide", retained)
+                self.assertNotIn("tilo-ui-bound:v1:category", retained)
                 diagnostic = json.loads(retained)
                 self.assertEqual(diagnostic["rejection_count"], 1)
                 self.assertEqual(diagnostic["reasons"][reason], 1)
@@ -1480,14 +1532,14 @@ class PresentedEditorTargetTests(unittest.TestCase):
         )
 
     def test_marker_operation_keeps_discovered_bound_resource_opaque_and_exact(self):
-        resource = "tilo-ui-bound:v1:host:current:636861742e706572736f6e3a74696465"
-        expected = f"broker:9:{resource}#open-agent-conversation"
+        resource = "tilo-ui-bound:v1:host:current:636861742e63617465676f72793a70726f6f66"
+        expected = f"broker:9:{resource}#rename"
         request = {"messages": [{"role": "user", "content":
             "Operations published right now:\n\n"
-            f"In so.tilo.chat: Tide (chat.agent) — resource {resource}\n"
-            f"  {expected} — Open conversation\nThe request:\n\nOpen it."}]}
+            f"In so.tilo.chat: Lifecycle proof (chat.category) — resource {resource}\n"
+            f"  {expected} — Rename category\nThe request:\n\nRename it."}]}
         self.assertEqual(PROOF.marker_operation_from_request(request, "tide", resource), expected)
-        for stale in [None, "chat.person:tide", resource.replace("current", "retired")]:
+        for stale in [None, "chat.category:proof", resource.replace("current", "retired")]:
             with self.subTest(resource=stale), self.assertRaises(RuntimeError):
                 PROOF.marker_operation_from_request(request, "tide", stale)
 
@@ -1509,21 +1561,88 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertIn('"profile.save"', grant)
         self.assertIn('"profile.assign"', grant)
         self.assertIn('"Action"', grant)
-        self.assertIn('"open-agent-conversation"', grant)
+        self.assertIn('"rename"', grant)
+        self.assertIn('"so.tilo.chat#rename"', grant)
         self.assertIn('"broad_chat_grant": False', grant)
         stage = inspect.getsource(PROOF.managed_agent_marker_stage)
         for required in (
                 "start_managed_agent", "agent_marker_accessibility",
-                "activate_shell_accessibility_control", "Agent quick composer",
+                "activate_shell_accessibility_control",
+                "actual quick composer with authenticated Steer availability",
                 "exercise_agent_quick_composer", "provider.request_count() != 3",
                 "provider.marker_second_held", "provider.marker_second_superseded",
                 "provider.release_marker_terminal", 'interaction["receipt_revision"]',
+                'preceding_result != {', '"result": "succeeded"',
+                'offered_chat_category_action', '"category_renamed": True',
+                'chat_category_accessibility("Agent marker proof")',
+                'marker_binds_presented_category', '"marker_category_bound"',
+                '"marker-category-binding-refusal.json"',
+                'ensure_chat_category_visible(socket, "Lifecycle proof", process)',
+                '"category-marker-visible-before-task-',
+                'observe_chat_task_frontier(', 'title="Agent marker proof"',
+                'chat_frontier.get("sequence") != second_admission["sequence"]',
+                'accessibility_control_enabled(', 'access["controls"]["steer"]',
                 'third_admission["applied_revision"] != interaction["receipt_revision"]',
                 'admission["sequence"] < second_admission["sequence"]',
                 "full_lifecycle_proven"):
             self.assertIn(required, stage)
         for forbidden in ("open_agent_quick_composer_for_shots", "stage_scenario"):
             self.assertNotIn(forbidden, stage)
+
+    def test_category_marker_target_uses_label_query_and_exact_opaque_family(self):
+        category = "tilo-ui-bound:v1:current-category"
+        foreign = "tilo-ui-bound:v1:foreign-category"
+        rows = [{
+            "application": "so.tilo.chat", "room": "room-a", "record": "",
+            "resource": category, "operation": "open-category",
+        }, {
+            "application": "so.tilo.chat", "room": "room-a", "record": "",
+            "resource": category, "operation": "rename", "id": "exact",
+        }, {
+            "application": "so.tilo.chat", "room": "room-b", "record": "",
+            "resource": foreign, "operation": "open-category",
+        }, {
+            "application": "so.tilo.chat", "room": "room-b", "record": "",
+            "resource": foreign, "operation": "rename", "id": "foreign",
+        }, {
+            "application": "so.tilo.chat", "room": "room-a", "record": "other",
+            "resource": category, "operation": "rename", "id": "wrong-record",
+        }]
+        with patch.object(PROOF, "actions", return_value=rows) as listed:
+            selected = PROOF.offered_chat_category_action(
+                "socket", "room-a", "", "Lifecycle proof", "rename"
+            )
+        self.assertEqual(selected["id"], "exact")
+        listed.assert_called_once_with("socket", "Lifecycle proof")
+        with patch.object(PROOF, "actions", return_value=[rows[1]]):
+            self.assertIsNone(PROOF.offered_chat_category_action(
+                "socket", "room-a", "", "Lifecycle proof", "rename"
+            ))
+
+    def test_compact_category_reveal_uses_the_actual_chat_control(self):
+        category = {"bus": "chat", "control": "/category"}
+        reveal = {
+            "bus": "chat", "control": "/reveal",
+            "label": "Show conversation navigation",
+        }
+        with patch.object(
+                PROOF, "chat_category_accessibility", side_effect=[None, category]
+             ) as observed, patch.object(
+                 PROOF, "chat_accessibility_control", return_value=reveal
+             ), patch.object(PROOF, "activate_accessibility_control") as activated:
+            self.assertIs(PROOF.ensure_chat_category_visible(
+                "socket", "Lifecycle proof", None
+            ), category)
+        self.assertEqual(observed.call_count, 2)
+        activated.assert_called_once_with(reveal, "Show conversation navigation")
+
+        with patch.object(
+                PROOF, "chat_category_accessibility", return_value=category
+             ), patch.object(PROOF, "activate_accessibility_control") as activated:
+            self.assertIs(PROOF.ensure_chat_category_visible(
+                "socket", "Lifecycle proof", None
+            ), category)
+        activated.assert_not_called()
 
     def test_marker_composer_uses_physical_private_drafts_and_exact_owner_frontier(self):
         source = inspect.getsource(PROOF.exercise_agent_quick_composer)
@@ -1782,6 +1901,9 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "baseline_is_exact_rime_ascii_passthrough",
                              return_value=True), \
                 patch.object(PROOF, "physical_chord") as physical, \
+                patch.object(PROOF, "wait_for_private_selection", return_value={
+                    "draft_matches": True, "caret": 0, "selection": [0, 5],
+                }), \
                 patch.object(PROOF, "wait_for", side_effect=immediately), \
                 patch.object(PROOF, "private_editor_value_matches", return_value=True), \
                 patch.object(PROOF, "presented_primary_frame",
@@ -1797,11 +1919,24 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
         self.assertEqual(frame, {"frame_seq": 8})
         self.assertEqual(physical.call_args_list, [
-            call("socket", "z", ctrl=True),
+            call("socket", "a", ctrl=True),
             call("socket", "2", ctrl=True, shift=True),
         ])
+        self.assertIn(call("socket", {"op": "key", "key": "Backspace"}),
+                      control.call_args_list)
         self.assertIn(call("socket", {"op": "type", "text": "nihao"}),
                       control.call_args_list)
+
+        with patch.object(PROOF, "baseline_is_exact_rime_ascii_passthrough",
+                          return_value=True), \
+                patch.object(PROOF, "physical_chord"), \
+                patch.object(PROOF, "wait_for_private_selection", return_value={
+                    "draft_matches": True, "caret": 1, "selection": [1, 5],
+                }), \
+                self.assertRaisesRegex(RuntimeError, "exact ASCII pass-through"):
+            PROOF.recover_rime_chinese_mode(
+                "socket", pathlib.Path("unused"), "1600x900", {}, None, {}, {}, "nihao",
+            )
 
 
     def test_attached_preedit_refusal_records_only_closed_fixture_evidence(self):
@@ -2448,6 +2583,33 @@ class PresentedEditorTargetTests(unittest.TestCase):
             PROOF.atspi.atspi_address = original_address
             PROOF.accessible_subtree = original_subtree
 
+    def test_control_enabled_reads_the_actual_atspi_state(self):
+        class Client:
+            def __init__(self, reply):
+                self.reply = reply
+
+            def call(self, path, interface):
+                self.observed = (path, interface)
+                return self.reply
+
+        enabled = Client(f"([uint32 {PROOF.AT_SPI_ENABLED_STATE_BIT}, uint32 0],)")
+        disabled = Client("([uint32 0, uint32 0],)")
+        malformed = Client("PRIVATE")
+        access = {"bus": "bus"}
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=enabled):
+            self.assertTrue(PROOF.accessibility_control_enabled(access, "/steer"))
+        self.assertEqual(enabled.observed, (
+            "/steer", "org.a11y.atspi.Accessible.GetState"
+        ))
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=disabled):
+            self.assertFalse(PROOF.accessibility_control_enabled(access, "/steer"))
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=malformed), \
+                self.assertRaises(RuntimeError):
+            PROOF.accessibility_control_enabled(access, "/steer")
+
 
 class MarkerPrecedingInvokeResultTests(unittest.TestCase):
     @staticmethod
@@ -2482,6 +2644,30 @@ class MarkerPrecedingInvokeResultTests(unittest.TestCase):
             self.assertNotIn("PRIVATE", json.dumps(row))
             self.assertNotIn("refused", json.dumps(row))
 
+    def test_exact_plain_marker_refusals_project_only_fixed_classes(self):
+        reasons = {
+            "private_view: A collaborator cannot move this participant's private focus or "
+                "viewport; use Follow or Reveal explicitly": "private_view",
+            "agent is not admitted to this workspace": "agent_membership_lost",
+        }
+        for reason, expected in reasons.items():
+            with self.subTest(reason=reason):
+                row = PROOF.marker_preceding_invoke_result(self.request({
+                    "result": "failed", "error": reason,
+                }))
+                self.assertEqual(row, {
+                    "result": "failed",
+                    "error_class": expected,
+                    "private_content_recorded": False,
+                })
+            for changed in (reason + " PRIVATE", reason.upper(), " " + reason):
+                with self.subTest(changed=changed):
+                    row = PROOF.marker_preceding_invoke_result(self.request({
+                        "result": "failed", "error": changed,
+                    }))
+                    self.assertEqual(row["error_class"], "unclassified")
+                    self.assertNotIn("PRIVATE", json.dumps(row))
+
     def test_exact_static_rpc_reasons_project_only_fixed_classes(self):
         prefix = "capnp error: Failed: remote exception: "
         reasons = {
@@ -2499,6 +2685,17 @@ class MarkerPrecedingInvokeResultTests(unittest.TestCase):
                 "confirmation_unsupported",
             "durable task steps are not served by this host": "step_unsupported",
             "accepted task action has no broker state": "invocation_state_missing",
+            "remote actions are unavailable: the application no longer publishes that action":
+                "target_unpublished",
+            "remote actions are unavailable: the application has no invocation stream":
+                "invocation_stream_missing",
+            "remote actions are unavailable: caller no longer authorized for invocation":
+                "permission_revoked",
+            "the invocation id was already used for a different request":
+                "invocation_conflict",
+            "no such invocation": "invocation_unknown",
+            "remote actions are unavailable: the invocation is still being admitted; retry":
+                "admission_in_flight",
         }
         for reason, expected in reasons.items():
             with self.subTest(reason=reason):
@@ -2516,6 +2713,10 @@ class MarkerPrecedingInvokeResultTests(unittest.TestCase):
 
         for changed in (
                 prefix + "the application has no invocation stream PRIVATE",
+                prefix
+                    + "remote actions are unavailable: the application has no invocation stream PRIVATE",
+                prefix + "remote actions are unavailable: no such invocation",
+                prefix + "no such invocation PRIVATE",
                 prefix.lower() + "the application has no invocation stream",
                 "capnp error: the application has no invocation stream"):
             with self.subTest(changed=changed):
@@ -2580,10 +2781,94 @@ class MarkerPrecedingInvokeResultTests(unittest.TestCase):
         held = source.index('provider.marker_second_held')
         result = source.index('marker-preceding-invoke-result.json')
         snapshot = source.index('agent-marker-second-held-')
-        marker = source.index('wait_for("actual compositor Agent action marker"')
+        marker = source.index('"actual compositor Agent marker at the renamed category"')
         self.assertLess(held, result)
         self.assertLess(result, snapshot)
         self.assertLess(snapshot, marker)
+
+
+class OwnedRimeSchemaTests(unittest.TestCase):
+    def test_missing_user_config_does_not_hide_fixed_deployment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory)
+            root = profile / "data/fcitx5/rime"
+            (root / "build").mkdir(parents=True)
+            (root / "build/luna_pinyin.schema.yaml").write_text(
+                '__build_info:\n  timestamps: {}\nkey_binder:\n  bindings:\n'
+                '    - {accept: Control+Shift+at, toggle: ascii_mode, when: always}\n')
+            env = {"XDG_DATA_HOME": str(profile / "data"),
+                   "XDG_CONFIG_HOME": str(profile / "config")}
+            for user in (None, "", "var:\n  previously_selected_schema: private-schema\n"):
+                if user is not None:
+                    (root / "user.yaml").write_text(user)
+                observed = PROOF.owned_rime_schema_observation(env)
+                self.assertTrue(observed["rime_data_directory_present"])
+                self.assertTrue(observed["rime_deployed_directory_present"])
+                self.assertTrue(observed["rime_schema_exists"])
+                self.assertTrue(observed["rime_schema_deployed"])
+                self.assertTrue(observed["rime_schema_default_keybinder"])
+                self.assertFalse(observed["rime_selected_schema_is_luna_pinyin"])
+                self.assertEqual(observed["rime_selected_schema_observed"], user not in (None, ""))
+                self.assertTrue(all(type(value) is bool for value in observed.values()))
+                self.assertNotIn("private-schema", json.dumps(observed))
+
+    def test_deployed_known_schema_exports_only_closed_booleans(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory)
+            root = profile / "data/fcitx5/rime"
+            (root / "build").mkdir(parents=True)
+            (root / "user.yaml").write_text(
+                'var:\n  previously_selected_schema: "luna_pinyin"\nprivate: never-export\n')
+            (root / "build/luna_pinyin.schema.yaml").write_text(
+                '__build_info:\n  timestamps: {}\nkey_binder:\n  bindings:\n'
+                '    - {accept: Control+Shift+2, toggle: ascii_mode, when: always}\n')
+            observed = PROOF.owned_rime_schema_observation({
+                "XDG_DATA_HOME": str(profile / "data"),
+                "XDG_CONFIG_HOME": str(profile / "config"),
+            })
+            self.assertTrue(observed["rime_selected_schema_observed"])
+            self.assertTrue(observed["rime_selected_schema_is_luna_pinyin"])
+            self.assertTrue(observed["rime_schema_deployed"])
+            self.assertTrue(observed["rime_schema_default_keybinder"])
+            self.assertTrue(all(type(value) is bool for value in observed.values()))
+            self.assertNotIn("never-export", json.dumps(observed))
+
+    def test_missing_empty_unknown_duplicate_and_oversized_configs_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory)
+            root = profile / "data/fcitx5/rime"
+            root.mkdir(parents=True)
+            env = {"XDG_DATA_HOME": str(profile / "data"),
+                   "XDG_CONFIG_HOME": str(profile / "config")}
+            self.assertFalse(PROOF.owned_rime_schema_observation(env)["rime_user_config_present"])
+            for text, present, empty, selected in (
+                    ("", True, True, False),
+                    ("var:\n  previously_selected_schema: ../../private\n", True, False, True),
+                    ("var:\n  previously_selected_schema: luna_pinyin\n"
+                     "  previously_selected_schema: luna_pinyin\n", True, False, False),
+                    ("x" * 65537, False, False, False)):
+                (root / "user.yaml").write_text(text)
+                observed = PROOF.owned_rime_schema_observation(env)
+                self.assertEqual(observed["rime_user_config_present"], present)
+                self.assertEqual(observed["rime_user_config_empty"], empty)
+                self.assertEqual(observed["rime_selected_schema_observed"], selected)
+                self.assertFalse(observed["rime_schema_exists"])
+
+    def test_wrong_profile_and_symlink_escape_are_not_observed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory)
+            root = profile / "data/fcitx5/rime"
+            root.mkdir(parents=True)
+            outside = profile / "outside.yaml"
+            outside.write_text("var:\n  previously_selected_schema: luna_pinyin\n")
+            (root / "user.yaml").symlink_to(outside)
+            env = {"XDG_DATA_HOME": str(profile / "data"),
+                   "XDG_CONFIG_HOME": str(profile / "config")}
+            observed = PROOF.owned_rime_schema_observation(env)
+            self.assertFalse(observed["rime_user_config_present"])
+            self.assertFalse(observed["rime_selected_schema_observed"])
+            self.assertFalse(observed["rime_schema_exists"])
+            self.assertFalse(any(PROOF.owned_rime_schema_observation({}).values()))
 
 
 if __name__ == "__main__":

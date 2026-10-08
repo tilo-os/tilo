@@ -44,6 +44,8 @@ import atspi_external_client as atspi
 # AT-SPI's stable wire value for AtspiRole::Heading. The external client
 # intentionally exposes numeric roles because AccessKit has no role-name call.
 AT_SPI_ROLE_HEADING = 83
+# atspi_common::State::Enabled is ordinal 8 in the two-word state set.
+AT_SPI_ENABLED_STATE_BIT = 1 << 8
 
 
 def accessible_subtree(client, root, limit):
@@ -383,25 +385,130 @@ def agent_marker_accessibility(agent):
     return matches[0] if matches else None
 
 
-def activate_shell_accessibility_control(access, label):
-    """Focus and activate one exact compositor node through its public AT door."""
+def chat_category_accessibility(label):
+    """Find one exact current Chat category toggle without reading messages."""
+    names = {f"Collapse {label}", f"Expand {label}"}
+    address = atspi.atspi_address()
+    matches = []
+    for bus, proxy_pid in atspi.bus_pids(address).items():
+        if process_program(atspi.app_process(proxy_pid)) != "chat":
+            continue
+        client = atspi.AtspiClient(address, bus)
+        try:
+            children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
+            for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
+                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                for name in names:
+                    for path in client.named(tree, name):
+                        matches.append({
+                            "bus": bus, "window": window, "control": path, "label": name,
+                        })
+        except atspi.GateError:
+            continue
+    if len(matches) > 1:
+        raise RuntimeError("Chat published duplicate exact category toggles")
+    return matches[0] if matches else None
+
+
+def chat_accessibility_control(label):
+    """Find one exact control in the mounted Chat process."""
+    address = atspi.atspi_address()
+    matches = []
+    for bus, proxy_pid in atspi.bus_pids(address).items():
+        if process_program(atspi.app_process(proxy_pid)) != "chat":
+            continue
+        client = atspi.AtspiClient(address, bus)
+        try:
+            children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
+            for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
+                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                for path in client.named(tree, label):
+                    matches.append({
+                        "bus": bus, "window": window, "control": path, "label": label,
+                    })
+        except atspi.GateError:
+            continue
+    if len(matches) > 1:
+        raise RuntimeError(f"Chat published duplicate {label} controls")
+    return matches[0] if matches else None
+
+
+def ensure_chat_category_visible(socket, label, process):
+    """Reveal compact navigation through Chat's real shared control when needed."""
+    category = chat_category_accessibility(label)
+    if category is not None:
+        return category
+    reveal = wait_for(
+        "Chat's shared conversation navigation control",
+        lambda: chat_accessibility_control("Show conversation navigation"),
+        process,
+    )
+    activate_accessibility_control(reveal, reveal["label"])
+    return wait_for(
+        "Chat's exact visible marker category",
+        lambda: chat_category_accessibility(label),
+        process,
+    )
+
+
+def marker_binds_presented_category(marker, category, geometry):
+    """Require the real marker bounds to intersect its named presented control."""
+    category_target = component_global_target(
+        category, category["control"], geometry, "Chat category header"
+    )
+    client_rect = category_target["client_rect"]
+    origin = geometry["origin"]
+    category_rect = {
+        "x": origin["x"] + client_rect["x"],
+        "y": origin["y"] + client_rect["y"],
+        "w": client_rect["w"],
+        "h": client_rect["h"],
+    }
+    marker_client = atspi.AtspiClient(atspi.atspi_address(), marker["bus"])
+    marker_rect = atspi.extents_reply(marker_client.call(
+        marker["control"], "org.a11y.atspi.Component.GetExtents", "1",
+    ))
+    if marker_rect is None or marker_rect[2] <= 2 or marker_rect[3] <= 2:
+        raise RuntimeError("the actual Agent marker has no on-screen extent")
+    marker_rect = dict(zip(("x", "y", "w", "h"), marker_rect, strict=True))
+    overlap_x = min(marker_rect["x"] + marker_rect["w"],
+                    category_rect["x"] + category_rect["w"]) \
+        - max(marker_rect["x"], category_rect["x"])
+    overlap_y = min(marker_rect["y"] + marker_rect["h"],
+                    category_rect["y"] + category_rect["h"]) \
+        - max(marker_rect["y"], category_rect["y"])
+    return {
+        "marker_rect": marker_rect,
+        "category_rect": category_rect,
+        "category_bound": overlap_x > 0 and overlap_y > 0,
+        "private_content_recorded": False,
+    }
+
+
+def activate_accessibility_control(access, label):
+    """Focus and activate one exact mounted node through its public AT door."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
     focused = client.call(
         access["control"], "org.a11y.atspi.Component.GrabFocus", check=False
     )
     if focused.strip() != "(true,)":
-        raise RuntimeError(f"the compositor's {label} refused accessibility focus")
+        raise RuntimeError(f"the mounted {label} refused accessibility focus")
     actions = client.call(
         access["control"], "org.a11y.atspi.Action.GetActions", check=False
     )
     if "'click'" not in actions:
-        raise RuntimeError(f"the compositor's {label} has no accessibility action")
+        raise RuntimeError(f"the mounted {label} has no accessibility action")
     activated = client.call(
         access["control"], "org.a11y.atspi.Action.DoAction", "0", check=False
     )
     if activated.strip() != "(true,)":
-        raise RuntimeError(f"the compositor's {label} refused accessibility activation")
+        raise RuntimeError(f"the mounted {label} refused accessibility activation")
     return True
+
+
+def activate_shell_accessibility_control(access, label):
+    """Activate one exact compositor-owned control through the shared AT door."""
+    return activate_accessibility_control(access, label)
 
 
 def agent_read_only_accessibility(agent_name, *, detached=False):
@@ -628,6 +735,16 @@ def editor_accessibility_focus(access):
     return bool(int(words.group(1)) & atspi.FOCUSED_STATE_BIT)
 
 
+def accessibility_control_enabled(access, control):
+    """Observe one shared control's actual AT enabled state."""
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    reply = client.call(control, "org.a11y.atspi.Accessible.GetState")
+    words = re.fullmatch(r"\(\[(?:uint32 )?(\d+),\s*(?:uint32 )?(\d+)\],\)", reply.strip())
+    if words is None or any(int(word) > 0xFFFFFFFF for word in words.groups()):
+        raise RuntimeError("the actual control enabled state is unobservable")
+    return bool(int(words.group(1)) & AT_SPI_ENABLED_STATE_BIT)
+
+
 def task_phase_accessibility(access, label):
     """Observe one exact public status label in the mounted Chat window."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
@@ -725,7 +842,7 @@ def hold_physical_modifiers(socket, *, ctrl=False, shift=False, alt=False, logo=
     """Hold real seat modifier keys and release accepted keys in reverse order."""
     requested = [
         key for key, enabled in (
-            ("Control", ctrl), ("Shift", shift), ("Alt", alt), ("Logo", logo)
+            ("Control", ctrl), ("Shift", shift), ("Alt", alt), ("Super", logo)
         ) if enabled
     ]
     held = []
@@ -1481,6 +1598,7 @@ def preserve_attached_preedit_refusal(
     try:
         seat = chat_input_method_observation(socket)
         engine = fcitx_rime_observation(env)
+        schema = owned_rime_schema_observation(env)
         evidence_path.write_text(json.dumps({
             "phase": expectations["phase"],
             "baseline_retained": private_editor_value_matches(
@@ -1495,6 +1613,7 @@ def preserve_attached_preedit_refusal(
             "field_bounds": private_editor_numeric_bounds(access),
             **seat,
             **engine,
+            **schema,
             "same_input_method_process": same_fcitx_process(fcitx_identity),
             "private_content_recorded": False,
         }, indent=2) + "\n")
@@ -1548,9 +1667,15 @@ def recover_rime_chinese_mode(
     if not baseline_is_exact_rime_ascii_passthrough(
             socket, access, expected, fcitx_identity, env):
         raise RuntimeError("the failed Rime baseline was not exact ASCII pass-through")
-    physical_chord(socket, "z", ctrl=True)
+    physical_chord(socket, "a", ctrl=True)
+    selected = wait_for_private_selection(
+        socket, access, expected, [0, len(expected)], process, output,
+    )
+    if selected["selection"] != [0, len(expected)]:
+        raise RuntimeError("physical cleanup did not select the exact ASCII pass-through")
+    require_ok(call(socket, {"op": "key", "key": "Backspace"}))
     wait_for(
-        "physical undo of the exact Rime ASCII pass-through",
+        "physical removal of the exact Rime ASCII pass-through",
         lambda: private_editor_value_matches(access, ""),
         process,
     )
@@ -1576,7 +1701,12 @@ def recover_rime_chinese_mode(
             and fcitx_rime_active(env)
         )
 
-    wait_for("genuine Rime preedit after the physical mode switch", genuine_preedit, process)
+    try:
+        wait_for("genuine Rime preedit after the physical mode switch", genuine_preedit, process)
+    except Exception:
+        (output / "ime-mode-switch-schema.json").write_text(json.dumps(
+            owned_rime_schema_observation(env), indent=2) + "\n")
+        raise
 
     def fresh_candidate_frame():
         frame = presented_primary_frame(
@@ -1675,6 +1805,8 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
         process,
     )
 
+    (output / "ime-baseline-schema.json").write_text(json.dumps(
+        owned_rime_schema_observation(env), indent=2) + "\n")
     # Rime's express editor commits its raw composition on Return. Establish
     # one real edit without toggling Fcitx's global active state.  Use a
     # complete pinyin spelling: a lone `u` is not a valid luna-pinyin syllable
@@ -2075,7 +2207,7 @@ def marker_operation_from_request(request, agent, resource):
     if catalogue is None:
         raise MarkerOperationRefusal("no_trusted_catalogue")
     operation_pattern = re.compile(
-        r"^  (broker:\d+:([a-zA-Z0-9._:-]{1,4096})#open-agent-conversation) — ",
+        r"^  (broker:\d+:([a-zA-Z0-9._:-]{1,4096})#rename) — ",
     )
     operations = {
         match.group(1): match.group(2)
@@ -2139,6 +2271,12 @@ def marker_preceding_invoke_result(request):
                 "Task action did not reach a terminal state before its deadline",
                 "Task step did not settle before its deadline; its outcome is still unknown"):
             observation["error_class"] = "uncertain"
+        elif error == (
+                "private_view: A collaborator cannot move this participant's private focus or "
+                "viewport; use Follow or Reveal explicitly"):
+            observation["error_class"] = "private_view"
+        elif error == "agent is not admitted to this workspace":
+            observation["error_class"] = "agent_membership_lost"
         elif error.startswith("capnp error: "):
             # RPC failure is NOT evidence that an effect was definitely refused.
             # NotAvailable wraps capnp::Error Display; RPC decoding adds the
@@ -2161,6 +2299,17 @@ def marker_preceding_invoke_result(request):
                     "confirmation_unsupported",
                 "durable task steps are not served by this host": "step_unsupported",
                 "accepted task action has no broker state": "invocation_state_missing",
+                "remote actions are unavailable: the application no longer publishes that action":
+                    "target_unpublished",
+                "remote actions are unavailable: the application has no invocation stream":
+                    "invocation_stream_missing",
+                "remote actions are unavailable: caller no longer authorized for invocation":
+                    "permission_revoked",
+                "the invocation id was already used for a different request":
+                    "invocation_conflict",
+                "no such invocation": "invocation_unknown",
+                "remote actions are unavailable: the invocation is still being admitted; retry":
+                    "admission_in_flight",
             }
             known_errors = {prefix + reason: classification
                             for prefix in prefixes
@@ -2284,12 +2433,11 @@ class HeldProvider:
                     tool_name = "invoke"
                     arguments = {
                         "operation": owner.marker_operations[ordinal],
-                        "parameters": {},
+                        "parameters": {"value": "Agent marker proof"},
                         "parts": [{
-                            "part": "Open the Agent conversation.",
+                            "part": "Rename the Chat category.",
                             "app": "so.tilo.chat",
                         }],
-                        "reply": "Opened the Agent conversation.",
                     }
                 reply = {"id": "proof", "model": "bounded-fixture", "choices": [{
                     "index": 0, "message": {"role": "assistant", "content": None,
@@ -2864,6 +3012,68 @@ def chat_input_method_observation(socket):
     }
 
 
+def owned_rime_schema_observation(env):
+    """Read bounded configuration from only this disposable profile, never live options."""
+    result = dict.fromkeys((
+        "rime_user_config_present", "rime_user_config_empty",
+        "rime_selected_schema_observed", "rime_selected_schema_is_luna_pinyin",
+        "rime_schema_exists", "rime_schema_deployed", "rime_schema_default_keybinder",
+        "rime_data_directory_present", "rime_config_directory_present",
+        "rime_deployed_directory_present",
+    ), False)
+    data = pathlib.Path(env.get("XDG_DATA_HOME", ""))
+    config = pathlib.Path(env.get("XDG_CONFIG_HOME", ""))
+    if not data.is_absolute() or data.name != "data" or config != data.parent / "config":
+        return result
+    root = data / "fcitx5/rime"
+    result["rime_data_directory_present"] = (
+        root.resolve().is_relative_to(data.resolve()) and root.is_dir())
+    config_root = config / "fcitx5/rime"
+    result["rime_config_directory_present"] = (
+        config_root.resolve().is_relative_to(config.resolve()) and config_root.is_dir())
+    deployed = root / "build"
+    result["rime_deployed_directory_present"] = (
+        deployed.resolve().is_relative_to(data.resolve()) and deployed.is_dir())
+
+    def bounded_config(path):
+        try:
+            if not path.resolve().is_relative_to(data.resolve()):
+                return None
+            with path.open("rb") as stream:
+                raw = stream.read(65537)
+            return raw.decode("utf-8") if len(raw) <= 65536 else None
+        except (OSError, UnicodeError):
+            return None
+
+    user = bounded_config(root / "user.yaml")
+    if user is not None:
+        result["rime_user_config_present"] = True
+        result["rime_user_config_empty"] = not user.strip()
+        variables = re.findall(r"(?m)^var:[ \t]*\n((?:[ \t]+[^\n]*\n?)*)", user)
+        selected = re.findall(
+            r"(?m)^  previously_selected_schema:[ \t]*([^\r\n#]*?)[ \t]*(?:#.*)?$",
+            variables[0]) if len(variables) == 1 else []
+        if len(selected) == 1 and selected[0].strip():
+            result["rime_selected_schema_observed"] = True
+            result["rime_selected_schema_is_luna_pinyin"] = selected[0].strip() in (
+                "luna_pinyin", '"luna_pinyin"', "'luna_pinyin'",
+            )
+    # Fixed Luna deployment is independent of persisted selection. Its presence
+    # never establishes the live schema or options; never interpolate YAML values.
+    schema = bounded_config(root / "build/luna_pinyin.schema.yaml")
+    if schema is None:
+        return result
+    result["rime_schema_exists"] = True
+    result["rime_schema_deployed"] = bool(re.search(r"(?m)^__build_info:\s*$", schema))
+    binders = re.findall(r"(?m)^key_binder:[ \t]*\n((?:[ \t]+[^\n]*\n?)*)", schema)
+    result["rime_schema_default_keybinder"] = len(binders) == 1 and any(
+        re.search(r"accept:\s*[\"']?Control\+Shift\+(?:2|at)[\"']?[,\s]", rule)
+        and re.search(r"toggle:\s*[\"']?ascii_mode[\"']?[,\s}]", rule)
+        for rule in re.split(r"(?m)^[ \t]+-[ \t]+", binders[0])
+    )
+    return result
+
+
 def fcitx_rime_observation(env):
     """Observe exact active-state and engine equality without exporting output."""
     command = "/usr/bin/fcitx5-remote"
@@ -2996,6 +3206,25 @@ def offered_governance_action(socket, room, operation):
     return matches[0] if matches else None
 
 
+def offered_chat_category_action(socket, room, record, label, operation):
+    """Select one current category action while preserving its opaque address."""
+    rows = [row for row in actions(socket, label)
+            if row.get("application") == "so.tilo.chat"
+            and row.get("room") == room
+            and row.get("record") == record]
+    category_resources = {
+        row.get("resource") for row in rows
+        if row.get("operation") == "open-category"
+        and isinstance(row.get("resource"), str) and row["resource"]
+    }
+    matches = [row for row in rows
+               if row.get("resource") in category_resources
+               and row.get("operation") == operation]
+    if len(matches) > 1:
+        raise RuntimeError(f"ambiguous Chat category action {operation}")
+    return matches[0] if matches else None
+
+
 def grant_exact_marker_action(socket, room, agent, process, output):
     """Assign one expiring action rule through the real owner governance surface."""
     profile_name = "Agent marker proof"
@@ -3003,10 +3232,10 @@ def grant_exact_marker_action(socket, room, agent, process, output):
         socket, room, "profile.save"), process)
     save_receipt = wait_terminal(socket, invoke(socket, save, {
         "name": profile_name,
-        "description": "May open one Agent conversation for the marker proof",
+        "description": "May rename one Chat category for the marker proof",
         "rules": [{
             "scope": {"Action": {
-                "app": "so.tilo.chat", "action": "open-agent-conversation",
+                "app": "so.tilo.chat", "action": "rename",
             }},
             "effect": "Grant",
             "verb": "Write",
@@ -3025,7 +3254,7 @@ def grant_exact_marker_action(socket, room, agent, process, output):
     evidence = {
         "save_invocation": terminal_invocation(save_receipt),
         "assign_invocation": terminal_invocation(assign_receipt),
-        "scope": "so.tilo.chat#open-agent-conversation",
+        "scope": "so.tilo.chat#rename",
         "subject_kind": "agent",
         "expiring": True,
         "broad_chat_grant": False,
@@ -3366,7 +3595,8 @@ def chat_input_observer_enabled(output):
     return None
 
 
-def observe_chat_task_frontier(socket, output, task_id, run_epoch, phase, process):
+def observe_chat_task_frontier(
+        socket, output, task_id, run_epoch, phase, process, *, title="Lifecycle task"):
     """Require Chat's retained frontier, not only Task Center's owner read."""
     sampled = False
 
@@ -3394,7 +3624,7 @@ def observe_chat_task_frontier(socket, output, task_id, run_epoch, phase, proces
             if not editor_accessibility_focus(access):
                 return None
             require_chat_keyboard_focus_after_click(socket, output)
-            if not task_phase_accessibility(access, "Planning: Lifecycle task"):
+            if not task_phase_accessibility(access, f"Planning: {title}"):
                 return None
             require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
             sampled = True
@@ -3431,8 +3661,14 @@ def start_managed_agent(socket, room, agent, process):
 def managed_agent_marker_stage(socket, room, record, provider, output, process, size):
     """Invoke one least-privilege Chat action and activate its real marker."""
     agent = "tide"
-    target = wait_for("current semantic Agent marker target", lambda: offered_agent_action(
-        socket, room, record, agent, "open-agent-conversation"), process)
+    target = wait_for("current semantic category marker target", lambda:
+                      offered_chat_category_action(
+                          socket, room, record, "Lifecycle proof", "rename"
+                      ), process)
+    ensure_chat_category_visible(socket, "Lifecycle proof", process)
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"category-marker-visible-before-task-{size}.png"
+    )}))
     # Preserve the discovered opaque address verbatim. Never reconstruct or
     # decode a mounted component's transport alias from its semantic Person id.
     provider.marker_resource = target["resource"]
@@ -3440,7 +3676,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     queue = wait_for("owner-published Queue task action", lambda: offered_desktop_action(
         socket, room, "tasks", "desktop:tasks", "queue"), process)
     queued_receipt = wait_terminal(socket, invoke(socket, queue, {
-        "instruction": "Open Tide's agent conversation.",
+        "instruction": "Rename the Lifecycle proof Chat category to Agent marker proof.",
         "title": "Agent marker proof",
         "agent": agent,
         "route": "model",
@@ -3500,21 +3736,78 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     if second_admission is None:
         raise RuntimeError("marker continuation lacked owner task custody")
 
+    preceding_result = provider.preceding_marker_result()
     (output / "marker-preceding-invoke-result.json").write_text(
-        json.dumps(provider.preceding_marker_result(), indent=2) + "\n"
+        json.dumps(preceding_result, indent=2) + "\n"
     )
+    if preceding_result != {
+            "result": "succeeded", "error_class": "unclassified",
+            "private_content_recorded": False}:
+        raise RuntimeError("marker action did not complete successfully")
+
+    def category_renamed():
+        renamed = offered_chat_category_action(
+            socket, room, record, "Agent marker proof", "rename"
+        )
+        return renamed if renamed is not None \
+            and renamed.get("resource") == target["resource"] else None
+
+    wait_for("same Chat category's current public label", category_renamed, process)
+    chat_frontier = observe_chat_task_frontier(
+        socket, output, task_id, admission["run_epoch"], "planning", process,
+        title="Agent marker proof",
+    )
+    if chat_frontier.get("sequence") != second_admission["sequence"]:
+        raise RuntimeError("Chat retained a different marker task Planning sequence")
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"agent-marker-second-held-{size}.png"
     )}))
 
-    marker = wait_for("actual compositor Agent action marker",
-                      lambda: agent_marker_accessibility(agent), process)
+    latest_marker_binding = None
+
+    def bound_marker():
+        nonlocal latest_marker_binding
+        marker = agent_marker_accessibility(agent)
+        category = chat_category_accessibility("Agent marker proof")
+        frame = presented_primary_frame(
+            call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+        )
+        if marker is None or category is None or frame is None:
+            return None
+        binding = marker_binds_presented_category(
+            marker, category, presented_content_geometry(frame)
+        )
+        latest_marker_binding = binding
+        return (marker, binding) if binding["category_bound"] else None
+
+    try:
+        marker, marker_binding = wait_for(
+            "actual compositor Agent marker at the renamed category", bound_marker, process
+        )
+    except RuntimeError:
+        if latest_marker_binding is not None:
+            (output / "marker-category-binding-refusal.json").write_text(
+                json.dumps(latest_marker_binding, indent=2) + "\n"
+            )
+        raise
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"agent-action-marker-before-{size}.png"
     )}))
     activate_shell_accessibility_control(marker, marker["label"])
-    composer = wait_for("actual compositor Agent quick composer", lambda:
-                        shell_accessibility_control("Agent quick composer"), process)
+
+    def steer_ready_composer():
+        access = agent_quick_composer_accessibility(agent)
+        if access is None:
+            return None
+        return access if accessibility_control_enabled(
+            access, access["controls"]["steer"]
+        ) else None
+
+    composer = wait_for(
+        "actual quick composer with authenticated Steer availability",
+        steer_ready_composer,
+        process,
+    )
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"agent-quick-composer-after-{size}.png"
     )}))
@@ -3559,6 +3852,10 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
         "owner_planning_sequences": [row["sequence"] for row in admissions],
         "direction_revision": interaction["receipt_revision"],
         "exact_action_scope": grant["scope"],
+        "category_renamed": True,
+        "marker_category_bound": marker_binding["category_bound"],
+        "marker_rect": marker_binding["marker_rect"],
+        "category_rect": marker_binding["category_rect"],
         "marker_accessible": True,
         "marker_activated": True,
         "quick_composer_accessible": composer is not None,
