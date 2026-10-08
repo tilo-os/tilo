@@ -26,6 +26,8 @@
 //!   there is no raw-bus fallback, a failed proxy leaves the bus absent;
 //! - the `PipeWire` socket, when the session runs it (printing stays behind
 //!   the Print portal: no sandbox reaches the print spooler's socket);
+//! - the cloud account service's control socket, when it runs: sync now,
+//!   pause and resume a mounted account (no credential crosses it);
 //! - the compositor's runtime state files (`$XDG_RUNTIME_DIR/tilo`: the
 //!   connected displays, input devices), read-only, with every
 //!   subdirectory (capabilities, identity projections, service sockets)
@@ -149,9 +151,14 @@ fn runtime_state_in(dir: PathBuf) -> Option<RuntimeState> {
     Some(RuntimeState { dir, masked })
 }
 
-/// The host sockets the control panel's clients use, for a session of `uid`.
+/// The host sockets the control panel's clients use, for a session of `uid`:
+/// `PipeWire`, and the cloud account service's mount control
+/// (`runtime_fs::cloud::socket_in`), which carries no credential.
 fn authority_sockets(uid: u32) -> Vec<PathBuf> {
-    vec![PathBuf::from(format!("/run/user/{uid}/pipewire-0"))]
+    vec![
+        PathBuf::from(format!("/run/user/{uid}/pipewire-0")),
+        PathBuf::from(format!("/run/user/{uid}/tilo-fs-cloud/control.sock")),
+    ]
 }
 
 /// Where an app looks for the person's app store: under the `XDG_DATA_HOME`

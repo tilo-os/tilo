@@ -580,3 +580,22 @@ its new timing stream. Inspect returns the current fixed options and their
 scope. Agent-scoped, sandboxed, other-account and locked-session calls cannot
 configure this owner-only surface. No application content or typed keys are
 recorded by these timing options.
+
+## Cloud account mounts
+
+Settings publishes `sync-now` and either `pause-sync` or `resume-sync` on each
+`settings.account:<id>` row while the cloud account service lists that account
+as mounted at `~/Remote/<label>`; an account that is not mounted offers none of
+them. They are device-only jobs: the effect answers once the service has
+accepted the request, and the account's health still arrives through the
+account status store. `sync-now` cuts a failure back-off short and runs a pass
+(an account whose mount could not start is tried again); a pause stops
+background sync and uploads until resumed, survives restarts, and leaves
+on-demand reads working while edits queue.
+
+Settings and Files reach the mounts through the service's control socket,
+`$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock` (`runtime_fs::cloud`, mode
+0600). It also answers file requests: a file's provider revisions, restoring
+one of them, and a share link, each refused unless the provider's capabilities
+include it. No credential crosses it. Files does not yet publish these file
+requests as entry actions.

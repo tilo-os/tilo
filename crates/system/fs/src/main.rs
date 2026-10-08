@@ -492,6 +492,10 @@ enum Command {
         /// Filesystem executable used for supervised `mount-cloud` children.
         #[arg(long)]
         fs_binary: Option<PathBuf>,
+        /// Where to serve mount control (sync now, pause, file requests);
+        /// defaults to `$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock`.
+        #[arg(long)]
+        control_socket: Option<PathBuf>,
     },
     /// Serve one cloud account at `--mount-point`. The mount specification
     /// and credential arrive on stdin from `cloud-service`, never in argv.
@@ -700,7 +704,9 @@ async fn run_command() -> Result<()> {
             state_root,
             config_root,
             fs_binary,
+            control_socket,
         } => {
+            let control_socket = control_socket.or_else(runtime_fs::cloud::default_socket);
             let executable = match fs_binary {
                 Some(path) => path,
                 None => std::env::current_exe()?,
@@ -717,6 +723,7 @@ async fn run_command() -> Result<()> {
                         config_root,
                         mounts_root,
                         state_root,
+                        control_socket,
                     },
                     Box::new(fs::cloud::ProcessLauncher {
                         executable,

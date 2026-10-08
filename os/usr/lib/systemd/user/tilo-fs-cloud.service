@@ -22,7 +22,10 @@ Type=simple
 # with PrivateIPC=yes cannot start a second sandboxed process (its IPC
 # namespace setup fails with EPERM and the next exec exits 226/NAMESPACE).
 Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential
-ExecStart=/usr/bin/fs cloud-service --mounts-root %h/Remote --state-root %S/tilo/cloud
+# Settings and Files control the mounts (sync now, pause, revisions, share
+# links) through the control socket in the runtime directory; it is the
+# user's alone and carries no credential.
+ExecStart=/usr/bin/fs cloud-service --mounts-root %h/Remote --state-root %S/tilo/cloud --control-socket %t/tilo-fs-cloud/control.sock
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=20s
@@ -41,6 +44,8 @@ ProtectHome=read-only
 ReadWritePaths=%h/Remote %S/tilo %E/tilo %E/tilo/accounts
 ConfigurationDirectory=tilo/accounts
 StateDirectory=tilo/cloud
+RuntimeDirectory=tilo-fs-cloud
+RuntimeDirectoryMode=0700
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
