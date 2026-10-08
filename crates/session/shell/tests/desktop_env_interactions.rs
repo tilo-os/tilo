@@ -28,10 +28,10 @@ use shell::shell::state::{
 };
 use shell::shell::topbar_chrome::{TOPBAR_HEIGHT_PX, TopBarChrome};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use ui::synthetic_input::PointerAction;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
 const W: f32 = 1280.0;
@@ -113,6 +113,8 @@ struct Layout {
     )]
     root_node: NodeId,
     child_node: NodeId,
+    theme: Theme,
+    input_scale: f64,
 }
 
 /// Usable strip width at the fixture's viewport (window minus the
@@ -126,6 +128,10 @@ fn usable_strip_px(host: &mut ShellOverlayHost, strip_id: StripId) -> f64 {
 }
 
 fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
+    lay_out_host_with_theme(host, Theme::dark(), 1.0)
+}
+
+fn lay_out_host_with_theme(host: &mut ShellOverlayHost, theme: Theme, input_scale: f64) -> Layout {
     // What the compositor does before every build: name the display, so
     // window-group width fractions resolve against it rather than the
     // toolkit's fallback.
@@ -135,7 +141,6 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
         f64::from(W),
         f64::from(H),
     )]);
-    let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let child = host.build_layout(&mut taffy, &theme, &mut node_map);
@@ -174,6 +179,8 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
         taffy,
         root_node,
         child_node: child,
+        theme,
+        input_scale,
     }
 }
 
@@ -211,7 +218,7 @@ fn dispatch_with_modifiers(
     host.handle_event(
         event,
         &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
+            scale_factor: layout.input_scale,
             modifiers: &modifiers,
             state: ui::widget::Edits::lend(&mut doc),
             path: &doc_root,
@@ -248,7 +255,7 @@ fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: Stri
     cursor(host, layout, pill);
     // The curve is created by the layout pass that first sees the new hover
     // target, so it has to exist before it can be held.
-    let _layout = lay_out_host(host);
+    let _layout = lay_out_host_with_theme(host, layout.theme.clone(), layout.input_scale);
     let intended = host
         .group_at_for_tests(strip_id, 0)
         .expect("hovered group")
@@ -260,7 +267,7 @@ fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: Stri
     );
     // Once the intent clock has elapsed, the next layout starts the reveal
     // curve. Hold that separate curve to its end before placing the chip rects.
-    let layout = lay_out_host(host);
+    let layout = lay_out_host_with_theme(host, layout.theme.clone(), layout.input_scale);
     let mut held = false;
     if let Some(row) = host.group_row_mut_for_tests(strip_id) {
         for g in &mut row.groups {
@@ -274,17 +281,14 @@ fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: Stri
         "hovering the pill started no reveal, so there is nothing to click",
     );
     let _ = layout;
-    lay_out_host(host)
+    lay_out_host_with_theme(host, layout.theme.clone(), layout.input_scale)
 }
 
 fn cursor(host: &mut ShellOverlayHost, layout: &Layout, p: Point) {
     dispatch(
         host,
         layout,
-        &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(p.x, p.y),
-        },
+        &PointerAction::MoveTo(p).event(layout.input_scale),
     );
 }
 
@@ -292,11 +296,7 @@ fn press(host: &mut ShellOverlayHost, layout: &Layout) {
     dispatch(
         host,
         layout,
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
+        &PointerAction::Press(MouseButton::Left).event(layout.input_scale),
     );
 }
 
@@ -304,12 +304,21 @@ fn release(host: &mut ShellOverlayHost, layout: &Layout) {
     dispatch(
         host,
         layout,
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
+        &PointerAction::Release(MouseButton::Left).event(layout.input_scale),
     );
+}
+
+/// Paint explicitly before inspecting targets; inspection itself never prepares them.
+fn paint_group(host: &mut ShellOverlayHost, layout: &Layout, strip_id: StripId) {
+    host.group_at_for_tests(strip_id, 0)
+        .expect("group to paint")
+        .draw(
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &layout.theme,
+            &ui::presence::PresenceCtx::default(),
+        );
 }
 
 fn press_with_modifiers(host: &mut ShellOverlayHost, layout: &Layout, modifiers: Modifiers) {
@@ -323,6 +332,80 @@ fn press_with_modifiers(host: &mut ShellOverlayHost, layout: &Layout, modifiers:
         },
         modifiers,
     );
+}
+
+#[test]
+fn painted_window_controls_survive_cancel_and_scale_changes() {
+    for theme in [Theme::dark(), Theme::light().with_text_scale(2.0)] {
+        let (tree, strip_id, _) = single_strip_tree(&[1]);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let layout = lay_out_host_with_theme(&mut host, theme.clone(), 1.5);
+        let layout = reveal_tab_chips(&mut host, &layout, strip_id);
+        let maximize = host
+            .active_window_bounds()
+            .unwrap()
+            .maximize
+            .expect("revealed Expand");
+        cursor(&mut host, &layout, maximize.center());
+        press(&mut host, &layout);
+        release(&mut host, &layout);
+        host.tick_pending_maximize_harvest_for_tests();
+        let layout = lay_out_host_with_theme(&mut host, theme.clone(), 1.5);
+        let unpainted = host.active_window_bounds().expect("active group");
+        assert!(
+            unpainted.restore.is_none(),
+            "inspection must not paint or reveal"
+        );
+        assert_eq!(host.active_window_bounds(), Some(unpainted));
+        cursor(
+            &mut host,
+            &layout,
+            Point::new(unpainted.group.center().x, unpainted.group.y0 + 1.0),
+        );
+        paint_group(&mut host, &layout, strip_id);
+        let bounds = host.active_window_bounds().expect("painted active group");
+        let restore = bounds.restore.expect("painted Restore");
+        let client = bounds.client.expect("active client");
+        assert!(restore.y1 <= client.y0);
+        assert_eq!(host.active_window_control_rects().unwrap().1, restore);
+        cursor(&mut host, &layout, restore.center());
+        press(&mut host, &layout);
+        assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
+        dispatch(
+            &mut host,
+            &layout,
+            &PointerAction::Leave.event(layout.input_scale),
+        );
+        release(&mut host, &layout);
+        host.tick_pending_maximize_harvest_for_tests();
+        assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
+
+        cursor(&mut host, &layout, restore.center());
+        paint_group(&mut host, &layout, strip_id);
+        press(&mut host, &layout);
+        let scaled = lay_out_host_with_theme(&mut host, theme.with_text_scale(1.3), 2.0);
+        paint_group(&mut host, &scaled, strip_id);
+        let target = host
+            .active_window_bounds()
+            .unwrap()
+            .restore
+            .expect("new painted Restore");
+        cursor(&mut host, &scaled, target.center());
+        release(&mut host, &scaled);
+        host.tick_pending_maximize_harvest_for_tests();
+        assert!(
+            host.group_at_for_tests(strip_id, 0).unwrap().maximized,
+            "a scale change must cancel the old held gesture"
+        );
+
+        cursor(&mut host, &scaled, target.center());
+        press(&mut host, &scaled);
+        assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
+        release(&mut host, &scaled);
+        host.tick_pending_maximize_harvest_for_tests();
+        assert!(!host.group_at_for_tests(strip_id, 0).unwrap().maximized);
+        assert!(!chrome.borrow().is_fullscreen());
+    }
 }
 
 // 1. Horizontal window-group resize
@@ -1069,13 +1152,13 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let app = group
             .active_host_rect_for_tests()
             .expect("maximized group's active app");
-        // #3512 reserves a compact 34 px control lane at the default theme,
-        // while the hidden tab strip itself still reserves no height.
+        // The SDK owns the theme-dependent system lane policy; the hidden
+        // tab strip itself still reserves no height.
         assert_eq!(
             app,
             vello::kurbo::Rect::new(
                 maximized.x0,
-                maximized.y0 + 34.0,
+                maximized.y0 + ui::widget::maximized_chrome_height(&layout2.theme),
                 maximized.x1,
                 maximized.y1,
             ),
@@ -1094,15 +1177,10 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             &layout2,
             Point::new(maximized.center().x, maximized.y0 + 1.0),
         );
-        let group = host.group_at_for_tests(strip_id, 0).unwrap();
-        group.draw(
-            &mut vello::Scene::new(),
-            vello::kurbo::Affine::IDENTITY,
-            &mut ui::text_render::TextRenderer::new(),
-            &Theme::dark(),
-            &ui::presence::PresenceCtx::default(),
-        );
-        let restore = group.restore_rect();
+        paint_group(&mut host, &layout2, strip_id);
+        let bounds = host.active_window_bounds().expect("painted active group");
+        let restore = bounds.restore.expect("painted Restore target");
+        assert_eq!(bounds.client, Some(app));
         assert!(
             restore.area() > 0.0,
             "Restore must reveal below the OS top bar"

@@ -1,4 +1,7 @@
-//! Deterministic keyboard inputs shared by native scenarios and headless driving.
+//! Deterministic inputs shared by native scenarios and headless driving.
+
+pub mod pointer;
+pub use pointer::PointerAction;
 
 use serde::{Deserialize, Serialize};
 use winit::event::{ElementState, WindowEvent};
