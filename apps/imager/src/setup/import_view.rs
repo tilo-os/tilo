@@ -4922,20 +4922,25 @@ mod tests {
         assert!(!destination_parent.join("source").exists());
         app.poll_background();
         assert!(app.cancel_active());
+        let ownership_released = super::super::migration_store::test_support::ownership_release(
+            app.store.as_deref().unwrap(),
+        );
         drop(app);
         assert!(MigrationStore::open_at(&root).is_err());
+        assert_eq!(
+            ownership_released.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty),
+            "the held checkpoint still owns the store"
+        );
         release
             .send(())
             .expect("the start checkpoint was still held when the UI calls returned");
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            if let Ok(store) = MigrationStore::open_at(&root) {
-                assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
-                break;
-            }
-            assert!(ui::time::now() < deadline);
-            std::thread::yield_now();
-        }
+        tilo_test_env::recv(
+            "the cancelled copy store's ownership release",
+            &ownership_released,
+        );
+        let store = MigrationStore::open_at(&root).unwrap();
+        assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
         assert!(!destination_parent.join("source").exists());
     }
 
