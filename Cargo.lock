@@ -13120,6 +13120,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnp-rpc",
+ "getrandom 0.4.3",
  "libc",
  "rustix 1.1.4",
  "serde",
@@ -19826,6 +19827,7 @@ dependencies = [
  "durable-store",
  "ed25519-dalek 3.0.0",
  "env-tools",
+ "getrandom 0.4.3",
  "hex",
  "landlock",
  "legacy-vm",

@@ -1193,7 +1193,11 @@ pub trait Widget {
     /// across the retained tree and refuses to publish an action whose type has
     /// no handler, preventing a catalogue entry that can only fail at runtime.
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[]
+        if crate::undo::has_deferred_local_history(self) {
+            &[crate::undo::EDIT_OPERATION]
+        } else {
+            &[]
+        }
     }
 
     fn resource_operation_handlers(&self) -> HashSet<String> {
@@ -1906,6 +1910,9 @@ pub trait Widget {
         doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(started) = crate::undo::start_local_history(self, op)? {
+            return Ok(Some(started));
+        }
         start_in_children(self, op, doc, path)
     }
 
@@ -1930,6 +1937,11 @@ pub trait Widget {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        if let Some(update) =
+            crate::undo::poll_local_history(self, invocation, cancellation_requested)
+        {
+            return Some(update);
+        }
         for child in self.children_mut() {
             if let Some(update) =
                 child.poll_resource_operation(invocation, cancellation_requested, doc, path)

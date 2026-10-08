@@ -147,6 +147,8 @@ pub struct GuestPlan {
     /// The guest's `/etc/resolv.conf`: the session's DNS stub. `None` copies
     /// the machine's.
     pub resolver: Option<String>,
+    /// Optional qualified native producer, never requested via a guest path.
+    pub editor: Option<crate::editor::GuestEditor>,
 }
 
 impl GuestPlan {
@@ -415,6 +417,18 @@ fn push_pseudo_filesystems_and_var(a: &mut Vec<OsString>, plan: &GuestPlan) {
 /// The runtime binary (read-only, with its command shims) and the broker
 /// socket the guest sends requests over.
 fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
+    if let Some(editor) = &plan.editor {
+        a.extend([
+            "--dir".into(),
+            crate::editor::GUEST_DIR.into(),
+            "--ro-bind".into(),
+            editor.module.clone().into_os_string(),
+            format!("{}/producer.so", crate::editor::GUEST_DIR).into(),
+            "--ro-bind".into(),
+            editor.rc.clone().into_os_string(),
+            format!("{}/rc", crate::editor::GUEST_DIR).into(),
+        ]);
+    }
     a.push("--dir".into());
     a.push(crate::GUEST_BIN_DIR.into());
     a.push("--ro-bind".into());
@@ -647,6 +661,20 @@ pub fn spawn(
     if let Some(netns) = netns {
         netns.enter(&mut cmd);
     }
+    if let Some(editor) = &plan.editor {
+        use std::os::fd::{AsFd, AsRawFd};
+        use std::os::unix::process::CommandExt;
+        let fd = editor.producer.as_fd().as_raw_fd();
+        // SAFETY: only the qualified producer endpoint crosses this trusted exec.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     cmd.spawn()
 }
 
@@ -693,6 +721,7 @@ mod tests {
             term: "xterm-256color".into(),
             env: Vec::new(),
             resolver: None,
+            editor: None,
         }
     }
 

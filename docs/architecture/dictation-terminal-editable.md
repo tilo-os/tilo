@@ -1,12 +1,13 @@
 # Terminal editable-resource contract
 
-This is an integration contract, not an implemented terminal dictation backend.
-The source inspection at `1196d1340bfef9c6b72305e4b1677f108add04bc` found no
-cooperative command-line editor producer in Terminal or ush. Implementing that
-producer and its reversible transaction route is engineering work; microphone
-consent cannot supply them.
+The guarded native producer and Terminal/ush source integration are now a
+review candidate. They are not an installed or fully qualified desktop backend.
+The baseline inspection at `1196d1340bfef9c6b72305e4b1677f108add04bc` found no
+cooperative producer. The production-path native qualification below closes
+that source gap; managed-shell and mounted desktop acceptance remain separate.
+Microphone consent cannot substitute for either.
 
-## Existing boundary
+## Baseline boundary
 
 `apps/terminal/src/resource.rs` exposes session inspection and Send, Run, Paste
 and Interrupt effects. `TerminalWidget::perform` in `main_body.rs` sends process
@@ -147,3 +148,70 @@ queryable idempotent receipts, complete signal/unload handling, the existing ush
 FD custody route, participant-private resources and system Undo/Redo still need
 production implementation and acceptance. The fixture must not be installed or
 enabled in a user shell. Arbitrary shells and TUIs remain unavailable.
+
+## Production source candidate, 2026-10-08
+
+`crates/runtime/ush/native/bash_editor.c` is the actual Bash/Readline producer,
+not the feasibility fixture. It owns a private close-on-exec packet endpoint,
+uses the existing QPE1 executing-process proof, checks its compiled Bash and
+Readline versions, and publishes no buffer during startup configuration,
+`read -e`, silent input or unsupported edit states. Literal replacement checks
+the original incarnation, generation, revision, exact issued expiry and native
+UTF-8 selection. It verifies the resulting buffer before acknowledging it.
+Undo restores the original selection; Redo remains undoable. Exact duplicate
+requests query/replay their receipt without applying another edit.
+
+The admitted ush launch negotiates protocol version 1. Its descriptor bundle is
+PTY first, native editor second; the original single-descriptor protocol stays
+valid. The app verifies both descriptor roles. The supervisor qualifies an
+OS-owned module through root-owned, non-writable ancestors, bounds its reads,
+compares the selected guest Bash with the host build, and binds every producer
+packet to the original executing peer and owned launch. Process exit, ancillary
+rights, malformed packets and delivery uncertainty retire the channel. Neither
+a configured shell nor an unsupported runtime is replaced.
+
+Terminal retains ephemeral lease/history metadata, never the private field
+buffer. Its device-only Inspect editor and secret-parameter Replace editor
+selection effects use the existing resource route. The original caller is
+rechecked immediately before dispatch; permission and focus changes revoke
+captures. Qualified ordinary IME and dictation use the same literal request.
+Native history completes through the actual acknowledgement, using the SDK's
+public `LocalUndo` interface without exposing its private host operation API.
+A lost or mismatched acknowledgement fails explicitly; it is never retried as
+PTY input or document Undo. Ordinary IME failure has a persistent shared Banner
+and localized accessible announcement. Native redisplay preserves the lease;
+physical input revokes it before writing to the PTY.
+
+The existing OS component manifest carries the module at
+`/usr/lib/tilo/ush/bash-editor.so`. The native builder compiles it with the
+snapshot's Bash/Readline headers and hardened flags; the builder artifact
+manifest requires it. This is source packaging work only. No image was built,
+module installed, compositor deployed, microphone enabled or permission granted.
+
+`dictation-bash-editor-production.json` records the privately built production
+module and actual Bash journeys. The explicit qualification executable is
+`runtime-portal/examples/bash_editor_journey.rs`. It uses the production codec,
+packet socket and kernel process proof in an isolated namespace with a real
+controlling PTY. Seven checks cover protected startup, literal Unicode,
+selection restoration, exact expiry, receipt idempotence/query, Undo/Redo/Undo,
+net-zero caret changes, revocation and repeated editor generations. It also
+asserts that external commands do not inherit the editor capability.
+
+Focused tests separately prove the Terminal redisplay/input boundary, menu and
+read-only refusal, repeated ordinary IME input, exact acknowledgement correlation,
+resource secrecy, and the generic SDK history route's original acknowledgement
+and cancellation behavior. These packet-boundary fixtures are not a substitute
+for the actual Bash qualification or a managed desktop journey.
+
+Still unqualified: the full production `ush` launch with a root-owned packaged
+asset, mounted standalone/embedded Terminal, in-place guest restart reconnection,
+and older-device/ARM execution. The ordinary-user review cannot install a
+trusted OS asset, and no installation or deployment was authorized. The browser
+adapter remains with its existing owner. Mic/catalogue activation and acceptable
+speech recognition latency remain independent delivery blockers.
+
+Final strict all-target Clippy passed for Terminal, ush, runtime-portal, tilo-ui
+and tilo-relay. An earlier `shell --tests` compile passed. The final shell
+compile attempt was refused before compilation because the existing builder's
+volume was 95.3% full, above its 80% admission watermark. It is recorded as
+blocked, not passed; no local compilation fallback or shared cleanup was used.

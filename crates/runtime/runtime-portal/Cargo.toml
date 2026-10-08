@@ -45,6 +45,9 @@ rustix = { workspace = true, features = ["net"] }
 # Service descriptors are Unix sockets; other hosts report `NotAvailable`.
 tokio = { workspace = true, optional = true, features = ["net"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+getrandom.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 tilo-test-env = { path = "../../dev/test-env" }

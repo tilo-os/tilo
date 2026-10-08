@@ -392,6 +392,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
+        bash-devel readline-devel \
         libxkbcommon-devel wayland-devel \
         libseat-devel libinput-devel systemd-devel libdrm-devel \
         mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
@@ -512,6 +513,8 @@ FROM builder-base AS builder
 # instruction here commits a layer of this multi-gigabyte stage, and rootless
 # podman commits one by walking the whole tree, minutes apiece.
 COPY --from=builder-sources /build/ /build/
+# The cooperative editor stays an OS-owned asset, outside app/runtime grants.
+RUN python3 crates/runtime/ush/native/build.py --out /out/ush-editor/bash-editor.so
 
 # Compile the binaries the OS images need. Cache mounts persist cargo's
 # registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
