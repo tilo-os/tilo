@@ -77,6 +77,42 @@ impl super::App {
         self.native_input_snapshot()
     }
 
+    /// Observe native capture and owner gates without reading document content.
+    /// Used by the existing mounted integration fixture at its bounded cadence.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_native_document_sync_snapshot_for_test(&self) -> serde_json::Value {
+        use automerge::transaction::Transactable as _;
+        let owners = self.document_routes.owners.iter().take(64).map(|entry| {
+            let local = entry.owners.first().map(|owner| {
+                let (store, checkout) = owner.store_checkout();
+                serde_json::json!({
+                    "gate": store.controlled_merge_gate_snapshot_for_test(&checkout.id),
+                    "fully_sent": store.read_checked(&checkout.id, |doc| {
+                        !entry.needs_snapshot
+                            && doc.pending_ops() == 0
+                            && crate::history_mode::sorted_heads(doc.base_heads()) == entry.sent_heads
+                    }).ok(),
+                })
+            });
+            serde_json::json!({
+                "owner_count": entry.owners.len(),
+                "local": local,
+                "needs_snapshot": entry.needs_snapshot,
+                "read_ready": self.collaboration.manager.document_route_ready(Some(&entry.route)),
+                "queued_captures": self.committed_documents.iter().filter(|(route, _)| route == &entry.route).count(),
+                "current_captures": self.committed_documents.iter().filter(|(route, read)| route == &entry.route && read.is_current()).count(),
+                "inbound_failure": entry.pending.failure.is_some(),
+                "outbound_failure": entry.outbound_failure.is_some(),
+            })
+        }).collect::<Vec<_>>();
+        serde_json::json!({
+            "queued_captures": self.committed_documents.len(),
+            "current_captures": self.committed_documents.iter().filter(|(_, read)| read.is_current()).count(),
+            "primary_gate": self.state.controlled_merge_gate_snapshot_for_test(),
+            "owners": owners,
+        })
+    }
+
     /// Observe the production guard for acknowledged private continuity.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn controlled_private_continuity_route_for_test(

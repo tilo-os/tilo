@@ -3391,6 +3391,23 @@ impl RecordStore {
         Ok(read(document))
     }
 
+    /// Bounded facts about an existing owner for native integration diagnostics.
+    /// This borrows its parked state immutably: no load, save, commit or loan.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn controlled_merge_gate_snapshot_for_test(
+        &self,
+        id: &RecordId,
+    ) -> Option<serde_json::Value> {
+        let set = self.0.try_borrow().ok()?;
+        let parked = set.open.get(id)?;
+        let doc = parked.doc.as_ref()?;
+        Some(
+            parked
+                .action_state
+                .controlled_merge_gate_snapshot_for_test(doc),
+        )
+    }
+
     /// One exclusive record admission for the document and owned action frame.
     pub(crate) fn with_action_state<R>(
         &self,

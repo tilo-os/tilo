@@ -2528,6 +2528,21 @@ impl Default for RecordActionState {
     }
 }
 impl RecordActionState {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn controlled_merge_gate_snapshot_for_test(
+        &self,
+        doc: &AutoCommit,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "pending_ops": doc.pending_ops(),
+            "pending_action": self.pending.is_some(),
+            "pending_action_changed": self.pending.as_ref().is_some_and(|pending| {
+                !crate::state::owned_restore::same_frontier(&pending.before, &doc.base_heads())
+            }),
+            "action_generation": self.generation,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn statuses_for_test(
         &self,
