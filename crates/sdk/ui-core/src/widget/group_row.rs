@@ -8493,7 +8493,10 @@ mod tests {
             let closed = row.groups[0].id;
             let mut still = panned_four();
             assert!(row.remove_group_by_id(closed));
-            let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+            let (mut row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+            // The slide runs on wall time from the relayout; read it at its
+            // first frame, not however late a loaded runner reaches this line.
+            assert!(row.hold_shift_at(Duration::ZERO), "the close slides");
             for (&id, was) in survivors.iter().zip(before) {
                 let now = drawn(&row, id);
                 assert!(

@@ -202,7 +202,7 @@ fn shared_actual_dispatch_isolates_typed_range_after_untyped_same_document_edit(
                         address: &caller.lease.request.address,
                         resource: &resource,
                         spec: &declaration,
-                        encoded: encoded.clone(),
+                        encoded: encoded.as_ref().clone(),
                         actor: "fixture-user",
                         local_author: "fixture-user",
                         broker_admitted: true,
@@ -239,7 +239,7 @@ fn shared_actual_dispatch_isolates_typed_range_after_untyped_same_document_edit(
                     action.context.as_ref().unwrap().source_invocation,
                     Some(caller.lease.request.invocation)
                 );
-                assert_eq!(action.action, *encoded);
+                assert_eq!(action.action, **encoded);
                 assert_eq!(
                     action.context.as_ref().unwrap().executed_action,
                     Some(action.id)
@@ -361,7 +361,8 @@ fn actual_empty_or_failed_dispatch_never_invents_typed_contributors() {
                 remote: false,
             },
         )
-        .unwrap(),
+        .unwrap()
+        .into(),
     );
     invoke_actual_typed_dispatch(&mut fixture, &caller).unwrap();
     fixture.probe.spec.borrow_mut().input = tilo_actions::ActionInput::Immediate(
@@ -373,7 +374,8 @@ fn actual_empty_or_failed_dispatch_never_invents_typed_contributors() {
                 remote: false,
             },
         )
-        .unwrap(),
+        .unwrap()
+        .into(),
     );
     assert!(invoke_actual_typed_dispatch(&mut fixture, &caller).is_err());
     let (_, authorization, actual) = publication(&fixture, &before).unwrap();
