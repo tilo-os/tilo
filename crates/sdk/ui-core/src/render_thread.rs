@@ -26,15 +26,14 @@
     reason = "native host runner: the GPU render worker is a dedicated thread"
 )]
 
+mod native_gpu_trace;
+
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread::JoinHandle;
-
-#[path = "native_gpu_trace.rs"]
-mod native_gpu_trace;
 
 #[path = "render_timing.rs"]
 pub(crate) mod timing;
