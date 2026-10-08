@@ -4521,7 +4521,10 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
         let presentation_timed_out = note.claimed_by.is_none() && now >= note.present_before;
         let retired = note.retire_after.is_some_and(|deadline| now >= deadline);
         let keep = !presentation_timed_out && !retired;
-        if presentation_timed_out {
+        // A clean parent's handoff deadline can precede the presentation
+        // deadline. Report its unclaimed launch too, so the saved opening
+        // card is answered rather than losing the only expiry observer.
+        if presentation_timed_out || (retired && note.claimed_by.is_none()) {
             expired.push(note.key.clone());
         }
         if !keep {
@@ -5159,7 +5162,11 @@ mod tests {
 
             let now = Instant::now();
             retire_pending_placement_at(package, now);
-            assert_eq!(expire_pending_placements_at(now), Vec::<String>::new());
+            assert_eq!(expire_pending_placements_at(now), vec![package.to_string()]);
+            assert!(
+                expire_pending_placements_at(now).is_empty(),
+                "retirement reports once"
+            );
             assert_eq!(placement_for_toplevel("windowless", 702), None);
             clear_pending_placements();
         }
@@ -5188,7 +5195,10 @@ mod tests {
             let deadline = lock(&LaunchSession::current().pending)[0]
                 .retire_after
                 .expect("claim receives a bounded retirement deadline");
-            expire_pending_placements_at(deadline);
+            assert!(
+                expire_pending_placements_at(deadline).is_empty(),
+                "a mapped window must not be reported as a windowless launch"
+            );
             assert_eq!(placement_for_toplevel("claimed-once", 703), None);
             clear_pending_placements();
         }
