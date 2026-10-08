@@ -2001,7 +2001,9 @@ impl CloudVolume {
 
     /// Sync now: end the sync loop's wait, forget its failure back-off and
     /// run a pass; queued uploads are tried again too. A paused volume
-    /// stays paused.
+    /// stays paused. A change-notification wait already in flight (a
+    /// healthy push provider, at most 90 s) ends first: such a provider
+    /// reports remote changes as they happen anyway.
     pub fn sync_now(&self) {
         self.sync_requested.store(true, Ordering::SeqCst);
         self.kick();

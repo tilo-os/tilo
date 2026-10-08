@@ -60,8 +60,10 @@ impl CloudMounts {
             .find(|mount| mount.account == account)
     }
 
-    /// Ask the service again at the next poll.
+    /// Ask the service again at the next poll; a listing already on its
+    /// way may predate the change and is dropped.
     pub(crate) fn invalidate(&mut self) {
+        self.listing = None;
         self.next = None;
     }
 

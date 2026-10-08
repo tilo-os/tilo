@@ -44,8 +44,11 @@ ProtectHome=read-only
 ReadWritePaths=%h/Remote %S/tilo %E/tilo %E/tilo/accounts
 ConfigurationDirectory=tilo/accounts
 StateDirectory=tilo/cloud
+# Kept across restarts (and created at login by user-tmpfiles.d): Settings'
+# sandbox binds the directory, so a restarted service's socket shows through.
 RuntimeDirectory=tilo-fs-cloud
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

@@ -118,6 +118,9 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const CONTROL_ANSWER: Duration = Duration::from_secs(80);
 /// Control connections served at once.
 const MAX_CONTROL_CONNECTIONS: usize = 8;
+/// A control connection that sends nothing for this long is closed, so idle
+/// clients cannot hold every slot.
+const CONTROL_IDLE: Duration = Duration::from_secs(30);
 /// The accounts paused through the control socket, below the state root.
 const PAUSED_FILE: &str = "paused.json";
 
@@ -329,16 +332,17 @@ impl CloudService {
                 let _ = signals.send(Signal::Event(id.clone(), event));
             });
             let _ = self.reporter(&spec.account_id).started();
+            // A paused account's mount starts paused: its workers never run
+            // a pass or an upload before the pause.
+            let started = MountSpec {
+                paused: self.paused.contains(&spec.account_id),
+                ..spec.clone()
+            };
             match self
                 .launcher
-                .start(spec, &credential, &mount_point, &state_dir, events)
+                .start(&started, &credential, &mount_point, &state_dir, events)
             {
-                Ok(mut running) => {
-                    if self.paused.contains(&spec.account_id)
-                        && let Err(error) = running.send(&ToMount::Pause)
-                    {
-                        tracing::warn!(%error, "cannot pause a cloud mount");
-                    }
+                Ok(running) => {
                     self.mounts.insert(
                         spec.account_id.clone(),
                         Mounted {
@@ -478,12 +482,22 @@ impl CloudService {
         let response = match request {
             CloudRequest::List => CloudResponse::Mounts(self.mount_list()),
             CloudRequest::SyncNow { account } => {
-                if !self.mounts.contains_key(&account) {
+                if self.mounts.contains_key(&account) {
+                    done(self.send_to(&account, &ToMount::SyncNow))
+                } else if self
+                    .store()
+                    .get(&AccountId::from(account.as_str()))
+                    .is_some()
+                {
                     // A mount that could not start (offline, no credential
-                    // yet) is tried again now rather than at the next retry.
-                    self.reconcile();
+                    // yet) is tried again next on this loop rather than at
+                    // the next retry; starting it can take a while, so the
+                    // answer does not wait for it.
+                    let _ = self.signals.send(Signal::Accounts);
+                    CloudResponse::Done
+                } else {
+                    CloudResponse::Error("no such account".into())
                 }
-                done(self.send_to(&account, &ToMount::SyncNow))
             }
             CloudRequest::Pause { account } => {
                 let result = self.send_to(&account, &ToMount::Pause);
@@ -687,8 +701,12 @@ fn bind_control(path: &Path, signals: Sender<Signal>) -> io::Result<()> {
     Ok(())
 }
 
-/// Serve one control connection until it closes or sends a bad frame.
+/// Serve one control connection until it closes, idles past
+/// [`CONTROL_IDLE`] or sends a bad frame.
 fn serve_connection(mut stream: UnixStream, signals: &Sender<Signal>) {
+    if stream.set_read_timeout(Some(CONTROL_IDLE)).is_err() {
+        return;
+    }
     while let Ok(Some(request)) = CLOUD_FRAMING.read_value::<_, CloudRequest>(&mut stream) {
         let (answer, answered) = mpsc::channel();
         if signals.send(Signal::Control(request, answer)).is_err() {
@@ -1080,6 +1098,9 @@ impl Launcher for InProcessLauncher {
             },
             Box::new(move |h| health(MountEvent::Health(h))),
         )?;
+        if spec.paused {
+            volume.pause();
+        }
         self.volumes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1178,6 +1199,9 @@ pub fn run_mount(mount_point: &Path, state_dir: &Path) -> io::Result<()> {
             let _ = out.flush();
         }),
     )?;
+    if spec.paused {
+        volume.pause();
+    }
     let workers = volume.spawn_workers();
     let mut config = fuser::Config::default();
     config.mount_options = vec![
