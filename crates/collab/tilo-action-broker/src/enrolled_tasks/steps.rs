@@ -26,7 +26,10 @@ impl Admission<'_> {
         &self,
         offered: &(PublishedSurface, PublishedAction),
     ) -> Result<(), String> {
-        let (run, _) = task_actions::observed(self.handle, self.numeric, self.lease)?;
+        let (run, cancelled) = task_actions::observed(self.handle, self.numeric, self.lease)?;
+        if cancelled {
+            return Err("cancelled task cannot admit a prepared step".into());
+        }
         if offered != &self.offered {
             return Err("task step target publication changed".into());
         }

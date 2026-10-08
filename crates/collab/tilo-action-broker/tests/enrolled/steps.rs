@@ -29,6 +29,7 @@ pub(super) fn configured_broker(
                 native: native.clone(),
                 phase: match mode {
                     "steps-prepare-ack-lost" => Loss::Prepare,
+                    "steps-final-admission-cancelled" => Loss::PrepareCancel,
                     "steps-commit-ack-lost" => Loss::Commit,
                     _ => Loss::None,
                 },
@@ -52,6 +53,7 @@ pub(super) fn configured_broker(
 enum Loss {
     None,
     Prepare,
+    PrepareCancel,
     Commit,
 }
 struct AckLoss {
@@ -91,7 +93,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for AckLoss {
         let selected = matches!(
             (&self.phase, &request.operation),
             (
-                Loss::Prepare,
+                Loss::Prepare | Loss::PrepareCancel,
                 CommitOperation::WorkspaceTaskCommand {
                     command: WorkspaceTaskCommand::PrepareStep { .. },
                     ..
@@ -106,6 +108,8 @@ impl tilo_action_broker::services::WorkspaceMemberships for AckLoss {
         );
         let native = self.native.clone();
         let failed = self.failed.clone();
+        let phase = self.phase;
+        let original = request.clone();
         Box::pin(async move {
             let receipt = tilo_action_broker::services::WorkspaceMemberships::execute(
                 native.as_ref(),
@@ -113,6 +117,10 @@ impl tilo_action_broker::services::WorkspaceMemberships for AckLoss {
             )
             .await?;
             if selected && !failed.swap(true, Ordering::SeqCst) {
+                if matches!(phase, Loss::PrepareCancel) {
+                    cancel_prepared(&native, &original)?;
+                    return Ok(receipt);
+                }
                 return Err(
                     "injected lost acknowledgement after genuine durable step commit".into(),
                 );
@@ -120,6 +128,46 @@ impl tilo_action_broker::services::WorkspaceMemberships for AckLoss {
             Ok(receipt)
         })
     }
+}
+
+fn cancel_prepared(native: &native::Native, prepared: &OwnerCommitRequest) -> Result<(), String> {
+    let CommitOperation::WorkspaceTaskCommand {
+        command: WorkspaceTaskCommand::PrepareStep {
+            task_id, run_epoch, ..
+        },
+        ..
+    } = &prepared.operation
+    else {
+        return Err("cancellation fixture did not observe genuine prepared step".into());
+    };
+    let state = native.owner.workspace_task_snapshot(native.room)?;
+    let after_revision = state
+        .controls
+        .get(task_id)
+        .ok_or("prepared task control absent")?
+        .directions
+        .last()
+        .map_or(0, |row| row.revision);
+    let caller = native
+        .owner
+        .with_current(native.room, |view| Ok(view.device().clone()))?;
+    let cancel = OwnerCommitRequest {
+        room: native.room.to_string(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::new_v4(),
+            authority: WorkspaceTaskAuthority::Person { caller },
+            command: WorkspaceTaskCommand::CancelForRun {
+                task_id: task_id.clone(),
+                run_epoch: *run_epoch,
+                after_revision,
+            },
+        },
+    };
+    native
+        .owner
+        .commit_workspace_task_command(cancel.clone(), SystemTime::now())?
+        .validate_for(&cancel)?;
+    Ok(())
 }
 
 struct ClockAuthority {
@@ -666,4 +714,48 @@ fn signed_native_step_lost_terminal_owner_ack_replays_retained_output_without_re
     fixture.finish().unwrap();
     target.stop().unwrap();
     fixture.stop().unwrap();
+}
+
+#[test]
+fn signed_native_step_cancel_after_prepare_refuses_final_child_admission() {
+    let mut fixture =
+        running_fixture_options(false, false, Some("steps-final-admission-cancelled")).unwrap();
+    let mut target = Target::new(&fixture).unwrap();
+    grant_reader(&fixture, true).unwrap();
+    fixture.accept_and_progress().unwrap();
+    write_frame(
+        &mut fixture.model_peer,
+        &serde_json::json!({"peer":target.peer}),
+    )
+    .unwrap();
+    let observed = read_frame(&mut fixture.model_peer, "step-final-admission-cancelled");
+    // Clean up every genuinely owned process before checking the result, including baseline refusal failures.
+    if observed.is_ok() {
+        fixture.model_peer.write_all(b"F").unwrap();
+        let cancelled = read_frame(&mut fixture.model_peer, "cancelled").unwrap();
+        assert_eq!(cancelled["owner_cancelled_observed"], true);
+        fixture.model_peer.write_all(b"E").unwrap();
+    }
+    target.stop().unwrap();
+    fixture.stop().unwrap();
+    let observed = observed.unwrap();
+    assert_eq!(observed["final_admission_refused"], true);
+    assert_eq!(target.count.load(Ordering::SeqCst), 0);
+    let state = fixture
+        .native
+        .owner
+        .workspace_task_snapshot(fixture.native.room)
+        .unwrap();
+    assert_eq!(
+        state.tasks[0].status,
+        tilo_desktop_model::WorkspaceTaskStatus::Cancelled
+    );
+    let task = fixture.task.clone();
+    drop(fixture);
+    assert!(state.controls[&task].active_run.is_none());
+    assert_eq!(state.controls[&task].steps.len(), 1);
+    assert_eq!(
+        state.controls[&task].steps[0].state,
+        tilo_desktop_model::WorkspaceTaskStepState::Prepared
+    );
 }

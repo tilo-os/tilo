@@ -433,6 +433,17 @@ fn first_step(
             },
         )?;
     }
+    if mode == "steps-final-admission-cancelled" {
+        let refusal = step_refusal(first)?;
+        if !refusal.contains("cancelled") {
+            return Err(refusal.into());
+        }
+        frame(
+            model,
+            &serde_json::json!({"stage":"step-final-admission-cancelled","final_admission_refused":true}),
+        )?;
+        return Ok(None);
+    }
     if mode == "steps-denied" {
         let refusal = step_refusal(first)?;
         if !refusal.contains("caller no longer authorized") {
