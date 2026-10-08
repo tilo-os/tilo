@@ -142,12 +142,22 @@ option. Neither issue authorizes changing those rules in this port.
 
 
 The takeover port's focused runtime qualification covers nineteen peer
-succession controls, the three original real takeover scenarios, all six
+succession controls, the three original real takeover scenarios and a bind-failure/retry control, all six
 inherited governed-room scenarios, joined-room follow/contest persistence,
-and six neighbour-wire codec and retention tests. Six production mutations
+and six neighbour-wire codec and retention tests. Seven production mutations
 remove the cutoff, recorded restore, pending restore, topology, revocation
-source-order or revoked-caller defense individually; each strict assertion
+source-order, revoked-caller or failed-bind cleanup defense individually; each strict assertion
 fails with exit 100, and exact source restoration follows every case.
 Scoped all-target Clippy passes with warnings denied. The required shell
 integration-target compilation remains part of the final restored-candidate
 check. Cargo.lock and capability definitions are unchanged from #3672.
+
+
+The bind-failure control blocks only its fresh test workspace directory.
+It requires protocol refusal, no listed or persisted room, no governance
+acquired on restart, and a successful retry after removing the test fault.
+Removing the production unlink makes its exact persisted-room assertion fail.
+This does not claim atomic rollback after settlement has begun: as in the
+original source and current room creation, a publication failure after listing
+can report a refusal while governance remains committed. Member transport
+hints also still require separate migration to the new relay.

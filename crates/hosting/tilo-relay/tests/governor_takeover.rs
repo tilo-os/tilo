@@ -576,6 +576,59 @@ async fn a_relay_of_the_identity_takes_over_a_room_it_did_not_create() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_takeover_bind_leaves_no_governed_room_and_can_retry() {
+    let h = Box::pin(Handover::new()).await;
+    let home = h
+        .alice
+        .enrol("alice-home-bind-retry", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &h.alice, &home).await;
+    let address = relay.node_addr();
+    let admin = RoomAdminClient::new(device_endpoint(&h.laptop).await, h.laptop.cert.clone());
+    let succession = h.succession(&home);
+    let replica = h.laptop_peer.durable().unwrap();
+    let workspaces = state.path().join("workspaces");
+    std::fs::create_dir_all(&workspaces).unwrap();
+    let blocked = workspaces.join(h.room.workspace_id.to_string());
+    std::fs::write(&blocked, b"test-owned bind failure").unwrap();
+    assert!(
+        admin
+            .take_over(address.clone(), succession.clone(), Some(replica.clone()))
+            .await
+            .is_err()
+    );
+    assert!(
+        matches!(admin.send(address, RoomCommand::List).await.unwrap(), RoomReply::Rooms(rooms) if rooms.is_empty())
+    );
+    assert!(
+        !state
+            .path()
+            .join("rooms")
+            .join(format!("{}.room", h.room.room))
+            .exists(),
+        "a failed bind must remove the persisted room before restart"
+    );
+    std::fs::remove_file(blocked).unwrap();
+    relay.shutdown().await;
+    let relay = start(state.path(), &h.alice, &home).await;
+    let address = relay.node_addr();
+    assert!(
+        matches!(admin.send(address.clone(), RoomCommand::List).await.unwrap(), RoomReply::Rooms(rooms) if rooms.is_empty()),
+        "a refused bind must not silently acquire governance on restart"
+    );
+    let taken = admin
+        .take_over(address.clone(), succession, Some(replica))
+        .await
+        .unwrap();
+    assert_eq!(taken.room, h.room.room);
+    assert!(
+        matches!(admin.send(address, RoomCommand::List).await.unwrap(), RoomReply::Rooms(rooms) if rooms.len() == 1 && rooms[0].room == h.room.room)
+    );
+    relay.shutdown().await;
+    Box::pin(h.close()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn members_follow_a_successor_they_cannot_reach_through_any_member() {
     let mut h = Box::pin(Handover::new()).await;
     let (succession, mut governor) = h.laptop_governs();
