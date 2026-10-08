@@ -3396,12 +3396,6 @@ mod tests {
 
     #[test]
     fn page_flip_completion_is_routed_per_card() {
-        // One safe event-stream reader per card, unchanged.
-        assert_eq!(
-            page_flip_representatives([100, 100, 200, 100, 200]),
-            vec![(100, 0), (200, 2)],
-            "each card must drain its own shared event stream exactly once"
-        );
         struct RecordedOutput {
             device: u64,
             crtc: smithay::reexports::drm::control::crtc::Handle,
@@ -3415,6 +3409,12 @@ mod tests {
                 self.completions.push(event);
             }
         }
+        // One safe event-stream reader per card, unchanged.
+        assert_eq!(
+            page_flip_representatives([100, 100, 200, 100, 200]),
+            vec![(100, 0), (200, 2)],
+            "each card must drain its own shared event stream exactly once"
+        );
         let mut scanouts: Vec<_> = [(100, 7u32), (100, 8), (200, 7), (200, 8)]
             .into_iter()
             .map(|(device, crtc)| RecordedOutput {
