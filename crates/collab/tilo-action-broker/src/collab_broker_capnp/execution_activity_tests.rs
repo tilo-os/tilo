@@ -849,7 +849,7 @@ fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
 /// The broker's door, counting how often a shortcut run observes through it.
 struct CountedDoor {
     door: action_host::BrokerDoor,
-    observes: std::sync::atomic::AtomicUsize,
+    observes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl ActionHost for CountedDoor {
@@ -917,10 +917,7 @@ async fn shortcut_step_observes_once_per_change() {
     // then one per progress update and one for the outcome.
     const MOST_OBSERVES: usize = 6;
     let (state, caller, mut app) = fixture();
-    let door = Arc::new(CountedDoor {
-        door: action_host::BrokerDoor::new(Arc::clone(&state)),
-        observes: std::sync::atomic::AtomicUsize::new(0),
-    });
+    let observes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let shortcut = tilo_automation::Shortcut {
         id: "export".into(),
         name: "Export".into(),
@@ -948,10 +945,15 @@ async fn shortcut_step_observes_once_per_change() {
         tokio::runtime::Handle::current(),
     ));
     let running = tokio::spawn({
-        let door = Arc::clone(&door);
+        let state = Arc::clone(&state);
+        let observes = Arc::clone(&observes);
         async move {
+            let door = CountedDoor {
+                door: action_host::BrokerDoor::new(state),
+                observes,
+            };
             tilo_automation::run(
-                &*door,
+                &door,
                 &hooks,
                 tilo_automation::RunRequest {
                     shortcut: &shortcut,
@@ -1010,7 +1012,7 @@ async fn shortcut_step_observes_once_per_change() {
         tilo_automation::RunOutcome::Completed,
         "{report:?}"
     );
-    let observes = door.observes.load(Ordering::Relaxed);
+    let observes = observes.load(Ordering::Relaxed);
     assert!(
         observes <= MOST_OBSERVES,
         "{observes} observations for {PROGRESS_UPDATES} progress updates"
