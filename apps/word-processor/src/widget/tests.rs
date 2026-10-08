@@ -1798,6 +1798,157 @@ fn assert_compact_clear_footer(
 /// Alignment and line spacing apply to the paragraph via the panel, and the panel owns paragraph
 /// alignment and the style editor.
 #[test]
+fn painted_paragraph_alignment_swipes_edit_the_real_document_and_undo() {
+    use winit::event::TouchPhase::{Cancelled, Ended, Started};
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let before = app.peer_document().get_heads();
+    let start = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            assert_eq!(widget.current_align(), "left");
+            widget
+                .panel_hits
+                .iter()
+                .find_map(|(rect, hit)| {
+                    matches!(hit, PanelHit::ParaAlign("center")).then_some(rect.center())
+                })
+                .expect("the actual inspector paints Center")
+        })
+        .unwrap();
+    app.harness().touch(1, Started, start.x, start.y);
+    app.harness().touch(1, Ended, start.x - 90.0, start.y);
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+            .unwrap(),
+        "center"
+    );
+    assert_ne!(app.peer_document().get_heads(), before);
+    app.harness().touch(2, Started, start.x, start.y);
+    app.harness().touch(2, Cancelled, start.x - 90.0, start.y);
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+            .unwrap(),
+        "center"
+    );
+    assert!(
+        app.undo(),
+        "the admitted paragraph attribute is a real undo step"
+    );
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+            .unwrap(),
+        "left"
+    );
+    app.set_role(ui::permissions::Role::Viewer);
+    assert!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.claims_raw_touch(start))
+            .unwrap(),
+        "the viewer gesture reaches the actual painted strip"
+    );
+    let protected = app.peer_document().get_heads();
+    app.harness().touch(3, Started, start.x, start.y);
+    app.harness().touch(3, Ended, start.x - 90.0, start.y);
+    app.settle();
+    assert_eq!(
+        app.peer_document().get_heads(),
+        protected,
+        "touch grants no edit authority to a viewer"
+    );
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_align())
+            .unwrap(),
+        "left"
+    );
+}
+
+#[test]
+fn painted_font_swipes_edit_the_real_style_and_undo() {
+    for viewport in [(1280, 800), (390, 844)] {
+        assert_painted_font_swipe(viewport);
+    }
+}
+
+fn assert_painted_font_swipe(viewport: (u32, u32)) {
+    use winit::event::TouchPhase::{Cancelled, Ended, Started};
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize(viewport).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let current_font = |widget: &mut WordProcessorWidget| {
+        widget.sheet.get(&widget.focused_style_key().unwrap()).font
+    };
+    let before_style = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            widget.sheet.get(&widget.focused_style_key().unwrap())
+        })
+        .unwrap();
+    let before_font = before_style.font.clone();
+    let fonts = ["sans", "serif", "mono"];
+    let before_index = fonts.iter().position(|font| *font == before_font).unwrap();
+    let next_index = if before_index == 2 {
+        1
+    } else {
+        before_index + 1
+    };
+    let delta = if next_index > before_index {
+        -90.0
+    } else {
+        90.0
+    };
+    let start = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            widget
+                .panel_hits
+                .iter()
+                .find_map(|(rect, hit)| {
+                    matches!(hit, PanelHit::SetFont("serif")).then_some(rect.center())
+                })
+                .expect("the actual inspector paints the font strip")
+        })
+        .unwrap();
+    let before = app.peer_document().get_heads();
+    app.harness().touch(1, Started, start.x, start.y);
+    app.harness().touch(1, Ended, start.x + delta, start.y);
+    app.settle();
+    assert_eq!(app.with_surface(current_font).unwrap(), fonts[next_index]);
+    let mut expected_style = before_style;
+    expected_style.font = fonts[next_index].into();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| {
+            widget.sheet.get(&widget.focused_style_key().unwrap())
+        })
+        .unwrap(),
+        expected_style,
+        "a granular font action preserves every other resolved style property"
+    );
+    assert_ne!(app.peer_document().get_heads(), before);
+    app.harness().touch(2, Started, start.x, start.y);
+    app.harness().touch(2, Cancelled, start.x - delta, start.y);
+    app.settle();
+    assert_eq!(app.with_surface(current_font).unwrap(), fonts[next_index]);
+    assert!(app.undo(), "the font change is a real attributed undo step");
+    app.settle();
+    assert_eq!(app.with_surface(current_font).unwrap(), before_font);
+    app.set_role(ui::permissions::Role::Viewer);
+    assert!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.claims_raw_touch(start))
+            .unwrap()
+    );
+    let protected = app.peer_document().get_heads();
+    app.harness().touch(3, Started, start.x, start.y);
+    app.harness().touch(3, Ended, start.x + delta, start.y);
+    app.settle();
+    assert_eq!(app.peer_document().get_heads(), protected);
+    assert_eq!(app.with_surface(current_font).unwrap(), before_font);
+}
+
+#[test]
 fn compact_styles_is_a_full_window_page_with_real_controls_and_no_typing_leak() {
     for viewport in [(390, 844), (844, 390)] {
         let mut app =

@@ -240,6 +240,19 @@ impl App {
             self.autosave_generation,
             &self.state.doc,
         );
+        let routes = self
+            .document_routes
+            .witness
+            .iter()
+            .map(|witness| witness.route.clone())
+            .chain(
+                self.document_routes
+                    .owners
+                    .iter()
+                    .map(|owner| owner.route.clone()),
+            )
+            .collect();
+        self.collaboration.manager.set_document_owner_routes(routes);
         // The exact live owner map exists before any join can deliver callbacks.
         for route in joins {
             self.collaboration.manager.join_route(route);

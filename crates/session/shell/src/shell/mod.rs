@@ -23,6 +23,7 @@ pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
 pub mod app_close;
+pub mod app_notice_card;
 pub mod app_tabs;
 pub(crate) mod audio_output;
 pub mod automation_folders;
@@ -89,7 +90,6 @@ pub mod i18n;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
-pub mod install_card;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub(crate) mod launch_readiness;
@@ -486,7 +486,7 @@ fn try_to_ui_tile_for_tab(
             label,
             missing: Some(tilo_desktop_model::MissingApp::Installable { display_name }),
             ..
-        } if tab.is_some() => UiTile::App(Box::new(install_card::InstallCard::new(
+        } if tab.is_some() => UiTile::App(Box::new(app_notice_card::AppNoticeCard::install(
             tab.unwrap_or_default(),
             label,
             display_name,
@@ -528,6 +528,18 @@ fn try_to_ui_tile_for_tab(
                 )],
             ),
         },
+        ShellTile::LocalApp {
+            app_id,
+            label,
+            note,
+        } if tab.is_some() && !note.is_empty() && note != peer_windows::OPENING => {
+            UiTile::App(Box::new(app_notice_card::AppNoticeCard::retry(
+                tab.unwrap_or_default(),
+                app_id,
+                label,
+                note,
+            )))
+        }
         ShellTile::LocalApp { label, note, .. } => UiTile::Notice {
             title: label.clone(),
             detail: if note.is_empty() {
@@ -938,6 +950,20 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
     }
 }
 
+fn mount_private_feedback(
+    apps: &mut in_process::InProcessApps,
+    room: &str,
+    tab: u64,
+) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
+    apps.mount(
+        tilo_desktop::feedback::definition(),
+        room,
+        tab,
+        ui::record::RecordId::for_tab(tab),
+        |_| {},
+    )
+}
+
 /// The tab as the framework app's own component, when the host mounts that
 /// app in its own process: the terminal on its tab's record, opening
 /// sessions through the session's process supervisor; Files on the room's
@@ -956,6 +982,9 @@ pub fn mount_in_process(
     let room = request.room.to_string();
     let tab = request.tab.id;
     let mounted = match kind {
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Feedback") => {
+            mount_private_feedback(&mut apps.borrow_mut(), &room, tab)
+        }
         ShellKind::Terminal => apps.borrow_mut().mount(
             terminal::definition(),
             &room,

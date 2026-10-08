@@ -771,6 +771,9 @@ pub enum CollabEvent {
         /// resource and action remain authoritative; this only supplies the
         /// surrounding purpose and work-group for durable history.
         context: Option<Box<tilo_actions::ActionContext>>,
+        /// Private same-channel evidence attached by the authenticated native
+        /// stream. Inert declarations or action arguments cannot construct it.
+        native_delivery: Option<Result<crate::invocation_scope::NativeInvocationDelivery, String>>,
     },
     /// The invocation owner requested cooperative cancellation. Delivered at
     /// most once; the app-side job decides the next safe stopping boundary.
@@ -1826,6 +1829,18 @@ impl CollaborationManager {
             Backend::Disabled("pre-terminal document publication; outcome unknown".into());
         self.awaiting_primary = false;
         self.primary_route.accepted = None;
+    }
+
+    pub(crate) fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.set_document_owner_routes(routes);
+        }
+    }
+
+    pub(crate) fn finish_event_batch(&mut self) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.finish_event_batch();
+        }
     }
 
     /// Drain every event pending on the current backend. Non-blocking.

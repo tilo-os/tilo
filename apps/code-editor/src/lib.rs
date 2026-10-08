@@ -53,6 +53,7 @@ pub mod lsp;
 pub mod model;
 pub mod native_fixture;
 pub mod resource;
+mod row_viewport;
 mod sample_project;
 mod search;
 pub mod search_entries;

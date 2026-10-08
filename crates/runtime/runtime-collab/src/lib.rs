@@ -2800,6 +2800,9 @@ pub struct Invocation {
     /// invocation originated from a leased workspace task. Empty for ordinary
     /// invocations so legacy application callers remain context-neutral.
     pub context_json: String,
+    /// Optional bounded original declaration from this authenticated stream.
+    /// Empty on older brokers; the declaration itself is never authority.
+    pub admission_json: String,
 }
 
 /// Client-pulled stream of invocations addressed to this application.
@@ -2851,6 +2854,11 @@ impl InvocationStream {
         let action = text(r.get_action()?, "invocation action")?;
         let actor = text(r.get_actor()?, "invocation actor")?;
         let context_json = text(r.get_context_json()?, "invocation context")?;
+        let raw_admission = r.get_admission_json()?;
+        if raw_admission.len() > 16 * 1024 {
+            return Err(capnp::Error::failed("oversized invocation admission".into()).into());
+        }
+        let admission_json = text(raw_admission, "invocation admission")?;
         let argument = if r.get_has_argument() {
             Some(text(r.get_argument()?, "invocation argument")?)
         } else {
@@ -2866,6 +2874,7 @@ impl InvocationStream {
             argument,
             actor,
             context_json,
+            admission_json,
         })
     }
 }

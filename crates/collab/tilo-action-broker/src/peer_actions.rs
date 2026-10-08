@@ -2,7 +2,7 @@
 //! Only inert authenticated requests cross into its bounded `LocalSet` queue.
 use std::sync::Arc;
 use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
-use tilo_relay::client::{CertifiedAction, CertifiedActionEvent};
+use tilo_relay_session::client::{CertifiedAction, CertifiedActionEvent};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
 
@@ -323,7 +323,7 @@ impl PeerActionQueue {
     /// Returns `()` once serving stops for any reason; the session is then closed.
     pub async fn serve(
         &self,
-        session: Arc<tilo_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay_session::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
     ) -> Result<(), ()> {
@@ -344,7 +344,7 @@ impl PeerActionQueue {
     /// Returns why serving stopped; a closed transport also closes the session.
     pub async fn serve_with_readiness(
         &self,
-        session: Arc<tilo_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay_session::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
         acknowledged: tokio::sync::watch::Sender<bool>,
@@ -366,7 +366,7 @@ impl PeerActionQueue {
     #[cfg(feature = "test-support")]
     pub async fn serve_with_readiness_and_registration_barrier_for_test(
         &self,
-        session: Arc<tilo_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay_session::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
         acknowledged: tokio::sync::watch::Sender<bool>,
@@ -383,7 +383,7 @@ impl PeerActionQueue {
 
     async fn serve_with_readiness_inner(
         &self,
-        session: Arc<tilo_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay_session::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
         acknowledged: tokio::sync::watch::Sender<bool>,
@@ -488,10 +488,10 @@ fn sequence(update: &tilo_actions::InvocationUpdate) -> Option<u64> {
 }
 
 fn send(
-    session: &tilo_relay::RelayCoeditSession,
+    session: &tilo_relay_session::RelayCoeditSession,
     evidence: &CertifiedAction,
     message: ActionMessage,
-) -> Result<(), tilo_relay::client::ClientError> {
+) -> Result<(), tilo_relay_session::client::ClientError> {
     let request = evidence.action();
     session.send_action(bounded_reply(request, message))
 }
@@ -611,9 +611,11 @@ fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
     clippy::needless_pass_by_value,
     reason = "a `map_err` adapter receives the error by value"
 )]
-fn attachment_send_error(error: tilo_relay::client::ClientError) -> PeerActionAttachmentError {
+fn attachment_send_error(
+    error: tilo_relay_session::client::ClientError,
+) -> PeerActionAttachmentError {
     match error {
-        tilo_relay::client::ClientError::PrivateTransportClosed => {
+        tilo_relay_session::client::ClientError::PrivateTransportClosed => {
             PeerActionAttachmentError::TransportClosed
         }
         _ => PeerActionAttachmentError::Failed,
@@ -788,7 +790,7 @@ mod tests {
 
     #[test]
     fn only_closed_private_transport_is_retryable() {
-        use tilo_relay::client::ClientError;
+        use tilo_relay_session::client::ClientError;
 
         assert_eq!(
             attachment_send_error(ClientError::PrivateTransportClosed),

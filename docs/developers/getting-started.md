@@ -54,7 +54,9 @@ To learn one idea at a time, start from an example instead: a complete,
 tested program such as `counter`, `shared-checklist`, `data-table` or
 `localized`. `tilo-app examples` lists them, and
 `tilo-app new my-list --from-example shared-checklist` copies one and renames
-it to your app. [Templates and examples](../examples.md) describes each.
+it to your app. To inspect its collaboration and undo tests without a checkout,
+run `tilo-app examples shared-checklist --file tests/app.rs --json`.
+[Templates and examples](../examples.md) describes each.
 
 The new directory is a complete Cargo project with its own git repository:
 

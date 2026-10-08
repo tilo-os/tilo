@@ -165,6 +165,96 @@ fn templates_are_listed_in_both_modes() {
 }
 
 #[test]
+fn focused_examples_show_one_example_offline_outside_a_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+        .args(["examples", "shared-checklist", "--json"])
+        .current_dir(dir.path())
+        .env("PATH", dir.path())
+        .env("CARGO", dir.path().join("missing-cargo"))
+        .env_remove("TILO_UI_PATH")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        output.stderr.is_empty(),
+        "metadata is not duplicated to stderr"
+    );
+    let result = document(&output);
+    assert_eq!(result["command"], "examples");
+    assert_eq!(result["result"]["example"]["name"], "shared-checklist");
+    assert!(result["result"]["examples"].is_null());
+    assert!(
+        result["result"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file == "tests/app.rs")
+    );
+    assert_eq!(
+        result["result"]["create_command"],
+        "tilo-app new NAME --from-example shared-checklist"
+    );
+    assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn focused_examples_emit_exact_embedded_tests_once_in_each_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let args = ["examples", "shared-checklist", "--file", "tests/app.rs"];
+    let human = tilo_app(dir.path(), &args);
+    assert!(human.status.success(), "{human:?}");
+    let expected = include_str!("../../../../examples/apps/shared-checklist/tests/app.rs");
+    assert_eq!(human.stdout, expected.as_bytes());
+    let mut args = args.to_vec();
+    args.push("--json");
+    let output = tilo_app(dir.path(), &args);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        output.stderr.is_empty(),
+        "source is not duplicated to stderr"
+    );
+    let result = document(&output);
+    assert_eq!(result["result"]["file"], "tests/app.rs");
+    assert_eq!(result["result"]["content"], expected);
+    assert_eq!(result["result"]["example"]["name"], "shared-checklist");
+}
+
+#[test]
+fn focused_examples_refuse_unknown_files_without_reading_the_filesystem() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("outside.txt"), "outside example fixture").unwrap();
+    for path in ["outside.txt", "../../Cargo.toml", "/etc/passwd"] {
+        let output = tilo_app(
+            dir.path(),
+            &["examples", "shared-checklist", "--file", path, "--json"],
+        );
+        assert!(!output.status.success());
+        let report = document(&output);
+        assert_eq!(report["ok"], false);
+        assert_eq!(report["command"], "examples");
+        let error = report["error"].as_str().unwrap();
+        assert!(error.contains("choose one of:"));
+        assert!(error.contains("src/lib.rs"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("outside example fixture"));
+    }
+    let missing_name = tilo_app(
+        dir.path(),
+        &["examples", "--file", "tests/app.rs", "--json"],
+    );
+    assert!(!missing_name.status.success());
+    assert_eq!(document(&missing_name)["ok"], false);
+    let unknown = tilo_app(dir.path(), &["examples", "unknown", "--json"]);
+    assert!(!unknown.status.success());
+    assert!(
+        document(&unknown)["error"]
+            .as_str()
+            .unwrap()
+            .contains("shared-checklist")
+    );
+}
+
+#[test]
 fn examples_are_listed_in_both_modes() {
     let dir = tempfile::tempdir().unwrap();
     let human = tilo_app(dir.path(), &["examples"]);
@@ -175,6 +265,10 @@ fn examples_are_listed_in_both_modes() {
 
     let output = tilo_app(dir.path(), &["examples", "--json"]);
     assert!(output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "example list is not duplicated to stderr"
+    );
     let report = document(&output);
     assert_eq!(report["ok"], true);
     let examples = report["result"]["examples"].as_array().unwrap();

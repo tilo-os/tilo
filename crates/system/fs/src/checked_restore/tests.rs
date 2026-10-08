@@ -879,12 +879,7 @@ async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_
                         Outcome::NotVisible
                     }
                     1 => {
-                        fixture
-                            .fs
-                            .write_buffers
-                            .lock()
-                            .unwrap()
-                            .insert(fixture.ino, b"unflushed".to_vec());
+                        fixture.fs.install_stage(fixture.ino, b"unflushed".to_vec());
                         Outcome::PendingWrites
                     }
                     2 => {

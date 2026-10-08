@@ -355,37 +355,25 @@ mod tests {
         announced(&inspection, name).unwrap_or_else(|| panic!("`{name}` is announced"))
     }
 
-    /// The accessibility node whose name satisfies `wanted`, depth first.
-    fn announced_where(
-        node: &serde_json::Value,
-        wanted: &dyn Fn(&str) -> bool,
-    ) -> Option<serde_json::Value> {
-        if node
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(wanted)
-        {
-            return Some(node.clone());
-        }
-        match node {
-            serde_json::Value::Object(fields) => fields
-                .values()
-                .find_map(|child| announced_where(child, wanted)),
-            serde_json::Value::Array(items) => items
-                .iter()
-                .find_map(|child| announced_where(child, wanted)),
-            _ => None,
-        }
-    }
-
-    /// The cadence the header's button shows, as a screen reader hears it.
+    /// The exact accessible name of the real retained cadence button, rather
+    /// than a similarly named popup item or resource declaration.
     fn shown_interval(app: &mut TestApp<MonitorShell>) -> String {
+        fn cadence(node: &serde_json::Value) -> Option<&serde_json::Value> {
+            if node.get("test_id").and_then(serde_json::Value::as_str) == Some("monitor.cadence") {
+                return node.get("semantics");
+            }
+            match node {
+                serde_json::Value::Object(fields) => fields.values().find_map(cadence),
+                serde_json::Value::Array(items) => items.iter().find_map(cadence),
+                _ => None,
+            }
+        }
         let inspection: serde_json::Value =
             serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-        announced_where(&inspection, &|name| name.starts_with("Every "))
-            .expect("the cadence is announced")["name"]
+        cadence(&inspection).expect("the retained cadence button publishes accessibility semantics")
+            ["name"]
             .as_str()
-            .unwrap()
+            .expect("the cadence button announces its update frequency")
             .to_owned()
     }
 
@@ -439,7 +427,10 @@ mod tests {
     #[test]
     fn preferences_follow_the_person_and_stay_out_of_the_document() {
         let mut app = TestApp::<MonitorShell>::new().unwrap();
-        assert_eq!(shown_interval(&mut app), "Every 1.5 s");
+        assert_eq!(
+            shown_interval(&mut app),
+            "Update frequency: Every 1.5 seconds"
+        );
 
         // Another of the person's devices changed them.
         app.settings::<MonitorPreferences>()
@@ -450,7 +441,10 @@ mod tests {
             .unwrap();
         app.harness().relayout();
         app.harness().relayout();
-        assert_eq!(shown_interval(&mut app), "Every 3 s");
+        assert_eq!(
+            shown_interval(&mut app),
+            "Update frequency: Every 3 seconds"
+        );
 
         // A cadence chosen here is stored for every device.
         let versions = app.versions().len();
@@ -459,7 +453,10 @@ mod tests {
         app.harness().key("ArrowDown");
         app.harness().key("Enter");
         app.harness().relayout();
-        assert_eq!(shown_interval(&mut app), "Every 5 s");
+        assert_eq!(
+            shown_interval(&mut app),
+            "Update frequency: Every 5 seconds"
+        );
         assert_eq!(
             app.settings::<MonitorPreferences>().get(),
             MonitorPreferences {
@@ -474,7 +471,10 @@ mod tests {
         );
 
         let mut app = app.reopen().unwrap();
-        assert_eq!(shown_interval(&mut app), "Every 5 s");
+        assert_eq!(
+            shown_interval(&mut app),
+            "Update frequency: Every 5 seconds"
+        );
     }
 
     #[test]
@@ -654,6 +654,29 @@ mod tests {
             } else {
                 assert!(rows > 0, "`{scenario}` lists the sample processes");
             }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn captured_startup_paints_the_actual_hosted_machine_at_both_widths() {
+        fn assert_painted(app: &mut TestApp<MonitorShell>, viewport: (u32, u32)) {
+            assert_eq!(tab_shown(app, 1), Some(false));
+            assert!(process_rows(app) > 0);
+            let pixels = app.harness().render_rgba();
+            let first = pixels.get(..4).expect("the real host must render pixels");
+            assert!(
+                pixels.chunks_exact(4).any(|pixel| pixel != first),
+                "the captured machine must paint more than the window ground at {viewport:?}"
+            );
+        }
+        for viewport in [(1280, 800), (390, 844)] {
+            let mut app = TestApp::<MonitorShell>::capture_at(None, viewport).unwrap();
+            // Observe startup before any explicit extra relayout or theme
+            // change can repair a lost retained layout.
+            assert_painted(&mut app, viewport);
+            app.harness().set_theme(ui::Theme::light());
+            assert_painted(&mut app, viewport);
         }
     }
 
