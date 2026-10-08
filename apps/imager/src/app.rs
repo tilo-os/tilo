@@ -968,6 +968,11 @@ impl ImagerApp {
                 "Pre-configured for {} on {}",
                 self.profile.user.username, self.profile.hostname
             )
+        } else if let Some(hostname) = crate::handoff::chosen_hostname(&self.profile) {
+            crate::setup::strings::t_args(
+                "imager-review-setup-hostname",
+                &[("hostname", ui::i18n::ArgValue::from(hostname))],
+            )
         } else {
             "Written unchanged, then verified".to_string()
         }
@@ -2453,6 +2458,51 @@ mod tests {
         ImagerDoc::seed_demo(&mut doc);
         present(&mut app, &doc);
         (app, doc)
+    }
+
+    #[test]
+    fn unchanged_disk_review_discloses_the_authored_hostname() {
+        use tilo_actions::Action as _;
+
+        let (mut app, mut doc) = seeded_app();
+        let mut source = app
+            .recent
+            .iter()
+            .find(|source| source.kind == SourceKind::IsoFile)
+            .unwrap()
+            .clone();
+        source.installable = false;
+        ImagerAction::SelectSource {
+            source: Box::new(source),
+            previous: None,
+            recent_rank: 1,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        present(&mut app, &doc);
+        app.goto(Step::Confirm);
+        assert!(!app.customizable());
+        assert_eq!(app.review_setup(), "Written unchanged, then verified");
+
+        ImagerAction::SetHostname {
+            value: "reviewed-host".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        present(&mut app, &doc);
+        assert_eq!(
+            crate::handoff::chosen_hostname(&app.profile),
+            Some("reviewed-host")
+        );
+        let setup = app
+            .review_rows()
+            .into_iter()
+            .find(|(label, _)| *label == "Setup")
+            .unwrap()
+            .1;
+        assert!(setup.contains("reviewed-host"), "{setup}");
+        assert!(setup.contains("then verified"), "{setup}");
+        assert!(!setup.contains("Pre-configured"), "{setup}");
     }
 
     /// Blank start, demo seeding, local state and restart reconciliation.
