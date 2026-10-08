@@ -422,6 +422,7 @@ impl Drop for NativeAcceptedWorker {
     }
 }
 thread_local! {
+    static NATIVE_RETIRING_STREAM: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> = const { RefCell::new(None) };
     static NATIVE_ACCEPTED_WORKERS: RefCell<Vec<NativeAcceptedWorker>> = const { RefCell::new(vec![]) };
 }
 fn start_native_accepted_worker(invocation: tilo_actions::InvocationId) {
@@ -444,8 +445,8 @@ fn start_native_accepted_worker(invocation: tilo_actions::InvocationId) {
             cancelled,
             exited,
             thread: Some(thread),
-            delayed: matches!(COMPOUND_MODE.get(), 15 | 16),
-            remaining_cancel_polls: usize::from(matches!(COMPOUND_MODE.get(), 15 | 16)),
+            delayed: matches!(COMPOUND_MODE.get(), 15..=17),
+            remaining_cancel_polls: usize::from(matches!(COMPOUND_MODE.get(), 15..=17)),
             cleanup_observed: false,
             foreign_terminal_pending: COMPOUND_MODE.get() == 16,
         })
@@ -816,4 +817,69 @@ fn native_effect_foreign_terminal_preserves_exact_component_closed_cleanup() {
             .refused_bound_invocations
             .contains(&request.invocation)
     );
+}
+
+#[test]
+fn native_effect_retired_after_acceptance_retains_delayed_worker_cleanup() {
+    COMPOUND_MODE.set(17);
+    let mut fixture = ActionFixture::broker();
+    let target = fixture.target(0, "follow-up");
+    let live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    NATIVE_RETIRING_STREAM.with_borrow_mut(|slot| *slot = Some(live.clone()));
+    let (delivery, request) = native_effect_delivery(&fixture, live);
+    let scope = native_effect_scope(&fixture, &delivery, &request);
+    let refused = fixture.app.invoke_bound_target_with_broker(
+        &target,
+        &ResourceInvocation::new(&request.address, &request.actor)
+            .confirmed(true)
+            .broker_admitted(true)
+            .invocation(Some(request.invocation))
+            .scope(Some(&scope)),
+        None,
+    );
+    COMPOUND_MODE.set(0);
+    NATIVE_RETIRING_STREAM.with_borrow_mut(|slot| *slot = None);
+    assert!(
+        refused
+            .unwrap_err()
+            .to_string()
+            .contains("native stream retired")
+    );
+    assert!(
+        fixture
+            .app
+            .actions
+            .bound_invocations
+            .contains_key(&request.invocation),
+        "accepted callback lost cleanup when its stream retired after handler admission"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline {
+        fixture.app.poll_directed_invocations();
+        if NATIVE_ACCEPTED_WORKERS.with_borrow(|workers| workers[0].cleanup_observed) {
+            break;
+        }
+        std::thread::park_timeout(std::time::Duration::from_millis(5));
+    }
+    NATIVE_ACCEPTED_WORKERS.with_borrow_mut(|workers| {
+        assert_eq!(workers[0].invocation, request.invocation);
+        assert!(workers[0].cleanup_observed);
+        assert!(workers[0].thread.is_none());
+        workers.clear();
+    });
+    assert!(
+        !fixture
+            .app
+            .actions
+            .bound_invocations
+            .contains_key(&request.invocation)
+    );
+    assert!(
+        !fixture
+            .app
+            .actions
+            .directed_invocations
+            .contains_key(&request.invocation)
+    );
+    assert!(scope.effect_scope().is_err());
 }

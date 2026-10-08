@@ -2219,18 +2219,8 @@ pub(crate) fn invoke_resource_action(
                     } else {
                         (execute_and_drain(operation.doc), false)
                     };
-                    let mut native_cleanup_pending = false;
                     if native_violation {
                         if let Some(scope) = scope { scope.cancel(); }
-                        if accepted {
-                            // Contract refusal must stop the exact worker already
-                            // admitted by this callback, using its normal lifecycle
-                            // handler. Retain component CLOSED custody below even
-                            // when cooperative cancellation has not finished yet.
-                            native_cleanup_pending = !widget.poll_resource_operation(invocation, true, operation.doc, path)
-                                .is_some_and(|update| update.invocation() == invocation && update.is_terminal());
-                            accepted = native_cleanup_pending;
-                        }
                     }
                     if operation.finish() || native_violation {
                         let error = tilo_actions::DoorError::Unavailable {
@@ -2241,11 +2231,7 @@ pub(crate) fn invoke_resource_action(
                                 "callback mutated the document without a declared Document follow-up; bytes were retained".into()
                             },
                         };
-                        return Err(if native_cleanup_pending {
-                            BoundActionError::NativeAcceptedRefusal(error)
-                        } else {
-                            BoundActionError::Door(error)
-                        });
+                        return Err(BoundActionError::Door(error));
                     }
                     started
                     };
@@ -2257,8 +2243,32 @@ pub(crate) fn invoke_resource_action(
                 .map_err(BoundActionError::Dispatch)
                 .and_then(std::convert::identity),
         );
-        // Even a post-delivery contract fault must retain Accepted lifecycle
-        // custody for the component's existing CLOSED cancellation/cleanup path.
+        // Any native post-admission refusal (including drain or final scope
+        // checks) must cancel the exact already-accepted worker. The canonical
+        // refusal remains final while normal lifecycle polling observes cleanup.
+        if accepted
+            && result.as_ref().is_some_and(Result::is_err)
+            && scope.is_some_and(|scope| scope.is_native_effect())
+        {
+            if let Some(scope) = scope {
+                scope.cancel();
+            }
+            accepted = !binding
+                .read_document(document, |doc, path| {
+                    widget.poll_resource_operation(invocation, true, doc, path)
+                })
+                .ok()
+                .flatten()
+                .is_some_and(|update| update.invocation() == invocation && update.is_terminal());
+            if accepted {
+                if let Some(Err(error)) = result.take() {
+                    result = Some(Err(BoundActionError::NativeAcceptedRefusal(
+                        error.into_door(),
+                    )));
+                }
+            }
+        }
+        // Retain component CLOSED custody for pending cleanup as well.
         accepted.then_some((invocation, true))
     };
     root.visit_components(&mut ComponentRequest {

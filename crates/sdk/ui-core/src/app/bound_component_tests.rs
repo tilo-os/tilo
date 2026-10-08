@@ -288,9 +288,16 @@ impl Widget for Probe {
                     mode == 10
                 );
             }
-            13..=16 => {
+            13..=17 => {
                 start_native_accepted_worker(request.invocation);
-                if mode != 14 {
+                if mode == 17 {
+                    NATIVE_RETIRING_STREAM.with_borrow(|slot| {
+                        slot.as_ref()
+                            .unwrap()
+                            .store(false, std::sync::atomic::Ordering::Release);
+                    });
+                }
+                if !matches!(mode, 14 | 17) {
                     doc.document_mut()
                         .put(ROOT, "accepted-unauthorized", true)
                         .unwrap();
