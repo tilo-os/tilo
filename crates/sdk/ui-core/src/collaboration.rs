@@ -1777,6 +1777,18 @@ impl CollaborationManager {
         self.primary_route.accepted = None;
     }
 
+    pub(crate) fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.set_document_owner_routes(routes);
+        }
+    }
+
+    pub(crate) fn finish_event_batch(&mut self) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.finish_event_batch();
+        }
+    }
+
     /// Drain every event pending on the current backend. Non-blocking.
     ///
     /// Also records a primary-route acknowledgement the transport reported
