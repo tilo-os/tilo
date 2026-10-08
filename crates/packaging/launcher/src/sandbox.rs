@@ -198,6 +198,7 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
     // injector or output path. Keep arbitrary profiling/scenario environment stripped.
     for name in [
         "TILO_PROFILE_PRESENTATION",
+        "TILO_PROFILE_GPU_STAGES",
         "VELLO_GPU_TIMESTAMPS",
         "VELLO_GPU_DISPATCH_TIMESTAMPS",
     ] {
@@ -290,19 +291,24 @@ pub fn push_gpu_selection(
         argv.push(key.to_string());
         argv.push(value);
     }
-    // Read-only: the session writes the seed, apps only start from it, so
-    // no app can plant pipelines another app will run.
     if let Some(seed) = &selection.pipeline_seed {
-        push_bind(
-            argv,
-            "--ro-bind-try",
-            seed,
-            Path::new(crate::gpu::SANDBOX_PIPELINE_SEED_DIR),
-        );
-        argv.push("--setenv".to_string());
-        argv.push(crate::gpu::PIPELINE_SEED_ENV.to_string());
-        argv.push(crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string());
+        push_pipeline_seed(argv, seed);
     }
+}
+
+/// Bind the trusted session seed read-only, independently of DRM access.
+pub fn push_pipeline_seed(argv: &mut Vec<String>, seed: &Path) {
+    push_bind(
+        argv,
+        "--ro-bind-try",
+        seed,
+        Path::new(crate::gpu::SANDBOX_PIPELINE_SEED_DIR),
+    );
+    argv.extend([
+        "--setenv".to_string(),
+        crate::gpu::PIPELINE_SEED_ENV.to_string(),
+        crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string(),
+    ]);
 }
 
 /// The Landlock rules that make [`push_gpu_selection`]'s binds usable: the
@@ -1370,7 +1376,8 @@ mod tests {
                 .set("TILO_NATIVE_INPUT_GATE", "private-approval")
                 .set("TILO_PROFILE_OUT", "/private/log")
                 .set("VELLO_GPU_DISPATCH_TIMESTAMPS", value)
-                .set("VELLO_GPU_TIMESTAMPS", value);
+                .set("VELLO_GPU_TIMESTAMPS", value)
+                .set("TILO_PROFILE_GPU_STAGES", value);
             let argv = build_bwrap_argv(
                 &mk_manifest("off"),
                 Path::new("/host/pkg"),
@@ -1385,7 +1392,11 @@ mod tests {
                 setenv_value(&argv, "TILO_PROFILE_PRESENTATION"),
                 (value == "1").then_some("1")
             );
-            for key in ["VELLO_GPU_TIMESTAMPS", "VELLO_GPU_DISPATCH_TIMESTAMPS"] {
+            for key in [
+                "VELLO_GPU_TIMESTAMPS",
+                "VELLO_GPU_DISPATCH_TIMESTAMPS",
+                "TILO_PROFILE_GPU_STAGES",
+            ] {
                 assert_eq!(setenv_value(&argv, key), (value == "1").then_some("1"));
             }
             for key in [

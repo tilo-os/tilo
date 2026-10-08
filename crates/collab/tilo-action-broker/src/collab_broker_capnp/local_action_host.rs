@@ -15,6 +15,106 @@ struct CertifiedLocalActionHost {
 }
 
 impl CapnpBrokerState {
+    /// Invoke through the native seat's existing palette/control provider.
+    /// This process-owned door is never used by network, MCP or app transports.
+    pub fn action_invoke_local_person(
+        self: &Arc<Self>,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if request.on_behalf_of.is_some()
+            || caller.is_foreign_device()
+            || !matches!(caller.principal(), CallerPrincipal::Person(_))
+        {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        // Hosts without a native-seat service retain the pre-existing ordinary
+        // action door. It supplies no original certificate custody, so no
+        // privileged continuation can mistake it for native-person evidence.
+        // An installed service that refuses NEVER takes this compatibility path.
+        if self.services.local_person.is_none() {
+            return self.action_invoke(caller, None, None, request);
+        }
+        let origin = (|| {
+            if !self.is_accepting() || request.on_behalf_of.is_some() || caller.is_foreign_device()
+            {
+                return Err(ActionHostError::NotPermitted);
+            }
+            let CallerPrincipal::Person(person) = caller.principal() else {
+                return Err(ActionHostError::NotPermitted);
+            };
+            let room = caller.room().ok_or(ActionHostError::NotPermitted)?;
+            let certificate = self
+                .services
+                .local_person
+                .as_ref()
+                .ok_or(ActionHostError::NotPermitted)?
+                .certificate(room, person)
+                .map_err(|_| ActionHostError::NotPermitted)?;
+            if caller
+                .user_public_key()
+                .is_some_and(|key| key != &certificate.user_public_key)
+                || caller
+                    .device_public_key()
+                    .is_some_and(|key| key != &certificate.device_public_key)
+            {
+                return Err(ActionHostError::NotPermitted);
+            }
+            self.current_native_person(room, &certificate)
+                .map_err(|_| ActionHostError::NotPermitted)?;
+            if super::principal_id_for_root(certificate.user_public_key) != *person {
+                return Err(ActionHostError::NotPermitted);
+            }
+            let time = self
+                .registered_policy_time()
+                .map_err(|_| ActionHostError::NotPermitted)?
+                .ok_or(ActionHostError::NotPermitted)?;
+            Ok(InvocationCaller::NativePerson {
+                invocation: request.invocation,
+                room: room.into(),
+                certificate,
+                time,
+            })
+        })();
+        match origin {
+            Ok(origin) => {
+                self.action_invoke_with_origin(caller, None, None, Some(&origin), request)
+            }
+            Err(error) => Pending::ready(Err(error)),
+        }
+    }
+
+    pub(super) fn current_native_person(
+        &self,
+        room: &str,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        if !self.is_accepting() {
+            return Err("native person host retired".into());
+        }
+        let time = self
+            .registered_policy_time()?
+            .ok_or("native person policy origin unavailable")?;
+        tilo_user_identity::verify_device_cert_at(
+            certificate,
+            time.now_ns().map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let current = self
+            .services
+            .local_person
+            .as_ref()
+            .ok_or("native person authority unavailable")?
+            .certificate(
+                room,
+                &super::principal_id_for_root(certificate.user_public_key),
+            )?;
+        if current != *certificate {
+            return Err("native person identity replaced".into());
+        }
+        Ok(())
+    }
+
     /// Bind one host-issued execution to an existing signed, room-bound presentation.
     /// The verifier, not the caller's labels or UUID, establishes authority.
     ///
@@ -27,6 +127,14 @@ impl CapnpBrokerState {
         caller: &Caller,
         presentation: &[u8],
     ) -> Result<Arc<dyn ActionHost + Send + Sync>, String> {
+        Ok(self.checked_local_host(caller, presentation)?)
+    }
+
+    fn checked_local_host(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+    ) -> Result<Arc<CertifiedLocalActionHost>, String> {
         // This door never falls back to the legacy wall clock during verification.
         self.registered_policy_time()?
             .ok_or("original policy clock unavailable")?;
@@ -59,6 +167,68 @@ impl CapnpBrokerState {
         });
         host.check(caller).map_err(|error| error.to_string())?;
         Ok(host)
+    }
+}
+
+/// Existing signed personal-device admission, retained with its real execution
+/// and original policy clock. No public constructor, serialized token, key,
+/// device enrolment or account grant is exposed by this projection.
+#[derive(Clone)]
+pub struct CertifiedPersonContext {
+    principal: String,
+    device: String,
+    checked: Arc<CertifiedLocalActionHost>,
+}
+impl CertifiedPersonContext {
+    pub fn principal(&self) -> &str {
+        &self.principal
+    }
+    pub fn device(&self) -> &str {
+        &self.device
+    }
+    /// # Errors
+    /// Refuses an ended/revoked session, unavailable original clock or changed
+    /// certificate/admission. Must be called at the actual native I/O boundary.
+    pub fn revalidate(&self) -> Result<(), String> {
+        self.checked
+            .check(&self.checked.caller)
+            .map_err(|_| "personal device admission unavailable".into())
+    }
+}
+impl CapnpBrokerState {
+    /// Project only an already admitted person's own room on a non-foreign
+    /// device. This does not delegate account credentials or mint permissions.
+    /// # Errors
+    /// Refuses forged labels, agents/apps, other rooms/devices, expired or
+    /// revoked certificate/admission, ended execution and missing policy clocks.
+    pub fn certified_person_context(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+    ) -> Result<CertifiedPersonContext, String> {
+        let checked = self.checked_local_host(caller, presentation)?;
+        let certificate = checked
+            .admission
+            .admitted
+            .certificate
+            .as_ref()
+            .ok_or("personal device certificate unavailable")?;
+        let room = uuid::Uuid::parse_str(&checked.admission.room)
+            .map_err(|_| "personal room unavailable")?;
+        if !collab_types::is_person_room(&certificate.user_public_key, &room)
+            || checked.effective.is_foreign_device()
+            || checked.admission.admitted.agent_id.is_some()
+            || checked.admission.admitted.host_scope.is_some()
+        {
+            return Err("native credentials require this person's own admitted device room".into());
+        }
+        let principal = checked.admission.admitted.principal_id.clone();
+        let device = hex::encode(certificate.device_public_key);
+        Ok(CertifiedPersonContext {
+            principal,
+            device,
+            checked,
+        })
     }
 }
 

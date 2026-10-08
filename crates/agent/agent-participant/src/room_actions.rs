@@ -34,6 +34,8 @@
 //! channels like any other, admitted by the room's steward. It reads only
 //! records it holds keys for and writes nothing in the clear.
 
+mod reads;
+
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
@@ -708,7 +710,7 @@ impl Worker {
                     let result = if query.view_resource.is_some() {
                         self.view_catalogue_page(workspace_id, &caller, &query)
                     } else {
-                        self.catalogue_page(workspace_id, &query)
+                        self.catalogue_page(workspace_id, &caller, &query)
                     };
                     done.complete(result);
                 }
@@ -808,8 +810,7 @@ impl Worker {
                 &self.participant,
                 false,
                 Seed::Existing {
-                    record: ui::record::RecordId::parse(&route.record)
-                        .ok_or_else(|| format!("{} is not a record id", route.record))?,
+                    record: reads::record_id(&route.record)?,
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                 },
             )
@@ -928,8 +929,15 @@ impl Worker {
     fn catalogue_page(
         &mut self,
         workspace_id: u64,
+        caller: &Caller,
         query: &CatalogueQuery,
     ) -> Result<CataloguePage, ActionHostError> {
+        if let Some(provider) = query.provider.as_deref()
+            && let Some(page) =
+                self.registered_read_catalogue(workspace_id, caller, provider, query)
+        {
+            return Ok(page);
+        }
         let state = self.refresh(workspace_id)?;
         let revision = state.revision.to_string();
         let Some(room) = state.room.clone() else {
@@ -950,13 +958,27 @@ impl Worker {
         let mut rows = Vec::new();
         for route in &wanted {
             let provider = record_provider(route);
-            let descriptors = match self.mount(route, &state) {
+            let mut descriptors = match self.mount(route, &state) {
                 Ok(mounted) => live_actions(&mounted.app),
                 Err(error) => {
                     tracing::warn!(%error, record = %route.record, "room actions: a record did not mount");
                     continue;
                 }
             };
+            if let Some(link) = self.shared.link.get().cloned()
+                && let Ok(read) = reads::CanonicalRead::prepare(
+                    &self.catalogue,
+                    link.as_ref(),
+                    workspace_id,
+                    caller,
+                    route,
+                )
+                && read
+                    .recheck(link.as_ref(), workspace_id, caller, route)
+                    .is_ok()
+            {
+                descriptors.extend(read.operations());
+            }
             rows.extend(descriptors.into_iter().map(|descriptor| CatalogueRow {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
@@ -1002,6 +1024,59 @@ impl Worker {
         Ok(page)
     }
 
+    fn registered_read_catalogue(
+        &self,
+        workspace: u64,
+        caller: &Caller,
+        provider: &str,
+        query: &CatalogueQuery,
+    ) -> Option<CataloguePage> {
+        let mut route = record_of(provider, "")?;
+        let link = self.shared.link.get()?;
+        route.cluster_id = link
+            .view_read_policy(workspace, caller, &route.app_id, &route.record)?
+            .room;
+        let read = reads::CanonicalRead::prepare(
+            &self.catalogue,
+            link.as_ref(),
+            workspace,
+            caller,
+            &route,
+        )
+        .ok()?;
+        // Document rows retain their existing room revision and invocation
+        // path. Only an exact registered-read target uses this source revision.
+        let target = query.target.as_ref()?;
+        let descriptors = read.operations();
+        if !descriptors.iter().any(|entry| &entry.address == target) {
+            return None;
+        }
+        read.recheck(link.as_ref(), workspace, caller, &route)
+            .ok()?;
+        let rows = descriptors
+            .into_iter()
+            .map(|descriptor| CatalogueRow {
+                provider: provider.into(),
+                app_id: route.app_id.clone(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: descriptor.address.resource.clone(),
+                    kind: descriptor.resource_kind.clone(),
+                    label: descriptor.resource_label.clone(),
+                    presentation: None,
+                },
+                action: Some(descriptor),
+                has_children: false,
+                visibility: None,
+            })
+            .collect();
+        Some(CataloguePage::from_rows(
+            read.revision().to_owned(),
+            rows,
+            query,
+        ))
+    }
+
     fn open_rows(&self, room: &str) -> Vec<CatalogueRow> {
         self.catalogue
             .iter()
@@ -1040,7 +1115,7 @@ impl Worker {
     }
 
     fn invoke(&mut self, workspace_id: u64, invocation: InvocationId) -> InvocationReceipt {
-        let request = {
+        let (caller, request) = {
             let mut ledger = self.ledger();
             let Some(entry) = ledger.entries.get(&invocation) else {
                 return InvocationReceipt {
@@ -1054,11 +1129,13 @@ impl Worker {
                 // Cancelled before it started.
                 return InvocationState::new(invocation, entry.update.clone()).receipt();
             }
+            let caller = entry.caller.clone();
             let request = entry.request.clone();
             ledger.running = Some(invocation);
-            request
+            drop(ledger);
+            (caller, request)
         };
-        let outcome = self.perform(workspace_id, &request);
+        let outcome = self.perform(workspace_id, &caller, &request);
         let target = &request.target;
         match &outcome {
             Ok(_) => {
@@ -1099,8 +1176,15 @@ impl Worker {
     fn perform(
         &mut self,
         workspace_id: u64,
+        caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<ActionOutput, Outcome> {
+        if let Some(output) = self
+            .try_registered_read(workspace_id, caller, request)
+            .map_err(|error| *error)?
+        {
+            return Ok(output);
+        }
         let state = self.refresh(workspace_id).map_err(Outcome::Rejected)?;
         if request
             .revision
@@ -1173,6 +1257,76 @@ impl Worker {
         Ok(output)
     }
 
+    fn try_registered_read(
+        &self,
+        workspace: u64,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Option<ActionOutput>, Box<Outcome>> {
+        let Some(hint) = record_of(&request.target.provider, "") else {
+            return Ok(None);
+        };
+        let Some(link) = self.shared.link.get() else {
+            return Ok(None);
+        };
+        let Some(policy) = link.view_read_policy(workspace, caller, &hint.app_id, &hint.record)
+        else {
+            return Ok(None);
+        };
+        let route = DocumentRoute {
+            cluster_id: policy.room,
+            ..hint
+        };
+        let Ok(mut read) = reads::CanonicalRead::prepare(
+            &self.catalogue,
+            link.as_ref(),
+            workspace,
+            caller,
+            &route,
+        ) else {
+            // A missing canonical read source must not replace or grant the
+            // ordinary document door. Unregistered effects stay refused there.
+            return Ok(None);
+        };
+        if !read
+            .operations()
+            .iter()
+            .any(|entry| entry.address == request.target.address)
+        {
+            return Ok(None);
+        }
+        if request
+            .revision
+            .as_deref()
+            .is_some_and(|revision| revision != read.revision())
+        {
+            return Err(Box::new(Outcome::Rejected(ActionHostError::Refused {
+                reason: "the committed source changed".into(),
+            })));
+        }
+        let arguments = match &request.argument {
+            InvokeArgument::None => serde_json::Map::new(),
+            InvokeArgument::Json(arguments) => arguments.clone(),
+            InvokeArgument::Text(_) => {
+                return Err(Box::new(Outcome::Rejected(
+                    ActionHostError::InvalidRequest {
+                        reason: "a registered read requires typed arguments".into(),
+                    },
+                )));
+            }
+        };
+        read.invoke(
+            link.as_ref(),
+            workspace,
+            caller,
+            &route,
+            &request.target.address,
+            &arguments,
+        )
+        .map(Some)
+        .map_err(|error| Box::new(door_outcome(&error)))
+    }
+
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -1196,7 +1350,7 @@ impl Worker {
         let route = DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: room.to_owned(),
-            record: hosted.record().to_owned(),
+            record: hosted.wire_record().to_owned(),
         };
         if let Some(mutation) = hosted.take_mutation() {
             self.commit(workspace_id, &route, &mutation)

@@ -340,6 +340,13 @@ pub struct SurfaceCx<R: Resource> {
 }
 
 impl<R: Resource> SurfaceCx<R> {
+    /// The host-owned identity of the record this surface shows. A durable
+    /// activation link can name it without relying on the last-open window.
+    /// Absent in a historical view that cannot launch live work.
+    pub fn record(&self) -> Option<&ui_core::record::RecordId> {
+        self.run.launched.record.as_ref()
+    }
+
     /// Open, in this window and in place of the record it shows, what a
     /// launch of the app naming `arguments` opens: the record
     /// [`ResourceApp::launch_record`](super::ResourceApp::launch_record)
@@ -584,6 +591,18 @@ impl<R: Resource> SurfaceCx<R> {
         T: 'static,
     {
         self.effects.drain(self.alive.clone(), pending, run)
+    }
+
+    /// Caller-authorized document consequences, as [`ViewCx::drain_causal`](super::ViewCx::drain_causal).
+    pub fn drain_causal<K, T>(
+        &self,
+        pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
+        run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) where
+        K: Eq + Hash + Clone + 'static,
+        T: 'static,
+    {
+        self.effects.drain_causal(self.alive.clone(), pending, run);
     }
 }
 

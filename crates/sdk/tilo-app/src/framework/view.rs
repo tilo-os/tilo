@@ -790,16 +790,18 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         handle: impl FnMut(E, &mut EffectCx<R>) -> EffectAnswer + 'static,
     ) -> EffectsHandle {
         let status: StatusSource = Rc::default();
+        // Captures and History still describe the controls they draw. Only
+        // execution needs a live environment; publication is inert metadata.
+        let source = Rc::clone(&status);
+        self.effects.publish::<E>(self.alive.clone(), move || {
+            let now = source
+                .borrow()
+                .as_ref()
+                .map(|status| status())
+                .unwrap_or_default();
+            super::effect::published_specs::<E>(&now)
+        });
         if self.effects.env().is_some() {
-            let source = Rc::clone(&status);
-            self.effects.publish::<E>(self.alive.clone(), move || {
-                let now = source
-                    .borrow()
-                    .as_ref()
-                    .map(|status| status())
-                    .unwrap_or_default();
-                super::effect::published_specs::<E>(&now)
-            });
             self.effects.handle(self.alive.clone(), handle);
         }
         EffectsHandle { status }
@@ -835,6 +837,21 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         I: 'static,
     {
         self.effects.drain(self.alive.clone(), pending, run)
+    }
+
+    /// Drain only consequences newly queued by an actual local Document
+    /// invocation. Delayed work keeps that invocation's checked custody, and
+    /// the caller receives success only after every consequence settles.
+    /// Remote/replayed/previously pending entries acquire no caller authority.
+    pub fn drain_causal<K, I>(
+        &self,
+        pending: impl Fn(&R::State) -> Vec<(K, I)> + 'static,
+        run: impl FnMut(I, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) where
+        K: Eq + Hash + Clone + 'static,
+        I: 'static,
+    {
+        self.effects.drain_causal(self.alive.clone(), pending, run);
     }
 
     /// A button that invokes one effect, through the same door (and the

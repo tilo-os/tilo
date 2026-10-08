@@ -2,6 +2,8 @@
 # Contract-test the RPM system-store staging boundary without compiling 47 apps.
 set -euo pipefail
 
+export TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$(printf 'ab%.0s' {1..32})
+
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d)
 cleanup() { rm -rf -- "$work"; }
@@ -83,6 +85,20 @@ stage=$work/stage
 TILO_ENV_RUNTIME_DIR=$env_runtime \
     "$repo_root/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$stage"
 
+trust=$stage/usr/share/tilo/trust/tilo-main-registry-owner.pub
+grep -Fxq "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" "$trust"
+test "$(stat -c %a "$trust")" = 644
+for owner in '' invalid "$(printf '0%.0s' {1..64})"; do
+    if TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$owner \
+        "$repo_root/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$work/no-owner" \
+        >"$work/no-owner.log" 2>&1; then
+        echo "staging accepted a missing or invalid official registry owner" >&2
+        exit 1
+    fi
+    grep -Fq 'must be a non-placeholder 32-byte hex key' "$work/no-owner.log"
+    test ! -e "$work/no-owner"
+done
+
 registry=$stage/usr/share/tilo-apps/registry.toml
 grep -Fqx 'id = "so.tilo.settings"' "$registry"
 tree_id=$(printf 'ab%.0s' {1..32})
@@ -102,6 +118,34 @@ test -x "$stage/usr/lib/tilo-apps/bin/settings-cli"
 test "$(stat -c %a "$stage/usr/lib/tilo-apps/bin/settings-cli.tilo-shim")" = 644
 grep -Fqx '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
     "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt"
+# Store updates use the official release runtime signer, independently of the
+# runtime baked into this host RPM. Both authorities must survive staging.
+grep -Fqx "$(cat "$repo_root/os/registry-runtime-publisher.hex")" \
+    "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt"
+test "$(head -n 1 "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt")" = \
+    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+test "$(wc -l < "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt")" = 2
+# An absent or malformed independently committed pin must fail, rather than
+# silently shipping only the baked key and breaking Store updates again.
+pin_repo=$work/pin-repo
+mkdir -p "$pin_repo/dist/rpm" "$pin_repo/os"
+cp "$repo_root/dist/rpm/stage-app-store.sh" "$pin_repo/dist/rpm/"
+printf 'not-a-public-key\n' > "$pin_repo/os/registry-runtime-publisher.hex"
+if "$pin_repo/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$work/bad-pin" \
+    >"$work/bad-pin.log" 2>&1; then
+    echo "app-store staging accepted a malformed registry runtime publisher" >&2
+    exit 1
+fi
+grep -Fq 'registry runtime publisher pin is not a 64-character public key' "$work/bad-pin.log"
+test ! -e "$work/bad-pin/etc/tilo/runtime-bundle-trusted-publishers.txt"
+rm "$pin_repo/os/registry-runtime-publisher.hex"
+if "$pin_repo/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$work/missing-pin" \
+    >"$work/missing-pin.log" 2>&1; then
+    echo "app-store staging accepted a missing registry runtime publisher" >&2
+    exit 1
+fi
+grep -Fq 'registry runtime publisher pin unavailable' "$work/missing-pin.log"
+test ! -e "$work/missing-pin/etc/tilo/runtime-bundle-trusted-publishers.txt"
 # The env-runtime image ships beside the apps with its tree untouched by the
 # mode normalisation, and its publisher becomes a trusted image publisher.
 test "$(stat -c %a "$stage/usr/lib/tilo-apps/pkgs/$image_id/usr/bin/bash")" = 555

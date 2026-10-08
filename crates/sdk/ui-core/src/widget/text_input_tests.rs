@@ -1459,6 +1459,7 @@ fn spellcheck_eligibility_follows_field_kind_vocabulary_and_language() {
             .with_spell_language("en_US")
             .with_initial_value("qwordz");
         ti.set_focus(true);
+        ti.refresh_personal_spelling();
         ti.spell_dictionary = Some(spellcheck::Dictionary::from_words(["qwordz"]));
         ti.refresh_spelling();
         assert!(ti.spell_spans.is_empty());
@@ -1730,6 +1731,8 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
             .with_spell_language("en_US")
             .with_initial_value("teh");
         known.core.set_caret(known.text.len());
+        known.spell_active = true;
+        known.refresh_personal_spelling();
         known.spell_dictionary = Some(spellcheck::Dictionary::from_words(["teh"]));
         known.insert_word_boundary(" ");
         assert_eq!(known.value(), "teh ");
@@ -4361,6 +4364,176 @@ fn submit_accessory_and_span_highlighting() {
         assert!(
             (text_rect.x0 - TextInput::local().text_inset_x(&theme)).abs() < 1e-9,
             "a painted field insets its text like a retained one"
+        );
+    }
+}
+
+#[cfg(feature = "broker-transport")]
+#[test]
+fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::local_identity::install_source(None);
+        }
+    }
+    let _guard = tilo_test_env::lock();
+    let _restore = Restore;
+    crate::local_identity::install_source(Some(Arc::new(crate::local_identity::FixedIdentity(
+        crate::local_identity::LocalIdentity {
+            group_public_key: [1; 32],
+            display_name: String::new(),
+            avatar_color: [0; 3],
+        },
+    ))));
+    let directory = tempfile::tempdir().unwrap();
+    let service = Arc::new(
+        settings_store::personal_dictionary::Service::new(directory.path().to_owned()).unwrap(),
+    );
+    let source = Arc::new(settings_store::personal_dictionary::host::Host::new(
+        Arc::new(settings_store::HostDocument::new(
+            serde_json::Map::new(),
+            |_| Ok(()),
+        )),
+        service,
+        Arc::new(|| Some([1; 32])),
+    ));
+    let mut host =
+        crate::personal_dictionary::TestHost::new(source, "so.tilo.notes", [1; 32]).unwrap();
+    let field = |text: &str| {
+        TextInput::local()
+            .with_autocorrect(true)
+            .with_spell_language("en_US")
+            .with_initial_value(text)
+    };
+    let mut input = field("teh");
+    input.core.set_caret(input.text.len());
+    assert!(input.autocorrection_candidate().is_some());
+    crate::personal_dictionary::edit(
+        0,
+        crate::personal_dictionary::Edit::Add(
+            crate::personal_dictionary::Word::new("teh", None).unwrap(),
+        ),
+    )
+    .unwrap();
+    host.flush().unwrap();
+    input.insert_word_boundary(" ");
+    assert_eq!(input.value(), "teh ");
+    assert!(
+        crate::personal_dictionary::edit(1, crate::personal_dictionary::Edit::Reset).is_err(),
+        "ordinary apps may add explicit words but cannot reset the dictionary"
+    );
+    let mut ordinary = field("adress");
+    ordinary.core.set_caret(ordinary.text.len());
+    ordinary.insert_word_boundary(" ");
+    assert_eq!(
+        ordinary.value(),
+        "address ",
+        "personal words never force ordinary replacements"
+    );
+    crate::personal_dictionary::edit(
+        1,
+        crate::personal_dictionary::Edit::Add(
+            crate::personal_dictionary::Word::new("Élodie", Some("fr")).unwrap(),
+        ),
+    )
+    .unwrap();
+    host.flush().unwrap();
+    let mut french = field("E\u{301}lodie").with_spell_language("fr_FR");
+    french.set_focus(true);
+    french.refresh_personal_spelling();
+    assert!(french.personal_word("E\u{301}lodie"));
+    let mut english = field("Élodie");
+    english.set_focus(true);
+    english.refresh_personal_spelling();
+    assert!(!english.personal_word("Élodie"));
+    crate::local_identity::install_source(Some(Arc::new(crate::local_identity::NoLocalIdentity)));
+    french.refresh_personal_spelling();
+    assert!(!french.personal_word("Élodie"));
+    assert!(french.spell_dictionary.as_ref().unwrap().is_empty());
+}
+
+#[test]
+fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
+    use crate::clipboard::{ClipboardBackend, ClipboardTarget};
+    use std::sync::{Arc, Mutex, mpsc};
+    #[derive(Default)]
+    struct Delayed(Mutex<Option<mpsc::Sender<Option<String>>>>);
+    impl ClipboardBackend for Delayed {
+        fn set_text(&self, _: ClipboardTarget, _: &str) -> bool {
+            false
+        }
+        fn text(&self, _: ClipboardTarget) -> Option<String> {
+            None
+        }
+        fn request_text(&self, _: ClipboardTarget) -> mpsc::Receiver<Option<String>> {
+            let (send, receive) = mpsc::channel();
+            *self.0.lock().unwrap() = Some(send);
+            receive
+        }
+        fn name(&self) -> &'static str {
+            "delayed-paste"
+        }
+    }
+    let clipboard = Arc::new(Delayed::default());
+    let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = crate::host::enter(&services);
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = changes.clone();
+    let mut input = TextInput::local()
+        .with_initial_value("a")
+        .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+    input.set_focus(true);
+    let mut document = AutoCommit::new();
+    drive(
+        &mut input,
+        &mut document,
+        &char_key_event("v"),
+        mods(true, false),
+    );
+    assert_eq!(input.value(), "a");
+    clipboard
+        .0
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap()
+        .send(Some("b\nc".into()))
+        .unwrap();
+    Widget::sync(&mut input, &document, &automerge::ROOT);
+    assert_eq!(input.value(), "abc");
+    assert_eq!(&*changes.borrow(), &["abc"]);
+    Widget::sync(&mut input, &document, &automerge::ROOT);
+    assert_eq!(&*changes.borrow(), &["abc"]);
+
+    for change in 0..3 {
+        drive(
+            &mut input,
+            &mut document,
+            &char_key_event("v"),
+            mods(true, false),
+        );
+        let reply = clipboard.0.lock().unwrap().take().unwrap();
+        match change {
+            0 => {
+                input.set_focus(false);
+                input.set_focus(true);
+            }
+            1 => {
+                input.set_cursor_pos(0);
+                input.set_cursor_pos(3);
+            }
+            _ => {
+                input.set_text("changed");
+                input.set_text("abc");
+            }
+        }
+        let _ = reply.send(Some("stale".into()));
+        Widget::sync(&mut input, &document, &automerge::ROOT);
+        assert_eq!(
+            input.value(),
+            "abc",
+            "changed target must cancel delayed paste"
         );
     }
 }

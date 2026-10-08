@@ -15,6 +15,7 @@ import re
 import sys
 import tomllib
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -364,14 +365,24 @@ def line_number(text: str, offset: int) -> int:
 
 
 CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
+RUST_CODE_RUN = re.compile(r"[^/'\"]+")
 
 
+# Rules inspect the same immutable text repeatedly. Bound retained strings,
+# and key by content so an edit at the same path is always rescanned.
+@lru_cache(maxsize=128)
 def rust_code_only(text: str) -> str:
     """Remove comments and literals so prose cannot satisfy the protocol gate."""
     out: list[str] = []
     i = 0
     block_depth = 0
     while i < len(text):
+        # Ordinary code cannot start a comment or literal. Copy its entire run;
+        # keep the existing lexical handling at each delimiter below.
+        if not block_depth and (code := RUST_CODE_RUN.match(text, i)):
+            out.append(code.group())
+            i = code.end()
+            continue
         if block_depth:
             if text.startswith("/*", i):
                 block_depth += 1

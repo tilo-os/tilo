@@ -24,6 +24,7 @@ pub mod app_action_access;
 pub mod app_action_consent;
 pub mod app_close;
 pub mod app_tabs;
+pub(crate) mod audio_output;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
@@ -60,7 +61,9 @@ pub mod device_unlock_runtime;
 pub mod device_wake;
 pub mod display_bars;
 pub mod display_confirm;
+pub(crate) mod display_control;
 pub mod display_identify;
+pub(crate) mod display_persistence;
 pub mod doc_open;
 pub mod document_import;
 pub mod durable_writer;
@@ -93,6 +96,7 @@ pub(crate) mod launch_readiness;
 pub mod launcher;
 pub mod live_activities;
 pub mod live_presence;
+mod local_person;
 pub mod magnifier;
 pub mod media_keys;
 pub mod mpris;
@@ -159,6 +163,7 @@ pub mod system_monitor;
 pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
+pub(crate) mod task_review;
 pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;
@@ -995,6 +1000,22 @@ pub fn mount_in_process(
             ui::record::RecordId::room_default(),
             |_| {},
         ),
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Messages") => apps.borrow_mut().mount(
+            messages::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::room_default(),
+            |_| {},
+        ),
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Passwords") => {
+            apps.borrow_mut().mount(
+                passwords::definition(),
+                &room,
+                tab,
+                ui::record::RecordId::room_default(),
+                |_| {},
+            )
+        }
         // Every Notes tab is a notebook of its own, on the tab's record.
         ShellKind::Other(name) if name.eq_ignore_ascii_case("Notes") => apps.borrow_mut().mount(
             notes::definition(),

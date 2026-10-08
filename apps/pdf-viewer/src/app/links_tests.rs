@@ -11,8 +11,7 @@ use crate::actions::{delete_page_plan_action, move_page_plan_action};
 use crate::source::LinkTarget;
 
 fn links_fixture() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/platform/tilo-pdf/tests/fixtures/links.pdf")
+    std::path::Path::new(env!("OUT_DIR")).join("links.pdf")
 }
 
 /// The reader on the four-page links fixture, sized like a desktop window,

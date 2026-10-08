@@ -90,6 +90,7 @@ impl Device {
     fn app(&self) -> App {
         App {
             json: false,
+            target: None,
             worktree: None,
             registry_path: self.dir.path().join("vms.toml"),
             runner: SystemRunner { cwd: None },
@@ -102,7 +103,10 @@ impl Device {
     fn run(&self, args: &[&str]) -> Result<tilo_vm::app::Outcome, CliError> {
         let cli =
             Cli::try_parse_from(std::iter::once("tilo-vm").chain(args.iter().copied())).unwrap();
-        self.app().run(cli.normalized().command)
+        let cli = cli.normalized();
+        let mut app = self.app();
+        app.target = cli.target;
+        app.run(cli.command)
     }
 
     fn log(&self) -> String {

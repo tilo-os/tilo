@@ -918,7 +918,7 @@ impl NativeNotes {
             .unwrap();
         let checkout = component.record().clone();
         let fonts = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
+            ui::font_catalog::checkout_root(),
             "en-US",
         );
         let mut driver = ui::headless::Driver::from_component(

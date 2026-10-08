@@ -18,7 +18,10 @@ use shell::network::{
     Actor, NeighbourMsg, NetCmd, NetEvent, WorkspaceControlRoute,
     invite::{make_invite_token, validate_invite_token},
 };
-use shell::shell::state::{PeerOrigin, WorkspaceTree};
+use shell::shell::state::{
+    AppKind, PeerOrigin, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+    Workspace, WorkspaceId, WorkspaceTree, compose_id,
+};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -219,6 +222,242 @@ async fn warm_exact_target_input_stays_below_the_interactive_p95_budget() {
     );
 }
 
+fn percentile(sorted: &[Duration], pct: usize) -> Duration {
+    sorted[(sorted.len().saturating_mul(pct) / 100).min(sorted.len().saturating_sub(1))]
+}
+
+fn report(label: &str, mut samples: Vec<Duration>) -> Duration {
+    samples.sort_unstable();
+    let (p50, p95, max) = (
+        percentile(&samples, 50),
+        percentile(&samples, 95),
+        *samples.last().expect("samples"),
+    );
+    eprintln!(
+        "{label}: p50 {p50:?}, p95 {p95:?}, max {max:?} over {} samples",
+        samples.len()
+    );
+    p95
+}
+
+/// The tab ids of `room`'s first window group, in order, as `tree` holds them.
+fn group_tabs(tree: &WorkspaceTree, room: RoomId) -> Vec<u64> {
+    tree.desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .and_then(|workspace| workspace.strips.first())
+        .and_then(|strip| strip.window_groups.first())
+        .map(|group| group.tabs.iter().map(|tab| tab.id).collect())
+        .unwrap_or_default()
+}
+
+fn notes_tab(id: u64) -> Tab {
+    Tab {
+        id,
+        title: format!("Notes {id:x}"),
+        tile: TileContent::Stub {
+            kind: AppKind::Other("so.tilo.notes".into()),
+            label: "Notes".into(),
+        },
+    }
+}
+
+fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
+    let id = |counter: u64| compose_id(salt, counter);
+    let mut a = WorkspaceTree::default();
+    a.set_salt_override(salt);
+    let mut workspace = Workspace::new(WorkspaceId(id(1)), "Live");
+    workspace.room = room;
+    workspace.strips.push(Strip {
+        id: StripId(id(2)),
+        name: "Main".into(),
+        window_groups: vec![WindowGroup {
+            id: id(3),
+            tabs: vec![notes_tab(id(100))],
+            active_tab: id(100),
+            width: WindowWidth::Normal,
+            maximized: false,
+        }],
+    });
+    a.desktop.active = workspace.id;
+    a.desktop.workspaces.push(workspace);
+    a.seed_doc_from_cache();
+
+    a
+}
+
+/// Two devices share one room over real Iroh. Device A opens, moves and
+/// closes tabs; each change is pushed the way the shell pushes it (the room
+/// document's changes since what A last announced, as one `SyncResp`) and is
+/// timed from A's mutation to B's tree holding the same tab order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget() {
+    const SALT_A: u16 = 0xA0A0;
+    const SALT_B: u16 = 0xB0B0;
+    const SAMPLES: usize = 24;
+
+    let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
+    let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_peer_joined(&mut events_a).await;
+    wait_peer_joined(&mut events_b).await;
+
+    let room = RoomId::new();
+    let id = |counter: u64| compose_id(SALT_A, counter);
+    let mut a = room_push_tree(room, SALT_A);
+
+    let mut b = WorkspaceTree::default();
+    b.set_salt_override(SALT_B);
+    let placeholder = b.append_empty_workspace("Placeholder");
+    assert!(b.set_room(placeholder, room));
+
+    let publish = |changes: Vec<Vec<u8>>| NetCmd::Publish {
+        ws: WS,
+        msg: NeighbourMsg::SyncResp {
+            changes,
+            room: room.to_string(),
+        },
+    };
+    let mut receive = async |b: &mut WorkspaceTree, want: &[u64]| {
+        while group_tabs(b, room) != want {
+            let event = events_b.recv().await.expect("B's events");
+            if let NetEvent::Msg {
+                peer,
+                msg: NeighbourMsg::SyncResp { changes, .. },
+                ..
+            } = event
+            {
+                b.apply_room_changes(room, &changes, &PeerOrigin::peer(&peer))
+                    .expect("B applies A's push");
+            }
+        }
+    };
+
+    // Warm-up: B joins with A's whole room, as its first pull would bring.
+    let baseline = a.export_room_changes_since(room, &[]).expect("A's room");
+    let mut announced = a.room_heads(room);
+    cmd_a
+        .send(publish(baseline))
+        .await
+        .expect("baseline queued");
+    let want = group_tabs(&a, room);
+    tilo_test_env::within("B joined A's room", receive(&mut b, &want)).await;
+
+    let mut next = 101;
+    let mut latencies = Vec::with_capacity(SAMPLES);
+    for sample in 0..SAMPLES {
+        let started = Instant::now();
+        {
+            let workspace = &mut a.desktop.workspaces[0];
+            let tabs = &mut workspace.strips[0].window_groups[0].tabs;
+            match sample % 3 {
+                // Open a tab.
+                0 => {
+                    tabs.push(notes_tab(id(next)));
+                    next = next.saturating_add(1);
+                }
+                // Move the last tab to the front.
+                1 => {
+                    let moved = tabs.pop().expect("a tab");
+                    tabs.insert(0, moved);
+                }
+                // Close the first tab, keeping one open.
+                _ if tabs.len() > 1 => {
+                    tabs.remove(0);
+                }
+                _ => tabs.push(notes_tab(id(next))),
+            }
+        }
+        a.seed_doc_from_cache();
+        let changes = a
+            .export_room_changes_since(room, &announced)
+            .expect("A's room");
+        announced = a.room_heads(room);
+        assert!(!changes.is_empty(), "sample {sample} changed the room");
+        cmd_a.send(publish(changes)).await.expect("push queued");
+        let want = group_tabs(&a, room);
+        tilo_test_env::within("B shows A's change", receive(&mut b, &want)).await;
+        latencies.push(started.elapsed());
+    }
+    let p95 = report(
+        "pushed tab change, A mutation -> B tree (loopback Iroh)",
+        latencies,
+    );
+    assert!(
+        p95 < Duration::from_millis(50),
+        "a pushed tab change must reach the other device in under 50 ms at p95, got {p95:?}"
+    );
+}
+
+/// A document edit travels as one signed `AppDocument` on the room topic;
+/// timed from publication to arrival on the other device.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_edit_reaches_the_other_device_within_the_interactive_budget() {
+    const SAMPLES: usize = 24;
+    let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
+    let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_peer_joined(&mut events_a).await;
+    wait_peer_joined(&mut events_b).await;
+
+    let edit = |sequence: u64| {
+        // A typical keystroke-sized Automerge change.
+        let mut doc = automerge::AutoCommit::new();
+        let _ = automerge::transaction::Transactable::put(
+            &mut doc,
+            automerge::ROOT,
+            "text",
+            format!("edit {sequence}"),
+        );
+        NetCmd::Publish {
+            ws: WS,
+            msg: NeighbourMsg::AppDocument {
+                peer: 7,
+                app_id: "so.tilo.notes".into(),
+                cluster_id: RoomId::new().to_string(),
+                record_id: "uuid:notes".into(),
+                envelope: Box::new(collab_types::SignedOp::new_unsigned(
+                    doc.save(),
+                    collab_types::ArtifactId(uuid::Uuid::from_bytes([0x11; 16])),
+                    collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+                    collab_types::AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
+                    collab_types::OpClass::Splice,
+                    std::time::SystemTime::now(),
+                    sequence,
+                )),
+            },
+        }
+    };
+    let arrived = async |events: &mut mpsc::Receiver<NetEvent>, sequence: u64| loop {
+        if let Some(NetEvent::Msg {
+            msg: NeighbourMsg::AppDocument { envelope, .. },
+            ..
+        }) = events.recv().await
+            && envelope.seq == sequence
+        {
+            return;
+        }
+    };
+    cmd_a.send(edit(u64::MAX)).await.expect("warm edit queued");
+    tilo_test_env::within("warm edit arrived", arrived(&mut events_b, u64::MAX)).await;
+    let mut latencies = Vec::with_capacity(SAMPLES);
+    for sequence in 0..SAMPLES as u64 {
+        let started = Instant::now();
+        cmd_a.send(edit(sequence)).await.expect("edit queued");
+        tilo_test_env::within("edit arrived", arrived(&mut events_b, sequence)).await;
+        latencies.push(started.elapsed());
+    }
+    let p95 = report(
+        "document edit, A publish -> B receive (loopback Iroh)",
+        latencies,
+    );
+    assert!(
+        p95 < Duration::from_millis(50),
+        "a document edit must reach the other device in under 50 ms at p95, got {p95:?}"
+    );
+}
+
 /// A remote-action frame reaches exactly the addressed peer over the direct
 /// route, and a byte-identical retry is delivered again rather than being
 /// content-deduplicated away: the receiving host deduplicates by invocation.
@@ -416,6 +655,12 @@ fn native_snapshot(
             stamp: stamp.clone(),
         },
         display: Some(native_fabric::DisplayPlacement {
+            outputs: vec![native_fabric::DisplayConnectorPlacement {
+                connector: "eDP-1".into(),
+                label: "Synthetic panel".into(),
+                rect: native_fabric::DisplayRect { x: 0, y: 0, ..rect },
+                scale_milli,
+            }],
             device: device.clone(),
             rect,
             scale_milli,
@@ -468,22 +713,15 @@ async fn send_native_payload(
 
 /// The existing certified personal-fabric lane carries placement and leased
 /// input to the native seat. No surface share, stream, enrollment or new router.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
-    let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(42).await;
-    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(43).await;
-    let source = DeviceId::new(hex::encode(addr_a.id.as_bytes())).unwrap();
-    let target = DeviceId::new(hex::encode(addr_b.id.as_bytes())).unwrap();
-    let endpoint_a = addr_a.id;
-    let endpoint_b = addr_b.id;
-    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
-    wait_certified_native_peer(&mut events_a).await;
-    wait_certified_native_peer(&mut events_b).await;
+fn native_pair_fabrics(
+    source: &DeviceId,
+    target: &DeviceId,
+) -> (native_fabric::DeviceFabric, native_fabric::DeviceFabric) {
     let mut source_fabric = native_fabric::DeviceFabric::default();
     let mut target_fabric = native_fabric::DeviceFabric::default();
     source_fabric
         .upsert(native_snapshot(
-            &source,
+            source,
             2000,
             native_fabric::DisplayRect {
                 x: 0,
@@ -495,7 +733,7 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
         .unwrap();
     target_fabric
         .upsert(native_snapshot(
-            &target,
+            target,
             1000,
             native_fabric::DisplayRect {
                 x: 960,
@@ -505,6 +743,60 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
             },
         ))
         .unwrap();
+    (source_fabric, target_fabric)
+}
+
+async fn send_native_connector_observation(
+    command: &tokio::sync::mpsc::Sender<NetCmd>,
+    target: iroh::EndpointId,
+    events: &mut tokio::sync::mpsc::Receiver<NetEvent>,
+    source: iroh::EndpointId,
+    fabrics: (
+        &native_fabric::DeviceFabric,
+        &mut native_fabric::DeviceFabric,
+    ),
+    owner: &DeviceId,
+) {
+    let display = fabrics
+        .0
+        .snapshots()
+        .get(owner)
+        .unwrap()
+        .display
+        .as_ref()
+        .unwrap();
+    send_native_payload(
+        command,
+        target,
+        PersonalFabricPayload::DisplayConnectors {
+            stamp: display.stamp.clone(),
+            outputs: display.outputs.clone(),
+        },
+    )
+    .await;
+    let PersonalFabricPayload::DisplayConnectors { stamp, outputs } =
+        wait_native_payload(events, source).await
+    else {
+        panic!("expected native connector observation")
+    };
+    fabrics
+        .1
+        .observe_display_connectors(owner, &stamp, outputs)
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
+    let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(42).await;
+    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(43).await;
+    let source = DeviceId::new(hex::encode(addr_a.id.as_bytes())).unwrap();
+    let target = DeviceId::new(hex::encode(addr_b.id.as_bytes())).unwrap();
+    let endpoint_a = addr_a.id;
+    let endpoint_b = addr_b.id;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_certified_native_peer(&mut events_a).await;
+    wait_certified_native_peer(&mut events_b).await;
+    let (mut source_fabric, mut target_fabric) = native_pair_fabrics(&source, &target);
     send_native_payload(
         &cmd_b,
         endpoint_a,
@@ -520,6 +812,16 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
     assert_eq!(received.snapshots().len(), 1);
     let remote = received.snapshots().get(&target).unwrap().clone();
     source_fabric.upsert(remote.clone()).unwrap();
+    send_native_connector_observation(
+        &cmd_b,
+        endpoint_a,
+        &mut events_a,
+        endpoint_b,
+        (&target_fabric, &mut source_fabric),
+        &target,
+    )
+    .await;
+    let remote = source_fabric.snapshots().get(&target).unwrap().clone();
     let mut advertised_source = native_fabric::DeviceFabric::default();
     advertised_source
         .upsert(source_fabric.snapshots().get(&source).unwrap().clone())
@@ -540,6 +842,15 @@ async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
     target_fabric
         .upsert(received.snapshots().get(&source).unwrap().clone())
         .unwrap();
+    send_native_connector_observation(
+        &cmd_a,
+        endpoint_b,
+        &mut events_b,
+        endpoint_a,
+        (&advertised_source, &mut target_fabric),
+        &source,
+    )
+    .await;
     assert_eq!(
         source_fabric, target_fabric,
         "both native replicas converge on the same logical topology"
@@ -807,4 +1118,292 @@ fn native_screen_geometry_rejects_offline_sources_and_invalid_bounds() {
         .logical_placement()
         .is_none()
     );
+}
+
+#[test]
+fn native_connector_discovery_preserves_owner_scale_and_offline_state() {
+    use shell::shell::device_fabric_runtime::observed_device_displays;
+    let source = DeviceId::new("source").unwrap();
+    let target = DeviceId::new("target").unwrap();
+    let mut fabric = native_fabric::DeviceFabric::default();
+    let rect = native_fabric::DisplayRect {
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 540,
+    };
+    fabric.upsert(native_snapshot(&source, 2000, rect)).unwrap();
+    let mut peer = native_snapshot(&target, 1000, native_fabric::DisplayRect { x: 960, ..rect });
+    peer.display.as_mut().unwrap().rect.width = 1920;
+    peer.display
+        .as_mut()
+        .unwrap()
+        .outputs
+        .push(native_fabric::DisplayConnectorPlacement {
+            connector: "DP-1".into(),
+            label: "Second panel".into(),
+            scale_milli: 1250,
+            rect: native_fabric::DisplayRect { x: 960, ..rect },
+        });
+    fabric.upsert(peer.clone()).unwrap();
+    let observed = observed_device_displays(&fabric, Some(&source));
+    assert_eq!(observed.len(), 3);
+    assert_ne!(
+        observed[0].key(),
+        observed[1].key(),
+        "matching eDP names retain exact device identity"
+    );
+    assert_eq!(
+        (observed[0].scale_milli, observed[1].scale_milli),
+        (2000, 1000)
+    );
+    assert_eq!(
+        (observed[2].connector.as_str(), observed[2].x),
+        ("DP-1", 1920)
+    );
+    peer.presence.online = false;
+    peer.presence.stamp.counter += 1;
+    fabric.upsert(peer.clone()).unwrap();
+    let offline = observed_device_displays(&fabric, Some(&source));
+    assert!(offline[0].online && offline[0].local);
+    assert!(
+        offline[1..]
+            .iter()
+            .all(|display| !display.online && !display.local)
+    );
+    peer.display.as_mut().unwrap().outputs[1].connector = "eDP-1".into();
+    assert!(
+        peer.validate().is_err(),
+        "duplicate connectors cannot enter authenticated topology"
+    );
+    peer.display.as_mut().unwrap().outputs[1].connector = "DP-1".into();
+    peer.display.as_mut().unwrap().outputs[1].rect.x = i32::MAX;
+    assert!(
+        peer.validate().is_err(),
+        "overflowing connector bounds fail closed"
+    );
+}
+
+#[test]
+fn native_crossing_uses_connector_edges_and_destination_seat_coordinates() {
+    let source = DeviceId::new("source").unwrap();
+    let target = DeviceId::new("target").unwrap();
+    let mut fabric = native_fabric::DeviceFabric::default();
+    let source_rect = native_fabric::DisplayRect {
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 1080,
+    };
+    fabric
+        .upsert(native_snapshot(&source, 2000, source_rect))
+        .unwrap();
+    let mut peer = native_snapshot(
+        &target,
+        1000,
+        native_fabric::DisplayRect {
+            x: 960,
+            width: 1920,
+            ..source_rect
+        },
+    );
+    peer.display.as_mut().unwrap().outputs = vec![
+        native_fabric::DisplayConnectorPlacement {
+            connector: "upper".into(),
+            label: "Upper screen".into(),
+            scale_milli: 1000,
+            rect: native_fabric::DisplayRect {
+                x: 0,
+                y: 0,
+                width: 960,
+                height: 540,
+            },
+        },
+        native_fabric::DisplayConnectorPlacement {
+            connector: "lower".into(),
+            label: "Lower screen".into(),
+            scale_milli: 1250,
+            rect: native_fabric::DisplayRect {
+                x: 0,
+                y: 540,
+                width: 960,
+                height: 540,
+            },
+        },
+    ];
+    fabric.upsert(peer.clone()).unwrap();
+    let crossing = fabric.cross_right_edge(&source, 700).unwrap();
+    assert_eq!(
+        (crossing.to, crossing.target_x, crossing.target_y),
+        (target, 0, 700),
+        "the lower connector receives its actual seat coordinate, not y=160"
+    );
+    peer.presence.stamp.counter += 1;
+    peer.display.as_mut().unwrap().outputs[1].rect.x = 960;
+    fabric.upsert(peer).unwrap();
+    assert!(
+        fabric.cross_right_edge(&source, 700).is_none(),
+        "a device bounding box cannot bridge the empty space between connectors"
+    );
+}
+
+#[test]
+fn native_crossing_preserves_negative_connector_coordinates() {
+    let source = DeviceId::new("source").unwrap();
+    let target = DeviceId::new("target").unwrap();
+    let rect = native_fabric::DisplayRect {
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 540,
+    };
+    let mut own = native_snapshot(&source, 2000, rect);
+    own.display.as_mut().unwrap().outputs[0].rect.x = -960;
+    let mut peer = native_snapshot(
+        &target,
+        1250,
+        native_fabric::DisplayRect { x: -1920, ..rect },
+    );
+    peer.display.as_mut().unwrap().outputs[0].rect.y = -100;
+    let mut fabric = native_fabric::DeviceFabric::default();
+    fabric.upsert(own).unwrap();
+    fabric.upsert(peer).unwrap();
+    let crossing = fabric
+        .cross_edge(&source, native_fabric::DisplayEdge::Left, -960, 205)
+        .unwrap();
+    assert_eq!(
+        (crossing.to, crossing.target_x, crossing.target_y),
+        (target, 959, 205)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_checked_placement_is_transport_bound_and_stale_after_owner_relayout() {
+    let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(46).await;
+    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(47).await;
+    let source = DeviceId::new(hex::encode(addr_a.id.as_bytes())).unwrap();
+    let target = DeviceId::new(hex::encode(addr_b.id.as_bytes())).unwrap();
+    let endpoint_a = addr_a.id;
+    let endpoint_b = addr_b.id;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_certified_native_peer(&mut events_a).await;
+    wait_certified_native_peer(&mut events_b).await;
+    let (_, owner) = native_pair_fabrics(&source, &target);
+    let mut before = owner.snapshots().get(&target).unwrap().clone();
+    let display = before.display.as_ref().unwrap();
+    let rect = native_fabric::DisplayRect {
+        x: 0,
+        y: 540,
+        ..display.rect
+    };
+    let expected = display.stamp.clone();
+    let now = tilo_clock::unix_now_ms();
+    let envelope = native_fabric::PersonalFabricActionEnvelope {
+        request_id: [17; 16],
+        source: source.clone(),
+        target: target.clone(),
+        issued_unix_ms: now,
+        action: native_fabric::PersonalFabricAction::SetDisplayPlacementChecked {
+            expected: expected.clone(),
+            rect,
+            expires_unix_ms: now.saturating_add(native_fabric::MAX_DISPLAY_MOVE_AGE_MS),
+        },
+    };
+    let received =
+        send_native_action(&cmd_a, &mut events_b, (endpoint_a, endpoint_b), &envelope).await;
+    received.validate_at(&source, &target, now).unwrap();
+    assert!(received.validate_at(&target, &source, now).is_err());
+    assert!(
+        received
+            .validate_at(
+                &source,
+                &target,
+                now.saturating_add(native_fabric::MAX_DISPLAY_MOVE_AGE_MS + 1)
+            )
+            .is_err(),
+        "delayed gestures expire before applying after reconnect"
+    );
+    let native_fabric::PersonalFabricAction::SetDisplayPlacementChecked { expected, rect, .. } =
+        received.action
+    else {
+        panic!("checked placement");
+    };
+    assert!(
+        before
+            .display
+            .as_ref()
+            .unwrap()
+            .accepts_move(&expected, rect)
+    );
+    assert_topology_grants_no_keyboard_input(&source, &target, now);
+    before.presence.stamp.counter = 2;
+    let authored = before.display.as_mut().unwrap();
+    authored.stamp.counter = 2;
+    authored.rect = rect;
+    let mut published = native_fabric::DeviceFabric::default();
+    published.upsert(before).unwrap();
+    send_native_payload(
+        &cmd_b,
+        endpoint_a,
+        PersonalFabricPayload::Snapshot(published.encode_checkpoint().unwrap()),
+    )
+    .await;
+    let PersonalFabricPayload::Snapshot(bytes) =
+        wait_native_payload(&mut events_a, endpoint_b).await
+    else {
+        panic!("owner-authored placement checkpoint");
+    };
+    let confirmed = native_fabric::DeviceFabric::decode_checkpoint(&bytes).unwrap();
+    let actual = confirmed
+        .snapshots()
+        .get(&target)
+        .unwrap()
+        .display
+        .as_ref()
+        .unwrap();
+    assert_eq!(actual.rect, rect);
+    assert_eq!(actual.stamp.counter, 2);
+    assert!(
+        !actual.accepts_move(&expected, rect),
+        "replaying the previous drag cannot replace a newer owner layout"
+    );
+}
+
+fn assert_topology_grants_no_keyboard_input(source: &DeviceId, target: &DeviceId, now: u64) {
+    assert!(
+        !native_fabric::permits_spatial_input(
+            None,
+            source,
+            target,
+            (
+                [9; 16],
+                native_fabric::FabricInputEvent::Key {
+                    keycode: 30,
+                    pressed: true,
+                    modifiers: 0
+                }
+            ),
+            now
+        ),
+        "certified topology control grants no keyboard input"
+    );
+}
+
+async fn send_native_action(
+    cmd: &mpsc::Sender<NetCmd>,
+    events: &mut mpsc::Receiver<NetEvent>,
+    endpoints: (iroh::EndpointId, iroh::EndpointId),
+    envelope: &native_fabric::PersonalFabricActionEnvelope,
+) -> native_fabric::PersonalFabricActionEnvelope {
+    send_native_payload(
+        cmd,
+        endpoints.1,
+        PersonalFabricPayload::Action(postcard::to_allocvec(envelope).unwrap()),
+    )
+    .await;
+    let PersonalFabricPayload::Action(bytes) = wait_native_payload(events, endpoints.0).await
+    else {
+        panic!("typed placement action");
+    };
+    postcard::from_bytes(&bytes).unwrap()
 }

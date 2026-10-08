@@ -500,7 +500,10 @@ const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
 pub(crate) static STORE_CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
     "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
+    &[
+        ("en-US", include_str!("../locales/en-US.ftl")),
+        ("de-DE", include_str!("../locales/de-DE.ftl")),
+    ],
     "store-remotes-title",
 )
 .with_system_locale();
@@ -894,6 +897,36 @@ mod tests {
         assert_eq!(app.state().reports[0].note, "");
     }
 
+    fn assert_installed_flatpak_launch(app_id: &str, id: &str) {
+        let exports = tempfile::tempdir().unwrap();
+        std::fs::write(
+            exports.path().join(format!("{id}.desktop")),
+            format!(
+                concat!(
+                    "[Desktop Entry]\nType=Application\nName=Installed Flatpak\n",
+                    "Exec=/usr/bin/flatpak run {}\nX-Flatpak={}\n"
+                ),
+                id, id
+            ),
+        )
+        .unwrap();
+        let scan = desktop_entry::scan::scan_dirs(
+            &[exports.path().to_path_buf()],
+            &desktop_entry::scan::current_desktops(),
+        );
+        let desktop_id = app_id.strip_prefix("host:").unwrap();
+        let entry = scan
+            .find(desktop_id)
+            .expect("the original launch resolves the installed Flatpak export");
+        assert_eq!(entry.id, id);
+        assert_eq!(
+            entry.source,
+            desktop_entry::EntrySource::Flatpak {
+                app_id: id.to_owned()
+            }
+        );
+    }
+
     #[test]
     fn declared_open_job_waits_for_its_original_channel_startup_receipt() {
         use ui::collaboration::{CollabEvent, CollabRequest};
@@ -946,7 +979,9 @@ mod tests {
         else {
             panic!("the original channel must carry startup");
         };
-        assert_eq!(app_id, format!("host:{id}.desktop"));
+        // Join the actual admitted launch to the host's production desktop
+        // scanner, rather than duplicating its identity convention here.
+        assert_installed_flatpak_launch(&app_id, &id);
         assert!(package_root.is_none());
         assert!(
             on_behalf_of.is_none(),
@@ -1110,7 +1145,9 @@ mod tests {
             assert!(params.get_reference().unwrap().is_empty());
             self.installs
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            results.get().set_status("Installed for this account.");
+            results.get().set_status(
+                "Installing runtime/org.example.Runtime…\nInstalling app/org.example.Editor…",
+            );
             std::future::ready(Ok(()))
         }
 
@@ -1676,7 +1713,7 @@ mod tests {
         assert_eq!(
             app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned())
                 .unwrap(),
-            "Installed for this account."
+            ui::i18n!("store-app-installed")
         );
         app.with_surface::<StoreApp, _>(|surface| {
             let item = surface

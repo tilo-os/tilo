@@ -17,6 +17,104 @@ use ui::prelude::TestApp;
 use ui::theme::Theme;
 
 #[test]
+fn closed_alarm_activation_reopens_the_same_record_at_the_exact_alarm() {
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    app.invoke(Clocks::ADD_TIMER.with(("Distractor".to_owned(), 600)))
+        .unwrap();
+    app.invoke(Clocks::ADD_ALARM.with(("First".to_owned(), 10, 0, Vec::new())))
+        .unwrap();
+    app.invoke(Clocks::ADD_ALARM.with(("Requested".to_owned(), 11, 0, Vec::new())))
+        .unwrap();
+    let before = app.state();
+    let id = before
+        .alarms
+        .iter()
+        .find(|(_, alarm)| alarm.label == "Requested")
+        .unwrap()
+        .0
+        .clone();
+    let source_record = app.record().clone();
+    let uri = crate::native_timers::alarm_activation(Some(&source_record), id.as_str());
+    let other_record = ui::record::RecordId::minted();
+    app.open_here(&[&format!("tilo-clocks:record/{other_record}")])
+        .unwrap();
+    assert_eq!(app.record(), &other_record);
+    app.invoke(Clocks::ADD_ALARM.with(("Other record".to_owned(), 12, 0, Vec::new())))
+        .unwrap();
+    let mut reopened = app.relaunch(&[&uri]).unwrap();
+    assert_eq!(reopened.record(), &source_record);
+    assert_eq!(
+        reopened.state(),
+        before,
+        "opening an alarm is not a document edit"
+    );
+    reopened
+        .with_surface::<super::ClocksApp, _>(|surface| {
+            assert_eq!(
+                surface.mode.get(),
+                super::ALARMS,
+                "a running timer must not redirect the alarm activation"
+            );
+            assert_eq!(
+                surface.state.with(|shown| shown.selected_alarm.clone()),
+                Some(id)
+            );
+        })
+        .unwrap();
+}
+
+#[test]
+fn live_alarm_activation_returns_from_another_record_to_the_source_alarm() {
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    app.invoke(Clocks::ADD_ALARM.with(("Source".to_owned(), 11, 0, Vec::new())))
+        .unwrap();
+    let source = app.record().clone();
+    let alarm = app.state().alarms.ids().next().unwrap().clone();
+    let uri = crate::native_timers::alarm_activation(Some(&source), alarm.as_str());
+    let other = ui::record::RecordId::minted();
+    app.open_here(&[&format!("tilo-clocks:record/{other}")])
+        .unwrap();
+    assert_eq!(app.record(), &other);
+    app.with_surface::<super::ClocksApp, _>(|surface| surface.activate_uri(&uri))
+        .unwrap();
+    app.harness().relayout();
+    assert_eq!(app.record(), &source);
+    app.with_surface::<super::ClocksApp, _>(|surface| {
+        assert_eq!(surface.mode.get(), super::ALARMS);
+        assert_eq!(
+            surface.state.with(|shown| shown.selected_alarm.clone()),
+            Some(alarm)
+        );
+    })
+    .unwrap();
+}
+
+#[test]
+fn semantic_alarm_open_rejects_missing_targets_without_changing_selection() {
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    app.invoke(Clocks::ADD_ALARM.with(("Requested".to_owned(), 11, 0, Vec::new())))
+        .unwrap();
+    let id = app.state().alarms.ids().next().unwrap().clone();
+    app.effect(&crate::resource::ClocksEffect::OpenAlarm {
+        alarm: id.to_string(),
+    })
+    .unwrap();
+    assert!(
+        app.effect(&crate::resource::ClocksEffect::OpenAlarm {
+            alarm: "missing".into()
+        })
+        .is_err()
+    );
+    app.with_surface::<super::ClocksApp, _>(|surface| {
+        assert_eq!(
+            surface.state.with(|shown| shown.selected_alarm.clone()),
+            Some(id)
+        );
+    })
+    .unwrap();
+}
+
+#[test]
 fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
     // The shared navigation is a grouped list. Back exposes it on a phone;
     // every screen retains a full, independent pointer target.
@@ -373,4 +471,38 @@ fn narrow_custom_timer_fields_fit_and_start_through_real_controls() {
         timers.timers.values().next().unwrap().duration_ms,
         7_384_000
     );
+}
+
+#[test]
+fn native_alarm_handoff_does_not_emit_a_second_shell_notice() {
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| {
+        surface.remember_due(crate::DueEvent::Alarm {
+            id: ui::prelude::Id::from_raw("owned-alarm"),
+            label: "Wake up".into(),
+            scheduled_for: chrono::Utc::now(),
+            native_scheduled: true,
+        });
+        assert!(
+            surface.notice.get().is_some(),
+            "the app still explains the due alarm"
+        );
+        assert!(
+            surface
+                .shell_snapshot(chrono::Utc::now())
+                .notification_id
+                .is_none(),
+            "the shell must not notify again after the scheduler's delivery"
+        );
+    })
+    .unwrap();
+    app.effect(&crate::resource::ClocksEffect::DismissNotice)
+        .unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| {
+        assert!(
+            surface.notice.get().is_none(),
+            "semantic dismissal clears the device's notice"
+        );
+    })
+    .unwrap();
 }

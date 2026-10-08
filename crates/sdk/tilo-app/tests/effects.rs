@@ -13,6 +13,164 @@ use tilo_app::prelude::tilo_actions::Action as _;
 use tilo_app::prelude::*;
 use tilo_resource::Effect;
 
+thread_local! {
+    static CAUSAL_REPLIES: RefCell<Vec<tilo_app::framework::EffectReply>> = const { RefCell::new(Vec::new()) };
+    static CAUSAL_CALLERS: RefCell<Vec<tilo_actions::InvocationId>> = const { RefCell::new(Vec::new()) };
+    static RECEIPT_REPLIES: RefCell<Vec<tilo_app::framework::EffectReply>> = const { RefCell::new(Vec::new()) };
+    static RECEIPT_CALLERS: RefCell<Vec<tilo_actions::InvocationId>> = const { RefCell::new(Vec::new()) };
+}
+
+struct CausalMailApp;
+
+impl ResourceApp for CausalMailApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-causal-mailbox";
+    const TITLE: &'static str = "Mailbox";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.drain_causal(
+            |mail: &Mailbox| {
+                mail.outbox
+                    .iter()
+                    .map(|(id, text)| (id.clone(), text.clone()))
+                    .collect()
+            },
+            |_, cx| {
+                CAUSAL_CALLERS.with(|callers| callers.borrow_mut().push(cx.invocation().unwrap()));
+                CAUSAL_REPLIES.with(|replies| replies.borrow_mut().push(cx.reply()));
+                Ok(Effected::Pending)
+            },
+        );
+        Box::new(Column::new())
+    }
+}
+
+fn start_causal(app: &mut TestApp<CausalMailApp>, text: &str) -> tilo_actions::InvocationId {
+    start_causal_action(app, "send", &serde_json::json!({"text": text}))
+}
+
+fn start_causal_action(
+    app: &mut TestApp<CausalMailApp>,
+    action: &str,
+    arguments: &serde_json::Value,
+) -> tilo_actions::InvocationId {
+    let instance_id = app.harness().component_instance_id().unwrap();
+    let address = tilo_app::bound_dispatch::BoundActionAddress {
+        instance_id,
+        address: tilo_actions::ActionAddress::new("test.mailbox", action),
+    };
+    let (invocation, started) = app
+        .harness()
+        .start_bound_job_for(None, &address, arguments.as_object().unwrap(), true)
+        .unwrap();
+    assert!(
+        started.completed().is_none(),
+        "document consequence must remain pending"
+    );
+    invocation
+}
+
+#[test]
+fn semantic_undo_consequences_keep_undos_own_new_invocation() {
+    let mut app = TestApp::<CausalMailApp>::new().unwrap();
+    let original = start_causal(&mut app, "original");
+    CAUSAL_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .finish(Ok(tilo_actions::ActionOutput::default()));
+    app.settle();
+    let entry = app.state().outbox.iter().next().unwrap().0.clone();
+    app.call("delivered", serde_json::json!({"entry": entry}))
+        .unwrap();
+    assert!(app.state().outbox.is_empty());
+    let undo = start_causal_action(&mut app, "undo", &serde_json::json!({}));
+    assert_ne!(undo, original);
+    assert_eq!(
+        CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
+        vec![original, undo]
+    );
+    app.settle();
+    assert!(
+        !app.harness()
+            .job_updates(undo)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+    CAUSAL_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .finish(Err("undo compensation refused".into()));
+    app.settle();
+    assert!(app.harness().job_updates(undo).iter().any(
+        |update| matches!(update, tilo_actions::InvocationUpdate::Failed { invocation, error }
+            if *invocation == undo && error.message.contains("undo compensation refused"))
+    ));
+    assert!(
+        !app.harness()
+            .job_updates(undo)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+}
+
+#[test]
+fn causal_document_jobs_keep_the_actual_invocation_and_wait_for_terminal_receipts() {
+    let mut app = TestApp::<CausalMailApp>::new().unwrap();
+    let invocation = start_causal(&mut app, "first");
+    assert_eq!(
+        CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
+        vec![invocation]
+    );
+    app.settle();
+    assert!(
+        !app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+    CAUSAL_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .finish(Ok(tilo_actions::ActionOutput::default()));
+    app.settle();
+    assert!(app.harness().job_updates(invocation).iter()
+        .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. } if *actual == invocation)));
+    // The old outbox entry remains pending. Another caller's edit must not
+    // adopt it, even though an ordinary drain would retry pending work.
+    app.call("fetched", serde_json::json!({"text": "unrelated"}))
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
+        vec![invocation]
+    );
+    let second = start_causal(&mut app, "second");
+    assert_eq!(
+        CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
+        vec![invocation, second]
+    );
+    CAUSAL_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .finish(Err("compensation refused".into()));
+    app.settle();
+    assert!(app.harness().job_updates(second).iter()
+        .any(|update| matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.message.contains("compensation refused"))));
+}
+
+#[test]
+fn causal_document_job_cancellation_stops_the_same_delayed_consequence() {
+    let mut app = TestApp::<CausalMailApp>::new().unwrap();
+    let invocation = start_causal(&mut app, "cancel");
+    assert!(app.harness().cancel_job(invocation).is_some());
+    let reply = CAUSAL_REPLIES.with(|replies| replies.borrow_mut().pop().unwrap());
+    assert!(reply.is_cancelled());
+    reply.finish(Ok(tilo_actions::ActionOutput::default()));
+    app.settle();
+    assert!(
+        !app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+}
+
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Mailbox {
     pub outbox: Collection<String>,
@@ -57,6 +215,12 @@ pub enum MailEffect {
     /// Promise an answer without starting anything.
     #[effect(job)]
     Stall,
+    /// Settle an external receipt as the original caller.
+    #[effect(job)]
+    Receipt,
+    /// A read receipt cannot authorize a document edit.
+    #[effect(job, permission = "read")]
+    ReadReceipt,
     /// Note what was read, as an edit.
     #[effect(permission = "read")]
     Note { text: String },
@@ -71,6 +235,23 @@ thread_local! {
 }
 
 struct MailApp;
+
+fn deferred_receipt(cx: &mut EffectCx<Mailbox, ()>) -> Effected {
+    RECEIPT_REPLIES.with(|replies| {
+        replies.borrow_mut().push(cx.reply_then(|(), output, cx| {
+            RECEIPT_CALLERS.with(|callers| {
+                callers.borrow_mut().push(cx.invocation().unwrap());
+            });
+            let text = output
+                .value
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .ok_or("receipt has no text")?;
+            cx.invoke(Mailbox::FETCHED.with(text));
+            Ok(Effected::done())
+        }));
+    });
+    Effected::Pending
+}
 
 impl ResourceApp for MailApp {
     type Resource = Mailbox;
@@ -100,6 +281,7 @@ impl ResourceApp for MailApp {
             }
             MailEffect::Connect => Ok(Effected::done()),
             MailEffect::Stall => Ok(Effected::Pending),
+            MailEffect::Receipt | MailEffect::ReadReceipt => Ok(deferred_receipt(cx)),
             MailEffect::Note { text } => {
                 cx.invoke(Mailbox::FETCHED.with(text));
                 Ok(Effected::done())
@@ -259,6 +441,76 @@ fn a_button_bound_to_an_effect_runs_it() {
 }
 
 #[test]
+fn captures_publish_view_effects_and_availability_without_running_handlers() {
+    let mut live = TestApp::<MailApp>::new().unwrap();
+    let mut capture = TestApp::<MailApp>::capture(None).unwrap();
+    let live_surface = live.agent_surface();
+    let captured_surface = capture.agent_surface();
+    for id in ["count", "fetch", "connect", "stall", "note", "show-sent"] {
+        let live_spec = effect(&live_surface, id).unwrap();
+        let captured_spec = effect(&captured_surface, id).unwrap();
+        assert_eq!(
+            captured_spec, live_spec,
+            "capture lost effect metadata for {id}"
+        );
+    }
+    assert_eq!(
+        effect(&captured_surface, "connect").unwrap()["label"],
+        "Connect (offline)"
+    );
+    let audit = capture.harness().native_app_audit();
+    assert!(audit.is_certified(), "{:?}", audit.issues);
+
+    // Both effect and view handlers stay inert, even through the real door.
+    assert!(capture.effect(&MailEffect::Count).is_err());
+    assert!(
+        capture
+            .effect(&MailEffect::Fetch {
+                from: "capture".into()
+            })
+            .is_err()
+    );
+    assert!(capture.effect(&MailEffect::ShowSent).is_err());
+    capture.settle();
+    assert_eq!(capture.state(), Mailbox::default());
+    assert!(capture.effect_progress().is_empty());
+    assert!(
+        capture
+            .harness()
+            .inspection_json()
+            .unwrap()
+            .contains("Showing inbox"),
+        "the inert view handler must not change local presentation"
+    );
+}
+
+#[test]
+fn history_renders_effect_controls_without_replaying_outside_consequences() {
+    DELIVERED.with(|delivered| delivered.borrow_mut().clear());
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    app.invoke(Mailbox::FETCHED.with("historical".into()))
+        .unwrap();
+    let version = app.versions().last().unwrap().hash;
+    app.invoke(Mailbox::SEND.with("delivered once".into()))
+        .unwrap();
+    app.settle();
+    let past = app.past_version(&[version]).unwrap();
+    assert_eq!(past.state().fetched, "historical");
+    let texts = past.texts();
+    assert!(texts.iter().any(|text| text == "Fetch"), "{texts:?}");
+    assert!(
+        texts.iter().any(|text| text == "Showing inbox"),
+        "{texts:?}"
+    );
+    assert_eq!(
+        DELIVERED.with(|delivered| delivered.borrow().clone()),
+        ["delivered once"],
+        "History must not replay an external drain"
+    );
+    assert!(app.state().outbox.is_empty());
+}
+
+#[test]
 fn a_projection_drains_each_queued_entry_once_on_every_change() {
     DELIVERED.with(|delivered| delivered.borrow_mut().clear());
     let mut app = TestApp::<MailApp>::new().unwrap();
@@ -364,6 +616,138 @@ fn an_effect_lends_its_invoker_no_more_than_they_were_admitted_for() {
         .and_then(|context| context.invoker)
         .map(|invoker| invoker.actor);
     assert_eq!(invoker.as_deref(), Some("agent:writer"));
+}
+
+fn start_receipt(app: &mut TestApp<MailApp>) -> tilo_actions::InvocationId {
+    start_named_receipt(app, "receipt")
+}
+
+fn start_named_receipt(app: &mut TestApp<MailApp>, action: &str) -> tilo_actions::InvocationId {
+    let address = tilo_app::bound_dispatch::BoundActionAddress {
+        instance_id: app.harness().component_instance_id().unwrap(),
+        address: tilo_actions::ActionAddress::new("test.mailbox", action),
+    };
+    let (invocation, started) = app
+        .harness()
+        .start_bound_job_for(
+            Some(tilo_actions::ActionInvoker::actor("agent:receipt-writer")),
+            &address,
+            &serde_json::Map::new(),
+            true,
+        )
+        .unwrap();
+    assert!(started.completed().is_none());
+    invocation
+}
+
+#[test]
+fn delayed_receipt_completion_applies_history_as_its_original_invoker() {
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    let invocation = start_receipt(&mut app);
+    app.settle();
+    assert!(app.state().fetched.is_empty());
+    assert!(RECEIPT_CALLERS.with(|callers| callers.borrow().is_empty()));
+    RECEIPT_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .answer(Ok(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!("settled receipt")),
+            resources: Vec::new(),
+        }));
+    app.settle();
+    assert_eq!(
+        RECEIPT_CALLERS.with(|callers| callers.borrow().clone()),
+        [invocation]
+    );
+    assert_eq!(app.state().fetched, "settled receipt");
+    assert_eq!(
+        app.versions()
+            .last()
+            .unwrap()
+            .context
+            .as_ref()
+            .unwrap()
+            .invoker
+            .as_ref()
+            .unwrap()
+            .actor,
+        "agent:receipt-writer"
+    );
+    assert!(
+        app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+}
+
+#[test]
+fn delayed_receipt_refusal_preserves_failure_and_skips_history_completion() {
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    let invocation = start_receipt(&mut app);
+    let refused = tilo_actions::ActionFailure {
+        code: "clipboard_refused".into(),
+        message: "destination grant revoked".into(),
+        details: Some(serde_json::json!({"receipt": "opaque"})),
+        retryable: true,
+    };
+    RECEIPT_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .answer(Err(refused.clone()));
+    app.settle();
+    assert!(RECEIPT_CALLERS.with(|callers| callers.borrow().is_empty()));
+    assert!(app.state().fetched.is_empty());
+    assert!(app.harness().job_updates(invocation).iter().any(|update|
+        matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. } if *error == refused)));
+}
+
+#[test]
+fn cancelled_delayed_receipt_cannot_run_its_history_completion() {
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    let invocation = start_receipt(&mut app);
+    assert!(app.harness().cancel_job(invocation).is_some());
+    let reply = RECEIPT_REPLIES.with(|replies| replies.borrow_mut().pop().unwrap());
+    assert!(reply.is_cancelled());
+    reply.answer(Ok(tilo_actions::ActionOutput {
+        value: Some(serde_json::json!("cancelled receipt")),
+        resources: Vec::new(),
+    }));
+    app.settle();
+    assert!(RECEIPT_CALLERS.with(|callers| callers.borrow().is_empty()));
+    assert!(app.state().fetched.is_empty());
+    assert!(
+        !app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+}
+
+#[test]
+fn delayed_receipt_completion_cannot_exceed_its_original_read_admission() {
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    let invocation = start_named_receipt(&mut app, "read-receipt");
+    RECEIPT_REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .answer(Ok(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!("unadmitted edit")),
+            resources: Vec::new(),
+        }));
+    app.settle();
+    assert_eq!(
+        RECEIPT_CALLERS.with(|callers| callers.borrow().clone()),
+        [invocation]
+    );
+    assert!(app.state().fetched.is_empty());
+    assert!(app.harness().job_updates(invocation).iter().any(
+        |update| matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. }
+            if error.code == "permission_denied")
+    ));
+    assert!(
+        !app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
 }
 
 /// A surface's own effects: answered with `&mut self`, completed with it.

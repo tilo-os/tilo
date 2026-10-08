@@ -96,6 +96,14 @@ pub enum DisplayEffect {
     /// dragging it does. Staged until applied.
     #[effect(returns, row)]
     MoveDisplay { display: String, x: i32, y: i32 },
+    /// Request this peer's screens at a shared logical position. No input grant.
+    #[effect(returns, row, label = "Move device display")]
+    MoveDeviceDisplay {
+        display: String,
+        revision: u64,
+        x: i32,
+        y: i32,
+    },
     /// Show another display's picture, or extend the workspace. Staged
     /// until applied.
     #[effect(returns, row)]
@@ -128,16 +136,16 @@ pub enum DisplayEffect {
     )]
     InspectDisplayConfiguration,
     /// Show each display's number and name on it for a few seconds.
-    #[effect(returns, label = "Identify displays")]
+    #[effect(returns, permission = "admin", label = "Identify displays")]
     IdentifyDisplays,
     /// Preview the staged arrangement; it is kept only when confirmed.
-    #[effect(returns, label = "Apply display changes")]
+    #[effect(returns, permission = "admin", label = "Apply display changes")]
     ApplyDisplayChanges,
     /// Keep the arrangement being previewed.
-    #[effect(returns, label = "Keep display changes")]
+    #[effect(returns, permission = "admin", label = "Keep display changes")]
     KeepDisplayChanges,
     /// Go back to the arrangement before the preview.
-    #[effect(returns, label = "Revert display changes")]
+    #[effect(returns, permission = "admin", label = "Revert display changes")]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
     #[effect(returns, row, label = "Ask again")]
@@ -155,8 +163,54 @@ pub enum DisplayEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: DisplayEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if matches!(
+        effect,
+        DisplayEffect::InspectDisplayConfiguration
+            | DisplayEffect::IdentifyDisplays
+            | DisplayEffect::ApplyDisplayChanges
+            | DisplayEffect::KeepDisplayChanges
+            | DisplayEffect::RevertDisplayChanges
+    ) && app.displays().model().borrow().of_device
+    {
+        let command = app.displays().model().borrow().host_command(&effect)?;
+        let inspect = effect == DisplayEffect::InspectDisplayConfiguration;
+        // Only a delivered invocation can name broker-retained original custody.
+        // Physical UI effects have no remote invoker and use the certified local channel.
+        let original = if ui::invocation_scope::current_invoker().is_some() {
+            ui::collaboration::DisplayOrigin::Published(
+                cx.invocation()
+                    .ok_or("The original display invocation is unavailable.")?
+                    .0
+                    .into_bytes(),
+            )
+        } else {
+            ui::collaboration::DisplayOrigin::LocalHost
+        };
+        return Ok(cx.thread(
+            move |_| request_host_display(&command, original),
+            move |app, result, _| {
+                let model = app.displays().model();
+                let mut model = model.borrow_mut();
+                model.accept_host_reply(result?);
+                let value = if inspect {
+                    model.inspection()
+                } else {
+                    let transaction = model
+                        .host_state
+                        .as_ref()
+                        .and_then(|state| state.transaction.as_ref());
+                    serde_json::json!({
+                        "transaction": transaction.map(|value| value.id),
+                        "state": transaction.map(|value| value.state),
+                        "identify_requested_unix_ms": model.host_state.as_ref().and_then(|state| state.identify).map(|request| request.requested_unix_ms),
+                    })
+                };
+                Ok(Effected::value(value))
+            },
+        ));
+    }
     if effect == DisplayEffect::InspectDisplayConfiguration {
         return Ok(Effected::value(
             app.displays().model().borrow().inspection(),
@@ -167,6 +221,17 @@ pub(crate) fn answer(
         .borrow_mut()
         .apply(&effect)
         .map(Effected::value)
+}
+
+fn request_host_display(
+    command: &settings_store::display_control::DisplayCommand,
+    original: ui::collaboration::DisplayOrigin,
+) -> Result<settings_store::display_control::DisplayReply, String> {
+    let bytes =
+        serde_json::to_vec(command).map_err(|_| "The display request could not be encoded.")?;
+    let reply = ui::collaboration::display_control(bytes, original)?;
+    serde_json::from_slice(&reply)
+        .map_err(|_| "The display service returned an invalid reply.".into())
 }
 
 const NIGHT_LIGHT_TEMPERATURES: &[(&str, u32)] = &[
@@ -505,15 +570,17 @@ fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
         .map_or_else(|| base.clone(), |card| format!("{base} on {card}"))
 }
 
-/// Enumerate real DRM connectors from `/sys/class/drm`. Best-effort: returns
-/// an empty vec when the directory is unavailable (a container under
-/// `--shots`), in which case the pane shows an honest "no displays" note.
-/// Virtual connectors (compositor writeback) are skipped — they are not
-/// displays a user can plug into.
+/// Read capabilities only from the active compositor's leased snapshot.
 fn read_outputs() -> Vec<DisplayOutput> {
-    let mut out: Vec<_> = DisplayHardwareSnapshot::load()
-        .into_iter()
-        .flat_map(|snapshot| snapshot.outputs)
+    DisplayHardwareSnapshot::load()
+        .map_or_else(Vec::new, |snapshot| outputs_from_snapshot(&snapshot))
+}
+
+fn outputs_from_snapshot(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutput> {
+    let mut out: Vec<_> = snapshot
+        .outputs
+        .iter()
+        .cloned()
         .map(|snapshot| {
             let label = snapshot_label(&snapshot.descriptor, snapshot.builtin);
             let connector_label = snapshot.descriptor.label().to_string();
@@ -640,7 +707,9 @@ impl DisplayArea {
     /// Take in background results, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
-            model.borrow_mut().poll_background();
+            let mut model = model.borrow_mut();
+            model.poll_device_move();
+            model.poll_background();
         }
     }
 
@@ -653,6 +722,13 @@ impl DisplayArea {
             .into_iter()
             .map(|output| model.output_row(output))
             .collect();
+        rows.extend(
+            model
+                .device_displays
+                .iter()
+                .filter(|display| DisplayModel::device_movable(display))
+                .map(DisplayModel::device_output_row),
+        );
         if model.of_device {
             for tool in &settings_store::display_tools::TrustedDisplayTools::load().tools {
                 rows.push(
@@ -677,6 +753,10 @@ pub struct DisplayModel {
     of_device: bool,
     brightness_control: Arc<dyn BrightnessControl>,
     outputs: Vec<DisplayOutput>,
+    device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
+    pending_device_move: Option<settings_store::device_displays::DeviceDisplayMove>,
+    awaiting_device_move: Option<(settings_store::device_displays::DeviceDisplayMove, Instant)>,
+    device_move_reply: Option<Rc<std::cell::RefCell<ui::widget::DeviceDisplayMoveReply>>>,
     ambient_sensor_available: bool,
     brightness: f32,
     prefs: Followed<DisplayPrefs>,
@@ -687,6 +767,11 @@ pub struct DisplayModel {
     output_brightness: BTreeMap<String, f32>,
     pending_candidate: Option<DisplayConfig>,
     last_seen_transaction: Option<(u64, DisplayTransactionState)>,
+    host_state: Option<settings_store::display_control::DisplayReply>,
+    host_poll_deadline: Option<Instant>,
+    host_probe: Option<
+        std::sync::mpsc::Receiver<Result<settings_store::display_control::DisplayReply, String>>,
+    >,
     last_snapshot_check: Instant,
     snapshot_stamp: Option<SystemTime>,
     hardware_probe: Option<std::sync::mpsc::Receiver<HardwareProbe>>,
@@ -701,10 +786,95 @@ pub struct DisplayModel {
     /// The arrangement canvas's in-progress drag; kept here because the
     /// composition is rebuilt between frames.
     arrangement_drag: LocalState<Option<super::display_arrangement::ArrangementDrag>>,
+    device_arrangement_drag: LocalState<Option<super::display_arrangement::ArrangementDrag>>,
     changed: bool,
 }
 
 impl DisplayModel {
+    fn device_movable(display: &settings_store::device_displays::DeviceDisplay) -> bool {
+        display.online && !display.local && display.revision != 0
+    }
+
+    fn device_output_row(display: &settings_store::device_displays::DeviceDisplay) -> LiveRow {
+        LiveRow::new(
+            format!("settings.device-display:{}", display.key()),
+            "settings.device-display",
+            display.label.clone(),
+        )
+        .operation(
+            SettingsEffect::from(DisplayEffect::MoveDeviceDisplay {
+                display: display.key(),
+                revision: display.revision,
+                x: 0,
+                y: 0,
+            })
+            .bound_asking(&["x", "y"]),
+        )
+    }
+
+    pub(crate) fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        let request = self.pending_device_move.take()?;
+        let reply = Rc::downgrade(self.device_move_reply.as_ref()?);
+        Some(ui::widget::AppHostIntent::MoveDeviceDisplay { request, reply })
+    }
+
+    fn poll_device_move(&mut self) {
+        let result = self
+            .device_move_reply
+            .as_ref()
+            .and_then(|reply| reply.borrow_mut().result.take());
+        if let Some(result) = result {
+            self.device_move_reply = None;
+            self.notice = Some(result.map_or_else(
+                |error| {
+                    self.awaiting_device_move = None;
+                    error
+                },
+                |()| t("display-device-move-requested"),
+            ));
+            self.changed = true;
+        }
+        if self
+            .awaiting_device_move
+            .as_ref()
+            .is_some_and(|(_, started)| started.elapsed() >= Duration::from_secs(10))
+        {
+            self.device_move_reply = None;
+            self.pending_device_move = None;
+            self.awaiting_device_move = None;
+            self.notice = Some(t("display-device-move-unconfirmed"));
+            self.changed = true;
+            return;
+        }
+        if self.device_move_reply.is_some() {
+            return;
+        }
+        let Some((request, _started)) = &self.awaiting_device_move else {
+            return;
+        };
+        let observed = self
+            .device_displays
+            .iter()
+            .find(|screen| screen.key() == request.screen.key());
+        let message = match observed {
+            None => Some(t("display-device-move-unavailable")),
+            Some(screen) if !screen.online => Some(t("display-device-move-unavailable")),
+            Some(screen) if screen.revision > request.screen.revision => {
+                Some(t(if (screen.x, screen.y) == (request.x, request.y) {
+                    "display-device-move-confirmed"
+                } else {
+                    "display-device-move-changed"
+                }))
+            }
+            _ => None,
+        };
+        if let Some(message) = message {
+            self.awaiting_device_move = None;
+            self.notice = Some(message);
+            self.changed = true;
+        }
+    }
+
     /// This device's displays; brightness is probed and set off the UI
     /// thread.
     fn of_device(cx: PaneCx) -> Self {
@@ -747,7 +917,13 @@ impl DisplayModel {
             output_config,
             output_brightness,
             pending_candidate: None,
+            pending_device_move: None,
+            awaiting_device_move: None,
+            device_move_reply: None,
             last_seen_transaction: None,
+            host_state: None,
+            host_probe: None,
+            host_poll_deadline: None,
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: settings_store::hardware::display_snapshot_path()
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
@@ -758,6 +934,9 @@ impl DisplayModel {
             pending_brightness: None,
             notice: None,
             arrangement_drag: LocalState::new(None),
+            device_arrangement_drag: LocalState::new(None),
+            device_displays: settings_store::device_displays::DeviceDisplaySnapshot::load()
+                .map_or_else(Vec::new, |snapshot| snapshot.displays),
             changed: false,
         }
     }
@@ -765,12 +944,15 @@ impl DisplayModel {
     /// A built-in panel at 62 %, with an ambient light sensor; nothing it
     /// does reaches the device or its files.
     fn sample(cx: PaneCx) -> Self {
+        let device_displays = cx
+            .scene()
+            .map_or_else(Vec::new, |scene| scene.device_displays.clone());
         let mode = OutputMode {
             width: 1920,
             height: 1080,
             refresh_mhz: 60_000,
         };
-        Self::detached(cx).with_outputs(vec![DisplayOutput {
+        let mut model = Self::detached(cx).with_outputs(vec![DisplayOutput {
             label: "Built-in display".into(),
             connected: true,
             builtin: true,
@@ -788,7 +970,9 @@ impl DisplayModel {
             color_profiles: Vec::new(),
             color_profile_labels: BTreeMap::new(),
             monitor: None,
-        }])
+        }]);
+        model.device_displays = device_displays;
+        model
     }
 
     /// A model with no outputs whose brightness changes nothing; tests give
@@ -805,7 +989,13 @@ impl DisplayModel {
             output_config: DisplayConfig::default(),
             output_brightness: BTreeMap::new(),
             pending_candidate: None,
+            pending_device_move: None,
+            awaiting_device_move: None,
+            device_move_reply: None,
             last_seen_transaction: None,
+            host_state: None,
+            host_probe: None,
+            host_poll_deadline: None,
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: None,
             hardware_probe: None,
@@ -815,6 +1005,8 @@ impl DisplayModel {
             pending_brightness: None,
             notice: None,
             arrangement_drag: LocalState::new(None),
+            device_arrangement_drag: LocalState::new(None),
+            device_displays: Vec::new(),
             changed: false,
         }
     }
@@ -845,6 +1037,75 @@ impl DisplayModel {
     }
 
     /// Observed output timing stays separate from a requested candidate.
+    fn transaction(&self) -> Option<DisplayTransaction> {
+        if let Some(state) = &self.host_state {
+            state.transaction.clone()
+        } else {
+            self.of_device.then(DisplayTransaction::load).flatten()
+        }
+    }
+
+    fn host_command(
+        &self,
+        effect: &DisplayEffect,
+    ) -> Result<settings_store::display_control::DisplayCommand, String> {
+        use settings_store::display_control::DisplayCommand;
+        match effect {
+            DisplayEffect::InspectDisplayConfiguration => Ok(DisplayCommand::Inspect),
+            DisplayEffect::IdentifyDisplays => Ok(DisplayCommand::Identify),
+            DisplayEffect::ApplyDisplayChanges => Ok(DisplayCommand::Apply {
+                observed_set: self.display_set(),
+                candidate: self
+                    .pending_candidate
+                    .clone()
+                    .ok_or("There are no staged display changes to apply.")?,
+            }),
+            DisplayEffect::KeepDisplayChanges => Ok(DisplayCommand::Keep {
+                transaction: self
+                    .transaction()
+                    .ok_or("There is no display preview to keep.")?
+                    .id,
+            }),
+            DisplayEffect::RevertDisplayChanges => Ok(DisplayCommand::Revert {
+                transaction: self
+                    .transaction()
+                    .ok_or("There is no display preview to revert.")?
+                    .id,
+            }),
+            _ => Err("This action is not a display transaction request.".into()),
+        }
+    }
+
+    fn accept_host_reply(&mut self, reply: settings_store::display_control::DisplayReply) {
+        let pending = reply.transaction.as_ref().is_some_and(|transaction| {
+            matches!(
+                transaction.state,
+                DisplayTransactionState::Requested
+                    | DisplayTransactionState::AwaitingConfirmation
+                    | DisplayTransactionState::ConfirmRequested
+                    | DisplayTransactionState::RevertRequested
+            )
+        });
+        let same = self
+            .host_state
+            .as_ref()
+            .and_then(|state| state.transaction.as_ref())
+            .map(|transaction| transaction.id)
+            == reply.transaction.as_ref().map(|transaction| transaction.id);
+        if pending && (!same || self.host_poll_deadline.is_none()) {
+            self.host_poll_deadline = Some(ui::time::now() + Duration::from_secs(30));
+        } else if !pending {
+            self.host_poll_deadline = None;
+        }
+        if let Some(transaction) = &reply.transaction {
+            self.settle(transaction);
+        }
+        self.outputs = outputs_from_snapshot(&reply.observed);
+        self.output_config = reply.committed.clone();
+        self.host_state = Some(reply);
+        self.changed = true;
+    }
+
     fn inspection(&self) -> serde_json::Value {
         serde_json::json!({
             "observed_outputs": self.connected_outputs().into_iter().map(|output| {
@@ -858,10 +1119,11 @@ impl DisplayModel {
                     "vrr_available": output.vrr,
                 })
             }).collect::<Vec<_>>(),
+            "device_displays": self.device_displays,
             "saved_configuration": self.output_config,
             "staged_configuration": self.staged(),
             "has_staged_changes": self.pending_candidate.is_some(),
-            "transaction": self.of_device.then(DisplayTransaction::load).flatten(),
+            "transaction": self.transaction(),
             "notice": self.notice,
         })
     }
@@ -1142,6 +1404,40 @@ impl DisplayModel {
         }
         self.changed = true;
         let reported = match effect {
+            DisplayEffect::MoveDeviceDisplay {
+                display,
+                revision,
+                x,
+                y,
+            } => {
+                if self.device_move_reply.is_some() || self.awaiting_device_move.is_some() {
+                    return Err(t("display-device-move-pending"));
+                }
+                let screen = self
+                    .device_displays
+                    .iter()
+                    .find(|screen| {
+                        screen.key() == *display
+                            && screen.revision == *revision
+                            && DisplayModel::device_movable(screen)
+                    })
+                    .ok_or_else(|| t("display-device-move-unavailable"))?
+                    .clone();
+                self.pending_device_move =
+                    Some(settings_store::device_displays::DeviceDisplayMove {
+                        screen,
+                        x: *x,
+                        y: *y,
+                    });
+                self.awaiting_device_move = self
+                    .pending_device_move
+                    .clone()
+                    .map(|request| (request, ui::time::now()));
+                self.device_move_reply = Some(Rc::new(std::cell::RefCell::new(
+                    ui::widget::DeviceDisplayMoveReply::default(),
+                )));
+                Ok(t("display-device-move-pending"))
+            }
             DisplayEffect::InspectDisplayConfiguration => {
                 Err("Display inspection is read-only.".into())
             }
@@ -1500,12 +1796,67 @@ impl DisplayModel {
             return;
         }
         self.last_snapshot_check = ui::time::now();
+        if let Some(receiver) = &self.host_probe {
+            match receiver.try_recv() {
+                Ok(Ok(reply)) => {
+                    self.host_probe = None;
+                    self.accept_host_reply(reply);
+                }
+                Ok(Err(error)) => {
+                    self.host_probe = None;
+                    self.notice = Some(error);
+                    self.changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.host_probe = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if self.host_probe.is_none()
+            && self
+                .host_poll_deadline
+                .is_some_and(|deadline| ui::time::now() < deadline)
+            && self
+                .host_state
+                .as_ref()
+                .and_then(|state| state.transaction.as_ref())
+                .is_some_and(|transaction| {
+                    matches!(
+                        transaction.state,
+                        DisplayTransactionState::Requested
+                            | DisplayTransactionState::AwaitingConfirmation
+                            | DisplayTransactionState::ConfirmRequested
+                            | DisplayTransactionState::RevertRequested
+                    )
+                })
+        {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            self.host_probe = Some(receiver);
+            let wake = ui::WakeHandle::new();
+            std::thread::spawn(move || {
+                let _ = sender.send(request_host_display(
+                    &settings_store::display_control::DisplayCommand::Inspect,
+                    ui::collaboration::DisplayOrigin::LocalHost,
+                ));
+                wake.wake();
+            });
+        }
+        let devices = settings_store::device_displays::DeviceDisplaySnapshot::load()
+            .map_or_else(Vec::new, |snapshot| snapshot.displays);
+        if devices != self.device_displays {
+            self.device_displays = devices;
+            self.changed = true;
+        }
         let stamp = settings_store::hardware::display_snapshot_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
         if stamp != self.snapshot_stamp {
             self.snapshot_stamp = stamp;
             self.outputs = read_outputs();
-            self.output_config = DisplayConfig::load_for(&self.display_set());
+            self.output_config = self.host_state.as_ref().map_or_else(
+                || DisplayConfig::load_for(&self.display_set()),
+                |state| state.committed.clone(),
+            );
             self.changed = true;
         }
         // Monitor probing finishes in the background; a monitor that turns
@@ -1515,7 +1866,7 @@ impl DisplayModel {
             self.output_brightness = controllable;
             self.changed = true;
         }
-        if let Some(transaction) = DisplayTransaction::load() {
+        if let Some(transaction) = self.transaction() {
             self.settle(&transaction);
         }
     }
@@ -1538,7 +1889,10 @@ impl DisplayModel {
                 .unwrap_or_else(|| "Display configuration was rejected.".into()),
             _ => return,
         };
-        self.output_config = DisplayConfig::load_for(&self.display_set());
+        self.output_config = self.host_state.as_ref().map_or_else(
+            || DisplayConfig::load_for(&self.display_set()),
+            |state| state.committed.clone(),
+        );
         self.pending_candidate = None;
         self.notice = Some(notice);
     }
@@ -1549,6 +1903,9 @@ impl DisplayModel {
         let brightness = self.build_brightness_card();
 
         let mut cards = vec![arrangement];
+        if let Some(devices) = self.build_device_arrangement_card() {
+            cards.push(devices);
+        }
         if let Some(notice) = &self.notice {
             cards.push(card(&t("display-card-title"), rows(vec![caption(notice)])));
         }
@@ -1561,6 +1918,85 @@ impl DisplayModel {
         }
         cards.push(brightness);
         crate::widgets::cards(cards)
+    }
+
+    /// Certified peer connectors at their observed shared logical positions.
+    /// Observation alone never makes a screen movable or grants input access.
+    fn build_device_arrangement_card(&self) -> Option<El> {
+        use super::display_arrangement::{
+            ArrangedDisplay, DisplayArrangement, placement::Placement,
+        };
+        if !self.device_displays.iter().any(|display| !display.local) {
+            return None;
+        }
+        let first_local = self
+            .device_displays
+            .iter()
+            .position(|display| display.local);
+        let displays = self
+            .device_displays
+            .iter()
+            .enumerate()
+            .filter_map(|(index, display)| {
+                Some(ArrangedDisplay {
+                    connector: display.key(),
+                    movement_group: Some(display.device.clone()),
+                    label: t_args(
+                        "display-device-screen",
+                        &[
+                            ("device", display.device_label.clone().into()),
+                            ("screen", display.label.clone().into()),
+                            (
+                                "status",
+                                t(if display.online {
+                                    "display-device-online"
+                                } else {
+                                    "display-device-offline"
+                                })
+                                .into(),
+                            ),
+                        ],
+                    ),
+                    number: index + 1,
+                    placement: Placement::new(
+                        display.x,
+                        display.y,
+                        i32::try_from(display.width).ok()?,
+                        i32::try_from(display.height).ok()?,
+                    ),
+                    primary: first_local == Some(index),
+                    movable: DisplayModel::device_movable(display),
+                })
+            })
+            .collect();
+        let moves = self
+            .device_displays
+            .iter()
+            .filter(|display| DisplayModel::device_movable(display))
+            .filter_map(|display| {
+                let key = display.key();
+                let target = key.clone();
+                let revision = display.revision;
+                self.cx
+                    .row_binding(
+                        &DisplayModel::device_output_row(display).into_resource(),
+                        effect(DisplayEffect::MOVE_DEVICE_DISPLAY)
+                            .map(move |(x, y): (i32, i32)| (target.clone(), revision, x, y)),
+                    )
+                    .map(|binding| (key, binding))
+            })
+            .collect();
+        Some(card(
+            &t("display-devices-title"),
+            rows(vec![
+                Box::new(DisplayArrangement::new(
+                    displays,
+                    moves,
+                    self.device_arrangement_drag.clone(),
+                )),
+                caption(&t("display-devices-arrange")),
+            ]),
+        ))
     }
 
     /// The "Displays" arrangement card: a drag-to-arrange canvas of the
@@ -1663,6 +2099,7 @@ impl DisplayModel {
             };
             next_free_x = next_free_x.max(x.saturating_add(width));
             placed.push(ArrangedDisplay {
+                movement_group: None,
                 connector: output.connector.clone(),
                 label: output_title(output),
                 number: numbers.get(index).copied().unwrap_or(index + 1),
@@ -2043,7 +2480,7 @@ impl DisplayModel {
     /// The safety/apply-transaction card, driven by the on-disk
     /// [`DisplayTransaction`] state machine.
     fn build_safety_card(&self) -> El {
-        let transaction = self.of_device.then(DisplayTransaction::load).flatten();
+        let transaction = self.transaction();
         match transaction.as_ref().map(|transaction| transaction.state) {
             Some(DisplayTransactionState::AwaitingConfirmation) => {
                 let seconds = transaction
@@ -2165,6 +2602,7 @@ impl PaneModel for DisplayModel {
     }
 
     fn poll(&mut self) -> bool {
+        self.poll_device_move();
         self.poll_background();
         self.poll_device();
         if self.prefs.refresh() {
@@ -2178,7 +2616,9 @@ impl PaneModel for DisplayModel {
     }
 
     fn busy(&self) -> bool {
-        self.hardware_probe.is_some() || self.pending_brightness.is_some()
+        self.hardware_probe.is_some()
+            || self.pending_brightness.is_some()
+            || self.awaiting_device_move.is_some()
     }
 
     fn next_wake(&self) -> Option<Instant> {
@@ -2317,6 +2757,242 @@ mod tests {
     use crate::dispatcher::testing::RecordingDispatcher;
 
     /// The compositor's exact output is the shared control and automation target.
+    #[test]
+    fn peer_drag_exports_the_same_exact_request_without_editing_local_outputs() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        let saved = pane.output_config.clone();
+        pane.device_displays = vec![settings_store::device_displays::DeviceDisplay {
+            device: "drag-peer".into(),
+            device_label: "Laptop".into(),
+            connector: "eDP-1".into(),
+            label: "Panel".into(),
+            online: true,
+            local: false,
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_milli: 1250,
+            revision: 9,
+        }];
+        let row = DisplayModel::device_output_row(&pane.device_displays[0]);
+        assert_eq!(row.id(), "settings.device-display:drag-peer/eDP-1");
+        assert!(
+            pane.apply(&DisplayEffect::MoveDeviceDisplay {
+                display: "drag-peer/eDP-1".into(),
+                revision: 8,
+                x: 0,
+                y: 1080
+            })
+            .is_err(),
+            "a drag bound before a new peer layout cannot overwrite it"
+        );
+        pane.apply(&DisplayEffect::MoveDeviceDisplay {
+            display: "drag-peer/eDP-1".into(),
+            revision: 9,
+            x: 0,
+            y: 1080,
+        })
+        .unwrap();
+        let ui::widget::AppHostIntent::MoveDeviceDisplay { request, reply } =
+            pane.take_host_intent().unwrap()
+        else {
+            panic!("exact typed host request");
+        };
+        assert_eq!(request.screen, pane.device_displays[0]);
+        assert_eq!((request.x, request.y), (0, 1080));
+        assert_eq!(pane.output_config, saved);
+        assert!(pane.pending_candidate.is_none());
+        assert!(pane.take_host_intent().is_none());
+        reply.upgrade().unwrap().borrow_mut().result = Some(Err("Disconnected".into()));
+        pane.poll_device_move();
+        assert_eq!(pane.notice.as_deref(), Some("Disconnected"));
+        pane.device_displays[0].online = false;
+        assert!(
+            pane.apply(&DisplayEffect::MoveDeviceDisplay {
+                display: "drag-peer/eDP-1".into(),
+                revision: 9,
+                x: 0,
+                y: 0
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn peer_drag_confirmation_reports_owner_updates_competing_layouts_and_offline() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        for outcome in 0..3 {
+            let mut pane = laptop_with_monitor();
+            pane.device_displays = vec![settings_store::device_displays::DeviceDisplay {
+                device: "confirmation-peer".into(),
+                device_label: "Peer".into(),
+                connector: "eDP-1".into(),
+                label: "Panel".into(),
+                online: true,
+                local: false,
+                x: 1920,
+                y: 0,
+                width: 1280,
+                height: 720,
+                scale_milli: 1250,
+                revision: 9,
+            }];
+            pane.apply(&DisplayEffect::MoveDeviceDisplay {
+                display: "confirmation-peer/eDP-1".into(),
+                revision: 9,
+                x: 0,
+                y: 1080,
+            })
+            .unwrap();
+            let ui::widget::AppHostIntent::MoveDeviceDisplay { reply, .. } =
+                pane.take_host_intent().unwrap()
+            else {
+                panic!("placement host request");
+            };
+            reply.upgrade().unwrap().borrow_mut().result = Some(Ok(()));
+            pane.poll_device_move();
+            assert!(
+                pane.awaiting_device_move.is_some(),
+                "dispatch is never reported as applied"
+            );
+            let screen = &mut pane.device_displays[0];
+            screen.revision = 10;
+            let expected = match outcome {
+                0 => {
+                    screen.x = 0;
+                    screen.y = 1080;
+                    "display-device-move-confirmed"
+                }
+                1 => {
+                    screen.y = 20;
+                    "display-device-move-changed"
+                }
+                _ => {
+                    screen.online = false;
+                    "display-device-move-unavailable"
+                }
+            };
+            pane.poll_device_move();
+            assert!(pane.awaiting_device_move.is_none());
+            assert_eq!(pane.notice, Some(t(expected)));
+        }
+    }
+
+    #[test]
+    fn peer_drag_timeout_cancels_an_unadmitted_host_gesture() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        pane.device_displays = vec![settings_store::device_displays::DeviceDisplay {
+            device: "timeout-peer".into(),
+            device_label: "Peer".into(),
+            connector: "eDP-1".into(),
+            label: "Panel".into(),
+            online: true,
+            local: false,
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_milli: 1250,
+            revision: 9,
+        }];
+        pane.apply(&DisplayEffect::MoveDeviceDisplay {
+            display: "timeout-peer/eDP-1".into(),
+            revision: 9,
+            x: 0,
+            y: 1080,
+        })
+        .unwrap();
+        let ui::widget::AppHostIntent::MoveDeviceDisplay { reply, .. } =
+            pane.take_host_intent().unwrap()
+        else {
+            panic!("placement host request");
+        };
+        pane.awaiting_device_move.as_mut().unwrap().1 = ui::time::now()
+            .checked_sub(Duration::from_secs(11))
+            .unwrap();
+        pane.poll_device_move();
+        assert!(
+            reply.upgrade().is_none(),
+            "an expired gesture leaves no live admission witness"
+        );
+        assert!(pane.pending_device_move.is_none() && pane.awaiting_device_move.is_none());
+        assert_eq!(pane.notice, Some(t("display-device-move-unconfirmed")));
+        assert!(pane.take_host_intent().is_none());
+    }
+
+    #[test]
+    fn peer_drag_uses_the_mounted_app_semantic_door_and_fixed_revision() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        app.surface::<SettingsApp, _>(|settings| {
+            settings.displays().model().borrow_mut().device_displays =
+                vec![settings_store::device_displays::DeviceDisplay {
+                    device: "semantic-peer".into(),
+                    device_label: "Peer laptop".into(),
+                    connector: "eDP-1".into(),
+                    label: "Panel".into(),
+                    online: true,
+                    local: false,
+                    x: 1920,
+                    y: 0,
+                    width: 1280,
+                    height: 720,
+                    scale_milli: 1250,
+                    revision: 9,
+                }];
+        })
+        .unwrap();
+        app.settle();
+        let address = "settings.device-display:semantic-peer/eDP-1";
+        let surface = app.agent_surface();
+        let row = surface
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["resource"] == address && row["action"] == "move-device-display")
+            .expect("discovered screen exports its move action");
+        assert_eq!(
+            row["params"].as_array().unwrap().len(),
+            2,
+            "only logical x/y are caller-controlled"
+        );
+        assert!(
+            app.call_on(
+                address,
+                "move-device-display",
+                serde_json::json!({"x":0,"y":1080,"revision":1})
+            )
+            .is_err()
+        );
+        assert!(
+            app.call_on(
+                address,
+                "move-device-display",
+                serde_json::json!({"x":0,"y":1080,"display":"other/eDP-1"})
+            )
+            .is_err()
+        );
+        app.call_on(
+            address,
+            "move-device-display",
+            serde_json::json!({"x":0,"y":1080}),
+        )
+        .unwrap();
+        let intent = app.surface::<SettingsApp, _>(<SettingsApp as ui::framework::ResourceSurface<Settings, SettingsEffect>>::take_host_intent).flatten().expect("the real mounted surface carries the typed host intent");
+        let ui::widget::AppHostIntent::MoveDeviceDisplay { request, .. } = intent else {
+            panic!("typed topology request");
+        };
+        assert_eq!(request.screen.device, "semantic-peer");
+        assert_eq!(request.screen.revision, 9);
+        assert_eq!((request.x, request.y), (0, 1080));
+        assert!(app.harness().component_contract_violations().is_empty());
+    }
+
     #[test]
     fn connected_display_controls_publish_their_parameter_actions() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
@@ -2463,6 +3139,90 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn readonly_display_surface_keeps_inspection_and_has_no_stale_admin_controls() {
+        for role in [ui::Role::Viewer, ui::Role::Editor] {
+            let mut app =
+                ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(role).unwrap();
+            let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
+            app.call_on(&open.resource, &open.action, serde_json::json!({}))
+                .unwrap();
+            app.settle();
+            let audit = app.harness().native_app_audit();
+            assert!(
+                audit
+                    .issues
+                    .iter()
+                    .all(|issue| issue.code != "stale-action-binding"),
+                "role {role:?}: stale control in the actual application and host doors: {:?}",
+                audit.issues
+            );
+            assert!(
+                app.call("inspect-display-configuration", serde_json::json!({}))
+                    .unwrap()
+                    .is_some()
+            );
+            for action in [
+                "identify-displays",
+                "apply-display-changes",
+                "keep-display-changes",
+                "revert-display-changes",
+            ] {
+                assert!(
+                    app.call(action, serde_json::json!({})).is_err(),
+                    "{role:?} cannot invoke {action}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn readonly_host_reply_replaces_stale_observation_without_staging_or_disk_writes() {
+        let mut model = model(vec![classify_connector("eDP-1", "connected")]);
+        let mode = OutputMode {
+            width: 2944,
+            height: 1840,
+            refresh_mhz: 89999,
+        };
+        let observed = DisplayHardwareSnapshot {
+            outputs: vec![settings_store::hardware::DisplayOutputSnapshot {
+                descriptor: OutputDescriptor {
+                    connector: "eDP-1".into(),
+                    connector_label: "eDP-1".into(),
+                    modes: vec![mode],
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: vec![],
+                    monitor: None,
+                },
+                current_mode: mode,
+                scale: 2.0,
+                builtin: true,
+                sink_hdr: false,
+                hdr_unavailable_reason: None,
+                sink_vrr: false,
+                vrr_unavailable_reason: None,
+                color_profile_labels: BTreeMap::new(),
+            }],
+            ..DisplayHardwareSnapshot::default()
+        };
+        model.accept_host_reply(settings_store::display_control::DisplayReply {
+            identify: None,
+            observed,
+            transaction: None,
+            committed: DisplayConfig::default(),
+        });
+        let inspection = model.inspection();
+        assert_eq!(
+            inspection["observed_outputs"][0]["current_mode"]["refresh_mhz"],
+            89999
+        );
+        assert_eq!(inspection["observed_outputs"][0]["scale"], 2.0);
+        assert_eq!(inspection["has_staged_changes"], false);
+        assert!(inspection["transaction"].is_null());
+        assert!(model.pending_candidate.is_none());
     }
 
     fn model(outputs: Vec<DisplayOutput>) -> DisplayModel {
@@ -3194,5 +3954,64 @@ mod tests {
         .unwrap();
         assert!(!TrustedDisplayTools::load().contains(&kanshi));
         assert!(pane.build_trusted_tools_card().is_none());
+    }
+    #[test]
+    fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
+        fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
+            fn collect(node: &ui::a11y::AccessNode, names: &mut Vec<String>) {
+                if let Some(name) = &node.name {
+                    names.push(name.clone());
+                }
+                for child in &node.children {
+                    collect(child, names);
+                }
+            }
+            if let Some(node) = widget.accessibility() {
+                collect(&node, names);
+            }
+            for child in widget.children() {
+                accessible_names(child, names);
+            }
+        }
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        assert!(pane.build_device_arrangement_card().is_none());
+        pane.device_displays = vec![settings_store::device_displays::DeviceDisplay {
+            device: "certified-peer".into(),
+            device_label: "Peer laptop".into(),
+            connector: "eDP-1".into(),
+            label: "Panel".into(),
+            online: false,
+            local: false,
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_milli: 1250,
+            revision: 1,
+        }];
+        let card = pane
+            .build_device_arrangement_card()
+            .expect("discovered peer has a real canvas");
+        let mut names = Vec::new();
+        accessible_names(card.as_ref(), &mut names);
+        assert!(
+            names
+                .iter()
+                .any(|name| name.contains("Peer laptop") && name.contains("Offline")),
+            "assistive users receive actual peer and offline state"
+        );
+        let inspection = pane.inspection();
+        assert_eq!(inspection["device_displays"][0]["device"], "certified-peer");
+        assert_eq!(inspection["device_displays"][0]["scale_milli"], 1250);
+        assert!(
+            pane.apply(&DisplayEffect::MoveDisplay {
+                display: "certified-peer/eDP-1".into(),
+                x: 0,
+                y: 0,
+            })
+            .is_err(),
+            "read-only discovery cannot edit local outputs or grant input"
+        );
     }
 }

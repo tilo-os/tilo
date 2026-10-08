@@ -463,3 +463,74 @@ The original isolated native voice-session CI failure closed before the expected
 call-state event. Three bounded exact repeats passed; no race was demonstrated.
 The assertion is preserved and now names its expected stage on closure. No
 blind reconnect or test retry was added.
+
+### Compiled standalone browser acceptance (2026-10-07)
+
+The supported `tilo-app build apps/chat --platform web` path now recognizes
+`ui::dev_reload_entry!` as exporting the SDK's existing `definition()`. The CLI
+previously rejected Chat before generating its browser registry. No SDK macro or
+Chat definition is duplicated. A focused CLI regression covers that production
+source probe, and the actual Chat WASM bundle builds successfully.
+
+Run `node scripts/headless-examples/chat-browser-journey.mjs <chat-bundle>`
+against that generated bundle with the repository browser helper's `CHROME`
+configured for an owned Chromium process. The journey serves only loopback and
+uses a throwaway browser profile. It mounts the compiled Chat, requires a real
+presented frame, creates two conversations through published actions, posts one
+message and one typed live-resource address, reads them through the public
+resource door, verifies conversation isolation and exact provider provenance,
+flushes and reloads the same room, then compares the complete restored results.
+The local compiled-browser journey passed with Chromium's sandbox enabled and
+an owned descendant supervisor. It does not certify peer authentication, native
+clipboard navigation, resource hydration, public hosting or browser voice.
+
+Fresh public reads of the previously audited `https://tilo.coffee/` candidate
+returned 200 for the homepage and config and 403 for
+`/qos-runtime/resource.html`. This is evidence about that candidate only; the
+existing demo's identity and current published resource entry still need
+confirmation. Read-only CloudFormation queries in both documented regions
+reported expired credentials. No login renewal, deployment or access change was
+performed. The actual standalone Chat bundle is ready for local acceptance;
+external acceptance must use the existing authorized demo rather than create a
+replacement deployment.
+
+### Governed compiled browser recovery
+
+The existing native `mounted-resource` fixture now also qualifies the actual
+Chat browser bundle over its temporary certified HTTPS host. The default Viewer
+journey passed resource opening, browser Copy/Open, explicit account choice,
+Leave and owner revocation. Its optional `--disconnect-retry` journey uses an
+ordinary temporary Editor invitation, observes the real browser carrier lose
+authentication, queues one original browser post while a native post becomes
+durable, invokes the existing retry control, then verifies both original posts
+exactly once in the browser and native replica. It requires a newly presented
+frame and keeps the same certified device. The SDK web lane preserves its
+Viewer journey and adds the actual Chat build/recovery journey with separate
+receipts. See `docs/native-chat-browser-acceptance.md` for scope and reproduction.
+These loopback fixture results do not establish public demo access, browser
+voice, a full profile restart with queued edits or cross-app Follow.
+
+## Compiled browser call acceptance (2026-10-07)
+
+The `mounted-resource --voice` journey now exercises two certified profiles
+running the actual compiled Chat and Wasm peer, including production audio and
+signalling. The governor prepares the registered native primary and authors its
+existing graph through the host-local `Rooms::author_application` API. The API
+checks exact current custody and record access, refuses missing or sealed
+records before the callback, and publishes admitted incremental changes. It is
+not an incoming member publication or a new network authoring endpoint. Native
+resource replay and voice binding keep their existing admission predicates.
+
+The journey passed muted join without capture, explicit Unmute through public
+actions and the rendered semantic control, bidirectional decoded synthetic
+audio, independent mute, Leave cleanup, rejoin with fresh consent, and targeted
+owner revocation. The SDK web lane runs it with unprivileged sandboxed browsers
+and retains screenshots and quantitative lifecycle observations. A regression
+also proves that an authored record reaches the retained resource view when a
+real signed governance tail crosses its publication limit.
+
+This qualifies the governed loopback compiled-browser call. It does not
+establish physical microphone support, arbitrary remote encrypted Chat routes,
+cross-app Follow, or public demo access. See
+`docs/native-chat-browser-acceptance.md` for reproduction and the separate
+Viewer and disconnect/retry journeys.

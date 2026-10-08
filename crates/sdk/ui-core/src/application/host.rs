@@ -26,6 +26,7 @@ const DEVICE_ID_FILE: &str = ".tilo-device-id";
 pub struct NativeProcessHost {
     host: ApplicationHost,
     instance_id: InstanceId,
+    default_record: RecordId,
     workspace_scoped: bool,
 }
 
@@ -53,6 +54,7 @@ impl NativeProcessHost {
         environment: NativeProcessEnvironment,
         author: UserId,
     ) -> Result<Self, LaunchError> {
+        let launcher_instance = environment.continuity_instance.is_some();
         let resolved = environment.resolve(definition.app_id, &author)?;
         let mut host = ApplicationHost::with_store(
             Rc::new(app_state::FsStore::new(resolved.profile_root)),
@@ -69,6 +71,11 @@ impl NativeProcessHost {
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
+            default_record: if launcher_instance {
+                RecordId::derived("default", &RecordId::for_tab(resolved.instance_id))
+            } else {
+                RecordId::room_default()
+            },
             workspace_scoped: resolved.workspace_scoped,
         })
     }
@@ -79,6 +86,37 @@ impl NativeProcessHost {
 
     pub fn instance_id(&self) -> InstanceId {
         self.instance_id
+    }
+
+    /// Prepare this native window's named record or saved continuation.
+    /// A launcher-issued fresh instance has its own durable fallback record;
+    /// standalone profiles retain the room default. Room-record applications
+    /// still use their package primary through the normal host policy.
+    ///
+    /// # Errors
+    /// Refuses contested writers, invalid saved views and denied authority.
+    pub fn prepare_launch(
+        &mut self,
+        definition: &ApplicationDefinition,
+        named: Option<RecordId>,
+        inputs: ComponentRunnerInputs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        let kind = definition.record_kind.clone();
+        match named {
+            Some(id) => self.host.prepare_record(
+                definition,
+                self.instance_id,
+                RecordCheckout::new(id, kind),
+                inputs,
+            ),
+            None => self.host.prepare_default(
+                definition,
+                self.instance_id,
+                RecordCheckout::new(self.default_record.clone(), kind),
+                None,
+                inputs,
+            ),
+        }
     }
 
     pub fn workspace_scoped(&self) -> bool {
@@ -499,6 +537,12 @@ pub struct ApplicationHost {
     /// Where the person's own records are kept: the host's store unless the
     /// host names another ([`Self::keep_person_records_in`]).
     person: RecordOwners,
+    lent_services: Vec<RegisteredLoan>,
+}
+
+struct RegisteredLoan {
+    package_id: String,
+    provide: Box<dyn Fn(&mut HostContext)>,
 }
 
 impl ApplicationHost {
@@ -582,7 +626,29 @@ impl ApplicationHost {
             permissions,
             author,
             action_context,
+            lent_services: Vec::new(),
         })
+    }
+
+    /// Register a host-owned service for one package and the host's exact person.
+    /// Every prepared launch receives a fresh loan; other packages receive none.
+    /// This binds an already authorized service and creates no credential grant.
+    /// # Errors
+    /// Refuses a different principal or empty package.
+    pub fn register_service<T: Clone + 'static>(
+        &mut self,
+        package_id: &str,
+        principal: &str,
+        service: T,
+    ) -> Result<(), LaunchError> {
+        if principal != self.author.0 || package_id.trim().is_empty() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        self.lent_services.push(RegisteredLoan {
+            package_id: package_id.into(),
+            provide: Box::new(move |context| context.lend(service.clone())),
+        });
+        Ok(())
     }
 
     /// Keep the person's own records ([`crate::record::person`]) in `store`
@@ -606,6 +672,13 @@ impl ApplicationHost {
         ) {
             Ok(records) => context.provide_person_records(records),
             Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
+        }
+        for loan in self
+            .lent_services
+            .iter()
+            .filter(|loan| loan.package_id == package_id)
+        {
+            (loan.provide)(&mut context);
         }
         context
     }
@@ -892,6 +965,140 @@ mod native_process_tests {
             xdg_data_home: Some(root.to_owned()),
             ..NativeProcessEnvironment::default()
         }
+    }
+
+    #[test]
+    fn fresh_native_window_records_do_not_contest_an_existing_writer() {
+        use crate::application_test_support as probe;
+        let temp = tempfile::tempdir().unwrap();
+        let definition = definition(probe::APP);
+        let room = "3f2b1c00-0000-4000-8000-00000000000a";
+        let launch = |instance: u64| {
+            NativeProcessHost::open_with(
+                &definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some(instance.to_string()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        let prepare = |native: &mut NativeProcessHost| {
+            native.prepare_launch(&definition, None, probe::runner_inputs())
+        };
+        let mut first = launch(41);
+        let mut first_record = prepare(&mut first).unwrap();
+        first_record
+            .context
+            .initialize_new_record(|_| Ok(()))
+            .unwrap();
+        let mut second = launch(42);
+        let second_record = prepare(&mut second).unwrap();
+        assert_ne!(
+            first_record.context.record(),
+            second_record.context.record()
+        );
+        // Naming the first record explicitly still contends with its actual
+        // live writer: distinct defaults must never weaken the storage lock.
+        assert!(
+            second
+                .prepare_launch(
+                    &definition,
+                    Some(first_record.context.record().id.clone()),
+                    probe::runner_inputs(),
+                )
+                .is_err()
+        );
+        let first_id = first_record.context.record().id.clone();
+        first
+            .host
+            .views
+            .save(&first_record.context.envelope(View::default(), None))
+            .unwrap();
+        drop(first_record);
+        drop(first);
+        let mut restored = launch(41);
+        let restored_record = prepare(&mut restored).unwrap();
+        assert_eq!(restored_record.context.record().id, first_id);
+        assert!(matches!(
+            restored_record.target,
+            LaunchTarget::Record { .. }
+        ));
+    }
+
+    #[test]
+    fn native_window_defaults_preserve_standalone_primary_and_saved_records() {
+        use crate::application_test_support as probe;
+        let temp = tempfile::tempdir().unwrap();
+        let definition = definition(probe::APP);
+        let mut standalone =
+            NativeProcessHost::open_with(&definition, environment(temp.path()), probe::author())
+                .unwrap();
+        let standalone_record = standalone
+            .prepare_launch(&definition, None, probe::runner_inputs())
+            .unwrap();
+        assert_eq!(
+            standalone_record.context.record().id,
+            RecordId::room_default()
+        );
+        drop(standalone_record);
+        drop(standalone);
+
+        let room = "3f2b1c00-0000-4000-8000-00000000000b";
+        let launch = || {
+            NativeProcessHost::open_with(
+                &definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some("51".into()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        // A saved pre-fix window can still name the old room-default record.
+        // Changing the fresh fallback must not replace its existing data.
+        let mut legacy = launch();
+        let mut old = legacy
+            .host_mut()
+            .prepare_default(
+                &definition,
+                51,
+                RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone()),
+                None,
+                probe::runner_inputs(),
+            )
+            .unwrap();
+        old.context.initialize_new_record(|_| Ok(())).unwrap();
+        legacy
+            .host
+            .views
+            .save(&old.context.envelope(View::default(), None))
+            .unwrap();
+        drop(old);
+        drop(legacy);
+        let mut restored = launch();
+        let old = restored
+            .prepare_launch(&definition, None, probe::runner_inputs())
+            .unwrap();
+        assert_eq!(old.context.record().id, RecordId::room_default());
+        assert!(matches!(old.target, LaunchTarget::Record { .. }));
+        drop(old);
+        drop(restored);
+
+        let mut primary_definition = self::definition(probe::APP);
+        primary_definition.room_record = true;
+        let mut primary = launch();
+        let prepared = primary
+            .prepare_launch(&primary_definition, None, probe::runner_inputs())
+            .unwrap();
+        assert!(prepared.context.record().id.is_package_primary());
+        assert!(matches!(prepared.target, LaunchTarget::PrimaryNew));
     }
 
     #[test]
@@ -1222,5 +1429,79 @@ mod native_process_tests {
             foreign_package.resolve("so.tilo.notes", &author),
             Err(LaunchError::BindingMismatch)
         ));
+    }
+}
+
+#[cfg(test)]
+mod service_loan_tests {
+    use super::*;
+    use crate::record::RecordKind;
+    use crate::widget::IconDescriptor;
+
+    fn definition(app_id: &'static str) -> ApplicationDefinition {
+        ApplicationDefinition {
+            app_id,
+            title: "Service probe",
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: RecordKind::new("service-probe"),
+            required: Vec::new(),
+            optional: Vec::new(),
+            opens: &[],
+            room_record: false,
+            create: |_, _, _| Err(LaunchError::BindingMismatch),
+        }
+    }
+
+    fn launch_context(host: &mut ApplicationHost, app: &ApplicationDefinition) -> HostContext {
+        let records = host.records_for(app).expect("checked app namespace");
+        let context = HostContext::prepare(
+            app,
+            HostContextInputs {
+                records,
+                views: host.views.clone(),
+                device_id: host.device_id.clone(),
+                instance_id: 1,
+                permissions: host.permissions.clone(),
+                author: host.author.clone(),
+                action_context: host.action_context.clone(),
+            },
+            &LaunchTarget::New,
+        )
+        .expect("checked launch");
+        host.with_person_records(app, context)
+    }
+
+    #[test]
+    fn registered_services_require_exact_person_and_only_reach_the_named_package() {
+        let mut host = ApplicationHost::with_store(
+            Rc::new(durable_store::MemoryStore::default()),
+            "device-a".into(),
+            "room-a",
+            UserId("person-a".into()),
+            Rc::new(RefCell::new(PermissionContext::permissive())),
+            tilo_actions::ActionContext::default(),
+        )
+        .expect("host");
+        assert!(
+            host.register_service("so.tilo.messages", "person-b", 7u64)
+                .is_err()
+        );
+        assert!(host.register_service("", "person-a", 7u64).is_err());
+        host.register_service("so.tilo.messages", "person-a", 7u64)
+            .expect("explicit owned service");
+        let mut other = launch_context(&mut host, &definition("so.tilo.other"));
+        assert!(other.take_lent().is_empty());
+        drop(other);
+        let mut messages = launch_context(&mut host, &definition("so.tilo.messages"));
+        let loans = messages.take_lent();
+        assert_eq!(loans.len(), 1);
+        assert_eq!(
+            loans.first().and_then(|loan| loan.downcast_ref::<u64>()),
+            Some(&7)
+        );
+        assert!(
+            messages.take_lent().is_empty(),
+            "a launch loan is taken only once"
+        );
     }
 }

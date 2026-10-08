@@ -474,8 +474,9 @@ then signed metadata is matched to an independently verified configured
 repository offer (app, version, root and publisher). The independently authenticated
 offer size is retained for the installer's exact download-size check; full and thin
 local files can encode the same identity at different lengths. An archive's
-own key never creates publisher trust. Unlisted private development packages are
-refused; component and runtime archives use the system updater.
+own key never creates publisher trust. Unlisted packages require independently
+provisioned identity-scoped trust, as described below; component and runtime
+archives use the system updater.
 
 After the review job succeeds, `inspect-catalogue` exposes `imported_package`
 with its app, root and file version. The app details show that version, its signed
@@ -509,3 +510,21 @@ payload already in the canonical content store; Store does not invent an
 untrusted download source. The review reports actual installed state separately
 from the candidate, and successful installation requires the reviewed root to
 be the selected installed package.
+### Timing diagnostics in an active owner session
+
+The authenticated local owner socket publishes `session-diagnostics` with
+`configure@session-diagnostics` and `inspect@session-diagnostics`. Configure
+requires exactly four booleans: `presentation`, `gpu_stages`, `gpu_timestamps`,
+and `gpu_dispatch_timestamps`. Dispatch timestamps require GPU timestamps.
+Use the ordinary `tilo-control actions invoke` argument JSON; no environment
+names or output paths are accepted.
+
+The setting is ephemeral to this desktop session. It sets or removes only the
+four existing diagnostic variables for subsequently launched children.
+Presentation also controls the compositor's existing physical input delivery
+observer immediately. Existing applications and the compositor's initialized
+GPU renderer retain their configuration; reopen the application to collect
+its new timing stream. Inspect returns the current fixed options and their
+scope. Agent-scoped, sandboxed, other-account and locked-session calls cannot
+configure this owner-only surface. No application content or typed keys are
+recorded by these timing options.

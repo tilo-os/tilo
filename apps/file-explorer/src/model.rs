@@ -1332,6 +1332,8 @@ pub struct Entry {
     pub history: Option<HistoryProjection>,
     /// Useful media/document facts from signed metadata; no payload read.
     pub rich_metadata: Option<MetadataProjection>,
+    /// Object observed by the listing, used only as a stale-view precondition.
+    pub observed: Option<host_fs::ObservedObject>,
 }
 
 impl Entry {
@@ -1513,6 +1515,9 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             share,
             history,
             rich_metadata,
+            observed: meta
+                .as_ref()
+                .and_then(host_fs::ObservedObject::from_metadata),
         });
     }
     Ok(out)
