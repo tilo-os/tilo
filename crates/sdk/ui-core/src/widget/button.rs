@@ -83,6 +83,9 @@ pub struct Button {
     enabled: bool,
     /// Where `enabled` comes from, when the app keeps it in a state.
     enabled_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
+    /// The page's encouraged action: a focus reset lands here, so Enter
+    /// activates it.
+    default_focus: bool,
     /// Holds the last emitted body/border/label primitives at *logical*
     /// coordinates; the App's transform is reapplied on `Scene::append`.
     cached: vello::Scene,
@@ -155,6 +158,7 @@ impl Button {
             measured_width: None,
             control_size: ControlSize::Regular,
             metrics: FaceMetrics::stock(ControlSize::Regular),
+            default_focus: false,
             on_click: None,
             action: None,
             native_resource: None,
@@ -414,6 +418,15 @@ impl Button {
         let (enabled, binding) = super::binding::local(state);
         self.enabled = enabled;
         self.enabled_binding = Some(binding);
+        self
+    }
+
+    /// Mark this button as its page's encouraged action: when the page is
+    /// rebuilt with a focus reset, keyboard focus starts here, so Enter
+    /// activates it.
+    #[must_use]
+    pub fn with_default_focus(mut self) -> Self {
+        self.default_focus = true;
         self
     }
 
@@ -1693,6 +1706,9 @@ impl Widget for Button {
 
     fn is_focusable(&self) -> bool {
         true
+    }
+    fn is_default_keyboard_focus(&self) -> bool {
+        self.default_focus
     }
     fn set_focus(&mut self, focused: bool) {
         // A press that focused it keeps its mark; losing focus clears it.
