@@ -255,6 +255,7 @@ fn custody_and_assumption_reject_forgery_missing_cutoff_and_revoked_successor() 
     }
     for failure in [Failure::Forged, Failure::Missing, Failure::Revoked] {
         let mut f = fixture();
+        let clean = f.peer.clone();
         match failure {
             Failure::Forged => f.record.signature[0] ^= 1,
             Failure::Missing => {
@@ -283,7 +284,10 @@ fn custody_and_assumption_reject_forgery_missing_cutoff_and_revoked_successor() 
         assert!(
             StatePeer::take_custody(
                 &f.record,
-                [Custody::Replica(Box::new(f.peer.clone()))],
+                [
+                    Custody::Replica(Box::new(f.peer.clone())),
+                    Custody::Replica(Box::new(clean)),
+                ],
                 f.now
             )
             .is_err(),

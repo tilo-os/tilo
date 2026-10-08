@@ -30,7 +30,8 @@ impl StatePeer {
     /// # Errors
     ///
     /// Returns why no source holds the previous governor's history exactly
-    /// up to the cutoff.
+    /// up to the cutoff. An invalid succession or a known revoked successor
+    /// refuses custody even when another history source would verify.
     pub fn take_custody(
         succession: &GovernorSuccession,
         sources: impl IntoIterator<Item = Custody>,
@@ -43,12 +44,17 @@ impl StatePeer {
                 Custody::Replica(peer) => Ok(*peer),
                 Custody::Retained(messages) => Self::replay(succession, messages, now),
             };
+            if candidate
+                .as_ref()
+                .is_ok_and(|peer| peer.core.revocations.revokes(&succession.successor))
+            {
+                // A verified revocation is permanent evidence, not a bad
+                // history source that a stale fallback may replace.
+                return Err("the successor is revoked".into());
+            }
             let checked = candidate.and_then(|peer| {
                 if peer.core.room != succession.room || peer.core.authority != succession.previous {
                     return Err("custody is of another room or governor".into());
-                }
-                if peer.core.revocations.revokes(&succession.successor) {
-                    return Err("the successor is revoked".into());
                 }
                 succession.check_cutoff(
                     &**peer

@@ -90,6 +90,9 @@ host. This catches temporary, reverted and concurrent governance changes even
 when the final projection matches the signed cutoff. Member content and
 unchanged governance echoes remain admissible. Custody also verifies the root's
 succession signature and refuses a known revoked successor.
+That refusal ends custody selection; a stale clean fallback cannot discard
+the verified revocation. The stricter fallback control fails on the preceding
+repair commit and passes with the permanent refusal.
 
 Following requires a successor-authored transition that descends from every
 signed cutoff head; its later governance remains valid. Durable restore
