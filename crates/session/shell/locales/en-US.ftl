@@ -2519,3 +2519,5 @@ quick-settings-network-inspect = Inspect Quick Settings network state
 quick-settings-network-inspect-subtitle = Read the cached network labels and networks shown on this device
 quick-settings-network-inspect-denied = Only the unlocked device owner can inspect this private network state.
 quick-settings-network-inspect-limit = The cached network state is too large to inspect safely.
+
+lock-screen-discovery-unavailable = Application discovery is unavailable while the session is locked

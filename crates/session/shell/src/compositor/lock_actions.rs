@@ -65,7 +65,7 @@ pub(super) fn dispatch(
     match command {
         Command::ActionsEnumerate { scope: Some(_), .. } if locked => Some(Response::Err {
             code: "session_locked".into(),
-            message: "application discovery is unavailable while the session is locked".into(),
+            message: crate::shell::i18n::t("lock-screen-discovery-unavailable"),
         }),
         Command::ActionsEnumerate { query, .. } if locked => Some(Response::Answer(
             console_control::enumerate(PROVIDER, &resources(locked, lock), query),

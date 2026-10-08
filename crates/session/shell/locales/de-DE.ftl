@@ -2522,3 +2522,5 @@ quick-settings-network-inspect = Netzwerkstatus der Schnelleinstellungen prüfen
 quick-settings-network-inspect-subtitle = Die auf diesem Gerät angezeigten Netzwerktexte und zwischengespeicherten Netzwerke lesen
 quick-settings-network-inspect-denied = Nur die entsperrte Gerätebesitzerin oder der entsperrte Gerätebesitzer kann diesen privaten Netzwerkstatus prüfen.
 quick-settings-network-inspect-limit = Der zwischengespeicherte Netzwerkstatus ist zu groß für eine sichere Prüfung.
+
+lock-screen-discovery-unavailable = Die Anwendungssuche ist nicht verfügbar, solange die Sitzung gesperrt ist
