@@ -273,18 +273,9 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
 
 fn exported(descriptor: &ActionDescriptor) -> ExportedAction {
     ExportedAction {
-        resource: descriptor.address.resource.clone(),
-        semantic_identity: descriptor.semantic_identity.clone(),
-        action: descriptor.address.action.clone(),
-        resource_kind: descriptor.resource_kind.clone(),
-        resource_label: descriptor.resource_label.clone(),
-        action_label: descriptor.action_label.clone(),
-        description: descriptor.description.clone(),
-        operation_kind: descriptor.kind.as_str().to_string(),
-        params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
-        contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
         view: None,
         input: ExportedInput::None,
+        ..ExportedAction::from(descriptor)
     }
 }
 
