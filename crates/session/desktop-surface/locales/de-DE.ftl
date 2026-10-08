@@ -230,7 +230,7 @@ activity-brief-underlying = { $count } { $count ->
        *[other] zugrunde liegende Aktionen
     }
 activity-brief-open-explorer = Diese Arbeitssitzung im Explorer öffnen →
-activity-brief-show-affected = Betroffene Ressourcen und Aktionen anzeigen ⌄
+activity-brief-show-affected = Betroffene Ressourcen und Aktionen anzeigen
 activity-browse-by = Durchsuchen nach
 activity-more-lenses = Weitere Ansichten…
 activity-first-lenses = Erste Ansichten…
@@ -328,7 +328,7 @@ activity-task-composer-title = Arbeit anlegen, ohne den Schreibtisch zu verlasse
 activity-task-placeholder = Was muss erledigt werden?
 activity-task-executor-manual = Ausführung · Du oder eine andere Person · kein Modell
 activity-task-executor-none = Ausführung · Kein Agent verfügbar · Aufgabe bleibt unzugewiesen
-activity-task-executor-agent = Ausführung · ▣ AGENT · { $agent }
+activity-task-executor-agent = Ausführung · Agent · { $agent }
 activity-task-no-attachment = Keine Ressource angehängt · Aufgabe gilt für den ganzen Arbeitsbereich
 activity-task-attached = Angehängt · { $app } · { $resource }
 activity-task-attached-workspace = Arbeitsbereich
@@ -343,7 +343,7 @@ activity-task-cancel = Aufgabe abbrechen
 activity-task-retry-agent = Agent erneut versuchen
 activity-task-audit-trail = PRÜFPROTOKOLL
 activity-task-unassigned-by = Nicht zugewiesen · angelegt von { $creator }
-activity-task-agent-badge = ▣ AGENT · { $name }
+activity-task-agent-badge = Agent · { $name }
 activity-task-status-queued = In der Warteschlange
 activity-task-status-in-progress = In Arbeit
 activity-task-status-waiting = Wartet
@@ -872,7 +872,9 @@ people-panel-only-you = Nur du bist hier
 people-panel-status-typing = Gib einen Status ein und drücke dann die Eingabetaste
 people-panel-status-empty = Lege fest, woran du gerade arbeitest …
 people-panel-own-status = Du · { $status }
-people-panel-sharing-auto = ✦ Automatisch
+people-panel-sharing-auto = Automatisch
+people-panel-previous-page = Vorherige Personen
+people-panel-next-page = Nächste Personen
 people-panel-sharing-manual = Manuell
 people-panel-sharing-hidden = Verborgen
 people-panel-agent-tag = Agent
@@ -962,3 +964,48 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Wechseln zu
 overview-panel-new-workspace = Neuer Arbeitsbereich
 browser-new-workspace-name = Arbeitsbereich { $number }
+
+notification-center-read = Lesen
+notification-center-read-description = Vollständige Benachrichtigung lesen
+notification-preview-hidden = Benachrichtigungsvorschau verborgen
+
+activity-catch-up-goals = Aufgaben im Arbeitsbereich · { $done } abgeschlossen · { $unfinished } offen · aktualisiert { $when }
+activity-catch-up-review-description = Prüfe wartende Aufgaben, Ziele und die Arbeit von Agenten in diesem Arbeitsbereich. Das Lesen der Aktivitäten schließt keine Aufgabe ab.
+activity-catch-up-review-goals = Ziele und die Arbeit von Agenten prüfen
+activity-acknowledge-viewed = Gesehene Aktivitäten bestätigen
+activity-acknowledge-description = Markiere nur die angezeigten Zusammenfassungen als gelesen. Verborgene Änderungen und wartende Aufgaben bleiben offen.
+activity-catch-up-needs-review = Deine Prüfung ist nötig · { $count ->
+    [one] eine wartende Aufgabe
+   *[other] { $count } wartende Aufgaben
+    }
+activity-catch-up-waiting-detail = { $task } · { $who }
+
+notification-alarm-snoozed = Um 5 Minuten verschoben. Verwirf diesen Eintrag, um die ausstehende Erinnerung abzubrechen.
+notification-alarm-dismiss = Verwerfen
+notification-alarm-snooze = In 5 Minuten erneut erinnern
+notification-alarm-action-failed = Dieser Wecker konnte nicht geändert werden
+notification-alarm-action-title = { $action }: { $title }
+notification-alarm-action-subtitle = Für dieses Weckereignis
+notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
+
+activity-task-review-unavailable = Authentifizierte Aufgabensteuerung ist nicht verfügbar. Der bisherige Verlauf bleibt lesbar.
+activity-task-review-history = Aktionsverlauf prüfen
+activity-task-steer = Anweisungen ändern
+activity-task-cancel-run = Diesen Lauf abbrechen
+activity-task-retry-run = Aufgabe erneut versuchen
+activity-task-direction-send = Anweisungen senden
+activity-task-direction-close = Zurück zur Aufgabe
+activity-task-direction-label = Öffentliche Aufgabenanweisungen
+activity-task-direction-placeholder = Beschreibe, was der Agent ändern soll
+activity-task-direction-observation = Anweisungen für Lauf { $epoch } nach Revision { $revision }. Ein geänderter Lauf muss erneut geprüft werden.
+activity-task-review-saving = Warten auf das Speichern durch den Arbeitsbereich…
+activity-task-review-saved = Im Arbeitsbereich gespeichert. Die Anwendung durch den Agenten wird separat angezeigt.
+activity-task-review-refused = Nicht gespeichert. Dein Entwurf bleibt erhalten. { $detail }
+
+activity-task-next = Nächste Aufgabe
+activity-task-previous = Vorherige Aufgabe
+activity-task-review-source = Arbeitsbereich · Generation { $generation } · Stand { $time }
+activity-task-review-status = { $status } · Agent: { $agent }
+activity-task-review-frontier = Lauf { $epoch } · Anweisungen { $revision } · vom Agenten angewendet { $applied }
+activity-task-review-direction = { $author }: { $text }
+activity-task-review-missing = Diese Aufgabe ist in diesem Arbeitsbereich nicht mehr verfügbar.

@@ -49,6 +49,9 @@ except Exception as e:
     print(json.dumps({"error": f"no AT-SPI client at {CLIENT}: {e}"}))
     sys.exit(0)
 
+# AtspiRole's list. AccessKit has no role-name method; roles are numbers.
+ROLE_LIST = 31
+
 def text(reply):
     # gdbus quotes a string in single quotes, or double quotes when it holds one.
     found = re.search(r"'((?:[^'\\]|\\.)*)'|\"((?:[^\"\\]|\\.)*)\"", reply)
@@ -64,8 +67,7 @@ def walk(client, limit=800):
         name = text(client.property(path, "Name"))
         names.append(name)
         children = m.PATH_RE.findall(client.call(path, "org.a11y.atspi.Accessible.GetChildren"))
-        if name == list_name and text(client.call(
-                path, "org.a11y.atspi.Accessible.GetRoleName", check=False)) == "list":
+        if name == list_name and client.role(path) == ROLE_LIST:
             return names, [text(client.property(c, "Name")) for c in children]
         pending += [c for c in children if c not in seen]
     return names, None

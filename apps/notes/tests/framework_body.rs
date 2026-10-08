@@ -13,7 +13,7 @@ fn with_page() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&new_page_action(page, None, 0, "First")).unwrap())
+    app.invoke(Invoke::apply(&new_page_action(page, None, "a".into(), "First")).unwrap())
         .unwrap();
     (app, page)
 }
@@ -62,4 +62,22 @@ fn the_published_body_applies_to_its_page() {
         "{:?}",
         body(&app, page)
     );
+}
+
+#[test]
+fn the_published_body_offers_the_rich_text_views() {
+    use ui::tilo_resource::Resource as _;
+    let (app, page) = with_page();
+    let children = notes::Notebook::children(&app.state());
+    let note = children
+        .iter()
+        .find(|child| child.id.as_str() == notes::actions::page_resource_id(page))
+        .expect("the note is published");
+    let body = note
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == page_body_id(page))
+        .expect("the note publishes its body");
+    let views: Vec<&str> = body.views.iter().map(|view| view.id.as_str()).collect();
+    assert_eq!(views, ["editor", "compact"], "{views:?}");
 }

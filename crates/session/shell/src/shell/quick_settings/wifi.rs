@@ -24,8 +24,10 @@ use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
 use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, LIST_TOP, PANEL_PAD, RELATED_GAP,
     ROW_HEIGHT, STATUS_DOT, TOGGLE_H, TOGGLE_W, centred_text_top, leading_glyph, paint_control,
-    trailing_dot_center, trailing_status_glyph, trailing_toggle, type_size,
+    trailing_dot_center, trailing_status_glyph, trailing_toggle,
 };
+use ui::TextRole;
+use ui::widget::ButtonRole;
 
 fn f32v(value: f64) -> f32 {
     #[allow(
@@ -47,6 +49,8 @@ pub struct QuickSettingsWifiPane {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WifiPaneOutcome {
     DrillIn(DrillInOutcome),
+    /// The host admits this typed operation and owns its completion.
+    RequestWifi(bool),
     /// A synchronous radio mutation succeeded; refresh authoritative OS state.
     Reconcile,
     ActionFailed {
@@ -117,7 +121,9 @@ impl QuickSettingsWifiPane {
     }
 
     fn status_message(state: &QuickSettingsState) -> Option<String> {
-        let key = if !state.wifi {
+        let key = if state.radio_change_pending {
+            "display-confirm-applying"
+        } else if !state.wifi {
             "qs-wifi-off"
         } else if state.wifi_scanning {
             "qs-wifi-scanning"
@@ -135,7 +141,7 @@ impl QuickSettingsWifiPane {
     /// an already-connected network remain visible, but keyboard and
     /// accessibility traversal must not land on inert targets.
     fn focusable_indices(state: &QuickSettingsState) -> Vec<usize> {
-        let busy = state.wifi_joining.is_some();
+        let busy = state.wifi_joining.is_some() || state.radio_change_pending;
         let mut indices = vec![Self::BACK_FOCUS];
         if !busy {
             indices.push(Self::WIFI_FOCUS);
@@ -459,12 +465,21 @@ impl QuickSettingsWifiPane {
             return WifiPaneOutcome::DrillIn(DrillInOutcome::Back);
         }
 
-        let busy = state.wifi_joining.is_some();
+        let busy = state.wifi_joining.is_some() || state.radio_change_pending;
         if Self::wifi_toggle_rect(panel).contains(point) {
             if busy {
                 return WifiPaneOutcome::DrillIn(DrillInOutcome::None);
             }
             let next = !state.wifi;
+            // Preparation is pure: the owning host starts the same typed
+            // operation and keeps its receipt. Explicit synchronous fixture
+            // dispatchers retain their original immediate contract.
+            if actions
+                .prepare_radio_change(os_actions::RadioChange::Wifi(next))
+                .is_some()
+            {
+                return WifiPaneOutcome::RequestWifi(next);
+            }
             let result = actions.set_wifi(next);
             if let Err(error) = result {
                 log_qs_result("set_wifi", Err(error.clone()));
@@ -559,7 +574,7 @@ impl QuickSettingsWifiPane {
         state: &QuickSettingsState,
     ) {
         let networks = &state.wifi_networks;
-        let busy = state.wifi_joining.is_some();
+        let busy = state.wifi_joining.is_some() || state.radio_change_pending;
         let displayed_networks = Self::displayed_network_count(state);
         self.list
             .layout_from(panel, displayed_networks, Self::LIST_TOP);
@@ -580,39 +595,39 @@ impl QuickSettingsWifiPane {
             colors.text_primary,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let detail_size = type_size(text, theme.tokens.typography.scale.xs);
+        let label_style = theme.text(TextRole::Caption);
+        let detail_style = theme.text(TextRole::Caption);
         let detail = t(if state.radios.hotspot_active {
             "qs-wifi-hotspot-sharing"
         } else {
             "qs-off"
         });
         let hotspot_label = t("qs-wifi-hotspot");
-        let (_, label_h) = text.measure_weighted(
+        let (_, label_h) = text.measure_style(
             &hotspot_label,
-            label_size,
             None,
-            ui::text_render::TextWeight::Medium,
+            &label_style
+                .clone()
+                .with_weight(ui::text_render::TextWeight::Medium),
         );
-        let (_, detail_h) = text.measure(&detail, detail_size, None);
+        let (_, detail_h) = text.measure_style(&detail, None, &detail_style);
         let block_top = centred_text_top(row, f64::from(label_h) + f64::from(detail_h));
         let text_x = glyph.x1 + CONTROL_INSET;
-        text.draw_text_weighted(
+        text.draw_style(
             scene,
             &hotspot_label,
-            label_size,
             colors.text_primary,
             transform.pre_translate((text_x, block_top).into()),
             None,
-            ui::text_render::TextWeight::Medium,
+            &label_style.with_weight(ui::text_render::TextWeight::Medium),
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &detail,
-            detail_size,
             colors.text_dim,
             transform.pre_translate((text_x, block_top + f64::from(label_h)).into()),
             None,
+            &detail_style,
         );
         Toggle::paint(
             scene,
@@ -622,7 +637,8 @@ impl QuickSettingsWifiPane {
                 trailing_toggle(row, CONTROL_INSET, TOGGLE_W, TOGGLE_H),
                 state.radios.hotspot_active,
             )
-            .hovered(hovered),
+            .hovered(hovered)
+            .disabled(busy),
         );
         if let Some(message) = Self::status_message(state) {
             DrillInList::draw_empty_from(
@@ -661,29 +677,29 @@ impl QuickSettingsWifiPane {
                     text,
                     theme,
                     &ButtonFace::new(*row, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .focused(true)
                         .disabled(network.connected || busy)
                         .accessible_name(&network.ssid),
                 );
             }
             if state.wifi_joining.as_deref() == Some(network.ssid.as_str()) {
-                text.draw_text(
+                text.draw_style(
                     scene,
                     &t("qs-connecting"),
-                    theme.tokens.typography.scale.xs,
-                    colors.accent[5],
+                    colors.intent.inverted,
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
                     Some(f32v((row.width() - 120.0).max(1.0))),
+                    &theme.text(TextRole::Caption),
                 );
             } else if network.connected {
-                text.draw_text(
+                text.draw_style(
                     scene,
                     &t("qs-connected"),
-                    theme.tokens.typography.scale.xs,
-                    colors.accent[5],
+                    colors.intent.inverted,
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
                     Some(f32v((row.width() - 120.0).max(1.0))),
+                    &theme.text(TextRole::Caption),
                 );
             }
             ui::icons::draw_icon(
@@ -724,7 +740,7 @@ impl QuickSettingsWifiPane {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.accent[5],
+                    colors.intent.inverted,
                     None,
                     &Circle::new(trailing_dot_center(*row, CONTROL_INSET), STATUS_DOT / 2.0),
                 );

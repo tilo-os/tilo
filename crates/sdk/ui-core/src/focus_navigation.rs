@@ -111,6 +111,44 @@ pub(crate) fn order(
     collect_focusable(root, widget, taffy, &mut order);
     (order, false)
 }
+
+/// The same deepest-trap policy through an admitted composition map. History
+/// and component roots add layout nodes that are not Widget children.
+pub(crate) fn mapped_order(
+    root: NodeId,
+    taffy: &TaffyTree<()>,
+    inspect: impl Fn(NodeId) -> (bool, bool, bool),
+) -> (Vec<NodeId>, bool) {
+    fn trap(
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+        inspect: &impl Fn(NodeId) -> (bool, bool, bool),
+    ) -> Option<NodeId> {
+        if inspect(node).2 {
+            return None;
+        }
+        for child in taffy.children(node).unwrap_or_default() {
+            if let Some(found) = trap(child, taffy, inspect) {
+                return Some(found);
+            }
+        }
+        inspect(node).1.then_some(node)
+    }
+    let trapped = trap(root, taffy, &inspect);
+    let mut pending = vec![trapped.unwrap_or(root)];
+    let mut order = Vec::new();
+    while let Some(node) = pending.pop() {
+        let (focusable, _, hidden) = inspect(node);
+        if hidden {
+            continue;
+        }
+        if focusable {
+            order.push(node);
+        }
+        pending.extend(taffy.children(node).unwrap_or_default().into_iter().rev());
+    }
+    (order, trapped.is_some())
+}
 /// None means keep focus; Some(None) means blur all controls.
 #[expect(
     clippy::option_option,
@@ -128,7 +166,17 @@ pub(crate) fn reconcile_trap(
             *before = focused;
             Some(order.first().copied())
         }
-        (true, false) => Some(before.take().filter(|id| order.contains(id))),
+        // Focus goes back to where it was before the trap, unless what the
+        // trap chose moved it somewhere that outlives the trap (a menu's
+        // "Rename" focusing the name it opened for editing).
+        (true, false) => {
+            let before = before.take();
+            if focused.is_some_and(|id| order.contains(&id) && Some(id) != before) {
+                None
+            } else {
+                Some(before.filter(|id| order.contains(id)))
+            }
+        }
         (true, true) if !focused.is_some_and(|id| order.contains(&id)) => {
             Some(order.first().copied())
         }
@@ -152,4 +200,36 @@ pub(crate) fn tab_index(order: &[NodeId], focused: Option<NodeId>, back: bool) -
             None => 0,
         },
     )
+}
+
+#[cfg(test)]
+mod trap_tests {
+    use super::*;
+
+    #[test]
+    fn a_closing_trap_restores_focus_unless_its_choice_moved_it() {
+        let ids: Vec<NodeId> = (0..4_u64).map(NodeId::from).collect();
+        let [canvas, label, menu, other] = [ids[0], ids[1], ids[2], ids[3]];
+        let page = [canvas, label, other];
+        // A menu opens over the canvas and closes without a choice.
+        let (mut active, mut before) = (false, None);
+        assert_eq!(
+            reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true),
+            Some(Some(menu))
+        );
+        assert_eq!(
+            reconcile_trap(&mut active, &mut before, Some(menu), &page, false),
+            Some(Some(canvas))
+        );
+        // Again, and its choice focuses the label it began editing.
+        assert_eq!(
+            reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true),
+            Some(Some(menu))
+        );
+        assert_eq!(
+            reconcile_trap(&mut active, &mut before, Some(label), &page, false),
+            None
+        );
+        assert_eq!(before, None);
+    }
 }

@@ -90,8 +90,9 @@ fn reports_keep_numeric_contrast_spacing_and_visibility_evidence() {
         assert!(report.failures.iter().any(|f| f.contains("Contrast")));
         assert!(report.failures.iter().any(|f| f.contains("click budget")));
         assert!(dir.path().join("index.html").exists());
-        // The native App composites onto theme.bg_app. A transparent offscreen
-        // image cannot be used as evidence of that visible contrast.
+        // The native App composites onto the window ground
+        // (`surfaces.content`). A transparent offscreen image cannot be used
+        // as evidence of that visible contrast.
         let png = image::open(dir.path().join("result.png"))
             .unwrap()
             .to_rgba8();

@@ -210,6 +210,30 @@ impl OffsetMap {
         Self { insertions }
     }
 
+    /// Add `extra` insertions; each goes after any already at its source
+    /// position.
+    pub(crate) fn add_insertions(&mut self, extra: &[VirtualInsertion]) {
+        self.insertions.extend_from_slice(extra);
+        self.insertions.sort_by_key(|insertion| insertion.source);
+    }
+
+    /// Whether the shaped byte `shaped` lies inside a virtual `ch`.
+    pub(crate) fn is_virtual(&self, shaped: usize, ch: char) -> bool {
+        let mut added = 0usize;
+        for insertion in &self.insertions {
+            let at = insertion.source.saturating_add(added);
+            if shaped < at {
+                return false;
+            }
+            let len = insertion.ch.len_utf8();
+            if shaped < at.saturating_add(len) {
+                return insertion.ch == ch;
+            }
+            added = added.saturating_add(len);
+        }
+        false
+    }
+
     pub(crate) fn is_identity(&self) -> bool {
         self.insertions.is_empty()
     }
@@ -339,8 +363,9 @@ impl OffsetMap {
 
 /// Extended grapheme clusters (UAX #29) paired with their starting byte
 /// offset, so combining marks, emoji modifiers, flags and ZWJ sequences stay
-/// whole.
-pub(crate) fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
+/// whole. Offsets address the original UTF-8 string and each slice is a
+/// complete UAX #29 cluster, using the same ICU rules as toolkit selection.
+pub fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
     use icu_segmenter::{GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed};
     const SEGMENTER: GraphemeClusterSegmenterBorrowed<'static> = GraphemeClusterSegmenter::new();
     let mut start = 0;

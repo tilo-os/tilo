@@ -16,18 +16,28 @@
 mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
+mod observed_launch;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
 #[cfg(test)]
 mod app_settings_tests;
+mod canonical_route;
 mod committed_document;
 mod durable_local_invocation;
+mod file_clipboard;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
+#[cfg(test)]
+#[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
+mod native_effect_recovery_tests;
 mod native_media;
+#[cfg(target_os = "linux")]
+mod process_binding;
 mod published_invocation;
 mod resolved_invocation;
+#[path = "workspace_memberships.rs"]
+mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
@@ -35,7 +45,10 @@ pub use committed_document::{
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::DurableInvocation;
 use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
-pub use native_media::{NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices};
+pub use native_media::{
+    AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
+    NativeMediaServices,
+};
 pub use published_invocation::OriginalInvocation;
 use published_invocation::{InvocationCaller, OriginalInvocationData};
 
@@ -69,7 +82,7 @@ use collab_types::{
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_directory, action_input, channel_handle,
+    OpKind, action_catalogue_stream, action_directory, action_input, blob_stream, channel_handle,
     collab_service, context_stream, invocation_stream, presence_event, presence_handle,
     presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
@@ -89,7 +102,7 @@ use tilo_desktop_model::{DesktopTree, WorkspaceTaskStatus};
 struct AuthorizedDocumentRoute {
     artifact: ArtifactId,
     channel: collab_types::ChannelId,
-    payload: collab_types::WholeDocumentPayload,
+    payload: collab_types::RoutedDocumentPayload,
 }
 
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
@@ -258,6 +271,7 @@ mod device_continuity_service_boundary_tests {
             NEARBY_TRANSFER_APP_ID,
             "workspace-7",
             CrdtRoute::app(NEARBY_TRANSFER_APP_ID, "workspace-7").channel_key(),
+            Some("local-person".into()),
         )
     }
 
@@ -351,6 +365,7 @@ mod device_continuity_service_boundary_tests {
             "so.tilo.browser",
             "workspace-7",
             CrdtRoute::app("so.tilo.browser", "workspace-7").channel_key(),
+            Some("local-person".into()),
         );
         let refused =
             delegate_nearby_transfer_command(&services, &other_app, "so.tilo.browser", &snapshot())
@@ -372,6 +387,49 @@ mod device_continuity_service_boundary_tests {
         );
         assert!(invalid.is_err(), "malformed command refused");
         assert_eq!(service.calls.lock().expect("calls").len(), 1);
+    }
+
+    #[test]
+    fn airdrop_delegation_seals_person_and_rejects_application_trust_claims() {
+        use runtime_collab::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
+        let service = Arc::new(RecordingNearby::answering(Reply::Accepted));
+        let services = HostServices {
+            nearby_transfer: Some(service.clone()),
+            ..Default::default()
+        };
+        let context = files_context();
+        let command = Command::SendAirDrop {
+            source_path: b"/approved/report".to_vec(),
+            address: "127.0.0.1".into(),
+            port: 443,
+        };
+        let json = serde_json::to_vec(&command).unwrap();
+        delegate_nearby_transfer_command(&services, &context, NEARBY_TRANSFER_APP_ID, &json)
+            .unwrap();
+        let calls = service.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.person(), Some("local-person"));
+        assert_eq!(calls[0].1, command);
+        drop(calls);
+        let mut spoof = serde_json::from_slice::<serde_json::Value>(&json).unwrap();
+        for key in ["person", "certificate_sha256", "verified", "remember"] {
+            spoof[key] = "app claim".into();
+            assert!(
+                delegate_nearby_transfer_command(
+                    &services,
+                    &context,
+                    NEARBY_TRANSFER_APP_ID,
+                    &serde_json::to_vec(&spoof).unwrap()
+                )
+                .is_err()
+            );
+            spoof.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(
+            service.calls.lock().unwrap().len(),
+            1,
+            "spoofed authority never reaches the service"
+        );
     }
 
     #[test]
@@ -414,6 +472,8 @@ struct CollabLaunchHandoff {
     protocol: u16,
     app_id: String,
     workspace_id: String,
+    #[serde(default)]
+    executing_peer: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -431,6 +491,13 @@ impl VerifiedJoinIdentity {
             device_public_key: cert.device_public_key,
             capped,
         }
+    }
+
+    /// Whether `cluster_id` is this identity's own person room: the room
+    /// every device its root certified owns, and no other device enters.
+    fn owns_person_room(&self, cluster_id: &str) -> bool {
+        uuid::Uuid::parse_str(cluster_id)
+            .is_ok_and(|room| collab_types::is_person_room(&self.user_public_key, &room))
     }
 }
 
@@ -579,6 +646,26 @@ impl AdmittedJoinIdentity {
         .from_foreign_device(foreign)
     }
 
+    /// The caller this certified identity is in `room`, from its own
+    /// device: foreign when it was held to the cap there or the host keeps
+    /// a stricter restriction for it.
+    fn certified_caller(&self, room: &str, restricted: bool) -> tilo_actions::remote::Caller {
+        let verified = &self.verified;
+        match &self.agent_id {
+            Some(agent) => tilo_actions::remote::Caller::delegated_agent(
+                agent.clone(),
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+            None => tilo_actions::remote::Caller::authenticated(
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+        }
+        .in_room(room)
+        .from_foreign_device(verified.capped || restricted)
+    }
+
     fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
         let room = workspace.room.to_string();
         if let Some(agent) = &self.agent_id {
@@ -651,12 +738,33 @@ fn admit_verified_join_at(
     verified: VerifiedJoinIdentity,
     now: u64,
 ) -> Result<AdmittedJoinIdentity, String> {
+    let principal_id = principal_id_for_root(verified.user_public_key);
+    // The person room has no roster to consult: its members are, by the
+    // room id's derivation, exactly the devices this root certified, each
+    // acting as the room's owner — a foreign device with the foreign-device
+    // cap's role, there as in any room. Any other room id is a workspace.
+    if verified.owns_person_room(&route.cluster_id) {
+        let role = if verified.capped {
+            foreign_device_role(CapRole::Owner, &[], now)
+        } else {
+            CapRole::Owner
+        };
+        return Ok(AdmittedJoinIdentity {
+            host_scope: None,
+            worker_registration: None,
+            certificate: None,
+            verified,
+            principal_id,
+            role,
+            display_handle: None,
+            agent_id: None,
+        });
+    }
     let workspace = tree
         .workspaces
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
         .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
-    let principal_id = principal_id_for_root(verified.user_public_key);
     let mut role = workspace
         .role_of_at(&principal_id, now)
         .ok_or_else(|| "certified collaboration identity is not a workspace member".to_string())?;
@@ -703,6 +811,10 @@ fn admit_agent_delegation_at(
     agent_id: &str,
     now: u64,
 ) -> Result<(), String> {
+    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+        agent: agent_id.to_owned(),
+    }
+    .validate()?;
     let workspace = tree
         .workspaces
         .iter()
@@ -913,6 +1025,8 @@ pub enum PublishedInput {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PublishedAction {
     pub resource: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
@@ -940,6 +1054,80 @@ fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<
         return Err(capnp::Error::failed(format!(
             "resource view {role} action must not require caller parameters"
         )));
+    }
+    Ok(())
+}
+
+fn decode_semantic_identity(
+    row: runtime_collab::collab_capnp::exported_action::Reader<'_>,
+) -> Result<Option<tilo_actions::ResourceSemanticIdentity>, capnp::Error> {
+    if !row.has_semantic_identity() {
+        return Ok(None);
+    }
+    let identity = row.get_semantic_identity()?;
+    let kind = identity.get_kind()?;
+    let key = identity.get_key()?;
+    if kind.len() > tilo_actions::ResourceSemanticIdentity::MAX_KIND_BYTES
+        || key.len() > tilo_actions::ResourceSemanticIdentity::MAX_KEY_BYTES
+    {
+        return Err(capnp::Error::failed(
+            "oversized resource semantic identity".into(),
+        ));
+    }
+    let identity = tilo_actions::ResourceSemanticIdentity::new(kind.to_str()?, key.to_str()?)
+        .ok_or_else(|| capnp::Error::failed("invalid resource semantic identity".into()))?;
+    if identity.kind != row.get_resource_kind()?.to_str()? {
+        return Err(capnp::Error::failed(
+            "resource semantic identity kind mismatch".into(),
+        ));
+    }
+    Ok(Some(identity))
+}
+
+fn validate_resource_range_binding(
+    actions: &[PublishedAction],
+    action: &PublishedAction,
+    range: &tilo_actions::ResourceViewRangeSpec,
+) -> Result<(), capnp::Error> {
+    let names = [&range.start_param, &range.end_param, &range.unit_param];
+    let target = actions
+        .iter()
+        .find(|target| target.resource == action.resource && target.action == range.action)
+        .ok_or_else(|| capnp::Error::failed("resource range action missing".into()))?;
+    if names.iter().any(|name| name.is_empty())
+        || names[0] == names[1]
+        || names[0] == names[2]
+        || names[1] == names[2]
+        || target.operation_kind != tilo_actions::OperationKind::View
+        || target.contract.confirmation != tilo_actions::ConfirmationPolicy::None
+    {
+        return Err(capnp::Error::failed(
+            "invalid resource range binding".into(),
+        ));
+    }
+    for (name, ty) in [
+        (&range.start_param, tilo_actions::ParamType::Integer),
+        (&range.end_param, tilo_actions::ParamType::Integer),
+        (&range.unit_param, tilo_actions::ParamType::Text),
+    ] {
+        if !target
+            .params
+            .iter()
+            .any(|p| p.name.as_ref() == name && p.ty == ty)
+        {
+            return Err(capnp::Error::failed(
+                "invalid resource range parameter".into(),
+            ));
+        }
+    }
+    if target
+        .params
+        .iter()
+        .any(|p| p.required && !names.iter().any(|n| p.name.as_ref() == *n))
+    {
+        return Err(capnp::Error::failed(
+            "resource range requires unrelated input".into(),
+        ));
     }
     Ok(())
 }
@@ -997,6 +1185,10 @@ fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(),
             }
         }
 
+        if let Some(range) = &view.range {
+            validate_resource_range_binding(actions, action, range)?;
+        }
+
         let Some(mount) = &view.mount else {
             continue;
         };
@@ -1047,6 +1239,26 @@ pub struct PublishedSurface {
     /// closes. Only actions that explicitly opted into launchable/durable
     /// discovery are ever retained this way.
     pub live: bool,
+}
+
+impl PublishedSurface {
+    /// Copy only the selected descriptor and its routing metadata.
+    fn action_projection(&self, resource: &str, action: &str) -> Option<(Self, PublishedAction)> {
+        let descriptor = self
+            .actions
+            .iter()
+            .find(|descriptor| descriptor.resource == resource && descriptor.action == action)?;
+        Some((
+            Self {
+                peer_id: self.peer_id,
+                app_id: self.app_id.clone(),
+                route: self.route.clone(),
+                actions: Vec::new(),
+                live: self.live,
+            },
+            descriptor.clone(),
+        ))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1102,6 +1314,9 @@ pub struct InvocationJob {
 
 #[derive(Clone)]
 struct PendingInvocation {
+    /// Who it was admitted for, kept so an edit its effect submits is
+    /// admitted for them too.
+    caller: Option<ContinuingCaller>,
     activity: Option<ActivityTarget>,
     owner: InvocationOwner,
     network_evidence: Option<tilo_relay::client::CertifiedAction>,
@@ -1111,6 +1326,7 @@ struct PendingInvocation {
     peer_id: u64,
     tx: std::sync::mpsc::Sender<InvocationCompletion>,
     update: tilo_actions::InvocationUpdate,
+    prepared_effect: Arc<Mutex<Option<PreparedEffectCommit>>>,
     last_sequence: u64,
     actor: String,
     cancellable: bool,
@@ -1125,6 +1341,13 @@ struct PendingInvocation {
     last_activity: std::time::Instant,
     /// Starts the shorter acknowledgement deadline for cooperative cancel.
     cancellation_requested_at: Option<std::time::Instant>,
+    /// A retained continuation must observe cancellation after registry removal.
+    cancellation_fence: Arc<AtomicBool>,
+}
+
+struct PreparedEffectCommit {
+    update: tilo_actions::InvocationUpdate,
+    request: tilo_peer_state::owner_commit::OwnerCommitRequest,
 }
 
 /// An opaque certified person admission. Its root/device are never accepted
@@ -1185,6 +1408,213 @@ impl CallerInvocation {
     }
 }
 
+impl CapnpBrokerState {
+    /// The caller of the invocation `running` that this broker delivered to
+    /// the connection `peer_id` and that still runs: who an edit its effect
+    /// submits is admitted for. `None` when the connection runs no such
+    /// invocation, or its caller was known only by certificate.
+    /// Who an invoke continuing a running invocation is admitted for: that
+    /// invocation's own caller, with their grants. `None` for any other
+    /// request; the refusal to answer with when the connection runs no such
+    /// invocation.
+    fn continued_caller(
+        &self,
+        peer_id: u64,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<Result<tilo_actions::remote::Caller, Box<tilo_actions::remote::RemoteActionMessage>>>
+    {
+        let tilo_actions::remote::RemoteActionMessage::Invoke(invoke) = message else {
+            return None;
+        };
+        let running = invoke.on_behalf_of?;
+        Some(self.continuing_caller(peer_id, running).ok_or_else(|| {
+            Box::new(tilo_actions::remote::RemoteActionMessage::Receipt(
+                tilo_actions::remote::InvocationReceipt {
+                    invocation: invoke.invocation,
+                    status: tilo_actions::remote::ReceiptStatus::Rejected {
+                        error: tilo_actions::remote::ActionHostError::NotPermitted,
+                    },
+                },
+            ))
+        }))
+    }
+
+    pub(crate) fn continuing_caller(
+        &self,
+        peer_id: u64,
+        running: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::Caller> {
+        // Doors that take the caller's own invocation id can admit two
+        // callers' invocations under one id; such an id names nobody.
+        let mut matching = self
+            .pending_invocations
+            .lock()
+            .ok()?
+            .values()
+            .filter(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
+            .map(|pending| pending.caller.clone())
+            .take(2)
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            return None;
+        }
+        matching.pop()??.current(self)
+    }
+}
+
+/// Who a running invocation was admitted for, however the door knew them:
+/// the caller an edit its effect submits is admitted as.
+#[derive(Clone)]
+enum ContinuingCaller {
+    /// Host-admitted native person, revalidated for every continuation.
+    NativePerson {
+        room: String,
+        certificate: Box<tilo_user_identity::DeviceCert>,
+        time: crate::peer_actions::PolicyTime,
+        direct: tilo_actions::remote::Caller,
+    },
+    /// A caller the door knew directly.
+    Caller(tilo_actions::remote::Caller),
+    /// A certified caller, its certificate checked again each time.
+    Certified {
+        caller: Box<VerifiedActionCaller>,
+        /// A stricter foreign-device restriction the host kept for them.
+        foreign_restriction: bool,
+        /// The exact caller the door admitted, with its execution, when it
+        /// knew one; it continues only while that execution is live.
+        direct: Option<tilo_actions::remote::Caller>,
+    },
+    /// A person or agent on a connection this host admitted, in a room.
+    Admitted {
+        room: String,
+        admitted: Box<AdmittedJoinIdentity>,
+    },
+}
+
+impl ContinuingCaller {
+    fn from_durable(durable: DurableContext<'_>) -> Self {
+        match durable {
+            DurableContext::Peer(caller, _) => Self::Certified {
+                caller: Box::new(caller.clone()),
+                foreign_restriction: false,
+                direct: None,
+            },
+            DurableContext::Local { caller, .. } => {
+                let (room, admitted) = caller.admitted_in();
+                Self::Admitted {
+                    room,
+                    admitted: Box::new(admitted),
+                }
+            }
+        }
+    }
+
+    fn from_origin(origin: &InvocationCaller) -> Self {
+        match origin {
+            InvocationCaller::NativePerson {
+                room,
+                certificate,
+                time,
+                ..
+            } => Self::NativePerson {
+                room: room.clone(),
+                certificate: Box::new(certificate.clone()),
+                time: time.clone(),
+                direct: tilo_actions::remote::Caller::local_person(principal_id_for_root(
+                    certificate.user_public_key,
+                ))
+                .in_room(room.clone()),
+            },
+            InvocationCaller::Certified {
+                caller,
+                foreign_restriction,
+            } => Self::Certified {
+                caller: caller.clone(),
+                foreign_restriction: *foreign_restriction,
+                direct: None,
+            },
+            InvocationCaller::Local { route, admitted } => Self::Admitted {
+                room: route.cluster_id.clone(),
+                admitted: admitted.clone(),
+            },
+        }
+    }
+
+    /// Who `caller` was admitted as: certified, with the custody its door
+    /// holds, when it holds one.
+    fn admitted(
+        caller: Option<&tilo_actions::remote::Caller>,
+        durable: Option<DurableContext<'_>>,
+        origin: Option<&InvocationCaller>,
+    ) -> Option<Self> {
+        match (caller, origin) {
+            (
+                Some(direct),
+                Some(InvocationCaller::NativePerson {
+                    room,
+                    certificate,
+                    time,
+                    ..
+                }),
+            ) => Some(Self::NativePerson {
+                room: room.clone(),
+                certificate: Box::new(certificate.clone()),
+                time: time.clone(),
+                direct: direct.clone(),
+            }),
+            (
+                Some(direct),
+                Some(InvocationCaller::Certified {
+                    caller,
+                    foreign_restriction,
+                }),
+            ) => Some(Self::Certified {
+                caller: caller.clone(),
+                foreign_restriction: *foreign_restriction,
+                direct: Some(direct.clone()),
+            }),
+            (Some(caller), _) => Some(Self::Caller(caller.clone())),
+            (None, _) => durable
+                .map(Self::from_durable)
+                .or_else(|| origin.map(Self::from_origin)),
+        }
+    }
+
+    /// The caller as they stand now: a certified caller whose certificate
+    /// no longer verifies, who changed, or whose execution ended, is nobody.
+    /// A certified caller keeps their own device, so they stay held to the
+    /// foreign-device cap wherever that device does not govern the room.
+    fn current(&self, state: &CapnpBrokerState) -> Option<tilo_actions::remote::Caller> {
+        match self {
+            Self::NativePerson {
+                room,
+                certificate,
+                time,
+                direct,
+            } => {
+                state.checked_policy_time(Some(time)).ok()?;
+                state.current_native_person(room, certificate).ok()?;
+                (direct.execution_id().is_none() || direct.execution_is_live())
+                    .then(|| direct.clone())
+            }
+            Self::Caller(caller) => Some(caller.clone()),
+            Self::Certified {
+                caller,
+                foreign_restriction,
+                direct,
+            } => {
+                let admitted = state.current_action_caller(caller).ok()?;
+                match direct {
+                    Some(direct) => (direct.execution_id().is_none() || direct.execution_is_live())
+                        .then(|| direct.clone()),
+                    None => Some(admitted.certified_caller(&caller.room, *foreign_restriction)),
+                }
+            }
+            Self::Admitted { room, admitted } => Some(admitted.caller(room)),
+        }
+    }
+}
+
 impl PendingInvocation {
     fn completion_owner(&self) -> InvocationOwner {
         self.owner.clone()
@@ -1195,6 +1625,8 @@ impl PendingInvocation {
 mod action_host;
 mod app_consent;
 mod launchable;
+mod local_action_host;
+pub use local_action_host::CertifiedPersonContext;
 
 pub use launchable::launchable_provider;
 #[path = "desktop_commands.rs"]
@@ -1339,6 +1771,15 @@ impl CapnpBrokerState {
         record: &DurableInvocation,
     ) -> Result<(), String> {
         let current = self.current_action_caller(caller)?;
+        if record.prepared_effect.is_some()
+            && record
+                .intent
+                .get("actor")
+                .and_then(serde_json::Value::as_str)
+                != Some(current.broker_actor().id.as_str())
+        {
+            return Err("prepared invocation actor differs from current caller".into());
+        }
         let now = self.checked_policy_time(caller.policy_time.as_ref())?.1 / 1_000_000_000;
         let contract: tilo_actions::ActionContract =
             serde_json::from_value(record.intent.get("contract").cloned().unwrap_or_default())
@@ -1447,6 +1888,8 @@ impl CapnpBrokerState {
             request.peer_id,
             offered,
             InvocationInputs {
+                requested: None,
+                caller: None,
                 execution: None,
                 argument: request.argument.as_deref(),
                 actor: &admitted.broker_actor(),
@@ -1508,6 +1951,7 @@ impl CapnpBrokerState {
                 .ok_or("durable admission unavailable")?
                 .cancel(key)?;
         }
+        pending.cancellation_fence.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -2160,6 +2604,11 @@ fn write_directory_descriptor(
     descriptor: &runtime_collab::ExportedAction,
 ) {
     out.set_resource(&descriptor.resource);
+    if let Some(identity) = &descriptor.semantic_identity {
+        let mut out = out.reborrow().init_semantic_identity();
+        out.set_kind(&identity.kind);
+        out.set_key(&identity.key);
+    }
     out.set_action(&descriptor.action);
     out.set_resource_kind(&descriptor.resource_kind);
     out.set_resource_label(&descriptor.resource_label);
@@ -2175,6 +2624,13 @@ fn write_directory_descriptor(
         out.set_description(view.description.as_deref().unwrap_or(""));
         out.set_open_action(&view.open_action);
         out.set_primary(view.primary);
+        if let Some(range) = &view.range {
+            let mut range_out = out.reborrow().init_range();
+            range_out.set_action(&range.action);
+            range_out.set_start_param(&range.start_param);
+            range_out.set_end_param(&range.end_param);
+            range_out.set_unit_param(&range.unit_param);
+        }
         if let Some(mount) = &view.mount {
             let mut out = out.init_mount();
             out.set_action(&mount.action);
@@ -2284,6 +2740,17 @@ struct PresenceSub {
 struct ContextSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<ContextEnvelope>,
+    /// Authenticated native membership projection and the exact admission it
+    /// came from. Incremental label/presence frames never replace it.
+    native: Option<NativeContext>,
+    /// Shares the original receiver; membership refresh belongs to its document row.
+    private_alias: bool,
+}
+
+#[derive(Clone)]
+struct NativeContext {
+    admitted: AdmittedJoinIdentity,
+    roster: Vec<ui::collaboration::Collaborator>,
 }
 
 /// Per-channel subscriber registry, keyed by `join_channel(id)`. A
@@ -2333,6 +2800,12 @@ struct PendingWorker {
 /// as, the one-use confirmation token it presents and its ambient context.
 /// Admission checks every field; none of them grants authority by itself.
 struct InvocationInputs<'a> {
+    /// The caller's lifecycle identity, independent of execution authority.
+    requested: Option<tilo_actions::InvocationId>,
+    /// Who the invocation is admitted for, when the door knows them as a
+    /// caller: kept with the running invocation, so an edit its effect
+    /// submits is admitted for them too.
+    caller: Option<&'a tilo_actions::remote::Caller>,
     execution: Option<ExecutionScope>,
     argument: Option<&'a str>,
     actor: &'a BrokerActor,
@@ -2392,6 +2865,7 @@ pub struct CapnpBrokerState {
     peer_action_queue: super::peer_actions::PeerActionQueue,
     peer_action_rx: Mutex<Option<tokio::sync::mpsc::Receiver<super::peer_actions::Request>>>,
     action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
+    canonical_directories: Mutex<canonical_route::CanonicalDirectories>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
@@ -2425,6 +2899,8 @@ pub struct CapnpBrokerState {
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
     /// The broker's own desktop command surface (not an app connection).
     desktop_command_peer: Mutex<Option<u64>>,
+    /// Broker-owned governed membership surface per native room.
+    workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
@@ -2618,6 +3094,7 @@ impl CapnpBrokerState {
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
         clear!(self.stable_invocation_subscribers);
+        clear!(self.workspace_membership_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
         clear!(self.task_subscribers);
@@ -2825,6 +3302,7 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>()
         };
         for (id, cancellation_expired, pending) in expired {
+            pending.cancellation_fence.store(true, Ordering::Release);
             let (code, message) = if cancellation_expired {
                 (
                     "action_cancellation_timeout",
@@ -2966,24 +3444,83 @@ impl CapnpBrokerState {
         }
         let status = tilo_actions::EffectReceiptStatus::from_terminal(update)
             .ok_or_else(|| capnp::Error::failed("nonterminal effect receipt".into()))?;
-        let receipt = crate::policy::redacted_effect_receipt(
-            update.invocation(),
-            &pending.actor,
-            pending.context.clone(),
-            status,
-        );
-        self.commit_owner_request(
-            tilo_peer_state::owner_commit::OwnerCommitRequest {
-                room: pending.cluster_id.clone(),
-                operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                    invocation: update.invocation().0,
-                    redacted: serde_json::to_vec(&receipt)
-                        .map_err(|e| capnp::Error::failed(e.to_string()))?,
-                },
-            },
-            None,
-        )
-        .await
+        let request = {
+            let mut prepared = pending.prepared_effect.lock().map_err(|_| {
+                capnp::Error::failed("effect receipt preparation unavailable".into())
+            })?;
+            if let Some(previous) = prepared.as_ref() {
+                if previous.update != *update {
+                    return Err(capnp::Error::failed(
+                        "effect terminal outcome changed".into(),
+                    ));
+                }
+                previous.request.clone()
+            } else {
+                let receipt = crate::policy::redacted_effect_receipt(
+                    update.invocation(),
+                    &pending.actor,
+                    pending.context.clone(),
+                    status,
+                );
+                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    room: pending.cluster_id.clone(),
+                    operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                        invocation: update.invocation().0,
+                        redacted: serde_json::to_vec(&receipt)
+                            .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                    },
+                };
+                *prepared = Some(PreparedEffectCommit {
+                    update: update.clone(),
+                    request: request.clone(),
+                });
+                request
+            }
+        };
+        if let Some(key) = &pending.journal_key {
+            self.journal
+                .lock()
+                .map_err(|_| capnp::Error::failed("invocation journal unavailable".into()))?
+                .as_mut()
+                .map_err(|error| capnp::Error::failed(error.clone()))?
+                .as_mut()
+                .ok_or_else(|| capnp::Error::failed("durable admission unavailable".into()))?
+                .prepare_effect(key, update.clone(), &request)
+                .map_err(capnp::Error::failed)?;
+        }
+        self.commit_owner_request(request, None).await
+    }
+
+    /// Reconcile an inert saved receipt, never dispatch or reconstruct action authority.
+    async fn reconcile_prepared_effect(
+        &self,
+        record: DurableInvocation,
+        authorize: impl Fn() -> Result<(), String>,
+    ) -> Result<DurableInvocation, String> {
+        authorize()?;
+        let Some(prepared) = record.prepared_effect.as_ref() else {
+            return Ok(record);
+        };
+        if !record.uncertain || record.update.is_terminal() {
+            return Ok(record);
+        }
+        self.owner_health()?;
+        // The normal service supplies actual current governor custody and exact owner retry.
+        // A saved request grants no authority, and no unavailable service fallback is allowed.
+        if let Err(error) = self.publisher.commit_owner(prepared.request(), None).await {
+            tracing::warn!(%error, "prepared effect remains uncertain");
+            authorize()?;
+            return Ok(record);
+        }
+        authorize()?;
+        self.journal
+            .lock()
+            .map_err(|_| "invocation journal unavailable")?
+            .as_mut()
+            .map_err(|error| error.clone())?
+            .as_mut()
+            .ok_or("durable admission unavailable")?
+            .finish_effect(&record.key, prepared)
     }
 
     fn record_effect_receipt(
@@ -3106,6 +3643,7 @@ impl CapnpBrokerState {
                 peer_action_queue,
                 peer_action_rx: Mutex::new(Some(peer_action_rx)),
                 action_directory_roots: Mutex::new(HashMap::new()),
+                canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
@@ -3127,6 +3665,7 @@ impl CapnpBrokerState {
                 journal: Mutex::new(journal),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 desktop_command_peer: Mutex::new(None),
+                workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
@@ -3199,6 +3738,7 @@ impl CapnpBrokerState {
     }
 
     /// Stand in for an application's invocation stream on `peer_id`.
+    /// The fixture receives the full envelope, including its stable invocation UUID.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture_invocations_for_test(
         &self,
@@ -3207,6 +3747,9 @@ impl CapnpBrokerState {
         let (tx, rx) = mpsc::unbounded_channel();
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.insert(peer_id, tx);
+        }
+        if let Ok(mut stable) = self.stable_invocation_subscribers.lock() {
+            stable.insert(peer_id);
         }
         rx
     }
@@ -3259,6 +3802,37 @@ impl CapnpBrokerState {
             ))
         }));
         result
+    }
+
+    /// Resolve against the current selected source, independently of the
+    /// asynchronous search snapshot. A live source shadows its retained
+    /// launchable catalogue even when it no longer offers the selected action.
+    pub fn published_action(
+        &self,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        let surfaces = self.surfaces.lock().ok()?;
+        let mut live_route = false;
+        for surface in surfaces
+            .values()
+            .filter(|surface| surface.app_id == route.app_id && surface.route == *route)
+        {
+            live_route = true;
+            if let Some(selected) = surface.action_projection(resource, action) {
+                return Some(selected);
+            }
+        }
+        let selected = if live_route {
+            None
+        } else {
+            self.launchable.action_for(route, resource, action)
+        };
+        // Keep live-source shadowing coherent with the archive lookup; a
+        // publisher must not install a live replacement between those reads.
+        drop(surfaces);
+        selected
     }
 
     /// Check one live action route without cloning the published catalogue.
@@ -3718,6 +4292,8 @@ impl CapnpBrokerState {
                 peer_id,
                 (surface, published),
                 InvocationInputs {
+                    requested: None,
+                    caller: None,
                     execution: None,
                     argument,
                     actor,
@@ -4015,6 +4591,12 @@ impl CapnpBrokerState {
         .map_err(|error| error.to_string())
     }
 
+    /// Invalidate retained discovery only after a real service-surface mutation.
+    fn publish_changed_action_catalogue(&self) {
+        self.surface_generation.fetch_add(1, Ordering::Relaxed);
+        self.publish_action_catalogue();
+    }
+
     fn publish_action_catalogue(&self) {
         let subscribers = self
             .action_catalogue_subscribers
@@ -4175,6 +4757,8 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                requested: None,
+                caller: None,
                 execution: None,
                 argument,
                 actor: &BrokerActor::person(actor),
@@ -4244,11 +4828,32 @@ impl CapnpBrokerState {
         inputs: InvocationInputs<'_>,
         revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
+        self.start_invocation_from_offered_origin(peer_id, offered, inputs, revision, None)
+    }
+
+    fn start_invocation_from_offered_origin(
+        &self,
+        peer_id: u64,
+        offered: (PublishedSurface, PublishedAction),
+        inputs: InvocationInputs<'_>,
+        revision: Option<&str>,
+        origin: Option<InvocationCaller>,
+    ) -> Result<InvocationJob, String> {
         let _admission = self
             .admission_lock
             .lock()
             .map_err(|_| "invocation admission unavailable")?;
-        self.dispatch_invocation_from_offered(peer_id, offered, inputs, None, revision)
+        self.dispatch_invocation_from_offered_owned(
+            peer_id,
+            offered,
+            inputs,
+            AdmissionProvenance {
+                durable: None,
+                revision,
+                origin,
+                retained_time: None,
+            },
+        )
     }
 
     fn dispatch_invocation_from_offered(
@@ -4284,6 +4889,8 @@ impl CapnpBrokerState {
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
         let InvocationInputs {
+            requested,
+            caller,
             execution,
             argument,
             actor,
@@ -4296,6 +4903,7 @@ impl CapnpBrokerState {
             origin,
             retained_time,
         } = provenance;
+        let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
         let owner = durable.map_or_else(
             || InvocationOwner::Local {
                 actor: actor.id.clone(),
@@ -4304,7 +4912,48 @@ impl CapnpBrokerState {
         );
         owner.validate()?;
         // Never trust an envelope's invoker: the host sets it.
-        let context = invoker::host_set_invoker(context, actor)?;
+        let context = invoker::host_set_invoker(context, actor, execution.as_ref())?;
+        // A certified local origin retains its original registered clock and
+        // exact person/room through an asynchronous directory lookup. Never
+        // recapture a replacement origin at dispatch or accept a payload actor.
+        let original_time = if let Some(InvocationCaller::Certified { caller, .. }) = &origin {
+            let admitted = self.current_action_caller(caller)?;
+            if caller.room != offered.0.route.cluster_id
+                || actor.is_agent
+                || actor.id != admitted.principal_id
+            {
+                return Err("original caller does not match the invocation route or actor".into());
+            }
+            Some(
+                caller
+                    .policy_time
+                    .as_ref()
+                    .ok_or("original policy clock unavailable")?,
+            )
+        } else if let Some(InvocationCaller::NativePerson {
+            room,
+            certificate,
+            time,
+            ..
+        }) = &origin
+        {
+            self.current_native_person(room, certificate)?;
+            if room != &offered.0.route.cluster_id
+                || actor.is_agent
+                || actor.id != principal_id_for_root(certificate.user_public_key)
+            {
+                return Err(
+                    "original native person does not match the invocation route or actor".into(),
+                );
+            }
+            Some(time)
+        } else {
+            None
+        };
+        if original_time.is_some() && (durable.is_some() || retained_time.is_some()) {
+            return Err("duplicate original invocation custody".into());
+        }
+        let retained_time = original_time.or(retained_time);
         let policy_time = match (durable, retained_time) {
             (Some(context), None) => self.checked_policy_time(context.time())?.0,
             (None, Some(original)) => self.checked_policy_time(Some(original))?.0,
@@ -4369,7 +5018,7 @@ impl CapnpBrokerState {
                 &offered.1,
             )?;
         }
-        if durable.is_some()
+        if (durable.is_some() || execution.is_some())
             && !self
                 .stable_invocation_subscribers
                 .lock()
@@ -4417,9 +5066,23 @@ impl CapnpBrokerState {
             .invocation_id
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| "invocation handle space exhausted")?;
+        let authoritative = durable
+            .map(DurableContext::invocation)
+            .or_else(|| execution.as_ref().map(ExecutionScope::invocation))
+            .or(match &origin {
+                Some(InvocationCaller::NativePerson { invocation, .. }) => Some(*invocation),
+                _ => None,
+            });
+        if requested.is_some_and(|requested| {
+            requested.0.is_nil() || authoritative.is_some_and(|held| held != requested)
+        }) {
+            return Err("requested invocation does not match admitted custody".into());
+        }
         let invocation = match durable {
             Some(context) => context.invocation(),
-            None => tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+            None => requested.or(authoritative).unwrap_or_else(|| {
+                tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)))
+            }),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let mut receipt_context = tilo_actions::ActionContext::for_resource(
@@ -4448,7 +5111,7 @@ impl CapnpBrokerState {
             };
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
-                "context": receipt_context, "app_id": offered.0.app_id,
+                "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
                 "action": offered.1.action, "revision": revision });
             if let Some(context) = durable {
                 context.before_admission(self, journal.host(), peer_id, &offered, &sender)?;
@@ -4471,7 +5134,8 @@ impl CapnpBrokerState {
         registry.insert(
             id,
             PendingInvocation {
-                activity: ActivityTarget::new(execution, actor, &offered.0, &offered.1),
+                caller: continuing,
+                activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
                 original: OriginalInvocationData::capture(
@@ -4491,12 +5155,14 @@ impl CapnpBrokerState {
                     revision,
                     durable.map(DurableContext::origin).or(origin),
                     policy_time.clone(),
+                    execution.as_ref().map(ExecutionScope::lease),
                 ),
                 policy_time,
                 journal_key,
                 peer_id,
                 tx,
                 update: tilo_actions::InvocationUpdate::Accepted { invocation },
+                prepared_effect: Arc::default(),
                 last_sequence: 0,
                 actor: actor.id.clone(),
                 cancellable: matches!(
@@ -4519,6 +5185,7 @@ impl CapnpBrokerState {
                 context: receipt_context,
                 last_activity: std::time::Instant::now(),
                 cancellation_requested_at: None,
+                cancellation_fence: Arc::new(AtomicBool::new(false)),
             },
         );
         self.invocation_generation.fetch_add(1, Ordering::Relaxed);
@@ -5027,6 +5694,8 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                requested: None,
+                caller: None,
                 execution: None,
                 argument,
                 actor: &BrokerActor::agent(run.agent_id),
@@ -5036,10 +5705,20 @@ impl CapnpBrokerState {
         )
     }
 
-    fn remove_connection(&self, peer_id: u64) {
+    fn disconnect_device_media(&self, peer_id: u64) {
         if let Some(media) = self.services.native_media.as_ref() {
             media.disconnect(peer_id);
         }
+        if let Some(output) = self.services.audio_output.as_ref() {
+            output.disconnect(peer_id);
+        }
+    }
+
+    fn remove_connection(&self, peer_id: u64) {
+        if let Ok(mut directories) = self.canonical_directories.lock() {
+            directories.remove(peer_id);
+        }
+        self.disconnect_device_media(peer_id);
         // Withdraw provenance before any stale surface can be observed during cleanup.
         match self.host_workers.lock() {
             Ok(mut workers) => {
@@ -5052,9 +5731,7 @@ impl CapnpBrokerState {
         if let Some(realtime) = self.services.realtime.as_ref() {
             realtime.disconnect(peer_id);
         }
-        if let Some(nearby) = self.services.nearby_transfer.as_ref() {
-            nearby.disconnect(peer_id);
-        }
+        self.disconnect_file_transfers(peer_id);
         if let Ok(mut surfaces) = self.surfaces.lock()
             && surfaces.remove(&peer_id).is_some()
         {
@@ -5083,6 +5760,7 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>();
             for id in ids {
                 if let Some(invocation) = pending.remove(&id) {
+                    invocation.cancellation_fence.store(true, Ordering::Release);
                     let completion = InvocationCompletion {
                         code: "action_failed".into(),
                         message: "application disconnected before completing the action".into(),
@@ -5135,15 +5813,22 @@ impl CapnpBrokerState {
         self.publish_action_catalogue();
     }
 
-    /// `joinChannel(channelId, identity)` carries no announced handle,
-    /// so the room lookup is the only answer for who to stamp traffic as.
+    fn disconnect_file_transfers(&self, peer_id: u64) {
+        if let Some(nearby) = self.services.nearby_transfer.as_ref() {
+            nearby.disconnect(peer_id);
+        }
+        if let Some(clipboard) = self.services.file_clipboard.as_ref() {
+            clipboard.disconnect(peer_id);
+        }
+    }
+
+    /// Stable authenticated actor id for native presence and interactions.
+    /// Display handles remain presentation only.
     fn participant_id(admitted: &AdmittedJoinIdentity) -> String {
-        admitted.agent_id.clone().unwrap_or_else(|| {
-            admitted
-                .display_handle
-                .clone()
-                .unwrap_or_else(|| admitted.principal_id.clone())
-        })
+        admitted.agent_id.as_ref().map_or_else(
+            || admitted.principal_id.clone(),
+            |agent| format!("agent:{agent}"),
+        )
     }
 
     fn revalidate_admission(
@@ -5246,7 +5931,7 @@ impl CapnpBrokerState {
                 "certified document operation does not match its joined route".into(),
             ));
         }
-        let payload = collab_types::validate_whole_document_payload_route(
+        let payload = collab_types::validate_document_payload_route(
             &route.app_id,
             &route.cluster_id,
             &route.record_id,
@@ -5258,12 +5943,15 @@ impl CapnpBrokerState {
             ))
         })?;
         let channel = match &payload {
-            collab_types::WholeDocumentPayload::Cleartext(_) => collab_types::document_channel_id(
-                &route.app_id,
-                &route.cluster_id,
-                &route.record_id,
-            ),
-            collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
+            collab_types::RoutedDocumentPayload::Cleartext(_)
+            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
+                collab_types::document_channel_id(
+                    &route.app_id,
+                    &route.cluster_id,
+                    &route.record_id,
+                )
+            }
+            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         };
         let broker_channels = self.broker_channels.lock().map_err(|_| {
             capnp::Error::failed("collaboration governance state is unavailable".into())
@@ -5274,6 +5962,21 @@ impl CapnpBrokerState {
             ));
         }
         drop(broker_channels);
+        if admitted.agent_id.is_none() && admitted.verified.owns_person_room(&route.cluster_id) {
+            // The person room's devices hold the role their admission gave
+            // them (owner, or a foreign device's cap); there is no workspace
+            // policy to narrow it further.
+            if !role_permits(admitted.role, ArtifactKind::Note, envelope.op_class) {
+                return Err(capnp::Error::failed(
+                    "this device may not perform this document action in the person room".into(),
+                ));
+            }
+            return Ok(AuthorizedDocumentRoute {
+                artifact: envelope.artifact,
+                channel,
+                payload,
+            });
+        }
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
@@ -5422,6 +6125,7 @@ impl CapnpBrokerState {
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::PublishedInvocationResult { .. }
+            | CollabEvent::InstalledApplicationLaunchResult { .. }
             | CollabEvent::ActionDirectoryPage { .. }
             | CollabEvent::PublishedActionResolution { .. }
             | CollabEvent::WorkspaceControl { .. }
@@ -5434,7 +6138,9 @@ impl CapnpBrokerState {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
+            | CollabEvent::RecordContent { .. }
             | CollabEvent::RemoteAction { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
@@ -5548,6 +6254,12 @@ impl CapnpBrokerState {
                 if s.peer_id == except {
                     return true;
                 }
+                // App-authored context is not complete membership authority.
+                // Native receivers get owner-backed add/remove refreshes from
+                // `refresh_workspace_context_services` instead.
+                if s.native.is_some() {
+                    return true;
+                }
                 s.tx.send(env.clone()).is_ok()
             });
         }
@@ -5630,15 +6342,261 @@ impl CapnpBrokerState {
         &self,
         channel_id: &str,
         peer_id: u64,
+        native: Option<NativeContext>,
     ) -> mpsc::UnboundedReceiver<ContextEnvelope> {
         let (tx, rx) = mpsc::unbounded_channel();
+        if let Some(native) = native.as_ref() {
+            let _ = tx.send(ContextEnvelope::Snapshot {
+                collaborators: native.roster.clone(),
+                permissions: Vec::new(),
+            });
+        }
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
                 .context
-                .push(ContextSub { peer_id, tx });
+                .push(ContextSub {
+                    peer_id,
+                    tx,
+                    native,
+                    private_alias: false,
+                });
         }
         rx
+    }
+
+    fn alias_private_context(&self, channel: &str, alias: &str, peer: u64) {
+        if let Ok(mut channels) = self.channels.lock() {
+            let subscriber = channels
+                .get(channel)
+                .and_then(|entry| {
+                    entry
+                        .context
+                        .iter()
+                        .rev()
+                        .find(|subscriber| subscriber.peer_id == peer)
+                })
+                .map(|subscriber| ContextSub {
+                    peer_id: peer,
+                    tx: subscriber.tx.clone(),
+                    native: subscriber.native.clone(),
+                    private_alias: true,
+                });
+            if let Some(subscriber) = subscriber {
+                let context = &mut channels.entry(alias.to_owned()).or_default().context;
+                context.retain(|entry| entry.peer_id != peer && !entry.tx.is_closed());
+                context.push(subscriber);
+            }
+        }
+    }
+
+    /// Complete room membership for one retained native receiver. This is
+    /// membership metadata, not online presence: it mints no pointer, caret,
+    /// arrival frame, or transport permission.
+    fn native_membership_roster(
+        &self,
+        route: &CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+    ) -> Result<Vec<ui::collaboration::Collaborator>, String> {
+        let now = self.policy_now_ns()? / 1_000_000_000;
+        let tree = self
+            .membership
+            .as_ref()
+            .ok_or("native context has no membership authority")?
+            .snapshot()?;
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == route.cluster_id)
+            .ok_or("native context workspace is unavailable")?;
+        let mut agents = workspace.agent_members_in_room_at(&route.cluster_id, now);
+        agents.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut people = workspace.roster_in_room_at(&route.cluster_id, now);
+        people.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut collaborators =
+            Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));
+        if admitted.agent_id.is_none() {
+            collaborators.push(ui::collaboration::Collaborator {
+                id: Self::participant_id(admitted),
+                name: admitted
+                    .display_handle
+                    .clone()
+                    .unwrap_or_else(|| admitted.principal_id.clone()),
+                colour: None,
+                is_agent: false,
+                is_self: true,
+            });
+        }
+        for (person, _) in people {
+            if admitted.agent_id.is_none() && person == admitted.principal_id {
+                continue;
+            }
+            // Presence may supply a label, but only owner-backed membership
+            // supplies the identity. An offline member remains a member.
+            let name = workspace
+                .collaborators
+                .iter()
+                .find(|row| row.id == person)
+                .map_or_else(|| person.clone(), |row| row.name.clone());
+            collaborators.push(ui::collaboration::Collaborator {
+                id: person,
+                name,
+                colour: None,
+                is_agent: false,
+                is_self: false,
+            });
+        }
+        for (agent, _) in agents {
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+                agent: agent.clone(),
+            }
+            .validate()
+            .map_err(|_| "native context contains a noncanonical agent identity")?;
+            let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
+            collaborators.push(ui::collaboration::Collaborator {
+                id: format!("agent:{agent}"),
+                name: agent,
+                colour: None,
+                is_agent: true,
+                is_self,
+            });
+        }
+        if collaborators.iter().filter(|row| row.is_self).count() != 1 {
+            return Err("native context has no exact authenticated self member".into());
+        }
+        Ok(collaborators)
+    }
+
+    fn native_roster_for_subscriber(
+        &self,
+        route: &CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+    ) -> Result<Option<NativeContext>, String> {
+        let Some(owner) = self.services.workspace_memberships.as_ref() else {
+            return Ok(None);
+        };
+        if !owner.requires_room(&route.cluster_id) {
+            return Ok(None);
+        }
+        let current = self
+            .revalidate_admission(route, admitted)
+            .map_err(|error| error.to_string())?;
+        let roster = self.native_membership_roster(route, &current)?;
+        Ok(Some(NativeContext {
+            admitted: current,
+            roster,
+        }))
+    }
+
+    fn refresh_workspace_context_services(&self) -> Result<(), String> {
+        fn same_roster(
+            left: &[ui::collaboration::Collaborator],
+            right: &[ui::collaboration::Collaborator],
+        ) -> bool {
+            left.len() == right.len()
+                && left.iter().zip(right).all(|(left, right)| {
+                    left.id == right.id
+                        && left.name == right.name
+                        && left.packed_colour() == right.packed_colour()
+                        && left.is_agent == right.is_agent
+                        && left.is_self == right.is_self
+                })
+        }
+
+        let targets = self
+            .channels
+            .lock()
+            .map_err(|_| "native context subscriptions unavailable")?
+            .iter()
+            .flat_map(|(channel, subscribers)| {
+                subscribers
+                    .context
+                    .iter()
+                    .filter(|subscriber| !subscriber.private_alias)
+                    .filter_map(|subscriber| {
+                        subscriber.native.as_ref().map(|native| {
+                            (channel.clone(), subscriber.peer_id, native.admitted.clone())
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        for (channel, peer_id, admitted) in targets {
+            let route = CrdtRoute::from_channel_key(&channel);
+            let Ok(current) = self.revalidate_admission(&route, &admitted) else {
+                let mut channels = self
+                    .channels
+                    .lock()
+                    .map_err(|_| "native context subscriptions unavailable")?;
+                if let Some(subscribers) = channels.get_mut(&channel) {
+                    subscribers.context.retain(|subscriber| {
+                        subscriber.peer_id != peer_id
+                            || subscriber
+                                .native
+                                .as_ref()
+                                .is_none_or(|native| native.admitted != admitted)
+                    });
+                }
+                drop(channels);
+                continue;
+            };
+            let roster = self.native_membership_roster(&route, &current)?;
+            let mut channels = self
+                .channels
+                .lock()
+                .map_err(|_| "native context subscriptions unavailable")?;
+            if let Some(subscribers) = channels.get_mut(&channel) {
+                subscribers.context.retain_mut(|subscriber| {
+                    let Some(native) = subscriber.native.as_mut() else {
+                        return true;
+                    };
+                    if subscriber.peer_id != peer_id || native.admitted != admitted {
+                        return true;
+                    }
+                    if same_roster(&native.roster, &roster) {
+                        return true;
+                    }
+                    if subscriber
+                        .tx
+                        .send(ContextEnvelope::Snapshot {
+                            collaborators: roster.clone(),
+                            permissions: Vec::new(),
+                        })
+                        .is_err()
+                    {
+                        return false;
+                    }
+                    native.roster.clone_from(&roster);
+                    true
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Ask one local subscriber of every record channel in `cluster_id` for
+    /// its document snapshot, on behalf of no local connection: how another
+    /// device that just came back catches up on what it missed. Returns how
+    /// many channels were asked.
+    pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
+        let channels: Vec<String> = self
+            .channels
+            .lock()
+            .map(|channels| {
+                channels
+                    .keys()
+                    .filter(|key| {
+                        let route = CrdtRoute::from_channel_key(key);
+                        route.cluster_id == cluster_id && !route.record_id.is_empty()
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        channels
+            .iter()
+            .filter(|channel| self.request_document_snapshot(channel, u64::MAX))
+            .count()
     }
 
     /// Direct a late-join snapshot request to one established subscriber on
@@ -5697,6 +6655,20 @@ struct ConnectionLease {
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     peer_id: u64,
+}
+
+/// Disconnect even when the `LocalSet` cancels a connection instead of polling it
+/// to EOF. capnp-rpc's first disconnect poll releases exported capabilities and
+/// pipelines synchronously; dropping `RpcSystem` alone does not release those
+/// cycles. No peer response or additional shutdown time is needed here.
+struct DisconnectOnDrop<F: std::future::Future>(Option<F>);
+
+impl<F: std::future::Future> Drop for DisconnectOnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(disconnector) = self.0.take() {
+            let _ = futures::FutureExt::now_or_never(disconnector);
+        }
+    }
 }
 
 struct ConnectionExit {
@@ -5783,16 +6755,10 @@ impl collab_service::Server for CapnpCollabService {
                     "application requires host-owned worker descriptor admission".into(),
                 ));
             }
-            let participant_handle = reader
-                .get_participant_handle()?
-                .to_str()
-                .map_err(|error| {
+            let participant_handle =
+                reader.get_participant_handle()?.to_str().map_err(|error| {
                     capnp::Error::failed(format!("participant handle not utf8: {error}"))
-                })?
-                .trim()
-                .chars()
-                .take(64)
-                .collect::<String>();
+                })?;
             let participant_kind = reader.get_participant_kind()?.to_str().map_err(|error| {
                 capnp::Error::failed(format!("participant kind not utf8: {error}"))
             })?;
@@ -5807,16 +6773,35 @@ impl collab_service::Server for CapnpCollabService {
             }
             match participant_kind {
                 "" | "person" => {
+                    // A Person handle is presentation, not its certified identity.
+                    let participant_handle = participant_handle
+                        .trim()
+                        .chars()
+                        .take(64)
+                        .collect::<String>();
                     if !participant_handle.is_empty() {
                         verified_identity.display_handle = Some(participant_handle);
                     }
                 }
                 "agent" => {
-                    if participant_handle.is_empty() {
+                    // Unlike a display handle, this names the exact workspace
+                    // principal. Normalize as enrollment does, then validate
+                    // its byte bound; truncation can silently select another
+                    // admitted Agent that shares the same display prefix.
+                    let participant_handle = participant_handle.trim();
+                    // Bound allocation before Unicode case normalization;
+                    // every normalized character consumes at least one byte.
+                    if participant_handle.chars().take(129).count() > 128 {
                         return Err(capnp::Error::failed(
-                            "an agent session must name its workspace agent".into(),
+                            "invalid canonical workspace agent identifier".into(),
                         ));
                     }
+                    let participant_handle = participant_handle.to_lowercase();
+                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+                        agent: participant_handle.clone(),
+                    }
+                    .validate()
+                    .map_err(capnp::Error::failed)?;
                     let membership = state.membership.as_ref().ok_or_else(|| {
                         capnp::Error::failed("agent session has no workspace authority".into())
                     })?;
@@ -5958,11 +6943,148 @@ fn app_settings_capability(
         ));
     };
     let app_id = route.app_id.clone();
+    let display = private_display_control(state, &route, &identity);
+    // Personal vocabulary stays on this device. Admission to a workspace is
+    // insufficient: only the host's private local worker descriptor of the
+    // authenticated person receives the read/edit projection.
+    let dictionary_owner = (identity.host_scope.is_some()
+        && identity.agent_id.is_none()
+        && !identity.verified.capped
+        && !identity
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| cert.capabilities.foreign))
+    .then_some(identity.verified.user_public_key);
     let state = Arc::clone(state);
     let revalidate: runtime_collab::settings::host::Revalidate =
         Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
     Ok(capnp_rpc::new_client(
-        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate),
+        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
+            .with_dictionary_owner(dictionary_owner)
+            .with_display(display),
+    ))
+}
+
+fn private_display_control(
+    state: &Arc<CapnpBrokerState>,
+    route: &CrdtRoute,
+    identity: &AdmittedJoinIdentity,
+) -> Option<runtime_collab::settings::host::DisplayControl> {
+    if route.app_id != "so.tilo.settings" || identity.agent_id.is_some() {
+        return None;
+    }
+    let registration = identity.worker_registration.clone()?;
+    if registration.route != *route
+        || identity.certificate.as_ref() != Some(&registration.certificate)
+    {
+        return None;
+    }
+    let service = state.services.display_control.clone()?;
+    let state = state.clone();
+    let route = route.clone();
+    let identity = identity.clone();
+    Some(Arc::new(move |command, origin| {
+        if !state.is_accepting() {
+            return Err("The display host has closed.".into());
+        }
+        state
+            .revalidate_admission(&route, &identity)
+            .map_err(|error| error.to_string())?;
+        if !state
+            .host_workers
+            .lock()
+            .map_err(|_| "Settings worker registry is unavailable.")?
+            .values()
+            .any(|worker| worker.worker_registration.as_ref() == Some(&registration))
+        {
+            return Err("The admitted Settings worker has closed.".into());
+        }
+        if command.len() > 64 * 1024 {
+            return Err("The display request exceeds its wire bound.".into());
+        }
+        let certificate = match origin {
+            runtime_collab::settings::DisplayOrigin::LocalHost => registration.certificate.clone(),
+            runtime_collab::settings::DisplayOrigin::Published(bytes) => {
+                let invocation = tilo_actions::InvocationId(uuid::Uuid::from_bytes(bytes));
+                let (peer, original) = {
+                    let workers = state
+                        .host_workers
+                        .lock()
+                        .map_err(|_| "Settings worker registry is unavailable.")?;
+                    let peer = workers
+                        .iter()
+                        .find_map(|(peer, worker)| {
+                            (worker.worker_registration.as_ref() == Some(&registration))
+                                .then_some(*peer)
+                        })
+                        .ok_or("The admitted Settings worker has closed.")?;
+                    drop(workers);
+                    let pending = state
+                        .pending_invocations
+                        .lock()
+                        .map_err(|_| "Original display invocation registry is unavailable.")?;
+                    let mut matching = pending.values().filter(|value| {
+                        value.peer_id == peer && value.update.invocation() == invocation
+                    });
+                    let entry = matching
+                        .next()
+                        .ok_or("The original display invocation is not retained.")?;
+                    if matching.next().is_some() || entry.cancellation_requested_at.is_some() {
+                        return Err("The original display invocation is no longer live.".into());
+                    }
+                    let original = entry
+                        .original
+                        .clone()
+                        .ok_or("Original display authority is unavailable.")?;
+                    drop(pending);
+                    (peer, original)
+                };
+                original.display_caller(
+                    &state,
+                    peer,
+                    &registration,
+                    serde_json::from_slice::<settings_store::display_control::DisplayCommand>(
+                        command,
+                    )
+                    .map_err(|_| "The display command is invalid.")?
+                    .mutates(),
+                )?
+            }
+        };
+        service.command(
+            &crate::services::DisplayControlContext {
+                room: route.cluster_id.clone(),
+                root: certificate.user_public_key,
+                device: certificate.device_public_key,
+            },
+            command,
+        )
+    }))
+}
+
+/// The `LiveActivity` capability of the app `route` certifies, over the
+/// host's board, for as long as the channel stays admitted.
+fn live_activity_capability(
+    state: &Arc<CapnpBrokerState>,
+    route: CrdtRoute,
+    identity: AdmittedJoinIdentity,
+) -> Result<runtime_collab::collab_capnp::live_activity::Client, capnp::Error> {
+    if route.app_id.is_empty() {
+        return Err(capnp::Error::failed(
+            "a live activity belongs to a certified app route".into(),
+        ));
+    }
+    let Some(board) = state.services.live_activities.clone() else {
+        return Err(capnp::Error::failed(
+            "this host presents no live activities".into(),
+        ));
+    };
+    let app_id = route.app_id.clone();
+    let state = Arc::clone(state);
+    let revalidate: runtime_collab::live_activity::Revalidate =
+        Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
+    Ok(capnp_rpc::new_client(
+        runtime_collab::live_activity::LiveActivityServer::new(app_id, board, revalidate),
     ))
 }
 
@@ -6097,7 +7219,124 @@ fn reply_frame(
     }
 }
 
+impl CapnpChannelHandle {
+    /// The host's record-content service, for a channel still admitted.
+    fn record_content(
+        &self,
+    ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), capnp::Error> {
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let route = self.route();
+        if route.app_id.is_empty() || route.cluster_id.is_empty() {
+            return Err(capnp::Error::failed(
+                "record content belongs to a certified app route".into(),
+            ));
+        }
+        let content = self.state.services.record_content.clone().ok_or_else(|| {
+            capnp::Error::unimplemented("this host keeps no record content".into())
+        })?;
+        Ok((route, content))
+    }
+}
+
+/// Content arriving for one channel's record, pulled one piece of content
+/// per `read`.
+struct BlobStreamServer {
+    host_guard: Option<HostWorkerReadGuard>,
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<crate::record_content::ContentArrival>>>,
+}
+
+impl blob_stream::Server for BlobStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: blob_stream::ReadParams,
+        mut results: blob_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            let mut guard = rx.lock().await;
+            let Some(arrival) = guard.recv().await else {
+                return Err(capnp::Error::disconnected(
+                    "record content stream closed".into(),
+                ));
+            };
+            drop(guard);
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            let mut reply = results.get();
+            reply.set_hash(&arrival.hash);
+            reply.set_bytes(&arrival.bytes);
+            Ok(())
+        })
+    }
+}
+
 impl channel_handle::Server for CapnpChannelHandle {
+    fn offer_blob(
+        self: Rc<Self>,
+        params: channel_handle::OfferBlobParams,
+        _results: channel_handle::OfferBlobResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let hash = p
+                .get_hash()?
+                .to_str()
+                .map_err(|e| capnp::Error::failed(format!("offerBlob hash: {e}")))?
+                .to_owned();
+            let bytes = p.get_bytes()?;
+            content
+                .offer(&route, &hash, bytes)
+                .map_err(capnp::Error::failed)
+        })
+    }
+
+    fn want_blob(
+        self: Rc<Self>,
+        params: channel_handle::WantBlobParams,
+        _results: channel_handle::WantBlobResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let hash = params
+                .get()?
+                .get_hash()?
+                .to_str()
+                .map_err(|e| capnp::Error::failed(format!("wantBlob hash: {e}")))?
+                .to_owned();
+            content.want(&route, &hash);
+            Ok(())
+        })
+    }
+
+    fn subscribe_blobs(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeBlobsParams,
+        mut results: channel_handle::SubscribeBlobsResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        let client: blob_stream::Client = capnp_rpc::new_client(BlobStreamServer {
+            host_guard: HostWorkerReadGuard::for_channel(
+                &self.state,
+                self.peer_id,
+                &self.verified_identity,
+            ),
+            rx: Rc::new(AsyncMutex::new(content.subscribe(&route))),
+        });
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
     /// The caller-side door to published actions: one remote-action request
     /// frame in, one answer out, as the caller this channel was admitted as.
     fn remote_action(
@@ -6126,19 +7365,31 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
-        // A delegated agent is its own principal already; any other
-        // connection is an application, which acts as itself.
-        let caller = if current.agent_id.is_some() {
-            person.clone()
-        } else {
-            match self
-                .state
-                .app_door(&person, &route.app_id, &request.message)
-            {
-                Ok(caller) => caller,
-                Err(refusal) => return reply_frame(*refusal, results),
-            }
-        };
+        // An edit an effect submits while running for someone is theirs.
+        let caller =
+            if let Some(continued) = self.state.continued_caller(self.peer_id, &request.message) {
+                match continued {
+                    Ok(caller) => caller,
+                    Err(refused) => return reply_frame(*refused, results),
+                }
+            } else if current.agent_id.is_some() {
+                person.clone()
+            } else {
+                match self
+                    .state
+                    .app_door(&person, &route.app_id, &request.message)
+                {
+                    Ok(caller) => caller,
+                    Err(refusal) => return reply_frame(*refusal, results),
+                }
+            };
+        if let tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation, query } =
+            &request.message
+            && query.view_resource.is_some()
+        {
+            return self.resource_view_query(*correlation, query.clone(), results);
+        }
+
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -6218,6 +7469,25 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .set_reply(&reply.encode().map_err(|e| capnp::Error::failed(e.into()))?);
             Ok(())
         })())
+    }
+
+    fn audio_output_command(
+        self: Rc<Self>,
+        params: channel_handle::AudioOutputCommandParams,
+        mut results: channel_handle::AudioOutputCommandResults,
+    ) -> Promise<(), capnp::Error> {
+        let future = (|| self.audio_output_dispatch(params.get()?.get_command()?))();
+        let future = match future {
+            Ok(future) => future,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let snapshot = future.await.map_err(capnp::Error::failed)?;
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|_| capnp::Error::failed("audio output reply encoding failed".into()))?;
+            results.get().set_reply(&bytes);
+            Ok(())
+        })
     }
 
     fn native_media_command(
@@ -6393,6 +7663,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
     }
 
+    fn live_activity(
+        self: Rc<Self>,
+        _params: channel_handle::LiveActivityParams,
+        mut results: channel_handle::LiveActivityResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        match live_activity_capability(&self.state, route, self.verified_identity.clone()) {
+            Ok(activity) => {
+                results.get().set_activity(activity);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
+    }
+
     fn wifi_continuity_command(
         self: Rc<Self>,
         params: channel_handle::WifiContinuityCommandParams,
@@ -6452,6 +7743,10 @@ impl channel_handle::Server for CapnpChannelHandle {
             route.app_id.clone(),
             route.cluster_id.clone(),
             route.channel_key(),
+            self.verified_identity
+                .agent_id
+                .is_none()
+                .then(|| self.verified_identity.principal_id.clone()),
         );
         let request = match params.get() {
             Ok(request) => request,
@@ -6471,6 +7766,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         match delegate_nearby_transfer_command(&self.state.services, &context, claimed_app, command)
         {
+            Ok(reply) => {
+                results.get().set_reply_json(&reply);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
+    }
+
+    fn local_file_clipboard(
+        self: Rc<Self>,
+        params: channel_handle::LocalFileClipboardParams,
+        mut results: channel_handle::LocalFileClipboardResults,
+    ) -> Promise<(), capnp::Error> {
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let answer = request
+            .get_command_json()
+            .and_then(|bytes| self.file_clipboard_dispatch(bytes, request.get_on_behalf_of()?));
+        match answer {
             Ok(reply) => {
                 results.get().set_reply_json(&reply);
                 Promise::ok(())
@@ -6833,13 +8149,51 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        let rx = self.state.subscribe_context(&self.channel_id, self.peer_id);
+        let route = self.route();
+        let native = match self
+            .state
+            .native_roster_for_subscriber(&route, &self.verified_identity)
+        {
+            Ok(roster) => roster,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let instance = match self.native_private_window_instance() {
+            Ok(instance) => instance,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let document = if instance.is_some() {
+            match self.document_read_context() {
+                Ok(context) => Some(context),
+                Err(error) => return Promise::err(capnp::Error::failed(error)),
+            }
+        } else {
+            None
+        };
+        let rx = self
+            .state
+            .subscribe_context(&self.channel_id, self.peer_id, native.clone());
+        if let Some(instance) = instance {
+            let alias = CrdtRoute::record(
+                &route.app_id,
+                &route.cluster_id,
+                format!("continuation:{instance}"),
+            )
+            .channel_key();
+            self.state
+                .alias_private_context(&self.channel_id, &alias, self.peer_id);
+        }
         let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
                 self.peer_id,
                 &self.verified_identity,
             ),
+            native_guard: native.map(|native| NativeContextReadGuard {
+                state: self.state.clone(),
+                route,
+                identity: native.admitted,
+                document,
+            }),
             rx: Rc::new(AsyncMutex::new(rx)),
         });
         results.get().set_stream(client);
@@ -6969,6 +8323,19 @@ impl channel_handle::Server for CapnpChannelHandle {
                             description: (!description.is_empty()).then_some(description),
                             open_action: view.get_open_action()?.to_str()?.to_owned(),
                             primary: view.get_primary(),
+                            range: view
+                                .has_range()
+                                .then(|| view.get_range())
+                                .transpose()?
+                                .map(|range| {
+                                    Ok::<_, capnp::Error>(tilo_actions::ResourceViewRangeSpec {
+                                        action: range.get_action()?.to_str()?.to_owned(),
+                                        start_param: range.get_start_param()?.to_str()?.to_owned(),
+                                        end_param: range.get_end_param()?.to_str()?.to_owned(),
+                                        unit_param: range.get_unit_param()?.to_str()?.to_owned(),
+                                    })
+                                })
+                                .transpose()?,
                             mount: view
                                 .has_mount()
                                 .then(|| view.get_mount())
@@ -6989,6 +8356,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .transpose()?;
                 actions.push(PublishedAction {
                     resource,
+                    semantic_identity: decode_semantic_identity(row)?,
                     action,
                     resource_kind: row.get_resource_kind()?.to_str()?.to_owned(),
                     resource_label: row.get_resource_label()?.to_str()?.to_owned(),
@@ -7123,10 +8491,22 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(error),
         };
         let route = self.route();
+        let registration = Rc::new(uuid::Uuid::new_v4());
+        let Ok(_admission) = self.state.admission_lock.lock() else {
+            return Promise::err(capnp::Error::failed(
+                "directory admission unavailable".into(),
+            ));
+        };
+        if let Err(error) =
+            self.state
+                .register_canonical_directory(self.peer_id, &route, *registration)
+        {
+            return Promise::err(capnp::Error::failed(error));
+        }
         self.directories.directories.borrow_mut().insert(
             self.peer_id,
             RegisteredActionDirectory {
-                registration: Rc::new(uuid::Uuid::new_v4()),
+                registration,
                 app_id: app_id.clone(),
                 route: route.clone(),
                 directory,
@@ -7311,6 +8691,26 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request.get_stable_invocation_ids(),
             Err(error) => return Promise::err(error),
         };
+        // Stream replacement and resolved dispatch share the admission boundary:
+        // an admitted old token must never dispatch to a replacement stream.
+        let Ok(admission) = self.state.admission_lock.lock() else {
+            return Promise::err(capnp::Error::failed(
+                "invocation admission registry unavailable".into(),
+            ));
+        };
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        if let Ok(mut directories) = self.state.canonical_directories.lock() {
+            directories.stream_replaced(self.peer_id);
+        } else {
+            return Promise::err(capnp::Error::failed(
+                "canonical stream registry unavailable".into(),
+            ));
+        }
         if let Ok(mut capabilities) = self.state.stable_invocation_subscribers.lock() {
             if stable {
                 capabilities.insert(self.peer_id);
@@ -7330,6 +8730,20 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "invocation subscriber registry unavailable".into(),
             ));
         }
+        drop(admission);
+        // The app the launcher attested, else the one this channel names.
+        let (app, room) = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .map_or_else(
+                || {
+                    let route = self.route();
+                    (route.app_id, route.cluster_id)
+                },
+                |app| (app.app_id.clone(), app.workspace_id.clone()),
+            );
+        let delivered = invocation_delivery_notice(&self.state.services, app, room);
         let client: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -7337,6 +8751,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 &self.verified_identity,
             ),
             rx: Rc::new(AsyncMutex::new(rx)),
+            delivered,
         });
         results.get().set_stream(client);
         Promise::ok(())
@@ -7887,6 +9302,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            requested: None,
+                            caller: None,
                             execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -7923,6 +9340,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            requested: None,
+                            caller: None,
                             execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -7951,6 +9370,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            requested: None,
+                            caller: None,
                             execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -8048,22 +9469,34 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::LaunchPublishedApplicationParams,
         mut results: channel_handle::LaunchPublishedApplicationResults,
     ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
         let request = match params.get() {
             Ok(request) => request,
             Err(error) => return Promise::err(error),
+        };
+        let parent = match request
+            .get_on_behalf_of()
+            .and_then(observed_launch::launch_parent)
+        {
+            Ok(parent) => parent,
+            Err(error) => return Promise::err(error),
+        };
+        let actor = match self.launch_actor(parent) {
+            Ok(actor) => actor,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let app_id = match request.get_app_id() {
             Ok(value) => match value.to_str() {
                 Ok(value) => value.to_owned(),
                 Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
             },
+            Err(error) => return Promise::err(error),
+        };
+        let package_root = match request.get_package_root().and_then(|root| {
+            root.to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+                .and_then(observed_launch::package_root)
+        }) {
+            Ok(root) => root,
             Err(error) => return Promise::err(error),
         };
         let Some(membership) = self.state.membership.as_ref() else {
@@ -8091,7 +9524,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 Ok(now) => now / 1_000_000_000,
                 Err(error) => return Promise::err(capnp::Error::failed(error)),
             };
-            let caller = current.policy_actor(&workspace, now);
+            let caller = actor.policy_in(&workspace, now);
             if workspace.decide_at(&caller, &ResourceRef::App(app_id.clone()), Verb::Write, now)
                 != CapDecision::Allow
             {
@@ -8102,44 +9535,28 @@ impl channel_handle::Server for CapnpChannelHandle {
             workspace
         };
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match self
-            .state
-            .services
-            .launcher
-            .as_ref()
-            .ok_or_else(|| "application launch unsupported".to_string())
-            .and_then(|service| service.launch(&app_id, &workspace))
-        {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(error) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "launch_failed".into(),
-                    message: error,
-                    details: None,
-                    retryable: false,
-                },
-            },
+        let now = match self.state.policy_now_ns() {
+            Ok(now) => now / 1_000_000_000,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
-        self.state.record_completion(
-            id,
-            InvocationOwner::Local {
-                actor: current.broker_actor().id,
-            },
-            update.clone(),
+        let author = observed_launch::launch_author(&actor, &workspace, now);
+        let started = self.begin_original_launch(
+            &app_id,
+            package_root.as_deref(),
+            &workspace,
+            author.as_deref(),
+            parent,
         );
-        match serde_json::to_string(&update) {
-            Ok(json) => {
-                results.get().set_id(id);
-                results.get().set_update_json(&json);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
-        }
+        let actor = actor.id().to_owned();
+        Promise::from_future(async move {
+            let outcome = observed_launch::wait_for_startup(started).await;
+            let update = self.finish_observed_launch(&app_id, actor, parent, id, outcome);
+            let json = serde_json::to_string(&update)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_id(id);
+            results.get().set_update_json(&json);
+            Ok(())
+        })
     }
 
     fn report_continuation(
@@ -8171,14 +9588,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "reportContinuation appId must match the certified connection route".into(),
             ));
         }
-        let Some(instance_id) = route
-            .record_id
-            .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-        else {
-            return Promise::err(capnp::Error::failed(
-                "reportContinuation requires a durable shell tab id".into(),
-            ));
+        let instance_id = match self.continuation_instance() {
+            Ok(instance) => instance,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
             return Promise::err(capnp::Error::failed(
@@ -8240,14 +9652,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "handoff appId must match the certified connection route".into(),
             ));
         }
-        let Some(instance_id) = route
-            .record_id
-            .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-        else {
-            return Promise::err(capnp::Error::failed(
-                "handoff requires a durable shell tab id".into(),
-            ));
+        let instance_id = match self.continuation_instance() {
+            Ok(instance) => instance,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
             return Promise::err(capnp::Error::failed(
@@ -8300,14 +9707,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "clearContinuation appId must match the certified connection route".into(),
             ));
         }
-        let Some(instance_id) = route
-            .record_id
-            .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-        else {
-            return Promise::err(capnp::Error::failed(
-                "clearContinuation requires a durable shell tab id".into(),
-            ));
+        let instance_id = match self.continuation_instance() {
+            Ok(instance) => instance,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
             return Promise::err(capnp::Error::failed(
@@ -8523,6 +9925,15 @@ fn published_directory_action(
             "directory descriptor address changed during conversion".into(),
         ));
     }
+    if descriptor
+        .semantic_identity
+        .as_ref()
+        .is_some_and(|identity| !identity.is_valid() || identity.kind != descriptor.resource_kind)
+    {
+        return Err(capnp::Error::failed(
+            "invalid directory resource semantic identity".into(),
+        ));
+    }
     let operation_kind = match descriptor.operation_kind.as_str() {
         "document" => tilo_actions::OperationKind::Document,
         "effect" => tilo_actions::OperationKind::Effect,
@@ -8558,6 +9969,15 @@ fn published_directory_action(
             description: view.description.clone(),
             open_action: view.open_action.clone(),
             primary: view.primary,
+            range: view
+                .range
+                .as_ref()
+                .map(|range| tilo_actions::ResourceViewRangeSpec {
+                    action: range.action.clone(),
+                    start_param: range.start_param.clone(),
+                    end_param: range.end_param.clone(),
+                    unit_param: range.unit_param.clone(),
+                }),
             mount: view
                 .mount
                 .as_ref()
@@ -8569,6 +9989,12 @@ fn published_directory_action(
         });
     Ok(PublishedAction {
         resource: descriptor.resource.clone(),
+        semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
+            tilo_actions::ResourceSemanticIdentity {
+                kind: identity.kind.clone(),
+                key: identity.key.clone(),
+            }
+        }),
         action: descriptor.action.clone(),
         resource_kind: descriptor.resource_kind.clone(),
         resource_label: descriptor.resource_label.clone(),
@@ -8661,7 +10087,7 @@ fn handle_signed_op_send_for_artifact(
             let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
                 mls_vault.clone_from(&ch.mls_vault);
-                ch.record_history(&envelope);
+                ch.record_history(&route.cluster_id, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.op_class == collab_types::OpClass::Compaction
@@ -8751,14 +10177,15 @@ fn handle_authorized_signed_op_send(
     debug_assert_eq!(
         authorized.channel,
         match &authorized.payload {
-            collab_types::WholeDocumentPayload::Cleartext(_) => {
+            collab_types::RoutedDocumentPayload::Cleartext(_)
+            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
                 collab_types::document_channel_id(
                     &route.app_id,
                     &route.cluster_id,
                     &route.record_id,
                 )
             }
-            collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
+            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         }
     );
     handle_signed_op_send_for_artifact(
@@ -9256,9 +10683,22 @@ impl realtime_stream::Server for RealtimeStreamServer {
     }
 }
 
+/// What the host is told each time an invocation is handed to `app` in
+/// `room`; nothing when no launcher hosts it.
+fn invocation_delivery_notice(
+    services: &HostServices,
+    app: String,
+    room: String,
+) -> Option<Box<dyn Fn()>> {
+    let launcher = services.launcher.clone().filter(|_| !app.is_empty())?;
+    Some(Box::new(move || launcher.note_acted_on(&app, &room)))
+}
+
 struct InvocationStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
+    /// Told each time an invocation is handed to the app.
+    delivered: Option<Box<dyn Fn()>>,
 }
 
 struct TaskRunStreamServer {
@@ -9322,6 +10762,9 @@ impl invocation_stream::Server for InvocationStreamServer {
             })?;
             drop(guard);
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            if let Some(delivered) = &self.delivered {
+                delivered();
+            }
             let mut result = results.get();
             result.set_id(invocation.id);
             result.set_invocation_uuid(invocation.invocation.0.as_bytes());
@@ -9442,7 +10885,52 @@ impl presence_stream::Server for PresenceStreamServer {
 
 struct ContextStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
+    native_guard: Option<NativeContextReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<ContextEnvelope>>>,
+}
+
+struct NativeContextReadGuard {
+    state: Arc<CapnpBrokerState>,
+    route: CrdtRoute,
+    identity: AdmittedJoinIdentity,
+    /// Native private views retain their original document's current Read custody.
+    document: Option<NativeDocumentReadContext>,
+}
+
+impl NativeContextReadGuard {
+    fn check(guard: Option<&Self>) -> Result<(), capnp::Error> {
+        if let Some(guard) = guard {
+            if !guard
+                .state
+                .services
+                .workspace_memberships
+                .as_ref()
+                .is_some_and(|owner| owner.requires_room(&guard.route.cluster_id))
+            {
+                return Err(capnp::Error::failed(
+                    "native context owner is no longer current".into(),
+                ));
+            }
+            guard
+                .state
+                .revalidate_admission(&guard.route, &guard.identity)?;
+            if let Some(context) = &guard.document {
+                context.revalidate().map_err(capnp::Error::failed)?;
+                guard
+                    .state
+                    .services
+                    .committed_documents
+                    .as_ref()
+                    .ok_or_else(|| {
+                        capnp::Error::failed("native private document owner ended".into())
+                    })?
+                    .authorize(context)
+                    .map_err(capnp::Error::failed)?;
+                context.revalidate().map_err(capnp::Error::failed)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl context_stream::Server for ContextStreamServer {
@@ -9454,6 +10942,7 @@ impl context_stream::Server for ContextStreamServer {
         let rx = self.rx.clone();
         Promise::from_future(async move {
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            NativeContextReadGuard::check(self.native_guard.as_ref())?;
             let mut guard = rx.lock().await;
             let Some(env) = guard.recv().await else {
                 return Err(capnp::Error::disconnected(
@@ -9462,6 +10951,7 @@ impl context_stream::Server for ContextStreamServer {
             };
             drop(guard);
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            NativeContextReadGuard::check(self.native_guard.as_ref())?;
             let mut ctx = results.get().init_ctx();
             let (collaborators, permissions) = match env {
                 ContextEnvelope::Snapshot {
@@ -9494,7 +10984,7 @@ impl context_stream::Server for ContextStreamServer {
                     let mut slot = collabs.reborrow().get(idx);
                     slot.set_user_id(&c.id);
                     slot.set_display_name(&c.name);
-                    slot.set_color(pack_color(c.color));
+                    slot.set_color(c.packed_colour());
                     slot.set_is_agent(c.is_agent);
                     slot.set_is_self(c.is_self);
                 }
@@ -9512,26 +11002,6 @@ impl context_stream::Server for ContextStreamServer {
             Ok(())
         })
     }
-}
-
-/// Convert `[f32; 3]` RGB in 0..=1 to the wire's `0x00RRGGBB`.
-fn pack_color(rgb: [f32; 3]) -> u32 {
-    let clamp = |c: f32| -> u32 {
-        let scaled = (c.clamp(0.0, 1.0) * 255.0).round();
-        // `scaled` is clamped to 0.0..=255.0 immediately above, so this
-        // cast is always exact and never negative.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "scaled is clamped to 0.0..=255.0 on the line above, so the u32 cast is always exact and non-negative"
-        )]
-        let result = scaled as u32;
-        result
-    };
-    let r = clamp(rgb[0]);
-    let g = clamp(rgb[1]);
-    let b = clamp(rgb[2]);
-    (r << 16) | (g << 8) | b
 }
 
 // Listener wiring
@@ -10040,6 +11510,8 @@ pub(super) fn spawn_configured(
                         );
                     })
                 };
+                #[cfg(any(test, feature = "test-support"))]
+                report_retired_broker_owners(&state, &directories);
                 match run {
                     Ok(()) => return,
                     Err(panic) => {
@@ -10053,6 +11525,24 @@ pub(super) fn spawn_configured(
     fanout.attach_capnp(attached_state);
 
     Ok(thread)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn report_retired_broker_owners(
+    state: &Arc<CapnpBrokerState>,
+    directories: &Rc<LocalActionDirectoryRegistry>,
+) {
+    if std::env::var_os("TILO_IN_PROCESS_TEST_ROOT").is_some() {
+        eprintln!(
+            "native broker retired LocalSet: state refs={}, directory refs={}, registered={:?}",
+            Arc::strong_count(state),
+            Rc::strong_count(directories),
+            directories
+                .directories
+                .try_borrow()
+                .map(|entries| entries.len()),
+        );
+    }
 }
 
 /// Most broker threads a session starts after one unwound, before the
@@ -10150,7 +11640,19 @@ async fn serve_broker_thread(
             return;
         }
     };
+    let mut next_membership_refresh = std::time::Instant::now();
     loop {
+        if std::time::Instant::now() >= next_membership_refresh {
+            if let Err(error) = state.refresh_workspace_membership_services() {
+                tracing::debug!(%error, "native membership surface could not be refreshed");
+            }
+            if let Err(error) = state.refresh_workspace_context_services() {
+                tracing::debug!(%error, "native membership context could not be refreshed");
+            }
+            next_membership_refresh = std::time::Instant::now()
+                .checked_add(Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
+        }
         #[cfg(test)]
         {
             let callbacks = match state.thread_callbacks.lock() {
@@ -10362,10 +11864,135 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
     ))
 }
 
+/// A launcher's handoff, read whole: the stream is now where the app's
+/// first Cap'n Proto message begins.
+struct LauncherHandoff {
+    handoff: CollabLaunchHandoff,
+    pid: u32,
+    media_process: Option<native_media::PeerProcess>,
+}
+
+/// Why a connection was refused before its first Cap'n Proto call.
+struct LaunchRefusal {
+    error: capnp::Error,
+    /// What the connection said it was, as far as it got: the process and
+    /// the app and room its launcher named.
+    peer: String,
+    /// The handoff was read whole, so the app can still be told the reason
+    /// over Cap'n Proto instead of seeing its connection reset.
+    answerable: bool,
+}
+
 async fn authenticate_launcher_handoff(
     stream: &mut tokio::net::UnixStream,
     services: &HostServices,
-) -> Result<Option<Arc<native_media::LocalAppConnection>>, capnp::Error> {
+) -> Result<Option<Arc<native_media::LocalAppConnection>>, LaunchRefusal> {
+    let LauncherHandoff {
+        handoff,
+        pid,
+        media_process,
+    } = match read_launcher_handoff(stream).await {
+        Ok(Some(read)) => read,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            let peer = stream.peer_cred().ok().and_then(|c| c.pid()).map_or_else(
+                || "a peer without credentials".to_owned(),
+                |pid| format!("pid {pid}"),
+            );
+            return Err(LaunchRefusal {
+                error,
+                peer,
+                answerable: false,
+            });
+        }
+    };
+    let peer = format!(
+        "pid {pid} launching {} in room {}",
+        handoff.app_id, handoff.workspace_id
+    );
+    if handoff.protocol != collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION
+        || handoff.app_id.trim().is_empty()
+        || handoff.workspace_id.trim().is_empty()
+    {
+        return Err(LaunchRefusal {
+            error: capnp::Error::failed(
+                "collaboration launch handoff has an unsupported or empty identity".into(),
+            ),
+            peer,
+            answerable: true,
+        });
+    }
+
+    // `spawn_launch` records immediately after `Command::spawn`; the child
+    // can connect first on a fast machine. Retry only this narrow registration
+    // race. A direct tilo-launcher command never obtains a record and fails
+    // closed instead of becoming a way around admin/admission checks.
+    for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
+        let launch = services
+            .launcher
+            .as_ref()
+            .map(|service| {
+                service.authenticated_launch(pid, &handoff.app_id, &handoff.workspace_id)
+            })
+            .transpose()
+            .map_err(|error| LaunchRefusal {
+                error: capnp::Error::failed(error),
+                peer: peer.clone(),
+                answerable: !handoff.executing_peer,
+            })?
+            .flatten();
+        if let Some(launch) = launch {
+            #[cfg(target_os = "linux")]
+            let media_process = if handoff.executing_peer {
+                Some(
+                    process_binding::bind(stream, media_process, services, pid, &handoff)
+                        .await
+                        .map_err(|error| LaunchRefusal {
+                            error,
+                            peer: peer.clone(),
+                            answerable: false,
+                        })?,
+                )
+            } else {
+                media_process
+            };
+            #[cfg(not(target_os = "linux"))]
+            if handoff.executing_peer {
+                return Err(LaunchRefusal {
+                    error: capnp::Error::failed("executing custody requires Linux".into()),
+                    peer,
+                    answerable: false,
+                });
+            }
+            return Ok(native_media::LocalAppConnection::from_launch(
+                handoff,
+                media_process,
+                launch,
+            ));
+        }
+        if attempt < LAUNCH_RECORD_RACE_RETRIES {
+            tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
+        }
+    }
+    let error = if services.launcher.is_none() {
+        "collaboration launch cannot be attested: this broker has no launcher service"
+    } else {
+        "collaboration launch is not an authenticated shell-managed process: the \
+         shell holds no live launch record for this process, app and room (an app \
+         started by hand through tilo-launcher, or one whose record expired)"
+    };
+    Err(LaunchRefusal {
+        error: capnp::Error::failed(error.into()),
+        peer,
+        answerable: !handoff.executing_peer,
+    })
+}
+
+/// Read the launcher's marker and handoff off `stream`; `None` for a raw
+/// client that sent no marker.
+async fn read_launcher_handoff(
+    stream: &mut tokio::net::UnixStream,
+) -> Result<Option<LauncherHandoff>, capnp::Error> {
     if !has_collab_launch_marker(stream).await? {
         return Ok(None);
     }
@@ -10425,39 +12052,37 @@ async fn authenticate_launcher_handoff(
     let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
         capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
     })?;
-    if handoff.protocol != collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION
-        || handoff.app_id.trim().is_empty()
-        || handoff.workspace_id.trim().is_empty()
-    {
-        return Err(capnp::Error::failed(
-            "collaboration launch handoff has an unsupported or empty identity".into(),
-        ));
-    }
-
-    // `spawn_launch` records immediately after `Command::spawn`; the child
-    // can connect first on a fast machine. Retry only this narrow registration
-    // race. A direct tilo-launcher command never obtains a record and fails
-    // closed instead of becoming a way around admin/admission checks.
-    for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
-        if services.launcher.as_ref().is_some_and(|service| {
-            service.attest_process(pid, &handoff.app_id, &handoff.workspace_id)
-        }) {
-            return Ok(media_process.and_then(|process| {
-                native_media::LocalAppConnection::attested(
-                    handoff.app_id,
-                    handoff.workspace_id,
-                    process,
-                )
-            }));
-        }
-        if attempt < LAUNCH_RECORD_RACE_RETRIES {
-            tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
-        }
-    }
-    Err(capnp::Error::failed(
-        "collaboration launch is not an authenticated shell-managed process".into(),
-    ))
+    Ok(Some(LauncherHandoff {
+        handoff,
+        pid,
+        media_process,
+    }))
 }
+
+/// Tell a refused app why over the protocol it speaks: every call on the
+/// service it bootstraps fails with `error`. Dropping the socket instead
+/// leaves its first message unread, and the app only sees its connection
+/// reset. Bounded, so a peer that never hangs up holds nothing for long.
+#[allow(
+    clippy::future_not_send,
+    reason = "Cap'n Proto RPC is Rc-backed and runs only on the broker LocalSet"
+)]
+async fn answer_refused_launch(stream: tokio::net::UnixStream, error: capnp::Error) {
+    let (reader, writer) = stream.into_split();
+    let network = Box::new(twoparty::VatNetwork::new(
+        futures::io::BufReader::new(reader.compat()),
+        futures::io::BufWriter::new(writer.compat_write()),
+        rpc_twoparty_capnp::Side::Server,
+        capnp::message::ReaderOptions::default(),
+    ));
+    let refused: collab_service::Client =
+        capnp_rpc::new_future_client(std::future::ready(Err(error)));
+    let rpc = RpcSystem::new(network, Some(refused.client));
+    let _ = tokio::time::timeout(REFUSED_LAUNCH_ANSWER_WINDOW, rpc).await;
+}
+
+/// How long a refused app's connection is kept open to hear why.
+const REFUSED_LAUNCH_ANSWER_WINDOW: Duration = Duration::from_secs(5);
 
 #[allow(
     clippy::future_not_send,
@@ -10477,7 +12102,23 @@ async fn drive_connection(
     };
     let mut stream = stream;
     let local_media = if worker.is_none() {
-        authenticate_launcher_handoff(&mut stream, &state.services).await?
+        match authenticate_launcher_handoff(&mut stream, &state.services).await {
+            Ok(local_media) => local_media,
+            Err(refusal) => {
+                // Error, not warning: an app the shell launched is about to
+                // exit for this, and the default session log keeps errors only.
+                tracing::error!(
+                    peer_id,
+                    peer = %refusal.peer,
+                    reason = %refusal.error,
+                    "capnp broker: refused a collaboration connection before its first call",
+                );
+                if refusal.answerable {
+                    answer_refused_launch(stream, refusal.error).await;
+                }
+                return Ok(());
+            }
+        }
     } else {
         None
     };
@@ -10504,6 +12145,7 @@ async fn drive_connection(
         peer_id,
     });
     let rpc = RpcSystem::new(network, Some(client.client));
+    let _disconnect = DisconnectOnDrop(Some(rpc.get_disconnector()));
     rpc.await
 }
 
@@ -10540,6 +12182,7 @@ pub mod tests {
         reason = "test scenarios and fixtures: a failed unwrap is the assertion, and each scenario keeps its setup, guards and awaits in one readable body"
     )]
     use super::*;
+    include!("certified_person_fixture.rs");
     #[cfg(test)]
     use crate::test_support::WorkspaceTree;
     use crate::test_support::WorkspaceTreeHandle;
@@ -10730,7 +12373,7 @@ pub mod tests {
 
         fn app_presence(&self, _: String, _: String, _: collab_types::PeerPresence) {}
 
-        fn scrollback_request(&self, _: ArtifactId, _: u64, _: u16) {}
+        fn scrollback_request(&self, _: &str, _: ArtifactId, _: u64, _: u16) {}
     }
 
     #[cfg(test)]
@@ -10835,6 +12478,109 @@ pub mod tests {
             "an operation admitted before shutdown keeps its non-retryable identity"
         );
         state.stop();
+    }
+
+    /// An app whose launch the shell holds no record of (one started by hand
+    /// through tilo-launcher, or one whose record is gone) is refused. It used
+    /// to be refused by dropping its socket with its first call unread, so the
+    /// app saw only "Connection reset by peer" and the shell logged nothing it
+    /// keeps. The app must hear why, as an ordinary failed call.
+    #[test]
+    fn an_unattested_launch_is_told_why_it_was_refused() {
+        struct NoLaunchRecords;
+        impl crate::services::LauncherServices for NoLaunchRecords {
+            fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+                Vec::new()
+            }
+            fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                Err("this broker launches nothing".into())
+            }
+            fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+                false
+            }
+        }
+        let directory = tempfile::tempdir().expect("temporary socket directory");
+        let socket = lifecycle_socket(&directory, "unattested");
+        let config = crate::peer_actions::NativePeerBrokerConfig {
+            journal_root: directory.path().join("unattested-invocations"),
+            certificate_authority: Arc::new(LifecycleAuthority),
+        };
+        let _broker = crate::collab_broker::spawn_with_test_services(
+            socket.clone(),
+            None,
+            PeerPublisher::disabled(),
+            Some(&config),
+            HostServices {
+                launcher: Some(Arc::new(NoLaunchRecords)),
+                ..Default::default()
+            },
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("test broker");
+
+        // What tilo-launcher writes before handing the descriptor to the app.
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
+        let handoff = serde_json::to_vec(&serde_json::json!({
+            "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "app_id": "so.tilo.calculator",
+            "workspace_id": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+        }))
+        .expect("handoff json");
+        std::io::Write::write_all(
+            &mut stream,
+            &collab_types::local_transport::COLLAB_LAUNCH_MAGIC,
+        )
+        .expect("marker");
+        std::io::Write::write_all(
+            &mut stream,
+            &launcher::services::COLLAB_LAUNCH_FRAMING
+                .encode(&handoff)
+                .expect("framed handoff"),
+        )
+        .expect("handoff");
+        stream.set_nonblocking(true).expect("nonblocking");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let error = tokio::task::LocalSet::new().block_on(&runtime, async move {
+            let stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
+            let (reader, writer) = stream.into_split();
+            let network = Box::new(twoparty::VatNetwork::new(
+                futures::io::BufReader::new(reader.compat()),
+                futures::io::BufWriter::new(writer.compat_write()),
+                rpc_twoparty_capnp::Side::Client,
+                capnp::message::ReaderOptions::default(),
+            ));
+            let mut rpc = RpcSystem::new(network, None);
+            let client = runtime_collab::CollabClient::from_raw(
+                rpc.bootstrap(rpc_twoparty_capnp::Side::Server),
+            );
+            tokio::task::spawn_local(async move {
+                let _ = rpc.await;
+            });
+            match client
+                .join_channel(
+                    "5ba25f73-87c5-447f-a5a6-880dc4249a81#app:so.tilo.calculator",
+                    b"",
+                )
+                .await
+            {
+                Ok(_) => panic!("an unattested launch joined a channel"),
+                Err(error) => error.to_string(),
+            }
+        });
+        assert!(
+            error.contains("not an authenticated shell-managed process"),
+            "the refused app must learn why, not see its connection reset: {error}",
+        );
+        assert!(
+            !error.contains("reset by peer"),
+            "the refusal arrived as a reset: {error}",
+        );
     }
 
     #[test]
@@ -11391,6 +13137,7 @@ pub mod tests {
         fn row(&self) -> runtime_collab::ActionDirectoryRow {
             let contract_json = self.contract_json();
             let descriptor = runtime_collab::ExportedAction {
+                semantic_identity: None,
                 resource: "workspace:atlas".into(),
                 action: "open".into(),
                 resource_kind: "workspace".into(),
@@ -11477,7 +13224,11 @@ pub mod tests {
     #[cfg(test)]
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
+    include!("canonical_route_tests.rs");
+    #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
+    #[cfg(test)]
+    include!("record_content_tests.rs");
 
     pub struct LocalDirectoryFixture {
         _fanout: Arc<FanoutState>,
@@ -11566,6 +13317,13 @@ pub mod tests {
             self.directory_state.borrow_mut().resolve_mode = mode;
         }
 
+        pub fn take_invocation_identity(&mut self) -> Option<(u64, tilo_actions::InvocationId)> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| (invocation.id, invocation.invocation))
+        }
+
         pub fn take_invocation_actor(&mut self) -> Option<String> {
             self.invocation_rx
                 .try_recv()
@@ -11608,6 +13366,62 @@ pub mod tests {
                         .await
                         .err()
                         .expect("ordinary admitted channel cannot mint local process custody");
+                    assert!(error.to_string().contains("launcher-attested"), "{error}");
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn file_clipboard_raw_admitted_channel_cannot_mint_local_custody() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let fixture = local_directory_fixture();
+                let channel = fixture.invocation_channel();
+                for command in [
+                    runtime_collab::file_clipboard::Command::Snapshot,
+                    runtime_collab::file_clipboard::Command::Publish {
+                        sources: vec![uuid::Uuid::new_v4().to_string()],
+                        cut: true,
+                    },
+                ] {
+                    let mut request = channel.local_file_clipboard_request();
+                    request
+                        .get()
+                        .set_command_json(&serde_json::to_vec(&command).expect("command"));
+                    request.get().set_on_behalf_of(&[]);
+                    let error = request
+                        .send()
+                        .promise
+                        .await
+                        .err()
+                        .expect("unattested channel must be refused");
+                    assert!(error.to_string().contains("launcher-attested"), "{error}");
+                }
+            })
+            .await;
+    }
+
+    #[cfg(test)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn audio_output_raw_admitted_channel_cannot_open_or_write_host_pcm() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let fixture = local_directory_fixture();
+                let channel = fixture.invocation_channel();
+                for command in [
+                    runtime_collab::audio_output::Command::Open {},
+                    runtime_collab::audio_output::Command::Write {
+                        generation: 1,
+                        sequence: 1,
+                        samples: vec![123; 1920],
+                    },
+                ] {
+                    let mut rpc = channel.audio_output_command_request();
+                    rpc.get().set_command(&command.encode().unwrap());
+                    let error = rpc.send().promise.await.err().expect(
+                        "an admitted remote/raw route cannot manufacture launcher process custody",
+                    );
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
                 }
             })
@@ -11722,12 +13536,7 @@ pub mod tests {
                 },
             );
         state.refresh_action_directory_root_snapshot();
-        let (invocation_tx, invocation_rx) = tokio::sync::mpsc::unbounded_channel();
-        state
-            .invocation_subscribers
-            .lock()
-            .expect("invocation subscribers")
-            .insert(peer_id, invocation_tx);
+        let invocation_rx = state.capture_invocations_for_test(peer_id);
         fanout.attach_capnp(Arc::clone(&state));
         LocalDirectoryFixture {
             _fanout: fanout,
@@ -11834,6 +13643,55 @@ pub mod tests {
     }
 
     #[test]
+    fn published_semantic_identity_retains_exact_directory_address_and_refuses_bad_wire() {
+        use runtime_collab::collab_capnp::exported_action;
+
+        let fixture = local_directory_fixture();
+        let mut row = fixture.directory_state.borrow().row();
+        let identity = runtime_collab::ExportedResourceSemanticIdentity {
+            kind: "workspace".into(),
+            key: "source-workspace:atlas".into(),
+        };
+        row.descriptor.as_mut().unwrap().semantic_identity = Some(identity);
+        let action = published_directory_action(&row).unwrap();
+        assert_eq!(action.resource, row.resource);
+        assert_eq!(action.action, row.action.as_deref().unwrap());
+        assert_eq!(
+            action.semantic_identity,
+            tilo_actions::ResourceSemanticIdentity::new("workspace", "source-workspace:atlas")
+        );
+
+        let decode = |kind: &str, key: &str| {
+            let mut message = capnp::message::Builder::new_default();
+            let mut descriptor = message.init_root::<exported_action::Builder<'_>>();
+            descriptor.set_resource_kind("chat.agent");
+            let mut identity = descriptor.init_semantic_identity();
+            identity.set_kind(kind);
+            identity.set_key(key);
+            decode_semantic_identity(
+                message
+                    .get_root_as_reader::<exported_action::Reader<'_>>()
+                    .unwrap(),
+            )
+        };
+        assert_eq!(
+            decode("chat.agent", "chat.person:scribe").unwrap(),
+            tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
+        );
+        assert!(decode("chat.person", "chat.person:scribe").is_err());
+        assert!(decode("chat.agent", "key\nsecret").is_err());
+        assert!(decode("chat.agent", &"x".repeat(4097)).is_err());
+        row.descriptor
+            .as_mut()
+            .unwrap()
+            .semantic_identity
+            .as_mut()
+            .unwrap()
+            .kind = "person".into();
+        assert!(published_directory_action(&row).is_err());
+    }
+
+    #[test]
     fn directory_wire_rows_refuse_control_framing_in_identifiers_before_policy_or_invocation() {
         let fixture = local_directory_fixture();
         let mut row = fixture.directory_state.borrow().row();
@@ -11905,6 +13763,60 @@ pub mod tests {
         assert!(after_disconnect.generation > second.generation);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
+        use tilo_actions::remote::{
+            Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+        };
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut fixture = local_directory_fixture();
+                let caller = Caller::local_person("fixture-owner")
+                    .in_room(fixture.cluster_id.clone())
+                    .in_new_execution();
+                let request = InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: fixture.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: Some("directory-r1".into()),
+                    on_behalf_of: None,
+                };
+                let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
+                let admitted = tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        drain_directory_bridge(&fixture).await;
+                        if let PendingPoll::Ready(result) = pending.poll_ready() {
+                            break result;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("bounded actual directory admission");
+                admitted.expect("full-envelope consumer supports scoped invocation UUIDs");
+                let (job, delivered) = fixture.take_invocation_identity().expect("actual delivery");
+                assert_eq!(delivered, request.invocation);
+                assert_ne!(delivered.0, uuid::Uuid::from_u128(u128::from(job)));
+                fixture
+                    .complete_invocation(
+                        job,
+                        &tilo_actions::InvocationUpdate::Succeeded {
+                            invocation: delivered,
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                    )
+                    .await
+                    .expect("actual peer-bound completion accepts the delivered UUID");
+                assert!(fixture.take_invocation_identity().is_none());
+            })
+            .await;
+    }
+
     #[test]
     fn invocation_journal_admission_precedes_real_application_delivery() {
         let root = tempfile::tempdir().expect("private test root");
@@ -11955,6 +13867,61 @@ pub mod tests {
         assert_eq!(snapshot["records"][0]["wire_id"], job.id);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_person_requested_uuid_survives_actual_delivery_and_completion() {
+        use tilo_actions::remote::{
+            Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+        };
+        tokio::task::LocalSet::new().run_until(async {
+            let root = tempfile::tempdir().unwrap();
+            let base = local_directory_fixture();
+            let membership = base.membership.as_ref().unwrap().clone();
+            membership.write().persist_path = Some(root.path().join("state.json"));
+            drop(base);
+            let mut fixture = local_directory_fixture_with_membership(membership);
+            let offered = PublishedSurface {
+                peer_id: fixture.peer_id,
+                app_id: fixture.route.app_id.clone(),
+                route: fixture.route.clone(),
+                actions: vec![published_directory_action(&fixture.directory_state.borrow().row()).unwrap()],
+                live: true,
+            };
+            fixture.state.surfaces.lock().unwrap().insert(fixture.peer_id, offered);
+            let caller = Caller::local_person("fixture-owner").in_room(fixture.cluster_id.clone());
+            assert!(caller.execution_id().is_none(), "no fabricated execution lease");
+            let request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: fixture.peer_id.to_string(),
+                    address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                },
+                argument: InvokeArgument::None, context: None, confirmation: None,
+                revision: None, on_behalf_of: None,
+            };
+            let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
+            let PendingPoll::Ready(Ok(receipt)) = pending.poll_ready() else {
+                panic!("published ordinary action must be admitted");
+            };
+            assert_eq!(receipt.invocation, request.invocation);
+            let (job, delivered) = fixture.take_invocation_identity().unwrap();
+            assert_eq!(delivered, request.invocation);
+            assert_ne!(delivered.0, uuid::Uuid::from_u128(u128::from(job)));
+            assert!(matches!(fixture.state.invocation_status(job),
+                Some(tilo_actions::InvocationUpdate::Accepted { invocation }) if invocation == request.invocation));
+            let path = root.path().join("state.json.invocations/records.json");
+            let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
+            fixture.complete_invocation(job, &tilo_actions::InvocationUpdate::Succeeded {
+                invocation: delivered, output: tilo_actions::ActionOutput::default(),
+            }).await.unwrap();
+            assert!(matches!(fixture.state.invocation_status(job),
+                Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == request.invocation));
+            let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
+            assert!(fixture.take_invocation_identity().is_none());
+        }).await;
+    }
+
     #[cfg(test)]
     fn certified_join(
         workspace: &str,
@@ -12003,6 +13970,185 @@ pub mod tests {
             verified.device_public_key,
             device.verifying_key().to_bytes()
         );
+    }
+
+    #[cfg(test)]
+    struct ParticipantJoinFixture {
+        state: Arc<CapnpBrokerState>,
+        fanout: Arc<FanoutState>,
+        client: runtime_collab::CollabClient,
+        presentation: Vec<u8>,
+        route: CrdtRoute,
+        principal: String,
+    }
+
+    #[cfg(test)]
+    impl ParticipantJoinFixture {
+        fn new(agents: &[String]) -> Self {
+            let root = SigningKey::from_bytes(&[101; 32]);
+            let device = SigningKey::from_bytes(&[102; 32]);
+            let principal = principal_id_for_root(root.verifying_key().to_bytes());
+            let mut workspace = crate::test_support::Workspace::new(
+                crate::test_support::WorkspaceId(101),
+                "Exact Agent identity",
+            );
+            workspace.owner = Some(principal.clone());
+            let route = CrdtRoute::cluster(workspace.room.to_string());
+            for agent in agents {
+                workspace.grant_capability(CapOverride::membership(
+                    Subject::agent(agent),
+                    route.cluster_id.clone(),
+                    Verb::Comment,
+                ));
+            }
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let fanout = Arc::new(FanoutState::new());
+            let (state, bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(tree.shared()),
+                Some(Arc::new(vec![device.verifying_key().to_bytes()])),
+            );
+            let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
+            let peer_id = fanout.next_peer_id();
+            let lease = Rc::new(ConnectionLease {
+                local_media: None,
+                state: Arc::clone(&state),
+                directories: Rc::clone(&directories),
+                peer_id,
+            });
+            let raw: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
+                worker: None,
+                state: Arc::clone(&state),
+                directories,
+                peer_id,
+                lease,
+            });
+            let presentation = certified_join(&route.cluster_id, &root, &device)
+                .encode()
+                .unwrap();
+            Self {
+                state,
+                fanout,
+                client: runtime_collab::CollabClient::from_raw(raw),
+                presentation,
+                route,
+                principal,
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
+        let ascii = "a".repeat(128);
+        let multibyte = "\u{e9}".repeat(64);
+        let fixture = ParticipantJoinFixture::new(&[
+            ascii.clone(),
+            multibyte.clone(),
+            // The old display-name truncation would silently select this
+            // different, also admitted Agent rather than reject the join.
+            "a".repeat(64),
+        ]);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fixture.fanout.subscribe_rooms(
+            vec![fixture.route.cluster_id.clone()],
+            Box::new(move |event, _| {
+                event_tx.send(event.clone()).unwrap();
+            }),
+        );
+        let key = PresenceKey::Resource {
+            app: "so.tilo.notes".into(),
+            id: "note:draft".into(),
+            kind: "note".into(),
+        };
+        let key_bytes = postcard::to_stdvec(&key).unwrap();
+        for expected in [ascii, multibyte] {
+            let input = format!(" {} ", expected.to_uppercase());
+            let channel = fixture
+                .client
+                .join_channel_as_kind(
+                    &fixture.route.channel_key(),
+                    &fixture.presentation,
+                    &input,
+                    "agent",
+                    "",
+                )
+                .await
+                .expect("certified join preserves the complete canonical Agent ID");
+            channel
+                .presence()
+                .await
+                .unwrap()
+                .publish_arrived(&key_bytes)
+                .await
+                .unwrap();
+            let event = event_rx.try_recv().unwrap();
+            assert!(matches!(event,
+                CollabEvent::RemotePresenceUpdate { user_id, key: delivered, payload: PresencePayload::Arrived }
+                    if user_id == format!("agent:{expected}") && delivered == key));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback() {
+        let fixture =
+            ParticipantJoinFixture::new(&["a".repeat(64), "a".repeat(128), "\u{e9}".repeat(64)]);
+        for invalid in [
+            "a".repeat(129),
+            "\u{e9}".repeat(65),
+            // Lowercase expands this input from 86 to 129 UTF-8 bytes.
+            "\u{130}".repeat(43),
+            format!("{}\nx", "a".repeat(64)),
+            String::new(),
+        ] {
+            assert!(
+                fixture
+                    .client
+                    .join_channel_as_kind(
+                        &fixture.route.channel_key(),
+                        &fixture.presentation,
+                        &invalid,
+                        "agent",
+                        "",
+                    )
+                    .await
+                    .is_err(),
+                "invalid Agent IDs must refuse instead of selecting an enrolled prefix"
+            );
+            assert!(fixture.state.channels.lock().unwrap().is_empty());
+        }
+        // The same long string is still a Person's bounded presentation
+        // handle: it never becomes that Person's certified principal.
+        let person = fixture
+            .client
+            .join_channel_as_kind(
+                &fixture.route.channel_key(),
+                &fixture.presentation,
+                &"a".repeat(129),
+                "person",
+                "",
+            )
+            .await
+            .unwrap();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fixture.fanout.subscribe_rooms(
+            vec![fixture.route.cluster_id.clone()],
+            Box::new(move |event, _| {
+                event_tx.send(event.clone()).unwrap();
+            }),
+        );
+        person
+            .presence()
+            .await
+            .unwrap()
+            .publish_arrived(&postcard::to_stdvec(&PresenceKey::pointer_default()).unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(event_rx.try_recv().unwrap(),
+            CollabEvent::RemotePresenceUpdate { user_id, payload: PresencePayload::Arrived, .. }
+                if user_id == fixture.principal));
     }
 
     #[test]
@@ -12358,6 +14504,244 @@ pub mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
+        struct NativeRoom(String);
+        impl crate::services::WorkspaceMemberships for NativeRoom {
+            fn requires_room(&self, room: &str) -> bool {
+                room == self.0
+            }
+
+            fn execute(
+                &self,
+                _: tilo_peer_state::owner_commit::OwnerCommitRequest,
+            ) -> tilo_peer_state::owner_commit::CommitFuture {
+                Box::pin(async { Err("roster fixture never commits owner state".into()) })
+            }
+        }
+
+        let root = SigningKey::from_bytes(&[46; 32]);
+        let person = principal_id_for_root(root.verifying_key().to_bytes());
+        let tide = "tide";
+        let reed = "reed";
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(46), "Roster");
+        workspace.owner = Some(person.clone());
+        let room = workspace.room.to_string();
+        let other_person = "other-person";
+        let person_membership = workspace.grant_capability(CapOverride::membership(
+            Subject::person(other_person),
+            room.clone(),
+            Verb::Read,
+        ));
+        workspace.grant_capability(CapOverride::membership(
+            Subject::person("person-in-other-room"),
+            uuid::Uuid::new_v4().to_string(),
+            Verb::Read,
+        ));
+        let collision = workspace.grant_capability(CapOverride::membership(
+            Subject::agent(&person),
+            room.clone(),
+            Verb::Read,
+        ));
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent(tide),
+            room.clone(),
+            Verb::Read,
+        ));
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("wrong-room"),
+            uuid::Uuid::new_v4().to_string(),
+            Verb::Read,
+        ));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let route = CrdtRoute::record("so.tilo.chat", &room, "main");
+        let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
+        admitted.display_handle = Some(tide.into());
+        assert_eq!(CapnpBrokerState::participant_id(&admitted), person);
+        let membership = tree.shared();
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership.authority()),
+            None,
+            None,
+            HostServices {
+                workspace_memberships: Some(Arc::new(NativeRoom(room.clone()))),
+                ..Default::default()
+            },
+        );
+
+        let roster = state.native_membership_roster(&route, &admitted).unwrap();
+        let legacy_route =
+            CrdtRoute::record("so.tilo.chat", uuid::Uuid::new_v4().to_string(), "main");
+        assert!(
+            state
+                .native_roster_for_subscriber(&legacy_route, &admitted)
+                .unwrap()
+                .is_none(),
+            "a room the native owner did not select keeps ordinary app context"
+        );
+        assert_eq!(roster.iter().filter(|row| row.is_self).count(), 1);
+        assert!(roster.iter().any(|row| row.id == person && !row.is_agent));
+        assert!(roster.iter().all(|row| row.id != "person-in-other-room"));
+        assert!(
+            roster
+                .iter()
+                .any(|row| { row.id == other_person && !row.is_agent && !row.is_self })
+        );
+        assert!(
+            roster
+                .iter()
+                .any(|row| { row.id == format!("agent:{person}") && row.is_agent && !row.is_self })
+        );
+        assert!(
+            roster
+                .iter()
+                .any(|row| row.id == format!("agent:{tide}") && row.is_agent)
+        );
+        assert!(
+            roster.iter().all(|row| row.id != "agent:wrong-room"),
+            "a grant for another room is not native membership here"
+        );
+        assert!(
+            state
+                .native_membership_roster(
+                    &CrdtRoute::record("so.tilo.chat", uuid::Uuid::new_v4().to_string(), "main",),
+                    &admitted,
+                )
+                .is_err()
+        );
+
+        let channel = route.channel_key();
+        let native = state
+            .native_roster_for_subscriber(&route, &admitted)
+            .unwrap()
+            .expect("the actual owner selects this native room");
+        assert!(state.host_workers.lock().unwrap().is_empty());
+        let mut parallel = state.subscribe_context(&channel, 46, Some(native.clone()));
+        assert!(matches!(
+            parallel.try_recv(),
+            Ok(ContextEnvelope::Snapshot { .. })
+        ));
+        let mut stream = state.subscribe_context(&channel, 46, Some(native.clone()));
+        let mut ordinary = state.subscribe_context(&channel, 47, None);
+        assert!(matches!(
+            stream.try_recv(),
+            Ok(ContextEnvelope::Snapshot { .. })
+        ));
+        let forged = ui::collaboration::Collaborator {
+            id: "agent:forged".into(),
+            name: "forged".into(),
+            colour: None,
+            is_agent: true,
+            is_self: false,
+        };
+        {
+            let mut channels = state.channels.lock().unwrap();
+            CapnpBrokerState::fanout_context(
+                channels.values_mut(),
+                u64::MAX,
+                std::slice::from_ref(&forged),
+                &[],
+            );
+        }
+        assert!(
+            stream.try_recv().is_err(),
+            "app context must not replace an authenticated native roster"
+        );
+        assert!(
+            parallel.try_recv().is_err(),
+            "app context must not replace a parallel authenticated native roster"
+        );
+        let ContextEnvelope::Snapshot { collaborators, .. } = ordinary.try_recv().unwrap() else {
+            panic!("ordinary context subscribers still receive app context");
+        };
+        assert_eq!(collaborators.len(), 1);
+        assert_eq!(collaborators[0].id, forged.id);
+        assert_eq!(collaborators[0].name, forged.name);
+        assert!(collaborators[0].is_agent);
+        assert!(!collaborators[0].is_self);
+        assert!(membership.write().workspaces[0].revoke_capability(&collision));
+        assert!(membership.write().workspaces[0].revoke_capability(&person_membership));
+        state.refresh_workspace_context_services().unwrap();
+        let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
+            panic!("membership refresh must be a complete snapshot");
+        };
+        assert!(
+            collaborators
+                .iter()
+                .all(|row| row.id != format!("agent:{person}"))
+        );
+        assert!(collaborators.iter().all(|row| row.id != other_person));
+        assert!(
+            collaborators
+                .iter()
+                .any(|row| row.id == person && row.is_self)
+        );
+        let ContextEnvelope::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+            panic!("every mounted root must receive membership removal");
+        };
+        assert!(
+            collaborators
+                .iter()
+                .all(|row| row.id != format!("agent:{person}"))
+        );
+        membership.write().workspaces[0].grant_capability(CapOverride::membership(
+            Subject::agent(reed),
+            room,
+            Verb::Read,
+        ));
+        state.refresh_workspace_context_services().unwrap();
+        let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
+            panic!("membership addition must be a complete snapshot");
+        };
+        assert!(
+            collaborators
+                .iter()
+                .any(|row| row.id == format!("agent:{reed}") && row.is_agent)
+        );
+        let ContextEnvelope::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+            panic!("every mounted root must receive membership addition");
+        };
+        assert!(
+            collaborators
+                .iter()
+                .any(|row| row.id == "agent:reed" && row.is_agent)
+        );
+
+        let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
+        assert!(matches!(
+            queued.try_recv(),
+            Ok(ContextEnvelope::Snapshot { .. })
+        ));
+        let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
+            host_guard: None,
+            native_guard: Some(NativeContextReadGuard {
+                state: state.clone(),
+                route: route.clone(),
+                identity: native.admitted,
+                document: None,
+            }),
+            rx: Rc::new(AsyncMutex::new(queued)),
+        });
+        let mut pending = Box::pin(client.read_request().send().promise);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), &mut pending)
+                .await
+                .is_err(),
+            "the actual stream read must be waiting before revocation"
+        );
+        membership.write().workspaces[0].owner = None;
+        state.refresh_workspace_context_services().unwrap();
+        let Err(error) = pending.await else {
+            panic!("revocation must terminate an already waiting native read");
+        };
+        assert!(error.to_string().contains("context stream fanout closed"));
+    }
+
     #[test]
     fn non_owner_cannot_claim_an_agent_principal() {
         let member = SigningKey::from_bytes(&[45; 32]);
@@ -12612,7 +14996,7 @@ pub mod tests {
             .expect("broker authorizes signed clear metadata without decrypting");
         assert!(matches!(
             authorized.payload,
-            collab_types::WholeDocumentPayload::Encrypted { channel, epoch: 7 }
+            collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
                 if channel == expected_channel
         ));
         handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
@@ -12655,6 +15039,144 @@ pub mod tests {
                 .is_err(),
             "a signed envelope cannot be replayed through another record route"
         );
+    }
+
+    /// The person room is admitted from the joiner's own root alone, with no
+    /// workspace in the tree, and its documents reach the other local
+    /// connections on the record and the peer publisher. Nobody else's root
+    /// enters it, and nobody enters another person's room.
+    #[test]
+    fn person_room_admits_only_its_own_roots_devices_as_owner() {
+        let root = SigningKey::from_bytes(&[26; 32]);
+        let device = SigningKey::from_bytes(&[27; 32]);
+        let stranger = SigningKey::from_bytes(&[28; 32]);
+        let own_room = collab_types::person_room(&root.verifying_key().to_bytes());
+        let route = CrdtRoute::record("so.tilo.tube", own_room.to_string(), "watch-history");
+        let membership = WorkspaceTree::default().shared();
+        let own_device = VerifiedJoinIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            capped: false,
+        };
+
+        let admitted = admit_verified_join(&membership.read(), &route, own_device.clone())
+            .expect("the root's own device joins its person room");
+        assert_eq!(admitted.role, CapRole::Owner);
+        assert_eq!(
+            admitted.principal_id,
+            principal_id_for_root(root.verifying_key().to_bytes())
+        );
+        assert!(
+            admit_verified_join(&membership.read(), &route, verified_device(&stranger)).is_err(),
+            "another root's device never joins this person's room"
+        );
+        let foreign = admit_verified_join(
+            &membership.read(),
+            &route,
+            VerifiedJoinIdentity {
+                capped: true,
+                ..own_device
+            },
+        )
+        .expect("the root's foreign device joins its person room");
+        assert_eq!(
+            foreign.role,
+            CapRole::Editor,
+            "a foreign device keeps the foreign-device cap in the person room too"
+        );
+        let strangers_room = CrdtRoute::record(
+            "so.tilo.tube",
+            collab_types::person_room(&stranger.verifying_key().to_bytes()).to_string(),
+            "watch-history",
+        );
+        assert!(
+            admit_verified_join(&membership.read(), &strangers_room, own_device).is_err(),
+            "a device never joins another person's room"
+        );
+
+        let fanout = Arc::new(FanoutState::new());
+        let broker_channels = Arc::new(Mutex::new(BrokerChannels::default()));
+        let sink = Arc::new(RecordingSink::default());
+        let publisher =
+            PeerPublisher::new(sink.clone() as Arc<dyn crate::collab_outbound::PeerPublishSink>);
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::clone(&broker_channels),
+            publisher,
+            Some(membership),
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+        state.ensure_channel(&route.channel_key());
+        let mut other_window = state.subscribe_ops(&route.channel_key(), 2);
+        let current = state
+            .revalidate_admission(&route, &admitted)
+            .expect("the person room stays admitted without a workspace");
+        assert_eq!(current.role, CapRole::Owner);
+
+        let mut op = SignedOp::new_unsigned(
+            DocumentMutation::Snapshot(b"watched".to_vec())
+                .encode()
+                .expect("typed snapshot"),
+            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            1,
+        );
+        sign_op(&mut op, &device).expect("device signs document op");
+        let authorized = state
+            .authorize_certified_document(&route, &current, &op)
+            .expect("the owner writes their own records");
+        handle_authorized_signed_op_send(&state, 1, &route, &current, &authorized, op.clone());
+
+        let delivered = other_window.try_recv().expect("local fanout");
+        assert_eq!(
+            postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("signed envelope"),
+            op
+        );
+        assert!(matches!(
+            sink.snapshot().as_slice(),
+            [Sent::Signed { cluster_id, record_id, .. }]
+                if *cluster_id == route.cluster_id && record_id == "watch-history"
+        ));
+    }
+
+    /// A device that came back is caught up by the local apps holding the
+    /// person room's records: each record channel of that room, and only of
+    /// that room, is asked for its snapshot.
+    #[test]
+    fn room_snapshot_requests_reach_only_that_rooms_record_channels() {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+        let person_room = collab_types::person_room(&[29; 32]).to_string();
+        let history = CrdtRoute::record("so.tilo.tube", person_room.as_str(), "watch-history");
+        let words = CrdtRoute::record("so.tilo.dict", person_room.as_str(), "learned");
+        let unscoped = CrdtRoute::cluster(person_room.as_str());
+        let shared = CrdtRoute::record("so.tilo.tube", "room-1", "watch-history");
+        let mut receivers: Vec<_> = [&history, &words, &unscoped, &shared]
+            .into_iter()
+            .zip(2_u64..)
+            .map(|(route, peer)| {
+                state.ensure_channel(&route.channel_key());
+                state.subscribe_context(&route.channel_key(), peer, None)
+            })
+            .collect();
+
+        assert_eq!(fanout.request_room_snapshots(&person_room), 2);
+        let asked: Vec<bool> = receivers
+            .iter_mut()
+            .map(|rx| matches!(rx.try_recv(), Ok(ContextEnvelope::SnapshotRequested)))
+            .collect();
+        assert_eq!(asked, [true, true, false, false]);
     }
 
     #[test]
@@ -12746,6 +15268,7 @@ pub mod tests {
             app_id: "so.tilo.files".into(),
             route: CrdtRoute::record("so.tilo.files", cluster, format!("record-{peer_id}")),
             actions: vec![PublishedAction {
+                semantic_identity: None,
                 resource: resource.into(),
                 action: "open".into(),
                 resource_kind: "files.entry".into(),
@@ -13041,6 +15564,52 @@ pub mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
+    #[test]
+    fn exact_published_action_uses_current_live_routes_before_archived_descriptors() {
+        let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let state = broker.state();
+        let mut retained = catalogue_surface(7, "room", "notebook");
+        retained.actions[0].contract.discovery = tilo_actions::DiscoveryScope::Launchable;
+        state.launchable.retain(&retained);
+        let route = retained.route.clone();
+        let (archived, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
+        assert!(!archived.live);
+        assert!(
+            archived.actions.is_empty(),
+            "lookup must not clone the source inventory"
+        );
+        assert_eq!(descriptor.resource, "notebook");
+
+        let mut empty = retained.clone();
+        empty.actions.clear();
+        state.replace_published_surfaces_for_test(vec![empty.clone()]);
+        assert!(state.published_action(&route, "notebook", "open").is_none());
+
+        let mut other_peer = retained;
+        other_peer.peer_id = 8;
+        other_peer.actions[0].action_label = "Current live action".into();
+        state.replace_published_surfaces_for_test(vec![empty, other_peer]);
+        let (live, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
+        assert!(live.live);
+        assert_eq!(live.peer_id, 8);
+        assert!(live.actions.is_empty());
+        assert_eq!(descriptor.action_label, "Current live action");
+        let foreign = CrdtRoute::record(&route.app_id, "another-room", &route.record_id);
+        assert!(
+            state
+                .published_action(&foreign, "notebook", "open")
+                .is_none()
+        );
+        state.replace_published_surfaces_for_test(Vec::new());
+        assert!(
+            !state
+                .published_action(&route, "notebook", "open")
+                .unwrap()
+                .0
+                .live
+        );
+    }
+
     #[allow(
         clippy::too_many_lines,
         clippy::arithmetic_side_effects,
@@ -13089,6 +15658,7 @@ pub mod tests {
         );
         let action =
             |resource: String, action: &str, description: Option<String>| PublishedAction {
+                semantic_identity: None,
                 resource,
                 action: action.into(),
                 resource_kind: "document".into(),
@@ -13250,6 +15820,7 @@ pub mod tests {
                 route,
                 actions: vec![
                     PublishedAction {
+                        semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
                         action: "reveal".into(),
                         resource_kind: "files.entry".into(),
@@ -13263,6 +15834,7 @@ pub mod tests {
                         input: PublishedInput::None,
                     },
                     PublishedAction {
+                        semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
                         action: "erase".into(),
                         resource_kind: "files.entry".into(),
@@ -13280,6 +15852,7 @@ pub mod tests {
                         input: PublishedInput::None,
                     },
                     PublishedAction {
+                        semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
                         action: "refresh".into(),
                         resource_kind: "files.entry".into(),
@@ -13375,6 +15948,15 @@ pub mod tests {
             .expect("cancellable job");
         let refresh_invocation = invocations.try_recv().expect("job invocation");
         assert_eq!(refresh_invocation.id, refresh.id);
+        let retained_cancellation = state
+            .pending_invocations
+            .lock()
+            .expect("pending")
+            .get(&refresh.id)
+            .expect("refresh")
+            .cancellation_fence
+            .clone();
+        assert!(!retained_cancellation.load(Ordering::Acquire));
         assert!(state.request_cancellation(refresh.id, "stranger").is_err());
         state
             .request_cancellation(refresh.id, "owner")
@@ -13402,6 +15984,10 @@ pub mod tests {
             now,
             std::time::Duration::from_secs(1),
             std::time::Duration::from_secs(1),
+        );
+        assert!(
+            retained_cancellation.load(Ordering::Acquire),
+            "the retained worker observes cancellation even after expiry removes the pending job"
         );
         assert!(matches!(
             state.invocation_status(refresh.id),
@@ -13478,6 +16064,7 @@ pub mod tests {
                     .clone(),
             ),
             actions: vec![PublishedAction {
+                semantic_identity: None,
                 resource: "files.app".into(),
                 action: "new-window".into(),
                 resource_kind: "files.app".into(),
@@ -13523,9 +16110,12 @@ pub mod tests {
         let room = uuid::Uuid::new_v4().to_string();
         let key =
             |app: &str, record: &str| CrdtRoute::record(app, room.clone(), record).channel_key();
-        let mut addressed = state.subscribe_context(&key("dev.tilo.notes", "continuation:5"), 7);
-        let mut sibling = state.subscribe_context(&key("dev.tilo.notes", "continuation:6"), 8);
-        let mut other_app = state.subscribe_context(&key("dev.tilo.sheets", "continuation:5"), 9);
+        let mut addressed =
+            state.subscribe_context(&key("dev.tilo.notes", "continuation:5"), 7, None);
+        let mut sibling =
+            state.subscribe_context(&key("dev.tilo.notes", "continuation:6"), 8, None);
+        let mut other_app =
+            state.subscribe_context(&key("dev.tilo.sheets", "continuation:5"), 9, None);
         let request = ui::collaboration::handoff::HandoffRequest::Checkpoint { token: 3 };
         // The route SessionFollowDispatcher::request_handoff addresses.
         state.fanout_to_route(
@@ -13548,6 +16138,51 @@ pub mod tests {
     }
 
     #[test]
+    fn private_context_alias_uses_latest_exact_subscriber_without_duplicate_delivery() {
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let room = uuid::Uuid::new_v4().to_string();
+        let document = CrdtRoute::record("so.tilo.code-editor", &room, "native-project");
+        let private = CrdtRoute::record("so.tilo.code-editor", &room, "continuation:42");
+        let mut old = state.subscribe_context(&document.channel_key(), 7, None);
+        let mut sibling = state.subscribe_context(&document.channel_key(), 8, None);
+        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
+        let mut current = state.subscribe_context(&document.channel_key(), 7, None);
+        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
+        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
+        state.alias_private_context(&document.channel_key(), &private.channel_key(), 99);
+        let request = ui::collaboration::handoff::HandoffRequest::Checkpoint { token: 3 };
+        state.fanout_to_route(
+            &CollabEvent::Handoff {
+                request: request.clone(),
+            },
+            u64::MAX,
+            &private,
+        );
+        assert!(
+            matches!(current.try_recv(), Ok(ContextEnvelope::Handoff(message))
+            if ui::collaboration::handoff::HandoffRequest::decode(&message) == Some(request))
+        );
+        assert!(
+            current.try_recv().is_err(),
+            "a renewed stream must receive each private view once"
+        );
+        assert!(
+            old.try_recv().is_err(),
+            "superseded context receiver cannot receive private views"
+        );
+        assert!(
+            sibling.try_recv().is_err(),
+            "sharing the document does not grant another window's private stream"
+        );
+    }
+
+    #[test]
     fn late_join_snapshot_request_selects_exactly_one_existing_holder() {
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
@@ -13558,9 +16193,9 @@ pub mod tests {
             None,
         );
         let channel = "dev.tilo.notes#room:test#record:daily";
-        let mut first = state.subscribe_context(channel, 7);
-        let mut second = state.subscribe_context(channel, 9);
-        let _requester = state.subscribe_context(channel, 12);
+        let mut first = state.subscribe_context(channel, 7, None);
+        let mut second = state.subscribe_context(channel, 9, None);
+        let _requester = state.subscribe_context(channel, 12, None);
 
         assert!(state.request_document_snapshot(channel, 12));
         assert!(matches!(
@@ -13569,7 +16204,7 @@ pub mod tests {
         ));
         assert!(second.try_recv().is_err(), "only one holder may respond");
         let requester_only_channel = "dev.tilo.notes#room:test#record:empty";
-        let mut requester_only = state.subscribe_context(requester_only_channel, 12);
+        let mut requester_only = state.subscribe_context(requester_only_channel, 12, None);
         assert!(
             !state.request_document_snapshot(requester_only_channel, 12),
             "the requester cannot answer from its own empty state"
@@ -13608,6 +16243,7 @@ pub mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let invocation = tilo_actions::InvocationId::new();
         let pending = PendingInvocation {
+            caller: None,
             activity: None,
             owner: InvocationOwner::Local {
                 actor: "agent:Scribe".into(),
@@ -13619,6 +16255,7 @@ pub mod tests {
             peer_id: 7,
             tx,
             update: tilo_actions::InvocationUpdate::Accepted { invocation },
+            prepared_effect: Arc::default(),
             last_sequence: 0,
             actor: "agent:Scribe".into(),
             cancellable: false,
@@ -13637,6 +16274,7 @@ pub mod tests {
             .with_group("task:release", "Release", "task"),
             last_activity: std::time::Instant::now(),
             cancellation_requested_at: None,
+            cancellation_fence: Arc::new(AtomicBool::new(false)),
         };
         let update = tilo_actions::InvocationUpdate::Failed {
             invocation,
@@ -13887,6 +16525,7 @@ pub mod tests {
                             capnp_rpc::new_client(InvocationStreamServer {
                                 host_guard: None,
                                 rx: rx.clone(),
+                                delivered: None,
                             });
                         let response = stream.read_request().send().promise.await.unwrap();
                         assert_eq!(response.get().unwrap().get_id(), wire_id);
@@ -14027,6 +16666,7 @@ pub mod tests {
                         capnp_rpc::new_client(InvocationStreamServer {
                             host_guard: None,
                             rx: rx.clone(),
+                            delivered: None,
                         });
                     let response = stream.read_request().send().promise.await.unwrap();
                     let delivered = response.get().unwrap();
@@ -14348,6 +16988,74 @@ pub mod tests {
                 );
                 assert!(fixture.invocation_rx.try_recv().is_err());
             }
+        }
+
+        /// An agent, a device admin or another device drives an app through
+        /// its actions. The host learns of each invocation the app is handed,
+        /// so a window the app closes because of it is not taken for one it
+        /// lost.
+        #[tokio::test(flavor = "current_thread")]
+        async fn the_host_learns_each_invocation_an_app_is_handed() {
+            struct Recording(Mutex<Vec<(String, String)>>);
+            impl crate::services::LauncherServices for Recording {
+                fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+                    Vec::new()
+                }
+                fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                    Err("this host launches nothing".into())
+                }
+                fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+                    false
+                }
+                fn note_acted_on(&self, app: &str, room: &str) {
+                    self.0.lock().unwrap().push((app.into(), room.into()));
+                }
+            }
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let recording = Arc::new(Recording(Mutex::new(Vec::new())));
+                    let services = HostServices {
+                        launcher: Some(recording.clone()),
+                        ..Default::default()
+                    };
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    let stream: invocation_stream::Client =
+                        capnp_rpc::new_client(InvocationStreamServer {
+                            host_guard: None,
+                            rx: Rc::new(AsyncMutex::new(rx)),
+                            delivered: invocation_delivery_notice(
+                                &services,
+                                "so.tilo.notes".into(),
+                                "room-7".into(),
+                            ),
+                        });
+                    assert!(recording.0.lock().unwrap().is_empty());
+                    tx.send(InvocationEnvelope {
+                        id: 1,
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(1)),
+                        resource: "window".into(),
+                        action: "close".into(),
+                        argument: None,
+                        actor: "agent:assistant".into(),
+                        context: None,
+                    })
+                    .unwrap();
+                    stream.read_request().send().promise.await.unwrap();
+                    assert_eq!(
+                        *recording.0.lock().unwrap(),
+                        vec![("so.tilo.notes".to_owned(), "room-7".to_owned())]
+                    );
+                    assert!(
+                        invocation_delivery_notice(
+                            &HostServices::default(),
+                            "a".into(),
+                            "r".into()
+                        )
+                        .is_none(),
+                        "a host without a launcher has no one to tell"
+                    );
+                })
+                .await;
         }
 
         #[tokio::test(flavor = "current_thread")]
@@ -15009,6 +17717,7 @@ mod resource_view_tests {
 
     fn test_published_view(action: &str, view_id: &str, primary: bool) -> PublishedAction {
         PublishedAction {
+            semantic_identity: None,
             resource: "note:one".into(),
             action: action.into(),
             resource_kind: "note".into(),
@@ -15035,6 +17744,7 @@ mod resource_view_tests {
                 description: None,
                 open_action: action.into(),
                 primary,
+                range: None,
                 mount: Some(tilo_actions::ResourceViewMountSpec::new(
                     action,
                     "slot_capability",
@@ -15068,6 +17778,22 @@ mod resource_view_tests {
             .unwrap()
             .view_param = "slot_capability".into();
         assert!(validate_resource_view_descriptors(std::slice::from_ref(&invalid_mount)).is_err());
+
+        let mut ranged = editor.clone();
+        ranged.view.as_mut().unwrap().range =
+            Some(tilo_actions::ResourceViewRangeSpec::new("show-range"));
+        let mut target = editor.clone();
+        target.action = "show-range".into();
+        target.view = None;
+        target.params = vec![
+            tilo_actions::ActionParam::required("start", tilo_actions::ParamType::Integer, "Start"),
+            tilo_actions::ActionParam::required("end", tilo_actions::ParamType::Integer, "End"),
+            tilo_actions::ActionParam::required("unit", tilo_actions::ParamType::Text, "Unit"),
+        ];
+        assert!(validate_resource_view_descriptors(&[ranged.clone(), target.clone()]).is_ok());
+        assert!(validate_resource_view_descriptors(std::slice::from_ref(&ranged)).is_err());
+        target.operation_kind = tilo_actions::OperationKind::Document;
+        assert!(validate_resource_view_descriptors(&[ranged, target]).is_err());
 
         let reader = test_published_view("read", "reader", true);
         assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());

@@ -1,10 +1,12 @@
 //! Capability-gated identity metadata and signing service for app sandboxes.
 
+use std::collections::HashMap;
 use std::io::{self, Write};
+use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -82,11 +84,13 @@ pub struct IdentityBrokerHandle {
     path: PathBuf,
     stop: Arc<AtomicBool>,
     listener: Option<thread::JoinHandle<()>>,
+    clients: Arc<Mutex<HashMap<u64, UnixStream>>>,
 }
 
 impl Drop for IdentityBrokerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        close_clients(&self.clients);
         // The listener sleeps in `accept`; one connection wakes it to see the
         // flag. If nothing can connect it is not waited for.
         if let Some(listener) = self.listener.take()
@@ -98,6 +102,27 @@ impl Drop for IdentityBrokerHandle {
     }
 }
 
+struct ClientConnection {
+    id: u64,
+    clients: Arc<Mutex<HashMap<u64, UnixStream>>>,
+}
+impl Drop for ClientConnection {
+    fn drop(&mut self) {
+        self.clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
+    }
+}
+fn close_clients(clients: &Mutex<HashMap<u64, UnixStream>>) {
+    for stream in clients
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .values()
+    {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+}
 /// Start the identity broker's unix-socket listener at `path`, serving
 /// clients on their own thread until the returned handle drops.
 ///
@@ -114,20 +139,40 @@ pub fn spawn(
     let listener = UnixListener::bind(&path)?;
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
+    let clients = Arc::new(Mutex::new(HashMap::new()));
+    let thread_clients = clients.clone();
     let listener_thread = thread::Builder::new()
         .name("tilo-identity-broker".into())
         .spawn(move || {
+            let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
+            let mut next_client = 0_u64;
             loop {
                 match listener.accept() {
                     Ok(_) if thread_stop.load(Ordering::Acquire) => break,
                     Ok((stream, _)) => {
                         let tree = Arc::clone(&tree);
                         let channels = Arc::clone(&channels);
-                        if let Err(error) = thread::Builder::new()
+                        let cancellation = match stream.try_clone() {
+                            Ok(cancellation) => cancellation,
+                            Err(error) => {
+                                tracing::warn!(%error, "identity broker cannot own client cancellation");
+                                continue;
+                            }
+                        };
+                        let Some(id) = next_client.checked_add(1) else { break; };
+                        next_client = id;
+                        thread_clients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id, cancellation);
+                        let connection = ClientConnection { id, clients: thread_clients.clone() };
+                        workers.retain(|worker| !worker.is_finished());
+                        match thread::Builder::new()
                             .name("tilo-identity-client".into())
-                            .spawn(move || serve(stream, &*tree, &*channels))
+                            .spawn(move || {
+                                serve(stream, &*tree, &*channels);
+                                drop(connection);
+                            })
                         {
-                            tracing::warn!(%error, "identity broker could not spawn client worker");
+                            Ok(worker) => workers.push(worker),
+                            Err(error) => tracing::warn!(%error, "identity broker could not spawn client worker"),
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
@@ -137,11 +182,19 @@ pub fn spawn(
                     }
                 }
             }
+            // Admission has stopped: also close clients accepted concurrently
+            // with the handle's first cancellation sweep, then release every
+            // client's membership and channel ownership before retirement.
+            close_clients(&thread_clients);
+            for worker in workers {
+                let _ = worker.join();
+            }
         })?;
     Ok(IdentityBrokerHandle {
         path,
         stop,
         listener: Some(listener_thread),
+        clients,
     })
 }
 
@@ -1182,6 +1235,55 @@ mod tests {
         collab_types::verify_op(&op).expect("identity service signature verifies");
         assert!(identity.sign_for("document.delete", b"no").is_err());
         drop(identity);
+    }
+
+    #[test]
+    fn shutdown_reaps_clients_waiting_for_requests_and_partial_handshakes() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("identity.sock");
+        let membership = Arc::new(WorkspaceTree::default().shared());
+        let retained = Arc::downgrade(&membership);
+        let broker = spawn(socket.clone(), membership, Arc::new(())).unwrap();
+        let mut client = UnixStream::connect(&socket).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write_frame(
+            &mut client,
+            &Handshake {
+                workspace_id: RoomId::new().to_string(),
+                app_id: "so.tilo.file-explorer".into(),
+            },
+        )
+        .unwrap();
+        write_action_frame(&mut client, &Request::Metadata).unwrap();
+        let _: Response = read_action_frame(&mut client).unwrap();
+        let mut partial = UnixStream::connect(&socket).unwrap();
+        partial
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        partial.write_all(&[0]).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while broker.clients.lock().unwrap().len() != 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "both actual client workers must be accepted"
+            );
+            thread::yield_now();
+        }
+        drop(broker);
+        assert!(
+            retained.upgrade().is_none(),
+            "accepted workers must release their committed membership before shutdown returns"
+        );
+        assert!(
+            FRAMING
+                .read_value::<_, Response>(&mut client)
+                .unwrap()
+                .is_none()
+        );
+        let mut byte = [0];
+        assert_eq!(partial.read(&mut byte).unwrap(), 0);
     }
 
     #[cfg(target_os = "linux")]

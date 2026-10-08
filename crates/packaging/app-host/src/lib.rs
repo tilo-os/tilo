@@ -43,6 +43,8 @@ pub mod dev_env;
 pub mod fetch;
 pub mod install;
 pub mod service;
+#[cfg(all(unix, feature = "test-support"))]
+pub mod testing;
 pub mod transport;
 
 /// Generated Cap'n Proto bindings for `schema/app-host.capnp`. The
@@ -73,3 +75,5 @@ pub fn default_socket_path() -> PathBuf {
     let base = xdg_paths::xdg::runtime_dir().unwrap_or_else(std::env::temp_dir);
     base.join("tilo").join("services").join("app-host.sock")
 }
+
+pub mod local_package;

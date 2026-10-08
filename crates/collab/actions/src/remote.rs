@@ -34,8 +34,9 @@ mod catalogue;
 mod pending;
 
 pub use catalogue::{
-    CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
-    CatalogueRow, MAX_CATALOGUE_PAGE, RowVisibility,
+    CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
+    ViewResourceQuery,
 };
 pub use pending::{Completer, Pending, PendingPoll, pending};
 
@@ -72,6 +73,35 @@ pub enum CallerPrincipal {
     App(String),
 }
 
+/// Host-owned execution lifetime. Clones share closure, never authority.
+/// Equality and hashing use the immutable minted identity, not liveness.
+#[derive(Clone, Debug)]
+pub struct ExecutionLease {
+    id: uuid::Uuid,
+    live: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl PartialEq for ExecutionLease {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for ExecutionLease {}
+impl std::hash::Hash for ExecutionLease {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+impl ExecutionLease {
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.live.load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Retire observation of this run. This does not cancel any app operation.
+    pub fn close(&self) {
+        self.live.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// The authenticated principal behind a request.
 ///
 /// Built only by the transport that authenticated the connection — from the
@@ -87,7 +117,7 @@ pub struct Caller {
     foreign: bool,
     // Transport-issued execution scope, never accepted from request context.
     // It narrows invocation ownership without changing the policy principal.
-    execution: Option<uuid::Uuid>,
+    execution: Option<ExecutionLease>,
 }
 
 impl Caller {
@@ -172,14 +202,34 @@ impl Caller {
     /// This changes invocation ownership, never the caller's permissions.
     #[must_use]
     pub fn in_new_execution(mut self) -> Self {
-        self.execution = Some(uuid::Uuid::new_v4());
+        self.execution = Some(ExecutionLease {
+            id: uuid::Uuid::new_v4(),
+            live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        });
         self
     }
 
     /// Host-issued execution identity. An identifier alone conveys no authority.
     #[must_use]
-    pub const fn execution_id(&self) -> Option<uuid::Uuid> {
-        self.execution
+    pub fn execution_id(&self) -> Option<uuid::Uuid> {
+        self.execution.as_ref().map(|lease| lease.id)
+    }
+
+    #[must_use]
+    pub fn execution_lease(&self) -> Option<ExecutionLease> {
+        self.execution.clone()
+    }
+
+    #[must_use]
+    pub fn execution_is_live(&self) -> bool {
+        self.execution.as_ref().is_some_and(ExecutionLease::is_live)
+    }
+
+    /// A transport ends its own run; retained caller clones cannot reopen it.
+    pub fn retire_execution(&self) {
+        if let Some(lease) = &self.execution {
+            lease.close();
+        }
     }
 
     /// Mark whether the caller acts from a foreign device: a Tilo runtime on
@@ -295,6 +345,11 @@ pub struct InvokeRequest {
     /// refuses a target that no longer exists at it rather than guessing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    /// The live invocation this request continues: an edit an effect
+    /// submits while running for someone else. The host admits it as that
+    /// invocation's original caller, with their grants, never as the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<InvocationId>,
 }
 
 /// Explicit confirmation carried with an invocation.
@@ -348,6 +403,131 @@ pub fn application_open_target(room: &str, app_id: &str) -> RemoteActionTarget {
             format!("{APPLICATION_RESOURCE_PREFIX}{app_id}"),
             APPLICATION_OPEN_ACTION,
         ),
+    }
+}
+
+/// Opening another installed app into the workspace, optionally with
+/// verified content it opens read-only: Photos with a captured picture, a
+/// player with a recorded clip. An app offers it as an action on its own
+/// resources ([`ApplicationLaunch::spec`]); the host routes the admitted
+/// invocation through the workspace broker, which stages the bytes and owns
+/// the launched process. The source app never hands over a local path.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ApplicationLaunch {
+    /// The installed app to open, by its id (`so.tilo.photos`).
+    pub app_id: String,
+    /// The content address hash of what it opens; the app opens empty
+    /// without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+}
+
+impl ApplicationLaunch {
+    /// The operation type the host routes to the broker.
+    pub const TYPE: &'static str = "tilo.application.launch";
+
+    /// Open `app_id` empty.
+    #[must_use]
+    pub fn app(app_id: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            content_hash: None,
+        }
+    }
+
+    /// Open `app_id` with the content whose hash is `content_hash`.
+    #[must_use]
+    pub fn with_content(app_id: impl Into<String>, content_hash: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            content_hash: Some(content_hash.into()),
+        }
+    }
+
+    /// An app id of letters, digits, dots and dashes, and a content hash
+    /// (when given) of 64 lowercase hex digits.
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        !self.app_id.is_empty()
+            && self.app_id.len() <= 128
+            && self
+                .app_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+            && self.content_hash.as_ref().is_none_or(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+    }
+
+    /// The argument the broker's application `open` takes: the content
+    /// hash as its text, or nothing.
+    #[must_use]
+    pub fn argument(&self) -> InvokeArgument {
+        self.content_hash
+            .clone()
+            .map_or(InvokeArgument::None, InvokeArgument::Text)
+    }
+
+    /// Opening `app_id` with content the caller names as the action's
+    /// `content_hash` argument: a control that hands over whatever it
+    /// shows now.
+    #[must_use]
+    pub fn content_spec(
+        app_id: &str,
+        id: &str,
+        label: &str,
+        description: &str,
+    ) -> crate::ActionSpec {
+        let app_id = app_id.to_owned();
+        crate::ActionSpec::typed_operation(
+            id,
+            label,
+            description,
+            crate::OperationKind::Effect,
+            Self::TYPE,
+            vec![crate::ActionParam::required(
+                "content_hash",
+                crate::ParamType::Text,
+                "Content address hash of what the app opens",
+            )],
+            move |args| {
+                let launch = Self::with_content(
+                    app_id.clone(),
+                    args.text("content_hash").unwrap_or_default(),
+                );
+                crate::EncodedAction::encode_operation(Self::TYPE, &launch).unwrap_or_else(|_| {
+                    crate::EncodedAction {
+                        type_id: Self::TYPE.to_owned(),
+                        payload: Vec::new(),
+                    }
+                })
+            },
+        )
+    }
+
+    /// This launch as the action `id` an app offers on a resource of its
+    /// own, taking no arguments.
+    #[must_use]
+    pub fn spec(&self, id: &str, label: &str, description: &str) -> crate::ActionSpec {
+        let encoded =
+            crate::EncodedAction::encode_operation(Self::TYPE, self).unwrap_or_else(|_| {
+                crate::EncodedAction {
+                    type_id: Self::TYPE.to_owned(),
+                    payload: Vec::new(),
+                }
+            });
+        crate::ActionSpec::typed_operation(
+            id,
+            label,
+            description,
+            crate::OperationKind::Effect,
+            Self::TYPE,
+            Vec::new(),
+            move |_| encoded.clone(),
+        )
     }
 }
 
@@ -523,6 +703,11 @@ impl ActionHostError {
 /// with [`ActionHostError::InvocationConflict`]. [`InvocationLedger`]
 /// implements that rule.
 pub trait ActionHost {
+    /// End this admitted transport run without cancelling its app jobs.
+    fn retire_execution(&self, caller: &Caller) {
+        caller.retire_execution();
+    }
+
     /// One page of what `caller` is offered. An action the caller may not
     /// invoke is absent, not flagged.
     fn query(
@@ -1043,6 +1228,27 @@ mod tests {
     use super::*;
     use crate::{ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind};
 
+    #[test]
+    fn execution_lifetime_is_shared_without_changing_caller_identity() {
+        let first = Caller::local_person("person:owner").in_new_execution();
+        let retained = first.clone();
+        let second = first.clone().in_new_execution();
+        let hash = |caller: &Caller| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(caller, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+        let before = hash(&first);
+        first.retire_execution();
+        assert!(!retained.execution_is_live());
+        assert!(second.execution_is_live());
+        assert_eq!(first, retained);
+        assert_eq!(hash(&first), before);
+        let reconnected = retained.in_new_execution();
+        assert!(reconnected.execution_is_live());
+        assert_ne!(reconnected.execution_id(), first.execution_id());
+    }
+
     fn alice() -> Caller {
         Caller::authenticated([1; 32], [2; 32])
     }
@@ -1073,6 +1279,7 @@ mod tests {
 
     fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
         ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(resource, action),
             resource_kind: "notes.note".into(),
             resource_label: "Groceries".into(),
@@ -1197,6 +1404,7 @@ mod tests {
 
     fn archive(invocation: InvocationId) -> InvokeRequest {
         InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: "7".into(),
@@ -1251,6 +1459,7 @@ mod tests {
                 }),
             },
             RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 argument: InvokeArgument::Json(arguments),
                 context: Some(ActionContext::for_resource(
                     "Archive",
@@ -1261,10 +1470,12 @@ mod tests {
                 ..archive(invocation)
             }),
             RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 argument: InvokeArgument::Text("hello".into()),
                 ..archive(invocation)
             }),
             RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 confirmation: Some(Confirmation::Phrase("delete it".into())),
                 ..archive(invocation)
             }),

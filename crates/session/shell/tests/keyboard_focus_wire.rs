@@ -437,9 +437,13 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         );
         let mut doc = automerge::AutoCommit::new();
         let mut focus = None;
-        assert!(
-            frame.dispatch_event(&custom_press, &ctrl, &mut doc, &automerge::ROOT, &mut focus,)
-        );
+        assert!(frame.dispatch_event(
+            &custom_press,
+            &ctrl,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
         assert!(
             !shell::compositor::client_input::route_input(
                 &mut h.state,
@@ -496,7 +500,7 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         assert!(frame.dispatch_event(
             &f1_press,
             &no_modifiers,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         ));
@@ -689,13 +693,21 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
     h.pump();
     h.client.keyboard.clear();
 
-    // Grant Ctrl+Shift+T to another app through the reviewed consent path.
+    // Grant Ctrl+Shift+M to another app through the reviewed consent path.
     let session = "/org/freedesktop/portal/desktop/session/talk";
     let dialogs = shell::shell::portal_dialog::PortalDialogQueue::default();
     let service = ShellGlobalShortcutsService::with_dialogs(dialogs.clone());
     let events =
         GlobalShortcutsHandle::with_bound_session_for_tests(session, "org.example.Talk", &["talk"]);
     service.attach_event_bridge(events.clone());
+    assert!(
+        service.is_reserved("CTRL+SHIFT+KEYT"),
+        "reopen belongs to the shell"
+    );
+    assert!(
+        !service.is_reserved("CTRL+SHIFT+KEYM"),
+        "the reviewed grant is unreserved"
+    );
     h.state.global_shortcuts = service.clone();
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     runtime.block_on(async {
@@ -709,7 +721,7 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
                 shortcuts: vec![GlobalShortcut {
                     id: "talk".into(),
                     description: Some("Push to talk".into()),
-                    preferred_trigger: Some("Ctrl+Shift+T".into()),
+                    preferred_trigger: Some("Ctrl+Shift+M".into()),
                 }],
             },
             reply,
@@ -723,13 +735,13 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
     let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
     let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
     let press = physical_key_event(
-        Key::Character("T".into()),
-        winit::keyboard::KeyCode::KeyT,
+        Key::Character("M".into()),
+        winit::keyboard::KeyCode::KeyM,
         true,
     );
     let release = physical_key_event(
-        Key::Character("T".into()),
-        winit::keyboard::KeyCode::KeyT,
+        Key::Character("M".into()),
+        winit::keyboard::KeyCode::KeyM,
         false,
     );
     assert!(

@@ -118,7 +118,6 @@ time. Readback payload counters exclude row-padding holes.
 | Variable | Default / values | Effect |
 | --- | --- | --- |
 | `TILO_UI_NO_SCROLL_OPT` | Nonempty, off | Disables the scroll-reposition fast path; forces full layout solving on layout-dirty frames. Cached at first use. |
-| `TILO_UI_NO_SPLIT_CACHE` | Nonempty, off | Disables `NavSplit` scene caching for troubleshooting. Cached at first use. |
 | `TILO_UI_PERF` | Nonempty, off | Enables application performance logging. Cached at first use. |
 | `TILO_UI_PRESENT` | Present, off | Render-thread encode/acquire/present timing logs; useful for costs absent from offscreen benchmarks. Latched when the render thread starts. |
 | `TILO_PROFILE` | Nonempty, off | Enables the in-app profiling HUD, including in release builds. The HUD itself adds UI work. |
@@ -263,6 +262,7 @@ separate from headless and nested-window results.
 | `TILO_LOOP_TIMING` | Present (Unicode), off | Logs a phase breakdown for native-loop ticks with more than 100 ms of non-sleeping work. `=0` still enables it; no log does not establish a 16.67 ms deadline. |
 | `TILO_RUN_SECONDS` | Unset: run indefinitely | Positive finite fractional seconds requests clean shutdown; malformed/nonpositive values mean no timeout. |
 | `TILO_REFRESH_HZ` | Backend refresh, or 60 Hz fallback | Diagnostic pacing override, finite 20–1000 Hz including fractional rates (rounded to millihertz). Invalid values warn and are ignored. Does not reconfigure a physical monitor. |
+| `TILO_TEST_FRAME_STALL_MS` | Unset; `80` or `50-130` (ms, at most 2000) | Developer override (debug or `dev-overrides` builds only; release builds ignore it): blocks the loop after every painted frame, a fresh delay from the range each frame, so layout springs, animations and configures run at a slow machine's frame times. Invalid values warn and are ignored. `os/dev/test-slow-frame-launch.sh` opens apps under it. |
 | `TILO_HEADLESS_SIZE` | `1600x900` | Initial headless output `WxH`, positive u32 dimensions; malformed/zero falls back. |
 | `TILO_HEADLESS_WATCH` | Unset: unwatched | `1` rasterizes every headless frame from the start, as a streaming viewer needs; otherwise frames are rasterized only after the control socket's `watch` (snapshots render on demand regardless). |
 | `TILO_WINIT_SIZE` | `1600x900` | Initial nested window `WxH`, positive u32 dimensions; malformed/zero falls back. |

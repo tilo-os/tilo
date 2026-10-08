@@ -3,7 +3,7 @@
 //!
 //! Most of a calculator is ephemeral: the expression being typed, the running
 //! display, which mode (Calc / 2D / 3D) is showing, the pan/zoom of a graph, the
-//! RAD/DEG toggle, the memory scratch register. None of that is a document
+//! angle-unit strip, the memory scratch register. None of that is a document
 //! mutation — it is presentation, computed or spliced live, and it never becomes
 //! an action.
 //!
@@ -46,33 +46,30 @@ use ui::time::UNIX_EPOCH;
 
 use tilo_actions::{Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus};
 use ui::doc::{put_if_changed, put_text_diffed};
+use ui::tilo_resource::{self, Effect};
 
 /// Registry `type_id` for every calculator action.
 pub const CALCULATOR_ACTION_TYPE: &str = "calculator.action";
-pub const CALCULATOR_OPERATION_TYPE: &str = "calculator.operation";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CalculatorOperation {
+/// Which part of the calculator is shown, and recalling a past calculation:
+/// what this window shows, not the shared document.
+#[derive(Debug, Clone, PartialEq, Eq, Effect)]
+#[effect(operation = "calculator.effect")]
+pub enum CalculatorEffect {
+    /// Show calculator.
+    #[effect(view, idempotent)]
     ShowCalculator,
+    /// Show 2D graph.
+    #[effect(view, idempotent)]
     ShowGraph2d,
+    /// Show 3D graph.
+    #[effect(view, idempotent)]
     ShowGraph3d,
-    RecallHistory { id: String },
-}
-
-/// # Errors
-///
-/// Returns the JSON decoding error when `type_id` identifies a calculator
-/// operation but `payload` is not a valid `CalculatorOperation` envelope.
-pub fn decode_operation(
-    type_id: &str,
-    payload: &[u8],
-) -> Result<Option<CalculatorOperation>, String> {
-    if type_id != CALCULATOR_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
+    /// Recall calculation.
+    #[effect(view, row, idempotent)]
+    Open {
+        #[param("The history entry's id")]
+        entry: String,
+    },
 }
 
 /// The most recent evaluated computations kept in the shared history list. The

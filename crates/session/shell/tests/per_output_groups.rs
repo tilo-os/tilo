@@ -288,8 +288,13 @@ impl Desk {
     fn dispatch(&mut self, event: &WindowEvent, mods: ModifiersState) {
         let mut doc = AutoCommit::new();
         let mut focus = None;
-        self.fb
-            .dispatch_event(event, &Modifiers::from(mods), &mut doc, &ROOT, &mut focus);
+        self.fb.dispatch_event(
+            event,
+            &Modifiers::from(mods),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &ROOT,
+            &mut focus,
+        );
     }
 
     /// The pointer moving to a logical point, as the compositor hands it on.
@@ -955,6 +960,8 @@ impl Collaborator {
         tree.set_salt_override(SALT.wrapping_add(1));
         let ws = tree.append_empty_workspace("Joined");
         assert!(tree.set_room(ws, room));
+        // The desk's invite names it as the room's governor.
+        assert!(tree.pin_room_authority(room, PeerOrigin::peer_id("docked-laptop")));
         let mut collaborator = Self { tree, room };
         collaborator.receive(desk);
         collaborator

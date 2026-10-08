@@ -1,7 +1,7 @@
 //! Process **tree** model: parent→child hierarchy + subtree roll-ups.
 //!
 //! The Processes tab can render the flat list as a tree keyed on each
-//! process's PPID, with expand/collapse triangles. Two roll-up modes drive
+//! process's PPID, with disclosure chevrons. Two roll-up modes drive
 //! what a parent row *displays*:
 //!
 //! * **Sum subtree** (default) — a collapsed parent shows the CPU% and
@@ -28,25 +28,6 @@ pub enum SumMode {
     SumSubtree,
     /// Every row shows only its own usage.
     PerProcess,
-}
-
-impl SumMode {
-    /// The mode this toggles to.
-    #[must_use]
-    pub fn toggled(self) -> SumMode {
-        match self {
-            SumMode::SumSubtree => SumMode::PerProcess,
-            SumMode::PerProcess => SumMode::SumSubtree,
-        }
-    }
-
-    /// Short label for the toolbar pill.
-    pub fn label(self) -> &'static str {
-        match self {
-            SumMode::SumSubtree => "Sum subtree",
-            SumMode::PerProcess => "Per-process",
-        }
-    }
 }
 
 /// One node in the process forest. `children` indexes back into the node
@@ -220,8 +201,8 @@ impl Forest {
         }
     }
 
-    /// Every pid that has at least one child — the set the renderer draws an
-    /// expand/collapse triangle for.
+    /// Every pid that has at least one child — the set the renderer draws a
+    /// disclosure chevron for.
     pub fn parents(&self) -> Vec<u32> {
         self.nodes
             .iter()
@@ -267,9 +248,9 @@ pub struct Row {
     pub status: String,
     /// Indentation level (0 = root).
     pub depth: usize,
-    /// Whether this node has children (draw a triangle).
+    /// Whether this node has children (it shows a disclosure chevron).
     pub has_children: bool,
-    /// Whether this node is currently expanded (triangle direction + whether
+    /// Whether this node is currently expanded (chevron direction + whether
     /// children follow). Always `false` when `has_children` is false.
     pub expanded: bool,
     /// Transitive descendant count, for the collapsed-parent caption.
@@ -466,7 +447,7 @@ mod tests {
             started_at: u64::from(pid) * 10,
             ppid,
             name: name.into(),
-            user: "quinten".into(),
+            user: "ada".into(),
             cpu,
             mem_bytes: mem_mib * 1024 * 1024,
             virt_bytes: mem_mib * 3 * 1024 * 1024,

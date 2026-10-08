@@ -5,7 +5,7 @@ use std::rc::Rc;
 use ui_core::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
-use ui_core::automerge::{AutoCommit, ObjId};
+use ui_core::automerge::ObjId;
 use ui_core::presence::PresenceCtx;
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
@@ -58,12 +58,12 @@ impl<K: Clone + PartialEq + 'static> Switch<K> {
 }
 
 impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.reconcile();
         self.part.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.part.update(state, path)
     }
 
@@ -109,11 +109,11 @@ impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
 
     fn start_operation(
         &mut self,
-        op: &ui_core::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        op: &ui_core::host_operation::ResourceOperation<'_>,
+        doc: &mut ui_core::widget::Edits<'_>,
         path: &ObjId,
-    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
-        ui_core::widget::start_in_children(self, op, doc, path)
+    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+        ui_core::host_operation::start_in_children(self, op, doc, path)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

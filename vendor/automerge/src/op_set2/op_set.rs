@@ -858,6 +858,11 @@ impl OpSet {
     ) -> Option<FoundOpId<'_>> {
         let obj_range = self.scope_to_obj(obj);
         let pos = self.get_op_id_pos(id)?;
+        // A cursor can name a valid operation in a different sequence. Treat
+        // that as an invalid cursor, just as the scoped slow lookup does.
+        if !obj_range.contains(&pos) {
+            return None;
+        }
         let op = self.get(pos)?;
         let visible;
         let index;
@@ -892,7 +897,13 @@ impl OpSet {
             }
             index += ops.width(seq_type, self.text_encoding);
         }
-        None
+        // An element deleted after every visible one: it sits at the end,
+        // where the fast path finds it.
+        Some(FoundOpId {
+            op,
+            index,
+            visible: false,
+        })
     }
 
     pub(crate) fn action_iter_range(&self, range: &Range<usize>) -> ActionIter<'_> {

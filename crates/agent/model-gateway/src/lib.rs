@@ -139,6 +139,15 @@ pub enum Request {
         model_id: String,
         images: Vec<FaceImage>,
     },
+    /// Find the subject of one bounded picture with the on-device
+    /// segmentation model the person installed (Settings › Models). The
+    /// gateway runs the model itself, on the CPU; no model file, path or
+    /// network reaches the caller, and nothing leaves the device. Answers a
+    /// [`SubjectMatte`] as JSON. Older servers reject this verb; callers
+    /// treat that as no model.
+    SegmentSubject {
+        image: VisionImage,
+    },
     SecretStatus {
         profile_id: String,
     },
@@ -150,6 +159,28 @@ pub enum Request {
         profile_id: String,
     },
 }
+
+/// How much of each pixel of a [`Request::SegmentSubject`] picture is its
+/// subject, and what found it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SubjectMatte {
+    /// The matte's size: the picture's.
+    pub width: u32,
+    pub height: u32,
+    /// Standard base64 of a greyscale PNG, white where the subject is.
+    pub matte_png_base64: String,
+    /// The catalogue model and its pinned revision, for provenance.
+    pub model_id: String,
+    pub revision: String,
+    /// Milliseconds spent loading the model (0 when it was loaded already)
+    /// and running it.
+    pub load_ms: u64,
+    pub infer_ms: u64,
+}
+
+/// The message the gateway refuses [`Request::SegmentSubject`] with when no
+/// segmentation model is installed, so a caller can offer to set one up.
+pub const NO_SEGMENTATION_MODEL: &str = "no on-device subject model is installed";
 
 /// Correlates the Plan requests (model turns) of one agent decision.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -549,6 +580,23 @@ pub fn cluster_faces(
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no face clusters".into()))
+}
+
+/// Find the subject of one bounded picture with the installed on-device
+/// segmentation model.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] if the launcher gateway is absent, no model is
+/// installed ([`ClientError::Rejected`] with [`NO_SEGMENTATION_MODEL`]), the
+/// picture is refused, or the answer is malformed.
+pub fn segment_subject(image: VisionImage) -> Result<SubjectMatte, ClientError> {
+    let response = request(Request::SegmentSubject { image })?;
+    let output = response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no subject".into()))?;
+    serde_json::from_str(&output)
+        .map_err(|error| ClientError::Protocol(format!("malformed subject: {error}")))
 }
 
 /// Query whether the profile has a secret stored by the isolated gateway.

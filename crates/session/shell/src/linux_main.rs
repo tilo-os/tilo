@@ -33,74 +33,6 @@ const SECRET_SERVICE_STARTUP_ATTEMPTS: usize = 8;
 const SECRET_SERVICE_STARTUP_RETRY_DELAY: std::time::Duration =
     std::time::Duration::from_millis(250);
 
-/// Install a panic hook that writes a crash report to
-/// `~/.cache/tilo/crashes/<timestamp>-<pid>.log` and echoes the panic message +
-/// log path to stderr — without this, a session launched outside a
-/// terminal (greetd, .desktop double-click) discards stderr, making "the shell just disappeared" unactionable.
-///
-/// Chains to the default hook AFTER writing the file so a developer running from a terminal still sees the colored panic + backtrace.
-///
-/// Reports carry backtraces and payloads, so they are private (0700 directory,
-/// 0600 file, never following a link). Without a home cache directory only the
-/// stderr copy is made: a shared fallback such as `/tmp` would let another user
-/// plant the path.
-fn install_crash_log_hook() {
-    let dir = xdg_paths::cache_dir()
-        .map(|cache| cache.join("tilo").join("crashes"))
-        .filter(|dir| private_fs::directory(dir).is_ok());
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let ts = chrono::Local::now().format("%Y-%m-%d-%H%M%S");
-        let backtrace = std::backtrace::Backtrace::force_capture();
-        let payload = info
-            .payload()
-            .downcast_ref::<&str>()
-            .map(|s| (*s).to_string())
-            .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "<unknown payload>".to_string());
-        let loc = info.location().map_or_else(
-            || "<unknown location>".to_string(),
-            |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
-        );
-        let thread = std::thread::current();
-        let thread = thread.name().unwrap_or("<unnamed>");
-        let contained = if tilo_rt::panic_boundary::is_isolated() {
-            "yes: the failing helper restarts and the session continues"
-        } else {
-            "no: the session ends"
-        };
-        let body = format!(
-            "tilo shell panic\n\
-             ===============\n\
-             timestamp: {ts}\n\
-             thread:    {thread}\n\
-             contained: {contained}\n\
-             location:  {loc}\n\
-             message:   {payload}\n\n\
-             backtrace:\n{backtrace}\n"
-        );
-        if let Some(dir) = &dir {
-            use std::io::Write as _;
-            let path = dir.join(format!("{ts}-{}.log", std::process::id()));
-            let wrote = private_fs::create_new(&path)
-                .and_then(|mut file| file.write_all(body.as_bytes()))
-                .is_ok();
-            if wrote {
-                eprintln!("\n[tilo] crash log written to {}", path.display());
-            } else {
-                eprintln!("\n[tilo] FAILED to write crash log to {}", path.display());
-            }
-        } else {
-            eprintln!("\n[tilo] no private cache directory; crash log not written");
-        }
-        default_hook(info);
-    }));
-    // After the crash log: a panic outside a helper's panic boundary still
-    // ends the compositor, in every build. Inside one (the collaboration
-    // broker's thread) it unwinds to the helper's owner, which restarts it.
-    tilo_rt::panic_boundary::abort_outside_boundaries();
-}
-
 /// The in-sandbox Landlock shim token. Only `tilo-launcher` implements it;
 /// the compositor never builds a sandbox.
 const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
@@ -400,13 +332,128 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
 /// settings document. Readers and writers in this process go through them;
 /// `settings.json` becomes the copy other processes read and write, which
 /// the session keeps current and takes their writes in from.
+fn dictionary_identity_owner() -> Option<[u8; 32]> {
+    let store = identity_provisioning::DiskIdentityStore::from_env().ok()?;
+    runtime_identity::load_metadata_from_path(store.path())
+        .ok()
+        .map(|identity| identity.group_public_key)
+}
+
+fn legacy_dictionary_owner() -> Option<[u8; 32]> {
+    let store = identity_provisioning::DiskIdentityStore::from_env().ok()?;
+    let path = store.path().parent()?.join("primary.json");
+    runtime_identity::load_metadata_from_path(&path)
+        .ok()
+        .map(|identity| identity.group_public_key)
+}
+
+fn session_host_view(
+    session: std::sync::Arc<settings_store::SessionSettings>,
+) -> std::sync::Arc<dyn settings_store::SettingsSource> {
+    match session.host_view() {
+        Ok(source) => source,
+        Err(error) => {
+            tracing::warn!(%error, "settings read view unavailable; using synchronous records");
+            session
+        }
+    }
+}
+
 fn install_session_settings() {
     let Some(paths) = settings_store::SessionPaths::configured() else {
         tracing::warn!("no config directory; settings are not kept this session");
         return;
     };
+    let copy = paths.copy.clone();
     match settings_store::SessionSettings::open(paths) {
-        Ok(session) => settings_store::install_source(Some(std::sync::Arc::new(session))),
+        Ok(session) => {
+            let session = std::sync::Arc::new(session);
+            // Another process writing the copy (Settings, a CLI) is taken in
+            // as it lands, which wakes every app following its settings.
+            let taken_in = std::sync::Arc::downgrade(&session);
+            match settings_store::watch::watch_settings_at(&copy, move || {
+                if let Some(session) = taken_in.upgrade() {
+                    session.refresh();
+                }
+            }) {
+                Ok(watch) => {
+                    static COPY_WATCH: std::sync::OnceLock<settings_store::watch::SettingsWatch> =
+                        std::sync::OnceLock::new();
+                    let _ = COPY_WATCH.set(watch);
+                }
+                Err(error) => tracing::warn!(
+                    %error,
+                    "settings copy watch unavailable; other processes' writes reach apps when the session next reads"
+                ),
+            }
+            let source = session_host_view(session);
+            let dictionary_root = copy.parent().map(|root| root.join("personal-dictionary"));
+            let source = match dictionary_root
+                .and_then(|root| settings_store::personal_dictionary::Service::new(root).ok())
+            {
+                Some(service) => {
+                    use settings_store::personal_dictionary::Vocabulary as _;
+                    // The legacy global file has no account identity. Claim it
+                    // once for the verified local person, never for an app or
+                    // a room's XDG directory and never again after reset.
+                    let legacy_owner = legacy_dictionary_owner();
+                    if let Some(owner) = dictionary_identity_owner()
+                        && Some(owner) == legacy_owner
+                        && let Some(reader) = service.bind(Some(owner))
+                        && let Some(path) = copy.parent().map(|root| root.join("userdict.txt"))
+                        && let Ok(metadata) = std::fs::symlink_metadata(&path)
+                        && metadata.file_type().is_file()
+                        && metadata.len() <= 512 * 1024
+                    {
+                        use std::io::Read;
+                        use std::os::unix::fs::OpenOptionsExt;
+                        let mut text = String::new();
+                        if let Ok(file) = std::fs::OpenOptions::new()
+                            .read(true)
+                            .custom_flags(libc::O_NOFOLLOW)
+                            .open(&path)
+                            && file.take(512 * 1024 + 1).read_to_string(&mut text).is_ok()
+                            && let Ok(snapshot) = reader.snapshot()
+                            && let Err(error) =
+                                service.import_legacy(&reader, snapshot.revision, owner, &text)
+                        {
+                            tracing::warn!(%error, "legacy personal dictionary import unavailable");
+                        }
+                    }
+                    let host = std::sync::Arc::new(
+                        settings_store::personal_dictionary::host::Host::new(
+                            source,
+                            std::sync::Arc::new(service),
+                            std::sync::Arc::new(dictionary_identity_owner),
+                        )
+                        .with_legacy_owner(legacy_owner),
+                    );
+                    if let Ok(store) = identity_provisioning::DiskIdentityStore::from_env()
+                        && let Some(directory) =
+                            store.path().parent().filter(|directory| directory.is_dir())
+                    {
+                        let weak = std::sync::Arc::downgrade(&host);
+                        if let Ok(watch) =
+                            settings_store::watch::watch_identity_at(directory, move || {
+                                if let Some(host) = weak.upgrade() {
+                                    settings_store::SettingsSource::dictionary_service(
+                                        host.as_ref(),
+                                    );
+                                }
+                            })
+                        {
+                            static IDENTITY_WATCH: std::sync::OnceLock<
+                                settings_store::watch::SettingsWatch,
+                            > = std::sync::OnceLock::new();
+                            let _ = IDENTITY_WATCH.set(watch);
+                        }
+                    }
+                    host as std::sync::Arc<dyn settings_store::SettingsSource>
+                }
+                None => source,
+            };
+            settings_store::install_source(Some(source));
+        }
         Err(error) => tracing::error!(
             %error,
             "cannot open the settings records; this session reads and writes settings.json itself"
@@ -424,11 +471,27 @@ pub fn run() -> std::process::ExitCode {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
+    let early_args: Vec<String> = std::env::args().collect();
+    if let Some(code) = shell::shader_seed::dispatch(&early_args) {
+        return code;
+    }
     // Answered before identity, GPU or session setup, so asking a host what
     // it has installed touches none of them.
     if let Some(version) = version_request(std::env::args().skip(1)) {
         println!("{version}");
         return std::process::ExitCode::SUCCESS;
+    }
+    if !early_args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--portal-server-only"
+                | "--firstboot-only"
+                | "--provision-identity"
+                | "--verify-collaboration-identity"
+        )
+    }) && let Err(error) = shell::shader_seed::prepare_session()
+    {
+        eprintln!("session shader seed unavailable ({error}); compiling normally");
     }
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
@@ -464,12 +527,25 @@ pub fn run() -> std::process::ExitCode {
         }
     }
 
+    let portal_only = compositor::parse_portal_server_only_from_args();
+    let firstboot_requested = compositor::parse_firstboot_from_args();
+    let firstboot_only_requested = compositor::parse_firstboot_only_from_args();
+    let provision_identity_requested = compositor::parse_provision_identity_from_args();
+    let verify_identity_requested = compositor::parse_verify_collaboration_identity_from_args();
+    // Systemd also invokes this binary for setup and identity checks. Those
+    // commands never paint: font discovery and shader warmup only compete
+    // with the greeter and the session they are preparing.
+    let paints = !(portal_only
+        || firstboot_only_requested
+        || provision_identity_requested
+        || verify_identity_requested);
+
     // Decide which GPU this session runs on before anything opens one — the
     // warmup thread below builds a wgpu context, and on a multi-GPU box its
     // adapter may disagree with what the compositor advertises to clients.
     // Pinning here, while `main` is still single-threaded, makes the
     // compositor and every launched app agree on one device.
-    let gpu_pin = compositor::render_node::pin_process();
+    let gpu_pin = paints.then(compositor::render_node::pin_process).flatten();
 
     // Cold-start warmup on a background thread, as early as possible.
     // cosmic-text's `FontSystem::new` (mmaps every face, up to ~1s) and
@@ -490,18 +566,18 @@ pub fn run() -> std::process::ExitCode {
                 "" | "0" | "off" | "false" | "no"
             )
         });
-    let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
+    let _warmup_handle = paints
+        .then(|| ui::warmup::spawn_warmup(!want_vello))
+        .flatten();
 
     tracing_subscriber::fmt::init();
-    install_crash_log_hook();
+    shell::crash_log::install("tilo shell panic");
+    // After the crash log: a panic outside a helper's panic boundary still
+    // ends the compositor, in every build. Inside one (the collaboration
+    // broker's thread) it unwinds to the helper's owner, which restarts it.
+    tilo_rt::panic_boundary::abort_outside_boundaries();
     log_gpu_pin(gpu_pin.as_ref());
     compositor::dev_env::report_build_mode();
-
-    let portal_only = compositor::parse_portal_server_only_from_args();
-    let firstboot_requested = compositor::parse_firstboot_from_args();
-    let firstboot_only_requested = compositor::parse_firstboot_only_from_args();
-    let provision_identity_requested = compositor::parse_provision_identity_from_args();
-    let verify_identity_requested = compositor::parse_verify_collaboration_identity_from_args();
 
     if portal_only && (firstboot_requested || firstboot_only_requested) {
         eprintln!(

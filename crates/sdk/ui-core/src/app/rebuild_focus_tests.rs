@@ -1,6 +1,6 @@
 use super::*;
-use crate::widget::{AppModel, ModelPath};
-use crate::widget::{Text, TextInput};
+use crate::widget::ModelPath;
+use crate::widget::{Button, Text, TextInput};
 use automerge::AutoCommit;
 use vello::kurbo::Rect;
 
@@ -9,6 +9,7 @@ use vello::kurbo::Rect;
 /// resets unless the App restores it via `get_state`/`set_state`.
 struct RebuildHarness {
     show_status: bool,
+    show_offer: bool,
     request_reset: bool,
     children: Vec<Box<dyn Widget>>,
     rect: Rect,
@@ -18,6 +19,7 @@ impl RebuildHarness {
     fn new() -> Self {
         Self {
             show_status: false,
+            show_offer: false,
             request_reset: false,
             children: Vec::new(),
             rect: Rect::ZERO,
@@ -32,6 +34,12 @@ impl RebuildHarness {
         kids.push(Box::new(TextInput::local().with_initial_value("hello")));
         if self.show_status {
             kids.push(Box::new(Text::new("status")));
+        }
+        if self.show_offer {
+            kids.push(Box::new(Button::new("offer.skip", "Not now")));
+            kids.push(Box::new(
+                Button::new("offer.accept", "Turn on").with_default_focus(),
+            ));
         }
         self.children = kids;
     }
@@ -88,10 +96,19 @@ impl Widget for RebuildHarness {
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .collect()
     }
-    fn on_external_event(&mut self, payload: &str, _s: &mut AppModel, _r: &ModelPath) {
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        _s: &mut crate::widget::Edits<'_>,
+        _r: &ModelPath,
+    ) {
         match payload {
             "show_status" => self.show_status = true,
             "reset" => self.request_reset = true,
+            "offer" => {
+                self.show_offer = true;
+                self.request_reset = true;
+            }
             _ => {}
         }
     }
@@ -131,8 +148,11 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
         // Triggers a structural rebuild that recreates the input as a fresh
         // instance whose own caret default is 5.
         let mut tmp = AutoCommit::new();
-        app.root_widget
-            .on_external_event("show_status", &mut tmp, &automerge::ROOT);
+        app.root_widget.on_external_event(
+            "show_status",
+            &mut crate::widget::Edits::lend(&mut tmp),
+            &automerge::ROOT,
+        );
         app.rebuild_structure();
 
         assert!(app.focused_node.is_some(), "focus preserved across rebuild");
@@ -163,8 +183,11 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
         }
 
         let mut tmp = AutoCommit::new();
-        app.root_widget
-            .on_external_event("reset", &mut tmp, &automerge::ROOT);
+        app.root_widget.on_external_event(
+            "reset",
+            &mut crate::widget::Edits::lend(&mut tmp),
+            &automerge::ROOT,
+        );
         app.rebuild_structure();
 
         assert_eq!(
@@ -173,4 +196,32 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
             "focus_reset must not paste the old caret onto the new field"
         );
     }
+}
+
+#[test]
+fn a_focus_reset_lands_on_the_default_control() {
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
+    app.autofocus_first = true;
+    app.autofocus_on_structure_change = true;
+    app.init_layout();
+
+    let mut tmp = AutoCommit::new();
+    app.root_widget.on_external_event(
+        "offer",
+        &mut crate::widget::Edits::lend(&mut tmp),
+        &automerge::ROOT,
+    );
+    app.rebuild_structure();
+
+    assert_eq!(app.focusable_order.len(), 3);
+    let focused = app.focused_node.expect("a reset focuses a control");
+    assert_ne!(
+        Some(focused),
+        app.focusable_order.first().copied(),
+        "the default control wins over the first one"
+    );
+    assert!(
+        app.inspect_node(focused, |widget| widget.is_default_keyboard_focus())
+            .unwrap_or(false)
+    );
 }

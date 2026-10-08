@@ -71,6 +71,9 @@ enum Cmd {
         /// Path to the package manifest (TOML).
         #[arg(long)]
         manifest: PathBuf,
+        /// Refuse if the actual signed installation differs from this root.
+        #[arg(long)]
+        expected_package_hash: Option<String>,
         /// Directory containing the unpacked package payload.
         #[arg(long)]
         payload_root: PathBuf,
@@ -121,6 +124,8 @@ enum Cmd {
         /// Files and mounted read-only at its fixed projection path.
         #[arg(long)]
         trusted_identities: Option<PathBuf>,
+        #[command(flatten)]
+        action_authority: Box<ActionAuthorityArgs>,
         /// App id the caller launched; must equal the manifest's package id.
         /// Capabilities naming another app are ignored.
         #[arg(long)]
@@ -284,6 +289,7 @@ fn main() -> ExitCode {
     match cli.cmd {
         Cmd::Run {
             manifest,
+            expected_package_hash,
             payload_root,
             runtime,
             no_services,
@@ -295,6 +301,7 @@ fn main() -> ExitCode {
             workspace_id,
             capabilities,
             trusted_identities,
+            action_authority,
             app_id,
             render_node,
             open,
@@ -303,6 +310,7 @@ fn main() -> ExitCode {
             rest,
         } => run_gui_command(RunCliArgs {
             manifest,
+            expected_package_hash,
             payload_root,
             runtime,
             no_services,
@@ -314,6 +322,7 @@ fn main() -> ExitCode {
             workspace_id,
             capabilities,
             trusted_identities,
+            action_authority: action_authority.action_authority,
             app_id,
             render_node,
             open,
@@ -363,6 +372,13 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(Debug, clap::Args)]
+struct ActionAuthorityArgs {
+    /// Host-staged, app-scoped action authority; mounted read-only.
+    #[arg(long)]
+    action_authority: Option<PathBuf>,
+}
+
 /// Every field of [`Cmd::Run`], bundled so [`run_gui_command`] doesn't count
 /// against clippy's argument limit — this is argv plumbing, not a sandbox
 /// policy struct (see [`ExecArgs`] below for the same pattern).
@@ -372,6 +388,7 @@ fn main() -> ExitCode {
 )]
 struct RunCliArgs {
     manifest: PathBuf,
+    expected_package_hash: Option<String>,
     payload_root: PathBuf,
     runtime: Option<PathBuf>,
     no_services: bool,
@@ -383,6 +400,7 @@ struct RunCliArgs {
     workspace_id: Option<String>,
     capabilities: Option<PathBuf>,
     trusted_identities: Option<PathBuf>,
+    action_authority: Option<PathBuf>,
     app_id: Option<String>,
     render_node: Option<PathBuf>,
     open: Option<PathBuf>,
@@ -403,6 +421,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         );
     }
     let opts = RunOptions {
+        expected_package_hash: args.expected_package_hash,
         no_services: args.no_services,
         runtime_root: args.runtime,
         bwrap_bin: None,
@@ -425,6 +444,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         workspace_id: args.workspace_id,
         capabilities_path: args.capabilities,
         trusted_identities_host_path: args.trusted_identities,
+        action_authority_host_path: args.action_authority,
         app_id: args.app_id,
         render_node: args.render_node,
         open_document: args.open,
@@ -435,6 +455,14 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
     }
     match run(&args.manifest, &args.payload_root, &opts) {
         Ok(status) => {
+            // How the app ended, said where its output goes: a signal leaves
+            // no exit code of its own, and is folded into 1 below.
+            if !status.success() {
+                eprintln!(
+                    "tilo-launcher: {} ended: {status}",
+                    opts.app_id.as_deref().unwrap_or("the app")
+                );
+            }
             if let Some(code) = status.code() {
                 exit_code(code)
             } else {
@@ -827,6 +855,7 @@ fn run_installed(
         );
     let opts = RunOptions {
         no_services,
+        expected_package_hash: None,
         runtime_root: None,
         bwrap_bin: None,
         sandbox_shim_bin: None,
@@ -844,6 +873,7 @@ fn run_installed(
             .filter(|s| !s.is_empty()),
         data_home: None,
         trusted_identities_host_path: None,
+        action_authority_host_path: None,
         // CLI launches are stdio-only: no display in the sandbox, and
         // therefore no compositor whose GPU choice they have to match.
         wayland_socket: None,
@@ -1005,5 +1035,39 @@ mod admit_share_tests {
         assert!(host_launch_env_is_secret("DESKTOP_STARTUP_ID"));
         assert!(!host_launch_env_is_secret("TILO_HOST_ACTIVATION_TOKEN"));
         assert!(!host_launch_env_is_secret("WAYLAND_DISPLAY"));
+    }
+}
+
+#[cfg(test)]
+mod action_authority_tests {
+    use super::*;
+    #[test]
+    fn action_authority_cli_keeps_host_selected_path_and_room() {
+        let parsed = Cli::try_parse_from([
+            "tilo-launcher",
+            "run",
+            "--manifest",
+            "/manifest.toml",
+            "--payload-root",
+            "/payload",
+            "--workspace-id",
+            "room-a",
+            "--action-authority",
+            "/private/current.json",
+        ])
+        .unwrap();
+        let Cmd::Run {
+            action_authority,
+            workspace_id,
+            ..
+        } = parsed.cmd
+        else {
+            panic!("run subcommand did not parse");
+        };
+        assert_eq!(
+            action_authority.action_authority,
+            Some(PathBuf::from("/private/current.json"))
+        );
+        assert_eq!(workspace_id.as_deref(), Some("room-a"));
     }
 }

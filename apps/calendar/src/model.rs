@@ -12,6 +12,7 @@ use uuid::Uuid;
 use vello::peniko::Color;
 
 use ui::theme::Theme;
+use ui::tokens::colors::PresenceHue;
 
 pub type Id = Uuid;
 
@@ -36,9 +37,9 @@ impl View {
     pub const ALL: [View; 4] = [View::Month, View::Week, View::Day, View::Agenda];
 }
 
-/// Which "smart list" or project the sidebar has selected. Drives the
-/// task list in the agenda/day rails.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// Which "smart list" or project the sidebar has chosen. Drives the
+/// task list the sidebar shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ListSel {
     Inbox,
     Today,
@@ -60,9 +61,9 @@ impl Priority {
     pub fn label(self) -> &'static str {
         match self {
             Priority::None => "No priority",
-            Priority::Low => "P3 · Low",
-            Priority::Medium => "P2 · Medium",
-            Priority::High => "P1 · High",
+            Priority::Low => "Low priority",
+            Priority::Medium => "Medium priority",
+            Priority::High => "High priority",
         }
     }
     pub fn flag(self) -> &'static str {
@@ -126,17 +127,21 @@ impl Palette {
         Palette::Slate,
     ];
 
+    /// The colour an item of this calendar colour is painted in: a hue of
+    /// the theme's presence palette (calendar colours are user content), or
+    /// the quiet ink tier for the colourless slate.
     pub fn color(self, theme: &Theme) -> Color {
         let c = &theme.tokens.colors;
-        match self {
-            Palette::Indigo => c.accent[5],
-            Palette::Emerald => c.semantic.success,
-            Palette::Amber => c.semantic.warning,
-            Palette::Red => c.semantic.danger,
-            Palette::Blue => c.semantic.info,
-            Palette::Violet => c.accent[7],
-            Palette::Slate => c.neutral[5],
-        }
+        let hue = match self {
+            Palette::Indigo => PresenceHue::Blue,
+            Palette::Emerald => PresenceHue::Green,
+            Palette::Amber => PresenceHue::Amber,
+            Palette::Red => PresenceHue::Red,
+            Palette::Blue => PresenceHue::Sky,
+            Palette::Violet => PresenceHue::Violet,
+            Palette::Slate => return c.text_tertiary,
+        };
+        c.presence.hue(hue)
     }
 
     pub fn name(self) -> &'static str {
@@ -149,6 +154,13 @@ impl Palette {
             Palette::Violet => "Violet",
             Palette::Slate => "Slate",
         }
+    }
+
+    /// The colour called `name` (any case).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|palette| palette.name().eq_ignore_ascii_case(name))
     }
 
     pub fn from_index(i: usize) -> Self {
@@ -275,16 +287,16 @@ impl Recurrence {
     }
 
     pub fn from_rrule(rule: &str) -> Self {
-        let up = rule.to_uppercase();
-        if up.contains("FREQ=DAILY") {
+        let rule = rule.to_lowercase();
+        if rule.contains("freq=daily") {
             Recurrence::Daily
-        } else if up.contains("BYDAY=MO,TU,WE,TH,FR") {
+        } else if rule.contains("byday=mo,tu,we,th,fr") {
             Recurrence::Weekdays
-        } else if up.contains("FREQ=WEEKLY") {
+        } else if rule.contains("freq=weekly") {
             Recurrence::Weekly
-        } else if up.contains("FREQ=MONTHLY") {
+        } else if rule.contains("freq=monthly") {
             Recurrence::Monthly
-        } else if up.contains("FREQ=YEARLY") {
+        } else if rule.contains("freq=yearly") {
             Recurrence::Yearly
         } else {
             Recurrence::None
@@ -545,12 +557,38 @@ pub struct Task {
     pub parent: Option<Id>,
 }
 
+impl Task {
+    /// The order tasks list in: open before done, then by priority, then by
+    /// due date, then by title, so the same tasks always list the same way
+    /// whatever order the document holds them in.
+    pub fn list_order(a: &Task, b: &Task) -> std::cmp::Ordering {
+        a.done
+            .cmp(&b.done)
+            .then(a.priority.rank().cmp(&b.priority.rank()))
+            .then(a.due.cmp(&b.due))
+            .then_with(|| a.title.cmp(&b.title))
+            .then(a.id.cmp(&b.id))
+    }
+}
+
 /// Aggregate model. Order within the vectors is the display order.
 #[derive(Clone, Debug, Default)]
 pub struct Model {
     pub projects: Vec<Project>,
     pub events: Vec<Event>,
     pub tasks: Vec<Task>,
+    /// The plain text of each event's and task's notes that hold any, for
+    /// search.
+    pub notes: std::collections::BTreeMap<Id, String>,
+    /// Events on a remote calendar whose latest version still waits to be
+    /// uploaded to its server.
+    pub push_queue: Vec<Id>,
+    /// Deleted items whose server copy still waits to be deleted, with the
+    /// remote calendar it lives in.
+    pub delete_queue: Vec<(String, Id)>,
+    /// Where each queued item lives on its server: the calendar, the
+    /// resource's href and the version (`ETag`) last seen there.
+    pub bindings: std::collections::BTreeMap<Id, (String, String, Option<String>)>,
 }
 
 impl Model {
@@ -587,12 +625,7 @@ impl Model {
                 ListSel::Project(p) => t.project == Some(*p),
             })
             .collect();
-        out.sort_by(|a, b| {
-            a.done
-                .cmp(&b.done)
-                .then(a.priority.rank().cmp(&b.priority.rank()))
-                .then(a.due.cmp(&b.due))
-        });
+        out.sort_by(|a, b| Task::list_order(a, b));
         out
     }
 
@@ -656,6 +689,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         projects: seed_demo_projects(pid_work, pid_personal, pid_health),
         events: seed_demo_events(today, pid_work, pid_personal, pid_health),
         tasks: seed_demo_tasks(today, pid_personal, pid_health, pid_work),
+        ..Model::default()
     }
 }
 
@@ -759,7 +793,7 @@ fn seed_demo_events_early(
                 cancelled: false,
                 start: Some(seed_demo_at(d(43), 14, 0)),
                 end: Some(seed_demo_at(d(43), 15, 0)),
-                title: Some("Design review · rescheduled".into()),
+                title: Some("Design review (moved)".into()),
                 location: None,
             }],
             timezone: "Europe/Berlin".into(),
@@ -770,7 +804,7 @@ fn seed_demo_events_early(
                 email: "mina@example.com".into(),
                 status: InviteStatus::Accepted,
             }],
-            reminder_min: Some(15),
+            reminder_min: Some(10),
             calendar_id: None,
             project: Some(pid_work),
         },
@@ -797,7 +831,7 @@ fn seed_demo_events_early(
         },
         Event {
             id: Uuid::new_v4(),
-            title: "Gym — strength".into(),
+            title: "Strength training".into(),
             start: seed_demo_at(today, 18, 30),
             end: seed_demo_at(today, 19, 30),
             all_day: false,
@@ -833,7 +867,7 @@ fn seed_demo_events_early(
             timezone: "floating".into(),
             organizer: None,
             attendees: Vec::new(),
-            reminder_min: Some(15),
+            reminder_min: Some(10),
             calendar_id: None,
             project: Some(pid_work),
         },
@@ -949,7 +983,7 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             timezone: "floating".into(),
             organizer: None,
             attendees: Vec::new(),
-            reminder_min: Some(720),
+            reminder_min: Some(60),
             calendar_id: None,
             project: Some(pid_personal),
         },

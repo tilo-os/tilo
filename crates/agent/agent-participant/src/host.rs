@@ -70,9 +70,6 @@ impl HostEndpoint {
 
 struct Shared {
     state_dir: PathBuf,
-    /// Agents use the host user's profile and secret store instead of their
-    /// own (granted explicitly with [`AgentHost::share_host_profile`]).
-    host_profile: AtomicBool,
     model: ModelChoice,
     catalogue: CatalogueFactory,
     endpoint: OnceLock<HostEndpoint>,
@@ -105,7 +102,6 @@ impl AgentHost {
     ) -> Self {
         let shared = Arc::new(Shared {
             state_dir,
-            host_profile: AtomicBool::new(false),
             model,
             catalogue,
             endpoint: OnceLock::new(),
@@ -125,22 +121,6 @@ impl AgentHost {
             written: Arc::new(Mutex::new(String::new())),
             owned_runtime: None,
         }
-    }
-
-    /// Let agents' apps use the host user's own files and secret store
-    /// (the Keychain, the Secret Service), as a person at this machine
-    /// would. By default each agent has a profile of its own below the
-    /// state directory and secrets kept in memory. Call before
-    /// [`Self::start`].
-    pub fn share_host_profile(&self) {
-        self.shared.host_profile.store(true, Ordering::Release);
-    }
-
-    /// Where an agent's apps keep their files unless the host profile is
-    /// shared.
-    #[must_use]
-    pub fn profile_dir(&self, agent_id: &str) -> PathBuf {
-        profile_dir(&self.shared.state_dir, agent_id)
     }
 
     /// The supervisor browsers steer agents through.
@@ -288,23 +268,11 @@ fn run_agent(
         return;
     };
     let _runtime = runtime.enter();
-    // The model and the apps' theme and fonts are the host's; what the
-    // apps keep (files, secrets) is the agent's own.
-    let planner = Box::new(HostSettings(shared.model.planner()));
+    // The agent holds records as replicas of their resources and runs no
+    // app's code, so it reads nothing of this machine's files or secrets;
+    // it plans with the host's model.
+    let planner = Box::new(shared.model.planner());
     let catalogue = (shared.catalogue)();
-    let _profile = if shared.host_profile.load(Ordering::Acquire) {
-        None
-    } else {
-        let directory = profile_dir(&shared.state_dir, &agent_id);
-        if let Err(error) = std::fs::create_dir_all(&directory) {
-            control.fail(&format!("create {}: {error}", directory.display()));
-            return;
-        }
-        Some((
-            tilo_paths::scope_profile(directory),
-            tilo_secrets::scope_thread(tilo_secrets::memory_backend()),
-        ))
-    };
     let mut participant = match AgentParticipant::start(
         ParticipantConfig {
             host: endpoint.host,
@@ -387,34 +355,4 @@ fn now_ns() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
         })
-}
-
-/// `<state>/<agent id>/profile`: an agent's home, with its id reduced to
-/// characters safe in one path component.
-fn profile_dir(state_dir: &std::path::Path, agent_id: &str) -> PathBuf {
-    let component: String = agent_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    state_dir.join(component).join("profile")
-}
-
-/// Plans with the host user's settings and model gateway while the agent's
-/// thread otherwise sees its own profile.
-struct HostSettings(crate::ModelPlanner);
-
-impl crate::Planner for HostSettings {
-    fn plan(
-        &mut self,
-        task: &str,
-        context: &crate::PlanContext,
-    ) -> Result<Vec<crate::Step>, String> {
-        tilo_paths::unscoped(|| tilo_secrets::unscoped(|| self.0.plan(task, context)))
-    }
 }

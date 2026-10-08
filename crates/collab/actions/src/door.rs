@@ -24,6 +24,7 @@ use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
 use crate::resource::{
     ActionInput, ActionSpec, Collects, KEY_SEP, Resource, ResourceViewMountSpec,
+    ResourceViewRangeSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +124,8 @@ impl InputSpec {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionDescriptor {
     pub address: ActionAddress,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_identity: Option<crate::ResourceSemanticIdentity>,
     /// The publishing resource's stable kind tag (`word_processor.section`,
     /// `files.entry`), shared with the OS-wide type registry so the same kind
     /// means the same thing across apps.
@@ -157,6 +160,8 @@ pub struct ResourceViewDescriptor {
     pub open_action: String,
     pub primary: bool,
     pub mount: Option<ResourceViewMountSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<ResourceViewRangeSpec>,
 }
 
 impl ResourceViewDescriptor {
@@ -175,6 +180,7 @@ impl ResourceViewDescriptor {
                 open_action: view.open_action.clone(),
                 primary: view.primary,
                 mount: view.mount.clone(),
+                range: view.range.clone(),
             })
     }
 }
@@ -283,6 +289,7 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
         let view = ResourceViewDescriptor::declared_for(resource, &action.id);
         out.push(ActionDescriptor {
             address: ActionAddress::new(resource.id.as_str(), &action.id),
+            semantic_identity: resource.semantic_identity.clone(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             action_label: action.label.clone(),
@@ -339,6 +346,11 @@ pub fn encode(
     match (&spec.input, argument) {
         (ActionInput::Deferred { type_id, build }, None) => {
             let encoded = build();
+            if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
+                return Err(DoorError::InvalidArguments(
+                    String::from_utf8_lossy(&encoded.payload).into_owned(),
+                ));
+            }
             if encoded.type_id != *type_id {
                 return Err(DoorError::InvalidArguments(format!(
                     "builder returned `{}` but declared `{type_id}`",
@@ -350,7 +362,7 @@ pub fn encode(
         (ActionInput::Deferred { .. }, Some(_)) => {
             Err(DoorError::UnexpectedArgument(address.clone()))
         }
-        (ActionInput::Immediate(encoded), None) => Ok(encoded.clone()),
+        (ActionInput::Immediate(encoded), None) => Ok(encoded.as_ref().clone()),
         (ActionInput::Immediate(_), Some(_)) => Err(DoorError::UnexpectedArgument(address.clone())),
         (ActionInput::Prompted { build, .. }, Some(text)) => {
             let encoded = build(text);
@@ -853,6 +865,7 @@ mod tests {
                 description: Some("Edit the note".into()),
                 open_action: "open".into(),
                 primary: true,
+                range: None,
                 mount: None,
             })
         );

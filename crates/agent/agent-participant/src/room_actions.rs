@@ -12,24 +12,29 @@
 //!   no provider lists rows for the records open on the room's shared
 //!   desktop, the most recently changed next, up to [`DEFAULT_ROWS_RECORDS`];
 //!   naming a record's provider lists every action that record publishes.
-//! - **Invoke.** The record is mounted headless ([`HostedApp`]) from what the
-//!   service opened of it, the action runs through the app's own door
-//!   (availability, confirmation and argument binding exactly as for a
-//!   person), and the change is sealed and signed as the host device's own,
-//!   so every page receives it as an ordinary durable change.
+//! - **Invoke.** The record is held as a replica of its resource
+//!   ([`Replica`]) from what the service opened of it, the operation runs
+//!   through the resource's own door (permission, confirmation and argument
+//!   binding exactly as for a person), and the change is sealed and signed as
+//!   the host device's own, so every page receives it as an ordinary durable
+//!   change.
 //! - **Tickets.** Invocation ids are idempotent: a retry reports the original
 //!   invocation, a different request under a used id is a conflict, and a
 //!   refused invocation is forgotten (nothing ran). An invocation is
 //!   accepted at once and runs on the service's own thread; `Observe`
 //!   reports where it stands, and `Cancel` stops one that has not started.
 //!
-//! Only the host user's own devices are served: the principal must be the
-//! person whose root the host chains to. Agents use their own mounts.
+//! Document invocations serve only the host user's own devices. Exact local
+//! View discovery also serves currently certified room readers, through the
+//! host's canonical Read policy; that grants no document invocation authority.
+//! Agents use their own mounts.
 //!
 //! The service joins each room as the host's own device ([`RoomMember`], from
 //! the [`RoomRecordsLink`] the host supplies): a member of the room's
 //! channels like any other, admitted by the room's steward. It reads only
 //! records it holds keys for and writes nothing in the clear.
+
+mod reads;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
@@ -38,6 +43,9 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 
+use crate::apps::{AppCatalogue, Replica, Seed};
+use crate::host::{CatalogueFactory, HostEndpoint};
+use crate::participant::actions::{RECORD_PROVIDER, record_provider};
 use collab_types::DocumentMutation;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
@@ -53,15 +61,10 @@ use tilo_browser_peer::{
     DocumentRoute, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
 };
 use tilo_user_identity::RevocationList;
-use ui::widget::ResourceOperationStart;
-
-use crate::apps::{AppCatalogue, HostedApp, Seed};
-use crate::host::{CatalogueFactory, HostEndpoint};
-use crate::participant::actions::{RECORD_PROVIDER, record_provider};
 
 /// Records whose rows a catalogue naming no provider lists.
 pub const DEFAULT_ROWS_RECORDS: usize = 12;
-/// Records kept mounted between requests; the least recently used unmounts.
+/// Records kept held between requests; the least recently used is dropped.
 const MAX_MOUNTED: usize = 24;
 /// How long a request waits for the service to join a room and open what
 /// the room's steward admitted it to.
@@ -82,6 +85,40 @@ pub struct RoomMember {
     pub runtime: tokio::runtime::Handle,
 }
 
+/// Current governed read policy supplied by the authenticated host boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewReadPolicy {
+    /// Governed room whose current policy authorized the exact source record.
+    pub room: String,
+    /// Current role of the certified caller, supplied by the host.
+    pub role: collab_types::Role,
+    /// Current capability overrides, including device restrictions.
+    pub caps: Vec<collab_types::caps::CapOverride>,
+    /// Root identity authenticated on the connection.
+    pub person: String,
+    /// Host time used to evaluate capability expiry.
+    pub unix_time: u64,
+}
+
+impl ViewReadPolicy {
+    fn permissions(&self) -> ui::permissions::PermissionContext {
+        ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(Some(self.role), self.person.clone())
+                .in_room(self.room.clone()),
+            self.caps.clone(),
+        )
+        .at_unix_time(self.unix_time)
+    }
+}
+
+/// An existing verified source snapshot for internal view discovery only.
+pub struct ViewDocument {
+    /// Replayed snapshot; never returned in the public metadata response.
+    pub bytes: Vec<u8>,
+    /// Content revision for catalogue freshness.
+    pub revision: String,
+}
+
 /// What the service needs of its host. Methods block; they are called from
 /// the service's own thread, never from the host's runtime.
 pub trait RoomRecordsLink: Send + Sync {
@@ -89,6 +126,41 @@ pub trait RoomRecordsLink: Send + Sync {
     fn user_public_key(&self) -> [u8; 32];
     /// How the service joins the host's rooms.
     fn member(&self) -> RoomMember;
+    /// Current certified-device admission and exact record Read capability.
+    /// Absence denies; this never inherits document invocation authority.
+    fn view_read_policy(
+        &self,
+        _workspace: u64,
+        _caller: &Caller,
+        _app: &str,
+        _record: &str,
+    ) -> Option<ViewReadPolicy> {
+        None
+    }
+    /// Read an exact existing source using already-owned host keys. The host
+    /// must check current certified Read under its room lock before key access
+    /// and again before returning. Missing keys never cause enrollment.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing/currently unauthorized sources, unavailable existing keys,
+    /// invalid signatures, incomplete replay or exceeded read budgets.
+    fn view_document(
+        &self,
+        _workspace: u64,
+        _caller: &Caller,
+        _source: &DocumentRoute,
+    ) -> Result<ViewDocument, String> {
+        Err("existing view documents unavailable".into())
+    }
+    /// The listener-owned public locator; absence cannot mint a browser link.
+    fn view_locator(
+        &self,
+        _room: &str,
+        _provider: &str,
+    ) -> Option<tilo_actions::remote::ResourceViewLocator> {
+        None
+    }
 }
 
 struct Entry {
@@ -136,7 +208,8 @@ impl Ledger {
 enum Job {
     Catalogue {
         workspace_id: u64,
-        query: CatalogueQuery,
+        query: Box<CatalogueQuery>,
+        caller: Caller,
         done: Completer<Result<CataloguePage, ActionHostError>>,
     },
     Invoke {
@@ -262,7 +335,7 @@ impl RoomActions {
                     correlation,
                     result,
                 };
-                if !self.authorized(caller) {
+                if query.view_resource.is_none() && !self.authorized(caller) {
                     return Some(Pending::ready(respond(Ok(CataloguePage::from_rows(
                         "0".into(),
                         Vec::new(),
@@ -272,7 +345,8 @@ impl RoomActions {
                 let (done, answer) = pending();
                 let job = Job::Catalogue {
                     workspace_id,
-                    query,
+                    query: Box::new(query),
+                    caller: caller.clone(),
                     done,
                 };
                 if let Err(Job::Catalogue { done, .. }) = self.submit(job) {
@@ -413,9 +487,9 @@ impl HostActions {
     }
 }
 
-/// One record mounted on the service thread.
+/// One record held on the service thread.
 struct Mounted {
-    app: HostedApp,
+    app: Replica,
     /// Digests of the bodies already merged into it.
     seen: HashSet<[u8; 32]>,
     used: u64,
@@ -568,10 +642,10 @@ fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
     })
 }
 
-/// What a mounted record publishes that its door runs now. A `Launchable`
+/// What a held record publishes that its door runs now. A `Launchable`
 /// action is delivered by launching the app, not by a record already open,
 /// so it is not offered here.
-fn live_actions(app: &mut HostedApp) -> Vec<tilo_actions::ActionDescriptor> {
+fn live_actions(app: &Replica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
         .into_iter()
         .filter(|descriptor| {
@@ -630,17 +704,22 @@ impl Worker {
                 Job::Catalogue {
                     workspace_id,
                     query,
+                    caller,
                     done,
-                } => done.complete(self.catalogue_page(workspace_id, &query)),
+                } => {
+                    let result = if query.view_resource.is_some() {
+                        self.view_catalogue_page(workspace_id, &caller, &query)
+                    } else {
+                        self.catalogue_page(workspace_id, &caller, &query)
+                    };
+                    done.complete(result);
+                }
                 Job::Invoke {
                     workspace_id,
                     invocation,
                     done,
                 } => done.complete(self.invoke(workspace_id, invocation)),
             }
-        }
-        for (_, mounted) in std::mem::take(&mut self.mounted) {
-            mounted.app.close();
         }
     }
 
@@ -722,19 +801,16 @@ impl Worker {
                 else {
                     break;
                 };
-                if let Some(mounted) = self.mounted.remove(&oldest) {
-                    mounted.app.close();
-                }
+                self.mounted.remove(&oldest);
             }
-            let app = HostedApp::open(
+            let app = Replica::open(
                 &self.catalogue,
                 &route.app_id,
                 &route.cluster_id,
                 &self.participant,
                 false,
                 Seed::Existing {
-                    record: ui::record::RecordId::parse(&route.record)
-                        .ok_or_else(|| format!("{} is not a record id", route.record))?,
+                    record: reads::record_id(&route.record)?,
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                 },
             )
@@ -789,11 +865,79 @@ impl Worker {
         routes
     }
 
+    fn view_catalogue_page(
+        &self,
+        workspace: u64,
+        caller: &Caller,
+        query: &CatalogueQuery,
+    ) -> Result<CataloguePage, ActionHostError> {
+        let refuse = || ActionHostError::UnknownAction;
+        let (wanted, provider) = exact_view_query(query)?;
+        let route_hint = record_of(provider, "").ok_or_else(refuse)?;
+        let link = self.shared.link.get().cloned().ok_or_else(refuse)?;
+        let first = link
+            .view_read_policy(workspace, caller, &route_hint.app_id, &route_hint.record)
+            .ok_or_else(refuse)?;
+        let route = record_of(provider, &first.room).ok_or_else(refuse)?;
+        let source = link
+            .view_document(workspace, caller, &route)
+            .map_err(|reason| ActionHostError::Unavailable { reason })?;
+        let mut doc = automerge::AutoCommit::new();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &source.bytes)
+            .map_err(|_| refuse())?;
+        let descriptors =
+            self.catalogue
+                .resource_views(&route.app_id, &doc, wanted, &first.permissions());
+        let fresh = link
+            .view_read_policy(workspace, caller, &route.app_id, &route.record)
+            .ok_or_else(refuse)?;
+        if fresh.room != first.room
+            || fresh.role != first.role
+            || fresh.caps != first.caps
+            || fresh.person != first.person
+        {
+            return Err(refuse());
+        }
+        let current =
+            self.catalogue
+                .resource_views(&route.app_id, &doc, wanted, &fresh.permissions());
+        let rows = descriptors
+            .into_iter()
+            .filter(|descriptor| current.contains(descriptor))
+            .map(|descriptor| CatalogueRow {
+                provider: provider.to_owned(),
+                app_id: route.app_id.clone(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: descriptor.address.resource.clone(),
+                    kind: descriptor.resource_kind.clone(),
+                    label: descriptor.resource_label.clone(),
+                    presentation: None,
+                },
+                action: Some(descriptor),
+                has_children: false,
+                visibility: None,
+            })
+            .collect();
+        let mut page = CataloguePage::from_rows(source.revision, rows, query);
+        if !page.rows.is_empty() {
+            page.locator = link.view_locator(&fresh.room, provider);
+        }
+        Ok(page)
+    }
+
     fn catalogue_page(
         &mut self,
         workspace_id: u64,
+        caller: &Caller,
         query: &CatalogueQuery,
     ) -> Result<CataloguePage, ActionHostError> {
+        if let Some(provider) = query.provider.as_deref()
+            && let Some(page) =
+                self.registered_read_catalogue(workspace_id, caller, provider, query)
+        {
+            return Ok(page);
+        }
         let state = self.refresh(workspace_id)?;
         let revision = state.revision.to_string();
         let Some(room) = state.room.clone() else {
@@ -814,13 +958,27 @@ impl Worker {
         let mut rows = Vec::new();
         for route in &wanted {
             let provider = record_provider(route);
-            let descriptors = match self.mount(route, &state) {
-                Ok(mounted) => live_actions(&mut mounted.app),
+            let mut descriptors = match self.mount(route, &state) {
+                Ok(mounted) => live_actions(&mounted.app),
                 Err(error) => {
                     tracing::warn!(%error, record = %route.record, "room actions: a record did not mount");
                     continue;
                 }
             };
+            if let Some(link) = self.shared.link.get().cloned()
+                && let Ok(read) = reads::CanonicalRead::prepare(
+                    &self.catalogue,
+                    link.as_ref(),
+                    workspace_id,
+                    caller,
+                    route,
+                )
+                && read
+                    .recheck(link.as_ref(), workspace_id, caller, route)
+                    .is_ok()
+            {
+                descriptors.extend(read.operations());
+            }
             rows.extend(descriptors.into_iter().map(|descriptor| CatalogueRow {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
@@ -866,6 +1024,59 @@ impl Worker {
         Ok(page)
     }
 
+    fn registered_read_catalogue(
+        &self,
+        workspace: u64,
+        caller: &Caller,
+        provider: &str,
+        query: &CatalogueQuery,
+    ) -> Option<CataloguePage> {
+        let mut route = record_of(provider, "")?;
+        let link = self.shared.link.get()?;
+        route.cluster_id = link
+            .view_read_policy(workspace, caller, &route.app_id, &route.record)?
+            .room;
+        let read = reads::CanonicalRead::prepare(
+            &self.catalogue,
+            link.as_ref(),
+            workspace,
+            caller,
+            &route,
+        )
+        .ok()?;
+        // Document rows retain their existing room revision and invocation
+        // path. Only an exact registered-read target uses this source revision.
+        let target = query.target.as_ref()?;
+        let descriptors = read.operations();
+        if !descriptors.iter().any(|entry| &entry.address == target) {
+            return None;
+        }
+        read.recheck(link.as_ref(), workspace, caller, &route)
+            .ok()?;
+        let rows = descriptors
+            .into_iter()
+            .map(|descriptor| CatalogueRow {
+                provider: provider.into(),
+                app_id: route.app_id.clone(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: descriptor.address.resource.clone(),
+                    kind: descriptor.resource_kind.clone(),
+                    label: descriptor.resource_label.clone(),
+                    presentation: None,
+                },
+                action: Some(descriptor),
+                has_children: false,
+                visibility: None,
+            })
+            .collect();
+        Some(CataloguePage::from_rows(
+            read.revision().to_owned(),
+            rows,
+            query,
+        ))
+    }
+
     fn open_rows(&self, room: &str) -> Vec<CatalogueRow> {
         self.catalogue
             .iter()
@@ -883,6 +1094,7 @@ impl Worker {
                         presentation: None,
                     },
                     action: Some(tilo_actions::door::ActionDescriptor {
+                        semantic_identity: None,
                         address: target.address,
                         resource_kind: "applications.app".into(),
                         resource_label: app.to_owned(),
@@ -903,7 +1115,7 @@ impl Worker {
     }
 
     fn invoke(&mut self, workspace_id: u64, invocation: InvocationId) -> InvocationReceipt {
-        let request = {
+        let (caller, request) = {
             let mut ledger = self.ledger();
             let Some(entry) = ledger.entries.get(&invocation) else {
                 return InvocationReceipt {
@@ -917,11 +1129,13 @@ impl Worker {
                 // Cancelled before it started.
                 return InvocationState::new(invocation, entry.update.clone()).receipt();
             }
+            let caller = entry.caller.clone();
             let request = entry.request.clone();
             ledger.running = Some(invocation);
-            request
+            drop(ledger);
+            (caller, request)
         };
-        let outcome = self.perform(workspace_id, &request);
+        let outcome = self.perform(workspace_id, &caller, &request);
         let target = &request.target;
         match &outcome {
             Ok(_) => {
@@ -962,8 +1176,15 @@ impl Worker {
     fn perform(
         &mut self,
         workspace_id: u64,
+        caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<ActionOutput, Outcome> {
+        if let Some(output) = self
+            .try_registered_read(workspace_id, caller, request)
+            .map_err(|error| *error)?
+        {
+            return Ok(output);
+        }
         let state = self.refresh(workspace_id).map_err(Outcome::Rejected)?;
         if request
             .revision
@@ -1006,7 +1227,7 @@ impl Worker {
         let mounted = self
             .mount(&route, &state)
             .map_err(|_| Outcome::Rejected(ActionHostError::UnknownAction))?;
-        let descriptor = live_actions(&mut mounted.app)
+        let descriptor = live_actions(&mounted.app)
             .into_iter()
             .find(|descriptor| descriptor.address == target.address)
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
@@ -1017,7 +1238,7 @@ impl Worker {
             (ConfirmationPolicy::Phrase { .. }, _) => false,
             (_, confirmation) => confirmation.is_some(),
         };
-        let started = mounted
+        let output = mounted
             .app
             .invoke(&target.address, &arguments, confirmed)
             .map_err(|error| door_outcome(&error))?;
@@ -1033,10 +1254,77 @@ impl Worker {
                     })
                 })?;
         }
-        Ok(match started {
-            ResourceOperationStart::Completed(output) => output,
-            ResourceOperationStart::Accepted => ActionOutput::default(),
-        })
+        Ok(output)
+    }
+
+    fn try_registered_read(
+        &self,
+        workspace: u64,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Option<ActionOutput>, Box<Outcome>> {
+        let Some(hint) = record_of(&request.target.provider, "") else {
+            return Ok(None);
+        };
+        let Some(link) = self.shared.link.get() else {
+            return Ok(None);
+        };
+        let Some(policy) = link.view_read_policy(workspace, caller, &hint.app_id, &hint.record)
+        else {
+            return Ok(None);
+        };
+        let route = DocumentRoute {
+            cluster_id: policy.room,
+            ..hint
+        };
+        let Ok(mut read) = reads::CanonicalRead::prepare(
+            &self.catalogue,
+            link.as_ref(),
+            workspace,
+            caller,
+            &route,
+        ) else {
+            // A missing canonical read source must not replace or grant the
+            // ordinary document door. Unregistered effects stay refused there.
+            return Ok(None);
+        };
+        if !read
+            .operations()
+            .iter()
+            .any(|entry| entry.address == request.target.address)
+        {
+            return Ok(None);
+        }
+        if request
+            .revision
+            .as_deref()
+            .is_some_and(|revision| revision != read.revision())
+        {
+            return Err(Box::new(Outcome::Rejected(ActionHostError::Refused {
+                reason: "the committed source changed".into(),
+            })));
+        }
+        let arguments = match &request.argument {
+            InvokeArgument::None => serde_json::Map::new(),
+            InvokeArgument::Json(arguments) => arguments.clone(),
+            InvokeArgument::Text(_) => {
+                return Err(Box::new(Outcome::Rejected(
+                    ActionHostError::InvalidRequest {
+                        reason: "a registered read requires typed arguments".into(),
+                    },
+                )));
+            }
+        };
+        read.invoke(
+            link.as_ref(),
+            workspace,
+            caller,
+            &route,
+            &request.target.address,
+            &arguments,
+        )
+        .map(Some)
+        .map_err(|error| Box::new(door_outcome(&error)))
     }
 
     #[allow(
@@ -1050,7 +1338,7 @@ impl Worker {
         app: &str,
     ) -> Result<ActionOutput, Outcome> {
         let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
-        let mut hosted = HostedApp::open(
+        let mut hosted = Replica::open(
             &self.catalogue,
             app,
             room,
@@ -1062,13 +1350,12 @@ impl Worker {
         let route = DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: room.to_owned(),
-            record: hosted.record().to_owned(),
+            record: hosted.wire_record().to_owned(),
         };
         if let Some(mutation) = hosted.take_mutation() {
             self.commit(workspace_id, &route, &mutation)
                 .map_err(refused)?;
         }
-        hosted.close();
         Ok(ActionOutput {
             value: Some(serde_json::json!({
                 "provider": record_provider(&route),
@@ -1099,4 +1386,34 @@ impl Worker {
         }
         Ok(())
     }
+}
+
+fn exact_view_query(
+    query: &CatalogueQuery,
+) -> Result<(&tilo_actions::remote::ViewResourceQuery, &str), ActionHostError> {
+    let wanted = query
+        .view_resource
+        .as_ref()
+        .ok_or(ActionHostError::UnknownAction)?;
+    let provider = query
+        .provider
+        .as_deref()
+        .ok_or(ActionHostError::UnknownAction)?;
+    if wanted.id.is_empty()
+        || wanted.id.trim().is_empty()
+        || wanted.id.chars().any(char::is_control)
+        || wanted.id.len() > 2048
+        || wanted.kind.is_empty()
+        || wanted.kind.trim().is_empty()
+        || wanted.kind.chars().any(char::is_control)
+        || wanted.kind.len() > 128
+        || provider.len() > 2048
+        || provider.chars().any(char::is_control)
+        || query.target.is_some()
+        || !query.cursor.is_empty()
+        || query.parent_resource.is_some()
+    {
+        return Err(ActionHostError::UnknownAction);
+    }
+    Ok((wanted, provider))
 }

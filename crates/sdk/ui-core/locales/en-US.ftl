@@ -23,6 +23,8 @@ standalone-history-restore-unavailable = This version can't be restored here.
 standalone-history-preview-resource = Document
 host-search = Search…
 host-search-placeholder = Search
+dropdown-search-placeholder = Search choices
+dropdown-search-description = Type to filter choices. Use the arrow keys to choose and Enter to select.
 host-undo = Undo
 host-undo-named = Undo { $change }
 host-redo = Redo
@@ -88,6 +90,7 @@ history-mode-unavailable = History unavailable
 history-mode-content-unavailable = Historical content unavailable
 history-mode-back-to-activity = Back to activity
 history-mode-back-to-live = Back to live
+history-mode-earlier = Show earlier changes
 history-mode-before = Before
 history-mode-after = After
 history-mode-showing-before = Historical: Before
@@ -260,6 +263,11 @@ terminal-run-on = Run on:
 terminal-run-on-this-device = This device
 terminal-host-awaiting-allow = Waiting for you to allow this device's own shell
 terminal-host-denied = This device's own shell was not allowed
+terminal-no-runtime-status = No environment can start here — press Enter for this device's own shell
+terminal-no-runtime-title = This terminal's environment cannot start on this device.
+terminal-no-runtime-host = Press Enter to open this device's own shell instead (unconfined; Tilo asks you to allow it first),
+terminal-no-runtime-picker = or choose another place from the target menu at the top of this tab.
+terminal-no-runtime-install = An environment needs an env-runtime image: update Tilo, or install one from the app store.
 terminal-env-title = Environments
 terminal-env-tools = Tools
 terminal-env-no-tools = No tools yet — run pkg install inside the environment
@@ -296,6 +304,7 @@ block-editor-code-exit-hint = Ctrl+Enter to leave code
 block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Copied
 block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: write above · Tab / Shift+Tab: indent / outdent · Ctrl+Shift+C: copy code
+widget-breadcrumb = Path
 widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
@@ -374,6 +383,16 @@ relative-ago-years = { $count ->
 
 # A software participant in history, presence and activity rows.
 participant-agent = { $name } · Agent
+interaction-agent = Agent
+interaction-collaborator = Collaborator
+interaction-action-status = { $action } ({ $phase }) - { $name }
+interaction-inspecting = Inspecting
+interaction-applying = Applying
+interaction-waiting = Waiting
+interaction-committed = Committed
+interaction-failed = Failed
+interaction-cancelled = Cancelled
+interaction-progress = { $label } - { $done }/{ $total }
 participant-unknown-agent = Unknown agent
 
 # History as published actions, for the palette, scripts, agents and assistive technology.
@@ -420,6 +439,28 @@ history-day-yesterday = Yesterday
 history-day-this-week = This week
 history-day-earlier = Earlier
 
+save-status-saving = Saving…
+save-status-saved = Saved
+save-status-failed = Save failed
+save-status-retry = Try again
+save-status-dismiss = Dismiss
+
+# Find bar: the band at the top of a document that finds in it.
+find-bar-name = Find
+find-bar-placeholder = Find
+find-bar-replace-placeholder = Replace with
+find-bar-match-case = Match case
+find-bar-whole-word = Whole word
+find-bar-regex = Regular expression
+find-bar-text = Text
+find-bar-hex = Hex
+find-bar-previous = Previous match
+find-bar-next = Next match
+find-bar-close = Close find
+find-bar-replace = Replace
+find-bar-replace-all = Replace all
+find-bar-position = { $current } of { $total }
+find-bar-no-matches = No matches
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
@@ -432,3 +473,125 @@ block-editor-replace = Replace
 
 block-editor-replace-all = Replace all
 block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field
+
+dictation-record-once = Record once
+dictation-finish = Finish
+dictation-cancel = Cancel
+
+music-home-heading = Your music
+music-connect-spotify = Connect Spotify
+music-connect-spotify-library = Enable full controls
+music-spotify-playback = Authorize playback
+music-spotify-playback-authorized = Spotify • Playback grant authorized; Premium checked before audio
+music-spotify-devices = Spotify devices
+music-browse-spotify = Browse Spotify
+music-browse-youtube = YouTube Music
+music-source-connecting = Connecting… Finish sign-in in your browser.
+
+music-disconnect-spotify = Disconnect Spotify
+
+music-searching-catalogue = Searching the music catalogue…
+music-search-hint = Press Enter to search the selected music source
+
+music-spotify-updating = Updating Spotify…
+music-spotify-output = Spotify output:
+music-spotify-device-help = Move Spotify playback to this device. Spotify manages its queue.
+music-spotify-library = Your Spotify library
+music-spotify-liked = Spotify Liked Songs
+music-spotify-liked-description = Songs saved to your Spotify account
+music-sources = Music sources
+music-sources-heading = Music sources
+music-sources-guide = Choose a catalogue alongside your local files. Authorize Spotify Premium playback separately.
+music-spotify-active = active
+music-spotify-save = Save to Spotify Liked Songs
+music-spotify-unsave = Remove from Spotify Liked Songs
+music-spotify-signin-expired = Spotify sign-in expired. Connect again to refresh your library; your local files remain available.
+music-spotify-queue-changed = The queue changed during the Spotify transition. Choose a song to continue.
+music-spotify-request-timeout = Spotify did not finish this request in time. A change may already have been applied; refresh before retrying.
+music-spotify-select-device = Select { $device }
+music-spotify-pause-device = Pause { $device }
+music-spotify-play-device = Play on { $device }
+music-spotify-playlist-choice = Spotify · { $name }
+music-spotify-remove-playlist = Remove all occurrences from this Spotify playlist
+music-spotify-rename-playlist = Rename Spotify playlist…
+music-spotify-save-playlist = Save Spotify playlist
+music-spotify-unsave-playlist = Remove Spotify playlist from your library
+
+music-spotify-create-playlist = New Spotify playlist
+music-spotify-create = Create
+music-spotify-save-name = Save name
+music-spotify-private-help = Creates an empty private playlist in Spotify. Add songs after creation is confirmed.
+music-spotify-ownership-help = Only the owner can rename this playlist. Adding or removing songs requires owner or collaborator access.
+music-spotify-select-first = Choose Spotify as your catalogue first.
+music-spotify-albums = Saved Spotify albums
+music-spotify-playlists = Spotify playlists
+music-spotify-queue-refresh = Refresh Spotify queue
+music-spotify-library-more = More collections
+music-spotify-library-page-unavailable = No next page is ready. Wait for loading, or refresh your Spotify library. At most 2,000 collections per type are supported.
+music-spotify-library-page-invalid = Spotify returned an invalid library page. Your current library has been kept.
+music-spotify-remote-queue = Spotify remote queue
+music-spotify-remote-queue-help = A read-only Spotify snapshot. This device’s queue stays separate. Refresh to check for changes.
+music-spotify-remote-queue-empty = Spotify reported no upcoming items.
+music-spotify-remote-queue-unloaded = Refresh to read Spotify’s remote queue. No remote snapshot is loaded.
+music-spotify-remote-queue-age = Snapshot captured { $seconds } seconds ago
+music-spotify-remote-queue-truncated = Showing the first 50 remote items.
+music-spotify-local-queue = This device’s queue
+
+music-spotify-artists = Followed artists
+music-spotify-following = Following on Spotify
+music-spotify-follow-artist = Follow artist on Spotify
+music-spotify-unfollow-artist = Unfollow artist on Spotify
+
+music-spotify-playlist-actions = Spotify playlist actions
+
+widget-sidebar-resize = Resize sidebar
+widget-inspector-resize = Resize inspector
+
+dictation-copy-transcript = Copy transcript
+dictation-discard-transcript = Discard transcript
+
+dropdown-no-matches = No matching choices
+
+# Shared native screen topology canvas
+display-arrangement-name = Display arrangement
+display-arrangement-description = Drag a display to place it beside another. Each display's position menu does the same from the keyboard.
+display-arrangement-empty = No displays to arrange
+display-arrangement-item = Display { $number }: { $name }
+display-arrangement-item-primary = Display { $number }: { $name }, primary
+display-arrangement-item-position = { $width } × { $height } at { $x }, { $y }
+
+device-display-session-unavailable = The Tilo session is unavailable.
+device-display-request-pending = A display placement request is already pending.
+device-display-session-disconnected = The Tilo session disconnected.
+music-recommendations-title = Made from your library
+music-recommendations-change-inputs = Change recommendation inputs
+music-recommendations-missing-track = This song is no longer in the library.
+music-recommendations-help = Suggestions from songs already in this library. Each one names the choice that brought it here.
+music-recommendations-privacy = Uses the inputs you enable and artists you prefer. No listening history or provider requests. Feedback shares with this library; History can undo it.
+music-recommendations-tune = Tune suggestions
+music-recommendations-input-likes = Use liked songs and their genre tags
+music-recommendations-input-saved-albums = Use saved albums
+music-recommendations-input-followed-artists = Use followed artists
+music-recommendations-empty = Nothing tailored yet. Add music, then like a song, save an album or follow an artist to find suggestions.
+music-recommendations-no-match = No eligible songs match. Adjust inputs, restore a song or add music. An account connection isn’t needed.
+music-recommendations-library = Open songs
+music-recommendations-song = { $title } · { $artist }
+music-recommendations-play = Play
+music-recommendations-dismiss = Hide this suggestion
+music-recommendations-restore = Show again
+music-recommendations-prefer = More from this artist
+music-recommendations-unprefer = Stop preferring this artist
+music-recommendations-feedback = Your recommendation choices
+music-recommendations-feedback-help = Preferences affect suggestions only, without following artists on a service. Change them below or Undo in History.
+music-recommendations-feedback-empty = No hidden songs or preferred artists.
+music-recommendations-preferred-artist = Preferred: { $name }
+music-recommendations-hidden-song = Hidden: { $title }
+music-recommendations-reason-preferred = Because you asked for more from { $name }.
+music-recommendations-reason-liked = Because you liked “{ $name }” by this artist.
+music-recommendations-reason-saved = Because you saved “{ $name }” by this artist.
+music-recommendations-reason-followed = Because you follow { $name } in this library.
+music-recommendations-reason-genre = Its library genre tag, { $genre }, matches { $artist }, whose song you liked. Genre tags can be imperfect.
+music-recommendations-enabled = Enabled
+music-recommendations-disabled = Disabled
+music-recommendations-enable = Enable input
+music-recommendations-disable = Disable input

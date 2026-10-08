@@ -485,12 +485,38 @@ pub struct PressIntent {
 /// a slow frame between two presses is indistinguishable from a slow user.
 static MULTI_CLICK_MS: AtomicU64 = AtomicU64::new(450);
 
+std::thread_local! {
+    // A capture may need two presses to survive slow rendering, without
+    // changing another capture's timing or the session preference.
+    static CAPTURE_MULTI_CLICK_INTERVAL: std::cell::Cell<Option<Duration>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
 /// How far the pointer may travel between them.
 const MULTI_CLICK_DIST: f64 = 4.0;
 
 /// The current multi-click window.
 pub fn multi_click_interval() -> Duration {
-    Duration::from_millis(MULTI_CLICK_MS.load(Ordering::Relaxed))
+    CAPTURE_MULTI_CLICK_INTERVAL
+        .get()
+        .unwrap_or_else(|| Duration::from_millis(MULTI_CLICK_MS.load(Ordering::Relaxed)))
+}
+
+/// Override capture timing synchronously on this thread, restoring it even
+/// when a frame panics. Ordinary hosts keep the session preference.
+pub(crate) fn with_capture_multi_click_interval<T>(
+    interval: Duration,
+    capture: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<Duration>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CAPTURE_MULTI_CLICK_INTERVAL.set(self.0);
+        }
+    }
+    let _restore = Restore(CAPTURE_MULTI_CLICK_INTERVAL.replace(Some(interval)));
+    capture()
 }
 
 /// Set the multi-click window for this session.
@@ -568,6 +594,54 @@ impl DragSelect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_captures_keep_their_own_multi_click_gestures_and_session_preference() {
+        let session_interval = multi_click_interval();
+        let ready = std::sync::Barrier::new(3);
+        let done = std::sync::Barrier::new(3);
+        std::thread::scope(|scope| {
+            let capture = |interval| {
+                with_capture_multi_click_interval(interval, || {
+                    ready.wait();
+                    let mut gesture = DragSelect {
+                        last_click: Some(crate::time::now()),
+                        last_pos: Point::ZERO,
+                        click_count: 1,
+                        ..DragSelect::default()
+                    };
+                    let granularity = gesture.press(Point::ZERO, false).granularity;
+                    done.wait();
+                    granularity
+                })
+            };
+            let long = scope.spawn(move || capture(Duration::from_secs(3600)));
+            let short = scope.spawn(move || capture(Duration::ZERO));
+            ready.wait();
+            let observed_session_interval = multi_click_interval();
+            done.wait();
+            assert_eq!(long.join().unwrap(), Granularity::Word);
+            assert_eq!(short.join().unwrap(), Granularity::Char);
+            assert_eq!(observed_session_interval, session_interval);
+        });
+        assert_eq!(multi_click_interval(), session_interval);
+    }
+
+    #[test]
+    fn capture_multi_click_timing_restores_nested_and_panicking_frames() {
+        let session_interval = multi_click_interval();
+        with_capture_multi_click_interval(Duration::from_secs(3600), || {
+            let result = std::panic::catch_unwind(|| {
+                with_capture_multi_click_interval(Duration::ZERO, || {
+                    assert_eq!(multi_click_interval(), Duration::ZERO);
+                    panic!("capture frame failed");
+                });
+            });
+            assert!(result.is_err());
+            assert_eq!(multi_click_interval(), Duration::from_secs(3600));
+        });
+        assert_eq!(multi_click_interval(), session_interval);
+    }
 
     #[test]
     fn drag_select_escalates_clicks_extends_with_shift_and_tracks_the_drag() {

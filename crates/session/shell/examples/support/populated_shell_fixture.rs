@@ -14,7 +14,7 @@ impl PopulatedShellFixture {
         let parent = tempfile::tempdir()
             .map_err(|error| format!("private populated shell fixture parent: {error}"))?;
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
+            ui::font_catalog::checkout_root(),
             "en-US",
         );
         let renderer = ui::text_render::TextRenderer::with_font_catalog(&catalog)

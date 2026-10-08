@@ -330,8 +330,8 @@ fn a_closed_window_gets_the_frame_callbacks_its_last_frames_wait_on() {
         c.frames_done.contains(&2)
     });
 
-    // The client draws once more while it shuts down; its tab is gone, so no
-    // paint would ever show it. The callback must still come, without one.
+    // The client draws once more while it shuts down. Its callback must
+    // still come immediately without needing another paint.
     draw(&surface, &buffer, &qh, 3);
     h.pump_until("frame 3's callback on commit", |c| {
         c.frames_done.contains(&3)
@@ -590,5 +590,152 @@ fn a_window_has_answered_input_after_two_pings_and_a_captured_frame() {
             started + shell::compositor::client_settle::SETTLE_LIMIT
         ),
         Progress::TimedOut
+    );
+}
+
+/// Open a window of [`APP_ID`] attributed to launch `key`, configured and
+/// drawn once.
+fn launched_window(
+    h: &mut Harness,
+    key: &str,
+) -> (
+    u64,
+    wl_surface::WlSurface,
+    xdg_surface::XdgSurface,
+    xdg_toplevel::XdgToplevel,
+) {
+    let qh = h.queue.handle();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id(APP_ID.into());
+    surface.commit();
+    h.pump();
+    let id = adopted_surface(&h.state);
+    shell::shell::launcher::attribute_surface_launch(id, key);
+    shell::compositor::foreign::store()
+        .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
+    shell::shell::foreign::flush_configures(&mut h.state);
+    h.pump_until("the first configure", |c| c.configured);
+    let buffer = shm_buffer(h);
+    draw(&surface, &buffer, &qh, 1);
+    h.pump();
+    (id, surface, xdg, toplevel)
+}
+
+/// A window that goes away without the compositor asking and without the
+/// person ever reaching its app was lost, not closed: an app whose drawing
+/// surface died tore its window down and exited cleanly, and the desktop
+/// said nothing. A window the compositor asked to close is not.
+#[test]
+fn a_window_that_goes_away_unasked_is_lost_and_a_closed_one_is_not() {
+    let mut h = Harness::new();
+    let (_, surface, xdg, toplevel) = launched_window(&mut h, "org.example.Lost");
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert!(
+        shell::shell::launcher::take_launch_vanished("org.example.Lost"),
+        "a window torn down unasked must be reported as lost"
+    );
+
+    let (id, surface, xdg, toplevel) = launched_window(&mut h, "org.example.Closed");
+    h.state.close_surface_on_request(id);
+    h.pump_until("the close request", |c| c.close_requested);
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert!(
+        !shell::shell::launcher::take_launch_vanished("org.example.Closed"),
+        "a window the compositor asked to close was closed, not lost"
+    );
+}
+
+/// An agent or another device drives an app through its actions. A window
+/// the app closes after being handed one was closed on request, even though
+/// no key or click ever reached it.
+#[test]
+fn a_window_closed_after_an_action_reached_its_app_is_not_lost() {
+    let mut h = Harness::new();
+    let (_, surface, xdg, toplevel) = launched_window(&mut h, "org.example.Acted");
+    // What the collaboration broker reports when it hands the app an
+    // invocation, such as an agent's close.
+    shell::shell::launcher::note_launch_acted_on("org.example.Acted");
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert!(
+        !shell::shell::launcher::take_launch_vanished("org.example.Acted"),
+        "a window its app closed after an action reached it was closed, not lost"
+    );
+}
+
+/// xdg close is a request: an unsaved-document/save-error decision may keep
+/// the client alive. Its tab must stay discoverable until actual destruction.
+#[test]
+fn a_deferred_client_close_keeps_its_tab_until_surface_destruction() {
+    let mut h = Harness::new();
+    let qh = h.queue.handle();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id(APP_ID.into());
+    surface.commit();
+    h.pump();
+    let id = adopted_surface(&h.state);
+    let chrome =
+        shell::shell::chrome_state::ChromeState::new_with_handle(h.state.workspace_tree.clone());
+    let tab_id = chrome.borrow().tree().desktop.workspaces.iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find(|tab| matches!(tab.tile, shell::shell::state::TileContent::Foreign { surface_id, .. } if surface_id == id))
+        .expect("adopted tab").id;
+    shell::shell::window_actions::close_tab(&mut chrome.borrow_mut(), tab_id).unwrap();
+    for requested in chrome.borrow_mut().take_surface_close_requests() {
+        h.state.close_surface_on_request(requested);
+    }
+    h.pump_until("the close request", |client| client.close_requested);
+    assert_eq!(
+        adopted_surface(&h.state),
+        id,
+        "the client can still show its close decision"
+    );
+    assert!(
+        chrome.borrow_mut().reopen_closed_tab().is_none(),
+        "a live client is not a completed close"
+    );
+    // A refusing client can commit a decision frame and remains discoverable.
+    surface.commit();
+    h.pump();
+    assert_eq!(adopted_surface(&h.state), id);
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert!(
+        !h.state
+            .workspace_tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .any(|tab| tab.id == tab_id),
+        "actual destruction removes the tab"
+    );
+    chrome.borrow_mut().sync_external_tree_revision();
+    assert!(
+        chrome.borrow_mut().reopen_closed_tab().is_some(),
+        "actual close has an Undo entry"
     );
 }

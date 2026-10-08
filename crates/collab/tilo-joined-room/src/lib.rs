@@ -9,12 +9,16 @@
 //! standalone runtime keeps it in a file of its own ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
+mod application_record;
 mod bootstrap;
 mod certified;
 mod document_read;
+mod effect_history;
+mod effect_receipt;
 pub mod enroll;
 mod enrollment;
 mod file_store;
+mod history_content;
 mod limits;
 mod publication;
 mod record;
@@ -24,13 +28,16 @@ pub mod testing;
 #[cfg(test)]
 mod tests;
 pub mod voice;
+mod workspace_membership;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 
+pub use application_record::{ApplicationInitialization, ApplicationRecord};
 pub use bootstrap::NativeBootstrap;
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use document_read::{CommittedDocument, DocumentRead};
 pub use file_store::open_file;
+pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use publication::{
     NativeOutgoing, NativeOutgoingEntry, preflight_storage, reserved_file_bytes,
@@ -54,6 +61,21 @@ use tilo_user_identity::DeviceCert;
 
 /// Where an owner's record is durable.
 pub trait Store: std::any::Any + Send + Sync {
+    /// Durably retain immutable owner history through the existing content backend.
+    /// The state publication may reference the returned address only after this succeeds.
+    ///
+    /// # Errors
+    /// Unsupported storage, quota, integrity or durable I/O failure.
+    fn put_history(&self, _bytes: &[u8]) -> Result<[u8; 32], String> {
+        Err("native owner history content is unavailable".into())
+    }
+    /// Read and verify a retained history block. Absence is an error, not UUID absence.
+    ///
+    /// # Errors
+    /// Missing, corrupt, oversized or unavailable content.
+    fn read_history(&self, _hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        Err("native owner history content is unavailable".into())
+    }
     /// False once a publication may or may not have reached disk; the owner
     /// then stays fenced until it is reopened from what the disk holds.
     fn healthy(&self) -> bool;
@@ -282,6 +304,7 @@ impl NativeWorkspaceOwner {
         }
         for (room, record) in &authority.rooms {
             let view = enrollment::restore(*room, record, now)?;
+            effect_receipt::validate_history(&view, store.as_ref())?;
             current.rooms.insert(*room, Arc::new(view));
         }
         Ok(Self(Arc::new(SharedOwner {
@@ -308,6 +331,102 @@ impl NativeWorkspaceOwner {
     #[must_use]
     pub fn contains_room(&self, room: RoomId) -> bool {
         self.0.current.read().required.contains(&room) || self.0.store.uncertain(room)
+    }
+
+    /// Canonical task state from the current admitted owner view, never the
+    /// desktop presentation cache.
+    ///
+    /// # Errors
+    /// The room is fenced, absent, or its task-control sidecar is malformed.
+    pub fn workspace_task_snapshot(
+        &self,
+        room: RoomId,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
+        self.with_current(room, |view| {
+            let document = view
+                .peer()
+                .admitted_room()
+                .ok_or("native room has no admitted task document")?;
+            tilo_peer_state::workspace_task::snapshot(document)
+        })
+    }
+
+    /// Result retained by the owner for one device-scoped task invocation.
+    ///
+    /// # Errors
+    /// The room is fenced, absent, or its task-control sidecar is malformed.
+    pub fn workspace_task_result(
+        &self,
+        room: RoomId,
+        id: tilo_peer_state::workspace_task::WorkspaceTaskCommandId,
+    ) -> Result<Option<tilo_desktop_model::WorkspaceTaskMutationResult>, String> {
+        self.with_current(room, |view| {
+            let document = view
+                .peer()
+                .admitted_room()
+                .ok_or("native room has no admitted task document")?;
+            tilo_peer_state::workspace_task::result_of(document, id)
+        })
+    }
+
+    /// Serialize one ordinary agent action admission against task directions.
+    /// The current room read guard is released before `admit` runs, while the
+    /// task mutation turn remains held, so nested policy reads are safe and a
+    /// concurrent direction is ordered wholly before or after this admission.
+    ///
+    /// `applied_direction_revision` is the revision the agent actually planned
+    /// against. It must equal both the active run's acknowledgement and the
+    /// latest durable direction, preventing a delayed pre-direction action from
+    /// entering after a newer direction has been acknowledged.
+    ///
+    /// # Errors
+    /// The room is fenced, the task/run/revision lease is stale, or `admit`
+    /// refuses the ordinary invocation.
+    pub fn with_task_action_admission<T>(
+        &self,
+        room: RoomId,
+        task_id: &str,
+        agent_id: &str,
+        run_epoch: u64,
+        applied_direction_revision: u64,
+        admit: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _turn = self.0.mutation.lock();
+        self.with_current(room, |view| {
+            let document = view
+                .peer()
+                .admitted_room()
+                .ok_or("native room has no admitted task document")?;
+            let snapshot = tilo_peer_state::workspace_task::snapshot(document)?;
+            let task = snapshot
+                .tasks
+                .iter()
+                .find(|task| task.id == task_id)
+                .ok_or("workspace task no longer exists")?;
+            let control = snapshot
+                .controls
+                .get(task_id)
+                .ok_or("workspace task has no execution control")?;
+            let run = control
+                .active_run
+                .as_ref()
+                .ok_or("workspace task has no active run")?;
+            let latest_direction = control
+                .directions
+                .last()
+                .map_or(0, |direction| direction.revision);
+            if task.status != tilo_desktop_model::WorkspaceTaskStatus::InProgress
+                || task.assigned_agent.as_deref() != Some(agent_id)
+                || run.agent_id != agent_id
+                || run.epoch != run_epoch
+                || run.applied_direction_revision != applied_direction_revision
+                || latest_direction != applied_direction_revision
+            {
+                return Err("workspace task action lease is stale".into());
+            }
+            Ok(())
+        })?;
+        admit()
     }
     /// Store availability only; room authority still requires `with_current`.
     ///
@@ -403,6 +522,7 @@ impl NativeWorkspaceOwner {
         mut candidate: NativeCommittedView,
         enrollment: Option<&StoredPendingEnrollment>,
     ) -> Result<(), String> {
+        publication::refresh_governance_checkpoint(&mut candidate)?;
         let candidate_security = candidate.security_digest()?;
         let changed = {
             let current = self.0.current.read();

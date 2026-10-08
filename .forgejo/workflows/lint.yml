@@ -9,10 +9,10 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # Stacked PRs (a PR whose base is another task branch) get the
     # same gate; affected-package selection diffs against that base, so each
     # layer tests its own change.
-    branches: ["main", "pr/sdk-*"]
+    branches: ["main", "pr/sdk-*", "codex/**"]
   workflow_dispatch:
 
 concurrency:
@@ -26,7 +26,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 30
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     env:
       # The policy suite's Cargo metadata and cargo deny resolve every locked
       # crate; read them from the shared download cache, not crates.io.
@@ -73,9 +73,28 @@ jobs:
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
+      # crates/workspace-hack unifies third-party features across members; a
+      # dependency change that is not regenerated splits the shared builds again.
+      # Fail before the slower policy and dependency scans when it is stale.
+      - name: Workspace-hack matches the dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then
+            echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (DEVELOPMENT.md, Dependency features)." >&2
+            exit 1
+          fi
+          cargo hakari verify
+
       - name: Require reasons for Rust lint exceptions in changed files
         run: >-
           python3 tools/ci/check_changed_rust_allows.py
+          '${{ steps.merge.outputs.main }}'
+          '${{ github.event.before }}'
+
+      - name: Verify commit messages and exact new blob contents
+        run: >-
+          python3 tools/policy/check_commit_policy.py
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
@@ -90,18 +109,6 @@ jobs:
 
       - name: cargo deny
         run: cargo deny --workspace check --hide-inclusion-graph
-
-      # crates/workspace-hack unifies third-party features across members; a
-      # dependency change that is not regenerated splits the shared builds again.
-      - name: Workspace-hack matches the dependency graph
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then
-            echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (DEVELOPMENT.md, Dependency features)." >&2
-            exit 1
-          fi
-          cargo hakari verify
 
       - name: cargo machete
         run: >-

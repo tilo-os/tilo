@@ -307,3 +307,46 @@ fn hosted_directory_expiry_failure_and_owner_close_never_restore_old_revision() 
         ));
     }
 }
+
+#[test]
+fn directory_permission_action_authority_revoke_invalidates_actual_bound_revision() {
+    use crate::permissions::{Actor, PermissionContext, Role};
+    use std::sync::{Arc, Mutex};
+    let current = Arc::new(Mutex::new(Some(Role::Owner)));
+    let source = current.clone();
+    let mut fixture = ActionFixture::broker();
+    *fixture.permissions.borrow_mut() = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Editor), "fixture-user"),
+        vec![],
+    )
+    .with_action_authority(
+        "so.tilo.binding-probe".into(),
+        Arc::new(move || {
+            Ok(PermissionContext::from_capabilities(
+                Actor::person(*source.lock().unwrap(), "fixture-user"),
+                vec![],
+            ))
+        }),
+    );
+    let revision = capture_bound_directory(&mut fixture);
+    let alias = fixture
+        .app
+        .actions
+        .bound_publication
+        .alias(&fixture.bindings[1], "bound:probe")
+        .unwrap();
+    assert!(matches!(
+        fixture
+            .app
+            .resolve_action_directory(&revision, &alias, "follow-up"),
+        runtime_collab::ActionDirectoryResolution::Found(_)
+    ));
+    *current.lock().unwrap() = None;
+    assert!(matches!(
+        fixture
+            .app
+            .resolve_action_directory(&revision, &alias, "follow-up"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    ));
+    assert!(fixture.app.actions.action_directory_snapshot.is_none());
+}

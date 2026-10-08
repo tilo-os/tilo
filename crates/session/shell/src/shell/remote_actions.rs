@@ -56,6 +56,32 @@ impl BrokerActionHost {
         }
     }
 
+    /// Legacy source fixtures delegate into the production broker's native
+    /// authority checks. Live palette/control use maintained action sessions.
+    #[cfg(test)]
+    pub(crate) fn invoke_local_person_job(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
+        if self.own_peer.is_some() || self.launch.is_some() {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        let state = std::sync::Arc::clone(self.broker.state());
+        let origin = caller.clone();
+        let invocation = request.invocation;
+        state
+            .clone()
+            .action_invoke_local_person(caller, request)
+            .map(move |result| {
+                let receipt = result?;
+                let job = state
+                    .remote_job(&origin, &invocation)
+                    .ok_or(ActionHostError::UnknownInvocation)?;
+                Ok((job, receipt))
+            })
+    }
+
     /// [`ActionHost::invoke`], also naming the broker job once admitted —
     /// for an in-process caller, such as the palette, that lists jobs.
     #[must_use]
@@ -135,6 +161,7 @@ mod tests {
 
     fn action(name: &str, contract: tilo_actions::ActionContract) -> PublishedAction {
         PublishedAction {
+            semantic_identity: None,
             resource: "files.entry:/tmp/report".into(),
             action: name.into(),
             resource_kind: "files.entry".into(),
@@ -211,6 +238,7 @@ mod tests {
 
     fn refresh(invocation: tilo_actions::InvocationId) -> InvokeRequest {
         InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: "7".into(),
@@ -295,6 +323,7 @@ mod tests {
                 description: None,
                 open_action: "open".into(),
                 primary: true,
+                range: None,
                 mount: None,
             };
             open.view = Some(view.clone());
@@ -386,6 +415,7 @@ mod tests {
                 .expect("the workspace is offered");
             let caller = Caller::local_person("a1".repeat(32)).in_room(&room);
             let open = InvokeRequest {
+                on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: tilo_actions::remote::workspace_provider(&room),

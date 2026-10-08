@@ -43,8 +43,11 @@ use crate::sshguard;
 use crate::sshkey;
 use crate::vmbuild;
 
+mod admin;
+mod builder;
 mod device;
 mod kernel;
+mod reach;
 mod scenario;
 
 #[derive(Debug, Clone, Copy)]
@@ -352,12 +355,16 @@ impl Plan {
 
 pub struct App {
     pub json: bool,
+    pub target: Option<String>,
     pub worktree: Option<Worktree>,
     pub registry_path: PathBuf,
     pub runner: SystemRunner,
     pub receipt: Receipt,
     /// Non-fatal findings surfaced after the main output.
     pub warnings: Vec<String>,
+    /// The peer-network session the last connection took, when the device
+    /// was not on this network.
+    pub peer: Option<remote::PeerSession>,
 }
 
 pub fn human_bytes(bytes: u64) -> String {
@@ -381,6 +388,34 @@ fn short(hash: &str) -> &str {
 }
 
 /// What an apply did, in one sentence per consequence.
+/// The rest of [`describe_apply`] for a laptop's `device` slot, the owner's
+/// login: what merged, which services and desktops restarted, or why not.
+fn describe_login(result: &ApplyResult, desktops: &[&str], text: &mut String) {
+    text.push_str("; merged into the machine's /usr with systemd-sysext");
+    let services: Vec<&str> = result
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::RestartUserUnit { unit, .. } => Some(unit.as_str()),
+            _ => None,
+        })
+        .collect();
+    if !services.is_empty() {
+        let _ = write!(text, "; restarted {}", services.join(", "));
+    }
+    for user in desktops {
+        let _ = write!(
+            text,
+            "; {user}'s desktop restarted in place (still logged in; apps reopen)"
+        );
+    }
+    for action in &result.actions {
+        if let Action::Deferred { reason } = action {
+            let _ = write!(text, "; {reason}");
+        }
+    }
+}
+
 pub fn describe_apply(result: &ApplyResult) -> String {
     if !result.changed {
         return format!(
@@ -402,7 +437,19 @@ pub fn describe_apply(result: &ApplyResult) -> String {
             _ => None,
         })
         .collect();
+    let desktops: Vec<&str> = result
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::RestartDesktop { user } => Some(user.as_str()),
+            _ => None,
+        })
+        .collect();
+    let login = !desktops.is_empty()
+        || (result.slot == tilo_vm_protocol::DEVICE_SLOT
+            && result.actions.contains(&Action::SysextRefresh));
     match result.policy {
+        Policy::SessionRestart if login => describe_login(result, &desktops, &mut text),
         Policy::SessionRestart => {
             text.push_str("; session restarted (logout, user manager restart, login)");
         }
@@ -429,6 +476,12 @@ pub fn describe_apply(result: &ApplyResult) -> String {
                     text,
                     "; restarted the sessions of every slot so they see it: {}",
                     restarted_sessions.join(", ")
+                );
+            }
+            for user in &desktops {
+                let _ = write!(
+                    text,
+                    "; {user}'s desktop restarted in place (still logged in)"
                 );
             }
         }
@@ -554,8 +607,16 @@ impl App {
     /// # Errors
     /// No VM selected, or a name the registry does not know.
     pub fn resolve_vm(&self, explicit: Option<&str>) -> Result<Resolved, CliError> {
+        if let (Some(target), Some(name)) = (self.target.as_deref(), explicit)
+            && target != name
+        {
+            return Err(CliError::TargetConflict {
+                target: target.to_owned(),
+                name: name.to_owned(),
+            });
+        }
         let registry = self.registry()?;
-        let (name, source) = if let Some(name) = explicit {
+        let (name, source) = if let Some(name) = explicit.or(self.target.as_deref()) {
             (name.to_owned(), Source::Argument)
         } else {
             let file = self.worktree.as_ref().map(|w| w.root.join(WORKTREE_FILE));
@@ -604,17 +665,49 @@ impl App {
         commands
     }
 
+    /// Open tilo-vmd's RPC. A device is reached where it is now
+    /// ([`Self::endpoint`]), and a connection lost to a roam between that
+    /// check and ssh is tried once more. A device with a recorded peer route
+    /// that is not on this network, at its address or by name, is reached
+    /// over the peer network instead ([`Self::connect_peer`]).
     fn connect(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
+        self.peer = None;
+        if let Some(route) = vm.entry.peer.clone()
+            && vm.entry.hypervisor == hypervisor::DEVICE
+            && std::env::var_os("TILO_VM_SSH").is_none()
+        {
+            // One look on the LAN, at the address and by name: the peer
+            // network rides out roams itself, so no minute of retries here.
+            if let Err(CliError::DeviceAsleep { detail, .. }) =
+                self.reach_device(&vm.name, Duration::ZERO, false)
+            {
+                return self.connect_peer(vm, &route, &detail);
+            }
+        }
         let adapter = Self::adapter(vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
         let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
-        let remote = match Remote::connect(
-            &vm.name,
-            &endpoint,
-            vm.entry.key.as_deref(),
-            vm.entry.daemon.as_deref(),
-            debug,
-        ) {
+        let mut retried = false;
+        let (endpoint, connected) = loop {
+            let endpoint = self.endpoint(vm)?;
+            let connected = Remote::connect(
+                &vm.name,
+                &endpoint,
+                vm.entry.key.as_deref(),
+                vm.entry.daemon.as_deref(),
+                debug.clone(),
+            );
+            match &connected {
+                Err(CliError::Unreachable { detail, .. })
+                    if !retried
+                        && vm.entry.hypervisor == hypervisor::DEVICE
+                        && crate::reach::lost(detail) =>
+                {
+                    retried = true;
+                }
+                _ => break (endpoint, connected),
+            }
+        };
+        let remote = match connected {
             Ok(remote) => remote,
             // SSH works; whether vm upgrade can fix it depends on bootc.
             Err(CliError::ProtocolMismatch { client, daemon, .. }) => {
@@ -643,6 +736,32 @@ impl App {
         Ok(remote)
     }
 
+    /// Open tilo-vmd's RPC over the peer network, as this machine's admin
+    /// identity, and say which route it took.
+    fn connect_peer(
+        &mut self,
+        vm: &Resolved,
+        route: &crate::config::PeerRoute,
+        lan: &str,
+    ) -> Result<Remote, CliError> {
+        let identity = config::admin_identity_root(&self.registry_path);
+        let line = remote::peer_dial(route, &identity);
+        let (remote, session) = Remote::over_peer(&vm.name, &line)?;
+        let note = format!(
+            "{} is not on this network ({lan}); reached it over the peer network: {} (session {} in its journal)",
+            vm.name,
+            session.describe(),
+            session.session
+        );
+        if !self.json {
+            eprintln!("tilo-vm: {note}");
+        }
+        self.receipt.set("route", json!({ "peer": &session }));
+        self.receipt.set("vm", &vm.name);
+        self.peer = Some(session);
+        Ok(remote)
+    }
+
     /// Does the VM have bootc? `None` when SSH did not say.
     fn probe_bootc(&mut self, vm: &Resolved, endpoint: &SshEndpoint) -> Option<bool> {
         let output = self.vm_sh(vm, endpoint, imageup::BOOTC_PROBE).ok()?;
@@ -657,6 +776,14 @@ impl App {
         adapter: &dyn Hypervisor,
         error: &CliError,
     ) -> ConnectFailure {
+        if adapter.suspended(&vm.vm(), &mut self.runner) == Some(true) {
+            return ConnectFailure {
+                state: "asleep",
+                summary: "suspended (the hypervisor reports it is asleep)".into(),
+                ssh: false,
+                next: vec![format!("tilo-vm vm wake {}", vm.name)],
+            };
+        }
         let running = adapter.running(&vm.vm(), &mut self.runner);
         let debug = Self::debug_commands(adapter, &vm.name);
         connect_failure(&vm.name, running, &debug, error)
@@ -793,6 +920,21 @@ impl App {
             Some(Command::Control { slot, args }) => self.control(slot, &args),
             Some(Command::Flight(command)) => self.flight(command),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
+            Some(Command::LayerPack {
+                component,
+                profile,
+                features,
+                source_inventory,
+            }) => Self::packed(crate::builderlayer::pack_with_source(
+                &component,
+                &profile,
+                &features,
+                source_inventory.as_deref(),
+            )),
+            Some(Command::AppPack {
+                app,
+                source_inventory,
+            }) => Self::packed(crate::builderapp::pack(&app, &source_inventory)),
             Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
             Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
             Some(Command::Gc {
@@ -802,6 +944,11 @@ impl App {
                 min_age,
             }) => self.gc(dry_run, keep, keep_targets, min_age),
         }
+    }
+
+    fn packed(result: Result<(), CliError>) -> Result<Outcome, CliError> {
+        result?;
+        Ok(Outcome::new("", json!({})))
     }
 
     fn guide(topic: Option<&str>) -> Result<Outcome, CliError> {
@@ -1125,6 +1272,9 @@ impl App {
 
     fn vm(&mut self, command: VmCommand) -> Result<Outcome, CliError> {
         match command {
+            VmCommand::Actions { name, command } => {
+                self.vm_device_actions(name.as_deref(), command)
+            }
             VmCommand::List => self.vm_list(),
             VmCommand::Use { name, global } => self.vm_use(&name, global),
             VmCommand::Ssh {
@@ -1137,6 +1287,11 @@ impl App {
             VmCommand::Create(args) => self.vm_create(args),
             VmCommand::Add(args) => self.vm_add(&args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
+            VmCommand::Wake { name } => self.vm_wake(name.as_deref()),
+            VmCommand::Awake { name, hold, off } => self.vm_awake(name.as_deref(), hold, off),
+            VmCommand::EnrolAdmin { via, cert, label } => {
+                self.vm_enrol_admin(via.as_deref(), cert.as_deref(), label)
+            }
             VmCommand::Restart { name } => {
                 let vm = self.resolve_vm(name.as_deref())?;
                 if !Self::adapter(&vm)?.powers_on() {
@@ -1225,7 +1380,7 @@ impl App {
         let adapter = Self::adapter(&vm)?;
         let mut lock = None;
         if !force {
-            let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+            let endpoint = self.endpoint(&vm)?;
             match remote::hold_vm_lock(&endpoint, vm.entry.key.as_deref()) {
                 LockOutcome::Held(held) => lock = Some(held),
                 LockOutcome::Busy => {
@@ -1241,17 +1396,14 @@ impl App {
         // A session holding logind's power-key lock (on seat0 it owns the
         // key) turns the ACPI request into its own power-key action, so the
         // guest is asked directly next, and powered off as a last resort.
-        let poweroff = adapter
-            .ssh_endpoint(&vm.vm(), &mut self.runner)
-            .ok()
-            .map(|endpoint| {
-                remote::ssh_command(
-                    &endpoint,
-                    vm.entry.key.as_deref(),
-                    &["systemctl".into(), "poweroff".into()],
-                    false,
-                )
-            });
+        let poweroff = self.endpoint(&vm).ok().map(|endpoint| {
+            remote::ssh_command(
+                &endpoint,
+                vm.entry.key.as_deref(),
+                &["systemctl".into(), "poweroff".into()],
+                false,
+            )
+        });
         let (down, step) = stop_escalating(
             &mut self.runner,
             adapter.as_ref(),
@@ -1459,8 +1611,7 @@ impl App {
             });
         }
         let vm = self.resolve_vm(name)?;
-        let adapter = Self::adapter(&vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(&vm)?;
         let line = remote::ssh_command(
             &endpoint,
             vm.entry.key.as_deref(),
@@ -1491,9 +1642,40 @@ impl App {
                     "  running and ready; tilo-vmd {} (protocol {}, {})",
                     remote.hello.daemon_version, remote.hello.protocol, remote.hello.arch
                 ));
+                if let Some(lease) = &remote.hello.awake {
+                    lines.push(format!("  awake: {}", reach::describe_lease(lease)));
+                }
+                let hello = remote.hello.clone();
+                drop(remote);
+                if let Some(session) = self.peer.clone() {
+                    // No SSH beyond the LAN: what it reported when last on it stands.
+                    lines.push(format!(
+                        "  reached over the peer network: {} (session {} in its journal); commands that need SSH (exec, builds on it, vm ssh) wait until it is on this network",
+                        session.describe(),
+                        session.session
+                    ));
+                    insert(&mut data, "route", json!({ "peer": session }));
+                } else if let Some(wake) = self.refresh_net(&vm) {
+                    lines.push(format!("  wake: {wake}"));
+                    let entry = self.resolve_vm(Some(&vm.name))?.entry;
+                    let enrolled = config::admin_identity_root(&self.registry_path)
+                        .join("device/cert.bin")
+                        .is_file();
+                    lines.push(format!(
+                        "  beyond the LAN: {}",
+                        reach::describe_peer(&entry, enrolled)
+                    ));
+                    insert(&mut data, "route", json!("ssh"));
+                    insert(&mut data, "address", json!(entry.ssh));
+                    insert(&mut data, "hostname", json!(entry.hostname));
+                    insert(&mut data, "mac", json!(entry.mac));
+                    insert(&mut data, "wake", json!(entry.wake));
+                    insert(&mut data, "peer", json!(entry.peer));
+                }
                 insert(&mut data, "state", json!("ready"));
                 insert(&mut data, "reachable", json!(true));
-                insert(&mut data, "daemon", json!(remote.hello));
+                insert(&mut data, "awake", json!(hello.awake));
+                insert(&mut data, "daemon", json!(hello));
                 Ok(Outcome::new(lines.join("\n"), data).next(&["tilo-vm status"]))
             }
             Err(error) => {
@@ -1635,10 +1817,16 @@ impl App {
                 alternative: "use --hypervisor whpx on Windows ARM64, or omit --headless".into(),
             });
         }
-        if (args.heads.is_some() || args.resolution.is_some() || args.gl) && adapter != "libvirt" {
+        if args.heads.is_some() && adapter != "libvirt" {
             return Err(CliError::Unsupported {
-                what: format!("--heads, --resolution or --gl with the {adapter} adapter"),
-                alternative: "use --hypervisor libvirt, or omit them".into(),
+                what: format!("--heads with the {adapter} adapter"),
+                alternative: "use --hypervisor libvirt, or omit --heads".into(),
+            });
+        }
+        if (args.resolution.is_some() || args.gl) && !matches!(adapter, "libvirt" | "qemu") {
+            return Err(CliError::Unsupported {
+                what: format!("--resolution or --gl with the {adapter} adapter"),
+                alternative: "use --hypervisor libvirt or qemu, or omit them".into(),
             });
         }
         if args.direct_boot_bundle.is_some() && adapter != "whpx" {
@@ -2097,6 +2285,10 @@ impl App {
                     "  reachable; tilo-vmd {} ({})",
                     remote.hello.daemon_version, remote.hello.arch
                 ));
+                drop(remote);
+                if let Some(wake) = self.refresh_net(&vm) {
+                    lines.push(format!("  wake: {wake}"));
+                }
                 true
             }
             Err(CliError::RootKeyRefused { install, .. }) => {
@@ -2128,8 +2320,7 @@ impl App {
     /// Restart a device that tilo-vm cannot power on: reboot it over SSH
     /// under the VM lock, wait for the new boot, then for tilo-vmd.
     fn vm_reboot(&mut self, vm: &Resolved) -> Result<Outcome, CliError> {
-        let adapter = Self::adapter(vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(vm)?;
         let old_boot = self
             .vm_sh(vm, &endpoint, "cat /proc/sys/kernel/random/boot_id")
             .ok()
@@ -2204,6 +2395,20 @@ impl App {
         .next(&["tilo-vm status"]))
     }
 
+    /// Start the VM when it is off; wake it when it is suspended, since a
+    /// suspended VM is running, not off.
+    fn power_up(&mut self, adapter: &dyn Hypervisor, vm: &Resolved) -> Result<(), CliError> {
+        if adapter.suspended(&vm.vm(), &mut self.runner) == Some(true)
+            && let Some(wake) = adapter.wake(&vm.vm())
+        {
+            run_all(&mut self.runner, &wake)
+        } else if adapter.running(&vm.vm(), &mut self.runner) != Some(true) {
+            run_all(&mut self.runner, &adapter.start(&vm.vm()))
+        } else {
+            Ok(())
+        }
+    }
+
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
         let floor = vm_free_floor(self.registry()?.min_free_bytes(), &vm.entry.hypervisor);
@@ -2223,9 +2428,7 @@ impl App {
             });
         }
         let adapter = Self::adapter(&vm)?;
-        if adapter.running(&vm.vm(), &mut self.runner) != Some(true) {
-            run_all(&mut self.runner, &adapter.start(&vm.vm()))?;
-        }
+        self.power_up(adapter.as_ref(), &vm)?;
         let started = Instant::now();
         let mut reachable = false;
         let mut no_daemon = None;
@@ -2361,8 +2564,7 @@ impl App {
 
     fn vm_upgrade(&mut self, args: &UpgradeArgs) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(args.name.as_deref())?;
-        let adapter = Self::adapter(&vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(&vm)?;
         let Some(from) = args.from.as_deref() else {
             if let Some(layout) = args.image.as_deref().map(Path::new)
                 && imageup::is_layout(layout)
@@ -3506,8 +3708,7 @@ impl App {
         no_reboot: bool,
     ) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
-        let adapter = Self::adapter(&vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(&vm)?;
         let facts = self.vm_facts(&vm, &endpoint, "vm rollback-image")?;
         let Some(target) = facts.bootc.rollback.clone() else {
             return Err(CliError::Unsupported {
@@ -3675,7 +3876,7 @@ impl App {
         // Fail on a missing slot before downloading anything.
         self.connect(vm)?.call(SlotShow { name: slot.clone() })?;
         let packages: Vec<String> = apps.apps.iter().map(|a| a.package.clone()).collect();
-        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(vm)?;
         let mut words = vmbuild::daemon_command(vm.entry.daemon.as_deref(), "install-packages");
         words.extend(["--timeout".to_owned(), timeout.to_string()]);
         words.extend(packages.iter().map(|p| vmbuild::sh_quote(p)));
@@ -3729,7 +3930,7 @@ impl App {
         command: &[String],
     ) -> Result<Outcome, CliError> {
         let slot = self.slot_name(name)?;
-        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(vm)?;
         let line = remote::ssh_command(
             &endpoint,
             vm.entry.key.as_deref(),
@@ -3748,10 +3949,7 @@ impl App {
     /// Does the VM have bootc (so vm upgrade can move it)? `None` when
     /// SSH does not say.
     fn vm_has_bootc(&mut self, vm: &Resolved) -> Option<bool> {
-        let endpoint = Self::adapter(vm)
-            .ok()?
-            .ssh_endpoint(&vm.vm(), &mut self.runner)
-            .ok()?;
+        let endpoint = self.endpoint(vm).ok()?;
         self.probe_bootc(vm, &endpoint)
     }
 
@@ -3820,11 +4018,7 @@ impl App {
         let manifest = self.manifest()?;
         let entry = manifest.as_ref().and_then(|m| m.get(&component)).cloned();
         if let Some(c) = &entry {
-            let fits = if slot == VM_SLOT {
-                c.info.scope == Scope::Vm
-            } else {
-                c.info.scope != Scope::Vm
-            };
+            let fits = (slot == VM_SLOT) == (c.info.scope == Scope::Vm);
             if !fits {
                 return Err(CliError::ScopeMismatch {
                     component,
@@ -3845,6 +4039,7 @@ impl App {
                 std::env::consts::OS,
             )?;
         }
+        let cohort_inputs = self.cohort_inputs(&component, &source)?;
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
         self.check_vm_space(&mut remote, &vm)?;
@@ -3862,11 +4057,12 @@ impl App {
             if let ci::Source::Ci { tag, commit } = source {
                 self.ci_layer(&mut remote, &vm, entry, &tag, commit)?
             } else {
-                worktree_buildable(entry)?;
-                let entry = entry.clone().with_profile(profile);
-                self.build_worktree_layer(&mut remote, &vm, &entry, builder)?
+                self.worktree_component_layer(&mut remote, &vm, entry, builder, profile)?
             }
         };
+        if let Some(inputs) = &cohort_inputs {
+            self.cohort_prerequisites(&slot, &component, inputs)?;
+        }
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
         remote = self.connect(&vm)?;
@@ -3896,6 +4092,85 @@ impl App {
             "tilo-vm logs",
             "tilo-vm rollback",
         ]))
+    }
+
+    fn cohort_inputs(
+        &self,
+        component: &str,
+        source: &ci::Source,
+    ) -> Result<Option<crate::source_inputs::Snapshot>, CliError> {
+        if component == "apps+runtime" && matches!(source, ci::Source::Worktree) {
+            crate::source_inputs::Snapshot::create(
+                self.worktree.as_ref().ok_or(CliError::NotInWorktree)?,
+                component,
+            )
+            .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn worktree_component_layer(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        entry: &Component,
+        builder: Option<Builder>,
+        profile: Option<&str>,
+    ) -> Result<String, CliError> {
+        let selected = if entry.image_assembled && entry.name == "apps+runtime" {
+            if matches!(builder, Some(Builder::Host | Builder::Vm)) {
+                return Err(CliError::Unsupported {
+                    what: "a host/VM-only cargo build for the paired apps+runtime assembly".into(),
+                    alternative: "tilo-vm swap apps+runtime --builder remote".into(),
+                });
+            }
+            Some(Builder::Remote)
+        } else {
+            worktree_buildable(entry)?;
+            builder
+        };
+        self.build_worktree_layer(remote, vm, &entry.clone().with_profile(profile), selected)
+    }
+
+    /// The same source's normal session components understand its installed pins.
+    fn cohort_prerequisites(
+        &mut self,
+        slot: &str,
+        component: &str,
+        inputs: &crate::source_inputs::Snapshot,
+    ) -> Result<(), CliError> {
+        let root = self
+            .worktree
+            .as_ref()
+            .ok_or(CliError::NotInWorktree)?
+            .root
+            .clone();
+        self.receipt.set(
+            "cohort_source",
+            build::source_provenance(
+                self.worktree.as_ref().ok_or(CliError::NotInWorktree)?,
+                component,
+                "remote",
+            ),
+        );
+        let mut outcomes = Vec::new();
+        for component in ["launcher", "install"] {
+            inputs.unchanged(&root)?;
+            let outcome = self.swap(
+                Some(slot.into()),
+                component.into(),
+                "worktree",
+                Some(Builder::Remote),
+                None,
+                KernelFlags::default(),
+            )?;
+            inputs.unchanged(&root)?;
+            outcomes.push(json!({"component": component, "result": outcome.data}));
+            self.receipt.set("cohort_prerequisites", &outcomes);
+        }
+        self.receipt.set("component", component);
+        Ok(())
     }
 
     /// A boot component: the kernel swaps, the rest are refused with their
@@ -3934,6 +4209,21 @@ impl App {
         component: &Component,
         builder: Option<Builder>,
     ) -> Result<String, CliError> {
+        let arch = remote.hello.arch.clone();
+        let remote_builder = self.registry()?.remote_builders.get(&arch).cloned();
+        let builder = match builder {
+            None if vm.entry.hypervisor == hypervisor::DEVICE && remote_builder.is_some() => {
+                Some(Builder::Remote)
+            }
+            other => other,
+        };
+        if builder == Some(Builder::Remote) {
+            let command = remote_builder
+                .filter(|command| !command.is_empty())
+                .ok_or_else(|| self.no_remote_builder(&arch))?;
+            self.receipt.set("builder", "remote");
+            return self.build_layer_remote(remote, vm, component, &command);
+        }
         let (chosen, note) = choose_builder(
             builder,
             &remote.hello.tools,
@@ -3947,6 +4237,7 @@ impl App {
         match chosen {
             Builder::Vm => self.build_layer_vm(vm, component),
             Builder::Host => self.build_layer(remote, vm, component),
+            Builder::Remote => Err(self.no_remote_builder(&arch)),
         }
     }
 
@@ -3973,7 +4264,7 @@ impl App {
                 purpose: "sync this worktree into the VM for an in-VM build".into(),
             });
         }
-        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(vm)?;
         let id = vmbuild::worktree_id(&worktree, crate::context::hostname().as_deref());
         let rsync =
             vmbuild::rsync_command(&worktree.root, &endpoint, vm.entry.key.as_deref(), &id)?;
@@ -4005,7 +4296,7 @@ impl App {
         subcommand: &str,
         job: &impl serde::Serialize,
     ) -> Result<JobOutput, CliError> {
-        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(vm)?;
         let command = vmbuild::daemon_command(vm.entry.daemon.as_deref(), subcommand);
         let output = vmbuild::run_job(&vm.name, &endpoint, vm.entry.key.as_deref(), &command, job)?;
         let (JobOutput::Layer { phases, .. } | JobOutput::App { phases, .. }) = &output;
@@ -4206,6 +4497,19 @@ impl App {
         }
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
+        let arch = remote.hello.arch.clone();
+        let configured = self.registry()?.remote_builders.get(&arch).cloned();
+        let builder = match builder {
+            None if vm.entry.hypervisor == hypervisor::DEVICE => Some(Builder::Remote),
+            other => other,
+        };
+        if vm.entry.hypervisor == hypervisor::DEVICE && !matches!(builder, Some(Builder::Remote)) {
+            return Err(CliError::Unsupported {
+                what: "building an app on a physical device or the caller's host".into(),
+                alternative:
+                    "use --builder remote with the device architecture's configured builder".into(),
+            });
+        }
         let (chosen, note) = choose_builder(
             builder,
             &remote.hello.tools,
@@ -4239,6 +4543,12 @@ impl App {
                 }
             }
             Builder::Host => self.install_app_from_host(&mut remote, &worktree, slot, dir)?,
+            Builder::Remote => {
+                let command = configured
+                    .filter(|line| !line.is_empty())
+                    .ok_or_else(|| self.no_remote_builder(&arch))?;
+                self.install_app_from_remote(&mut remote, &vm, slot, dir, &command)?
+            }
         };
         let what = match (&result.id, &result.version) {
             (Some(id), Some(version)) => format!("{id} {version}"),
@@ -4266,17 +4576,15 @@ impl App {
         let target = build::target_dir(&self.cargo_metadata());
         let staging = build::Staging::new(worktree)?;
         let tapp = staging.tree().with_extension("tapp");
-        let [tools, package] = build::app_package(&target, dir, &tapp);
+        let package = build::app_package(&target, dir, &tapp);
         let runner = &mut self.runner;
         let built = self.receipt.phase("build", || -> Result<(), CliError> {
-            for command in [&tools, &package] {
-                if !runner.interactive(command)? {
-                    return Err(CliError::CommandFailed {
-                        command: command.display(),
-                        status: "failed".into(),
-                        stderr: String::new(),
-                    });
-                }
+            if !runner.interactive(&package)? {
+                return Err(CliError::CommandFailed {
+                    command: package.display(),
+                    status: "failed".into(),
+                    stderr: String::new(),
+                });
             }
             Ok(())
         });
@@ -4344,7 +4652,7 @@ impl App {
                     stderr: String::new(),
                 });
             }
-            build::pack(&staging.tree(), &staging.archive())
+            Ok(())
         });
         assembled?;
         // A build can outlast an idle SSH connection (a release shell takes
@@ -4358,6 +4666,37 @@ impl App {
             features,
             &staging.tree(),
         );
+        self.import_host_layer(remote, &staging, provenance)
+    }
+
+    /// Reuse an already imported content-identical layer before packing or sending it.
+    fn import_host_layer(
+        &mut self,
+        remote: &mut Remote,
+        staging: &build::Staging,
+        provenance: tilo_vm_protocol::Provenance,
+    ) -> Result<String, CliError> {
+        let hash = self.receipt.phase("digest", || {
+            tilo_vm_protocol::layer_hash::tree_hash(&staging.tree())
+                .map_err(CliError::io("hash assembled layer"))
+        })?;
+        let cached = self
+            .receipt
+            .phase("layer_lookup", || remote.call(LayerList {}))?;
+        if cached
+            .iter()
+            .any(|layer| layer.hash == hash && layer.provenance.component == provenance.component)
+        {
+            self.receipt.set("upload", "skipped");
+            self.receipt.set("layer_reused", &hash);
+            eprintln!(
+                "tilo-vm: device already holds layer {}; no pack or upload",
+                short(&hash)
+            );
+            return Ok(hash);
+        }
+        self.receipt
+            .phase("pack", || build::pack(&staging.tree(), &staging.archive()))?;
         let archive = staging.archive();
         let upload = self
             .receipt
@@ -4372,6 +4711,12 @@ impl App {
                 provenance: Box::new(provenance),
             })
         })?;
+        if imported.hash != hash {
+            return Err(CliError::InvalidInput(format!(
+                "imported layer {} does not match assembled layer {hash}",
+                imported.hash
+            )));
+        }
         Ok(imported.hash)
     }
 
@@ -5189,6 +5534,7 @@ pub fn choose_builder(
             Err(CliError::HostBuildUnsupported { os: os.to_owned() })
         }
         Some(Builder::Host) => Ok((Builder::Host, None)),
+        Some(Builder::Remote) => Ok((Builder::Remote, None)),
         Some(Builder::Vm) | None if tools.can_build() => Ok((Builder::Vm, None)),
         None if linux_host => Ok((
             Builder::Host,
@@ -5208,7 +5554,14 @@ pub fn choose_builder(
 pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError> {
     let action = match command {
         InputCommand::Key { combos } => InputAction::Key { combos },
-        InputCommand::Type { text } => InputAction::Type { text },
+        InputCommand::Type { text, stdin } => {
+            if stdin {
+                return stdin_input_actions(std::io::stdin().lock());
+            }
+            InputAction::Type {
+                text: text.ok_or_else(|| CliError::InvalidInput("no text source given".into()))?,
+            }
+        }
         InputCommand::Move { x, y } => InputAction::Move { x, y },
         InputCommand::Click { button, at } => InputAction::Click {
             button: Button::parse(&button).ok_or_else(|| {
@@ -5240,6 +5593,29 @@ pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError
     };
     let actions = vec![action];
     tilo_vm_protocol::input::validate(&actions).map_err(CliError::InvalidInput)?;
+    Ok(actions)
+}
+
+/// Stdin is deliberately bounded and its failures never quote supplied bytes.
+fn stdin_input_actions(reader: impl std::io::Read) -> Result<Vec<InputAction>, CliError> {
+    use std::io::Read as _;
+    const LIMIT: u64 = 65_536;
+    let mut bytes = Vec::new();
+    reader
+        .take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| CliError::InvalidInput("could not read input text from stdin".into()))?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(CliError::InvalidInput(
+            "stdin input exceeds 65536 bytes".into(),
+        ));
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| CliError::InvalidInput("stdin input must be valid UTF-8".into()))?;
+    let actions = vec![InputAction::Type { text }];
+    tilo_vm_protocol::input::validate(&actions).map_err(|_| {
+        CliError::InvalidInput("stdin input cannot be typed on a US keyboard layout".into())
+    })?;
     Ok(actions)
 }
 
@@ -5465,6 +5841,17 @@ fn slot_line(info: &SlotInfo) -> String {
 /// `status` for a slot that does not exist: create it when the VM has no
 /// slots, else show the ones it has rather than suggest yet another.
 fn missing_slot(name: &str, slots: &[SlotInfo]) -> (Vec<String>, Vec<String>) {
+    if name == tilo_vm_protocol::DEVICE_SLOT {
+        return (
+            vec![format!(
+                "slot: {name} (none here: no board session, and nobody is logged in to Tilo on the display)"
+            )],
+            vec![
+                "log in at the machine, then: tilo-vm status --slot device".into(),
+                "tilo-vm guide devices".into(),
+            ],
+        );
+    }
     let others: Vec<&SlotInfo> = slots.iter().filter(|s| s.kind != SlotKind::Vm).collect();
     if others.is_empty() {
         return (
@@ -5719,7 +6106,8 @@ fn merge_error(data: &mut Value, error: &CliError) {
 /// Why a VM's daemon could not be reached, for `status` and `vm status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectFailure {
-    /// `off`, `no-ssh`, `key-refused`, `no-daemon`, `incompatible` or `error`.
+    /// `off`, `asleep`, `no-ssh`, `key-refused`, `peer-refused`, `no-daemon`,
+    /// `incompatible` or `error`.
     pub state: &'static str,
     /// What the VM is doing, in one line.
     pub summary: String,
@@ -5730,8 +6118,11 @@ pub struct ConnectFailure {
 
 impl ConnectFailure {
     fn text(&self, error: &CliError) -> String {
-        // A VM that is off explains every connection error; repeating it is noise.
-        if self.state == "off" {
+        // A VM that is off or suspended explains every connection error;
+        // repeating it is noise.
+        if self.state == "off"
+            || (self.state == "asleep" && !matches!(error, CliError::DeviceAsleep { .. }))
+        {
             return format!("  {}", self.summary);
         }
         format!(
@@ -5744,6 +6135,33 @@ impl ConnectFailure {
 
 /// Tell apart a VM that is off, one whose SSH does not answer, one without
 /// tilo-vmd and one whose tilo-vmd is incompatible; each has its own fix.
+/// [`connect_failure`] for a device the peer network did not reach.
+fn peer_route_failure(vm: &str, failure: crate::error::PeerFailure) -> ConnectFailure {
+    use crate::error::PeerFailure;
+    ConnectFailure {
+        state: if failure == PeerFailure::Unreachable {
+            "asleep"
+        } else {
+            "peer-refused"
+        },
+        summary: format!("not on this network, and over the peer network {failure}"),
+        ssh: false,
+        next: match failure {
+            PeerFailure::Unreachable => {
+                vec![format!(
+                    "tilo-vm vm awake {vm} --for 2h   (once it answers)"
+                )]
+            }
+            PeerFailure::NotEnrolled | PeerFailure::Refused => {
+                vec!["tilo-vm vm enrol-admin --via <device>".into()]
+            }
+            PeerFailure::OtherDevice | PeerFailure::Failed => {
+                vec![format!("tilo-vm vm status {vm}   (on its LAN)")]
+            }
+        },
+    }
+}
+
 pub fn connect_failure(
     vm: &str,
     running: Option<bool>,
@@ -5764,6 +6182,17 @@ pub fn connect_failure(
         next
     };
     match error {
+        CliError::DeviceAsleep { wakeable, .. } => fail(
+            "asleep",
+            "asleep or gone: it does not answer at its address, nor by name".into(),
+            false,
+            if *wakeable {
+                vec![format!("tilo-vm vm wake {vm}")]
+            } else {
+                vec![format!("tilo-vm vm status {vm}   (once woken by hand)")]
+            },
+        ),
+        CliError::PeerRoute { failure, .. } => peer_route_failure(vm, *failure),
         CliError::RootKeyRefused { .. } => fail(
             "key-refused",
             "running; SSH answers but refuses the root key".into(),
@@ -6101,6 +6530,9 @@ fn wait_for_session(remote: &mut Remote, slot: &str) -> bool {
 }
 
 #[cfg(test)]
+mod host_layer_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -6185,6 +6617,7 @@ mod tests {
             changed,
             policy,
             actions,
+            cohort_selection: Vec::new(),
             warnings: vec![],
             boot: None,
         }
@@ -6269,6 +6702,20 @@ mod tests {
             );
             assert!(
                 describe_apply(&result(Policy::NoRestart, vec![], false)).contains("nothing to do")
+            );
+            let mut login = result(
+                Policy::SessionRestart,
+                vec![
+                    Action::SysextRefresh,
+                    Action::RestartDesktop { user: "me".into() },
+                ],
+                true,
+            );
+            login.slot = "device".into();
+            assert_eq!(
+                describe_apply(&login),
+                "generation 4 applied to slot device; merged into the machine's /usr with \
+                 systemd-sysext; me's desktop restarted in place (still logged in; apps reopen)"
             );
             let vm = describe_apply(&result(
                 Policy::VmRefresh,
@@ -6781,12 +7228,34 @@ mod tests {
     fn app_with_empty_registry(dir: &Path) -> App {
         App {
             json: false,
+            target: None,
             worktree: None,
             registry_path: dir.join("vms.toml"),
             runner: SystemRunner { cwd: None },
             receipt: Receipt::new(dir, vec![]),
             warnings: Vec::new(),
+            peer: None,
         }
+    }
+
+    #[test]
+    fn explicit_target_refuses_unknown_and_conflicting_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        std::fs::write(&app.registry_path, "default = 'default-vm'\n[vms.default-vm]\nhypervisor = 'libvirt'\n[vms.review]\nhypervisor = 'libvirt'\n").unwrap();
+        app.target = Some("review".into());
+        let selected = app.resolve_vm(None).unwrap();
+        assert_eq!(selected.name, "review");
+        assert!(matches!(selected.source, Source::Argument));
+        assert!(matches!(
+            app.resolve_vm(Some("default-vm")),
+            Err(CliError::TargetConflict { .. })
+        ));
+        app.target = Some("unknown".into());
+        assert!(matches!(
+            app.resolve_vm(None),
+            Err(CliError::UnknownVm { .. })
+        ));
     }
 
     #[test]
@@ -6945,6 +7414,72 @@ mod tests {
     /// Input arguments become validated actions and a direct-boot bundle resolves files and requires a
     /// root binding.
     #[test]
+    fn stdin_input_preserves_bytes_and_redacts_failures_and_receipts() {
+        use crate::cli::Cli;
+        use clap::Parser as _;
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("private-reader-error"))
+            }
+        }
+        let argv = ["tilo-vm", "input", "type", "--stdin"];
+        let cli = Cli::try_parse_from(argv).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Input {
+                action: InputCommand::Type {
+                    text: None,
+                    stdin: true
+                },
+                ..
+            })
+        ));
+        for words in [
+            vec!["tilo-vm", "input", "type"],
+            vec!["tilo-vm", "input", "type", "value", "--stdin"],
+        ] {
+            assert!(Cli::try_parse_from(words).is_err());
+        }
+        let marker = "synthetic-private-input\n";
+        let actions = stdin_input_actions(marker.as_bytes()).unwrap();
+        assert_eq!(
+            actions,
+            vec![InputAction::Type {
+                text: marker.into()
+            }]
+        );
+        assert_eq!(describe_input(&actions[0]), "typed 24 characters");
+        let oversized = vec![b'a'; 65_537];
+        assert!(
+            stdin_input_actions(&oversized[..])
+                .unwrap_err()
+                .to_string()
+                .contains("65536")
+        );
+        assert!(stdin_input_actions(&vec![b'a'; 65_536][..]).is_ok());
+        for invalid in [b"private-\xff".as_slice(), "private-é".as_bytes()] {
+            let error = stdin_input_actions(invalid).unwrap_err().to_string();
+            assert!(!error.contains("private"));
+            assert!(!error.contains('é'));
+        }
+        assert!(
+            !stdin_input_actions(Broken)
+                .unwrap_err()
+                .to_string()
+                .contains("private")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = Receipt::new(dir.path(), argv.iter().map(|s| (*s).into()).collect());
+        let path = receipt
+            .finish(Ok(&json!({"description": describe_input(&actions[0])})))
+            .unwrap();
+        let saved = std::fs::read_to_string(path).unwrap();
+        assert!(!saved.contains("synthetic-private-input"));
+        assert!(saved.contains("--stdin"));
+    }
+
+    #[test]
     fn inputs_and_boot_bundles_are_validated_before_use() {
         // Phase: input_arguments_become_validated_actions.
         {
@@ -6969,7 +7504,8 @@ mod tests {
                 Err(CliError::InvalidInput(_))
             ));
             let error = input_actions(InputCommand::Type {
-                text: "naïve".into(),
+                text: Some("naïve".into()),
+                stdin: false,
             })
             .unwrap_err();
             assert!(error.to_string().contains('ï'));
@@ -7007,6 +7543,21 @@ mod tests {
             .unwrap();
             assert!(read_direct_boot_bundle(&bundle).is_err());
         }
+    }
+
+    #[test]
+    fn qemu_accepts_display_fixture_options_but_not_multiple_heads() {
+        let mut args = create_args("dev");
+        args.resolution = Some("1920x1080".into());
+        args.gl = true;
+        assert!(App::validate_create_options("qemu", &args).is_ok());
+        assert!(App::validate_create_options("libvirt", &args).is_ok());
+        for adapter in ["whpx", "utm", "hyperv"] {
+            assert!(App::validate_create_options(adapter, &args).is_err());
+        }
+        args.heads = Some(2);
+        assert!(App::validate_create_options("qemu", &args).is_err());
+        assert!(App::validate_create_options("libvirt", &args).is_ok());
     }
 
     #[test]

@@ -109,23 +109,6 @@ impl SourceIdentity {
     }
 }
 
-impl Source {
-    /// One-line summary used under the source header.
-    pub fn summary(&self) -> String {
-        let where_from = if self.path.is_empty() {
-            "not downloaded".to_string()
-        } else {
-            self.path.clone()
-        };
-        format!(
-            "{}  ·  {}  ·  {}",
-            self.label,
-            fmt_size(self.size),
-            where_from
-        )
-    }
-}
-
 fn generic_hardware_profile() -> String {
     "generic".into()
 }
@@ -210,7 +193,7 @@ impl TiloRelease {
             name: self.display_name(),
             size: self.size,
             label: format!(
-                "Tilo {} ({}) · {}",
+                "Tilo {} ({}), {}",
                 self.version,
                 self.channel,
                 self.target_label()
@@ -326,6 +309,17 @@ pub struct TargetDrive {
 }
 
 impl TargetDrive {
+    /// The glyph of the drive: a USB stick, a memory card, or a drive.
+    pub fn icon(&self) -> ui::icons::Icon {
+        use ui::icons::Icon;
+        match self.tran.as_deref() {
+            Some("usb") => Icon::Usb,
+            Some("mmc" | "sd") => Icon::SdCard,
+            _ if self.name.starts_with("mmcblk") => Icon::SdCard,
+            _ => Icon::HardDrive,
+        }
+    }
+
     /// Whether this is external installation media the desktop imager may
     /// safely offer. Some USB readers report `RM=0`, so the transport is also
     /// considered; system disks are unconditionally excluded.
@@ -375,11 +369,10 @@ impl TargetDrive {
                     .unwrap_or_else(|| "data".into())
             })
             .collect();
-        format!(
-            "{} partition(s): {}",
-            self.partitions.len(),
-            labels.join(", ")
-        )
+        match self.partitions.len() {
+            1 => format!("1 partition ({})", labels.join(", ")),
+            count => format!("{count} partitions ({})", labels.join(", ")),
+        }
     }
     /// Does the image fit? (Raw writes need `image_size` ≤ drive size.)
     pub fn fits(&self, image_size: u64) -> bool {
@@ -613,7 +606,7 @@ impl Filesystem {
     }
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Btrfs => "Btrfs — recommended",
+            Self::Btrfs => "Btrfs (recommended)",
             Self::Ext4 => "Ext4",
             Self::Xfs => "XFS",
         }
@@ -687,11 +680,27 @@ pub struct InstallProfile {
     pub enroll_local_identity: bool,
 }
 
+/// 1–63 letters, digits or hyphens, without a hyphen at either end: one DNS
+/// label, which is also what `<hostname>.local` needs.
+pub(crate) fn hostname_is_valid(hostname: &str) -> bool {
+    !hostname.is_empty()
+        && hostname.len() <= 63
+        && hostname
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !hostname.starts_with('-')
+        && !hostname.ends_with('-')
+}
+
+/// The hostname a profile starts with. A profile that still carries it has not
+/// chosen one, so a written disk keeps the image's own name.
+pub const DEFAULT_HOSTNAME: &str = "tilo";
+
 impl Default for InstallProfile {
     fn default() -> Self {
         Self {
             mode: InstallMode::Live,
-            hostname: "tilo".into(),
+            hostname: DEFAULT_HOSTNAME.into(),
             user: UserAccount::default(),
             locale: "en_US.UTF-8".into(),
             keyboard: "us".into(),
@@ -740,15 +749,7 @@ impl InstallProfile {
     /// Returns a field-specific message when any transported value would be
     /// rejected by the live installer.
     pub fn validate_media_profile(&self) -> Result<(), String> {
-        let hostname = self.hostname.trim();
-        if hostname.is_empty()
-            || hostname.len() > 63
-            || !hostname
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-')
-            || hostname.starts_with('-')
-            || hostname.ends_with('-')
-        {
+        if !hostname_is_valid(self.hostname.trim()) {
             return Err(
                 "Hostname must be 1–63 letters, numbers or hyphens, without a hyphen at either end."
                     .into(),

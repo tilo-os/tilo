@@ -120,6 +120,7 @@ fn published_authorization_delayed_original_remote_grant_denies_before_document_
     )));
     let request = remote_request(851, "bump");
     let mut app = app();
+    app.collaboration.manager = admitted_delivery_manager();
     app.require_published_invocation_authorizer();
     app.install_published_invocation_authorizer(original_remote_authorizer(request.clone(), grant))
         .unwrap();
@@ -141,6 +142,7 @@ fn published_authorization_missing_unknown_or_mismatched_request_never_executes(
         let expected = remote_request(852, "bump");
         let mut delivered = expected.clone();
         let mut app = app();
+        app.collaboration.manager = admitted_delivery_manager();
         app.require_published_invocation_authorizer();
         if case != 0 {
             app.install_published_invocation_authorizer(original_remote_authorizer(
@@ -166,6 +168,7 @@ fn published_authorization_wrong_lease_never_executes() {
     use std::sync::Arc;
     let request = remote_request(853, "bump");
     let mut app = app();
+    app.collaboration.manager = admitted_delivery_manager();
     app.require_published_invocation_authorizer();
     app.install_published_invocation_authorizer(Arc::new(move |delivered| {
         let mut wrong = delivered.clone();
@@ -210,6 +213,7 @@ fn published_authorization_accepted_continuation_retains_failed_custody() {
     let request = remote_request(855, "async-bump");
     let (mut app, store, checkout, _temp) =
         owned_counter(CounterCard::with_async_post_bump_reset());
+    app.collaboration.manager = disconnected_delivery_manager();
     app.require_published_invocation_authorizer();
     app.install_published_invocation_authorizer(original_remote_authorizer(
         request.clone(),
@@ -312,6 +316,11 @@ fn owned_counter(
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(tile));
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
+    app.collaboration.manager = admitted_delivery_manager();
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: crate::collaboration::RouteSpec::app("test.counter", uuid::Uuid::from_u128(1)),
+        epoch: uuid::Uuid::new_v4(),
+    });
     app.init_layout();
     (app, store, checkout, temp)
 }
@@ -410,6 +419,104 @@ fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_prog
             );
         }
     }
+}
+
+#[test]
+fn completed_owned_job_retires_retained_handler_and_worker_custody() {
+    use std::sync::{Arc, atomic::AtomicU64};
+    struct TerminalTransport(std::rc::Rc<RefCell<Vec<CollabRequest>>>);
+    impl crate::collaboration::PeerTransport for TerminalTransport {
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+            self.0.borrow_mut().push(request);
+            Ok(())
+        }
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            vec![]
+        }
+        fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+            Ok(())
+        }
+        fn send_to_route(
+            &mut self,
+            _: crate::collaboration::RouteSpec,
+            request: CollabRequest,
+        ) -> Result<(), String> {
+            self.send(request)
+        }
+    }
+    let time = Arc::new(AtomicU64::new(99));
+    let (mut app, store, checkout, _temp) =
+        owned_counter(CounterCard::with_async_post_bump_reset());
+    let request = remote_request(8991, "async-bump");
+    // Exercise the production terminal gate with an admitted publication route.
+    // This transport proves queue admission, not a remote durability receipt.
+    let sent = std::rc::Rc::new(RefCell::new(vec![]));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(TerminalTransport(sent.clone()));
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: crate::collaboration::RouteSpec::app("test.counter", uuid::Uuid::from_u128(1)),
+        epoch: uuid::Uuid::new_v4(),
+    });
+    app.publish_owned_documents();
+    app.require_published_invocation_authorizer();
+    app.install_published_invocation_authorizer(original_remote_authorizer(
+        request.clone(),
+        original_remote_grant(time),
+    ))
+    .unwrap();
+    deliver_remote(&mut app, &request);
+    let scope = app.actions.directed_invocations[&request.invocation]
+        .authorization
+        .clone()
+        .unwrap();
+    let worker = scope.effect_scope().unwrap();
+    assert!(scope.check().is_ok());
+    app.refresh_focus_order();
+    assert_eq!(owned_count(&store, &checkout), 1);
+    assert!(
+        app.poll_directed_invocations(),
+        "the real terminal update arrived"
+    );
+    assert_eq!(app.action_publication_failure, None);
+    assert!(
+        !app.actions
+            .directed_invocations
+            .contains_key(&request.invocation)
+    );
+    assert!(
+        scope.check().is_err(),
+        "completed handlers cannot submit late work"
+    );
+    let mut ran = false;
+    assert!(
+        worker
+            .with_effect(|| {
+                ran = true;
+                Ok(())
+            })
+            .is_err()
+    );
+    assert!(
+        !ran,
+        "a retained worker cannot act after the original job ended"
+    );
+    assert!(
+        !app.poll_directed_invocations(),
+        "late polling cannot answer twice"
+    );
+    assert_eq!(
+        sent.borrow()
+            .iter()
+            .filter(|request| matches!(request,
+                CollabRequest::UpdateInvocation { update, .. } if update.is_terminal()
+            ))
+            .count(),
+        1,
+        "the original job has exactly one terminal receipt"
+    );
 }
 
 #[test]

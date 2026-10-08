@@ -30,9 +30,15 @@ pub struct Session {
 /// # Errors
 /// Returns invalid directory, session lock, state, record-store or construction errors.
 pub fn prepare(options: &Options) -> Result<Session, Error> {
-    let inputs = HostedTileInputs::for_host_directory(&options.files_dir)?;
     std::fs::create_dir_all(&options.state_dir)?;
     let state_dir = options.state_dir.canonicalize()?;
+    // The apps this host mounts keep their records beside its state.
+    let apps = crate::shell::in_process::InProcessApps::at(
+        &state_dir.join("apps"),
+        &crate::shell::state::local_user_id(),
+    )
+    .map_err(|error| error.to_string())?;
+    let inputs = HostedTileInputs::for_host_directory(&options.files_dir, apps)?;
     let lock = advisory_lock::FileLock::try_open(
         &state_dir.join("session.lock"),
         advisory_lock::LockMode::Exclusive,

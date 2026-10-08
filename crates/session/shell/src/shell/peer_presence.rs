@@ -407,6 +407,11 @@ impl PeerPresence {
             };
             std::mem::take(&mut *buf)
         };
+        // Each person in the colour their own machine says they wear, not
+        // one derived here from their session's handle.
+        for (peer, hue) in self.net.peer_colours() {
+            presence.set_presence_hue(ui::permissions::UserId(format!("peer@{peer}")), hue);
+        }
         let net = Arc::clone(&self.net);
         let mine: Vec<String> = self.rooms.lock().map(|g| g.clone()).unwrap_or_default();
         let cursor_changed = self.anchored.lock().is_ok_and(|mut anchored| {
@@ -1676,6 +1681,8 @@ mod two_sessions {
             tree.set_room(ws, room),
             "the guest has to end up in the room it joined",
         );
+        // Its invite pins the host (hub 1) as the room's governor.
+        assert!(tree.pin_room_authority(room, PeerOrigin::hub(1)));
         let changes = host
             .export_room_changes_since(room, &[])
             .expect("the host is in the room it governs");
@@ -1693,7 +1700,11 @@ mod two_sessions {
                 key,
                 point,
                 ts,
-            } => to.handle_presence_message(peer, user, key, point, ts),
+                colour,
+            } => {
+                to.note_peer_colour(peer, colour.as_deref());
+                to.handle_presence_message(peer, user, key, point, ts);
+            }
             other => panic!("expected PresenceMoved, got {other:?}"),
         }
     }

@@ -9,6 +9,8 @@
 #                                              the boot disk a stable hardware serial
 #                                              TILO_VM_LAN_PORT/_PEER/_MAC add a NIC on an
 #                                              L2 segment shared with one peer VM
+#                                              TILO_VM_HOSTFWD adds forwards to the NIC,
+#                                              e.g. hostfwd=tcp:127.0.0.1:3341-:3340
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
 #   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
 #   TILO_VM_CYCLE=NAME ./os/dev/vm.sh init-cycle
@@ -164,7 +166,7 @@ cmd_boot() {
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
     $(virtio_disk "$disk" tilo-disk "$disk_serial") $attach_arg \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(lan_qemu_args) $(input_qemu_args) \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22${TILO_VM_HOSTFWD:+,$TILO_VM_HOSTFWD} $(lan_qemu_args) $(input_qemu_args) \
     $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo"
@@ -266,32 +268,33 @@ cmd_boot_target() {
 # greeter's own report over its console that sign-in accepts input.
 greeter_accepts_input() {
   python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
-    check greeter /accepts_input --timeout 5 2>/dev/null
+    check greeter /accepts_input --timeout "${1:-5}" 2>/dev/null
 }
 
 # The live installer medium's greetd runs the installer instead, which is
 # driven through its console actions.
 installer_answers() {
   python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
-    check installer --timeout 5 2>/dev/null
+    check installer --timeout "${1:-5}" 2>/dev/null
 }
 
 cmd_wait() {
   msg "waiting for greeter (greetd) ..."
   local i early_reported=0 greetd=0 start=$SECONDS
   for i in $(seq 1 "$TILO_BOOT_WAIT_ATTEMPTS"); do
-    if [ "$greetd" = 1 ]; then
-      if greeter_accepts_input; then
-        msg "greeter accepts input (~$((SECONDS - start))s)"; return 0
-      elif installer_answers; then
-        msg "installer up (~$((SECONDS - start))s)"; return 0
-      fi
-    elif tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
+    # The console is authoritative, including on a quiet production boot with
+    # no development SSH service. Neither a serial log nor SSH is a prerequisite
+    # for observing the actual application's readiness.
+    if greeter_accepts_input 1; then
+      msg "greeter accepts input (~$((SECONDS - start))s)"; return 0
+    elif installer_answers 1; then
+      msg "installer up (~$((SECONDS - start))s)"; return 0
+    elif [ "$greetd" = 0 ] && tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
       msg "greetd up (~$((SECONDS - start))s); waiting for the greeter to accept input"; greetd=1; continue
     # A guest may reach greetd without writing kernel/userspace status to the
     # selected serial port. The installed validation disk supplies SSH access;
     # use it as an independent readiness signal when available.
-    elif (( i % 5 == 0 )) && command -v sshpass >/dev/null 2>&1 \
+    elif [ "$greetd" = 0 ] && (( i % 5 == 0 )) && command -v sshpass >/dev/null 2>&1 \
        && [ -n "${TILO_USER:-}" ] && [ -n "${TILO_PASS:-}" ] \
        && gssh 'systemctl is-active --quiet greetd.service' >/dev/null 2>&1; then
       msg "greetd up via SSH (~$((SECONDS - start))s); waiting for the greeter to accept input"; greetd=1; continue

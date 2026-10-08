@@ -171,6 +171,33 @@ for how selection and shared runtime compatibility interact. Use **Release / app
 dispatch for a development artifact, selecting the smallest applicable app and
 architecture set and leaving `publish` off unless publication is intended.
 
+For an independent Browser engine update, dispatch **Release / apps** on `main`
+with `engine_runtime_only=true`, `apps=browser` and the needed native architectures.
+This builds the digest-pinned CEF engine and the package tools, verifies native ELF
+architecture and hardening, and seals the runtime the Browser manifest names.
+`publish=true` uses the existing runtime/app signing identities and publisher OIDC;
+`publish=false` signs with disposable test identities and performs no registry write.
+The mode rejects collection qualification, coordinator and builder overrides. It
+builds neither the OS image nor the app collection. Changing engine code requires a
+new runtime version in the SDK, Browser manifest and OS recipe before publication.
+
+The explicit native pipeline proof uses no release credentials:
+
+```bash
+cargo run --locked -p runtime-bundle --example browser_runtime_release
+```
+
+Use `python3 tools/apps/browser_runtime_release.py proof-cargo` with Cargo or a
+configured Cargo-compatible native builder selected through `CARGO` or
+`--cargo-command`; repeat `--cargo-argument` for executable-specific arguments.
+Source-only builders may omit Git metadata; this launcher
+admits only a clean local commit and passes its actual commit object. The builder
+recomputes the Git tree from mirrored bytes, executable modes and symlink targets
+before compiling and sealing. The snapshot proof refuses CI events, publication
+and signing identity variables; production release jobs retain their Git guards.
+Its output is `target/browser-runtime-release-proof-<source-commit>`; archive/blob verification uses
+the same canonical tools as publication. The source must be clean and committed.
+
 The app registry is publicly reachable at `https://apps.tilo.so`. Main-branch
 app publication now submits each newly built immutable tapp to it; separate collector
 and networkless signer jobs independently verify accepted requests before advancing
@@ -227,6 +254,27 @@ python3 tools/dev.py check installer
 python3 tools/dev.py check app-packaging
 ```
 
+Give unrelated tasks their own worktree before starting validation:
+
+```sh
+python3 tools/dev.py worktree music-fix --base origin/main
+```
+
+The command prints the new path, branch and exact source commit. It creates the
+worktree in `.worktrees/` beside the shared Git directory, so invoking it from a
+temporary checkout does not place another checkout on `/tmp`'s user quota. It
+uses committed source; existing uncommitted edits stay where they are. An
+existing destination or branch is an error.
+
+Each task has its own Cargo target directory and remote source-sync lock. Remote
+Cargo drop-ins can use the shared Git identity to seed dependency artifacts and
+reuse compiler/download caches. Never share `target/` or set `CARGO_TARGET_DIR`. Run related checks
+sequentially within a task, combine related test targets where appropriate, and
+keep required integration checks. For diagnostics-only builds/checks use
+the remote Cargo drop-in's option to skip artifact downloads; leave fetching
+enabled for rust-analyzer and request artifacts when needed locally. Heavy non-Cargo work runs on the
+builder through SSH; keep only orchestration and small checks on the laptop.
+
 The repository-policy command is the same deterministic suite used by the
 fast-quality workflow. It checks live workflow triggers and timeouts in
 addition to running the policy unit tests, so testing a checker without
@@ -255,12 +303,97 @@ If the environment prohibits user namespaces, use the existing isolated Linux
 builder where these tests can run as container root. Missing capabilities fail
 the command and are recorded in its receipt.
 
+Signal working-profile custody has an explicit native qualification feature:
+`cargo test --locked -p shell --lib --features signal-profile-native-test working_profile::tests`
+and `cargo test --locked -p shell --lib --features signal-profile-native-test verified_enrollment_ram_profile_native_qualification`.
+These execute the production materializer, not a substitute memory policy. They
+require a private tmpfs whose opened mount reports `noswap`, or a host whose swap
+is absent or entirely zram without disk writeback. Otherwise the fixture attempts
+a disposable user/mount namespace; kernels can refuse `noswap` on unprivileged
+mounts, in which case qualification fails. The fixture does not change host swap
+or trust settings. Ordinary custody tests still cover encrypted storage and the
+original protected grant; they do not qualify native working-profile custody.
+A provider lease handed to the launcher cannot use the prelaunch cancellation
+checkpoint. The strict service launcher requires a successful exit of the actual
+private PID-namespace init before collecting the newest bounded working image.
+Forced shutdowns preserve the interrupted marker. Signed-runtime qualification
+remains a separate acceptance requirement.
+
 CI's repository policy tests discover the same app-packaging tests, including
 the build-to-collection handoff regression.
 For an actual installer VM cycle with an already prepared medium, continue using
 `os/dev/test-installer-cycle.sh`. To run a change in the Tilo OS image, use
 `tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); for the disposable Fedora desktop
 development session use `dist/dev/fedora44-vm-iterate.sh`.
+
+Source builds prepare the pinned font catalog during compilation, outside the
+source tree. Python 3.11+ is required. The first build downloads the exact reviewed
+fonts; subsequent builds verify the cached bytes. Prewarm with
+`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures`.
+Set `TILO_FONT_ASSETS_OFFLINE=1` (or `CARGO_NET_OFFLINE=true`) to require a warm
+cache, or supply a complete matching catalog with `TILO_FONT_CATALOG_ROOT`.
+See [font artifact preparation](crates/sdk/ui-core/assets/fonts/ARTIFACTS.md).
+
+A Cargo drop-in compiling on another machine prepares the catalog there. If the
+fetched executable will run locally, use the client's generated-artifact fetch
+facility to bring `target/font-artifacts/catalogs` back as part of the build,
+preserving its relative path. Fetching an executable alone does not bring font
+data, license notices or provenance back. With a custom cache location, preserve
+the catalog path compiled into the executable.
+
+Verify the received catalog locally without a network using
+`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --offline`.
+Tests and executables running on the builder use its catalog directly.
+Applications do not download fonts at runtime.
+
+For measured Rust edit feedback on the remote builder, run one scoped command:
+
+```sh
+python3 tools/rust_feedback.py check -p tilo-ui --lib
+python3 tools/rust_feedback.py test -p shell --test it --filter interaction_test::
+```
+
+This uses `$CARGO` (or `cargo`) and the committed lockfile. Choose a Cargo
+drop-in with `--cargo-command`; remote-only policy belongs to that command. The receipt under
+`target/rust-feedback/` records client elapsed time, first observed diagnostic
+and artifact, rebuilt/fresh Cargo units, source identity and actual test results.
+Checks use Cargo JSON; tests retain the project's runner (including nextest) and
+record its summary. A test filter matching no executed tests fails the feedback
+command. Missing Cargo messages fail a check. Raw output remains live and is not
+saved in receipts; ambient environment values and diagnostic contents are not collected.
+An existing receipt cannot be overwritten; use `--out <new-file>` to name one.
+
+Keep the same worktree, target, package/feature scope and compiler configuration
+for baseline/edit/repeat measurements. Source hashes include tracked edits and
+untracked files; a source change during the command invalidates its result.
+The timestamps include remote transport/buffering; the requested-package artifact
+is distinguished from earlier dependency artifacts. First artifact availability
+is not linking time or a passed test. Queue, link and per-run cache timings remain
+unknown when not observable. A remote builder's metrics supply shared contention and cache counters, not an
+isolated invocation's hit rate. Use Cargo's
+[`--timings`](https://doc.rust-lang.org/cargo/reference/timings.html) report for
+unit/concurrency inspection; its HTML is a human report, not a stable JSON API.
+
+Batch related small targets in one invocation instead of admitting each
+separately. Repeat `-p` or `--test`, and combine `--lib` with named integration
+targets to retain their union. For example:
+
+```sh
+python3 tools/rust_feedback.py test -p tilo-clock -p tilo-advisory-lock --lib --test lock
+```
+
+This keeps the same Cargo/test runner and selected tests while avoiding a second
+admission and client setup. It does not bypass admission or replace final
+integration checks. A larger feature/dependency union can cost more compilation,
+so batch related checks rather than the workspace.
+
+Start one heavy validation per task at a time. The builder owns admission; do
+not reserve slots or poll queued jobs. A fresh worktree's seed/sync cost can
+exceed a small leaf compile, so compare warm runs separately. A focused result
+is only feedback: retain affected-package integration checks and CI, and for
+shell changes finish with `$CARGO check --locked -p shell --tests`.
+[`cargo check`](https://doc.rust-lang.org/cargo/commands/cargo-check.html) omits
+code generation and can miss errors that appear in a test/build.
 
 For CI timing, use the repository run number from the Forgejo URL or `fgj actions
 run list`, not the Forgejo API's internal database ID:
@@ -650,11 +783,9 @@ cargo test --locked -p file-explorer --lib -- --test-threads=1
 cargo test --locked -p file-explorer --test it -- --test-threads=1
 ```
 
-Word Processor uses `%LOCALAPPDATA%/tilo/word-processor/recovery` for crash recovery
-unless `TILO_WP_RECOVERY_DIR` is explicitly set. Its recovery key stays stable
-when a new file is first saved and Windows starts returning a canonical verbatim
-path. Native tests cover editing, DOCX/ODT/HTML round trips, PDF/RTF/EPUB export,
-recovery cleanup and merging independently edited documents:
+Word Processor keeps every document in its framework record, so there is no
+separate crash-recovery copy. Native tests cover editing, DOCX/ODT/HTML round
+trips through a launch on the file and Save As, and PDF/RTF/EPUB export:
 
 ```powershell
 cargo test --locked -p word-processor --all-targets -- --test-threads=1
@@ -856,17 +987,18 @@ Unchanged shared fonts are preserved during installation, so a running Tilo app
 does not prevent installing another app. If font contents change, close running
 Tilo apps before installing the update.
 
-Clocks saves private device state under `%LOCALAPPDATA%/tilo/clocks.json` on
-Windows (an absolute `XDG_STATE_HOME` overrides that location). Its live startup
-restores that state; screenshot scenarios never save or consume shell commands.
+Clocks keeps alarms, timers, cities and the stopwatch in its synced resource
+record; which clocks float and which deadlines this device has already rung stay
+in the app's device-local settings. Screenshot scenarios never ring, schedule or
+consume shell commands.
 The installer registers `so.tilo.clocks` on the Start menu shortcut and in the
 current user's notification display-name registry. The SDK's `notifications`
 feature provides Windows toast submission and app-scoped history inspection.
 Alerts obey Windows notification settings and Do Not Disturb. Clocks hands timer
 deadlines to Windows, so timers continue to notify after the app closes. Pausing
-or deleting a timer cancels its pending Windows alert. A saved receipt records
+or deleting a timer cancels its pending Windows alert. A device-local receipt records
 the accepted deadline so reopening after delivery does not submit it again.
-Each state profile durably records the timer schedules it owns before submitting
+Each profile durably records the timer schedules it owns before submitting
 them to Windows. Opening another profile cannot cancel those schedules; deleted
 timers retain ownership until cancellation succeeds, including across restarts.
 Alarms still require the app to be running; closed-app alarm scheduling remains
@@ -1569,8 +1701,31 @@ suite names a member that `manage-deps` gave the unconditional line.
 Enable the repo's git hooks once per clone:
 
 ```bash
-git config core.hooksPath .githooks
+python3 tools/dev/install-git-hooks.py
 ```
+
+The tracked hooks do not activate automatically in a fresh clone. The installer
+verifies both hooks, preserves unrelated hook configuration, and uses worktree
+configuration when enabled. Run it in each linked worktree that needs its own
+managed hooks. It refuses an unrelated hooks path or custom default hooks;
+arrange explicit chaining rather than overwriting them.
+
+`commit-msg` requires `type(optional-scope)!: description`. Types are `build`,
+`chore`, `ci`, `docs`, `dev`, `env`, `feat`, `fix`, `perf`, `refactor`, `revert`,
+`style`, and `test`. For example, `fix(shell): preserve window identity` or
+`feat(ui)!: expose resource actions`. Bodies follow a blank line and can include
+`BREAKING CHANGE:` footers. Git's genuine merge, target-bound revert and
+existing-target autosquash messages are accepted; an arbitrary `Merge ...`
+subject on an ordinary commit is rejected. Generated sources use ordinary
+headers such as `chore(codegen): refresh bindings`.
+
+New or modified staged non-text and non-LF blobs are rejected, even when an
+exception entry is added in the same commit. Existing pinned assets are only
+admitted unchanged; deletion is allowed. The staged index is inspected, so
+partial staging and filenames with spaces are handled correctly. Fast quality
+checks all new commits and exact blobs in its comparison range, catching
+`--no-verify` commits and intermediate binary additions later deleted. It fails
+when history cannot be inspected. Existing exceptions remain migration work.
 
 `pre-commit` checks the staged change the way CI's quality job would: rustfmt
 on the staged Rust files, workspace membership

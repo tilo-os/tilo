@@ -708,13 +708,14 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
             None
         };
         let endpoint = crate::mcp_http::Endpoint::with_viewer(
-            host.clone(),
-            room,
+            host,
+            room.clone(),
             session.actor().to_owned(),
             config.token.clone(),
             private.then(|| computer.clone()).flatten(),
             viewer,
         );
+        endpoint.serve_sessions(session.mcp_session_factory(&room)?)?;
         if private {
             endpoint.serve_media(session.media());
         }
@@ -729,9 +730,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         room: session.room().to_owned(),
     };
     let endpoint = Endpoint {
-        host,
-        room: session.room().to_owned(),
-        actor: session.actor().to_owned(),
+        session_factory: session.mcp_session_factory(session.room())?,
         status,
         computer,
         joiner: session.joiner(),
@@ -743,9 +742,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
 
 /// What every native connection is served with.
 struct Endpoint<H> {
-    host: H,
-    room: String,
-    actor: String,
+    session_factory: crate::mcp::SessionFactory<H>,
     status: Status,
     computer: Option<Arc<crate::computer::Computer>>,
     joiner: Option<crate::Joiner>,
@@ -765,9 +762,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 drop(stream);
                 continue;
             }
-            let host = self.host.clone();
-            let room = self.room.clone();
-            let actor = self.actor.clone();
+            let factory = Arc::clone(&self.session_factory);
             let status = self.status.clone();
             let computer = self.computer.clone();
             let joiner = self.joiner.clone();
@@ -780,9 +775,13 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .name("tilo-native-mcp".into())
                 .spawn(move || {
                     let _slot = slot;
-                    let mut server = McpServer::new(host, room, actor)
-                        .with_computer(computer)
-                        .with_media(media);
+                    let mut server = match factory() {
+                        Ok(server) => server.with_computer(computer).with_media(media),
+                        Err(error) => {
+                            tracing::debug!(%error, "native MCP session admission unavailable");
+                            return;
+                        }
+                    };
                     if let Err(error) =
                         serve_connection(stream, &mut server, &status, joiner.as_ref(), &search)
                     {

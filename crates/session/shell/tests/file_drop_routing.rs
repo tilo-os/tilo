@@ -169,7 +169,7 @@ fn pump(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &doc_root,
             handled: &mut handled,
             focus_target: &mut focus,

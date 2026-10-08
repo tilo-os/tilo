@@ -23,7 +23,7 @@ use ui::tilo_resource::{self, ActionDecl, Doc, Invoke, ModelError, Resource, Sea
 use ui::widget::Element;
 
 use crate::actions::{FIREWALL_ACTION_TYPE, FirewallAction, register};
-use crate::app::FirewallApp;
+use crate::app::{FirewallApp, Notice, Tone};
 use crate::backend::{Backend, Mode};
 use crate::doc::FirewallDoc;
 use crate::model::{FirewallConfig, ZoneKind};
@@ -63,11 +63,9 @@ impl Resource for Firewall {
         state
             .zones
             .iter()
-            .map(|zone| SearchEntry {
-                anchor: Some(format!("firewall.zone:{}", zone.kind.name())),
-                title: zone.kind.name().to_owned(),
-                text: format!("{} rules", zone.rules.len()),
-                action: None,
+            .map(|zone| {
+                SearchEntry::new(zone.kind.title(), format!("{} rules", zone.rules.len()))
+                    .anchored(format!("firewall.zone:{}", zone.kind.name()))
             })
             .collect()
     }
@@ -75,7 +73,7 @@ impl Resource for Firewall {
 
 /// What the firewall does outside the document, for every caller.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "firewall.effect")]
+#[effect(operation = "firewall.effect", device_only)]
 pub enum FirewallEffect {
     /// Apply firewall configuration.
     #[effect(job, permission = "admin")]
@@ -128,14 +126,25 @@ pub(crate) fn apply_on_device(config: &FirewallConfig) -> Applied {
         .map(|()| (backend.mode(), backend.last_plan().len()))
 }
 
-/// The status line one apply leaves.
-pub(crate) fn applied_status(applied: &Applied) -> String {
+/// What one apply reports.
+pub(crate) fn applied_status(applied: &Applied) -> Notice {
+    let changes = |n: usize| if n == 1 { "change" } else { "changes" };
     match applied {
-        Ok((Mode::Live, n)) => format!("Applied {n} firewall-cmd commands"),
-        Ok((Mode::DryRun, n)) => {
-            format!("Dry-run: {n} commands planned (set TILO_FIREWALL_APPLY=1)")
-        }
-        Err(error) => format!("Apply failed: {error}"),
+        Ok((Mode::Live, n)) => Notice {
+            text: format!("Applied {n} {}", changes(*n)),
+            tone: Tone::Success,
+        },
+        Ok((Mode::DryRun, n)) => Notice {
+            text: format!(
+                "{n} {} checked. This device does not allow applying them.",
+                changes(*n)
+            ),
+            tone: Tone::Info,
+        },
+        Err(error) => Notice {
+            text: format!("Could not apply the configuration: {error}"),
+            tone: Tone::Error,
+        },
     }
 }
 
@@ -152,11 +161,9 @@ fn read_device() -> Result<FirewallConfig, String> {
     match crate::backend::import() {
         Some(config) if config.validate().is_ok() => Ok(config),
         Some(_) => {
-            Err("firewalld returned unsupported or unsafe rule data; no changes were made".into())
+            Err("Firewalld returned rules this app cannot show safely. Nothing was changed.".into())
         }
-        None => Err(
-            "Still unable to reach firewalld. Start the service, authorize it, then retry.".into(),
-        ),
+        None => Err("Firewalld is still not reachable. Start the service, then try again.".into()),
     }
 }
 
@@ -166,14 +173,18 @@ pub struct FirewallShell;
 /// Every screenshot scenario. All but `service-error` show the sample
 /// ruleset; the rest is view state the surface stages.
 const SCENARIOS: &[&str] = &[
-    "default",
     "empty",
+    "add-rule",
     "error",
     "confirmation",
     "active-change",
+    "panic",
+    "stopped",
     "service-error",
     "services",
     "selected",
+    "narrow",
+    "drawer",
 ];
 
 impl ResourceApp for FirewallShell {
@@ -190,12 +201,19 @@ impl ResourceApp for FirewallShell {
         SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1100, 720)
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| match name {
+                "narrow" => Some((800, 600)),
+                "drawer" => Some((640, 600)),
+                _ => None,
+            })
+            .unwrap_or((1280, 800))
     }
 
     /// The bundled sample ruleset, never the capturing machine's; the
-    /// active-change scenario has just made `home` the active zone.
+    /// active-change scenario has just made `home` the active zone, and
+    /// the panic and stopped scenarios have turned those switches.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Firewall>> {
         if name == Some("service-error") {
             return Vec::new();
@@ -203,10 +221,13 @@ impl ResourceApp for FirewallShell {
         let mut actions = vec![FirewallAction::Import {
             config: crate::sample::sample_config(),
         }];
-        if name == Some("active-change") {
-            actions.push(FirewallAction::SetDefaultZone {
+        match name {
+            Some("active-change") => actions.push(FirewallAction::SetDefaultZone {
                 zone: ZoneKind::Home,
-            });
+            }),
+            Some("panic") => actions.push(FirewallAction::SetPanic { on: true }),
+            Some("stopped") => actions.push(FirewallAction::SetEnabled { on: false }),
+            _ => {}
         }
         actions
             .iter()
@@ -216,18 +237,19 @@ impl ResourceApp for FirewallShell {
 
     /// A new record starts with what firewalld on the creating device
     /// already has, which that device therefore need not apply again. A
-    /// device without a readable firewalld starts empty and offers a retry.
+    /// device without a readable firewalld starts empty and offers a retry,
+    /// and so does a record created without a window: it is no device's.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Firewall>> {
-        if cx.host().capture().is_some() {
+        let Some(host) = cx.host().filter(|host| host.capture().is_none()) else {
             return Vec::new();
-        }
+        };
         let Ok(config) = read_device() else {
             return Vec::new();
         };
         let applied = AppliedConfig {
             config: Some(config.canonical().to_json()),
         };
-        if let Err(error) = cx.host().settings::<AppliedConfig>().set(&applied) {
+        if let Err(error) = host.settings::<AppliedConfig>().set(&applied) {
             tracing::warn!(%error, "could not remember the imported firewall configuration");
         }
         Invoke::apply(&FirewallAction::Import { config })
@@ -258,9 +280,12 @@ impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
                         (config, result)
                     },
                     move |(), (config, result): (FirewallConfig, Applied), _| {
-                        let status = applied_status(&result);
-                        *outcome.borrow_mut() = Some(status.clone());
-                        result.map_err(|_| status)?;
+                        if result.is_err() {
+                            let status = applied_status(&result);
+                            let message = status.text.clone();
+                            *outcome.borrow_mut() = Some(status);
+                            return Err(message);
+                        }
                         remember_applied(&applied, &config);
                         Ok(Effected::done())
                     },
@@ -325,8 +350,8 @@ impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
     }
 }
 
-/// Where the projection's result goes until the surface shows it.
-pub(crate) type ApplyOutcome = Rc<RefCell<Option<String>>>;
+/// Where a failed apply of the projection goes until the surface reports it.
+pub(crate) type ApplyOutcome = Rc<RefCell<Option<Notice>>>;
 
 #[cfg(test)]
 mod tests {
@@ -421,8 +446,6 @@ mod tests {
                 remembered.get().config.as_deref() == Some(stored.as_str())
             });
         assert!(applied, "the device remembers the configuration it applied");
-        let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("commands planned"), "{frame}");
 
         // Stopping the firewall is an edit like any other: confirmed, in
         // the document, and applied by the device in turn.
@@ -444,14 +467,25 @@ mod tests {
     #[test]
     fn captures_stage_the_sample_through_actions() {
         let mut active = TestApp::<FirewallShell>::capture(Some("active-change")).unwrap();
-        assert_eq!(active.harness().inspection().viewport, [1100, 720]);
+        assert_eq!(active.harness().inspection().viewport, [1280, 800]);
         assert_eq!(active.state().default_zone, ZoneKind::Home);
         let frame = active.harness().inspection_json().unwrap();
-        assert!(frame.contains("home is now the active zone"), "{frame}");
+        assert!(frame.contains("Home is now the active zone"), "{frame}");
+
+        let mut narrow = TestApp::<FirewallShell>::capture(Some("narrow")).unwrap();
+        assert_eq!(narrow.harness().inspection().viewport, [800, 600]);
+
+        let panic = TestApp::<FirewallShell>::capture(Some("panic")).unwrap();
+        assert!(panic.state().panic_mode);
+        let stopped = TestApp::<FirewallShell>::capture(Some("stopped")).unwrap();
+        assert!(!stopped.state().enabled);
 
         let mut error = TestApp::<FirewallShell>::capture(Some("service-error")).unwrap();
         assert!(error.state().zones.is_empty());
         let frame = error.harness().inspection_json().unwrap();
-        assert!(frame.contains("Permission denied"), "{frame}");
+        assert!(
+            frame.contains("Permission to read firewalld was denied"),
+            "{frame}"
+        );
     }
 }

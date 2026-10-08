@@ -1258,7 +1258,7 @@ pub fn is_workspace_path(path: &Path) -> bool {
 
 /// Whether `path` is one of `roots` or nested under one. Pure over an explicit
 /// root list so the containment logic is testable without the environment.
-fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
+pub(crate) fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|r| path == r || path.starts_with(r))
 }
 
@@ -1332,6 +1332,8 @@ pub struct Entry {
     pub history: Option<HistoryProjection>,
     /// Useful media/document facts from signed metadata; no payload read.
     pub rich_metadata: Option<MetadataProjection>,
+    /// Object observed by the listing, used only as a stale-view precondition.
+    pub observed: Option<host_fs::ObservedObject>,
 }
 
 impl Entry {
@@ -1378,6 +1380,12 @@ pub fn format_modified(modified: Option<DateTime<Local>>) -> String {
         Some(t) => crate::i18n::format_datetime(t),
         None => "—".to_string(),
     }
+}
+
+/// Locale-sensitive modified date without the time of day, for a narrow
+/// column; `None` when unknown.
+pub fn format_modified_date(modified: Option<DateTime<Local>>) -> Option<String> {
+    modified.map(crate::i18n::format_date)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1507,6 +1515,9 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             share,
             history,
             rich_metadata,
+            observed: meta
+                .as_ref()
+                .and_then(host_fs::ObservedObject::from_metadata),
         });
     }
     Ok(out)
@@ -2031,8 +2042,6 @@ mod sync_state_tests {
 
         // --- phase: revisioned_workspace_pager_is_one_page_bounded_and_indexes_later_rows_incrementally ---
         {
-            use ui::search::SearchProvider as _;
-
             let root = tempfile::tempdir().unwrap();
             // An injected FUSE page source models dozens of pages without trying
             // to store them as host xattrs (which many filesystems reject long
@@ -2048,9 +2057,16 @@ mod sync_state_tests {
                 "one step cannot materialise the whole index"
             );
             assert!(!first.complete);
-            let provider =
-                crate::search_provider::CollaborativeRecordSearchProvider::new(&first.records);
-            assert!(provider.search("late-target").is_empty());
+            let provider = crate::search_provider::CollaborativeRecordSearch::new(&first.records);
+            let found = |provider: &crate::search_provider::CollaborativeRecordSearch| {
+                ui::search::SearchProvider::search(
+                    &ui::framework::testing::search_source::<crate::resource::FileExplorer>(
+                        provider.entries(),
+                    ),
+                    "late-target",
+                )
+            };
+            assert!(found(&provider).is_empty());
 
             let mut indexed = first.records.len();
             while pager.has_more() {
@@ -2068,11 +2084,10 @@ mod sync_state_tests {
             );
             assert_eq!(indexed, records, "every page is indexed exactly once");
             assert!(
-                provider
-                    .search("late-target")
+                found(&provider)
                     .iter()
                     .any(|hit| hit.title == "late-target.txt"),
-                "later pages enter the retained search catalogue without a full refresh"
+                "later pages enter the search entries without a full refresh"
             );
         }
     }

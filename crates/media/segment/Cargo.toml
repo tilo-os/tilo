@@ -1,0 +1,34 @@
+[package]
+name = "tilo-segment"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Finding the subject of a picture with a local model, and refining a selection's edge to the picture."
+
+[features]
+# Running the subject model. Only the service that holds the model needs it;
+# refining an edge and taking the background out of its colours do not.
+infer = ["dep:rten", "dep:rten-tensor"]
+
+[dependencies]
+thiserror.workspace = true
+# A pure-Rust ONNX runtime on the CPU (SIMD, several threads): no native
+# library to ship, and it builds for every target Tilo does.
+rten = { version = "0.27", default-features = false, features = ["onnx_format"], optional = true }
+rten-tensor = { version = "0.27", optional = true }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# The timing run reads real photographs and writes what it found.
+image = { workspace = true, features = ["png", "jpeg"] }
+
+[[test]]
+name = "subject"
+required-features = ["infer"]

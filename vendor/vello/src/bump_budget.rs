@@ -342,9 +342,26 @@ impl BudgetTracker {
                 eprintln!(
                     "vello: a frame overflowed its bump buffers (failed={:#x}) and the \
                      reservation cannot grow (ceiling or device limit of {} bytes per \
-                     buffer); geometry past it is dropped. Reported once. \
-                     Set {LOG_ENV}=1 for detail.",
-                    used.failed, self.budget.max_binding_bytes,
+                     buffer); the frame is not drawn. It asked for lines {}, binning {}, \
+                     tiles {}, seg_counts {}, segments {}, blend {}, ptcl {} against \
+                     lines {}, binning {}, tiles {}, seg_counts {}, segments {}, \
+                     blend {}, ptcl {}. Reported once. Set {LOG_ENV}=1 for detail.",
+                    used.failed,
+                    self.budget.max_binding_bytes,
+                    used.lines,
+                    used.binning,
+                    used.tile,
+                    used.seg_counts,
+                    used.segments.max(used.seg_counts),
+                    used.blend,
+                    used.ptcl,
+                    in_effect.lines,
+                    in_effect.binning,
+                    in_effect.tiles,
+                    in_effect.seg_counts,
+                    in_effect.segments,
+                    in_effect.blend_spill,
+                    in_effect.ptcl,
                 );
             }
         } else if used.failed != 0 {

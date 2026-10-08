@@ -177,17 +177,14 @@ impl ContentBackend for DeviceBackend {
     }
 }
 
-impl ContentStore {
-    /// The device content store, when the launcher handed this process its capability. Every
-    /// store returned shares the one connection.
-    pub fn device() -> Option<Self> {
-        static DEVICE: OnceLock<Option<Arc<DeviceBackend>>> = OnceLock::new();
-        let backend = DEVICE.get_or_init(|| {
-            let client = BlobClient::from_environment().ok()?;
-            Some(Arc::new(DeviceBackend::new(client)))
-        });
-        backend
-            .as_ref()
-            .map(|backend| Self::from_backend(Arc::clone(backend) as Arc<dyn ContentBackend>))
-    }
+/// The one launcher-granted device connection shared by stores in this process.
+pub(crate) fn store() -> Option<ContentStore> {
+    static DEVICE: OnceLock<Option<Arc<DeviceBackend>>> = OnceLock::new();
+    let backend = DEVICE.get_or_init(|| {
+        let client = BlobClient::from_environment().ok()?;
+        Some(Arc::new(DeviceBackend::new(client)))
+    });
+    backend
+        .as_ref()
+        .map(|backend| ContentStore::from_backend(Arc::clone(backend) as Arc<dyn ContentBackend>))
 }

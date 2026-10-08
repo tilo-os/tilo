@@ -118,8 +118,19 @@ pub fn render_rgba(
     pixels_per_unit: f64,
     options: &Options,
 ) -> Result<(Vec<u8>, u32, u32), String> {
+    // A picture is drawn at its own detail: a painted layer is simulated as
+    // finely as the picture's pixels need (up to its finest level), not
+    // enlarged from the coarser simulation a whole view shows.
+    let options = Options {
+        detail: Some(options.detail.unwrap_or(crate::detail::Detail {
+            visible: region,
+            pixels_per_unit,
+            wait: true,
+        })),
+        ..options.clone()
+    };
     pixels(region, pixels_per_unit, options.bare, |scene, to| {
-        renderer.draw(art, scene, to, text, options);
+        renderer.draw(art, scene, to, text, &options);
     })
 }
 
@@ -524,6 +535,8 @@ pub fn look(
         wet: None,
         marks: None,
         selection: true,
+        detail: None,
+        live: false,
     };
     let picture = render(renderer, text, art, (region, scale), &options, jpeg)?;
     let info = json!({
@@ -688,7 +701,10 @@ pub fn export(
         art,
         art.bounds(),
         scale,
-        &Options::default(),
+        &Options {
+            bare: export.transparent.unwrap_or(false),
+            ..Options::default()
+        },
     )?;
     let (bytes, format) = match format {
         "png" => (encode_png(&rgba, width, height)?, "png"),
@@ -975,6 +991,16 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         "listed": marks.len(),
         "matching": matching.len(),
     });
+    if inspect.palette == Some(true)
+        && let Value::Object(fields) = &mut answer
+    {
+        let palette = crate::palette::used(matching.iter().copied());
+        fields.insert("palette_colours".into(), json!(palette.len()));
+        fields.insert(
+            "palette".into(),
+            json!(palette.into_iter().take(32).collect::<Vec<_>>()),
+        );
+    }
     if let Some(selection) = selection_info(art)
         && let Value::Object(fields) = &mut answer
     {
@@ -1001,6 +1027,7 @@ fn layer_entry(art: &Artwork, layer: &Layer) -> Value {
     let mut entry = json!({
         "id": layer.id,
         "name": layer.name,
+        "group": layer.group,
         "medium": if layer.medium.is_empty() { "plain" } else { layer.medium.as_str() },
         "marks": art.marks_of(&layer.id).count(),
     });
@@ -1234,6 +1261,7 @@ fn mark_fields(old: &Mark, new: &Mark) -> Vec<String> {
 fn layer_fields(old: &Layer, new: &Layer) -> Vec<String> {
     [
         (old.name != new.name, "name"),
+        (old.group != new.group, "group"),
         (old.order != new.order, "stacking"),
         (old.medium != new.medium, "medium"),
         (old.opacity.to_bits() != new.opacity.to_bits(), "opacity"),

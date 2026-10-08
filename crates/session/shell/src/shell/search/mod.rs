@@ -71,9 +71,6 @@ fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
     }
 }
 
-/// Top of every shell provider's ranker-derived score.
-pub(crate) const MAX_PROVIDER_SCORE: i32 = 100;
-
 /// Map a field rank onto the provider scale; see
 /// [`ui::search::system::provider_score`].
 pub(crate) use ui::search::system::provider_score;
@@ -163,9 +160,19 @@ impl ResourceKindText for ResourceKind {
 /// directly. Returns a [`Result`] because an action can be addressed
 /// correctly and still have nothing to act on — "it ran" and "there was
 /// nothing here" are different answers a headless caller must tell apart.
-pub type OpenFn = dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
-pub type InvokeFn =
-    dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<ActionReceipt, ActionError>;
+pub type OpenFn =
+    dyn Fn(&mut ui::widget::Edits<'_>, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
+pub type InvokeFn = dyn Fn(
+    &mut ui::widget::Edits<'_>,
+    &ObjId,
+    &Chrome,
+    &ActionArgs,
+) -> Result<ActionReceipt, ActionError>;
+/// The longest an exact-address resolve waits for a provider's retained
+/// index to finish its first build. An address is valid whether or not a
+/// search ran before it; the wait only happens while a build is in flight.
+pub const RESOLVE_INDEX_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// A non-blocking admission poll. `None` means the broker has not answered
 /// yet; the compositor keeps the ticket and polls again next frame.
 pub type PendingInvocation = Rc<dyn Fn() -> Result<Option<ActionReceipt>, ActionError>>;
@@ -183,7 +190,7 @@ impl std::fmt::Debug for InvocationDisposition {
     }
 }
 pub type BeginInvokeFn = dyn Fn(
-    &mut AutoCommit,
+    &mut ui::widget::Edits<'_>,
     &ObjId,
     &Chrome,
     &ActionArgs,
@@ -203,6 +210,20 @@ impl ActionReceipt {
             update: tilo_actions::InvocationUpdate::Succeeded {
                 invocation: tilo_actions::InvocationId::new(),
                 output: tilo_actions::ActionOutput::default(),
+            },
+        }
+    }
+
+    /// A completed local action that answers with `value`.
+    pub fn completed_with(value: serde_json::Value) -> Self {
+        Self {
+            broker_invocation_id: None,
+            update: tilo_actions::InvocationUpdate::Succeeded {
+                invocation: tilo_actions::InvocationId::new(),
+                output: tilo_actions::ActionOutput {
+                    value: Some(value),
+                    resources: Vec::new(),
+                },
             },
         }
     }
@@ -253,7 +274,7 @@ impl SearchResult {
         title: impl Into<String>,
         subtitle: Option<String>,
         score: i32,
-        on_open: impl Fn(&mut AutoCommit, &ObjId, &Chrome) + 'static,
+        on_open: impl Fn(&mut ui::widget::Edits<'_>, &ObjId, &Chrome) + 'static,
     ) -> Self {
         Self {
             kind,
@@ -285,7 +306,8 @@ impl SearchResult {
         title: impl Into<String>,
         subtitle: Option<String>,
         score: i32,
-        on_open: impl Fn(&mut AutoCommit, &ObjId, &Chrome) -> Result<(), ActionError> + 'static,
+        on_open: impl Fn(&mut ui::widget::Edits<'_>, &ObjId, &Chrome) -> Result<(), ActionError>
+        + 'static,
     ) -> Self {
         Self {
             kind,
@@ -302,6 +324,32 @@ impl SearchResult {
             on_invoke: None,
             on_begin_invoke: None,
         }
+    }
+}
+
+impl SearchResult {
+    /// A nullary row that shows something and answers with what it showed:
+    /// the palette runs it like any other row, and an action caller receives
+    /// the value as the receipt's typed output.
+    pub fn view_with_output(
+        kind: ResourceKind,
+        provider_id: impl Into<String>,
+        id: impl Into<String>,
+        title: impl Into<String>,
+        subtitle: Option<String>,
+        score: i32,
+        open: impl Fn(&Chrome) -> Result<serde_json::Value, ActionError> + 'static,
+    ) -> Self {
+        let open = Rc::new(open);
+        let invoke = Rc::clone(&open);
+        let mut row = Self::nullary_fallible(kind, provider_id, id, title, subtitle, score, {
+            move |_doc, _root, chrome| open(chrome).map(drop)
+        });
+        row.operation_kind = tilo_actions::OperationKind::View;
+        row.on_invoke = Some(Rc::new(move |_doc, _root, chrome, _args| {
+            invoke(chrome).map(ActionReceipt::completed_with)
+        }));
+        row
     }
 }
 
@@ -348,14 +396,24 @@ pub trait SearchProvider {
 
     /// Resolve one provider-local id from current provider state. The default
     /// is suitable for small providers whose empty query is their complete
-    /// action surface. Retained or remote providers override this so selecting
-    /// an already-discovered address does not issue a different search query
-    /// and discard the page that disclosed it.
+    /// action surface: it follows that query's pages to the end, so an id
+    /// past the first palette page still resolves. Retained or remote
+    /// providers override this so selecting an already-discovered address
+    /// does not issue a different search query and discard the page that
+    /// disclosed it.
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
-        self.query_page(ctx, None, SearchBudget::PALETTE)
-            .results
-            .into_iter()
-            .find(|result| result.id == id)
+        let mut cursor: Option<SearchCursor> = None;
+        for _ in 0..HEADLESS_MAX_PAGES {
+            let page = self.query_page(ctx, cursor.as_ref(), SearchBudget::PALETTE);
+            if let Some(found) = page.results.into_iter().find(|result| result.id == id) {
+                return Some(found);
+            }
+            if page.exhausted || page.stale_cursor {
+                return None;
+            }
+            cursor = Some(page.next_cursor?);
+        }
+        None
     }
 
     /// Resource hierarchy for one result already admitted to the caller's
@@ -454,11 +512,21 @@ pub enum SearchProximity {
 /// by value so providers don't have to store the borrows.
 #[derive(Clone, Copy)]
 pub struct SearchContext<'a> {
+    /// Effective registry scope, independent of the palette's current filter.
+    pub query_scope: Option<SearchScope>,
+    /// Explicit machine discovery; ordinary palette queries keep this false.
+    pub include_programmatic: bool,
     pub needle: &'a str,
     pub wanted: &'a [ResourceKind],
     pub chrome: &'a ChromeState,
     pub doc: &'a AutoCommit,
     pub doc_root: &'a ObjId,
+}
+
+impl SearchContext<'_> {
+    pub fn effective_scope(&self) -> SearchScope {
+        self.query_scope.unwrap_or(self.chrome.search_scope)
+    }
 }
 
 /// Arguments for [`SearchRegistry::query`]/[`SearchRegistry::query_grouped`]
@@ -710,6 +778,8 @@ impl SearchRegistry {
             return None;
         }
         let ctx = SearchContext {
+            query_scope: Some(args.scope),
+            include_programmatic: false,
             needle: "",
             wanted: &wanted,
             chrome: args.chrome,
@@ -749,6 +819,8 @@ impl SearchRegistry {
                 continue;
             }
             let ctx = SearchContext {
+                query_scope: Some(args.scope),
+                include_programmatic: false,
                 needle: args.needle,
                 wanted: &wanted,
                 chrome: args.chrome,
@@ -797,6 +869,8 @@ impl SearchRegistry {
         }
         Some(provider.query_page(
             SearchContext {
+                query_scope: Some(args.scope),
+                include_programmatic: false,
                 needle: args.needle,
                 wanted: &wanted,
                 chrome: args.chrome,
@@ -885,6 +959,8 @@ impl SearchRegistry {
             out.push_str(provider.id());
             out.push('\0');
             out.push_str(&provider.search_revision(&SearchContext {
+                query_scope: Some(args.scope),
+                include_programmatic: false,
                 needle: args.needle,
                 wanted: args.wanted_kinds,
                 chrome: args.chrome,
@@ -900,16 +976,27 @@ impl SearchRegistry {
     /// filter. `wanted_kinds` filters results by kind; empty means "any
     /// kind" so a naive caller can just pass `&[]`.
     pub fn query(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
-        self.query_inner(args, false)
+        self.query_inner(args, false, false)
     }
 
     /// Exhaust every provider continuation for a render-free action listing.
     /// Interactive palette queries deliberately remain one bounded page.
     pub fn query_exhaustive(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
-        self.query_inner(args, true)
+        self.query_inner(args, true, false)
     }
 
-    fn query_rounds(&self, args: &QueryArgs<'_>, exhaustive: bool) -> Vec<ProviderQuery<'_>> {
+    /// Explicit machine enumeration includes programmatic actions within the
+    /// same bounded provider, continuation and visibility machinery.
+    pub fn query_with_programmatic(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
+        self.query_inner(args, true, true)
+    }
+
+    fn query_rounds(
+        &self,
+        args: &QueryArgs<'_>,
+        exhaustive: bool,
+        include_programmatic: bool,
+    ) -> Vec<ProviderQuery<'_>> {
         let mut sources: Vec<_> = self
             .enabled_providers()
             .filter(|provider| scope_allows(provider.as_ref(), args.scope, args.active_provider_id))
@@ -959,6 +1046,8 @@ impl SearchRegistry {
                 }
                 let page = source.provider.query_page(
                     SearchContext {
+                        query_scope: Some(args.scope),
+                        include_programmatic,
                         needle: args.needle,
                         wanted: &source.wanted,
                         chrome: args.chrome,
@@ -1006,7 +1095,12 @@ impl SearchRegistry {
         sources
     }
 
-    fn query_inner(&self, args: &QueryArgs<'_>, exhaustive: bool) -> Vec<SearchResult> {
+    fn query_inner(
+        &self,
+        args: &QueryArgs<'_>,
+        exhaustive: bool,
+        include_programmatic: bool,
+    ) -> Vec<SearchResult> {
         if !query_input_is_bounded(args.needle) {
             return Vec::new();
         }
@@ -1019,7 +1113,7 @@ impl SearchRegistry {
         } = *args;
         let mut merged: Vec<(SearchResult, f32)> = Vec::new();
         let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
-        for source in self.query_rounds(args, exhaustive) {
+        for source in self.query_rounds(args, exhaustive, include_programmatic) {
             let provider = source.provider;
             let top = provider.max_score().max(1);
             for r in source.results {
@@ -1647,12 +1741,10 @@ mod tests {
         {
             use crate::shell::search::providers::{
                 actions::ActionsProvider, applications::ApplicationsProvider, files::FilesProvider,
-                notes::NotesProvider,
             };
             let providers: Vec<Rc<dyn SearchProvider>> = vec![
                 Rc::new(ActionsProvider::new()),
                 Rc::new(ApplicationsProvider::new()),
-                Rc::new(NotesProvider::new()),
                 Rc::new(FilesProvider::new()),
             ];
             for p in providers {

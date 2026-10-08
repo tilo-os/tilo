@@ -109,7 +109,7 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) updaters: Updaters<R>,
     pub(crate) alive: Weak<()>,
     pub(crate) dispatch: Dispatcher<R>,
-    pub(crate) published: Rc<tilo_actions::Resource>,
+    pub(crate) action_bindings: Actions<R>,
     pub(crate) item: Option<Id>,
     pub(crate) controls: Rc<RefCell<HashMap<String, u32>>>,
     pub(crate) saved: LocalState<RecordSaveStatus>,
@@ -145,7 +145,7 @@ impl<R: Resource> ViewCx<R> {
             updaters: Updaters::new(),
             alive: Rc::downgrade(alive),
             dispatch,
-            published: Rc::new(published),
+            action_bindings: Actions::new(Rc::new(published)),
             item: None,
             controls: Rc::default(),
             saved: LocalState::new(RecordSaveStatus::Saved),
@@ -160,6 +160,30 @@ impl<R: Resource> ViewCx<R> {
 }
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
+    /// Open, in this window and in place of the record it shows, what a
+    /// launch of the app naming `arguments` opens: the record
+    /// [`ResourceApp::launch_record`](super::ResourceApp::launch_record)
+    /// names, with its launch actions — the document a person chose with
+    /// the app's own Open. The window's view is rebuilt for that record on
+    /// the next frame. Refused in a past version and a capture.
+    ///
+    /// The outcome answers once the host opened it, or why it could not.
+    ///
+    /// # Errors
+    /// Returns that the window cannot open another record.
+    pub fn open_here(
+        &self,
+        arguments: &[String],
+    ) -> Result<ui_core::application::ReplacementOutcome, String> {
+        self.run.open_here(arguments)
+    }
+
+    /// The names of the participants, for showing the ids actions record
+    /// ([`People::name`](super::People::name)).
+    pub fn people(&self) -> super::People {
+        self.run.people.clone()
+    }
+
     /// The live resource state, for reads a binding does not cover.
     pub fn live(&self) -> &Live<R> {
         &self.live
@@ -168,6 +192,18 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// Where edits go. Custom widgets keep a clone.
     pub fn dispatcher(&self) -> Dispatcher<R> {
         self.dispatch.clone()
+    }
+
+    /// Observe what this participant may do, without storing their role in
+    /// the shared resource. Use this with [`Self::switch`] for an owner-only
+    /// pane, or with a bound widget for a permission-specific label. Changes
+    /// follow the host even when the document and write access stay unchanged.
+    /// This controls presentation; the action door remains the authority.
+    pub fn permission_state(
+        &self,
+        requirement: tilo_actions::PermissionRequirement,
+    ) -> LocalState<bool> {
+        self.dispatch.permission_state(requirement)
     }
 
     /// The dispatcher of the resource nested in this one at `id`, whose
@@ -191,6 +227,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.me()
     }
 
+    /// What the launch that opened this window named — the file a person
+    /// opened the app with, its command line — for a view that shows what
+    /// the launch's actions ([`ResourceApp::launch`](super::ResourceApp::launch))
+    /// made: the note a launch imported, opened. Empty for a plain start and
+    /// for a past version.
+    pub fn launch(&self) -> super::launch::LaunchInput<'_> {
+        self.run.launch()
+    }
+
     /// Whether this participant may only view, when the view is built.
     /// Bound controls already follow permission changes on their own; to show
     /// or disable something else while the participant may only view, bind to
@@ -198,6 +243,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// runs.
     pub fn read_only(&self) -> bool {
         self.dispatch.read_only()
+    }
+
+    /// Whether this view shows a past version in History mode, drawn from a
+    /// frozen document. It must start no work there: a surface that fetches,
+    /// watches or spawns a worker is built without it and presents what the
+    /// document holds.
+    pub fn is_past(&self) -> bool {
+        self.dispatch.is_past()
     }
 
     /// Whether this participant may only view, as state that follows role
@@ -255,7 +308,40 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// on them beyond the actions the launch took: the file a save writes
     /// back to. Empty for a plain start, a past version and a capture.
     pub fn launch_arguments(&self) -> &[String] {
-        &self.run.arguments
+        &self.run.launched.arguments
+    }
+
+    /// The value of the app's own option `name` (`--purpose`) the window's
+    /// launch named; see [`ResourceApp::OPTIONS`](super::ResourceApp::OPTIONS).
+    /// `None` for a past version.
+    pub fn launch_option(&self, name: &str) -> Option<&str> {
+        super::launch::option(&self.run.launched.options, name)
+    }
+
+    /// Whether the window's launch named the app's switch `name`; see
+    /// [`ResourceApp::FLAGS`](super::ResourceApp::FLAGS).
+    pub fn launch_flag(&self, name: &str) -> bool {
+        super::launch::flag(&self.run.launched.options, name)
+    }
+
+    /// The service of type `T` the host that mounts the app in its own
+    /// process lent it ([`HostContext::lend`](ui_core::application::HostContext::lend)),
+    /// taken once: the shell's connection to the session's process
+    /// supervisor for a terminal it hosts. `None` in the app's own process,
+    /// and for a past version or a capture, which start nothing.
+    pub fn take_lent<S: 'static>(&self) -> Option<S> {
+        if !self.run.mode.is_live() {
+            return None;
+        }
+        self.run.launched.lent.take::<S>()
+    }
+
+    /// Whether the window is private ([`ResourceApp::PRIVATE_WINDOWS`](super::ResourceApp::PRIVATE_WINDOWS)):
+    /// its record, settings and files are thrown away with the process. A
+    /// view keeps what it would otherwise remember on the device (visits,
+    /// a session to restore) to itself.
+    pub fn is_private(&self) -> bool {
+        self.run.private
     }
 
     /// The app's typed settings of type `S`, kept current while this scope
@@ -268,6 +354,35 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.storage.follow(self.alive.clone())
     }
 
+    /// The device this window runs on: stable across launches, distinct on
+    /// each of the person's devices. `None` in a view of a past version. An
+    /// action that records where something happened (a speed test run on
+    /// this device) takes it as an argument, so every replica applies the
+    /// same value.
+    pub fn device(&self) -> Option<&str> {
+        self.storage.device()
+    }
+
+    /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)):
+    /// theirs alone, kept in their own room and synced to their other
+    /// devices, never to a collaborator, whatever room this record is in.
+    /// `None` where the host keeps no records of the person's (a view of a
+    /// past version) or the record cannot be opened.
+    pub fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.person::<P>()
+    }
+
+    /// The person's record `P` that one app keeps for all of theirs — their
+    /// accounts, which Settings keeps: the same record on every device, held
+    /// here too and converging with the keeper's over the person's own room.
+    /// Changed only by its owner and editors
+    /// ([`SharedRecord`](tilo_resource::SharedRecord),
+    /// [`PersonRecord::editable`](super::PersonRecord::editable)); for its
+    /// owner it is [`Self::person`].
+    pub fn shared_person<P: tilo_resource::SharedRecord>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.shared_person::<P>()
+    }
+
     /// The app's files, secrets and settings documents, as its host gave
     /// them. A secret of one document item is
     /// `cx.storage().secrets().item(purpose, id)`.
@@ -278,6 +393,28 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// Typed process-local view state: never persisted, shared or undone.
     pub fn local<V: Send + Sync + 'static>(&self, initial: V) -> LocalState<V> {
         LocalState::new(initial)
+    }
+
+    /// Show the item a search hit opens: `open` runs with the hit's anchor
+    /// (a [`SearchEntry`](tilo_resource::SearchEntry)'s `anchor`) when the
+    /// person picks the hit, or when an agent invokes the resource's `open`
+    /// action. Select the item, switch to its page, scroll it into view:
+    /// set the [`LocalState`]s that show it, as the person's own input would.
+    pub fn on_open(&self, open: impl FnMut(&str) + 'static) {
+        self.stages.push_opener(self.alive.clone(), Box::new(open));
+    }
+
+    /// Open the platform search with `request`, narrowed to this app or one
+    /// part of it. Usually a control does this ([`Self::search_button`]); a
+    /// custom handler calls [`Dispatcher::open_search`] on its dispatcher.
+    pub fn open_search(&self, request: &ui_core::search::SearchRequest) {
+        self.dispatch.open_search(request);
+    }
+
+    /// The search launcher for this view's chrome: an icon button that opens
+    /// the platform search with `request`. Apps never draw a search field.
+    pub fn search_button(&self, request: ui_core::search::SearchRequest) -> Button {
+        ui_core::search::search_button(request)
     }
 
     /// Stage view state for a screenshot scenario: `stage` runs with the
@@ -367,6 +504,46 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         }
     }
 
+    /// Route a serialized screen's text inputs over `path` through the
+    /// resource ([`UiValues::route`](ui_core::UiValues::route)): they show
+    /// `read` of it and each edit invokes `action` with the input's new text.
+    /// A view that may not invoke `action` leaves the path unrouted.
+    pub fn route_graph_text(
+        &self,
+        values: &ui_core::UiValues,
+        path: &str,
+        read: impl Fn(&T) -> String + 'static,
+        action: impl Binds<R, String>,
+    ) {
+        let Some(binding) = self.binding(action) else {
+            return;
+        };
+        let shown = LocalState::new(String::new());
+        let sink = shown.clone();
+        let initial = self.follow(read, move |value| sink.set(value));
+        shown.set(initial);
+        values.route(path, shown, binding);
+    }
+
+    /// Route a serialized screen's checked controls through the resource:
+    /// they show `read` and each edit invokes its typed `action`.
+    pub fn route_graph_bool(
+        &self,
+        values: &ui_core::UiValues,
+        path: &str,
+        read: impl Fn(&T) -> bool + 'static,
+        action: impl Binds<R, bool>,
+    ) {
+        let Some(binding) = self.binding(action) else {
+            return;
+        };
+        let shown = LocalState::new(false);
+        let sink = shown.clone();
+        let initial = self.follow(read, move |value| sink.set(value));
+        shown.set(initial);
+        values.route_bool(path, shown, binding);
+    }
+
     /// A checkbox showing `read` of the resource; toggling invokes `action`
     /// with the new value.
     pub fn checkbox(
@@ -390,22 +567,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// A button that invokes one fully specified action.
     pub fn button(&self, label: &str, invoke: Invoke<R>) -> Button {
         let id = self.control_id(invoke.id);
-        let button = Button::new(&id, label, None);
-        let Some(spec) = self
-            .published
-            .actions
-            .iter()
-            .find(|spec| spec.id == invoke.id)
-            .cloned()
-        else {
-            return disabled(button);
-        };
-        match ActionBinding::static_json(&self.published, &spec, invoke.arguments) {
-            Ok(binding) => button.on_action(binding),
-            Err(error) => {
-                tracing::warn!(%error, action = invoke.id, "button not bound");
-                disabled(button)
-            }
+        let button = Button::new(&id, label);
+        match self.actions().invocation(invoke) {
+            Some(binding) => button.on_action(binding),
+            None => disabled(button),
         }
     }
 
@@ -427,7 +592,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let live = self.live.clone();
         let updaters = self.updaters.clone();
         let dispatch = self.dispatch.clone();
-        let published = Rc::clone(&self.published);
+        let action_bindings = self.action_bindings.clone();
         let controls = Rc::clone(&self.controls);
         let saved = self.saved.clone();
         let stages = self.stages.clone();
@@ -451,7 +616,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     updaters: updaters.clone(),
                     alive: Rc::downgrade(alive),
                     dispatch: dispatch.clone(),
-                    published: Rc::clone(&published),
+                    action_bindings: action_bindings.clone(),
                     item: Some(id.clone()),
                     controls: Rc::clone(&controls),
                     saved: saved.clone(),
@@ -474,7 +639,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// state it captured. Invoking one dispatches what it builds through the
     /// same permission check, confirmation and undo as any other action. The
     /// binding lasts as long as this view scope (a row's ends with the row);
-    /// an id the resource already publishes keeps the resource's action.
+    /// an id the resource already publishes keeps the resource's action
+    /// unless the bound one refines it ([`tilo_resource::bind_declaration`]).
     pub fn bind_declarations(&self, bind: impl Fn(&R::State) -> Vec<ActionDecl<R>> + 'static) {
         self.bindings
             .0
@@ -485,7 +651,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// The resource's published actions, for binding controls built outside
     /// the view function: the rows a table, list or tree creates on demand.
     pub fn actions(&self) -> Actions<R> {
-        Actions::new(Rc::clone(&self.published))
+        self.action_bindings.clone()
     }
 
     /// A value that follows `read` of the resource, for any toolkit control
@@ -534,7 +700,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let focus = Rc::clone(&self.focus);
         let updaters = self.updaters.clone();
         let dispatch = self.dispatch.clone();
-        let published = Rc::clone(&self.published);
+        let action_bindings = self.action_bindings.clone();
         let item = self.item.clone();
         let saved = self.saved.clone();
         let stages = self.stages.clone();
@@ -552,7 +718,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     updaters: updaters.clone(),
                     alive: Rc::downgrade(alive),
                     dispatch: dispatch.clone(),
-                    published: Rc::clone(&published),
+                    action_bindings: action_bindings.clone(),
                     item: item.clone(),
                     // Each build of the part names its controls afresh.
                     controls: Rc::default(),
@@ -577,8 +743,11 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         S: ResourceSurface<R, E> + 'static,
         E: Effect,
     {
+        let jobs = self.effects.surface_jobs();
         surface.attach(SurfaceCx {
+            jobs: jobs.clone(),
             dispatch: self.dispatch.clone(),
+            actions: self.actions(),
             live: self.live.clone(),
             run: self.run.clone(),
             storage: Rc::clone(&self.storage),
@@ -591,6 +760,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             self.live.clone(),
             self.dispatch.clone(),
             &self.effects,
+            jobs,
             self.alive.clone(),
             surface,
         );
@@ -620,19 +790,27 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         handle: impl FnMut(E, &mut EffectCx<R>) -> EffectAnswer + 'static,
     ) -> EffectsHandle {
         let status: StatusSource = Rc::default();
+        // Captures and History still describe the controls they draw. Only
+        // execution needs a live environment; publication is inert metadata.
+        let source = Rc::clone(&status);
+        self.effects.publish::<E>(self.alive.clone(), move || {
+            let now = source
+                .borrow()
+                .as_ref()
+                .map(|status| status())
+                .unwrap_or_default();
+            super::effect::published_specs::<E>(&now)
+        });
         if self.effects.env().is_some() {
-            let source = Rc::clone(&status);
-            self.effects.publish::<E>(self.alive.clone(), move || {
-                let now = source
-                    .borrow()
-                    .as_ref()
-                    .map(|status| status())
-                    .unwrap_or_default();
-                super::effect::published_specs::<E>(&now)
-            });
             self.effects.handle(self.alive.clone(), handle);
         }
         EffectsHandle { status }
+    }
+
+    /// Jobs the view starts on its own, with nobody invoking an effect: a
+    /// fetch when what it shows changes. See [`Jobs`](super::Jobs).
+    pub fn jobs(&self) -> super::Jobs<R> {
+        self.effects.view_jobs()
     }
 
     /// Drain a projection: what the resource's actions queued for the world
@@ -661,12 +839,27 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.effects.drain(self.alive.clone(), pending, run)
     }
 
+    /// Drain only consequences newly queued by an actual local Document
+    /// invocation. Delayed work keeps that invocation's checked custody, and
+    /// the caller receives success only after every consequence settles.
+    /// Remote/replayed/previously pending entries acquire no caller authority.
+    pub fn drain_causal<K, I>(
+        &self,
+        pending: impl Fn(&R::State) -> Vec<(K, I)> + 'static,
+        run: impl FnMut(I, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) where
+        K: Eq + Hash + Clone + 'static,
+        I: 'static,
+    {
+        self.effects.drain_causal(self.alive.clone(), pending, run);
+    }
+
     /// A button that invokes one effect, through the same door (and the
     /// same confirmation, for a destructive one) as the palette.
     pub fn effect_button<E: Effect>(&self, label: &str, effect: &E) -> Button {
         let id = self.control_id(effect.id());
         self.actions()
-            .bind_effect_invocation(Button::new(&id, label, None), effect)
+            .bind_effect_invocation(Button::new(&id, label), effect)
     }
 }
 

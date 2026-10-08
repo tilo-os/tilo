@@ -25,9 +25,11 @@ path = "src/main.rs"
 # this binary. Off by default -- a normal `cargo build --release -p
 # word-processor` is an unchanged static build.
 thin = ["dep:runtime-dylib"]
+# Writer's publication without a window, for peers in other crates' tests
+# that serve a Writer document the way its framework app publishes it.
+test-support = []
 
 [dependencies]
-fnv.workspace = true
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -62,7 +64,9 @@ name = "it"
 path = "tests/it.rs"
 
 [dev-dependencies]
+settings-store = { path = "../../crates/system/settings-store" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

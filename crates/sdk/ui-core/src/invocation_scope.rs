@@ -64,6 +64,144 @@ impl Drop for InvokerScope {
     }
 }
 
+thread_local! {
+    static VIEWERS: std::cell::RefCell<Vec<tilo_actions::ParticipantId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The participant a published tree is being built for while it lives:
+/// what a surface offers bound to where someone is (their caret, their
+/// Find hits) is that participant's, not the window's. It grants nothing:
+/// an invocation still runs for its own invoker.
+pub struct ViewerScope(());
+impl ViewerScope {
+    pub fn enter(participant: tilo_actions::ParticipantId) -> Self {
+        VIEWERS.with_borrow_mut(|viewers| viewers.push(participant));
+        Self(())
+    }
+}
+impl Drop for ViewerScope {
+    fn drop(&mut self) {
+        VIEWERS.with_borrow_mut(|viewers| {
+            viewers.pop();
+        });
+    }
+}
+
+/// Whose view what is being built or resolved now is: the participant of
+/// the delivered invocation, else the participant a tree is published for.
+/// `None` for the window's own person.
+pub fn current_viewer() -> Option<tilo_actions::ParticipantId> {
+    current_participant().or_else(|| VIEWERS.with_borrow(|viewers| viewers.last().cloned()))
+}
+
+/// Who an effect invocation runs for, kept while it runs: what its handler
+/// and completion submit is applied for the same invoker, in the same
+/// context, and only as far as the invoker was admitted.
+#[derive(Clone, Debug)]
+pub(crate) struct Continuation {
+    pub(crate) invoker: tilo_actions::ActionInvoker,
+    pub(crate) context: Option<tilo_actions::ActionContext>,
+    /// What the invoker was admitted for: the effect's own requirement for
+    /// its arguments, which the admitting host checked the invoker holds.
+    pub(crate) admitted: tilo_actions::PermissionRequirement,
+    /// Why an edit the effect submitted was refused: the effect then fails.
+    pub(crate) refused: Option<tilo_actions::ActionFailure>,
+    /// The edits it submitted that the host is still admitting, by request.
+    pub(crate) outstanding: std::collections::HashSet<u64>,
+    /// The effect's answer, held until those edits are admitted or refused:
+    /// the wire id to send it under, and the answer.
+    pub(crate) deferred: Option<(u64, tilo_actions::InvocationUpdate)>,
+}
+
+impl Continuation {
+    /// Enter the invoker's scope for one edit the effect submitted.
+    pub(crate) fn enter(&self) -> (InvokerScope, ContinuationScope) {
+        (
+            InvokerScope::enter(self.invoker.clone()),
+            ContinuationScope::enter(self.admitted),
+        )
+    }
+
+    /// Why the effect fails when the edit it submitted was refused with
+    /// `error`: a refusal keeps its own code.
+    pub(crate) fn failure(error: &tilo_actions::DoorError) -> tilo_actions::ActionFailure {
+        let (code, message) = match error {
+            tilo_actions::DoorError::Unavailable { code, reason } => (code.clone(), reason.clone()),
+            error => (
+                crate::bound_dispatch::door_error_code(error).to_owned(),
+                error.to_string(),
+            ),
+        };
+        tilo_actions::ActionFailure {
+            code,
+            message,
+            details: None,
+            retryable: false,
+        }
+    }
+
+    /// The effect's terminal `update`, failed when an edit it submitted was
+    /// refused.
+    pub(crate) fn settle(
+        &self,
+        update: tilo_actions::InvocationUpdate,
+    ) -> tilo_actions::InvocationUpdate {
+        match (update, &self.refused) {
+            (tilo_actions::InvocationUpdate::Succeeded { invocation, .. }, Some(error)) => {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: error.clone(),
+                }
+            }
+            (update, _) => update,
+        }
+    }
+}
+
+thread_local! {
+    static CONTINUATION_BOUNDS: std::cell::RefCell<Vec<tilo_actions::PermissionRequirement>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// An edit an effect submitted on its invoker's behalf is being applied on
+/// this thread: it may need no more than the invoker was admitted for.
+#[must_use = "the bound applies only while the guard is alive"]
+pub(crate) struct ContinuationScope(());
+impl ContinuationScope {
+    pub(crate) fn enter(admitted: tilo_actions::PermissionRequirement) -> Self {
+        CONTINUATION_BOUNDS.with_borrow_mut(|bounds| bounds.push(admitted));
+        Self(())
+    }
+}
+impl Drop for ContinuationScope {
+    fn drop(&mut self) {
+        CONTINUATION_BOUNDS.with_borrow_mut(|bounds| {
+            bounds.pop();
+        });
+    }
+}
+
+/// Refuse an edit that needs `needed` while applying an effect's edit for
+/// an invoker admitted for less: an effect never lends its invoker more
+/// than they hold.
+///
+/// # Errors
+/// [`tilo_actions::DoorError::Unavailable`] with code `permission_denied`.
+pub(crate) fn check_continuation(
+    spec: &tilo_actions::ActionSpec,
+    needed: tilo_actions::PermissionRequirement,
+) -> Result<(), tilo_actions::DoorError> {
+    let admitted = CONTINUATION_BOUNDS.with_borrow(|bounds| bounds.last().copied());
+    match admitted {
+        Some(admitted) if !admitted.covers(needed) => Err(tilo_actions::DoorError::Unavailable {
+            code: "permission_denied".into(),
+            reason: format!("the invoker may not {} here", spec.label.to_lowercase()),
+        }),
+        _ => Ok(()),
+    }
+}
+
 /// The invoker of the delivered invocation being resolved on this thread.
 /// `None` outside any delivered invocation (the local person acting).
 pub fn current_invoker() -> Option<tilo_actions::ActionInvoker> {
@@ -210,6 +348,74 @@ use std::{
     },
 };
 
+/// Local evidence of the target resolved at dispatch, before encoding/execution.
+///
+/// The SDK captures this from the original caller's scope and actual record
+/// loan. It contains no action arguments, result, anchor or pixels. It is not
+/// a receipt of completion, portable authentication, or permission to execute.
+/// A consumer must separately qualify any anchor and successful presentation
+/// against these committed heads and the current owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationLocusBasis {
+    invocation: tilo_actions::InvocationId,
+    actor: String,
+    participant: Option<tilo_actions::ParticipantId>,
+    publication: tilo_actions::ActionAddress,
+    target: crate::bound_dispatch::BoundActionAddress,
+    owner_lifetime: uuid::Uuid,
+    checkout: RecordId,
+    route: RouteSpec,
+    heads: Vec<ChangeHash>,
+}
+
+impl InvocationLocusBasis {
+    pub fn invocation(&self) -> tilo_actions::InvocationId {
+        self.invocation
+    }
+    pub fn actor(&self) -> &str {
+        &self.actor
+    }
+    pub fn participant(&self) -> Option<&tilo_actions::ParticipantId> {
+        self.participant.as_ref()
+    }
+    /// Original host-admitted address; it may be a publication alias.
+    pub fn publication(&self) -> &tilo_actions::ActionAddress {
+        &self.publication
+    }
+    /// Exact component-local address resolved by the SDK's publication registry.
+    pub fn target(&self) -> &tilo_actions::ActionAddress {
+        &self.target.address
+    }
+    pub fn instance(&self) -> crate::application::InstanceId {
+        self.target.instance_id
+    }
+    pub fn owner_lifetime(&self) -> uuid::Uuid {
+        self.owner_lifetime
+    }
+    /// Actual local checkout identity, not an inferred wire record ID.
+    pub fn checkout(&self) -> &RecordId {
+        &self.checkout
+    }
+    pub fn route(&self) -> &RouteSpec {
+        &self.route
+    }
+    pub fn heads(&self) -> &[ChangeHash] {
+        &self.heads
+    }
+}
+
+#[derive(Default)]
+enum InvocationLocusState {
+    #[default]
+    Unobserved,
+    Unavailable,
+    Captured(Box<InvocationLocusBasis>),
+}
+
+const MAX_LOCUS_HEADS: usize = 128;
+const MAX_LOCUS_FIELD_BYTES: usize = 4096;
+const MAX_LOCUS_BASIS_BYTES: usize = 16 * 1024;
+
 /// Immutable job custody, constructed only from an actual admitted invocation
 /// and the exact mounted record owner. InvocationId alone cannot construct it.
 #[derive(Clone)]
@@ -219,6 +425,8 @@ pub struct ResourceInvocationScope {
     lease: PublishedInvocationLease,
     provenance: Rc<RefCell<InvocationProvenance>>,
     retired: Arc<AtomicBool>,
+    locus_target: Option<crate::bound_dispatch::BoundActionAddress>,
+    locus_basis: Rc<RefCell<InvocationLocusState>>,
 }
 
 impl ResourceInvocationScope {
@@ -252,7 +460,112 @@ impl ResourceInvocationScope {
             lease,
             provenance,
             retired: Arc::new(AtomicBool::new(false)),
+            locus_target: None,
+            locus_basis: Rc::new(RefCell::new(InvocationLocusState::Unobserved)),
         })
+    }
+
+    /// Retain the exact target while the SDK still holds its original alias
+    /// resolution. Later dispatch cannot qualify a different same-owner action.
+    pub(crate) fn for_bound_target(
+        target: crate::bound_dispatch::BoundActionTarget,
+        lease: PublishedInvocationLease,
+    ) -> Result<Self, String> {
+        if target.address.instance_id != target.binding.instance_id {
+            return Err("invocation target instance disagrees with owner".into());
+        }
+        let mut scope = Self::for_owner(HistoryOwner::component(target.binding), lease)?;
+        if target.address.address.resource.len() <= MAX_LOCUS_FIELD_BYTES
+            && target.address.address.action.len() <= MAX_LOCUS_FIELD_BYTES
+        {
+            scope.locus_target = Some(target.address);
+        } else {
+            *scope.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+        }
+        Ok(scope)
+    }
+
+    /// Read the immutable pre-execution observation while original custody is
+    /// live. No basis means this invocation could not be observed truthfully.
+    /// This never commits, borrows a document, refreshes timestamps or executes.
+    pub fn locus_basis(&self) -> Result<Option<InvocationLocusBasis>, String> {
+        self.check()?;
+        Ok(match &*self.locus_basis.borrow() {
+            InvocationLocusState::Captured(basis) => Some(basis.as_ref().clone()),
+            _ => None,
+        })
+    }
+
+    /// Best-effort metadata at actual bound dispatch; failure never changes the
+    /// action result. Once unavailable it cannot be repaired by a later event.
+    pub(crate) fn capture_locus_basis(
+        &self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        invocation: tilo_actions::InvocationId,
+        actor: &str,
+        document: &AutoCommit,
+    ) {
+        let request = &self.lease.request;
+        let valid = self.locus_target.as_ref() == Some(&target.address)
+            && self
+                .owner
+                .same_owner(&HistoryOwner::component(target.binding.clone()))
+            && self.owner.lifetime_id() == Some(target.binding.lifetime_id)
+            && invocation == request.invocation
+            && actor == request.actor
+            && current_invoker().as_ref() == Some(&request.invoker())
+            && self.check_read_loan(document).is_ok();
+        if !valid {
+            *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+            return;
+        }
+        if !matches!(*self.locus_basis.borrow(), InvocationLocusState::Unobserved) {
+            return;
+        }
+        // Never call get_heads here: observation must not close an open edit.
+        let mut heads = document.base_heads();
+        if document.pending_ops() != 0 || heads.len() > MAX_LOCUS_HEADS {
+            *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+            return;
+        }
+        let fields = [
+            request.actor.as_str(),
+            request
+                .participant
+                .as_ref()
+                .map_or("", tilo_actions::ParticipantId::as_str),
+            request.address.resource.as_str(),
+            request.address.action.as_str(),
+            target.address.address.resource.as_str(),
+            target.address.address.action.as_str(),
+            target.binding.checkout.id.as_str(),
+            self.lease.route.app_id.as_str(),
+            self.lease.route.record.as_deref().unwrap_or(""),
+        ];
+        let bytes = fields
+            .iter()
+            .try_fold(128usize + heads.len() * 32, |sum, field| {
+                (field.len() <= MAX_LOCUS_FIELD_BYTES)
+                    .then(|| sum.checked_add(field.len()))
+                    .flatten()
+            });
+        if bytes.is_none_or(|bytes| bytes > MAX_LOCUS_BASIS_BYTES) || self.check().is_err() {
+            *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+            return;
+        }
+        heads.sort_unstable();
+        *self.locus_basis.borrow_mut() =
+            InvocationLocusState::Captured(Box::new(InvocationLocusBasis {
+                invocation,
+                actor: request.actor.clone(),
+                participant: request.participant.clone(),
+                publication: request.address.clone(),
+                target: target.address.clone(),
+                owner_lifetime: target.binding.lifetime_id,
+                checkout: target.binding.checkout.id.clone(),
+                route: self.lease.route.clone(),
+                heads,
+            }));
     }
 
     /// Compare inert original admission facts with this exact current handler.

@@ -17,8 +17,8 @@
 //! [`EditCore::place_position`]; the core owns everything logical, which is
 //! exactly what unit tests can pin without a GPU.
 //!
-//! [`TypingRun`] is the one idle timer that closes a burst of typing into a
-//! single undo entry.
+//! [`TypingRun`] notes when the user last typed, so a word being typed is
+//! not checked before it settles.
 //!
 //! [`NameField`]: crate::widget::name_field::NameField
 //! [`QueryComposition`]: crate::query_text::QueryComposition
@@ -676,12 +676,8 @@ impl CaretWord {
     }
 }
 
-/// How long typing must pause before the burst closes into one undo entry.
-pub const TYPING_RUN_IDLE: Duration = Duration::from_secs(1);
-
-/// Groups a burst of edits into one undo entry: every edit [`touch`]es the
-/// run, and once it has been idle for [`TYPING_RUN_IDLE`] the host commits
-/// (`UndoPoints::needs_commit`) and [`close`]s it.
+/// A burst of typing: every edit [`touch`]es the run, and a programmatic
+/// replacement of the text [`close`]s it.
 ///
 /// [`touch`]: TypingRun::touch
 /// [`close`]: TypingRun::close
@@ -703,25 +699,7 @@ impl TypingRun {
     pub fn last_edit(&self) -> Option<Instant> {
         self.last_edit
     }
-    /// Whether edits have landed since the run was last closed.
-    pub fn is_open(&self) -> bool {
-        self.last_edit.is_some()
-    }
-    /// When the open run goes idle.
-    pub fn deadline(&self) -> Option<Instant> {
-        self.last_edit
-            .and_then(|at| at.checked_add(TYPING_RUN_IDLE))
-    }
-    /// Whether the open run has been idle long enough to commit.
-    pub fn needs_commit(&self) -> bool {
-        self.needs_commit_at(crate::time::now())
-    }
-    /// [`Self::needs_commit`] against an explicit clock reading.
-    pub fn needs_commit_at(&self, now: Instant) -> bool {
-        self.last_edit
-            .is_some_and(|at| now.saturating_duration_since(at) >= TYPING_RUN_IDLE)
-    }
-    /// The run was committed; the next edit starts a new one.
+    /// The text was replaced; the next edit starts a new run.
     pub fn close(&mut self) {
         self.last_edit = None;
     }
@@ -1248,29 +1226,5 @@ mod tests {
         word.observe(edited, Selection::collapsed(8), settled);
         word.clear();
         assert_eq!(word.current(), None);
-    }
-
-    #[test]
-    fn typing_run_closes_after_the_idle_threshold() {
-        let start = crate::time::now();
-        let mut run = TypingRun::default();
-        assert!(!run.is_open());
-        assert!(!run.needs_commit_at(start));
-
-        run.touch_at(start);
-        assert!(run.is_open());
-        assert_eq!(run.deadline(), start.checked_add(TYPING_RUN_IDLE));
-        let just_before = start + TYPING_RUN_IDLE - Duration::from_millis(1);
-        assert!(!run.needs_commit_at(just_before), "still inside the burst");
-        assert!(run.needs_commit_at(start + TYPING_RUN_IDLE));
-
-        // Another keystroke extends the burst.
-        run.touch_at(just_before);
-        assert!(!run.needs_commit_at(start + TYPING_RUN_IDLE));
-        assert!(run.needs_commit_at(just_before + TYPING_RUN_IDLE));
-
-        run.close();
-        assert!(!run.is_open());
-        assert!(!run.needs_commit_at(just_before + TYPING_RUN_IDLE * 2));
     }
 }

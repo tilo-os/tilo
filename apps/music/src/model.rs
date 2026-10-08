@@ -38,7 +38,8 @@ pub struct Album {
     pub year: u32,
 }
 
-/// One track. `yt_id` is the YouTube-Music video id used to resolve a
+/// One track. The historical `yt_id` field holds a source key: a `YouTube`
+/// video id or a namespaced Spotify URI. `YouTube` keys resolve a
 /// streamable audio URL via the [`crate::backend`] worker; for the offline
 /// sample library it is a synthetic id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,7 +52,7 @@ pub struct Track {
     pub track_no: u32,
     /// Duration in whole seconds.
     pub duration_s: u32,
-    /// YouTube-Music video id (streaming source key).
+    /// Source key, retained under its historical CRDT name for compatibility.
     pub yt_id: String,
     /// Play count, used by "most played" sorting and stats.
     pub plays: u64,
@@ -61,6 +62,16 @@ impl Track {
     pub fn duration_ms(&self) -> u64 {
         u64::from(self.duration_s) * 1000
     }
+}
+
+/// A track from the streaming catalogue (a search hit, a chart entry, an
+/// album page) with the album and artist it belongs to: what the library
+/// imports once the track is played.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogueTrack {
+    pub track: Track,
+    pub album: Album,
+    pub artist: Artist,
 }
 
 /// A user-curated playlist: an ordered list of track ids.
@@ -83,7 +94,7 @@ pub struct Playlist {
 }
 
 impl Playlist {
-    const ORDER_STEP: i64 = 1_048_576;
+    pub(crate) const ORDER_STEP: i64 = 1_048_576;
 
     /// Absolute sparse rank for appending a new membership.
     pub fn append_rank(&self) -> i64 {
@@ -221,11 +232,12 @@ pub const LIKED_PLAYLIST_ID: &str = "pl_liked";
 /// as a render snapshot, refreshed from the CRDT each `sync`.
 #[derive(Clone, Debug, Default)]
 pub struct Library {
+    /// Explicit recommendation feedback, governed by this library's sharing permissions.
+    pub recommendations: crate::recommendations::Preferences,
     pub artists: BTreeMap<ArtistId, Artist>,
     pub albums: BTreeMap<AlbumId, Album>,
     pub tracks: BTreeMap<TrackId, Track>,
     pub playlists: Vec<Playlist>,
-    pub cache: BTreeMap<TrackId, CacheState>,
     /// Track ids the user has liked ("Liked Songs"). Ordered set so the
     /// virtual Liked playlist is stable across devices.
     pub liked: BTreeSet<TrackId>,
@@ -255,9 +267,6 @@ impl Library {
         self.albums
             .get(id)
             .map_or("Unknown Album", |a| a.title.as_str())
-    }
-    pub fn cache_state(&self, id: &str) -> CacheState {
-        self.cache.get(id).copied().unwrap_or_default()
     }
 
     /// Tracks of an album, ordered by track number.
@@ -320,17 +329,6 @@ impl Library {
         let mut v: Vec<&Track> = self.tracks.values().collect();
         v.sort_by_key(|t| std::cmp::Reverse(t.plays));
         v.into_iter().take(n).collect()
-    }
-
-    /// Cached (offline) tracks.
-    pub fn downloaded_tracks(&self) -> Vec<&Track> {
-        let mut v: Vec<&Track> = self
-            .tracks
-            .values()
-            .filter(|t| matches!(self.cache_state(&t.id), CacheState::Cached))
-            .collect();
-        v.sort_by(|a, b| a.title.cmp(&b.title));
-        v
     }
 
     /// Case-insensitive substring search across tracks, albums and artists.

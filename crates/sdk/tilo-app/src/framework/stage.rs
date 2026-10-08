@@ -12,7 +12,11 @@
 //! laid out: every [`ViewCx::on_stage`](super::ViewCx::on_stage) callback
 //! runs, and every hosted [`ResourceSurface`](super::ResourceSurface) gets
 //! [`stage`](super::ResourceSurface::stage) on its next sync, where it has
-//! its document. Then the capture waits for the frame to settle: a surface
+//! its document. What a person does in the scene — text typed, a drag held
+//! over its target — is input
+//! ([`ResourceApp::scenario_input`](super::ResourceApp::scenario_input)),
+//! driven through the window's event path after that. Then the capture
+//! waits for the frame to settle: a surface
 //! still decoding, rendering a page or reading a fixture says so with the
 //! toolkit's `Widget::has_pending_visual_work`.
 //!
@@ -33,41 +37,83 @@ use super::root::ResourceRoot;
 
 type Stage = Box<dyn FnMut(Option<&str>)>;
 type StageList = Vec<(Weak<()>, Stage)>;
+type Opener = Box<dyn FnMut(&str)>;
+type OpenerList = Vec<(Weak<()>, Opener)>;
 
-/// The stage callbacks of one app's views, each tied to the view scope that
-/// registered it (a row of an `Each` drops its callbacks with the row).
-pub(crate) struct Stages(Rc<RefCell<StageList>>);
+/// The view-state callbacks of one app's views — how each stages a
+/// screenshot scenario, and how each shows the item a search hit opens —
+/// tied to the view scope that registered it (a row of an `Each` drops its
+/// callbacks with the row).
+pub(crate) struct Stages {
+    stages: Rc<RefCell<StageList>>,
+    openers: Rc<RefCell<OpenerList>>,
+}
 
 impl Clone for Stages {
     fn clone(&self) -> Self {
-        Self(Rc::clone(&self.0))
+        Self {
+            stages: Rc::clone(&self.stages),
+            openers: Rc::clone(&self.openers),
+        }
     }
+}
+
+/// Run every live callback of `list`, in registration order. The list is
+/// taken first so a callback may register another without a reentrant
+/// borrow.
+fn run_live<F: ?Sized>(
+    list: &RefCell<Vec<(Weak<()>, Box<F>)>>,
+    mut call: impl FnMut(&mut F),
+) -> bool {
+    let mut current = std::mem::take(&mut *list.borrow_mut());
+    let mut ran = false;
+    current.retain_mut(|(alive, callback)| {
+        if alive.strong_count() == 0 {
+            return false;
+        }
+        call(callback);
+        ran = true;
+        true
+    });
+    let mut kept = list.borrow_mut();
+    current.append(&mut kept);
+    *kept = current;
+    ran
 }
 
 impl Stages {
     pub(crate) fn new() -> Self {
-        Self(Rc::default())
+        Self {
+            stages: Rc::default(),
+            openers: Rc::default(),
+        }
     }
 
     pub(crate) fn push(&self, alive: Weak<()>, stage: Stage) {
-        self.0.borrow_mut().push((alive, stage));
+        self.stages.borrow_mut().push((alive, stage));
     }
 
     /// Run every live callback for `scenario`, in registration order.
     pub(crate) fn run(&self, scenario: Option<&str>) {
-        // Take the list so a callback may register another without a
-        // reentrant borrow.
-        let mut current = std::mem::take(&mut *self.0.borrow_mut());
-        current.retain_mut(|(alive, stage)| {
-            if alive.strong_count() == 0 {
-                return false;
-            }
-            stage(scenario);
-            true
-        });
-        let mut list = self.0.borrow_mut();
-        current.append(&mut list);
-        *list = current;
+        run_live(&self.stages, |stage| stage(scenario));
+    }
+
+    pub(crate) fn push_opener(&self, alive: Weak<()>, opener: Opener) {
+        self.openers.borrow_mut().push((alive, opener));
+    }
+
+    /// Whether any live view shows the items search hits open.
+    pub(crate) fn opens(&self) -> bool {
+        self.openers
+            .borrow()
+            .iter()
+            .any(|(alive, _)| alive.strong_count() > 0)
+    }
+
+    /// Show the item at `anchor` in every view that opens items. Returns
+    /// whether any did.
+    pub(crate) fn open(&self, anchor: &str) -> bool {
+        run_live(&self.openers, |open| open(anchor))
     }
 }
 
@@ -109,6 +155,21 @@ pub fn stage<A: ResourceApp>(
             true
         });
     }
+    // The surfaces stage on this sync; the input meets the staged scene.
+    harness.relayout();
+    A::scenario_input(scenario, harness).map_err(|error| {
+        LaunchError::Operation(format!(
+            "{} scenario {:?} input failed: {error}",
+            A::TITLE,
+            scenario.unwrap_or("default")
+        ))
+    })?;
+    // Project acknowledged scenario edits before awaiting asynchronous
+    // rendering. Transient save feedback belongs to the captured scene;
+    // its lifetime is separate from unfinished placeholder work.
+    harness
+        .flush_component_records()
+        .map_err(LaunchError::Operation)?;
     harness
         .wait_for_visuals(SETTLE)
         .map_err(|error| match scenario {
@@ -117,7 +178,18 @@ pub fn stage<A: ResourceApp>(
                 A::TITLE
             )),
             None => LaunchError::Operation(format!("{} did not settle: {error}", A::TITLE)),
-        })
+        })?;
+    // The scenario's edits are saved before the frame is taken, as they would
+    // be by the time anyone looked: a capture shows the record saved, not a
+    // write still in flight.
+    harness
+        .flush_component_records()
+        .map_err(LaunchError::Operation)?;
+    harness.relayout();
+    // Navigation replacement has coherent first-frame geometry. Capture the
+    // acknowledged production frame after its visual work above completes;
+    // a live progress spinner intentionally never reaches animation idle.
+    Ok(())
 }
 
 /// How long a capture waits for its surfaces' asynchronous work (a page
@@ -130,4 +202,37 @@ fn root_instance<A: ResourceApp>(harness: &FrameHarness) -> Result<u64, LaunchEr
     harness
         .component_instance_id()
         .ok_or_else(|| LaunchError::Operation(format!("{} is not hosted here", A::TITLE)))
+}
+
+/// How long each of `frames` frames of `A`'s capture of `scenario` takes to
+/// sync, lay out and draw, after one frame that warms the text caches: what
+/// a `--bench` command reports. Where no native runner is linked (a browser
+/// page) there is no headless capture to time.
+///
+/// # Errors
+/// Returns why the capture could not be built, or that this build has no
+/// headless capture.
+pub fn time_frames<A: ResourceApp>(
+    scenario: Option<&str>,
+    frames: usize,
+) -> Result<Vec<ui_core::time::Duration>, String> {
+    #[cfg(tilo_native_runner)]
+    {
+        let mut app = super::testing::HeadlessApp::<A>::capture(scenario)
+            .map_err(|error| error.to_string())?;
+        let harness = app.harness();
+        harness.relayout();
+        Ok((0..frames)
+            .map(|_| {
+                let start = ui_core::time::now();
+                harness.relayout();
+                start.elapsed()
+            })
+            .collect())
+    }
+    #[cfg(not(tilo_native_runner))]
+    {
+        let _ = (scenario, frames);
+        Err("timing frames needs the native runner's headless capture".into())
+    }
 }

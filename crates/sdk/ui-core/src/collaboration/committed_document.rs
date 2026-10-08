@@ -10,17 +10,58 @@ pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, Gate>>>,
     Arc<std::sync::Mutex<BTreeMap<String, CommittedDocument>>>,
     Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    Arc<std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>>,
+    Arc<std::sync::Mutex<Option<Vec<String>>>>,
 );
 #[derive(Clone)]
 enum Gate {
     Joining,
     Legacy,
-    Required(Arc<AtomicBool>),
+    Required(Arc<AtomicBool>, Arc<std::sync::atomic::AtomicU64>),
 }
 impl Reads {
+    pub(super) fn delivery_generation(&self, key: &str) -> Option<Arc<AtomicBool>> {
+        let rows = self.0.lock().ok()?;
+        match rows.get(key)? {
+            Gate::Required(ready, _) => Some(ready.clone()),
+            _ => None,
+        }
+    }
+    pub(super) fn delivery_turn(&self, key: &str) -> Result<Arc<tokio::sync::Semaphore>, String> {
+        let mut turns = self.3.lock().map_err(|_| "document turn map poisoned")?;
+        Ok(turns
+            .entry(key.into())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .clone())
+    }
+    pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>) {
+        keys.sort();
+        keys.dedup();
+        if let Ok(mut owners) = self.4.lock() {
+            *owners = Some(keys);
+        }
+    }
+    pub(super) fn document_owner_routes(&self, original: &str) -> Result<Vec<String>, String> {
+        self.4
+            .lock()
+            .map_err(|_| "document owner routes poisoned".into())
+            .map(|owners| owners.clone().unwrap_or_else(|| vec![original.into()]))
+    }
     #[cfg(test)]
     pub(super) fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {
         self.pending(key).unwrap()
+    }
+    #[cfg(test)]
+    pub(super) fn stage_for_test(&self, key: &str, read: CommittedDocument) {
+        let ready = self.pending(key).unwrap();
+        self.stage(key, &ready, read).unwrap();
+    }
+    #[cfg(test)]
+    pub(super) fn refresh_for_test(&self, key: &str, read: CommittedDocument) {
+        let applied = self.1.lock().unwrap().get(key).unwrap().merged.clone();
+        assert!(applied.load(Ordering::Acquire));
+        self.clear_stage(key, &applied);
+        self.stage_for_test(key, read);
     }
     pub(super) fn publishable(&self, key: &str) -> bool {
         self.0
@@ -30,14 +71,35 @@ impl Reads {
             .is_some_and(|gate| match gate {
                 Gate::Joining => false,
                 Gate::Legacy => true,
-                Gate::Required(ready) => ready.load(Ordering::Acquire),
+                Gate::Required(ready, _) => ready.load(Ordering::Acquire),
             })
     }
     pub(super) fn required(&self, key: &str) -> bool {
         self.0
             .lock()
-            .is_ok_and(|rows| matches!(rows.get(key), Some(Gate::Required(_))))
+            .is_ok_and(|rows| matches!(rows.get(key), Some(Gate::Required(_, _))))
     }
+    pub(super) fn bind_private_window(
+        &self,
+        key: &str,
+        instance: Option<u64>,
+    ) -> Result<(), String> {
+        let rows = self.0.lock().map_err(|_| "document reads poisoned")?;
+        let Some(Gate::Required(_, bound)) = rows.get(key) else {
+            return Err("private binding requires admitted native document custody".into());
+        };
+        bound.store(instance.unwrap_or(0), Ordering::Release);
+        Ok(())
+    }
+    pub(super) fn private_window(&self, key: &str) -> Option<u64> {
+        let rows = self.0.lock().ok()?;
+        let Gate::Required(_, instance) = rows.get(key)? else {
+            return None;
+        };
+        let instance = instance.load(Ordering::Acquire);
+        (instance != 0).then_some(instance)
+    }
+
     pub(super) fn joining(&self, key: &str) -> bool {
         let Ok(mut rows) = self.0.lock() else {
             return false;
@@ -66,7 +128,8 @@ impl Reads {
         read: CommittedDocument,
     ) -> Result<(), String> {
         let gates = self.0.lock().map_err(|_| "document reads poisoned")?;
-        if !matches!(gates.get(key),Some(Gate::Required(current)) if Arc::ptr_eq(current,ready)) {
+        if !matches!(gates.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready))
+        {
             return Err("committed route replaced".into());
         }
         let mut rows = self
@@ -88,8 +151,8 @@ impl Reads {
             rows.remove(key);
         }
     }
-    fn current(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
-        self.0.lock().is_ok_and(|rows|matches!(rows.get(key),Some(Gate::Required(current)) if Arc::ptr_eq(current,ready)))
+    pub(super) fn current(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
+        self.0.lock().is_ok_and(|rows|matches!(rows.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready)))
     }
     fn discard_stage(&self, key: &str) {
         if let Ok(mut rows) = self.1.lock()
@@ -113,7 +176,7 @@ impl Reads {
     }
     fn pending(&self, key: &str) -> Result<Arc<AtomicBool>, String> {
         let mut rows = self.0.lock().map_err(|_| "document reads poisoned")?;
-        if let Some(Gate::Required(old)) = rows.get(key) {
+        if let Some(Gate::Required(old, _)) = rows.get(key) {
             old.store(false, Ordering::Release);
         }
         self.discard_stage(key);
@@ -121,7 +184,11 @@ impl Reads {
             return Err("committed document route capacity".into());
         }
         let ready = Arc::new(AtomicBool::new(false));
-        rows.insert(key.into(), Gate::Required(ready.clone()));
+        let instance = match rows.get(key) {
+            Some(Gate::Required(_, instance)) => instance.clone(),
+            _ => Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        };
+        rows.insert(key.into(), Gate::Required(ready.clone(), instance));
         Ok(ready)
     }
 }
@@ -132,6 +199,9 @@ pub struct CommittedDocument {
     data: Arc<Captured>,
     merged: Arc<AtomicBool>,
     valid: Arc<AtomicBool>,
+    creation: Option<runtime_collab::committed_document::CreationReceipt>,
+    revision: [u8; 32],
+    initialized: Arc<AtomicBool>,
 }
 impl std::fmt::Debug for CommittedDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -144,6 +214,39 @@ impl std::fmt::Debug for CommittedDocument {
     }
 }
 impl CommittedDocument {
+    pub(crate) fn creation_workspace(
+        &self,
+    ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
+        self.is_current().then_some(())?;
+        if self.initialized.load(Ordering::Acquire) {
+            return None;
+        }
+        self.creation.as_ref().map(|receipt| &receipt.workspace)
+    }
+    pub(crate) fn initialization_request(
+        &self,
+        kind: &str,
+        document: Vec<u8>,
+    ) -> Result<Request, String> {
+        if self.creation_workspace().is_none() {
+            return Err("original application creation receipt unavailable".into());
+        }
+        let receipt = self
+            .creation
+            .as_ref()
+            .ok_or("creation receipt unavailable")?;
+        let request = Request::Initialize {
+            token: receipt.token,
+            revision: self.revision,
+            kind: kind.into(),
+            document,
+        };
+        request.encode().map_err(str::to_owned)?;
+        Ok(request)
+    }
+    pub(crate) fn initialized(&self) {
+        self.initialized.store(true, Ordering::Release);
+    }
     pub(crate) fn with_mutation<T>(
         &self,
         apply: impl FnOnce(&collab_types::DocumentMutation) -> T,
@@ -264,6 +367,36 @@ mod tests {
         assert!(reads.publishable("legacy"));
     }
     #[test]
+    fn native_private_binding_cannot_open_document_or_survive_route_downgrade() {
+        let reads = Reads::default();
+        assert!(reads.bind_private_window("route", Some(42)).is_err());
+        assert!(reads.joining("route"));
+        assert!(reads.bind_private_window("route", Some(42)).is_err());
+        let old = reads.pending("route").unwrap();
+        reads.bind_private_window("route", Some(42)).unwrap();
+        assert_eq!(reads.private_window("route"), Some(42));
+        assert!(
+            !reads.publishable("route"),
+            "a window binding cannot acknowledge a document"
+        );
+        let current = reads.pending("route").unwrap();
+        assert_eq!(
+            reads.private_window("route"),
+            Some(42),
+            "document refresh retains the original launch binding"
+        );
+        old.store(true, Ordering::Release);
+        assert!(!reads.publishable("route"));
+        current.store(true, Ordering::Release);
+        assert!(reads.publishable("route"));
+        reads.bind_private_window("route", None).unwrap();
+        assert_eq!(reads.private_window("route"), None);
+        reads.legacy("route").unwrap();
+        assert!(reads.bind_private_window("route", Some(42)).is_err());
+        assert_eq!(reads.private_window("route"), None);
+    }
+
+    #[test]
     fn committed_document_replacing_route_discards_staged_capture() {
         let reads = Reads::default();
         let ready = reads.pending("route").unwrap();
@@ -275,6 +408,9 @@ mod tests {
             }),
             merged: Arc::new(AtomicBool::new(false)),
             valid: Arc::new(AtomicBool::new(true)),
+            creation: None,
+            revision: [0; 32],
+            initialized: Arc::new(AtomicBool::new(false)),
         };
         reads.stage("route", &ready, read.clone()).unwrap();
         reads.pending("route").unwrap();
@@ -361,11 +497,15 @@ async fn read_capture(
     })
     .await
 }
-async fn read_capture_using(
+pub(super) async fn read_capture_using(
     first: Reply,
     budget: &ByteBudget,
     mut send: impl AsyncFnMut(Request) -> Result<Reply, String>,
 ) -> Result<(CommittedDocument, [u8; 32]), String> {
+    let (first, creation) = match first {
+        Reply::Created { receipt, chunk } => (chunk.into_reply(), Some(receipt)),
+        reply => (reply, None),
+    };
     // Reserve before the full-document destination allocation. Every clone of
     // the event retains this one shared reservation until the last owner drops.
     let (first_id, first_token) = match &first {
@@ -440,10 +580,20 @@ async fn read_capture_using(
             }),
             merged: Arc::new(AtomicBool::new(false)),
             valid: Arc::new(AtomicBool::new(true)),
+            creation,
+            revision: assembly.revision,
+            initialized: Arc::new(AtomicBool::new(false)),
         },
         assembly.revision,
     ))
 }
+// A parked owner must observe both publication readiness and its withdrawal.
+fn set_read_ready(inbound: &InboundBridge, ready: &AtomicBool, value: bool) {
+    if ready.swap(value, Ordering::AcqRel) != value {
+        inbound.state.notify_events();
+    }
+}
+
 /// Resolve mode before the route can produce any document. Initial history is
 /// queued without waiting for the UI owner (which awaits PrimaryReady itself).
 #[allow(
@@ -468,7 +618,7 @@ pub(super) async fn install(
     }
     let ready = inbound.state.document_reads.pending(&key)?;
     let (initial, revision) = match first {
-        Reply::Chunk { .. } => match read_capture(channel, first).await {
+        Reply::Chunk { .. } | Reply::Created { .. } => match read_capture(channel, first).await {
             Ok((read, revision)) => (Some(read), Some(revision)),
             Err(_) => (None, None),
         },
@@ -482,6 +632,18 @@ pub(super) async fn install(
         let mut current = initial;
         let mut revision = revision;
         loop {
+            if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
+                break;
+            }
+            // A queued native invocation retains this existing transport turn
+            // through the owner's dispatch batch. A refresh cannot withdraw its
+            // applied capture between admission delivery and the unchanged guard.
+            let Ok(semaphore) = inbound.state.document_reads.delivery_turn(&key) else {
+                break;
+            };
+            let Ok(turn) = semaphore.acquire_owned().await else {
+                break;
+            };
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
                 break;
             }
@@ -516,7 +678,7 @@ pub(super) async fn install(
             }
             let refresh = inbound.state.document_reads.refresh_requested(&key);
             if refresh {
-                ready.store(false, Ordering::Release);
+                set_read_ready(&inbound, &ready, false);
             }
             let result = tokio::time::timeout(
                 Duration::from_secs(2),
@@ -527,10 +689,10 @@ pub(super) async fn install(
             .await;
             match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
-                    ready.store(true, Ordering::Release)
+                    set_read_ready(&inbound, &ready, true)
                 }
                 Ok(Ok(reply @ Reply::Chunk { .. })) => {
-                    ready.store(false, Ordering::Release);
+                    set_read_ready(&inbound, &ready, false);
                     match read_capture(&channel, reply).await {
                         Ok((read, next)) => {
                             current = Some(read);
@@ -543,17 +705,18 @@ pub(super) async fn install(
                     }
                 }
                 Ok(Ok(Reply::Unavailable)) => {
-                    ready.store(false, Ordering::Release);
+                    set_read_ready(&inbound, &ready, false);
                     revision = None;
                 }
                 _ => {
-                    ready.store(false, Ordering::Release);
+                    set_read_ready(&inbound, &ready, false);
                     break;
                 }
             }
+            drop(turn);
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        ready.store(false, Ordering::Release);
+        set_read_ready(&inbound, &ready, false);
         if inbound.state.document_reads.current(&key, &ready) {
             inbound.state.document_reads.discard_stage(&key);
         }

@@ -9,6 +9,7 @@ use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
+mod guide;
 mod json_stdout;
 mod publishing;
 
@@ -18,6 +19,7 @@ mod publishing;
     version,
     about = "Create and work on Tilo apps",
     long_about = "The short path from an app idea to a running Tilo window.\n\n\
+                  Start with `tilo-app guide` for short offline workflows.\n\n\
                   Run `tilo-app new` for an interactive setup, or provide a name \
                   and flags for a reproducible, non-interactive scaffold. Then \
                   use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `build`, `shot`, `inspect`, and `package` from anywhere inside the app; `--target linux|macos|web` picks the platform. Use `ui` to construct validated serialized screens."
@@ -34,6 +36,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Read one short offline workflow, or list the available topics.
+    Guide {
+        #[arg(value_enum)]
+        topic: Option<guide::Topic>,
+    },
     /// Create a buildable app with packaging and headless-test defaults.
     New(NewArgs),
     /// List the example apps `tilo-app new --from-example` starts from.
@@ -750,6 +757,20 @@ struct DevArgs {
     #[arg(long)]
     timings: bool,
 
+    /// Build the app optimised, with `--profile thin-app`: release
+    /// optimisation without LTO, as thin Tilo builds ship. Use it when the
+    /// debug build is too slow to judge (painting, video, large documents);
+    /// each rebuild takes longer. The app still reloads in place.
+    #[arg(long, conflicts_with = "profile")]
+    release: bool,
+
+    /// Cargo profile for every build of the app [default: Cargo's `dev`].
+    /// Only `dev` and `thin-app` reload in place; any other profile (such
+    /// as the fat-LTO `release`) restarts the app on each change instead.
+    /// The runtime host stays a debug build.
+    #[arg(long)]
+    profile: Option<String>,
+
     /// `web` serves the app's web build and reloads the page into the same
     /// document after each rebuild; a native platform runs on this machine
     /// only when it is that system and architecture.
@@ -1076,6 +1097,7 @@ fn main() -> ExitCode {
     let interactive = json.is_none();
     let name = cli.command.name();
     let result = match cli.command {
+        Command::Guide { topic } => Ok(guide::run(topic, interactive)),
         Command::New(args) => run_new(args, interactive),
         Command::Examples => Ok(list_examples()),
         Command::Add(args) => run_add(args, interactive),
@@ -1180,6 +1202,7 @@ fn failed(message: impl Into<String>, report: Value) -> anyhow::Error {
 impl Command {
     fn name(&self) -> &'static str {
         match self {
+            Self::Guide { .. } => "guide",
             Self::New(_) => "new",
             Self::Examples => "examples",
             Self::Add(_) => "add",
@@ -1442,8 +1465,11 @@ fn run_add_ci(forge: ForgeArg, runs_on: Option<&str>, options: &AddOptions) -> R
         "Would create"
     };
     println!("{verb} {}", outcome.path.display());
+    if let Some(path) = &outcome.reusable_path {
+        println!("{verb} {} (reusable GitHub workflow)", path.display());
+    }
     println!(
-        "Next: add the TILO_PUBLISHER_KEY secret (the file `tilo-app keys new` wrote), then push a v* tag to publish"
+        "Next: add the TILO_PUBLISHER_KEY secret (what `tilo-app keys export` prints), then push a v* tag to publish"
     );
     Ok(outcome.to_json())
 }
@@ -1850,8 +1876,12 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         watch_ui: !args.app_only,
         debounce: Duration::from_millis(args.debounce_ms.get()),
         timings: args.timings,
+        profile: dev_profile(args.release, args.profile),
     };
     let (platform, arch) = args.platform.resolve()?;
+    if platform == tilo_app_cli::PackagePlatform::Web && request.profile.is_some() {
+        anyhow::bail!("--release and --profile are for a native or Android dev loop");
+    }
     if platform == tilo_app_cli::PackagePlatform::Web {
         tilo_app_cli::web::dev_web(
             &path,
@@ -1875,6 +1905,15 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         }
     }
     Ok(json!({"stopped": true}))
+}
+
+/// The Cargo profile `dev` builds the app with; `None` is Cargo's `dev`.
+fn dev_profile(release: bool, profile: Option<String>) -> Option<String> {
+    if release {
+        Some(tilo_app_cli::DEV_RELEASE_PROFILE.to_owned())
+    } else {
+        profile
+    }
 }
 
 fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
@@ -2732,6 +2771,7 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
                 watch_ui: true,
                 debounce: Duration::from_millis(tilo_app_cli::DEV_DEBOUNCE_MS),
                 timings: false,
+                profile: None,
             },
         )?;
         Ok(report)
@@ -3491,6 +3531,25 @@ mod tests {
                 [OsString::from("--document"), OsString::from("sample.qdoc")]
             );
             assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
+            assert_eq!(dev.profile, None);
+            assert_eq!(dev_profile(dev.release, dev.profile), None);
+        }
+
+        // Phase: dev_builds_the_app_in_a_chosen_profile.
+        {
+            let dev = |args: &[&str]| {
+                let cli = Cli::try_parse_from(["tilo-app", "dev"].iter().chain(args))?;
+                let Command::Dev(dev) = cli.command else {
+                    panic!("expected dev command");
+                };
+                Ok::<_, clap::Error>(dev_profile(dev.release, dev.profile))
+            };
+            assert_eq!(dev(&["--release"]).unwrap().as_deref(), Some("thin-app"));
+            assert_eq!(
+                dev(&["--profile", "release"]).unwrap().as_deref(),
+                Some("release")
+            );
+            assert!(dev(&["--release", "--profile", "dev"]).is_err());
         }
 
         // Phase: every_build_command_takes_platform_and_arch.

@@ -357,6 +357,13 @@ pub enum BackendEvent {
     /// `FrameBuilder::dispatch_event` — the same dispatch path the
     /// headless `execute_planned_action` uses.
     Input(WindowEvent),
+    /// A real libinput keyboard event, preserving its kernel `CLOCK_MONOTONIC`
+    /// timestamp before translation or input-loop queueing. Synthetic input
+    /// and compositor-generated repeats never use this variant.
+    PhysicalKey {
+        event: WindowEvent,
+        input_time_ns: u64,
+    },
     /// Raw relative mouse motion, emitted by the direct backend alongside the
     /// clamped absolute cursor event. Spatial device control needs the delta
     /// after the local cursor reaches a display edge.
@@ -394,6 +401,11 @@ pub enum BackendEvent {
     /// previously reported (keyboard unplug, VT pause, or keymap replacement).
     /// The compositor must retire its seat state before accepting new input.
     InputStateReset,
+    /// A discovered typing keyboard's effective source assignment, before its key event.
+    KeyboardConfiguration {
+        scope: String,
+        settings: Box<drm::input_config::KeyboardSettings>,
+    },
     /// A gesture the shell did **not** claim, for forwarding to the
     /// focused client over `zwp_pointer_gestures_v1`.
     Gesture(GestureEvent),
@@ -418,11 +430,14 @@ pub enum BackendEvent {
     InputDeviceRemoved {
         id: String,
     },
-    /// The class of physical input changed: the person typed, moved a
+    /// The class of physical input changed: the person typed, activated a
     /// pointer, touched the screen or used a controller after using
     /// something else. Reported by the source of the event, so emulated
     /// pointer input from a tap still counts as touch.
     InputUsed(ui::InputModality),
+    /// Pointer hover changes precision and shortcut hints, but preserves a
+    /// touch-started on-screen keyboard until deliberate pointer input.
+    PointerMotionUsed,
     /// A convertible's tablet-mode switch changed: `true` when the keyboard
     /// is folded away and the touchscreen is the primary input.
     TabletMode(bool),
@@ -633,6 +648,12 @@ pub trait Backend {
     /// Whether this backend consumes versioned native-pixel retained damage. Other backends use
     /// the established dense `Scene` path and should not pay to construct segmented recordings.
     fn supports_retained_scene_damage(&self) -> bool {
+        false
+    }
+
+    /// Whether the presenter consumes empty workspace transition frames by
+    /// retaining/replaying its previous pixels, rather than rasterising them.
+    fn supports_workspace_clip(&self) -> bool {
         false
     }
 

@@ -113,7 +113,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             })
             .unwrap();
         assert!(store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_none());
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         assert!(
             store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_some(),
             "normal update must finish this exact action-owned creation after the loan ends"
@@ -168,7 +168,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                 ids
             })
             .unwrap();
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         let ready_after_first = ids
             .iter()
             .filter(|id| store.is_ready(&ui::RecordId::for_tab(**id)))
@@ -178,7 +178,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             "one ordinary update has a bounded creation budget"
         );
         for _ in 0..3 {
-            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            host.update(&AutoCommit::new(), &automerge::ROOT);
         }
         for (index, id) in ids.iter().enumerate() {
             assert_eq!(
@@ -200,8 +200,8 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .with(&parent.id, |_| {
                 crate::shell::window_actions::open_hosted(
                     &mut chrome.borrow_mut(),
-                    AppKind::Other("Notes".into()),
-                    "New note",
+                    AppKind::Other("Word".into()),
+                    "New document",
                     crate::shell::window_actions::Destination::Here,
                 )
             })
@@ -224,7 +224,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                     .push(Strip::new(StripId::new(), "Rebuild"));
                 state.bump();
             }
-            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            host.update(&AutoCommit::new(), &automerge::ROOT);
             let group = host.group_at_for_tests(strip, 0).unwrap();
             group.bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
             let tile = group.host_for_tab_mut(new_id).unwrap();
@@ -246,7 +246,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             false,
             store,
         );
-        reopened.update(&mut AutoCommit::new(), &automerge::ROOT);
+        reopened.update(&AutoCommit::new(), &automerge::ROOT);
         assert!(
             reopened
                 .group_at_for_tests(strip, 0)
@@ -333,7 +333,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                     }
                 }
             }
-            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+            host.update(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(
                 store.read(&ui::RecordId::for_tab(new_id), |_| ()).is_some(),
                 cancellation == "none",
@@ -361,7 +361,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .with(&parent.id, |_| {
                 let id = crate::shell::window_actions::open_hosted(
                     &mut chrome.borrow_mut(),
-                    AppKind::Other("Notes".into()),
+                    AppKind::Other("Word".into()),
                     "Nested",
                     crate::shell::window_actions::Destination::Here,
                 );
@@ -371,11 +371,11 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .unwrap();
         let replacement = ui::record::RecordStore::in_memory();
         chrome.borrow_mut().set_records(replacement.clone());
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         old_store
             .create_record(&crate::shell::tab_documents::scratch_tab_record(new_id))
             .unwrap();
-        host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        host.update(&AutoCommit::new(), &automerge::ROOT);
         assert!(
             host.group_at_for_tests(strip, 0)
                 .unwrap()
@@ -1153,6 +1153,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
         group.active_tab = 1;
         tree.seed_doc_from_cache();
 
+        crate::shell::foreign::store().note_adopted(41);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.close_tab_in_group(group_id, Some(1)));
         assert_eq!(
@@ -1160,6 +1161,25 @@ fn group_actions_target_exactly_their_group_or_surface() {
             vec![41],
             "close requests are keyed by surface, never by shared app id"
         );
+        let _ = host.take_structure_dirty();
+        let retained = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("live close decision");
+        assert_eq!(
+            retained.active_tab_id(),
+            1,
+            "a deferred close retains focus"
+        );
+        assert_eq!(retained.tab_count(), 2, "both client hosts remain visible");
+        assert!(
+            chrome.borrow_mut().reopen_closed_tab().is_none(),
+            "no Undo before destruction"
+        );
+        crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+            &mut chrome.borrow_mut().tree_mut(),
+            41,
+        );
+        crate::shell::foreign::store().forget(41);
         let remaining = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()

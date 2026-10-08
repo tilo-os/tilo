@@ -1,5 +1,6 @@
 //! Shared native/browser neighbour wire and certified state admission.
 pub mod colorimetry;
+pub mod contribution_attestation;
 pub mod governance;
 pub mod hdr_metadata;
 pub mod join;
@@ -43,6 +44,8 @@ pub mod topology;
 pub mod desktop_command;
 pub mod document_import;
 pub mod owner_commit;
+pub mod workspace_membership;
+pub mod workspace_task;
 
 pub mod retained_proof;
 

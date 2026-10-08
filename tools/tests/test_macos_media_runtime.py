@@ -18,7 +18,7 @@ class MediaDataTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix='media data spaces & $() ')
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
-        self.profile = {'packages': {}, 'data_assets': {}}
+        self.profile = {'app': 'tube', 'packages': {}, 'data_assets': {}}
         for name in media.PACKAGES:
             root = self.root / name / '1'
             root.mkdir(parents=True)
@@ -128,6 +128,47 @@ class MediaDataTests(unittest.TestCase):
                 'runtime_plan': {'media_data': True}}
         with self.assertRaisesRegex(ValueError, 'media runtime adapter changed'):
             extension.augment(self.root / 'absent.app', plan, Path('/guard'))
+
+    def test_player_profile_cannot_expand_to_editor_packages(self):
+        self.profile['app'] = 'video-player'
+        media.additional_assets(self.plan, self.profile)
+        self.profile['packages']['/foreign/flac/1'] = {'package_root': '/foreign/flac/1'}
+        with self.assertRaisesRegex(ValueError, 'must match the app'):
+            media.additional_assets({'assets': {}}, self.profile)
+
+    def test_editor_requires_its_added_packages_and_catalogs(self):
+        self.profile['app'] = 'video-editor'
+        with self.assertRaisesRegex(ValueError, 'must match the app'):
+            media.additional_assets(self.plan, self.profile)
+        for name in ('flac', 'libogg'):
+            root = self.root / name / '1'
+            root.mkdir(parents=True)
+            notice = root / 'COPYING'
+            notice.write_bytes(b'notice')
+            self.profile['packages'][str(root)] = {'package_root': str(root),
+                'top_level_notice_candidates': [{'path': str(notice), 'sha256': digest(notice)}]}
+        locale = self.root / 'gstreamer/1/share/locale'
+        messages = locale / 'de/LC_MESSAGES'
+        messages.mkdir(parents=True)
+        for domain in extension.DOMAINS:
+            (messages / (domain + '.mo')).write_bytes(b'catalog')
+        plan = {'assets': {}, 'locale_prefixes': {'gstreamer': str(locale)}}
+        extension.additional_assets(plan, self.profile, 'video-editor')
+        self.assertEqual(len(plan['assets']), 26)
+        self.assertTrue(plan['media_data'])
+        (messages / 'gst-plugins-ugly-1.0.mo').unlink()
+        with self.assertRaisesRegex(ValueError, 'missing additional'):
+            extension.additional_assets({'assets': {}, 'locale_prefixes': plan['locale_prefixes']},
+                                        self.profile, 'video-editor')
+
+    def test_duplicate_package_versions_or_unknown_app_are_rejected(self):
+        original = self.profile['packages'][str(self.root / 'pango/1')]
+        self.profile['packages'][str(self.root / 'pango/2')] = original
+        with self.assertRaisesRegex(ValueError, 'duplicate versions'):
+            media.additional_assets(self.plan, self.profile)
+        self.profile['app'] = 'foreign'
+        with self.assertRaisesRegex(ValueError, 'unreviewed media app'):
+            media.additional_assets(self.plan, self.profile)
 
 
 if __name__ == '__main__':

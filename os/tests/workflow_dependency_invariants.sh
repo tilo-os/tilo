@@ -136,24 +136,22 @@ else
   fail=1
 fi
 
-nightly_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(registry\.tilo\.so\/tilo\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
-    "$nightly_workflow"
-} | head -n 1)"
-refresh_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(registry\.tilo\.so\/tilo\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
-    "$visual_refresh_workflow"
-} | head -n 1)"
-if [[ "$nightly_visual_image" =~ @sha256:[0-9a-f]{64}$ ]] \
-  && [ "$nightly_visual_image" = "$refresh_visual_image" ] \
+# Both render on the builder every job resolves; the refresh records it with
+# its candidates and the nightly verifies against the recorded one.
+if grep -Fq 'image: ${{ needs.builder.outputs.image }}' "$nightly_workflow" \
+  && grep -Fq 'image: ${{ needs.builder.outputs.image }}' "$visual_refresh_workflow" \
+  && grep -Fq 'golden-image.sh check "$BUILDER_IMAGE"' "$nightly_workflow" \
+  && grep -Fq 'golden-image.sh record "$BUILDER_IMAGE"' "$visual_refresh_workflow" \
+  && grep -Eq '^registry\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}$' \
+    "$repo/.config/visual-goldens-image" \
   && grep -Fq 'Upload candidates for visual review' "$visual_refresh_workflow" \
   && grep -Fq 'xargs -0 -r git add -N --' "$visual_refresh_workflow" \
   && grep -Fq 'sha256sum candidates.patch > candidates.patch.sha256' \
     "$visual_refresh_workflow" \
   && ! grep -Fq 'git push origin' "$visual_refresh_workflow"; then
-  printf 'ok    visual verification and reviewed candidates share one immutable builder\n'
+  printf 'ok    visual verification and reviewed candidates name one recorded builder\n'
 else
-  printf 'visual candidates must use the nightly image and never auto-commit pixels\n' >&2
+  printf 'visual candidates must record the builder the nightly verifies on and never auto-commit pixels\n' >&2
   fail=1
 fi
 

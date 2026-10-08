@@ -482,11 +482,16 @@ impl Writer {
             num(*width),
             num(*height)
         );
+        let sampling = if style.pixelated {
+            r#" image-rendering="pixelated""#
+        } else {
+            ""
+        };
         let _ = write!(self.body, "<g{attrs}>");
         if let Some(picture) = self.pictures.get(&mark.id) {
             let _ = write!(
                 self.body,
-                r#"<image{place} preserveAspectRatio="none" href="data:{};base64,{}"/>"#,
+                r#"<image{place}{sampling} preserveAspectRatio="none" href="data:{};base64,{}"/>"#,
                 picture.mime,
                 base64::engine::general_purpose::STANDARD.encode(&picture.bytes)
             );
@@ -764,7 +769,7 @@ pub fn source(svg: &str) -> Result<String, String> {
         return Ok(svg.to_owned());
     }
     let bytes = if let Some(hash) = ui::tilo_actions::content_hash(trimmed) {
-        tilo_content::ContentStore::for_app()
+        crate::content::store()
             .read(hash)
             .ok_or_else(|| format!("no stored content {trimmed}"))?
     } else if trimmed.starts_with('/') {

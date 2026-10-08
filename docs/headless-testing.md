@@ -96,8 +96,8 @@ control socket past it.
 A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
 
 ```bash
-cargo build -p shell --bin tilo-control      # lands in target/debug, NOT on PATH
-alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/shell --bin tilo-control
+cargo build -p tilo-control                 # lands in target/debug; images ship /usr/bin/tilo-control
+alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/control-cli
 
 qc actions list Calculator --json           # inspect search results without opening the palette
 qc actions invoke applications dev.tilo.calculator # invoke the exact discovered identity
@@ -143,7 +143,16 @@ when pending, use `actions status INVOCATION_ID` until it reaches a terminal
 state. Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
 not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
-presented app identity, surface, frame count, and rendering errors.
+presented app identity, surface, frame count, and rendering errors for foreign
+Wayland clients. It does not observe apps mounted inside the compositor:
+`actions:window.new.terminal` mounts Terminal in-process, with `AppPlaceholder`
+as its persisted tile kind. Neither that kind nor an empty `foreign_frames`
+reply proves the hosted app failed to render. Verify its exported
+`inspect-session` operation to completion, its laid-out `terminal` target and
+a private headless snapshot. Process startup additionally requires an open
+session with input available; rendering a missing-runtime explanation is not
+a working PTY. The separately discovered `applications:so.tilo.terminal`
+launches the packaged app and should be checked with foreign-frame counters.
 
 `scripts/headless-examples/action-api-demo.py` exercises discovery and semantic
 invocation against an isolated compositor. `app-launch-proof.py` selects native
@@ -464,6 +473,32 @@ contract and `confirmation_phrase` a `Phrase` one. `expect_error` makes the
 step pass only when the door refuses with that code (`unknown_action`,
 `invalid_arguments`, `action_unavailable`, `action_confirmation_required`,
 `action_failed`), so a scenario can prove a refusal as well as a success.
+An optional `"results":"target/drive-results.json"` retains the actual return
+from each explicit `invoke`, in order. The version 1 JSON envelope contains
+`author` and `entries`; each entry carries its resource/action `address` and
+one `status`: `completed` with the original typed `output` (`value` and
+`resources`), `accepted`, or `refused` with the door's `code` and `message`.
+`accepted` records admission, not background completion. An expected refusal
+still appears as `refused` when its scenario step passes. Arguments and
+confirmation phrases are not copied into this envelope; returned data and
+error messages may themselves be sensitive, so retention is opt-in.
+
+Retention admits at most 4,096 entries and 16 MiB of JSON. Exceeding a limit
+fails the scenario and records `retention_error` with the retained prefix;
+the last operation may already have run, and its omitted result must not be
+interpreted as a refusal. The journal stays failed for subsequent invocations.
+The file records invocations, not overall scenario success; check the exit status
+and audit report as well. Without `results`, the existing behavior is unchanged.
+
+For a framework resource's existing `render` action, the returned content
+address identifies the actual offscreen PNG in the ordinary ContentStore.
+Run with an explicit owned `--data-dir target/drive-profile` to keep those
+bytes after exit (`target/drive-profile/content/<first-two-hash-characters>/<hash>`).
+The default temporary profile is removed on exit. This is a render of the
+imported state, distinct from a seeded `--shots` fixture. The normal desktop's
+`tilo-control` already preserves returned action payloads; this option brings
+the standalone scenario driver to the same semantic result contract.
+
 From Rust, `Driver::invoke_action` is the same call, and
 `Driver::deliver_external` delivers a `UserEvent::External` payload the way
 the live host does. `crates/session/installer/tests/headless_wizard.rs` runs
@@ -542,7 +577,7 @@ Two things it pins that are easy to get wrong by hand:
 
 - The socket takes **winit** key names. `Enter` works; `Return` is an
   xkb name and comes back as a `parse_error`.
-- **`Super+K`**, not `Ctrl+K`. `Ctrl+K` scopes to the focused app, and
+- **`Super+Space`**, not `Ctrl+K`. `Ctrl+K` scopes to the focused app, and
   only widens to global when nothing is focused — so it appears to work
   on an empty workspace and stops working once there is a tab in front
   of you. The script measures both scopes after the app is up, where

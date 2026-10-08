@@ -77,6 +77,9 @@ pub enum SnippetsView {
     /// Reveal tagged snippets
     #[effect(view, row)]
     Reveal { tag: String },
+    /// Reveal snippets in a folder
+    #[effect(view, row)]
+    RevealFolder { folder: String },
     /// Search snippets
     #[effect(view)]
     Search,
@@ -290,7 +293,7 @@ pub fn parse_tags(raw: &str) -> Vec<String> {
 fn snippet_label(s: &Snippet) -> String {
     let t = s.title.trim();
     let base = if t.is_empty() { "Untitled snippet" } else { t };
-    format!("{} · {}", base, s.language.label())
+    format!("{} ({})", base, s.language.label())
 }
 
 /// Document-derived children: folders, tags and snippets.
@@ -340,6 +343,7 @@ pub fn titled_snippet(title: &str, folder: &str) -> Snippet {
 pub fn provide_folder_resource(folder: String) -> Resource {
     let id = folder_resource_id(&folder);
     let label = folder.clone();
+    let reveal_folder = folder.clone();
     let create = ActionDecl::<Snippets>::new(
         "new-snippet",
         format!("New snippet in {folder}"),
@@ -352,7 +356,14 @@ pub fn provide_folder_resource(folder: String) -> Resource {
         },
     )
     .describe("Create a new snippet in this folder.");
-    Resource::new(id, "snippets.folder", label).with_action(declaration_spec(&create))
+    Resource::new(id, "snippets.folder", label)
+        .with_action(
+            SnippetsView::RevealFolder {
+                folder: reveal_folder,
+            }
+            .bound(),
+        )
+        .with_action(declaration_spec(&create))
 }
 
 pub fn provide_tag_resource(tag: String) -> Resource {
@@ -458,6 +469,20 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
         Some(&s.body),
         move |edit| edit_body_action(id, edit),
     )])
+}
+
+pub fn reveal_folder_address(folder: &str) -> ActionAddress {
+    ActionAddress::new(folder_resource_id(folder), "reveal-folder")
+}
+pub fn reveal_folder_binding(folder: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(
+        &provide_folder_resource(folder.to_owned()),
+        "reveal-folder",
+    )
+    .ok()
+}
+pub fn reveal_tag_binding(tag: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&provide_tag_resource(tag.to_owned()), "reveal").ok()
 }
 
 #[cfg(test)]

@@ -5,8 +5,8 @@
 //! move logic once.
 
 use super::{
-    DropPlacement, DropTarget, ElementState, Key, KeyEvent, MouseButton, NamedKey, NodeId, Point,
-    Rect, ReorderDrop, TreeModel, TreeRowKey, TreeView, WindowEvent, idx_to_f64,
+    DropPlacement, DropTarget, ElementState, Key, KeyEvent, LABEL_ROLE, MouseButton, NamedKey,
+    NodeId, Point, Rect, ReorderDrop, TreeModel, TreeRowKey, TreeView, WindowEvent, idx_to_f64,
 };
 use crate::widget::{TextInput, Widget};
 
@@ -103,7 +103,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Open the inline rename field on `id`. Returns `false` when rename is
     /// not enabled or the node is unknown.
     pub fn begin_rename(&mut self, id: NodeId) -> bool {
-        if self.on_rename.is_none() {
+        if self.on_rename.is_none() || !self.model.is_renamable(id) {
             return false;
         }
         let Some(label) = self.model.label(id) else {
@@ -111,7 +111,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         };
         let mut input = TextInput::local()
             .with_plain_chrome()
-            .with_font_size(self.label_size)
+            .with_text_role(LABEL_ROLE)
             .with_initial_value(label);
         input.set_focus(true);
         if let Some(rect) = self.rename_field_rect(id, 0.0) {

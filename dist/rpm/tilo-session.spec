@@ -18,22 +18,24 @@
 # here as a tarball, and refuses to package anything it did not build.
 
 %global tilo_summary Tilo compositor as a Wayland session
-%{!?tilo_version:%global tilo_version 0.1.12}
+%{!?tilo_version:%global tilo_version 0.1.13}
 # Release builds keep 1; a developer build names its commit here (e.g.
 # 0.202609271530.git5764267571) so `rpm -q tilo-session` on a host says which
 # tree is layered. See dist/rpm/host-update.sh.
 %{!?tilo_release:%global tilo_release 1}
 
-# The payload is already built and stripped; there is no source to extract
-# debug symbols from, and an empty -debuginfo subpackage would fail the
-# build.
+# The payload is prebuilt. Its native binaries deliberately keep their symbol
+# table (`[profile.release]` in Cargo.toml) so a crash log on the user's
+# machine names each frame's function, and carry no debug info to extract.
 %global debug_package %{nil}
 
-# The signed Tilo runtime is already stripped before its bundle manifest is
-# hashed and signed. Fedora's generic brp-strip pass would mutate the bundled
-# ELF loader and shared libraries after that signature was created, leaving a
-# formally packaged but unusable runtime. Keep the ordinary post-processing
-# chain, but make its strip helpers no-ops for this prebuilt, signed payload.
+# Nothing in the payload is stripped here. The signed Tilo runtime is already
+# stripped before its bundle manifest is hashed and signed, and Fedora's
+# generic brp-strip pass would mutate the bundled ELF loader and shared
+# libraries after that signature was created, leaving a formally packaged but
+# unusable runtime; on the session binaries it would remove the symbol table
+# the crash log needs. Keep the ordinary post-processing chain, but make its strip
+# helpers no-ops for this prebuilt payload.
 %global __strip /bin/true
 
 # These signature-covered application trees are private sandbox payloads, not
@@ -233,6 +235,7 @@ install -Dpm 0644 license/LICENSE \
 cp -a apps/usr/. %{buildroot}%{_prefix}/
 install -Dpm 0644 apps/etc/tilo/runtime-bundle-trusted-publishers.txt \
                   %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
+install -Dpm 0755 apps/bin/app %{buildroot}%{_bindir}/app
 install -Dpm 0755 apps/bin/tilo-install %{buildroot}%{_bindir}/tilo-install
 install -Dpm 0755 apps/bin/tilo-app-package %{buildroot}%{_bindir}/tilo-app-package
 install -Dpm 0755 apps/bin/tilo-runtime-bundle %{buildroot}%{_bindir}/tilo-runtime-bundle
@@ -306,8 +309,9 @@ grep -q '^id = "so.tilo.settings"$' %{buildroot}%{_datadir}/tilo-apps/registry.t
 grep -q '^payload_root = "/usr/lib/tilo-apps/' %{buildroot}%{_datadir}/tilo-apps/registry.toml
 test -d %{buildroot}%{_prefix}/lib/tilo-apps/pkgs
 test ! -e %{buildroot}%{_datadir}/tilo-apps/pkgs
-test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml
-test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml)" = 644
+# One runtime build of the 2026.07 release, named by its ABI digest.
+test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bundle.toml
+test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bundle.toml)" = 644
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 # What the ush supervisor runs, at the paths it looks for them.
@@ -339,6 +343,8 @@ done
 %license %{_datadir}/licenses/%{name}/LICENSE
 
 %files apps
+%{_bindir}/app
+%{_datadir}/tilo/trust/tilo-main-registry-owner.pub
 %{_bindir}/tilo-install
 %{_bindir}/tilo-app-package
 %{_bindir}/tilo-runtime-bundle

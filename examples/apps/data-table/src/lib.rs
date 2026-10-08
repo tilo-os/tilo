@@ -217,8 +217,8 @@ impl ResourceApp for App {
                 .with_widget(move |row, _| {
                     Box::new(
                         actions.bind_invocation(
-                            Button::new(&format!("open-{}", row.id), "data-open", None)
-                                .fit_content(28.0),
+                            Button::new(&format!("open-{}", row.id), "data-open")
+                                .control_size(ui::widget::ControlSize::Small),
                             Review::OPEN.with(row.id),
                         ),
                     )

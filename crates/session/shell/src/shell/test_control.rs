@@ -186,6 +186,8 @@ pub enum Command {
     ActionsEnumerate {
         #[serde(default)]
         query: String,
+        #[serde(default)]
+        include_programmatic: bool,
     },
     /// Invoke one enumerated action by its `(provider, id)` address, with no window, scene or synthetic input.
     ///
@@ -366,6 +368,22 @@ pub trait ControlState {
     /// Returns a human-readable refusal reason whenever the surface cannot be enumerated at all — no live action registry on this control state.
     fn enumerate_actions(&self, _query: &str) -> Result<serde_json::Value, String> {
         Err("no live action registry on this control state".to_string())
+    }
+
+    /// Enumerate the bounded machine catalogue only when explicitly supported.
+    ///
+    /// # Errors
+    /// Returns a refusal if this state does not support programmatic discovery,
+    /// or if the underlying action catalogue is unavailable.
+    fn enumerate_actions_with_programmatic(
+        &self,
+        query: &str,
+        include_programmatic: bool,
+    ) -> Result<serde_json::Value, String> {
+        if include_programmatic {
+            return Err("this control state cannot enumerate programmatic actions".into());
+        }
+        self.enumerate_actions(query)
     }
 
     /// Resolve `(provider, id)` against a fresh catalogue and report what it addresses, without invoking it — the validation half of `actions_invoke`, so the transport can refuse instead of planning an invocation that silently does nothing.
@@ -747,8 +765,14 @@ pub fn dispatch_command<S: ControlState>(
         Command::ClipboardCopy { text, primary } => clipboard_copy(text, *primary),
         Command::ClipboardCopyImage => clipboard_copy_image(),
         Command::ClipboardPaste { primary } => clipboard_paste(*primary),
-        Command::ActionsEnumerate { query } => (
-            answer_or_err(state.enumerate_actions(query), "enumerate_failed"),
+        Command::ActionsEnumerate {
+            query,
+            include_programmatic,
+        } => (
+            answer_or_err(
+                state.enumerate_actions_with_programmatic(query, *include_programmatic),
+                "enumerate_failed",
+            ),
             Vec::new(),
         ),
         Command::ActionsInvoke {
@@ -1519,7 +1543,37 @@ pub fn parse_request(line: &str) -> Result<Request, Response> {
 pub const AGENT_CONTROL_NOT_PERMITTED: &str =
     "the agent-control socket serves input, screenshots and the watch signal only";
 
+/// Protocol error for a command the device admin's control socket does not
+/// serve. It names where the rest of the protocol lives, so a caller that
+/// reached for input learns the semantic route rather than retrying.
+pub const ADMIN_CONTROL_NOT_PERMITTED: &str = "the admin control socket serves the action model only \
+     (actions list/invoke/status/cancel, state-dump, foreign-frames); synthetic input and \
+     screenshots exist only on a development session's test-control socket ($TILO_TEST_CONTROL)";
+
+/// Protocol error for an action or screenshot asked for while the session
+/// is locked: nothing ran, and only the person at the device can unlock it.
+pub const SESSION_LOCKED: &str = "the session is locked; unlock it at the device, then retry";
+
 impl Command {
+    /// Whether the device admin's control socket serves this command: the
+    /// action model — enumerate, invoke, status, cancel — and read-only state.
+    /// Synthetic input, screenshots, grants, fixtures and agent seats are not:
+    /// the admin drives the session the way an assistive tool or an agent
+    /// does, through typed actions, and a person's screen is not something a
+    /// socket client reads or clicks.
+    #[must_use]
+    pub const fn admin_permitted(&self) -> bool {
+        matches!(
+            self,
+            Self::ActionsEnumerate { .. }
+                | Self::ActionsInvoke { .. }
+                | Self::ActionsStatus { .. }
+                | Self::ActionsCancel { .. }
+                | Self::StateDump
+                | Self::ForeignFrames
+        )
+    }
+
     /// Whether an agent-control connection may send this command: pointer,
     /// keyboard and clipboard input, screenshots, read-only frame and target
     /// inventories, and the partner watch signal, which only decides whether
@@ -2569,6 +2623,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn programmatic_discovery_wire_preserves_defaults_and_refuses_unsupported_states() {
+        let normal: Command = serde_json::from_value(serde_json::json!({
+            "op": "actions_enumerate", "query": "settings"
+        }))
+        .unwrap();
+        assert!(matches!(
+            &normal,
+            Command::ActionsEnumerate {
+                include_programmatic: false,
+                ..
+            }
+        ));
+        let (response, effects) = dispatch_command(&normal, &ActionState);
+        assert!(matches!(response, Response::Answer(_)));
+        assert!(effects.is_empty());
+        let machine: Command = serde_json::from_value(serde_json::json!({
+            "op": "actions_enumerate", "query": "settings", "include_programmatic": true
+        }))
+        .unwrap();
+        let (response, effects) = dispatch_command(&machine, &ActionState);
+        let Response::Err { code, message } = response else {
+            panic!("unsupported machine catalogue must fail: {response:?}");
+        };
+        assert_eq!(code, "enumerate_failed");
+        assert!(message.contains("cannot enumerate programmatic actions"));
+        assert!(effects.is_empty());
+    }
+
     const MOCK_INSERT_PARAMS: &[crate::shell::search::action_api::ActionParam] = &[
         crate::shell::search::action_api::ActionParam::required(
             "text",
@@ -2604,6 +2687,7 @@ mod tests {
             {
                 let (resp, actions) = dispatch_command(
                     &Command::ActionsEnumerate {
+                        include_programmatic: false,
                         query: String::new(),
                     },
                     &ActionState,
@@ -2734,6 +2818,7 @@ mod tests {
                 let state = StaticState::new(&[]);
                 let (resp, actions) = dispatch_command(
                     &Command::ActionsEnumerate {
+                        include_programmatic: false,
                         query: String::new(),
                     },
                     &state,
@@ -2753,6 +2838,7 @@ mod tests {
                 assert_eq!(
                     enumerate,
                     Command::ActionsEnumerate {
+                        include_programmatic: false,
                         query: "settings".to_string()
                     }
                 );
@@ -2762,6 +2848,7 @@ mod tests {
                 assert_eq!(
                     bare,
                     Command::ActionsEnumerate {
+                        include_programmatic: false,
                         query: String::new()
                     }
                 );
@@ -2940,66 +3027,74 @@ pub fn read_bounded_line<R: BufRead>(
     out: &mut String,
     max_bytes: usize,
 ) -> Result<Option<()>, ReadLineError> {
-    let mut buf = Vec::with_capacity(256);
-    loop {
-        let available = match reader.fill_buf() {
-            Ok(b) => b,
-            Err(e) => return Err(ReadLineError::Io(e)),
-        };
-        if available.is_empty() {
-            // EOF: return accumulated bytes as a best-effort line if any, else None.
-            if buf.is_empty() {
-                return Ok(None);
-            }
-            match String::from_utf8(buf) {
-                Ok(s) => {
-                    out.push_str(&s);
-                    return Ok(Some(()));
+    BoundedLineBuffer::default().read(reader, out, max_bytes)
+}
+
+/// One connection's bounded request prefix. Nonblocking readers retain it
+/// across `WouldBlock`, including a UTF-8 character split between reads.
+/// Consumed request bytes are zeroized after delivery and on connection drop.
+#[derive(Default)]
+pub struct BoundedLineBuffer(zeroize::Zeroizing<Vec<u8>>);
+
+impl BoundedLineBuffer {
+    /// Read one bounded line, preserving an incomplete prefix until more
+    /// bytes arrive. A nonempty final fragment at EOF keeps the existing policy.
+    ///
+    /// # Errors
+    /// Returns `TooLarge` for the cumulative line size, or an I/O/UTF-8 error.
+    /// `WouldBlock` preserves the pending bytes for the next call.
+    pub fn read<R: BufRead>(
+        &mut self,
+        reader: &mut R,
+        out: &mut String,
+        max_bytes: usize,
+    ) -> Result<Option<()>, ReadLineError> {
+        loop {
+            let available = match reader.fill_buf() {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::WouldBlock {
+                        zeroize::Zeroize::zeroize(&mut *self.0);
+                    }
+                    return Err(ReadLineError::Io(error));
                 }
-                Err(e) => {
-                    return Err(ReadLineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
-                }
+            };
+            if available.is_empty() {
+                return if self.0.is_empty() {
+                    Ok(None)
+                } else {
+                    self.finish(out)
+                };
             }
-        }
-        // Find the newline (if any) in the available slice.
-        let (consumed, found_nl) = match available.iter().position(|&b| b == b'\n') {
-            Some(idx) => (idx.saturating_add(1), true),
-            None => (available.len(), false),
-        };
-        if buf.len().saturating_add(consumed) > max_bytes {
-            // Cap reached: consume up to the cap so we don't leave garbage in the reader, then bail.
-            let remaining = max_bytes.saturating_sub(buf.len());
-            // `remaining < consumed <= available.len()` by construction, so this
-            // never misses — `unwrap_or(available)` is just a defensive fallback.
-            let take = available.get(..remaining).unwrap_or(available);
+            let (consumed, found_newline) = available
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or((available.len(), false), |index| {
+                    (index.saturating_add(1), true)
+                });
+            if self.0.len().saturating_add(consumed) > max_bytes {
+                reader.consume(max_bytes.saturating_sub(self.0.len()));
+                zeroize::Zeroize::zeroize(&mut *self.0);
+                return Err(ReadLineError::TooLarge);
+            }
+            let take = available.get(..consumed).unwrap_or(available);
             let taken = take.len();
-            buf.extend_from_slice(take);
+            self.0.extend_from_slice(take);
             reader.consume(taken);
-            return Err(ReadLineError::TooLarge);
-        }
-        // `consumed` is either `idx + 1` (a valid position in `available`) or
-        // `available.len()`, so this too never misses.
-        let take = available.get(..consumed).unwrap_or(available);
-        let taken = take.len();
-        buf.extend_from_slice(take);
-        reader.consume(taken);
-        if found_nl {
-            match String::from_utf8(buf) {
-                Ok(s) => {
-                    out.push_str(&s);
-                    return Ok(Some(()));
-                }
-                Err(e) => {
-                    return Err(ReadLineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
-                }
+            if found_newline {
+                return self.finish(out);
             }
         }
+    }
+
+    fn finish(&mut self, out: &mut String) -> Result<Option<()>, ReadLineError> {
+        let result = std::str::from_utf8(&self.0)
+            .map(|line| out.push_str(line))
+            .map_err(|error| {
+                ReadLineError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            });
+        zeroize::Zeroize::zeroize(&mut *self.0);
+        result.map(|()| Some(()))
     }
 }
 
@@ -3033,6 +3128,60 @@ pub fn keyboard_input_event(key: &Key, pressed: bool) -> WindowEvent {
 #[cfg(test)]
 mod framing_tests {
     use super::*;
+    #[test]
+    fn nonblocking_line_retains_split_utf8_and_the_next_line() {
+        use std::io::{BufReader, Write as _};
+        use std::os::unix::net::UnixStream;
+
+        let (server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let mut reader = BufReader::new(server);
+        let mut pending = BoundedLineBuffer::default();
+        let mut out = String::new();
+        client.write_all(&[0xf0, 0x9f]).unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 64),
+            Err(ReadLineError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        assert!(out.is_empty(), "a UTF-8 prefix is not yet a request");
+        client.write_all(&[0x98, 0x80, b'\n']).unwrap();
+        client.write_all(b"next\n").unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 64),
+            Ok(Some(()))
+        ));
+        assert_eq!(out, "😀\n");
+        out.clear();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 64),
+            Ok(Some(()))
+        ));
+        assert_eq!(out, "next\n", "delivery resets only the completed prefix");
+    }
+
+    #[test]
+    fn nonblocking_line_cap_applies_across_fragments() {
+        use std::io::{BufReader, Write as _};
+        use std::os::unix::net::UnixStream;
+
+        let (server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let mut reader = BufReader::new(server);
+        let mut pending = BoundedLineBuffer::default();
+        let mut out = String::new();
+        client.write_all(b"abc").unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 4),
+            Err(ReadLineError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        client.write_all(b"def\n").unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 4),
+            Err(ReadLineError::TooLarge)
+        ));
+        assert!(out.is_empty(), "an oversized line must never be dispatched");
+    }
+
     /// `read_bounded_line` caps a malicious/buggy client's input at
     /// `TEST_CONTROL_MAX_LINE_BYTES`; the caller closes the connection on `TooLarge`.
     #[test]

@@ -98,12 +98,24 @@ fn deliver(
     to: &mut PersonalWorkspaces,
     to_tree: &mut WorkspaceTree,
 ) -> bool {
-    from.publish_local(from_tree, PERSON);
+    deliver_as(PERSON, from, from_device, from_tree, to, to_tree)
+}
+
+/// [`deliver`] for the lists of `person`.
+fn deliver_as(
+    person: &str,
+    from: &mut PersonalWorkspaces,
+    from_device: &Device,
+    from_tree: &WorkspaceTree,
+    to: &mut PersonalWorkspaces,
+    to_tree: &mut WorkspaceTree,
+) -> bool {
+    from.publish_local(from_tree, person);
     let update = from.snapshot(&from_device.key, 10).expect("signed list");
-    to.publish_local(to_tree, PERSON);
+    to.publish_local(to_tree, person);
     to.merge(&update, &from_device.cert, 20)
         .expect("same person");
-    to.adopt_into(to_tree, &PERSON.to_string())
+    to.adopt_into(to_tree, &person.to_string())
 }
 
 fn room_named(tree: &WorkspaceTree, name: &str) -> RoomId {
@@ -171,13 +183,22 @@ fn an_enrolled_room_waits_for_its_name_before_publishing_to_other_devices() {
 #[test]
 fn a_workspace_made_on_one_device_appears_on_the_other_with_its_content() {
     let (laptop_device, board_device) = person_with_two_devices();
+    let (person, key) = certified_person(&laptop_device);
     let mut laptop = device_tree(LAPTOP, "Research");
     let mut board = device_tree(BOARD, "Board home");
+    for tree in [&mut laptop, &mut board] {
+        tree.desktop.workspaces[0].set_owner(person.clone());
+        tree.local_person = Some(key);
+    }
+    board
+        .authenticated_persons
+        .insert(origin_of(&laptop_device), key);
     let board_home = board.desktop.active;
     let mut laptop_list = list_for(&laptop_device);
     let mut board_list = list_for(&board_device);
 
-    assert!(deliver(
+    assert!(deliver_as(
+        &person,
         &mut laptop_list,
         &laptop_device,
         &laptop,
@@ -192,9 +213,11 @@ fn a_workspace_made_on_one_device_appears_on_the_other_with_its_content() {
         .find(|workspace| workspace.room == research)
         .expect("the laptop's workspace is on the board");
     assert_eq!(joined.name, "Research");
-    assert_eq!(joined.owner.as_deref(), Some(PERSON));
+    assert_eq!(joined.owner.as_deref(), Some(person.as_str()));
     assert!(joined.strips.is_empty(), "content comes from the room");
-    assert_eq!(board.room_authority(research), RoomAuthority::Unpinned);
+    // The person's signed list says the room is theirs, so it is pinned to
+    // the person now — not to whichever of their devices answers first.
+    assert_eq!(board.room_authority(research), RoomAuthority::Person(key));
     assert_eq!(
         board.desktop.active, board_home,
         "learning of a workspace never moves what the board is looking at"
@@ -208,7 +231,7 @@ fn a_workspace_made_on_one_device_appears_on_the_other_with_its_content() {
         .expect("the laptop is in the room");
     assert!(
         board
-            .apply_room_changes(research, &changes, &PeerOrigin::hub(1))
+            .apply_room_changes(research, &changes, &origin_of(&laptop_device))
             .expect("same-person room")
     );
     let arrived = board
@@ -232,7 +255,8 @@ fn a_workspace_made_on_one_device_appears_on_the_other_with_its_content() {
     ));
 
     // The other direction: the board's own workspace reaches the laptop.
-    assert!(deliver(
+    assert!(deliver_as(
+        &person,
         &mut board_list,
         &board_device,
         &board,
@@ -307,6 +331,36 @@ fn renames_follow_the_list_and_concurrent_ones_converge() {
             .map(|workspace| workspace.name.clone())
     };
     assert_eq!(name_on(&laptop), name_on(&board));
+}
+
+#[test]
+fn a_person_room_an_older_build_left_unpinned_is_pinned_by_the_list() {
+    let (laptop_device, board_device) = person_with_two_devices();
+    let (person, key) = certified_person(&laptop_device);
+    let mut laptop = device_tree(LAPTOP, "Research");
+    laptop.desktop.workspaces[0].set_owner(person.clone());
+    let mut board = device_tree(BOARD, "Board home");
+    board.desktop.workspaces[0].set_owner(person.clone());
+    let mut laptop_list = list_for(&laptop_device);
+    let mut board_list = list_for(&board_device);
+    assert!(deliver_as(
+        &person,
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board
+    ));
+    let research = room_named(&laptop, "Research");
+    assert_eq!(board.room_authority(research), RoomAuthority::Person(key));
+
+    // What an older build persisted: agreed in the list, still waiting for a
+    // first answer to pin its governor.
+    board
+        .room_authority
+        .insert(research, RoomAuthority::Unpinned);
+    assert!(board_list.adopt_into(&mut board, &person));
+    assert_eq!(board.room_authority(research), RoomAuthority::Person(key));
 }
 
 #[test]
@@ -1012,4 +1066,52 @@ fn deleting_from_the_menu_offers_an_undo() {
         .expect("an undo toast");
     assert!(state.activate_notification(toast));
     assert_eq!(names(&state.tree()), ["Research", "Thesis"]);
+}
+
+#[test]
+fn an_unchanged_tree_is_not_compared_against_the_directory_again() {
+    let ((_, mut laptop, mut laptop_list), (board_device, _, mut board_list)) =
+        two_devices_in_step();
+    laptop_list.publish_local(&laptop, PERSON);
+    let passes = laptop_list.publish_passes;
+    for _ in 0..3 {
+        assert!(!laptop_list.publish_local(&laptop, PERSON));
+    }
+    assert_eq!(laptop_list.publish_passes, passes, "nothing changed");
+
+    // A rename here is written to the directory.
+    let research = id_named(&laptop, "Research");
+    laptop
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == research)
+        .expect("workspace")
+        .name = "Reading".into();
+    assert!(laptop_list.publish_local(&laptop, PERSON));
+    assert!(!laptop_list.publish_local(&laptop, PERSON));
+    assert_eq!(laptop_list.publish_passes, passes + 1);
+
+    // So is a new order.
+    laptop.desktop.workspaces.reverse();
+    assert!(laptop_list.publish_local(&laptop, PERSON));
+    assert_eq!(laptop_list.publish_passes, passes + 2);
+
+    // Another device's list moves the directory under an unchanged tree,
+    // so the next call compares again.
+    let update = board_list
+        .snapshot(&board_device.key, 30)
+        .expect("signed list");
+    laptop_list
+        .merge(&update, &board_device.cert, 40)
+        .expect("same person");
+    laptop_list.publish_local(&laptop, PERSON);
+    assert_eq!(laptop_list.publish_passes, passes + 3);
+    assert!(!laptop_list.publish_local(&laptop, PERSON));
+    assert_eq!(laptop_list.publish_passes, passes + 3);
+
+    // As does bringing the directory into the tree.
+    laptop_list.adopt_into(&mut laptop, &PERSON.to_string());
+    laptop_list.publish_local(&laptop, PERSON);
+    assert_eq!(laptop_list.publish_passes, passes + 4);
 }

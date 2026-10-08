@@ -441,6 +441,9 @@ impl Harness {
         toplevel.set_app_id(app_id.into());
         self.pump();
         let _ = self.fb.paint_settled();
+        // Layout sends the opening xdg configure. Acknowledge it before
+        // the caller can attach its first buffer.
+        self.pump();
         let id = self
             .state
             .workspace_tree
@@ -463,7 +466,7 @@ impl Harness {
     }
 
     /// Give `surface` a first buffer, so it is mapped and can take focus.
-    fn map(&mut self, surface: &wl_surface::WlSurface) {
+    fn map(&mut self, surface: &wl_surface::WlSurface, surface_id: u64) {
         use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
         // 64×64 ARGB.
         let (width, height, stride, len) = (64, 64, 256, 16_384_usize);
@@ -493,6 +496,10 @@ impl Harness {
         surface.commit();
         self.pump();
         let _ = self.fb.paint_settled();
+        assert!(
+            shell::compositor::foreign::store().is_mapped(surface_id),
+            "the real first-buffer commit maps the configured toplevel"
+        );
     }
 
     /// The centre of the app's tile, where a pen lands on it.
@@ -663,7 +670,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
 fn a_pen_over_a_tablet_aware_app_still_moves_the_cursor_focuses_and_holds_its_stroke() {
     let mut h = Harness::new();
     let (surface, app) = h.open("org.example.Draw");
-    h.map(&surface);
+    h.map(&surface, app);
     let centre = h.centre_of(app);
     let manager = h.bind::<zwp_tablet_manager_v2::ZwpTabletManagerV2>("zwp_tablet_manager_v2", 1);
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
@@ -699,7 +706,10 @@ fn a_pen_over_a_tablet_aware_app_still_moves_the_cursor_focuses_and_holds_its_st
     assert_eq!(
         h.state.client_input.keyboard_focus(),
         Some(app),
-        "touching down focuses the window, as a click does"
+        "touching down focuses the window, as a click does; mapped={}, active={:?}, cursor={:?}",
+        shell::compositor::foreign::store().is_mapped(app),
+        shell::shell::input_policy::active_foreign_surface(&h.state.workspace_tree.read()),
+        h.state.client_input.cursor(),
     );
 
     // Off the window's edge mid-stroke, the stroke stays with the app.

@@ -16,6 +16,17 @@ use super::{
     semantic_action_bindings,
 };
 
+/// How the host answered a control's invocation: started (done at once with
+/// its output, or accepted to finish later), or refused.
+pub type ControlResult = Result<ResourceOperationStart, tilo_actions::DoorError>;
+
+/// A control intent and the effect invocation it continues, when an
+/// effect's handler or completion queued it.
+pub type AttributedControlInvocation = (
+    tilo_actions::ControlInvocation,
+    Option<tilo_actions::InvocationId>,
+);
+
 /// A widget that owns action-bound controls.
 pub trait ActionControls: Widget {
     /// Bind retained producers before their first callback. Private holders
@@ -37,6 +48,14 @@ pub trait ActionControls: Widget {
             .find_map(take_control_invocation)
     }
 
+    /// [`Self::take_control_invocation`], with the effect invocation the
+    /// intent continues when an effect's handler or completion queued it:
+    /// the host applies it for that invocation's invoker.
+    fn take_attributed_control_invocation(&mut self) -> Option<AttributedControlInvocation> {
+        self.take_control_invocation()
+            .map(|invocation| (invocation, None))
+    }
+
     /// Report the admission result of one queued local control invocation.
     /// `Accepted` means queued, not completed; confirmation remains an error
     /// while the host offers its normal confirmation UI. This notification
@@ -44,7 +63,7 @@ pub trait ActionControls: Widget {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+        result: &ControlResult,
     ) {
         result_to_children(self, address, result);
     }
@@ -95,7 +114,7 @@ fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetada
 fn result_to_children(
     widget: &mut (impl Widget + ?Sized),
     address: &tilo_actions::ActionAddress,
-    result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+    result: &ControlResult,
 ) {
     for child in widget.children_mut() {
         if !child.has_separate_document_owner() {
@@ -130,11 +149,25 @@ pub fn take_control_invocation(widget: &mut dyn Widget) -> Option<tilo_actions::
         .find_map(take_control_invocation)
 }
 
+/// [`take_control_invocation`], with the effect invocation the intent
+/// continues ([`ActionControls::take_attributed_control_invocation`]).
+pub fn take_attributed_control_invocation(
+    widget: &mut dyn Widget,
+) -> Option<AttributedControlInvocation> {
+    if let Some(controls) = capability_mut::<dyn ActionControls>(&mut *widget) {
+        return controls.take_attributed_control_invocation();
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .find_map(take_attributed_control_invocation)
+}
+
 /// Report a control invocation's admission result through `widget`'s subtree.
 pub fn on_control_invocation_result(
     widget: &mut dyn Widget,
     address: &tilo_actions::ActionAddress,
-    result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+    result: &ControlResult,
 ) {
     if let Some(controls) = capability_mut::<dyn ActionControls>(&mut *widget) {
         controls.on_control_invocation_result(address, result);

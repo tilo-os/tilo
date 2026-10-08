@@ -7,7 +7,7 @@
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
-use tilo_actions::{Action, ActionContext, ActionError, ActionRegistry, Doc, ExecutionLocus};
+use tilo_actions::{Action, ActionError, ActionRegistry, ChangeKind, Doc, ExecutionLocus};
 
 pub const ACTION_TYPE: &str = "video-player.shared-action";
 const PLAYLIST_PREFIX: &str = "video-player.shared.playlist:";
@@ -16,6 +16,10 @@ const ITEM_PREFIX: &str = "video-player.shared.playlist-item:";
 const ITEM_TOMBSTONE_PREFIX: &str = "video-player.shared.playlist-item-tombstone:";
 const ANNOTATION_PREFIX: &str = "video-player.shared.annotation:";
 const ANNOTATION_TOMBSTONE_PREFIX: &str = "video-player.shared.annotation-tombstone:";
+const TRANSPORT_PREFIX: &str = "video-player.shared.transport:";
+/// How many videos' playback the library remembers; the one left longest
+/// ago makes room.
+pub const MAX_TRANSPORTS: usize = 32;
 pub const MAX_SHARED_ROWS: usize = 10_000;
 const MAX_TEXT_BYTES: usize = 8 * 1024;
 
@@ -42,14 +46,50 @@ pub struct TimestampAnnotation {
     pub text: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Where playback of one video stands for everyone watching it together:
+/// the play state and the playhead at a wall-clock moment, which every
+/// participant projects to its own now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SharedTransport {
+    pub media_ref: String,
+    pub playing: bool,
+    pub position_ms: u64,
+    pub rate: f64,
+    /// Unix milliseconds at which `position_ms` held.
+    pub epoch_ms: u64,
+}
+
+impl SharedTransport {
+    /// The transport as the media engine follows it.
+    pub fn state(&self) -> media::TransportState {
+        media::TransportState {
+            playing: self.playing,
+            position_ms: self.position_ms,
+            rate: self.rate as f32,
+            epoch_ms: self.epoch_ms,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SharedLibrary {
     pub playlists: Vec<Playlist>,
     pub items: Vec<PlaylistItem>,
     pub annotations: Vec<TimestampAnnotation>,
+    /// Playback watched together, one per video.
+    pub transports: Vec<SharedTransport>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+impl SharedLibrary {
+    /// Where playback of the video `media_ref` stands, if anyone played it.
+    pub fn transport_for(&self, media_ref: &str) -> Option<&SharedTransport> {
+        self.transports
+            .iter()
+            .find(|transport| transport.media_ref == media_ref)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum SharedAction {
     CreatePlaylist {
         id: String,
@@ -97,6 +137,15 @@ pub enum SharedAction {
     },
     DeleteAnnotation {
         id: String,
+    },
+    /// Where playback of one video stands now: everyone watching it follows.
+    /// Not an undo step: playing, pausing and seeking are not edits.
+    SetTransport {
+        media_ref: String,
+        playing: bool,
+        position_ms: u64,
+        rate: f64,
+        epoch_ms: u64,
     },
 }
 
@@ -192,6 +241,13 @@ impl Action for SharedAction {
             | Self::EditAnnotation { .. }
             | Self::MoveAnnotation { .. }
             | Self::DeleteAnnotation { .. } => self.apply_annotation(doc)?,
+            Self::SetTransport {
+                media_ref,
+                playing,
+                position_ms,
+                rate,
+                epoch_ms,
+            } => apply_transport(doc, media_ref, *playing, *position_ms, *rate, *epoch_ms)?,
         }
         Ok(())
     }
@@ -199,6 +255,78 @@ impl Action for SharedAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
+
+    fn change_kind(&self) -> ChangeKind {
+        match self {
+            Self::SetTransport { .. } => ChangeKind::Housekeeping,
+            _ => ChangeKind::Content,
+        }
+    }
+}
+
+/// Store where playback of `media_ref` stands, making room by forgetting the
+/// video left longest ago once the library remembers too many.
+fn apply_transport(
+    doc: &mut Doc,
+    media_ref: &str,
+    playing: bool,
+    position_ms: u64,
+    rate: f64,
+    epoch_ms: u64,
+) -> Result<(), ActionError> {
+    if !valid_id(media_ref) || !(0.25..=4.0).contains(&rate) {
+        return Err(ActionError::Refused(
+            "a valid media identity and a playback rate from 0.25 to 4 are required".into(),
+        ));
+    }
+    let integer = |value: u64| {
+        i64::try_from(value)
+            .map_err(|_| ActionError::Refused("transport value is too large".into()))
+    };
+    let row = match object(doc, TRANSPORT_PREFIX, media_ref) {
+        Some(row) => row,
+        None => doc.put_object(&ROOT, key(TRANSPORT_PREFIX, media_ref), ObjType::Map)?,
+    };
+    doc.put(&row, "playing", playing)?;
+    doc.put(&row, "position_ms", integer(position_ms)?)?;
+    doc.put(&row, "rate", rate)?;
+    doc.put(&row, "epoch_ms", integer(epoch_ms)?)?;
+    let mut transports = read_transports(doc);
+    while transports.len() > MAX_TRANSPORTS {
+        transports.sort_by_key(|transport| transport.epoch_ms);
+        let oldest = transports.remove(0);
+        doc.delete(&ROOT, key(TRANSPORT_PREFIX, &oldest.media_ref))?;
+    }
+    Ok(())
+}
+
+fn read_transports(doc: &Doc) -> Vec<SharedTransport> {
+    let number = |row: &ObjId, field: &str| {
+        doc.get(row, field)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| value.into_scalar().ok())
+            .and_then(|value| value.as_f64())
+    };
+    doc.keys(&ROOT)
+        .filter_map(|property| {
+            let media_ref = property.strip_prefix(TRANSPORT_PREFIX)?;
+            let row = object(doc, TRANSPORT_PREFIX, media_ref)?;
+            let playing = doc
+                .get(&row, "playing")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.into_scalar().ok())
+                .and_then(|value| value.as_bool())?;
+            Some(SharedTransport {
+                media_ref: media_ref.to_owned(),
+                playing,
+                position_ms: u64::try_from(integer(doc, &row, "position_ms")?).ok()?,
+                rate: number(&row, "rate")?,
+                epoch_ms: u64::try_from(integer(doc, &row, "epoch_ms")?).ok()?,
+            })
+        })
+        .collect()
 }
 
 impl SharedAction {
@@ -326,69 +454,6 @@ impl SharedAction {
     }
 }
 
-pub fn history_context(action: &SharedAction) -> ActionContext {
-    let mut context = ActionContext::for_action("so.tilo.video-player", "Video Player", action);
-    let (label, id, kind) = match action {
-        SharedAction::CreatePlaylist { id, .. } => (
-            "Create playlist",
-            crate::actions::playlist_resource_id(id),
-            "media.playlist",
-        ),
-        SharedAction::RenamePlaylist { id, .. } => (
-            "Rename playlist",
-            crate::actions::playlist_resource_id(id),
-            "media.playlist",
-        ),
-        SharedAction::DeletePlaylist { id, .. } => (
-            "Delete playlist",
-            crate::actions::playlist_resource_id(id),
-            "media.playlist",
-        ),
-        SharedAction::AddPlaylistItem { id, .. } => (
-            "Add playlist item",
-            crate::actions::playlist_item_resource_id(id),
-            "media.playlist-item",
-        ),
-        SharedAction::MovePlaylistItem { id, .. } => (
-            "Move playlist item",
-            crate::actions::playlist_item_resource_id(id),
-            "media.playlist-item",
-        ),
-        SharedAction::RemovePlaylistItem { id } => (
-            "Remove playlist item",
-            crate::actions::playlist_item_resource_id(id),
-            "media.playlist-item",
-        ),
-        SharedAction::CreateAnnotation { id, .. } => (
-            "Add timestamp annotation",
-            crate::actions::annotation_resource_id(id),
-            "media.annotation",
-        ),
-        SharedAction::EditAnnotation { id, .. } => (
-            "Edit timestamp annotation",
-            crate::actions::annotation_resource_id(id),
-            "media.annotation",
-        ),
-        SharedAction::MoveAnnotation { id, .. } => (
-            "Move timestamp annotation",
-            crate::actions::annotation_resource_id(id),
-            "media.annotation",
-        ),
-        SharedAction::DeleteAnnotation { id } => (
-            "Delete timestamp annotation",
-            crate::actions::annotation_resource_id(id),
-            "media.annotation",
-        ),
-    };
-    context.action_label = label.into();
-    context.resource = Some(tilo_actions::ActionResource {
-        id,
-        kind: kind.into(),
-        label: label.into(),
-    });
-    context
-}
-
 pub fn read(doc: &Doc) -> SharedLibrary {
     let mut state = SharedLibrary::default();
     for property in doc.keys(&ROOT).take(MAX_SHARED_ROWS.saturating_mul(3)) {
@@ -460,6 +525,10 @@ pub fn read(doc: &Doc) -> SharedLibrary {
             .iter()
             .any(|playlist| playlist.id == item.playlist_id)
     });
+    state.transports = read_transports(doc);
+    state
+        .transports
+        .sort_by(|a, b| a.media_ref.cmp(&b.media_ref));
     state.annotations.sort_by(|a, b| {
         a.media_ref
             .cmp(&b.media_ref)

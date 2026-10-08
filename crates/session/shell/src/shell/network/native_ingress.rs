@@ -1,6 +1,58 @@
 use super::*;
 use crate::{network::actor::native_ingress, shell::native_workspace_owner::NativeWorkspaceOwner};
 impl ShellNetwork {
+    pub(crate) fn prepare_native_application(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        creator: &tilo_user_identity::DeviceCert,
+        route: &tilo_joined_room::ApplicationRecord,
+    ) -> Result<bool, String> {
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("native custody unavailable")?;
+        let (certificate, _) = owner.with_current(room, |view| {
+            identity.current_native_material(view.workspace())
+        })?;
+        if &certificate != creator {
+            return Err("application creator differs from selected native custody".into());
+        }
+        owner.prepare_application_record(
+            room,
+            &certificate,
+            &identity.device_signing_key,
+            route,
+            SystemTime::now(),
+        )
+    }
+
+    pub(crate) fn initialize_native_application(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        creator: &tilo_user_identity::DeviceCert,
+        initialization: tilo_joined_room::ApplicationInitialization<'_>,
+    ) -> Result<[u8; 32], String> {
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("native custody unavailable")?;
+        let (certificate, _) = owner.with_current(room, |view| {
+            identity.current_native_material(view.workspace())
+        })?;
+        if &certificate != creator {
+            return Err("application initialization creator custody changed".into());
+        }
+        owner.initialize_application_record(
+            room,
+            &certificate,
+            &identity.device_signing_key,
+            initialization,
+            SystemTime::now(),
+        )
+    }
+
     pub(crate) fn check_native_custody(
         &self,
         owner: &NativeWorkspaceOwner,
@@ -194,6 +246,31 @@ impl ShellNetwork {
                 })
             })
             .ok()
+    }
+
+    /// Native presence uses admitted governance, never the legacy hello cache.
+    pub(super) fn governed_presence_allows(
+        &self,
+        ws: u64,
+        device: iroh::EndpointId,
+        app: &str,
+        cluster: &str,
+    ) -> bool {
+        let Some(room) = self.unique_room_for_topic(ws) else {
+            return false;
+        };
+        if room.to_string() != cluster || app.is_empty() {
+            return false;
+        }
+        let Ok(owner) = self.native_owner() else {
+            return false;
+        };
+        owner
+            .with_current(room, |view| {
+                view.peer()
+                    .check_document_read(*device.as_bytes(), app, "", SystemTime::now())
+            })
+            .is_ok()
     }
     /// Whether `room` is an enrolled room whose records are sealed
     /// channels its members write themselves (its governor stewards them).

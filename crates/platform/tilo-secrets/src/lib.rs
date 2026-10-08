@@ -16,7 +16,7 @@
     )
 )]
 
-//! App-scoped secret storage: one API on Linux, macOS and the web.
+//! App-scoped secret storage: one API on Linux, macOS, Windows and the web.
 //!
 //! A [`SecretStore`] belongs to one app ([`SecretStore::for_app`]); its keys
 //! name that app's secrets and no other app's. [`SecretStore::memory`] keeps
@@ -26,6 +26,7 @@
 //! |---|---|---|
 //! | Linux | the freedesktop Secret Service over D-Bus (GNOME Keyring, `KWallet`) | [`Protection::OsKeychain`] |
 //! | macOS | the login Keychain's generic passwords | [`Protection::OsKeychain`] |
+//! | Windows | generic credentials in the user's Credential Manager (DPAPI-encrypted, this machine only) | [`Protection::OsKeychain`] |
 //! | Web | AES-GCM under a non-extractable `CryptoKey`; key and ciphertext in `IndexedDB` | [`Protection::BrowserWrapped`] |
 //! | Linux, macOS with `TILO_SECRETS_DIR` | sealed owner-only files in that directory | [`Protection::LocalFile`] |
 //!
@@ -54,6 +55,8 @@ use zeroize::Zeroizing;
 
 mod caps;
 pub mod conformance;
+#[cfg(any(target_os = "windows", test))]
+mod credential;
 #[cfg(unix)]
 mod files;
 #[cfg(target_os = "linux")]
@@ -62,6 +65,8 @@ mod linux;
 mod macos;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod web;
+#[cfg(target_os = "windows")]
+mod windows;
 
 pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
 
@@ -619,6 +624,21 @@ fn system_backend() -> Backend {
     Backend::Sync(Arc::new(macos::Keychain::new()))
 }
 
+/// As on macOS, a debug test build in the test environment never writes the
+/// user's own Credential Manager unless `TILO_SECRETS_SYSTEM_TEST` asks.
+#[cfg(target_os = "windows")]
+fn system_backend() -> Backend {
+    if cfg!(debug_assertions)
+        && std::env::var_os("TILO_TEST_ENVIRONMENT").is_some()
+        && std::env::var_os("TILO_SECRETS_SYSTEM_TEST").is_none()
+    {
+        return Backend::Sync(Arc::new(UnsupportedBackend(
+            "the test environment has no Credential Manager",
+        )));
+    }
+    Backend::Sync(Arc::new(windows::CredentialManager))
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn system_backend() -> Backend {
     Backend::Web
@@ -627,6 +647,7 @@ fn system_backend() -> Backend {
 #[cfg(not(any(
     target_os = "linux",
     target_os = "macos",
+    target_os = "windows",
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
 fn system_backend() -> Backend {
@@ -635,8 +656,8 @@ fn system_backend() -> Backend {
     )))
 }
 
-/// No secret store, and why: a target without one (Windows keeps DPAPI
-/// custody in `secret-vault` for now), or a macOS test environment.
+/// No secret store, and why: a target without one, or a macOS or Windows
+/// test environment.
 #[cfg(not(any(
     target_os = "linux",
     all(target_arch = "wasm32", target_os = "unknown")

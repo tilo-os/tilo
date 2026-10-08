@@ -56,7 +56,7 @@ fn keys<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<PageId>, D::Error
 
 impl NotesLocalViewV1 {
     pub(crate) fn decode(local: &ApplicationLocalView) -> Result<Self, ThawError> {
-        if local.app_id != crate::component::definition().app_id {
+        if local.app_id != <crate::NotesShell as ui::framework::ResourceApp>::ID {
             return Err(ThawError::BindingMismatch);
         }
         if local.version != 1 {
@@ -73,7 +73,7 @@ impl NotesLocalViewV1 {
     pub(crate) fn encode(&self) -> Result<ApplicationLocalView, ThawError> {
         self.validate()?;
         Ok(ApplicationLocalView {
-            app_id: crate::component::definition().app_id.into(),
+            app_id: <crate::NotesShell as ui::framework::ResourceApp>::ID.into(),
             version: 1,
             payload: serde_json::to_vec(self).map_err(|e| ThawError::State(e.to_string()))?,
         })

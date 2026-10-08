@@ -11,7 +11,18 @@ use ui::invocation_scope::{
 
 #[derive(Clone)]
 pub(super) enum InvocationCaller {
-    Certified(Box<VerifiedActionCaller>),
+    NativePerson {
+        invocation: tilo_actions::InvocationId,
+        room: String,
+        certificate: tilo_user_identity::DeviceCert,
+        time: crate::peer_actions::PolicyTime,
+    },
+    Certified {
+        caller: Box<VerifiedActionCaller>,
+        // A host-owned restriction may be stricter than the signed certificate.
+        // Retain it as a restriction, never by modifying certificate evidence.
+        foreign_restriction: bool,
+    },
     Local {
         route: CrdtRoute,
         admitted: Box<AdmittedJoinIdentity>,
@@ -24,8 +35,319 @@ pub(super) struct OriginalInvocationData {
     spec: PublishedInvocationSpec,
     caller: InvocationCaller,
     time: crate::peer_actions::PolicyTime,
+    execution: Option<tilo_actions::remote::ExecutionLease>,
 }
 impl OriginalInvocationData {
+    pub(super) fn display_caller(
+        self: &Arc<Self>,
+        state: &Arc<CapnpBrokerState>,
+        peer: u64,
+        worker: &PrivateWorkerRegistration,
+        mutates: bool,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if self.route != worker.route
+            || !self.spec.contract.permission.covers(if mutates {
+                tilo_actions::PermissionRequirement::Admin
+            } else {
+                tilo_actions::PermissionRequirement::Read
+            })
+        {
+            return Err("The original invocation does not admit display administration.".into());
+        }
+        let original = OriginalInvocation {
+            broker: Arc::downgrade(state),
+            peer,
+            worker: worker.clone(),
+            data: self.clone(),
+        };
+        original.check_lifecycle()?;
+        if mutates && original.agent_id().is_some() {
+            return Err("An Agent invocation cannot administer device displays.".into());
+        }
+        let caller = original.certificate()?.clone();
+        drop(original);
+        if mutates
+            && (caller.user_public_key != worker.certificate.user_public_key
+                || caller.device_public_key != worker.certificate.device_public_key)
+        {
+            return Err("The original caller does not own this Settings device channel.".into());
+        }
+        Ok(caller)
+    }
+
+    pub(super) fn permits_clipboard_command(
+        &self,
+        command: &runtime_collab::file_clipboard::Command,
+    ) -> bool {
+        use runtime_collab::file_clipboard::Command;
+        let action = self.request.address.action.as_str();
+        match command {
+            Command::Publish { cut: false, .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect
+                    && matches!(action, "copy" | "copy-selection")
+            }
+            Command::Publish { cut: true, .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect
+                    && matches!(action, "cut" | "cut-selection")
+            }
+            Command::Paste { .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect && action == "paste"
+            }
+            Command::RestoreTrash { .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect && action == "restore"
+            }
+            Command::Observe { .. } | Command::Cancel { .. } => {
+                matches!(
+                    action,
+                    "paste" | "restore" | "undo" | "redo" | "recover-clipboard-transfers"
+                )
+            }
+            Command::Undo { .. } => self.clipboard_compensation() && action == "undo",
+            Command::Redo { .. } => self.clipboard_compensation() && action == "redo",
+            Command::Recover { .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect
+                    && action == "recover-clipboard-transfers"
+            }
+            Command::Capture { .. } | Command::Release { .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect
+                    && matches!(
+                        action,
+                        "copy" | "copy-selection" | "cut" | "cut-selection" | "paste"
+                    )
+            }
+            Command::Snapshot => true,
+        }
+    }
+
+    pub(super) fn clipboard_compensation(&self) -> bool {
+        self.spec.kind == tilo_actions::OperationKind::Document
+            && matches!(self.request.address.action.as_str(), "undo" | "redo")
+    }
+
+    pub(super) fn clipboard_action(&self) -> &str {
+        &self.request.address.action
+    }
+    pub(super) fn revalidate_clipboard_origin(
+        &self,
+        state: &CapnpBrokerState,
+    ) -> Result<(), String> {
+        state.checked_policy_time(Some(&self.time))?;
+        match &self.caller {
+            InvocationCaller::NativePerson {
+                room, certificate, ..
+            } => {
+                if room != &self.route.cluster_id {
+                    return Err("original native caller route changed".into());
+                }
+                state.current_native_person(room, certificate)?;
+            }
+            InvocationCaller::Certified { caller, .. } => {
+                state.current_action_caller(caller)?;
+            }
+            InvocationCaller::Local { route, admitted } => {
+                state
+                    .revalidate_admission(route, admitted)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn permits_clipboard(&self, needed: tilo_actions::PermissionRequirement) -> bool {
+        self.spec.contract.permission.covers(needed)
+            && self
+                .execution
+                .as_ref()
+                .is_none_or(tilo_actions::remote::ExecutionLease::is_live)
+    }
+
+    fn current_person_certificate(
+        &self,
+        state: &CapnpBrokerState,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if self
+            .execution
+            .as_ref()
+            .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("original invocation execution session ended".into());
+        }
+        let (_, now) = state.checked_policy_time(Some(&self.time))?;
+        let certificate = match &self.caller {
+            InvocationCaller::NativePerson {
+                room, certificate, ..
+            } => {
+                if room != &self.route.cluster_id {
+                    return Err("original native caller route changed".into());
+                }
+                state.current_native_person(room, certificate)?;
+                certificate.clone()
+            }
+            InvocationCaller::Certified { caller, .. } => {
+                let admitted = state.current_action_caller(caller)?;
+                if admitted.agent_id.is_some() {
+                    return Err("this action requires an authenticated person".into());
+                }
+                admitted
+                    .certificate
+                    .ok_or("original person certificate unavailable")?
+            }
+            InvocationCaller::Local { route, admitted } => {
+                if route != &self.route {
+                    return Err("original local caller route changed".into());
+                }
+                if admitted.agent_id.is_some() {
+                    return Err("this action requires an authenticated person".into());
+                }
+                admitted
+                    .certificate
+                    .clone()
+                    .ok_or("original person certificate unavailable")?
+            }
+        };
+        tilo_user_identity::verify_device_cert_at(&certificate, now)
+            .map_err(|_| "original invocation certificate expired")?;
+        let tree = state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .snapshot()?;
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == self.route.cluster_id)
+            .ok_or("original invocation workspace unavailable")?;
+        let mut person = state.certified_person(&self.route.cluster_id, &certificate);
+        if let InvocationCaller::Certified {
+            foreign_restriction,
+            ..
+        } = &self.caller
+        {
+            person.capped |= super::cap_applies_in(
+                state.certificate_authority.get().map(AsRef::as_ref),
+                &self.route.cluster_id,
+                *foreign_restriction,
+                Some(&certificate.device_public_key),
+            );
+        }
+        let seconds = now / 1_000_000_000;
+        let actor = person.policy_in(workspace, seconds);
+        let verb = match self.spec.contract.permission {
+            tilo_actions::PermissionRequirement::None => None,
+            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+        };
+        if verb.is_some_and(|verb| {
+            workspace.decide_at(
+                &actor,
+                &ResourceRef::Action {
+                    app: self.route.app_id.clone(),
+                    action: self.request.address.action.clone(),
+                },
+                verb,
+                seconds,
+            ) != CapDecision::Allow
+        }) {
+            return Err("original invocation caller is no longer authorized".into());
+        }
+        drop(tree);
+        Ok(certificate)
+    }
+
+    /// Recover a person's original certified custody for a native owner turn.
+    /// This is not an allow decision: the owner rechecks current room rights.
+    pub(super) fn owner_person_certificate(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+        envelope: &super::InvocationEnvelope,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if self.route.cluster_id != room
+            || self.request.wire_id != envelope.id
+            || self.request.invocation != envelope.invocation
+            || self.request.address.resource != envelope.resource
+            || self.request.address.action != envelope.action
+            || self.request.argument != envelope.argument
+            || self
+                .execution
+                .as_ref()
+                .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("owner invocation original binding changed".into());
+        }
+        self.current_person_certificate(state)
+    }
+
+    pub(super) fn permits_launch_in(&self, room: &str) -> bool {
+        self.route.cluster_id == room
+            && self
+                .spec
+                .contract
+                .permission
+                .covers(tilo_actions::PermissionRequirement::Write)
+            && self
+                .execution
+                .as_ref()
+                .is_none_or(tilo_actions::remote::ExecutionLease::is_live)
+    }
+
+    pub(super) fn launch_person_certificate(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if !self.permits_launch_in(room) {
+            return Err("original invocation cannot authorize this launch".into());
+        }
+        self.current_person_certificate(state)
+    }
+
+    pub(super) fn launch_administrator_certificate(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        let certificate = self.launch_person_certificate(state, room)?;
+        let (_, now) = state.checked_policy_time(Some(&self.time))?;
+        let tree = state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .snapshot()?;
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .ok_or("original launch workspace unavailable")?;
+        let mut actor = state.certified_person(room, &certificate);
+        if let InvocationCaller::Certified {
+            foreign_restriction,
+            ..
+        } = &self.caller
+        {
+            actor.capped |= super::cap_applies_in(
+                state.certificate_authority.get().map(AsRef::as_ref),
+                room,
+                *foreign_restriction,
+                Some(&certificate.device_public_key),
+            );
+        }
+        let seconds = now / 1_000_000_000;
+        if workspace.decide_at(
+            &actor.policy_in(workspace, seconds),
+            &ResourceRef::Workspace,
+            Verb::Admin,
+            seconds,
+        ) != CapDecision::Allow
+        {
+            return Err("original launch caller cannot delegate application authorship".into());
+        }
+        drop(tree);
+        Ok(certificate)
+    }
+
     pub(super) fn capture(
         request: PublishedInvocationRequest,
         route: CrdtRoute,
@@ -33,6 +355,7 @@ impl OriginalInvocationData {
         revision: Option<&str>,
         caller: Option<InvocationCaller>,
         time: Option<crate::peer_actions::PolicyTime>,
+        execution: Option<tilo_actions::remote::ExecutionLease>,
     ) -> Option<Arc<Self>> {
         let spec = PublishedInvocationSpec {
             kind: offered.operation_kind,
@@ -62,6 +385,7 @@ impl OriginalInvocationData {
             spec,
             caller: caller?,
             time: time?,
+            execution,
         }))
     }
 }
@@ -103,7 +427,7 @@ impl OriginalInvocation {
         match &self.data.caller {
             // A network caller's verified device certificate is its signed
             // evidence; room admission alone carries only the key identity.
-            InvocationCaller::Certified(caller) => {
+            InvocationCaller::Certified { caller, .. } => {
                 caller.admitted.certificate.as_ref().or_else(|| {
                     caller
                         .network
@@ -112,13 +436,15 @@ impl OriginalInvocation {
                 })
             }
             InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),
+            InvocationCaller::NativePerson { certificate, .. } => Some(certificate),
         }
         .ok_or_else(|| "original invocation certificate unavailable".into())
     }
     pub fn agent_id(&self) -> Option<&str> {
         match &self.data.caller {
-            InvocationCaller::Certified(caller) => caller.admitted.agent_id.as_deref(),
+            InvocationCaller::Certified { caller, .. } => caller.admitted.agent_id.as_deref(),
             InvocationCaller::Local { admitted, .. } => admitted.agent_id.as_deref(),
+            InvocationCaller::NativePerson { .. } => None,
         }
     }
     /// Pure custody check: no owner callback, workspace snapshot or Store open.
@@ -128,6 +454,14 @@ impl OriginalInvocation {
     ///
     /// Returns a message when the broker, worker, certificate or clock lapsed.
     pub fn check_custody(&self) -> Result<u64, String> {
+        if self
+            .data
+            .execution
+            .as_ref()
+            .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("original invocation execution session ended".into());
+        }
         let now = self.data.time.now_ns().map_err(|error| error.to_string())?;
         let state = self
             .broker
@@ -163,7 +497,23 @@ impl OriginalInvocation {
             return Ok(None);
         }
         let room = &self.data.route.cluster_id;
-        Ok(Some(state.certified_person(room, self.certificate()?)))
+        let certificate = self.certificate()?;
+        let mut person = state.certified_person(room, certificate);
+        if let InvocationCaller::Certified {
+            foreign_restriction,
+            ..
+        } = &self.data.caller
+        {
+            // Re-evaluate the governing exemption with the original exact device;
+            // never let a weaker certificate erase the host's retained restriction.
+            person.capped |= super::cap_applies_in(
+                state.certificate_authority.get().map(AsRef::as_ref),
+                room,
+                *foreign_restriction,
+                Some(&certificate.device_public_key),
+            );
+        }
+        Ok(Some(person))
     }
     fn original_actor(
         &self,
@@ -204,7 +554,12 @@ impl OriginalInvocation {
             .revalidate_admission(&self.worker.route, &admitted)
             .map_err(|error| error.to_string())?;
         match &self.data.caller {
-            InvocationCaller::Certified(caller) => {
+            InvocationCaller::NativePerson {
+                room, certificate, ..
+            } => {
+                state.current_native_person(room, certificate)?;
+            }
+            InvocationCaller::Certified { caller, .. } => {
                 state.current_action_caller(caller)?;
             }
             InvocationCaller::Local { route, admitted } => {

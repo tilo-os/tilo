@@ -25,6 +25,10 @@ mod without_runner {
     }
 
     /// [`run`], printing the error and exiting with a failure status.
+    #[expect(
+        clippy::exit,
+        reason = "a missing runner is a terminal launch failure at the executable boundary"
+    )]
     pub fn run_or_exit(spec: &LaunchSpec) {
         if let Err(error) = run(spec) {
             tracing::error!("{error}");

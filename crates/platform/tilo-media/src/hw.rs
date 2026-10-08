@@ -134,7 +134,7 @@ impl HwPolicy {
             "off" | "0" | "none" | "sw" | "software" => HwPolicy::Off,
             "va" | "vaapi" => HwPolicy::Force(DecoderKind::Va),
             "nvcodec" | "nvdec" | "nvidia" | "cuda" => HwPolicy::Force(DecoderKind::NvCodec),
-            "v4l2" => HwPolicy::Force(DecoderKind::V4l2),
+            "v4l2" | "v4l2sl" => HwPolicy::Force(DecoderKind::V4l2),
             "vulkan" => HwPolicy::Force(DecoderKind::Vulkan),
             "d3d11" | "d3d" => HwPolicy::Force(DecoderKind::D3d),
             other => {
@@ -328,7 +328,23 @@ pub fn rank_for(policy: HwPolicy, kind: DecoderKind) -> u32 {
     }
 }
 
+/// The rank a decoder is given: a hardware family gets the rank `policy`
+/// assigns, while a software decoder keeps the rank its plugin `shipped`
+/// with. Flattening every CPU decoder to one rank would throw away the
+/// ordering the plugins encode between themselves — dav1d above libaom for
+/// AV1, libvpx above libavcodec for VP9 — and let the alphabet pick
+/// instead.
+pub fn effective_rank(policy: HwPolicy, kind: DecoderKind, shipped: u32) -> u32 {
+    if kind.is_hardware() {
+        rank_for(policy, kind)
+    } else {
+        shipped
+    }
+}
+
+pub mod fallback;
 pub mod realtime;
+pub mod v4l2;
 
 pub use realtime::{
     CodecElement, CodecFamily, CodecTier, RealtimePolicy, StreamCodec, realtime_candidates,
@@ -350,6 +366,12 @@ mod tests {
             // And the ones other hardware produces.
             assert_eq!(DecoderKind::classify("vaapih265dec"), DecoderKind::Va);
             assert_eq!(DecoderKind::classify("v4l2h264dec"), DecoderKind::V4l2);
+            // The stateless family the Hantro / rkvdec / Cedrus blocks drive.
+            assert_eq!(DecoderKind::classify("v4l2slh264dec0"), DecoderKind::V4l2);
+            assert_eq!(DecoderKind::classify("v4l2slvp8dec"), DecoderKind::V4l2);
+            assert_eq!(DecoderKind::classify("v4l2slmpeg2dec"), DecoderKind::V4l2);
+            assert!(looks_like_video_decoder("v4l2slh264dec0"));
+            assert!(looks_like_video_decoder("v4l2slmpeg2dec0"));
             assert_eq!(DecoderKind::classify("vulkanh264dec"), DecoderKind::Vulkan);
             assert_eq!(DecoderKind::classify("d3d11h264dec"), DecoderKind::D3d);
         }
@@ -460,6 +482,28 @@ mod tests {
             // A forced family that cannot handle the stream must fall through to
             // software, not to a different GPU family.
             assert!(rank_for(p, DecoderKind::Software) > rank_for(p, DecoderKind::NvCodec));
+        }
+        // Phase `software_decoders_keep_their_shipped_order_under_every_policy`.
+        {
+            // dav1ddec ships one above libaom's av1dec; vp9dec above avdec_vp9.
+            let dav1d = 257;
+            let libaom = 256;
+            for p in [
+                HwPolicy::Auto,
+                HwPolicy::Off,
+                HwPolicy::Force(DecoderKind::V4l2),
+            ] {
+                assert!(
+                    effective_rank(p, DecoderKind::Software, dav1d)
+                        > effective_rank(p, DecoderKind::Software, libaom),
+                    "{p:?} must not flatten the software order"
+                );
+            }
+            assert!(
+                effective_rank(HwPolicy::Auto, DecoderKind::V4l2, 0)
+                    > effective_rank(HwPolicy::Auto, DecoderKind::Software, dav1d),
+                "hardware still outranks the best software decoder"
+            );
         }
         // Phase `env_policy_parses_the_documented_values_and_survives_a_typo`.
         {

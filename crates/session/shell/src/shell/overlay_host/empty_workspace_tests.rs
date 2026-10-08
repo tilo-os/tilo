@@ -147,7 +147,8 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
         let root = automerge::ROOT;
         let _ = doc.put(&root, crate::shell::EMPTY_WORKSPACE_ACTIVITY, true);
 
-        host.sync(&mut doc, &root);
+        host.sync(&doc, &root);
+        host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
 
         assert!(
             crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
@@ -173,7 +174,8 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
         let root = automerge::ROOT;
         let _ = doc.put(&root, crate::shell::EMPTY_WORKSPACE_INVITE, true);
 
-        host.sync(&mut doc, &root);
+        host.sync(&doc, &root);
+        host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
 
         assert!(host.peer_sync_card_visible());
         assert_eq!(
@@ -194,7 +196,8 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
             true,
         );
 
-        host.sync(&mut doc, &root);
+        host.sync(&doc, &root);
+        host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
 
         assert!(host.palette_visible(), "the button opens the launcher");
         assert!(matches!(
@@ -229,14 +232,15 @@ fn app_cards_open_their_app_directly() {
             let root = automerge::ROOT;
             let _ = doc.put(&root, card.path(), true);
 
-            host.sync(&mut doc, &root);
+            host.sync(&doc, &root);
+            host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
 
             assert_eq!(*apps.opened.borrow(), [app], "{card:?} opens {app}");
             assert!(
                 !host.palette_visible(),
                 "{card:?} performs its action instead of pre-filling the launcher"
             );
-            assert!(LaunchpadAction::take(&mut doc, &root).is_none());
+            assert!(LaunchpadAction::take(&mut ui::widget::Edits::lend(&mut doc), &root).is_none());
         }
     }
 
@@ -248,7 +252,8 @@ fn app_cards_open_their_app_directly() {
         let root = automerge::ROOT;
         let _ = doc.put(&root, crate::shell::EMPTY_WORKSPACE_NOTES, true);
 
-        host.sync(&mut doc, &root);
+        host.sync(&doc, &root);
+        host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
         assert!(apps.opened.borrow().is_empty());
         assert!(
             host.next_wake_deadline().is_some(),
@@ -262,11 +267,13 @@ fn app_cards_open_their_app_directly() {
                 !host.palette_visible(),
                 "a cold index is waited out, not handed to the person as a typed launcher"
             );
-            host.update(&mut doc, &root);
+            host.update(&doc, &root);
+            host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
         }
         assert_eq!(*apps.opened.borrow(), ["so.tilo.notes"]);
         assert!(!host.palette_visible());
-        host.update(&mut doc, &root);
+        host.update(&doc, &root);
+        host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
         assert_eq!(
             apps.opened.borrow().len(),
             1,
@@ -315,6 +322,7 @@ fn host_with_live_app(
         actions: actions
             .iter()
             .map(|action| PublishedAction {
+                semantic_identity: None,
                 resource: resource.into(),
                 action: (*action).into(),
                 resource_kind: resource.into(),
@@ -356,14 +364,16 @@ fn the_call_card_invokes_chats_start_call() {
         let root = automerge::ROOT;
         let _ = doc.put(&root, card.path(), true);
 
-        host.sync(&mut doc, &root);
+        host.sync(&doc, &root);
+        host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
 
         let deadline = Instant::now() + tilo_test_env::hang_bound();
         let invocation = loop {
             match delivered.try_recv() {
                 Ok(invocation) => break invocation,
                 Err(_) if Instant::now() < deadline => {
-                    host.update(&mut doc, &root);
+                    host.update(&doc, &root);
+                    host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
                     std::thread::yield_now();
                 }
                 Err(error) => panic!("{card:?} delivered nothing to {app}: {error}"),
@@ -390,7 +400,8 @@ fn the_call_card_invokes_chats_start_call() {
             ),
             "the card acts as the person this device acts for"
         );
-        host.update(&mut doc, &root);
+        host.update(&doc, &root);
+        host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
         assert!(
             delivered.try_recv().is_err(),
             "{card:?} invokes exactly that action, once"
@@ -400,7 +411,7 @@ fn the_call_card_invokes_chats_start_call() {
             "{card:?} does not open a second copy of {app} beside its action"
         );
         assert!(!host.palette_visible(), "{card:?} needs no launcher step");
-        assert!(LaunchpadAction::take(&mut doc, &root).is_none());
+        assert!(LaunchpadAction::take(&mut ui::widget::Edits::lend(&mut doc), &root).is_none());
     }
 }
 
@@ -421,10 +432,12 @@ fn a_refused_card_action_says_why() {
     let root = automerge::ROOT;
     let _ = doc.put(&root, crate::shell::EMPTY_WORKSPACE_MEET, true);
 
-    host.sync(&mut doc, &root);
+    host.sync(&doc, &root);
+    host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
     let deadline = Instant::now() + tilo_test_env::hang_bound();
     while !host.pending_launchpad_actions.is_empty() && Instant::now() < deadline {
-        host.update(&mut doc, &root);
+        host.update(&doc, &root);
+        host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
         std::thread::yield_now();
     }
 
@@ -444,5 +457,200 @@ fn a_refused_card_action_says_why() {
         !warning.body.trim().is_empty(),
         "the warning says why: {:?}",
         warning.body
+    );
+}
+
+// Actual native Search journey: no application callback or device action runs.
+fn launchpad_journey_target(widget: &dyn Widget) -> Option<Rect> {
+    if let Some(pad) = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+    {
+        return pad
+            .targets()
+            .into_iter()
+            .find(|(id, _)| id == "launchpad:open-app")
+            .map(|(_, rect)| rect);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(launchpad_journey_target)
+}
+fn launchpad_journey_layout(host: &mut ShellOverlayHost, theme: &Theme) -> (TaffyTree<()>, NodeId) {
+    let mut taffy = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let node = host.build_layout(&mut taffy, theme, &mut nodes);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    taffy
+        .compute_layout_with_measure(
+            node,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(800.0),
+            },
+            |known, available, id, _, _| {
+                nodes.get(&id).map_or(Size::ZERO, |&ptr| unsafe {
+                    (*ptr).measure(known, available, &mut text)
+                })
+            },
+        )
+        .expect("production native layout");
+    host.apply_layout(&taffy, node, Point::ZERO);
+    (taffy, node)
+}
+fn launchpad_journey_deliver(
+    host: &mut ShellOverlayHost,
+    doc: &mut AutoCommit,
+    event: &WindowEvent,
+    tree: &TaffyTree<()>,
+    node: NodeId,
+) {
+    let mut handled = false;
+    let mut focus_target = None;
+    host.handle_event(
+        event,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: ui::widget::Edits::lend(doc),
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: tree,
+        },
+    );
+    host.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+}
+fn launchpad_journey_escape() -> WindowEvent {
+    let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+    WindowEvent::KeyboardInput {
+        device_id: winit::event::DeviceId::dummy(),
+        event: winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                ),
+                state: ElementState::Pressed,
+            },
+            key.clone(),
+            None,
+            winit::keyboard::KeyLocation::Standard,
+            false,
+            None,
+            key,
+        ),
+        is_synthetic: false,
+    }
+}
+fn launchpad_journey_paint(host: &mut ShellOverlayHost, theme: &Theme, name: &str) {
+    host.force_palette_settled();
+    let _ = launchpad_journey_layout(host, theme);
+    let mut scene = vello::Scene::new();
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    host.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        theme,
+        &PresenceCtx::default(),
+    );
+    if let Some(out) = std::env::var_os("TILO_LAUNCHPAD_JOURNEY_SHOTS") {
+        let out = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&out).expect("requested capture directory");
+        ui::offscreen::OffscreenRenderer::new(1280, 800).render_png(
+            &scene,
+            theme.tokens.colors.surfaces.base,
+            out.join(format!("{name}.png")),
+        );
+    }
+}
+
+#[test]
+fn app_opener_pointer_press_waits_and_drag_cancel_keeps_native_search_closed() {
+    let (mut host, _) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_default());
+    let mut doc = AutoCommit::new();
+    let theme = match std::env::var("TILO_LAUNCHPAD_JOURNEY_VARIANT").as_deref() {
+        Ok("light") => Theme::light(),
+        Ok("large-text") => Theme::dark().with_text_scale(2.0),
+        Ok("scaled") => Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+        _ => Theme::dark(),
+    }
+    .with_reduce_motion(true);
+    let (taffy, node) = launchpad_journey_layout(&mut host, &theme);
+    launchpad_journey_paint(&mut host, &theme, "idle");
+    let button = launchpad_journey_target(host.content.as_ref())
+        .expect("production app opener must be mounted")
+        .center();
+    let moved = |point: Point| WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+    };
+    let mouse = |state| WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state,
+        button: winit::event::MouseButton::Left,
+    };
+    launchpad_journey_deliver(&mut host, &mut doc, &moved(button), &taffy, node);
+    launchpad_journey_deliver(
+        &mut host,
+        &mut doc,
+        &mouse(ElementState::Pressed),
+        &taffy,
+        node,
+    );
+    launchpad_journey_paint(&mut host, &theme, "pointer-down");
+    assert!(
+        !host.palette_visible(),
+        "native Search must stay closed until release"
+    );
+    launchpad_journey_deliver(
+        &mut host,
+        &mut doc,
+        &moved(Point::new(5.0, 200.0)),
+        &taffy,
+        node,
+    );
+    launchpad_journey_deliver(
+        &mut host,
+        &mut doc,
+        &mouse(ElementState::Released),
+        &taffy,
+        node,
+    );
+    launchpad_journey_paint(&mut host, &theme, "cancelled");
+    assert!(
+        !host.palette_visible(),
+        "cancelled click must not open native Search"
+    );
+    launchpad_journey_deliver(&mut host, &mut doc, &moved(button), &taffy, node);
+    launchpad_journey_deliver(
+        &mut host,
+        &mut doc,
+        &mouse(ElementState::Pressed),
+        &taffy,
+        node,
+    );
+    launchpad_journey_deliver(
+        &mut host,
+        &mut doc,
+        &mouse(ElementState::Released),
+        &taffy,
+        node,
+    );
+    launchpad_journey_paint(&mut host, &theme, "released");
+    assert!(
+        host.palette_visible(),
+        "completed click must open the real native palette"
+    );
+    let escape = launchpad_journey_escape();
+    launchpad_journey_deliver(&mut host, &mut doc, &escape, &taffy, node);
+    launchpad_journey_paint(&mut host, &theme, "search-closed");
+    assert!(
+        !host.palette_visible(),
+        "Escape closes native Search after a completed click"
     );
 }

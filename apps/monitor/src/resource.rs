@@ -12,7 +12,7 @@ use ui::framework::{
     SurfaceCx, ViewCx,
 };
 use ui::tilo_actions::{Action, ActionError, ActionParam, ActionRegistry, ParamType};
-use ui::tilo_resource::{self, ActionDecl, Doc, Effect, ModelError, Resource};
+use ui::tilo_resource::{self, ActionDecl, Doc, Effect, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::app::MonitorApp;
@@ -63,7 +63,7 @@ impl Default for MonitorState {
 /// (its PID with its kernel start time), so a delayed invocation never
 /// reaches a process that reused the PID.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "monitor.effect")]
+#[effect(operation = "monitor.effect", device_only)]
 pub enum MonitorEffect {
     /// Refresh processes.
     #[effect(permission = "read")]
@@ -182,19 +182,18 @@ impl Resource for Monitor {
 /// The screenshot scenarios: the sample machine, staged.
 const SCENARIOS: &[&str] = &[
     "detail",
-    "interval-popover",
     "resources",
     "resources-many",
     "empty",
     "process-loading",
     "process-permission-error",
     "no-results",
-    "tree-collapsed",
+    "flat",
     "tree-expanded",
     "per-process",
-    "per-process-collapsed",
+    "kernel-threads",
     "context-menu",
-    "kill-confirm",
+    "interval",
 ];
 
 /// Framework app.
@@ -217,6 +216,18 @@ impl ResourceApp for MonitorShell {
     /// A capture shows the sample machine instead of this one.
     fn fixture(fixture: &mut Fixture<Monitor>) {
         fixture.provide(MonitorModel::scenario(fixture.scenario()));
+    }
+
+    /// The flat list is the shared table layout, set as a person sets it.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Monitor>> {
+        match name {
+            Some("flat" | "kernel-threads") => {
+                Invoke::apply(&MonitorAction::SetTreeMode { tree: false })
+                    .into_iter()
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
     }
 
     fn view(cx: &mut ViewCx<Monitor>) -> Element {
@@ -242,6 +253,7 @@ impl ResourceSurface<Monitor, MonitorEffect> for MonitorApp {
     fn attach(&mut self, cx: SurfaceCx<Monitor>) {
         self.follow_preferences(cx.settings());
         self.attach_framework(cx.dispatcher());
+        self.attach_actions(cx.actions());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -262,6 +274,12 @@ impl ResourceSurface<Monitor, MonitorEffect> for MonitorApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.live_process_row(id)
+    }
+
+    /// Every process running here, each found by its name, user or PID and
+    /// opening its exact generation — the tail beyond the published rows too.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.process_search_entries()
     }
 }
 
@@ -302,12 +320,33 @@ mod tests {
         }
     }
 
-    /// Whether the table shows the process row `id` selected; `None` when
-    /// it does not list it.
-    fn shown_selected(app: &mut TestApp<MonitorShell>, id: &str) -> Option<bool> {
+    /// Whether the inspector shows the process `pid`: its PID property, not
+    /// the table's cell.
+    fn inspected(app: &mut TestApp<MonitorShell>, pid: u32) -> bool {
+        fn find(node: &serde_json::Value, pid: &str) -> bool {
+            if node.get("name").and_then(serde_json::Value::as_str) == Some("PID")
+                && node.get("role").and_then(serde_json::Value::as_str) == Some("StaticText")
+                && node.get("value").and_then(serde_json::Value::as_str) == Some(pid)
+            {
+                return true;
+            }
+            match node {
+                serde_json::Value::Object(fields) => fields.values().any(|child| find(child, pid)),
+                serde_json::Value::Array(items) => items.iter().any(|child| find(child, pid)),
+                _ => false,
+            }
+        }
         let inspection: serde_json::Value =
             serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-        keyed(&inspection, &format!("monitor.{id}")).map(|node| node["state"]["selected"] == true)
+        find(&inspection, &pid.to_string())
+    }
+
+    /// Whether the tab segment `index` (0 Processes, 1 Resources) is on.
+    fn tab_shown(app: &mut TestApp<MonitorShell>, index: usize) -> Option<bool> {
+        let inspection: serde_json::Value =
+            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
+        keyed(&inspection, &format!("monitor.tabs:segment:{index}"))
+            .map(|tab| tab["state"]["checked"] == true)
     }
 
     fn named_node(app: &mut TestApp<MonitorShell>, name: &str) -> serde_json::Value {
@@ -316,17 +355,63 @@ mod tests {
         announced(&inspection, name).unwrap_or_else(|| panic!("`{name}` is announced"))
     }
 
-    /// The interval the window shows, as a screen reader hears it.
+    /// The exact accessible name of the real retained cadence button, rather
+    /// than a similarly named popup item or resource declaration.
     fn shown_interval(app: &mut TestApp<MonitorShell>) -> String {
-        named_node(app, "Refresh interval")["value"]
+        fn cadence(node: &serde_json::Value) -> Option<&serde_json::Value> {
+            if node.get("test_id").and_then(serde_json::Value::as_str) == Some("monitor.cadence") {
+                return node.get("semantics");
+            }
+            match node {
+                serde_json::Value::Object(fields) => fields.values().find_map(cadence),
+                serde_json::Value::Array(items) => items.iter().find_map(cadence),
+                _ => None,
+            }
+        }
+        let inspection: serde_json::Value =
+            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
+        cadence(&inspection).expect("the retained cadence button publishes accessibility semantics")
+            ["name"]
             .as_str()
-            .unwrap()
+            .expect("the cadence button announces its update frequency")
             .to_owned()
     }
 
     /// Click the control named `name` where a person sees it.
     fn click(app: &mut TestApp<MonitorShell>, name: &str) {
         let node = named_node(app, name);
+        click_node(app, &node);
+    }
+
+    /// Click the widget whose test id is `id`, where it is laid out.
+    fn click_widget(app: &mut TestApp<MonitorShell>, id: &str) {
+        fn rect_of(node: &serde_json::Value, id: &str) -> Option<[f64; 4]> {
+            if node.get("test_id").and_then(serde_json::Value::as_str) == Some(id)
+                && let Some(rect) = node.get("rect").and_then(serde_json::Value::as_array)
+            {
+                let rect: Vec<f64> = rect.iter().filter_map(serde_json::Value::as_f64).collect();
+                if let Ok(rect) = <[f64; 4]>::try_from(rect) {
+                    return Some(rect);
+                }
+            }
+            match node {
+                serde_json::Value::Object(fields) => {
+                    fields.values().find_map(|child| rect_of(child, id))
+                }
+                serde_json::Value::Array(items) => {
+                    items.iter().find_map(|child| rect_of(child, id))
+                }
+                _ => None,
+            }
+        }
+        let inspection: serde_json::Value =
+            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
+        let [x, y, w, h] = rect_of(&inspection, id).unwrap_or_else(|| panic!("`{id}` is laid out"));
+        app.harness().click_at(x + w / 2.0, y + h / 2.0);
+        app.harness().relayout();
+    }
+
+    fn click_node(app: &mut TestApp<MonitorShell>, node: &serde_json::Value) {
         let bounds = &node["bounds"];
         let coordinate = |low: &str, high: &str| {
             f64::midpoint(
@@ -342,29 +427,41 @@ mod tests {
     #[test]
     fn preferences_follow_the_person_and_stay_out_of_the_document() {
         let mut app = TestApp::<MonitorShell>::new().unwrap();
-        assert_eq!(shown_interval(&mut app), "1.5s");
+        assert_eq!(
+            shown_interval(&mut app),
+            "Update frequency: Every 1.5 seconds"
+        );
 
         // Another of the person's devices changed them.
         app.settings::<MonitorPreferences>()
             .set(&MonitorPreferences {
                 interval_ms: 3000,
                 show_kernel_threads: true,
-                confirm_kill: false,
             })
             .unwrap();
         app.harness().relayout();
-        assert_eq!(shown_interval(&mut app), "3s");
+        app.harness().relayout();
+        assert_eq!(
+            shown_interval(&mut app),
+            "Update frequency: Every 3 seconds"
+        );
 
-        // A click here cycles the cadence and stores it for every device.
+        // A cadence chosen here is stored for every device.
         let versions = app.versions().len();
-        click(&mut app, "Refresh interval");
-        assert_eq!(shown_interval(&mut app), "5s");
+        // The menu opens on the current cadence; the next one down is 5 s.
+        click_widget(&mut app, "monitor.cadence");
+        app.harness().key("ArrowDown");
+        app.harness().key("Enter");
+        app.harness().relayout();
+        assert_eq!(
+            shown_interval(&mut app),
+            "Update frequency: Every 5 seconds"
+        );
         assert_eq!(
             app.settings::<MonitorPreferences>().get(),
             MonitorPreferences {
                 interval_ms: 5000,
                 show_kernel_threads: true,
-                confirm_kill: false,
             }
         );
         assert_eq!(
@@ -374,7 +471,10 @@ mod tests {
         );
 
         let mut app = app.reopen().unwrap();
-        assert_eq!(shown_interval(&mut app), "5s");
+        assert_eq!(
+            shown_interval(&mut app),
+            "Update frequency: Every 5 seconds"
+        );
     }
 
     #[test]
@@ -409,11 +509,12 @@ mod tests {
 
         // Sorting is an edit of the shared layout, one undo step.
         let versions = app.versions().len();
-        click(&mut app, "Sort by name");
+        app.call("set-sort", serde_json::json!({ "key": "name" }))
+            .unwrap();
         assert_eq!(app.state().sort_key, "name");
         assert!(!app.state().sort_desc, "text columns sort ascending first");
         assert_eq!(app.versions().len(), versions + 1);
-        click(&mut app, "Tree process view");
+        click(&mut app, "Tree view");
         assert!(!app.state().tree_mode);
         assert!(app.undo());
         assert!(app.state().tree_mode);
@@ -424,17 +525,18 @@ mod tests {
             query: Some("cargo".into()),
         })
         .unwrap();
+        app.harness().relayout();
         let inspection: serde_json::Value =
             serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
         assert_eq!(
-            keyed(&inspection, "monitor.search").unwrap()["value"],
+            keyed(&inspection, "monitor.filter").unwrap()["value"],
             "cargo"
         );
         app.effect(&MonitorEffect::ShowTab {
             tab: "resources".into(),
         })
         .unwrap();
-        assert_eq!(named_node(&mut app, "Resources")["state"]["selected"], true);
+        assert_eq!(tab_shown(&mut app, 1), Some(true));
         assert!(
             app.effect(&MonitorEffect::ShowTab {
                 tab: "graphs".into()
@@ -496,18 +598,14 @@ mod tests {
         .unwrap();
 
         // Inspecting its row through the door selects it.
-        click(&mut app, "Tree process view");
-        assert_eq!(
-            shown_selected(&mut app, &id),
-            Some(false),
-            "the child is listed, unselected"
+        click(&mut app, "Tree view");
+        assert!(
+            !inspected(&mut app, child.id()),
+            "the child is not selected"
         );
         app.call_on(&id, "inspect", serde_json::json!({})).unwrap();
-        assert_eq!(
-            shown_selected(&mut app, &id),
-            Some(true),
-            "the child is selected"
-        );
+        app.harness().relayout();
+        assert!(inspected(&mut app, child.id()), "the child is selected");
 
         // Killing it asks first, then signals exactly that process.
         assert!(
@@ -542,17 +640,11 @@ mod tests {
         for scenario in MonitorShell::scenarios() {
             let mut app = TestApp::<MonitorShell>::capture(Some(scenario)).unwrap();
             app.harness().relayout();
-            let inspection: serde_json::Value =
-                serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-            let resources_shown = keyed(&inspection, "monitor.tab.resources")
-                .map(|tab| tab["state"]["selected"] == true);
-            let expected = if *scenario == "kill-confirm" {
-                // The confirmation is modal: only the dialog is announced.
-                None
-            } else {
-                Some(scenario.starts_with("resources"))
-            };
-            assert_eq!(resources_shown, expected, "`{scenario}` shows its tab");
+            assert_eq!(
+                tab_shown(&mut app, 1),
+                Some(scenario.starts_with("resources")),
+                "`{scenario}` shows its tab"
+            );
             let rows = process_rows(&mut app);
             if matches!(
                 *scenario,
@@ -565,12 +657,35 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn captured_startup_paints_the_actual_hosted_machine_at_both_widths() {
+        fn assert_painted(app: &mut TestApp<MonitorShell>, viewport: (u32, u32)) {
+            assert_eq!(tab_shown(app, 1), Some(false));
+            assert!(process_rows(app) > 0);
+            let pixels = app.harness().render_rgba();
+            let first = pixels.get(..4).expect("the real host must render pixels");
+            assert!(
+                pixels.chunks_exact(4).any(|pixel| pixel != first),
+                "the captured machine must paint more than the window ground at {viewport:?}"
+            );
+        }
+        for viewport in [(1280, 800), (390, 844)] {
+            let mut app = TestApp::<MonitorShell>::capture_at(None, viewport).unwrap();
+            // Observe startup before any explicit extra relayout or theme
+            // change can repair a lost retained layout.
+            assert_painted(&mut app, viewport);
+            app.harness().set_theme(ui::Theme::light());
+            assert_painted(&mut app, viewport);
+        }
+    }
+
     #[test]
     fn a_capture_and_a_past_version_never_read_this_machine() {
         crate::sampler::reset_provider_read_count();
         let mut app = TestApp::<MonitorShell>::capture(None).unwrap();
         app.harness().relayout();
-        click(&mut app, "Sort by name");
+        click(&mut app, "Tree view");
         let first = app.versions().first().unwrap().hash;
         assert!(app.past_version(&[first]).is_ok());
         assert_eq!(
@@ -578,6 +693,26 @@ mod tests {
             0,
             "the sample machine and past versions are drawn without probing this one"
         );
+    }
+
+    /// The real summary, shared layout and window-local tabs all enter
+    /// through admitted controls in a live process window.
+    #[test]
+    fn live_monitor_controls_are_certified() {
+        let mut app = TestApp::<MonitorShell>::new().unwrap();
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "processes: {audit:?}");
+        click(&mut app, "Tree view");
+        assert!(!app.state().tree_mode);
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "flat processes: {audit:?}");
+        app.harness()
+            .perform_named("monitor.tabs:segment:1", &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
+        assert_eq!(tab_shown(&mut app, 1), Some(true));
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "resources: {audit:?}");
     }
 
     ui::action_contract_tests! {

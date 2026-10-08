@@ -7,8 +7,6 @@ pub struct DesktopConfig {
     pub collaboration: CollaborationConfig,
     #[serde(default)]
     pub flatpak_share: FlatpakShareConfig,
-    #[serde(default)]
-    pub apps: Vec<AppConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -24,13 +22,6 @@ pub struct CollaborationConfig {
     pub auto_share_new_windows: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AppConfig {
-    pub name: String,
-    pub icon: String,
-    pub command: String,
-}
-
 impl Default for DesktopConfig {
     fn default() -> Self {
         Self {
@@ -44,23 +35,6 @@ impl Default for DesktopConfig {
                 auto_share_new_windows: false,
             },
             flatpak_share: FlatpakShareConfig::default(),
-            apps: vec![
-                AppConfig {
-                    name: "Terminal".into(),
-                    icon: "󰆍".into(),
-                    command: "quick-terminal".into(),
-                },
-                AppConfig {
-                    name: "Browser".into(),
-                    icon: "󰈹".into(),
-                    command: "firefox".into(),
-                },
-                AppConfig {
-                    name: "Files".into(),
-                    icon: "󰉋".into(),
-                    command: "file-explorer".into(),
-                },
-            ],
         }
     }
 }
@@ -94,8 +68,8 @@ impl Default for FlatpakShareConfig {
 /// Preferred video encoder, as a preference for the media stack's element
 /// selection (see `collab::encoder::EncoderChoice::policy`).
 ///
-/// `"vaapi"` / `"nvenc"` prefer that hardware family, falling back to
-/// software.
+/// `"vaapi"` / `"nvenc"` / `"v4l2"` prefer that hardware family, falling back
+/// to software.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EncoderChoice {
@@ -107,6 +81,9 @@ pub enum EncoderChoice {
     Vaapi,
     /// Prefer NVENC; other hardware only after software.
     Nvenc,
+    /// Prefer the kernel's V4L2 codec blocks (ARM boards); other hardware only
+    /// after software.
+    V4l2,
 }
 
 pub fn load_config() -> DesktopConfig {

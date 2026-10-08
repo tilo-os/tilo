@@ -49,7 +49,7 @@ pub struct Size {
 }
 
 /// The sizes offered, in units (a unit is a pixel at 1x export).
-pub const SIZES: [Size; 6] = [
+pub const SIZES: [Size; 9] = [
     Size {
         id: "screen",
         label: "canvas-size-screen",
@@ -92,6 +92,27 @@ pub const SIZES: [Size; 6] = [
         height: 1024.0,
         icon: Icon::Star,
     },
+    Size {
+        id: "pixel-32",
+        label: "canvas-size-pixel-32",
+        width: 32.0,
+        height: 32.0,
+        icon: Icon::Square,
+    },
+    Size {
+        id: "pixel-64",
+        label: "canvas-size-pixel-64",
+        width: 64.0,
+        height: 64.0,
+        icon: Icon::Square,
+    },
+    Size {
+        id: "pixel-128",
+        label: "canvas-size-pixel-128",
+        width: 128.0,
+        height: 128.0,
+        icon: Icon::Square,
+    },
 ];
 
 /// The size named `id`.
@@ -115,7 +136,7 @@ pub struct Start {
 }
 
 /// The grounds and media offered.
-pub const STARTS: [Start; 6] = [
+pub const STARTS: [Start; 7] = [
     Start {
         id: "paper",
         label: "canvas-start-paper",
@@ -158,6 +179,13 @@ pub const STARTS: [Start; 6] = [
         colour: "#1e2024", // document colour: a dark sheet for light work
         medium: "",
     },
+    Start {
+        id: "transparent",
+        label: "canvas-start-transparent",
+        texture: "smooth",
+        colour: "#ffffff00",
+        medium: "",
+    },
 ];
 
 /// The start named `id`.
@@ -174,6 +202,8 @@ pub fn start(id: &str) -> Option<Start> {
 pub struct FileLayer {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub medium: String,
     #[serde(default = "one")]
@@ -273,6 +303,7 @@ impl ArtworkFile {
                 .map(|layer| FileLayer {
                     id: layer.id.clone(),
                     name: layer.name.clone(),
+                    group: layer.group.clone(),
                     medium: layer.medium.clone(),
                     opacity: layer.opacity,
                     visible: layer.visible,
@@ -382,59 +413,29 @@ pub struct Recent {
 /// How many recent artworks are remembered.
 pub const RECENTS_KEPT: usize = 8;
 
-/// The recent artworks, newest first, as kept in the app's own state.
-pub mod recents {
-    use super::{RECENTS_KEPT, Recent};
-    use tilo_files::{Dir, VPath, blocking};
+/// The artworks opened or saved lately, newest first. Their paths name
+/// files on this device, so the list is a device-local setting.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecentArtworks {
+    pub artworks: Vec<Recent>,
+}
 
-    fn place() -> Option<(Dir, VPath)> {
-        let dir = Dir::open(tilo_paths::AppPaths::for_app(crate::APP_ID).state()).ok()?;
-        Some((dir, VPath::new("recent-artworks.json").ok()?))
-    }
+impl ui::storage::SettingsSchema for RecentArtworks {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
 
-    /// The recent artworks, newest first; none where the app keeps no
-    /// state.
-    pub fn read() -> Vec<Recent> {
-        let Some((dir, path)) = place() else {
-            return Vec::new();
-        };
-        blocking::read(&dir, &path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    }
-
+impl RecentArtworks {
     /// `recent` first, then the others it was not, at most
     /// [`RECENTS_KEPT`].
-    pub fn with(mut list: Vec<Recent>, recent: Recent) -> Vec<Recent> {
-        list.retain(|kept| kept.path != recent.path);
-        list.insert(0, recent);
-        list.truncate(RECENTS_KEPT);
-        list
-    }
-
-    /// Remember `recent`. Best effort: a machine that keeps no state for
-    /// the app simply shows no recent artworks.
-    pub fn remember(recent: Recent) -> Vec<Recent> {
-        let list = with(read(), recent);
-        if let Some((dir, path)) = place()
-            && let Ok(bytes) = serde_json::to_vec_pretty(&list)
-        {
-            let _ = blocking::write_atomic(&dir, &path, &bytes);
-        }
-        list
+    pub fn remember(&mut self, recent: Recent) {
+        self.artworks.retain(|kept| kept.path != recent.path);
+        self.artworks.insert(0, recent);
+        self.artworks.truncate(RECENTS_KEPT);
     }
 
     /// Forget the artwork at `path` (it moved or was removed).
-    pub fn forget(path: &str) -> Vec<Recent> {
-        let mut list = read();
-        list.retain(|kept| kept.path != path);
-        if let Some((dir, file)) = place()
-            && let Ok(bytes) = serde_json::to_vec_pretty(&list)
-        {
-            let _ = blocking::write_atomic(&dir, &file, &bytes);
-        }
-        list
+    pub fn forget(&mut self, path: &str) {
+        self.artworks.retain(|kept| kept.path != path);
     }
 }
 
@@ -560,10 +561,7 @@ pub fn save(
     art: &Artwork,
     save: &crate::resource::SaveArtwork,
 ) -> Result<serde_json::Value, String> {
-    let (bytes, missing) = pack(
-        &ArtworkFile::of(art),
-        &tilo_content::ContentStore::for_app(),
-    )?;
+    let (bytes, missing) = pack(&ArtworkFile::of(art), &crate::content::store())?;
     let size = bytes.len();
     let mut answer = match &save.path {
         None => serde_json::json!({"content": crate::resource::store(&bytes)?, "bytes": size}),
@@ -632,5 +630,5 @@ pub fn write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
 /// Says why it cannot be read or is not an artwork.
 pub fn read(path: &std::path::Path) -> Result<ArtworkFile, String> {
     let bytes = crate::resource::read_file(&path.display().to_string(), MAX_FILE_BYTES)?;
-    unpack(&bytes, &tilo_content::ContentStore::for_app())
+    unpack(&bytes, &crate::content::store())
 }

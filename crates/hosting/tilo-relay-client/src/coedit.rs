@@ -99,8 +99,9 @@ pub fn retention_metadata(bytes: &[u8]) -> Option<([u8; 32], RetentionKind)> {
 /// Presence body wrapper that carries author attribution.
 ///
 /// `Envelope::Presence` has no author field — the host forwards the
-/// bytes verbatim. So the publisher stamps its own device public key
-/// around the opaque toolkit presence `body`; the receiver recovers it
+/// opaque body. The publisher wraps its device public key around toolkit
+/// presence `body`; the governing relay stamps device attribution from the
+/// authenticated publishing connection before forwarding. The receiver recovers it
 /// in [`Inbound::Presence`]. (Document deltas ride
 /// `Envelope::Delta::author_device_public_key` instead and need no
 /// wrapper.)
@@ -148,7 +149,8 @@ pub enum Inbound {
     /// persisted; dropped if no peer is subscribed.
     Presence {
         /// Publishing device's public key, recovered from the
-        /// [`AttributedPresence`] wrapper. The host's presence envelope
+        /// [`AttributedPresence`] wrapper, stamped by the governing relay for
+        /// a publishing device. The host's presence envelope
         /// carries no author slot, so this is the only place the
         /// attribution survives — the toolkit maps it onto the
         /// `RemotePresenceUpdate` / `RemoteCursorMoved` `user_id`.
@@ -165,6 +167,15 @@ pub enum Inbound {
         /// The sending device's public key.
         from: [u8; 32],
         /// The remote-action frame, as the sender encoded it.
+        frame: Vec<u8>,
+    },
+    /// A piece of a record's content another device of the workspace
+    /// addressed to this one. The relay stamped the sender from its
+    /// authenticated connection.
+    RecordContent {
+        /// The sending device's public key.
+        from: [u8; 32],
+        /// The piece, as the sender encoded it.
         frame: Vec<u8>,
     },
     /// A live-plane frame (presence, previews) another live member of the

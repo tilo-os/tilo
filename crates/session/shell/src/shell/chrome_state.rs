@@ -8,7 +8,7 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
@@ -118,6 +118,8 @@ fn notification_unix_ms() -> u64 {
 /// without answering drops the `reply` sender, which the portal side
 /// reads as deny — refusal, not a hang.
 pub struct PendingPrompt {
+    /// Session-local identity; a stale answer must never consume another request.
+    pub id: uuid::Uuid,
     pub app_id: AppId,
     pub capability: Capability,
     /// Reply channel to a blocked portal request; `None` for
@@ -129,6 +131,7 @@ impl PendingPrompt {
     /// The shell asking on its own behalf; nobody is blocked on this.
     pub fn new(app_id: AppId, capability: Capability) -> Self {
         Self {
+            id: uuid::Uuid::new_v4(),
             app_id,
             capability,
             reply: None,
@@ -141,6 +144,7 @@ impl PendingPrompt {
         reply: tokio::sync::oneshot::Sender<crate::portal::PromptOutcome>,
     ) -> Self {
         Self {
+            id: uuid::Uuid::new_v4(),
             app_id,
             capability,
             reply: Some(reply),
@@ -157,6 +161,7 @@ impl PendingPrompt {
 impl std::fmt::Debug for PendingPrompt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingPrompt")
+            .field("id", &self.id)
             .field("app_id", &self.app_id)
             .field("capability", &self.capability)
             .field("awaiting_portal_reply", &self.reply.is_some())
@@ -204,18 +209,17 @@ pub struct OverlayFlags {
     pub clock: bool,
 }
 
+/// The live activity Clocks shows outside its windows: the timer or
+/// stopwatch running, and a due timer to announce once.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "this is a backwards-compatible JSON snapshot produced by the Clocks app; active, stopwatch, paused, and overlay are independent wire fields, and replacing them with enums would change the external schema"
+    reason = "active, stopwatch, paused, and overlay are independent fields of the activity Clocks shows"
 )]
 pub struct ClockActivity {
-    #[serde(default)]
-    pub version: u8,
     #[serde(default = "clock_activity_active_default")]
     pub active: bool,
-    /// UUID of the exact timer represented by this snapshot. Older Clocks
-    /// builds omit it; the singleton stopwatch intentionally has no ID.
+    /// The timer shown; `None` is the stopwatch.
     #[serde(default)]
     pub activity_id: Option<String>,
     pub label: String,
@@ -225,10 +229,6 @@ pub struct ClockActivity {
     pub paused: bool,
     #[serde(default)]
     pub overlay: bool,
-    #[serde(default)]
-    pub generation: u64,
-    #[serde(default)]
-    pub producer_pid: u32,
     #[serde(default)]
     pub notification_id: Option<String>,
     #[serde(default)]
@@ -370,6 +370,8 @@ pub struct QuickSettingsState {
     pub wifi_networks: Vec<WifiNetwork>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
+    /// A typed radio mutation is admitted but has not completed.
+    pub radio_change_pending: bool,
     /// Last discovery failure, kept separate from an honest empty result.
     pub wifi_scan_error: Option<String>,
     /// SSID currently being joined off-thread. Kept separate from the
@@ -385,6 +387,9 @@ pub struct QuickSettingsState {
     /// `Balanced` so a host without `power-profiles-daemon` still
     /// renders a sensible label.
     pub power_profile: PowerProfile,
+    /// The profiles the power daemon offers on this machine; empty until
+    /// read. The power row cycles only through these.
+    pub power_profiles: Vec<PowerProfile>,
     /// Apps currently keeping the screen awake (an idle inhibitor held
     /// through Wayland, the portal or `org.freedesktop.ScreenSaver`), named
     /// as they asked. Shown on the power row so a screen that never locks
@@ -460,11 +465,13 @@ impl Default for QuickSettingsState {
             // edge — no fake content.
             wifi_networks: Vec::new(),
             wifi_scanning: false,
+            radio_change_pending: false,
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
+            power_profiles: Vec::new(),
             awake_holders: Vec::new(),
             personal_devices: None,
             do_not_disturb: false,
@@ -507,11 +514,13 @@ impl QuickSettingsState {
             // edge — no fake content.
             wifi_networks: Vec::new(),
             wifi_scanning: false,
+            radio_change_pending: false,
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
+            power_profiles: Vec::new(),
             awake_holders: Vec::new(),
             personal_devices: None,
             do_not_disturb: false,
@@ -555,6 +564,7 @@ impl QuickSettingsState {
 pub struct ChromeState {
     identity_source: IdentitySource,
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
+    pub(crate) native_app_opening: Option<super::launcher::NativeAppOpening>,
     /// Shared with the portal (grants) and peer-sync (replica), all
     /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
@@ -664,6 +674,10 @@ pub struct ChromeState {
     /// actions, waiting for the overlay host's session executor — the same
     /// one the power flyout's rows reach.
     session_action_requests: Vec<os_actions::SessionAction>,
+    notification_launch_requests: Vec<crate::shell::notification::NotificationLaunch>,
+    notification_action_requests:
+        HashMap<u64, (Option<u64>, bool, crate::notifications::ScheduledAction)>,
+    notification_action_results: HashMap<u64, Result<(), String>>,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
     /// frame via [`Self::set_fullscreen_group`]. Client fullscreen is a
@@ -737,6 +751,9 @@ pub struct ChromeState {
     /// drains them on its next update and runs each exactly as its chord
     /// would, since the focused group's widgets live there.
     shortcut_action_requests: Vec<settings_store::hardware::ShortcutAction>,
+    cancel_tab_drag_requested: bool,
+    axis_navigation_enabled: bool,
+    axis_gather_requested: bool,
     /// The input-source chord chose this source. The native compositor
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
@@ -754,6 +771,7 @@ pub struct ChromeState {
     continuity_suggestions: crate::shell::continuity_suggestion::ContinuitySuggestions,
     /// Recently closed tabs, for `tab.reopen` and the close toast's Undo.
     closed_tabs: crate::shell::closed_tabs::ClosedTabStack,
+    pending_closed_tabs: Vec<crate::shell::closed_tabs::ClosedTab>,
     /// Close toasts still offering Undo: notification id -> closed entry.
     /// They never enter notification history.
     undo_toasts: BTreeMap<u64, u64>,
@@ -823,6 +841,7 @@ impl ChromeState {
         Rc::new(RefCell::new(Self {
             tree_handle,
             hosted_inputs,
+            native_app_opening: None,
             identity_source,
             overlays: OverlayFlags::default(),
             quick_settings,
@@ -862,6 +881,9 @@ impl ChromeState {
             active_exposures: Vec::new(),
             session_lock_requested: false,
             session_action_requests: Vec::new(),
+            notification_launch_requests: Vec::new(),
+            notification_action_requests: HashMap::new(),
+            notification_action_results: HashMap::new(),
             fullscreen_group: None,
             user_fullscreen_group: None,
             maximized_group: None,
@@ -884,12 +906,16 @@ impl ChromeState {
             fullscreen_toggle_requested: false,
             transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
+            cancel_tab_drag_requested: false,
+            axis_navigation_enabled: false,
+            axis_gather_requested: false,
             input_source_request: None,
             strip_viewport: None,
             viewport_size: None,
             continuity_suggestions:
                 crate::shell::continuity_suggestion::ContinuitySuggestions::default(),
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
+            pending_closed_tabs: Vec::new(),
             undo_toasts: BTreeMap::new(),
             workspace_undo_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
@@ -1074,6 +1100,26 @@ impl ChromeState {
         self.transition_paints_remaining = self.transition_paints_remaining.saturating_sub(1);
     }
 
+    pub fn axis_navigation_enabled(&self) -> bool {
+        self.axis_navigation_enabled
+    }
+
+    /// Experimental local view policy. Never persisted or shared with peers.
+    pub fn set_axis_navigation_enabled(&mut self, enabled: bool) {
+        self.axis_navigation_enabled = enabled;
+        self.axis_gather_requested = enabled;
+        self.bump();
+    }
+
+    pub fn request_axis_gather(&mut self) {
+        self.axis_gather_requested = self.axis_navigation_enabled;
+        self.bump();
+    }
+
+    pub fn take_axis_gather_request(&mut self) -> bool {
+        std::mem::take(&mut self.axis_gather_requested)
+    }
+
     /// Run `action` as if its chord had been pressed once, on the overlay
     /// host's next update.
     pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
@@ -1085,6 +1131,16 @@ impl ChromeState {
         &mut self,
     ) -> Vec<settings_store::hardware::ShortcutAction> {
         std::mem::take(&mut self.shortcut_action_requests)
+    }
+
+    /// Cancel the shell's pending tab gesture through the same path as Escape.
+    pub fn request_tab_drag_cancel(&mut self) {
+        self.cancel_tab_drag_requested = true;
+        self.bump();
+    }
+
+    pub fn take_tab_drag_cancel_request(&mut self) -> bool {
+        std::mem::take(&mut self.cancel_tab_drag_requested)
     }
 
     pub fn request_input_source(&mut self, index: usize) {
@@ -1225,6 +1281,11 @@ impl ChromeState {
             || self.local_user_id.clone(),
             |workspace| self.local_user_for_room(&workspace.room),
         )
+    }
+
+    /// What this host hands the apps it mounts.
+    pub fn hosted_inputs(&self) -> &super::hosted_inputs::HostedTileInputs {
+        &self.hosted_inputs
     }
 
     pub fn records(&self) -> &RecordStore {
@@ -1419,6 +1480,7 @@ impl ChromeState {
             return false;
         }
         self.observed_external_tree_revision = external;
+        self.publish_completed_closes();
         self.bump();
         true
     }
@@ -1522,7 +1584,9 @@ impl ChromeState {
         match id {
             tilo_desktop::activity::HISTORY_COMPARE
             | tilo_desktop::activity::HISTORY_UNDO
-            | tilo_desktop::activity::HISTORY_RESTORE => {}
+            | tilo_desktop::activity::HISTORY_RESTORE
+            | tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE
+            | tilo_desktop::activity::ACTIVITY_TASKS => {}
             _ => return Err("Unknown history action".into()),
         }
         self.open_room_activity(None);
@@ -1661,8 +1725,51 @@ impl ChromeState {
         Some(suggestion)
     }
 
-    /// Remember a close so it can be undone, and say so with a short toast
-    /// whose activation puts the tab back.
+    /// Publish Undo and its toast only after removal. A live client may
+    /// refuse its close request and keep the tab present.
+    pub fn remember_closed_tab_after_removal(
+        &mut self,
+        entry: crate::shell::closed_tabs::ClosedTab,
+    ) {
+        if self.pending_closed_tabs.iter().any(|pending| {
+            pending
+                .tabs
+                .iter()
+                .map(|content| content.tab.id)
+                .eq(entry.tabs.iter().map(|content| content.tab.id))
+        }) {
+            return;
+        }
+        self.pending_closed_tabs.push(entry);
+        self.publish_completed_closes();
+    }
+
+    fn publish_completed_closes(&mut self) {
+        let present: std::collections::HashSet<_> = self
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .map(|tab| tab.id)
+            .collect();
+        let entries = std::mem::take(&mut self.pending_closed_tabs);
+        for entry in entries {
+            if entry
+                .tabs
+                .iter()
+                .any(|content| present.contains(&content.tab.id))
+            {
+                self.pending_closed_tabs.push(entry);
+            } else {
+                self.remember_closed_tab(entry);
+            }
+        }
+    }
+
+    /// Remember a completed close and offer a toast whose activation restores it.
     pub fn remember_closed_tab(&mut self, entry: crate::shell::closed_tabs::ClosedTab) -> u64 {
         use crate::shell::i18n::{t, t_args};
 
@@ -2007,7 +2114,7 @@ impl ChromeState {
 
     /// The tab's canonical app id — see
     /// [`tilo_desktop_model::apps::canonical_app_id`].
-    fn tab_app_id(
+    pub(crate) fn tab_app_id(
         &self,
         strip_id: StripId,
         group_id: GroupId,
@@ -2438,6 +2545,9 @@ impl ChromeState {
             self.undo_deleted_workspace(id);
             return true;
         }
+        if let Some(request) = crate::shell::notification::scheduled_launch(&removed) {
+            self.notification_launch_requests.push(request);
+        }
         if let Some(command) = removed
             .default_action_key()
             .and_then(|key| remote_action_command(&removed, &key))
@@ -2630,29 +2740,33 @@ impl ChromeState {
             return HistoryActivation::Missing;
         };
         let key = notification.default_action_key();
-        let outcome = if notification.remote_route.is_some() {
-            match key.and_then(|key| remote_action_command(notification, &key)) {
-                Some(command) => {
-                    self.queue_remote_notification_command(command);
-                    HistoryActivation::Invoked
+        let outcome =
+            if let Some(request) = crate::shell::notification::scheduled_launch(notification) {
+                self.notification_launch_requests.push(request);
+                HistoryActivation::Invoked
+            } else if notification.remote_route.is_some() {
+                match key.and_then(|key| remote_action_command(notification, &key)) {
+                    Some(command) => {
+                        self.queue_remote_notification_command(command);
+                        HistoryActivation::Invoked
+                    }
+                    None => HistoryActivation::Unavailable,
                 }
-                None => HistoryActivation::Unavailable,
-            }
-        } else if let (Some(bridge), Some(dbus_id), Some(key)) = (
-            self.notification_bridge.as_ref(),
-            notification.sender_id,
-            key,
-        ) {
-            bridge.note_action(dbus_id, key);
-            HistoryActivation::Invoked
-        } else if let Some(app_id) = notification.app_id.clone() {
-            HistoryActivation::OpenApp {
-                label: tilo_desktop::notifications::group_label(notification),
-                app_id,
-            }
-        } else {
-            HistoryActivation::Unavailable
-        };
+            } else if let (Some(bridge), Some(dbus_id), Some(key)) = (
+                self.notification_bridge.as_ref(),
+                notification.sender_id,
+                key,
+            ) {
+                bridge.note_action(dbus_id, key);
+                HistoryActivation::Invoked
+            } else if let Some(app_id) = notification.app_id.clone() {
+                HistoryActivation::OpenApp {
+                    label: tilo_desktop::notifications::group_label(notification),
+                    app_id,
+                }
+            } else {
+                HistoryActivation::Unavailable
+            };
         if matches!(
             outcome,
             HistoryActivation::Invoked | HistoryActivation::OpenApp { .. }
@@ -2730,6 +2844,7 @@ impl ChromeState {
             id: format!("notification:{}", uuid::Uuid::new_v4()),
             kind: "notification".to_string(),
             label: notification.title.clone(),
+            agent_request: None,
         };
         let room = self
             .tree()
@@ -2942,12 +3057,191 @@ impl ChromeState {
         std::mem::take(&mut self.session_action_requests)
     }
 
+    pub(crate) fn take_notification_launch_requests(
+        &mut self,
+    ) -> Vec<crate::shell::notification::NotificationLaunch> {
+        std::mem::take(&mut self.notification_launch_requests)
+    }
+
+    pub(crate) fn alarm_actions_available(&self) -> bool {
+        self.notification_bridge
+            .as_ref()
+            .is_some_and(crate::notifications::NotificationBridge::scheduled_actions_available)
+    }
+
+    pub(crate) fn snoozed_alarms(&self, room: &str) -> Vec<crate::notifications::SnoozedAlarm> {
+        self.notification_bridge
+            .as_ref()
+            .map_or_else(Vec::new, |bridge| bridge.snoozed_alarms(room))
+    }
+
+    fn alarm_action_capacity(&self) -> Result<(), String> {
+        if self
+            .notification_action_requests
+            .len()
+            .saturating_add(self.notification_action_results.len())
+            >= 64
+        {
+            Err("too many pending alarm actions".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn alarm_target_authorized(
+        &self,
+        target: &tilo_desktop::notifications::ScheduledNotificationTarget,
+        address: &str,
+    ) -> bool {
+        self.tree().desktop.workspaces.iter().any(|workspace| {
+            if workspace.room.to_string() != target.room {
+                return false;
+            }
+            let actor = workspace.actor_for_person(&self.local_user_for_room(&workspace.room));
+            crate::shell::search::providers::actions::shell_action_authorized_for(
+                workspace, &actor, address,
+            )
+        })
+    }
+
+    pub(crate) fn request_snoozed_alarm_dismiss(
+        &mut self,
+        source: &crate::notifications::SnoozedAlarm,
+    ) -> Result<u64, String> {
+        self.alarm_action_capacity()?;
+        let address = crate::shell::notification::snoozed_alarm_dismiss_id(&source.target);
+        if !source.target.valid()
+            || !source.target.calendar_alarm
+            || !self.alarm_target_authorized(&source.target, &address)
+        {
+            return Err("alarm's original workspace authority is unavailable".into());
+        }
+        let bridge = self
+            .notification_bridge
+            .as_ref()
+            .ok_or("alarm service unavailable")?;
+        let action = crate::notifications::ScheduledAction::Dismiss;
+        let request = bridge.request_scheduled_action(
+            source.app_id.clone(),
+            source.target.clone(),
+            action,
+        )?;
+        self.notification_action_requests
+            .insert(request, (None, true, action));
+        self.bump();
+        Ok(request)
+    }
+
+    pub(crate) fn alarm_action_authorized(&self, notification: &Notification) -> bool {
+        let Some(request) = crate::shell::notification::scheduled_launch(notification)
+            .filter(|request| request.target.calendar_alarm)
+        else {
+            return false;
+        };
+        self.alarm_target_authorized(
+            &request.target,
+            &format!("notification.{}.snooze", notification.id),
+        )
+    }
+
+    pub(crate) fn request_alarm_action(
+        &mut self,
+        id: u64,
+        action: crate::notifications::ScheduledAction,
+        retain_result: bool,
+    ) -> Result<u64, String> {
+        self.alarm_action_capacity()?;
+        let notification = self
+            .notification_log
+            .active()
+            .iter()
+            .find(|notice| notice.id == id)
+            .or_else(|| self.notification_log.history_entry(id))
+            .ok_or("alarm notification is no longer available")?;
+        let request = crate::shell::notification::scheduled_launch(notification)
+            .filter(|request| request.target.calendar_alarm)
+            .ok_or("notification is not a host calendar alarm")?;
+        if !self.alarm_action_authorized(notification) {
+            return Err("alarm's original workspace authority is unavailable".into());
+        }
+        let bridge = self
+            .notification_bridge
+            .as_ref()
+            .ok_or("alarm service unavailable")?;
+        let request_id = bridge.request_scheduled_action(request.app_id, request.target, action)?;
+        self.notification_action_requests
+            .insert(request_id, (Some(id), retain_result, action));
+        self.bump();
+        Ok(request_id)
+    }
+
+    pub(crate) fn take_alarm_action_result(&mut self, id: u64) -> Option<Result<(), String>> {
+        self.notification_action_results.remove(&id)
+    }
+
+    fn finish_alarm_card_action(&mut self, id: u64, action: crate::notifications::ScheduledAction) {
+        let removed = if let Some(removed) = self.notification_log.take_active(id) {
+            self.emit_closed(&removed, CloseReason::Dismissed);
+            Some(removed)
+        } else {
+            self.notification_log.take_history(id)
+        };
+        if action == crate::notifications::ScheduledAction::Snooze
+            && let Some(mut notice) = removed
+        {
+            if let Some(target) = notice.scheduled_target.as_mut() {
+                if !target.snoozed {
+                    let status = tilo_desktop::notifications::alarm_snoozed_label();
+                    notice.body = if notice.body.is_empty() {
+                        status
+                    } else {
+                        format!("{}\n\n{status}", notice.body)
+                    };
+                }
+                target.snoozed = true;
+            }
+            self.notification_log.retain(notice);
+        }
+    }
+
+    fn pump_alarm_action_results(&mut self, bridge: &crate::notifications::NotificationBridge) {
+        let requests: Vec<_> = self.notification_action_requests.keys().copied().collect();
+        for request in requests {
+            let Some(result) = bridge.take_scheduled_action_result(request) else {
+                continue;
+            };
+            let Some((id, retain_result, action)) =
+                self.notification_action_requests.remove(&request)
+            else {
+                continue;
+            };
+            if result.is_ok() {
+                if let Some(id) = id {
+                    self.finish_alarm_card_action(id, action);
+                }
+            } else if let Err(error) = &result
+                && !retain_result
+            {
+                tracing::warn!(%error, "alarm notification action failed");
+                self.push_warning_notification(
+                    tilo_desktop::notifications::alarm_action_failed_label(),
+                    tilo_desktop::notifications::alarm_action_retry_label(),
+                );
+            }
+            if retain_result {
+                self.notification_action_results.insert(request, result);
+            }
+            self.bump();
+        }
+    }
+
     /// Called once per frame; no-op when no bridge is installed.
     pub fn pump_dbus_notifications(&mut self) {
         use chrono::{Datelike, Timelike};
         let Some(bridge) = self.notification_bridge.clone() else {
             return;
         };
+        self.pump_alarm_action_results(&bridge);
         let refresh_policy = self
             .notification_policy_checked
             .is_none_or(|checked| checked.elapsed() >= std::time::Duration::from_millis(750));
@@ -2962,6 +3256,7 @@ impl ChromeState {
         }
         for inc in bridge.drain_incoming() {
             let dbus_id = inc.dbus_id;
+            let scheduled_target = bridge.take_scheduled_target(dbus_id, inc.caller.as_ref());
             // A fresh Notify with an existing id supersedes the prior toast.
             self.notification_log
                 .discard_active_where(|n| n.sender_id == Some(dbus_id));
@@ -2985,6 +3280,7 @@ impl ChromeState {
                 u8::try_from(now.weekday().num_days_from_monday()).unwrap_or(u8::MAX),
             );
             let mut notification = crate::shell::notification::from_incoming(inc);
+            notification.scheduled_target = scheduled_target;
             notification.show_preview = effective.previews;
             notification.show_on_lock_screen = effective.lock_screen;
             if effective.cross_device
@@ -3468,6 +3764,8 @@ mod active_tab_tests {
             let mut replica = tree_with(100);
             let replica_workspace = replica.desktop.active;
             assert!(replica.set_room(replica_workspace, room));
+            // The host's invite pins it (hub 1) as the room's governor.
+            assert!(replica.pin_room_authority(room, crate::shell::state::PeerOrigin::hub(1)));
             let baseline = tree
                 .export_room_changes_since(room, &[])
                 .expect("host room baseline");

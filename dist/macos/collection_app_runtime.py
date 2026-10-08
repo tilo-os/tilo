@@ -12,14 +12,14 @@ from collection_native import system_library
 from collection_runtime import formula_evidence
 
 PLUGINS = {
-    'tube': media.PLUGINS,
+    **{name: media.PLUGINS | extra for name, extra in media.PLUGIN_ADDITIONS.items()},
     'remote': {'coreelements', 'app', 'videoconvertscale', 'videoparsersbad'},
     'music': {'coreelements', 'app', 'playback', 'typefindfunctions', 'audioconvert',
               'audioresample', 'autodetect', 'osxaudio', 'volume', 'audiofx', 'audioparsers',
               'ogg', 'isomp4', 'matroska', 'wavparse', 'aiff', 'asf', 'id3demux', 'apetag'},
 }
 LIBRARIES = {
-    'tube': media.LIBRARIES,
+    **{name: media.LIBRARIES | extra for name, extra in media.LIBRARY_ADDITIONS.items()},
     'remote': {'libgstcodecparsers-1.0.0.dylib'},
     'music': {'libgstsdp-1.0.0.dylib', 'libgstrtp-1.0.0.dylib', 'libgstrtsp-1.0.0.dylib',
               'libgstriff-1.0.0.dylib', 'libogg.0.8.6.dylib', 'libgstfft-1.0.0.dylib'},
@@ -30,15 +30,15 @@ DOMAINS = {'gst-plugins-good-1.0', 'gst-plugins-bad-1.0', 'gst-plugins-ugly-1.0'
 def additional_assets(plan, profile, name):
     deadline = time.monotonic() + 30
     assets = plan['assets']
-    if name == 'tube':
+    if name in media.PLUGIN_ADDITIONS:
         media.additional_assets(plan, profile)
-    if name not in ('music', 'tube'):
+    if name != 'music' and name not in media.PLUGIN_ADDITIONS:
         return
     if name == 'music':
         music_notices(plan, profile, deadline)
     locale = Path(plan['locale_prefixes']['gstreamer'])
     found = set()
-    domains = DOMAINS if name == 'music' else {'gst-plugins-good-1.0'}
+    domains = DOMAINS if name in ('music', 'video-editor') else {'gst-plugins-good-1.0'}
     for language in runtime.directory_entries(locale, 512, deadline):
         if language.is_symlink():
             raise ValueError('symlink locale directory')
@@ -117,11 +117,11 @@ def prepare(path, expected, entry, binary, base):
     expected_packages = {'gstreamer', 'libogg'} if name == 'music' else {'gstreamer'}
     if set(profile['packages']) != set(packages):
         raise ValueError('app profile includes unused package evidence')
-    if name == 'tube':
-        expected_packages = media.PACKAGES
+    if name in media.PLUGIN_ADDITIONS:
+        expected_packages = media.expected_packages(name)
     if {Path(root).parent.name for root in packages} != expected_packages:
         raise ValueError('app profile added an unreviewed package')
-    limit = 24 if name == 'tube' else 8
+    limit = 24 if name in media.PLUGIN_ADDITIONS else 8
     if sum(item['bytes'] for item in images.values()) > limit * 1024**2:
         raise ValueError('app runtime delta exceeds its byte bound')
     main_name = entry['binary']

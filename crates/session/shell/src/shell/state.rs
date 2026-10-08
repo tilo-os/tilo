@@ -96,10 +96,8 @@ mod identity_fs_tests {
             permissions.set_mode(0o700);
             std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
             let acl = temp.path().join("fs-capabilities.json");
-            let cache = temp.path().join("cache");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
-            env.set("TILO_FS_AUTHORITY_CACHE_DIR", &cache);
             env.set("TILO_FS_AUTHORITY_TEST_LOG", &log);
             env.set("TILO_FS_AUTHORITY_TEST_STARTED", &started);
             env.set("TILO_FS_AUTHORITY_TEST_RELEASE", &release);
@@ -131,9 +129,11 @@ mod identity_fs_tests {
             wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound())
                 .unwrap_or_else(|report| panic!("the released publisher never finished: {report}"));
             let arguments = std::fs::read_to_string(&log).expect("background publication");
-            assert!(arguments.contains("publish-authority"));
-            assert!(arguments.contains(cache.to_str().unwrap()));
-            assert!(arguments.contains(acl.to_str().unwrap()));
+            assert_eq!(
+                arguments.lines().collect::<Vec<_>>(),
+                ["publish-authority", "--acl", acl.to_str().unwrap()],
+                "the publisher needs no path into the daemon's root-only cache"
+            );
         }
 
         // Phase `capability_export_retries_until_a_late_authority_service_is_ready`.
@@ -181,6 +181,41 @@ mod identity_fs_tests {
                     .parse::<u8>()
                     .expect("numeric attempt count")
                     > 3
+            );
+        }
+
+        // Phase `a_device_without_the_governor_key_publishes_once_and_settles`.
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let temp = tempfile::tempdir().expect("temp");
+            let publisher = temp.path().join("joined-device-publisher.sh");
+            let count = temp.path().join("attempts");
+            std::fs::write(
+                &publisher,
+                "#!/bin/sh\nprintf x >> \"$TILO_FS_AUTHORITY_TEST_COUNT\"\nexit 77\n",
+            )
+            .expect("publisher script");
+            let mut permissions = std::fs::metadata(&publisher)
+                .expect("metadata")
+                .permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
+            env.set("TILO_FS_AUTHORITY_TEST_COUNT", &count);
+            let tree = WorkspaceTree {
+                fs_acl_path: Some(temp.path().join("fs-capabilities.json")),
+                ..WorkspaceTree::default()
+            };
+            tree.export_fs_capabilities();
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
+                |report| panic!("a joined device kept retrying publication: {report}"),
+            );
+            assert_eq!(
+                std::fs::read_to_string(&count).expect("attempt count"),
+                "x",
+                "a device that does not govern the workspace asks once"
             );
         }
     }
@@ -414,8 +449,16 @@ pub enum RoomAuthority {
     Local,
     /// A named peer, cross-checked against the invite token's signature.
     Peer(PeerOrigin),
-    /// Joined without an invite naming an administrator: the first peer
-    /// to supply governance becomes it, and is pinned.
+    /// Joined without an invite naming an administrator, so nobody may
+    /// write the room's governance: every governance change is refused —
+    /// the first snapshot included — until an invite
+    /// ([`WorkspaceTree::pin_room_authority`]), the person's signed
+    /// workspace directory ([`WorkspaceTree::adopt_personal_room`]) or a
+    /// continuation offer from the person's own device
+    /// ([`WorkspaceTree::adopt_continuation_room`]) names an authority. A
+    /// state file written while a room still waited for its first answer to
+    /// pin a governor loads as this same read-only value; no `SyncResp` ever
+    /// pins it.
     Unpinned,
     /// The room belongs to a person (their user root key), not to one of
     /// their devices: every authenticated, unrevoked device of that person
@@ -513,6 +556,23 @@ pub fn person_id_of(user_public_key: [u8; 32]) -> Option<UserId> {
     }
 }
 
+/// The user root key a person id names, when the id is one: the lowercase
+/// hex [`person_id_of`] spells it as.
+fn person_root(person: &str) -> Option<[u8; 32]> {
+    let root: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
+    (person_id_of(root).as_deref() == Some(person)).then_some(root)
+}
+
+/// Who put a room on the person's workspace list; see
+/// [`WorkspaceTree::adopt_personal_room`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RoomListing {
+    /// The person's signed directory, which names the room's governor.
+    Directory,
+    /// The machine that enrolled this device, which hands over only the id.
+    Enrolled,
+}
+
 pub fn local_user_id() -> UserId {
     #[cfg(test)]
     crate::shell::test_support::ambient_start("session identity");
@@ -533,6 +593,47 @@ pub fn local_user_id() -> UserId {
         }
     }
     std::env::var("USER").unwrap_or_else(|_| "local".to_string())
+}
+
+/// The colour the person at this machine wears: their stored choice
+/// (`identity.colour`, roaming with their other personal settings), or the
+/// hue their stable identity derives until they choose one — never the
+/// session's handle, so every machine they use and every collaborator who
+/// sees them agrees. Presence frames carry it to collaborators many times a
+/// second, so this reads it again at most once a second;
+/// [`read_local_presence_hue`] reads it now.
+pub fn local_presence_hue() -> ui::tokens::PresenceHue {
+    const FRESH: std::time::Duration = std::time::Duration::from_secs(1);
+    if let Ok(known) = LOCAL_PRESENCE_HUE.lock()
+        && let Some((at, hue)) = *known
+        && at.elapsed() < FRESH
+    {
+        return hue;
+    }
+    read_local_presence_hue()
+}
+
+static LOCAL_PRESENCE_HUE: std::sync::Mutex<Option<(std::time::Instant, ui::tokens::PresenceHue)>> =
+    std::sync::Mutex::new(None);
+
+/// [`local_presence_hue`] read from the settings document and identity
+/// now, for a caller that knows the settings just changed.
+pub fn read_local_presence_hue() -> ui::tokens::PresenceHue {
+    let hue =
+        ui::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(settings_store::load()))
+            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(&local_user_id()));
+    if let Ok(mut known) = LOCAL_PRESENCE_HUE.lock() {
+        *known = Some((std::time::Instant::now(), hue));
+    }
+    hue
+}
+
+/// Whether `room` is the local person's own room. It is never a workspace:
+/// it has no roster to invite anyone into, and its records travel only
+/// between that person's devices, so no invite, enrollment or continuation
+/// may turn it into a room collaborators share.
+pub fn is_local_person_room(room: RoomId) -> bool {
+    collab_types::person_room_of(&local_user_id()) == Some(room.as_uuid())
 }
 
 /// Identity acting in a specific durable room.
@@ -858,7 +959,7 @@ impl WorkspaceTree {
         } else {
             self.stewarded_rooms.remove(&room);
         }
-        let (name, owner, caps) = Self::extract_governed_fields(document);
+        let (name, owner, caps) = tilo_peer_state::room::extract_governed_fields(document);
         let tasks = projection::workspace_tasks_of(document);
         let receipts = projection::workspace_effect_receipts_of(document);
         self.room_docs.insert(room, document.clone());
@@ -876,7 +977,9 @@ impl WorkspaceTree {
             if let Some(owner) = owner {
                 ws.owner = Some(owner);
             }
+            let local = self.native_runtime.preserve_files_home_consent(ws, peer);
             ws.capabilities = caps;
+            ws.capabilities.extend(local);
             ws.tasks = tasks;
             ws.effect_receipts = receipts;
         }
@@ -1077,7 +1180,8 @@ impl WorkspaceTree {
     /// this machine minted the room and governs it; joining another's
     /// room ([`Self::set_room`]) records [`RoomAuthority::Unpinned`],
     /// pinned to the named owner on invite accept
-    /// ([`Self::pin_room_authority`]).
+    /// ([`Self::pin_room_authority`]). Until then the room refuses every
+    /// governance change.
     pub fn room_authority(&self, room: RoomId) -> RoomAuthority {
         self.room_authority
             .get(&room)
@@ -1086,11 +1190,20 @@ impl WorkspaceTree {
     }
 
     /// Does this machine hold `room`'s governance? A room minted here does,
-    /// and so does a room governed by the person this device belongs to.
+    /// and so does a room governed by the person this device belongs to
+    /// once that person is its owner. A room the person's own device
+    /// offered for continuation is pinned to the person before its
+    /// governance arrives; it may turn out to be someone else's room, which
+    /// the person's devices relay but do not govern.
     pub fn governs_room(&self, room: RoomId) -> bool {
         match self.room_authority(room) {
             RoomAuthority::Local => true,
-            RoomAuthority::Person(person) => self.local_person == Some(person),
+            RoomAuthority::Person(person) => {
+                self.local_person == Some(person)
+                    && self.workspace_in_room(room).is_some_and(|workspace| {
+                        workspace.owner.is_some() && workspace.owner == person_id_of(person)
+                    })
+            }
             RoomAuthority::Peer(_) | RoomAuthority::Unpinned => false,
         }
     }
@@ -1984,86 +2097,62 @@ impl WorkspaceTree {
         )
     }
 
-    /// True (and logs a warning) if the payload's own `room` field
-    /// disagrees with the room it was sent to answer.
-    fn declared_room_mismatches(candidate: &AutoCommit, room: RoomId) -> bool {
-        let declared = projection::declared_room(candidate);
-        if declared.is_some_and(|d| d != room) {
-            tracing::warn!(
-                target: "shell::state",
-                asked = %room,
-                got = %declared.map(|d| d.to_string()).unwrap_or_default(),
-                "room sync refused: the payload names a different room than \
-                 the one it answers",
-            );
-            true
-        } else {
-            false
+    /// The sender of a batch for `room` as this machine knows it: the
+    /// transport-authenticated origin, and the person and role behind it when
+    /// the network layer has authenticated that person. A sender with no
+    /// authenticated person reached the tree through the network gate
+    /// (`peer_room_allows`), which already decided its `Write`.
+    fn room_writer<'a>(
+        &self,
+        room: RoomId,
+        from: &'a PeerOrigin,
+        now: u64,
+    ) -> tilo_peer_state::room::Writer<'a> {
+        use tilo_peer_state::room::{Standing, Writer};
+        let standing = match self.authenticated_persons.get(from) {
+            Some(person) => Standing::Member {
+                person: *person,
+                role: person_id_of(*person).and_then(|id| {
+                    self.workspace_in_room(room)
+                        .and_then(|workspace| workspace.role_of_at(&id, now))
+                }),
+            },
+            None => Standing::TransportAuthorized,
+        };
+        Writer {
+            key: from.as_str(),
+            standing,
         }
     }
 
-    /// True (and logs a warning) if
-    /// `from` is not entitled to write the governance changes
-    /// `candidate` carries relative to what's currently held for `room`.
-    fn governance_write_refused(
+    /// Who may write `room`'s governance — its owner and capability list,
+    /// which together control the whole security policy — for a batch from
+    /// `from`. Only what this machine pinned from an invite, its own minting
+    /// or the person's devices counts; nothing in the batch does.
+    /// [`RoomAuthority::Unpinned`] names nobody, so a room joined without an
+    /// invite naming its administrator refuses every governance change: the
+    /// first peer to answer does not become its governor.
+    fn room_authority_pin<'a>(
         &self,
         room: RoomId,
-        candidate: &AutoCommit,
+        authority: &'a RoomAuthority,
+        local_person: Option<&'a [u8; 32]>,
         from: &PeerOrigin,
-    ) -> bool {
-        // Write authority on the room's governance. Compared by value,
-        // not op id: a peer echoing governance it learned from us
-        // re-states it under its own actor, which is not a change.
-        let before = Self::governance_of(self.room_docs.get(&room));
-        let after = Self::governance_of(Some(candidate));
-        if before == after {
-            return false;
-        }
-        match self.room_authority(room) {
+    ) -> tilo_peer_state::room::AuthorityPin<'a> {
+        use tilo_peer_state::room::AuthorityPin;
+        match authority {
             // We administer the room; only another device of the person who
             // owns it governs it alongside us.
-            RoomAuthority::Local if self.same_person_governs(room, from) => false,
-            RoomAuthority::Local => {
-                tracing::warn!(
-                    target: "shell::state",
-                    room = %room,
-                    from = %from,
-                    "room sync refused: a peer's changes would rewrite \
-                     the governance of a room this machine administers",
-                );
-                true
-            }
-            // Someone else's room, and this is not them.
-            RoomAuthority::Peer(pinned) if pinned != *from => {
-                tracing::warn!(
-                    target: "shell::state",
-                    room = %room,
-                    from = %from,
-                    pinned = %pinned,
-                    "room sync refused: governance may only come from \
-                     the peer that administers the room",
-                );
-                true
-            }
-            // A person's room: any of that person's authenticated devices.
-            RoomAuthority::Person(person) => {
-                let refused = self.authenticated_persons.get(from) != Some(&person);
-                if refused {
-                    tracing::warn!(
-                        target: "shell::state",
-                        room = %room,
-                        from = %from,
-                        "room sync refused: governance may only come from \
-                         a device of the person who owns the room",
-                    );
+            RoomAuthority::Local => match local_person {
+                Some(person) if self.same_person_governs(room, from) => {
+                    AuthorityPin::Person(person)
                 }
-                refused
-            }
-            // `Unpinned`: joined without an invite naming an administrator —
-            // the first peer to supply governance becomes it. Legacy TOFU is
-            // installed by `apply_room_changes` only after every candidate
-            // check passes, so a refused batch never pins its sender.
-            RoomAuthority::Peer(_) | RoomAuthority::Unpinned => false,
+                _ => AuthorityPin::Local,
+            },
+            RoomAuthority::Peer(pinned) => AuthorityPin::Device(pinned.as_str()),
+            // A person's room: any of that person's authenticated devices.
+            RoomAuthority::Person(person) => AuthorityPin::Person(person),
+            RoomAuthority::Unpinned => AuthorityPin::Unpinned,
         }
     }
 
@@ -2150,75 +2239,6 @@ impl WorkspaceTree {
             .is_none()
     }
 
-    /// True (and logs a warning) if `candidate` would rewrite windows
-    /// this machine owns in `room` — compared only over entries both
-    /// sides already hold, so a guest's own history syncing back after a
-    /// restart (room documents aren't persisted) is never refused.
-    fn owned_contents_conflict(
-        &self,
-        room: RoomId,
-        candidate: &AutoCommit,
-        from: &PeerOrigin,
-    ) -> bool {
-        // Write authority over this machine's own windows: entries this
-        // machine minted are this machine's to write — same
-        // "refuse the whole batch" reasoning as the governance check above.
-        let local_salt = self.local_salt();
-        // Compared over the **intersection** of entries both documents
-        // hold — see `projection::changed_owned_entries`. Our next
-        // projection sweeps any gap.
-        let changed_ours =
-            projection::changed_owned_entries(self.room_docs.get(&room), candidate, local_salt);
-        if changed_ours == 0 {
-            return false;
-        }
-        tracing::warn!(
-            target: "shell::state",
-            room = %room,
-            from = %from,
-            entries = changed_ours,
-            "room sync refused: a peer's changes would rewrite windows \
-             this machine owns",
-        );
-        true
-    }
-
-    /// `(name, owner, capability overrides)` a candidate room document
-    /// declares — the governed fields [`Self::apply_room_changes`] folds
-    /// into the cached workspace once every refusal gate passes.
-    fn extract_governed_fields(
-        candidate: &AutoCommit,
-    ) -> (Option<String>, Option<String>, Vec<CapOverride>) {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let name = match candidate.get(&ROOT, "name").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let owner = match candidate.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let mut caps: Vec<CapOverride> = Vec::new();
-        if let Some((_, caps_id)) = candidate.get(&ROOT, "capabilities").ok().flatten() {
-            let keys: Vec<String> = candidate.keys(&caps_id).collect();
-            for key in keys {
-                if let Some((Value::Scalar(s), _)) = candidate.get(&caps_id, &key).ok().flatten()
-                    && let ScalarValue::Bytes(blob) = s.as_ref()
-                    && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
-                {
-                    caps.push(cap);
-                }
-            }
-        }
-        (name, owner, caps)
-    }
-
     /// Diffs `candidate`'s room-record index against what's already held
     /// for `room`, queues the difference for the shell to fold in (see
     /// [`Self::take_inbound_room_records`]), and reports whether
@@ -2244,18 +2264,23 @@ impl WorkspaceTree {
     /// Merge a peer's changes to `room` into the cached workspace, and
     /// report whether it changed.
     ///
-    /// Refuses, before anything is stored: a room this machine isn't in;
-    /// a payload whose `room` disagrees with the envelope; and a payload
-    /// changing the room's governance unless `from` is entitled to write
-    /// it ([`Self::room_authority`]) — automerge has no per-key ACL, so
-    /// otherwise a guest's cache wins a coin toss over its host's
-    /// ownership.
+    /// Admission is [`tilo_peer_state::room::admit_room_changes`], the same
+    /// function the native room peer runs: the sender holds `Write`, the
+    /// payload names this room, governance changes come only from the
+    /// writer this machine pinned ([`Self::room_authority`] — never from
+    /// whoever answers first), this machine's own windows are not rewritten,
+    /// receipts are immutable, coverage and durable receipts never rewind and
+    /// the media policy is consistent. This function adds only what is this
+    /// machine's own storage: binding a media policy to the pinned device
+    /// ([`Self::media_authority_admitted`]), the receipts already projected
+    /// into the workspace, and the projection itself.
     ///
     /// Refusal is of the **whole batch**: a partial merge would advance
     /// local heads past rejected ops (the sender's next export then skips
     /// them, unrecoverably) while leaving those ops in the graph exported
     /// onward. This also blocks a stale lineage from resurrecting a
-    /// capability revoked while that peer was away.
+    /// capability revoked while that peer was away. A refused batch changes
+    /// nothing here, the room's authority included.
     ///
     /// # Errors
     ///
@@ -2272,60 +2297,92 @@ impl WorkspaceTree {
         changes: &[Vec<u8>],
         from: &PeerOrigin,
     ) -> Result<bool, automerge::AutomergeError> {
+        use tilo_peer_state::room::{
+            AdmittedRoom, ContentOwnership, RoomAdmission, RoomRefusal, admit_room_changes,
+        };
         if self.requires_native_owner(room) {
             return Ok(false);
         }
         if self.workspace_in_room(room).is_none() {
             return Ok(false);
         }
-        // Applied to a copy first: a check that runs after the merge has
-        // already happened is not a check. `candidate` admits the batch
-        // through automerge's checked path under the shared incoming
-        // resource limits (and resets the patch log, see `sync_room_doc`);
-        // it reports a refusal as text, so keep this API's error type and
-        // the detail in the log.
-        let candidate = tilo_peer_state::room::candidate(self.room_docs.get(&room), changes)
-            .map_err(|error| {
-                tracing::warn!(%error, room = %room, "room changes refused");
-                automerge::AutomergeError::Fail
-            })?;
-
-        if Self::declared_room_mismatches(&candidate, room) {
-            return Ok(false);
+        // A local rename may still live only in the cache when a delayed
+        // reply arrives. Stage it in a copy of the existing room document
+        // before merging, so projection cannot erase it. Keep this private:
+        // a malformed or unauthorized reply must leave our heads unchanged.
+        // The room's name is not governed, so every check reads the same
+        // governance from the staged copy as from the held document.
+        let mut staged_before = None;
+        if self.governs_room(room)
+            && let Some(before) = self.room_docs.get(&room)
+            && let Some(workspace) = self.workspace_in_room(room)
+            && let Some(name) = tilo_peer_state::room::extract_governed_fields(before).0
+            && name != workspace.name
+        {
+            use automerge::transaction::Transactable as _;
+            let mut staged = before.clone();
+            staged.put(automerge::ROOT, "name", workspace.name.clone())?;
+            staged_before = Some(staged);
         }
-        // Parsing and consistency are independent of the writer check, including
-        // equal-value echoes. Never let a bad first snapshot establish TOFU.
-        let media = match tilo_peer_state::room::media::validate_transition(
-            self.room_docs.get(&room),
-            &candidate,
-            tilo_peer_state::room::media::TransitionMode::Admission,
-        ) {
-            Ok(media) => media,
-            Err(error) => {
-                tracing::warn!(?error, room = %room, "room sync refused: invalid media policy");
+        let before = staged_before.as_ref().or_else(|| self.room_docs.get(&room));
+        let now = tilo_clock::unix_now();
+        let authority = self.room_authority(room);
+        let local_person = self.local_person;
+        let room_id = room.to_string();
+        // Applied to a copy first: a check that runs after the merge has
+        // already happened is not a check.
+        let admitted = admit_room_changes(
+            RoomAdmission {
+                before,
+                room: &room_id,
+                source: self.room_writer(room, from, now),
+                authority: self.room_authority_pin(room, &authority, local_person.as_ref(), from),
+                contents: ContentOwnership::Salted {
+                    local_salt: self.local_salt(),
+                },
+                caps_now: now,
+            },
+            changes,
+        );
+        let AdmittedRoom { candidate, media } = match admitted {
+            Ok(admitted) => admitted,
+            // An undecodable batch keeps this API's error type; the detail
+            // goes to the log.
+            Err(RoomRefusal::Malformed(error)) => {
+                tracing::warn!(%error, room = %room, "room changes refused");
+                return Err(automerge::AutomergeError::Fail);
+            }
+            Err(refusal) => {
+                tracing::warn!(
+                    target: "shell::state",
+                    room = %room,
+                    from = %from,
+                    authority = ?authority,
+                    %refusal,
+                    "room sync refused",
+                );
                 return Ok(false);
             }
         };
         if media.is_some() && !self.media_authority_admitted(room, &candidate, from) {
+            tracing::warn!(
+                target: "shell::state",
+                room = %room,
+                from = %from,
+                "room sync refused: the media policy is not bound to the room's pinned device",
+            );
             return Ok(false);
         }
         let media_changed = tilo_peer_state::room::media::governed_value(self.room_docs.get(&room))
             != tilo_peer_state::room::media::governed_value(Some(&candidate));
-        if tilo_peer_state::coverage::monotonic(self.room_docs.get(&room), &candidate).is_err() {
-            return Ok(false);
-        }
-        if self.governance_write_refused(room, &candidate, from) {
-            return Ok(false);
-        }
-        if self.owned_contents_conflict(room, &candidate, from) {
-            return Ok(false);
-        }
 
-        let (name, owner, caps) = Self::extract_governed_fields(&candidate);
+        let (name, owner, caps) = tilo_peer_state::room::extract_governed_fields(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
         let shortcuts = projection::workspace_shortcuts_of(&candidate);
         let mut schedule_claims = projection::schedule_claims_of(&candidate);
         let mut effect_receipts = projection::workspace_effect_receipts_of(&candidate);
+        // Receipts already projected into the workspace stay immutable even
+        // once the room document omits them.
         if let Some(workspace) = self.workspace_in_room(room) {
             for existing in &workspace.effect_receipts {
                 match effect_receipts
@@ -2344,34 +2401,6 @@ impl WorkspaceTree {
                     None => effect_receipts.push(existing.clone()),
                 }
             }
-        }
-        // Joined without an invite naming an administrator: the first peer
-        // to supply governance becomes it, pinned only now that every
-        // candidate check has passed.
-        if self.room_authority(room) == RoomAuthority::Unpinned
-            && Self::governance_of(self.room_docs.get(&room))
-                != Self::governance_of(Some(&candidate))
-        {
-            tracing::info!(
-                target: "shell::state",
-                room = %room,
-                from = %from,
-                "room sync: pinning this peer as the room's \
-                 governance authority (joined without an invite \
-                 naming one)",
-            );
-            // A device of this person supplying governance of a room the
-            // person owns pins the person, not that one device.
-            let owner = Self::governance_of(Some(&candidate)).0;
-            let pin = match (self.local_person, self.authenticated_persons.get(from)) {
-                (Some(local), Some(sender))
-                    if *sender == local && owner.as_deref() == person_id_of(local).as_deref() =>
-                {
-                    RoomAuthority::Person(local)
-                }
-                _ => RoomAuthority::Peer(from.clone()),
-            };
-            self.room_authority.insert(room, pin);
         }
         let records_changed = self.queue_inbound_records(room, &candidate);
 
@@ -2478,16 +2507,21 @@ impl WorkspaceTree {
     pub fn queue_save(&self) {
         let started = std::time::Instant::now();
         let export = self.fs_capability_export();
+        let actions = crate::shell::launcher::action_authority::Export::of(self);
         match (&self.persist_path, export) {
             (Some(path), export) => {
                 crate::shell::persist::queue_save(self, path, move || {
+                    actions.publish();
                     if let Some(export) = export {
                         export.write();
                     }
                 });
             }
-            (None, Some(export)) => export.submit(),
-            (None, None) => {}
+            (None, Some(export)) => {
+                export.submit();
+                actions.submit();
+            }
+            (None, None) => actions.submit(),
         }
         let took = started.elapsed();
         if took > std::time::Duration::from_millis(4) {
@@ -2803,7 +2837,7 @@ impl WorkspaceTree {
     /// Existing join semantics for an unpublished owner candidate. No state,
     /// filesystem authority, relay export or publisher side effects occur here.
     pub(crate) fn set_room_in_memory(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
-        if room.is_nil() {
+        if room.is_nil() || is_local_person_room(room) {
             return false;
         }
         // Joining a room some other local workspace is already in is not a
@@ -2828,6 +2862,9 @@ impl WorkspaceTree {
             false
         };
         if joining {
+            // Joining names no administrator; the invite that led here pins
+            // it next (`accept_invite_into`). Until then the room refuses
+            // every governance change rather than trusting whoever answers.
             self.room_authority
                 .entry(room)
                 .or_insert(RoomAuthority::Unpinned);
@@ -3273,6 +3310,8 @@ impl WorkspaceTree {
     /// revoke would mutate only the local cache, so a peer would keep
     /// using a capability the owner took away.
     pub fn doc_revoke_capability(&mut self, workspace_id: WorkspaceId, cap_id: &str) {
+        self.native_runtime
+            .forget_files_home_consent(workspace_id, cap_id);
         if tilo_desktop_model::desktop_doc::revoke_capability(&mut self.doc, workspace_id, cap_id) {
             self.commit_room_change();
         }
@@ -3885,25 +3924,57 @@ impl WorkspaceTree {
     /// learning that another device has a workspace open cannot publish an
     /// empty local layout into that room or pull the current session away.
     /// The room's authenticated sync response supplies its real name/layout.
+    ///
+    /// The offer travels only between devices certified for the person at
+    /// this machine, so the room's governance is pinned to that person
+    /// ([`RoomAuthority::Person`]): their devices relay it, whoever owns the
+    /// room. `_source_device` is a continuity label, not a key, and pins
+    /// nothing. With no certified person here the room stays
+    /// [`RoomAuthority::Unpinned`] and refuses governance; a later offer of
+    /// a room already held pins such a room (the deterministic migration of
+    /// a continuation room a state file recorded as `Unpinned`).
     pub fn adopt_continuation_room(&mut self, room: RoomId, _source_device: &str) -> bool {
-        if room.is_nil()
-            || self
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room == room)
-        {
+        if room.is_nil() || is_local_person_room(room) {
             return false;
+        }
+        if self
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.room == room)
+        {
+            return self.pin_continuation_room(room);
         }
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "From another device");
         workspace.room = room;
         self.desktop.workspaces.push(workspace);
         self.continuation_rooms.insert(room);
-        self.room_authority.insert(room, RoomAuthority::Unpinned);
+        self.room_authority.insert(
+            room,
+            self.local_person
+                .map_or(RoomAuthority::Unpinned, RoomAuthority::Person),
+        );
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
+        self.queue_save();
+        true
+    }
+
+    /// Pin an unpinned continuation room to the person at this machine; see
+    /// [`Self::adopt_continuation_room`]. Returns whether it was pinned.
+    fn pin_continuation_room(&mut self, room: RoomId) -> bool {
+        let Some(person) = self.local_person else {
+            return false;
+        };
+        if !self.continuation_rooms.contains(&room)
+            || self.room_authority(room) != RoomAuthority::Unpinned
+        {
+            return false;
+        }
+        self.room_authority
+            .insert(room, RoomAuthority::Person(person));
         self.queue_save();
         true
     }
@@ -3913,26 +3984,39 @@ impl WorkspaceTree {
     /// This is membership, not a continuation offer, so turning app
     /// continuations off does not remove it.
     pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
-        if self
-            .desktop
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.room == room)
+        if is_local_person_room(room)
+            || self
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == room)
         {
             return false;
         }
-        self.adopt_personal_room(room, "From another device", &local_user_id(), None)
+        // Enrollment hands over a room id, not who governs it: the room stays
+        // unpinned — refusing governance — until the person's signed
+        // workspace directory lists it with its governor.
+        self.hold_personal_room(
+            room,
+            "From another device",
+            &local_user_id(),
+            None,
+            RoomListing::Enrolled,
+        )
     }
 
     /// Hold `room` as one of `person`'s workspaces, named `name`: the
     /// person's workspace list says they are in it. `governor` is the peer
     /// that governs a room someone else owns, the same one the device that
     /// accepted the invitation pinned; `None` means the person owns the
-    /// room, so whichever of their devices first answers for it pins the
-    /// person. A room this tree lacks is joined without focus or layout; a
+    /// room, so its governance is pinned to the person
+    /// ([`RoomAuthority::Person`]) and any of their devices may supply it.
+    /// A room this tree lacks is joined without focus or layout; a
     /// room only offered by another device's continuation becomes a
-    /// workspace of its own; one already held takes the listed name.
-    /// Returns whether the tree changed.
+    /// workspace of its own; one already held takes the listed name, and a
+    /// listed governor replaces an unpinned authority or a person pin on a
+    /// room the person does not own (a continuation offer's provisional
+    /// pin). Returns whether the tree changed.
     pub fn adopt_personal_room(
         &mut self,
         room: RoomId,
@@ -3940,7 +4024,28 @@ impl WorkspaceTree {
         person: &UserId,
         governor: Option<&PeerOrigin>,
     ) -> bool {
-        if room.is_nil() {
+        self.hold_personal_room(room, name, person, governor, RoomListing::Directory)
+    }
+
+    /// [`Self::adopt_personal_room`] and [`Self::join_enrolled_room`]:
+    /// `listing` says whether the person's signed directory vouches for who
+    /// governs the room.
+    fn hold_personal_room(
+        &mut self,
+        room: RoomId,
+        name: &str,
+        person: &UserId,
+        governor: Option<&PeerOrigin>,
+        listing: RoomListing,
+    ) -> bool {
+        // The authority the listing names: the listed governor, or the person
+        // who owns the room. Enrollment names neither.
+        let listed = match (listing, governor) {
+            (RoomListing::Enrolled, _) => None,
+            (RoomListing::Directory, Some(governor)) => Some(RoomAuthority::Peer(governor.clone())),
+            (RoomListing::Directory, None) => person_root(person).map(RoomAuthority::Person),
+        };
+        if room.is_nil() || is_local_person_room(room) {
             return false;
         }
         if let Some(index) = self
@@ -3962,10 +4067,18 @@ impl WorkspaceTree {
             if owned {
                 workspace.set_owner(person.clone());
             }
-            let pinned = match governor {
-                Some(governor) if self.room_authority(room) == RoomAuthority::Unpinned => {
-                    self.room_authority
-                        .insert(room, RoomAuthority::Peer(governor.clone()));
+            let person_owns = workspace.owner.as_deref() == Some(person.as_str());
+            // A person pin on a room the person does not own is provisional
+            // (a continuation offer's): the directory says who actually
+            // governs the room.
+            let current = self.room_authority(room);
+            let replaceable = current == RoomAuthority::Unpinned
+                || (matches!(current, RoomAuthority::Person(_)) && !person_owns);
+            let pinned = match listed {
+                // The person governs only a room it owns.
+                Some(RoomAuthority::Person(_)) if !person_owns => false,
+                Some(listed) if replaceable && listed != current => {
+                    self.room_authority.insert(room, listed);
                     true
                 }
                 _ => false,
@@ -3996,12 +4109,8 @@ impl WorkspaceTree {
         if first {
             self.desktop.active = id;
         }
-        self.room_authority.insert(
-            room,
-            governor.map_or(RoomAuthority::Unpinned, |governor| {
-                RoomAuthority::Peer(governor.clone())
-            }),
-        );
+        self.room_authority
+            .insert(room, listed.unwrap_or(RoomAuthority::Unpinned));
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
@@ -5581,6 +5690,9 @@ mod automerge_foundation_tests {
         let mut guest = WorkspaceTree::bootstrap_demo();
         let guest_ws = guest.desktop.workspaces[0].id;
         assert!(guest.set_room(guest_ws, room));
+        // The host's invite names it (hub 1, as `ship` delivers it) as the
+        // room's governor; a join alone names nobody.
+        assert!(guest.pin_room_authority(room, PeerOrigin::hub(1)));
         guest.adopt_ownerless_workspaces(&"xaver".to_string());
         (host, guest, room)
     }
@@ -5936,6 +6048,8 @@ mod automerge_foundation_tests {
                 let mut guest = WorkspaceTree::bootstrap_demo();
                 let guest_ws = guest.desktop.workspaces[0].id;
                 assert!(guest.set_room(guest_ws, room));
+                // The invite pins the host as the room's governor.
+                assert!(guest.pin_room_authority(room, PeerOrigin::hub(1)));
                 guest.adopt_ownerless_workspaces(&"bob".to_string());
 
                 // The guest projects first — that is what leaves a patch log
@@ -8081,6 +8195,10 @@ mod active_group_tests {
 mod shell_media_policy;
 
 #[cfg(test)]
+#[path = "state/apply_room_changes_tests.rs"]
+mod apply_room_changes_tests;
+
+#[cfg(test)]
 mod active_workspace_peer_count_tests {
     //! Coverage for [`active_workspace_peer_count`] — the shared helper
     //! used by chrome that summarizes the active workspace roster.
@@ -9204,6 +9322,7 @@ mod workspace_tree_lifecycle_tests {
                         id: "document:brief".into(),
                         kind: "document".into(),
                         label: "Release brief".into(),
+                        agent_request: None,
                     }),
                 )
                 .expect("non-empty task is created");

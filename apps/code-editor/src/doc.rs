@@ -16,7 +16,7 @@
 //! and `ui::State::commit_action` can snapshot/restore the whole doc.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 #[cfg(test)]
@@ -73,38 +73,12 @@ pub enum ParentPatch<'a> {
 }
 
 impl EditorDoc {
-    /// Return the durable project identity, minting it once inside the shared
-    /// document.
-    pub fn ensure_project_id(doc: &mut AutoCommit, proposed: &str) -> String {
-        if let Ok(Some((Value::Scalar(value), _))) = doc.get(&ROOT, "project_id")
-            && let ScalarValue::Str(id) = value.as_ref()
-            && uuid::Uuid::parse_str(id).is_ok()
-        {
-            return id.to_string();
-        }
-        let id = if uuid::Uuid::parse_str(proposed).is_ok() {
-            proposed.to_string()
-        } else {
-            uuid::Uuid::new_v4().to_string()
-        };
-        let _ = doc.put(&ROOT, "project_id", id.as_str());
-        id
-    }
-
-    /// The durable project id, when one has been written.
-    pub fn project_id(doc: &AutoCommit) -> Option<String> {
-        match doc.get(&ROOT, "project_id") {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Str(id) if uuid::Uuid::parse_str(id).is_ok() => Some(id.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     /// Get-or-create the durable file-record namespace. Unlike `buffers`, this
     /// is the collaborative project tree rather than a cache of editor panes.
     pub fn files_map(doc: &mut AutoCommit) -> Option<ObjId> {
+        if ui::record::genesis_actor(doc).is_some() {
+            return ui::record::bootstrap::object(doc, &ROOT, "files", ObjType::Map);
+        }
         match doc.get(&ROOT, "files") {
             Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
             _ => doc.put_object(&ROOT, "files", ObjType::Map).ok(),
@@ -177,7 +151,12 @@ impl EditorDoc {
         if doc.get(&files, &file.id).ok().flatten().is_some() {
             return false;
         }
-        let Ok(item) = doc.put_object(&files, &file.id, ObjType::Map) else {
+        let item = if ui::record::genesis_actor(doc).is_some() {
+            ui::record::bootstrap::object(doc, &files, &file.id, ObjType::Map)
+        } else {
+            doc.put_object(&files, &file.id, ObjType::Map).ok()
+        };
+        let Some(item) = item else {
             return false;
         };
         let _ = doc.put(&item, "name", file.name.as_str());
@@ -257,6 +236,9 @@ impl EditorDoc {
     /// Get-or-create the top-level `buffers` Map.
     ///
     pub fn buffers_map(doc: &mut AutoCommit) -> Option<ObjId> {
+        if ui::record::genesis_actor(doc).is_some() {
+            return ui::record::bootstrap::object(doc, &ROOT, "buffers", ObjType::Map);
+        }
         match doc.get(&ROOT, "buffers") {
             Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
             _ => doc.put_object(&ROOT, "buffers", ObjType::Map).ok(),
@@ -296,6 +278,11 @@ impl EditorDoc {
         if let Ok(Some((Value::Object(ObjType::Text), t))) = doc.get(&buffers, key) {
             Some(t)
         } else {
+            if ui::record::genesis_actor(doc).is_some() {
+                let text = ui::record::bootstrap::object(doc, &buffers, key, ObjType::Text)?;
+                ui::record::bootstrap::seed_text(doc, &text, seed)?;
+                return Some(text);
+            }
             let t = doc.put_object(&buffers, key, ObjType::Text).ok()?;
             if !seed.is_empty() {
                 let _ = doc.splice_text(&t, 0, 0, seed);
@@ -312,31 +299,6 @@ impl EditorDoc {
 
     pub fn read_buffer_key(doc: &AutoCommit, key: &str) -> Option<String> {
         Self::buffer_text_key(doc, key).and_then(|t| doc.text(&t).ok())
-    }
-
-    /// Get-or-create the Map that scopes the embedded terminal's CRDT state.
-    /// The `TerminalWidget` stores its grid + cursor under whatever object it's
-    /// handed as "root"; giving it a dedicated sub-map keeps its keys
-    /// (`terminal_grid`, `cursor`) out of the editor's own root namespace.
-    ///
-    /// # Panics
-    /// Never in practice: `put_object` on `ROOT` only fails for an invalid or
-    /// deleted parent object, and `ROOT` is permanent for the life of the doc.
-    #[allow(
-        clippy::expect_used,
-        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
-    )]
-    pub fn terminal_root(doc: &mut AutoCommit) -> ObjId {
-        let _ = tilo_actions::Action::apply(
-            &crate::actions::CodeEditorAction::EnsureTerminalPanel,
-            doc,
-        );
-        match Self::terminal_panel(doc) {
-            Some(id) => id,
-            None => doc
-                .put_object(&ROOT, "terminal_panel", ObjType::Map)
-                .expect("put_object terminal_panel on root never fails"),
-        }
     }
 
     /// The embedded terminal's map, when the document already has one.
@@ -367,23 +329,7 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     #[test]
-    fn project_identity_and_exhausted_file_revisions_refuse_to_overwrite() {
-        // Project identity persists and does not collide.
-        {
-            let proposed_a = "00000000-0000-4000-8000-000000000011";
-            let proposed_b = "00000000-0000-4000-8000-000000000012";
-            let mut a = AutoCommit::new();
-            let mut b = AutoCommit::new();
-            let id_a = EditorDoc::ensure_project_id(&mut a, proposed_a);
-            assert_eq!(EditorDoc::ensure_project_id(&mut a, proposed_b), id_a);
-            assert_eq!(EditorDoc::ensure_project_id(&mut b, proposed_b), proposed_b);
-            assert_ne!(id_a, EditorDoc::ensure_project_id(&mut b, proposed_b));
-
-            let bytes = a.save();
-            let mut peer = AutoCommit::load(&bytes).unwrap_or_else(|_| AutoCommit::new());
-            assert_eq!(EditorDoc::ensure_project_id(&mut peer, proposed_b), id_a);
-        }
-
+    fn exhausted_file_revisions_refuse_to_overwrite() {
         // An exhausted field revision refuses without partially mutating metadata.
         {
             let mut doc = AutoCommit::new();

@@ -17,7 +17,12 @@ pub mod local;
 
 /// The `settings.json` section owned by this crate.
 pub const SETTINGS_SECTION: &str = "agent_providers";
+/// The key holding the providers of this device and its network, and the
+/// default: they stay on the device.
 const CONFIG_KEY: &str = "config";
+/// The key holding the hosted providers: they name no device, so they roam
+/// with the person.
+const HOSTED_KEY: &str = "hosted";
 
 /// The request dialect spoken by a provider endpoint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +119,10 @@ pub struct ModelDescriptor {
     pub label: String,
     /// Best known input-context size. `None` means unknown, not unlimited.
     pub context_window: Option<u32>,
+    /// Optional Settings-owned request policy. Runtime context is a configured
+    /// deployment limit, separate from this model's source context capacity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_limits: Option<ModelRequestLimits>,
     /// Immutable release revision when this model comes from the signed local
     /// model catalogue. Hosted providers often cannot supply one, so absence
     /// means "not attested", never "latest".
@@ -137,11 +146,52 @@ impl Default for ModelDescriptor {
             id: String::new(),
             label: String::new(),
             context_window: None,
+            request_limits: None,
             revision: None,
             vision: false,
             face_recognition: false,
             tool_calling: true,
         }
+    }
+}
+
+/// Explicit request limits for one selected model; not a capability or runtime
+/// attestation. None on a descriptor preserves legacy request shaping.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRequestLimits {
+    pub max_output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_context_tokens: Option<u32>,
+    /// Owner-configured Plan deadline ceiling; absent preserves 60 seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_timeout_ms: Option<u32>,
+}
+
+impl ModelRequestLimits {
+    /// Validate bounded settings without estimating the token count of a prompt.
+    ///
+    /// # Errors
+    /// Returns a diagnostic for an invalid allowance or contradictory context.
+    pub fn validate(&self, source_context: Option<u32>) -> Result<(), &'static str> {
+        if self.max_output_tokens == 0 || self.max_output_tokens > 65_536 {
+            return Err("Output allowance must be between 1 and 65536 tokens.");
+        }
+        if let Some(context) = self.runtime_context_tokens
+            && (context == 0
+                || context > 1_048_576
+                || self.max_output_tokens >= context
+                || source_context.is_some_and(|source| context > source))
+        {
+            return Err("Runtime context must fit the model and leave room beyond output.");
+        }
+        if self
+            .plan_timeout_ms
+            .is_some_and(|timeout| timeout == 0 || timeout > 900_000)
+        {
+            return Err("Plan timeout must be between 1 and 900000 milliseconds.");
+        }
+        Ok(())
     }
 }
 
@@ -336,6 +386,15 @@ impl ProviderProfile {
     }
 }
 
+/// The hosted providers of a configuration, as they roam with the person:
+/// each names an endpoint on the internet and a reference to its key, never
+/// the key, which each device keeps in its own vault.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostedProfiles {
+    pub profiles: Vec<ProviderProfile>,
+}
+
 /// A portable profile list and the user's deliberate default. Kept separate
 /// from a task: tasks capture a chosen model at start so changing this default
 /// does not change work already in progress.
@@ -362,12 +421,66 @@ impl ProviderConfig {
     }
 
     fn from_section(section: &Map<String, Value>) -> Self {
-        section
+        let local = section
             .get(CONFIG_KEY)
             .cloned()
             .and_then(|value| serde_json::from_value::<Self>(value).ok())
-            .unwrap_or_default()
-            .sanitised()
+            .unwrap_or_default();
+        let hosted = section
+            .get(HOSTED_KEY)
+            .cloned()
+            .and_then(|value| serde_json::from_value::<HostedProfiles>(value).ok())
+            .unwrap_or_default();
+        Self::from_stored(local, hosted).sanitised()
+    }
+
+    /// This configuration as it is stored: the providers of this device and
+    /// its network with the default, which stay on the device, and the
+    /// hosted providers, which roam with the person.
+    #[must_use]
+    pub fn stored(self) -> (Self, HostedProfiles) {
+        let (hosted, local): (Vec<_>, Vec<_>) = self
+            .profiles
+            .into_iter()
+            .partition(|profile| profile.location == EndpointLocation::Hosted);
+        (
+            Self {
+                profiles: local,
+                default_profile: self.default_profile,
+            },
+            HostedProfiles { profiles: hosted },
+        )
+    }
+
+    /// The configuration stored as `local` and `hosted`; a profile stored in
+    /// both is the local one.
+    #[must_use]
+    pub fn from_stored(local: Self, hosted: HostedProfiles) -> Self {
+        let mut profiles = local.profiles;
+        for profile in hosted.profiles {
+            if !profiles.iter().any(|known| known.id == profile.id) {
+                profiles.push(profile);
+            }
+        }
+        Self {
+            profiles,
+            default_profile: local.default_profile,
+        }
+    }
+
+    /// The section's two keys for this configuration.
+    fn section(&self) -> std::io::Result<Map<String, Value>> {
+        let (local, hosted) = self.clone().sanitised().stored();
+        let mut section = Map::new();
+        section.insert(
+            CONFIG_KEY.to_string(),
+            serde_json::to_value(local).map_err(std::io::Error::other)?,
+        );
+        section.insert(
+            HOSTED_KEY.to_string(),
+            serde_json::to_value(hosted).map_err(std::io::Error::other)?,
+        );
+        Ok(section)
     }
 
     /// Merge our single configuration payload into the shared settings file.
@@ -379,13 +492,7 @@ impl ProviderConfig {
     /// Returns an error if the configuration cannot be serialised or the
     /// shared settings document cannot be updated.
     pub fn save(&self) -> std::io::Result<()> {
-        let config = self.clone().sanitised();
-        let mut section = Map::new();
-        section.insert(
-            CONFIG_KEY.to_string(),
-            serde_json::to_value(config).map_err(std::io::Error::other)?,
-        );
-        settings_store::update_section(SETTINGS_SECTION, section)
+        settings_store::update_section(SETTINGS_SECTION, self.section()?)
     }
 
     /// Save this configuration to the shared settings document at `path`.
@@ -395,13 +502,7 @@ impl ProviderConfig {
     /// Returns an error if the configuration cannot be serialised or the
     /// settings document at `path` cannot be updated.
     pub fn save_at(&self, path: &Path) -> std::io::Result<()> {
-        let config = self.clone().sanitised();
-        let mut section = Map::new();
-        section.insert(
-            CONFIG_KEY.to_string(),
-            serde_json::to_value(config).map_err(std::io::Error::other)?,
-        );
-        settings_store::update_section_at(path, SETTINGS_SECTION, section)
+        settings_store::update_section_at(path, SETTINGS_SECTION, self.section()?)
     }
 
     /// Validate storage and runtime-safe invariants, returning user-facing
@@ -442,6 +543,13 @@ impl ProviderConfig {
                     &profile.id,
                     "Every model needs a unique id.",
                 ));
+            }
+            for model in &profile.models {
+                if let Some(limits) = &model.request_limits
+                    && let Err(message) = limits.validate(model.context_window)
+                {
+                    issues.push(ProfileIssue::new(&profile.id, message));
+                }
             }
             if profile.reasoning.as_ref().is_some_and(|reasoning| {
                 reasoning.param != ReasoningParam::Omit
@@ -518,7 +626,10 @@ impl ProviderConfig {
         Some(removed)
     }
 
-    fn sanitised(mut self) -> Self {
+    /// The configuration as it is stored and read: profiles without an id,
+    /// models without an id and defaults naming no model are dropped.
+    #[must_use]
+    pub fn sanitised(mut self) -> Self {
         // Do not turn unknown/malformed input into a usable provider.
         self.profiles
             .retain(|profile| !profile.id.trim().is_empty());
@@ -567,6 +678,83 @@ fn is_safe_endpoint(endpoint: &str, location: EndpointLocation) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_request_limits_preserve_legacy_and_validate_runtime_room() {
+        let legacy = ModelDescriptor::new("m");
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("request_limits")
+                .is_none()
+        );
+        let mut profile = ProviderProfile::local_vllm();
+        profile.models = vec![legacy];
+        let mut config = ProviderConfig {
+            profiles: vec![profile],
+            default_profile: None,
+        };
+        for (output, context, source, valid) in [
+            (512, Some(4096), Some(262_144), true),
+            (512, None, None, true),
+            (0, Some(4096), None, false),
+            (65_537, None, None, false),
+            (4096, Some(4096), None, false),
+            (512, Some(1_048_577), None, false),
+            (512, Some(8192), Some(4096), false),
+        ] {
+            config.profiles[0].models[0].context_window = source;
+            config.profiles[0].models[0].request_limits = Some(ModelRequestLimits {
+                max_output_tokens: output,
+                runtime_context_tokens: context,
+                plan_timeout_ms: None,
+            });
+            assert_eq!(config.validation_errors().is_empty(), valid);
+        }
+        for (timeout, valid) in [
+            (None, true),
+            (Some(1), true),
+            (Some(900_000), true),
+            (Some(0), false),
+            (Some(900_001), false),
+        ] {
+            let limits = ModelRequestLimits {
+                max_output_tokens: 512,
+                runtime_context_tokens: Some(4096),
+                plan_timeout_ms: timeout,
+            };
+            assert_eq!(limits.validate(None).is_ok(), valid);
+            if timeout.is_none() {
+                assert_eq!(
+                    serde_json::to_value(&limits).unwrap(),
+                    serde_json::json!({"max_output_tokens":512,"runtime_context_tokens":4096})
+                );
+            }
+        }
+        for malformed in [
+            serde_json::json!(true),
+            serde_json::json!("1000"),
+            serde_json::json!(-1),
+        ] {
+            assert!(
+                serde_json::from_value::<ModelRequestLimits>(serde_json::json!({
+                "max_output_tokens":512,"plan_timeout_ms":malformed}))
+                .is_err()
+            );
+        }
+        assert!(
+            serde_json::from_value::<ModelRequestLimits>(
+                serde_json::json!({"max_output_tokens":false})
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ModelRequestLimits>(
+                serde_json::json!({"max_output_tokens":512,"hidden_override":true})
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn request_shape_is_profile_configuration_not_host_inference() {
@@ -729,4 +917,36 @@ mod tests {
         assert!(body.contains("appearance"));
         assert!(!body.contains("sk-live-secret"));
     }
+
+    /// A hosted provider is stored apart from the ones on this device, so it
+    /// roams with the person while a loopback endpoint and the default stay.
+    #[test]
+    fn hosted_providers_are_stored_apart_from_this_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let hosted = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        let local = ProviderProfile::local_vllm();
+        let config = ProviderConfig {
+            default_profile: Some(local.id.clone()),
+            profiles: vec![local.clone(), hosted.clone()],
+        };
+        config.save_at(&path).unwrap();
+        assert_eq!(ProviderConfig::load_at(&path), config);
+        let document = settings_store::load_at(&path);
+        let section = document[SETTINGS_SECTION].as_object().unwrap();
+        let stored: ProviderConfig = serde_json::from_value(section[CONFIG_KEY].clone()).unwrap();
+        let roaming: HostedProfiles = serde_json::from_value(section[HOSTED_KEY].clone()).unwrap();
+        assert_eq!(stored.profiles, vec![local]);
+        assert_eq!(stored.default_profile, config.default_profile);
+        assert_eq!(roaming.profiles, vec![hosted]);
+        assert!(settings_store::continuity::is_personal(
+            "tilo.agent_providers.hosted"
+        ));
+        assert!(!settings_store::continuity::is_personal(
+            "tilo.agent_providers.config"
+        ));
+    }
 }
+
+/// Typed local-speech configuration and its private worker wire format.
+pub mod speech;

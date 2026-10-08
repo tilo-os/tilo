@@ -2,6 +2,11 @@
 """Explicit, local SDK app collection stages. See collection.md."""
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 11):
+    raise SystemExit('macOS collection requires Python 3.11+; invoke an existing compatible interpreter explicitly')
+
 import argparse
 from contextlib import contextmanager
 import fcntl
@@ -11,7 +16,6 @@ import os
 from pathlib import Path
 import platform
 import subprocess
-import sys
 import tempfile
 import tomllib
 

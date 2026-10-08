@@ -124,6 +124,9 @@ impl Widget for Spacer {
                 flex_shrink: 1.0,
                 ..Default::default()
             },
+            // A zero step is no gap at all: out of the flow, so the
+            // container does not put its own gap on both sides of it.
+            Some(px) if px <= 0.0 => super::when::removed_from_flow(),
             Some(px) => Style {
                 flex_grow: 0.0,
                 flex_shrink: 0.0,
@@ -376,7 +379,11 @@ mod tests {
             let mut nodes = std::collections::HashMap::new();
             let mut spacer = Spacer::fixed(-8.0);
             let node = spacer.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-            assert_eq!(taffy.style(node).unwrap().size.width, length(0.0_f32));
+            assert_eq!(
+                taffy.style(node).unwrap().display,
+                taffy::Display::None,
+                "clamped to nothing, and out of the flow"
+            );
         }
     }
 }

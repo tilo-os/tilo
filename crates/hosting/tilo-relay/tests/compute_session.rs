@@ -152,6 +152,21 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
         .await
         .unwrap();
 
+    // Sending a frame does not establish processing order with a new
+    // connection. Fence the status on this ordered stream before reconnecting,
+    // as the offline-cancel scenario does for its durable enqueue.
+    worker_client.send(&ComputeEnvelope::Ping).await.unwrap();
+    assert!(matches!(
+        tilo_test_env::within(
+            "relay processed status before reconnect",
+            worker_client.receive()
+        )
+        .await
+        .unwrap()
+        .envelope,
+        ComputeEnvelope::Pong
+    ));
+
     let mut requester_again = ComputeClient::connect(
         client_endpoint().await,
         relay_address,

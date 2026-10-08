@@ -49,7 +49,7 @@ fn assert_finite_rects(widget: &dyn Widget, path: &str) {
     );
 }
 
-/// Compact headings, the region preview and finite region layout.
+/// Compact first controls, the region preview and finite region layout.
 #[test]
 fn compact_heading_and_region_layout_stay_balanced() {
     // Case `first_account_action_and_region_field_follow_compact_heading`.
@@ -68,9 +68,6 @@ fn compact_heading_and_region_layout_stay_balanced() {
                 first.y1 < limit,
                 "{category:?}: first control {first:?} below {limit}"
             );
-            let mut headings = Vec::new();
-            named(&*app, &category.label(), &mut headings);
-            assert!(headings.iter().any(|r| r.y1 < first.y0));
         }
     }
 

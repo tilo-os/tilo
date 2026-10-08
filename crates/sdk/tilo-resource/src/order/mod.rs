@@ -52,6 +52,13 @@ pub fn between(low: Option<&str>, high: Option<&str>) -> String {
     }
 }
 
+/// True when `key` is a key [`between`] could have made: non-empty, only
+/// `0-9a-z`, and not ending in `0`. Only such keys compare as fractions.
+#[must_use]
+pub fn is_key(key: &str) -> bool {
+    !key.is_empty() && !key.ends_with('0') && key.bytes().all(|c| DIGITS.contains(&c))
+}
+
 /// `count` keys in ascending order, all strictly between `low` and `high`.
 #[must_use]
 pub fn sequence(low: Option<&str>, high: Option<&str>, count: usize) -> Vec<String> {
@@ -84,7 +91,7 @@ mod tests {
             ];
             for (low, high) in cases {
                 let key = between(low, high);
-                assert!(!key.ends_with('0'), "{key}");
+                assert!(is_key(&key), "{key}");
                 if let Some(low) = low {
                     assert!(key.as_str() > low, "{low:?} < {key}");
                 }
@@ -104,6 +111,13 @@ mod tests {
             }
             let keys = sequence(Some("a"), Some("b"), 50);
             assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+        // phase: only_between_shaped_keys_are_keys
+        {
+            for bad in ["", "a0", "A", "a-b", " a"] {
+                assert!(!is_key(bad), "{bad:?}");
+            }
+            assert!(is_key("0001") && is_key("i") && is_key("zz"));
         }
     }
 }

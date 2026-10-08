@@ -557,6 +557,37 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
 }
 
 #[test]
+fn device_login_input_uses_the_physical_seat() {
+    use tilo_vm_protocol::{Input, InputAction};
+
+    let actions = vec![InputAction::Key {
+        combos: vec!["a".into()],
+    }];
+    let root = tempfile::tempdir().unwrap();
+    let mut login = Daemon::spawn_with(root.path(), "record-login");
+    login.client.hello("test").unwrap();
+    let sent = login
+        .client
+        .call(Input {
+            slot: "device".into(),
+            actions: actions.clone(),
+        })
+        .unwrap();
+    assert_eq!(sent.seat, "seat0");
+    assert!(sent.events > 0);
+
+    let board_root = tempfile::tempdir().unwrap();
+    let mut board = Daemon::spawn_with(board_root.path(), "record-device");
+    board.client.hello("test").unwrap();
+    let error = rpc_error(board.client.call(Input {
+        slot: "device".into(),
+        actions,
+    }));
+    assert_eq!(error.code, code::INVALID);
+    assert!(error.message.contains("headless"));
+}
+
+#[test]
 fn the_device_slot_is_the_machines_own_session() {
     // Phase `a_machine_without_its_own_session_has_no_device_slot`.
     {
@@ -736,4 +767,47 @@ fn the_device_slot_is_the_machines_own_session() {
             unit: "tilo-vm-session@agent-a.service".into()
         }));
     }
+}
+
+#[test]
+fn chunked_upload_preserves_verified_layer_and_cache() {
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(root.path());
+    daemon.client.hello("upload-ack-test").unwrap();
+    // Send multiple chunks and leave a short final chunk.
+    let data = vec![83_u8; tilo_vm_protocol::UPLOAD_CHUNK_BYTES * 5 + 17];
+    let bytes = tarball("usr/bin/shell", &data);
+    let hash = import(&mut daemon.client, "shell", &bytes);
+    let installed =
+        std::fs::read(root.path().join("layers").join(&hash).join("usr/bin/shell")).unwrap();
+    assert_eq!(
+        sha2::Sha256::digest(&installed),
+        sha2::Sha256::digest(&data)
+    );
+    assert_eq!(installed.len(), data.len());
+    let again = import(&mut daemon.client, "shell", &bytes);
+    assert_eq!(again, hash, "chunked uploads preserve layer identity");
+    let layers = daemon.client.call(LayerList {}).unwrap();
+    assert_eq!(
+        layers.len(),
+        1,
+        "the existing content cache reuses the layer"
+    );
+    assert_eq!(layers[0].hash, hash);
+    assert_eq!(layers[0].provenance.component, "shell");
+
+    let invalid = tarball("etc/unapproved", b"bad layer");
+    let upload = daemon.client.upload(invalid.as_slice()).unwrap();
+    assert!(
+        daemon
+            .client
+            .call(LayerImport {
+                source: LayerSource::Upload(upload),
+                provenance: Box::new(Provenance::local("shell")),
+            })
+            .is_err()
+    );
+    let retained = daemon.client.call(LayerList {}).unwrap();
+    assert_eq!(retained.len(), 1, "rejected imports cannot publish a layer");
+    assert_eq!(retained[0].hash, hash);
 }

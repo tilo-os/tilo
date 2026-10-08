@@ -1,4 +1,4 @@
-"""Reviewed Tube media additions; no automatic plugin or package expansion."""
+"""Reviewed media additions; no automatic plugin or package expansion."""
 from pathlib import Path
 import time
 
@@ -23,6 +23,24 @@ PACKAGES = {'gstreamer', 'libass', 'libunibreak', 'harfbuzz', 'graphite2', 'free
             'libpng', 'fribidi', 'cairo', 'pixman', 'libxcb', 'libxdmcp', 'libxau',
             'libxrender', 'libx11', 'libxext', 'fontconfig', 'pango', 'libthai', 'libdatrie'}
 DATA = {'libthai': 'share/libthai/thbrk.tri', 'libunibreak': 'LICENCE'}
+PLUGIN_ADDITIONS = {
+    'tube': set(),
+    'video-player': {'avi'},
+    'video-editor': {'avi', 'x264', 'opus', 'ogg', 'wavparse', 'aiff', 'asf', 'flac',
+                     'flv', 'mpegpsdemux', 'mpegtsdemux', 'id3demux', 'apetag'},
+}
+LIBRARY_ADDITIONS = {
+    'tube': set(), 'video-player': set(),
+    'video-editor': {'libgstmpegts-1.0.0.dylib', 'libFLAC.14.dylib', 'libogg.0.8.6.dylib',
+                     'libgstsdp-1.0.0.dylib', 'libgstrtsp-1.0.0.dylib'},
+}
+PACKAGE_ADDITIONS = {'tube': set(), 'video-player': set(), 'video-editor': {'flac', 'libogg'}}
+
+
+def expected_packages(name):
+    if name not in PACKAGE_ADDITIONS:
+        raise ValueError('unreviewed media app')
+    return PACKAGES | PACKAGE_ADDITIONS[name]
 
 
 def additional_assets(plan, profile):
@@ -30,7 +48,10 @@ def additional_assets(plan, profile):
     deadline = time.monotonic() + 30
     assets = plan['assets']
     packages = {Path(root).parent.name: record for root, record in profile['packages'].items()}
-    for name in sorted(PACKAGES - {'gstreamer'}):
+    expected = expected_packages(profile.get('app'))
+    if len(packages) != len(profile['packages']) or set(packages) != expected:
+        raise ValueError('media package evidence must match the app without duplicate versions')
+    for name in sorted(expected - {'gstreamer'}):
         record = packages[name]
         root = Path(record['package_root'])
         notices = record['top_level_notice_candidates']

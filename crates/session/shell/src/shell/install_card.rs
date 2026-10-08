@@ -13,9 +13,7 @@ use winit::event::WindowEvent;
 use ui::Theme;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
-use ui::widget::{
-    AppKind, AppModel, AppWidget, EmptyState, EventCtx, IconDescriptor, ModelPath, Widget,
-};
+use ui::widget::{AppKind, AppWidget, EmptyState, EventCtx, IconDescriptor, ModelPath, Widget};
 
 use crate::shell::state::TabId;
 
@@ -54,7 +52,11 @@ impl InstallCard {
     pub(crate) fn press_for_test(&mut self) {
         let mut state = automerge::AutoCommit::new();
         let path = automerge::ROOT;
-        self.perform_action(&ui::a11y::Action::Activate, &mut state, &path);
+        self.perform_action(
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut state),
+            &path,
+        );
     }
 }
 
@@ -108,7 +110,7 @@ impl Widget for InstallCard {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let performed = self.card.perform_action(action, state, path);
@@ -120,7 +122,7 @@ impl Widget for InstallCard {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let performed = self

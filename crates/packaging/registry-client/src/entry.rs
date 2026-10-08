@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde::Deserialize;
+use tilo_app_package::chunks::ObjectDir;
 use tilo_app_package::manifest::Arch;
 use tilo_app_package::{DiscardBlobs, Manifest, PackageId, Verification};
 
@@ -96,14 +97,42 @@ pub struct Checked {
 ///
 /// Why the registry would refuse the package.
 pub fn check_package(tapp_bytes: &[u8], publisher: [u8; 32]) -> Result<Checked> {
+    check_package_with(tapp_bytes, publisher, None)
+}
+
+/// [`check_package`] for a package whose payload blobs the `.tapp` need not
+/// carry: each missing blob is read from `objects` (the directory
+/// `tilo-app-package split` wrote, published beside the thin `.tapp`) and
+/// checked against its hash, so the payload shape and size limits are
+/// checked on what installs will actually materialize.
+///
+/// # Errors
+///
+/// Why the registry would refuse the package, or a blob neither carried nor
+/// in `objects`.
+pub fn check_package_with(
+    tapp_bytes: &[u8],
+    publisher: [u8; 32],
+    objects: Option<&ObjectDir>,
+) -> Result<Checked> {
     let tapp = tilo_app_package::tapp::read(tapp_bytes, &mut DiscardBlobs)
         .map_err(|error| anyhow!("decode .tapp: {error}"))?;
+    let mut lengths = tapp.carried.clone();
     let missing = tapp.missing();
     if !missing.is_empty() {
-        bail!(
-            "publish the full .tapp; {} payload blob(s) are not carried",
-            missing.len()
-        );
+        let Some(objects) = objects else {
+            bail!(
+                "publish the full .tapp, or the thin one with its payload objects; {} payload blob(s) are not carried",
+                missing.len()
+            );
+        };
+        for hash in missing {
+            let len = objects
+                .verified_len(&hash)
+                .map_err(|error| anyhow!("payload object {hash}: {error}"))?
+                .ok_or_else(|| anyhow!("no payload object for blob {hash}"))?;
+            lengths.insert(hash, len);
+        }
     }
     let manifest = &tapp.meta.manifest;
     let payload_paths: Vec<PathBuf> = tapp
@@ -116,9 +145,17 @@ pub fn check_package(tapp_bytes: &[u8], publisher: [u8; 32]) -> Result<Checked> 
     tilo_app_package::validate_manifest_with_payload(manifest, &payload_paths)
         .map_err(|error| anyhow!("manifest/payload validation: {error}"))?;
     tilo_app_package::validate_materialized_payload(manifest, &tapp.meta.collection, |hash| {
-        tapp.carried.get(hash).copied()
+        lengths.get(hash).copied()
     })
     .map_err(|error| anyhow!("{error}"))?;
+    let payload_bytes = lengths
+        .values()
+        .fold(0u64, |sum, len| sum.saturating_add(*len));
+    if let Some(limit) = tilo_app_package::payload_size_limit(manifest)
+        && payload_bytes > limit
+    {
+        bail!("the payload is {payload_bytes} bytes; limit is {limit} bytes");
+    }
     match tilo_app_package::verify(&tapp.meta, &[publisher]) {
         Verification::Trusted { .. } | Verification::AttestedBy { .. } => {}
         Verification::UntrustedPublisher { identity, .. } => bail!(
@@ -151,10 +188,6 @@ pub fn check_package(tapp_bytes: &[u8], publisher: [u8; 32]) -> Result<Checked> 
 ///
 /// When the package fails [`check_package`], does not match `platform` or
 /// `arch`, or conflicts with `previous`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "registry entry assembly must bind package inspection, target selection, metadata, prior-entry continuity, validation, and signing in one auditable sequence"
-)]
 pub fn build_entry(
     tapp_bytes: &[u8],
     url: &str,
@@ -166,13 +199,80 @@ pub fn build_entry(
     retention: &registry_types::retention::RetentionPolicy,
 ) -> Result<registry_types::RegistryEntry> {
     let checked = check_package(tapp_bytes, signer.verifying_key().to_bytes())?;
+    entry_for_checked(
+        (tapp_bytes, &checked),
+        url,
+        signer,
+        platform,
+        arch,
+        previous,
+        metadata,
+        retention,
+    )
+}
+
+/// A thin `.tapp` and the directory of payload objects hosted beside it.
+#[derive(Clone, Copy)]
+pub struct ThinPackage<'a> {
+    pub tapp: &'a [u8],
+    pub objects: &'a ObjectDir,
+}
+
+/// [`build_entry`] for a thin `.tapp` whose payload objects (the directory
+/// `tilo-app-package split` wrote) are hosted beside it at `url`; the payload
+/// is checked from `package.objects` (see [`check_package_with`]).
+///
+/// # Errors
+///
+/// As [`build_entry`], or a payload blob missing from `objects`.
+pub fn build_entry_with_objects(
+    package: ThinPackage<'_>,
+    url: &str,
+    signer: &SigningKey,
+    platform: Platform,
+    arch: Option<&str>,
+    previous: Option<&registry_types::RegistryEntry>,
+    metadata: Option<&EntryMetadata>,
+    retention: &registry_types::retention::RetentionPolicy,
+) -> Result<registry_types::RegistryEntry> {
+    let checked = check_package_with(
+        package.tapp,
+        signer.verifying_key().to_bytes(),
+        Some(package.objects),
+    )?;
+    entry_for_checked(
+        (package.tapp, &checked),
+        url,
+        signer,
+        platform,
+        arch,
+        previous,
+        metadata,
+        retention,
+    )
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "registry entry assembly must bind package inspection, target selection, metadata, prior-entry continuity, validation, and signing in one auditable sequence"
+)]
+fn entry_for_checked(
+    (tapp_bytes, checked): (&[u8], &Checked),
+    url: &str,
+    signer: &SigningKey,
+    platform: Platform,
+    arch: Option<&str>,
+    previous: Option<&registry_types::RegistryEntry>,
+    metadata: Option<&EntryMetadata>,
+    retention: &registry_types::retention::RetentionPolicy,
+) -> Result<registry_types::RegistryEntry> {
     let binding = match platform {
-        Platform::TiloOs => native_binding(tapp_bytes, &checked, arch)?,
+        Platform::TiloOs => native_binding(tapp_bytes, checked, arch)?,
         Platform::Web
         | Platform::Linux
         | Platform::Windows
         | Platform::Macos
-        | Platform::Android => signed_target_binding(tapp_bytes, &checked, platform, arch)?,
+        | Platform::Android => signed_target_binding(tapp_bytes, checked, platform, arch)?,
     };
     let package = &checked.manifest.package;
     let now = std::env::var("SOURCE_DATE_EPOCH")
@@ -332,7 +432,12 @@ fn native_binding(
             platform: registry_types::TILO_OS_PLATFORM.into(),
             architecture: arch_wire(arch).into(),
             isa: level.wire_label().to_string(),
-            runtime: checked.manifest.package.runtime.clone(),
+            runtime: checked
+                .manifest
+                .package
+                .native_runtime_binding()
+                .map(str::to_string),
+            interfaces: checked.manifest.required_interface_wire(),
         },
     })
 }
@@ -369,6 +474,7 @@ fn signed_target_binding(
         architecture: target.architecture.clone(),
         isa: target.isa.clone(),
         runtime: Some(target.runtime.clone()),
+        interfaces: Vec::new(),
     };
     if target.platform != platform.wire() {
         bail!(
@@ -483,6 +589,7 @@ mod tests {
                 architecture: "x86_64".into(),
                 isa: "x86_64-v3".into(),
                 runtime: None,
+                interfaces: Vec::new(),
             },
         }
     }
@@ -613,6 +720,7 @@ module = "{module}"
                 architecture: "aarch64".into(),
                 isa: "aarch64".into(),
                 runtime: Some("tilo-runtime/2026.07".into()),
+                interfaces: Vec::new(),
             }
         );
         assert!(registry_types::verify_entry_signature(&entry));

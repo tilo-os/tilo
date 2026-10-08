@@ -93,8 +93,6 @@ shortcut-new-window = New window
 shortcut-add-tab = Add tab here
 shortcut-duplicate-tab = Duplicate tab
 shortcut-open-terminal = Open terminal
-shortcut-global-search = Global search
-shortcut-lock = Lock
 shortcut-workspace-wheel = Workspace wheel
 shortcut-display-layout = Display layout
 shortcut-capture-screenshot = Capture screenshot
@@ -109,9 +107,9 @@ shortcut-vim-navigation = Vim navigation
 shortcut-dismiss = Dismiss
 
 # What each changeable desktop shortcut is called
-shortcut-name-search = Global search
+shortcut-name-search = Search everywhere
 shortcut-name-workspace-overview = Overview
-shortcut-name-lock = Lock
+shortcut-name-lock = Lock screen
 shortcut-name-quick-settings = Quick Settings
 shortcut-name-shortcut-help = Desktop help
 shortcut-name-focus-previous-window = Focus previous window
@@ -514,6 +512,7 @@ host-session-action-blocked = Session action blocked
 host-action-started = Started “{ $title }”
 host-action-admitted = Action job { $job } was admitted
 host-action-cannot-run = Can't run “{ $title }”
+host-action-failed-status = Couldn't run
 launchpad-action-unanswered = The app never answered
 host-search-placeholder = Search…
 host-search-in = Search in { $scope }…
@@ -1023,14 +1022,14 @@ notification-remote-input-stopped-shares = { $count ->
    *[other] Remote control was removed from { $count } shares; sharing was stopped.
 }
 
-# Media codec pack notices
+# Media formats notices
 codec-hardware-ready = Hardware H.264/HEVC is ready
-codec-installed = Media codecs installed
-codec-installed-mesa-waiting = { $applies } Hardware H.264/HEVC follows once RPM Fusion publishes a Mesa build matching this system.
-codec-failed = Media codecs could not be installed
+codec-installed = More video and audio formats are on
+codec-installed-mesa-waiting = { $applies } Hardware H.264/HEVC follows once a matching driver is published.
+codec-failed = More video and audio formats could not be turned on
 codec-failed-retry = Open Settings, Updates, to try again.
 codec-failed-with-error = { $error } Open Settings, Updates, to try again.
-codec-app-name = Media codecs
+codec-app-name = Video and audio formats
 
 # Screen capture surfaces
 capture-live-alt = Live capture: { $title }
@@ -1067,11 +1066,16 @@ launch-error-no-display = The desktop is still starting. Try again in a moment.
 launch-error-no-workspace = Choose a workspace, then try again.
 launch-error-shell-owned-intent = Open this destination from the desktop controls.
 launch-error-registry-unreadable = The app list could not be read. Try again.
+launch-error-sandbox-supervision = The app's file permissions could not be supervised. Try again.
 launch-error-host-app-refused = This app's desktop entry cannot be started.
 launch-failed-launcher-unavailable = The app launcher is unavailable. Open Applications and try again.
 launch-failed-stopped = The app stopped before opening. Open Applications and try again.
 launch-failed-missing-library = The app needs a library this system doesn't have, so it stopped before opening.
+launch-failed-runtime-mismatch = This app was built for a different Tilo runtime. Update or reinstall it to get the runtime it needs.
 launch-failed-sandbox = The app's sandbox could not be set up, so it stopped before opening.
+launch-failed-collaboration = The app couldn't join this workspace's collaboration service, so it stopped before opening. The desktop log says why.
+launch-failed-window-lost = Its window stopped without being closed. Open it again from Applications; the desktop log says why.
+launch-window-lost-title = { $app } closed unexpectedly
 launch-failed-crashed = The app crashed before opening. Open Applications and try again.
 launch-unnamed-app = application
 launch-failure-title = Couldn't open { $app }
@@ -1229,9 +1233,12 @@ search-opens-here = Opens here, as a tab
 # Search providers, as the search settings actions name them
 search-provider-now-playing = Now playing
 search-provider-records = Records
-search-provider-notes = Notes
-search-provider-editor = Editor
 search-provider-session = Session
+search-provider-permission-prompts = Permission requests
+permission-request-expired = Permission request is no longer pending
+permission-request-owner-required = Permission decisions require the current owner
+permission-request-permanent-owner-required = Permanent permission requires the current owner
+permission-request-confirm = Confirm this permission decision
 search-provider-shortcuts = Shortcuts
 search-provider-tray = Tray
 search-provider-files = Files
@@ -1438,8 +1445,6 @@ search-action-peer-invite-named = Name collaborator and open invite
 search-action-peer-invite-named-subtitle = Record the display name, then review their invite before creating it
 search-action-agent-invite = Invite agent to workspace
 search-action-agent-invite-subtitle = Start a scoped agent setup; choose every surface it may use
-search-action-text-insert = Insert text into the focused note
-search-action-text-insert-subtitle = Write into the focused Notes or Editor tab at a character offset
 search-action-record-bring = Add an item to this workspace
 search-action-record-bring-subtitle = Make it available here without moving the original
 search-action-quick-settings-brightness-set = Set display brightness
@@ -1528,6 +1533,14 @@ search-apps-opening-body = Loading…
 # Search: continuity actions across your certified devices
 search-continuity-certified-device = certified device
 search-continuity-play-on = Play { $source } on { $target }
+search-continuity-wake-device = Wake a device
+search-continuity-wake-device-subtitle = Sends a wake-up signal from a device on its network
+device-wake-app-name = Devices
+device-wake-rejoined = { $device } is awake
+device-wake-not-rejoined = { $device } did not wake up
+device-wake-not-rejoined-body = It got a wake-up signal but has not come back. It may be off or out of power.
+device-wake-failed = { $device } could not be woken
+device-wake-failed-body = No wake-up signal could be sent on its network.
 search-continuity-media-handoff-subtitle = Move this live media session to an exact certified device
 search-continuity-media-cancel = Cancel moving { $media }
 search-continuity-media-retry = Retry moving { $media }
@@ -1580,6 +1593,14 @@ search-continuity-calibration-revert = Revert placement for { $device }
 search-continuity-calibration-revert-subtitle = Restore the previous certified-display placement
 search-continuity-tether-request = Ask { $device } for tethering
 search-continuity-tether-request-subtitle = Request a short-lived, phone-approved connection
+search-continuity-unlock-approve = Unlock { $device } (code { $code })
+search-continuity-unlock-deny = Keep { $device } locked (code { $code })
+search-continuity-unlock-subtitle = It restarted and is asking to open its encrypted disk
+search-continuity-device-remove = Remove { $device } from your devices
+search-continuity-device-remove-subtitle = It can no longer act for you or unlock its disk through your devices
+device-unlock-error-not-pending = That unlock request is no longer waiting
+device-unlock-error-cannot-remove = This device cannot remove that device
+device-unlock-error-no-identity = This device does not hold your identity
 search-continuity-tether-allow = Allow tethering for { $device }
 search-continuity-tether-decline = Decline tethering for { $device }
 search-continuity-tether-consent-subtitle = Resolve this exact phone-side consent request
@@ -1692,15 +1713,28 @@ onboarding-nearby-code-label = Verification code
 onboarding-nearby-try-again = Try again
 
 # First-login identity setup: pairing with a nearby device
-onboarding-nearby-start-failed = Could not start nearby setup: { $error }
+onboarding-nearby-failed-title = Pairing did not finish
+onboarding-nearby-ended = The pairing window closed or approval was cancelled. Choose Try again.
+onboarding-nearby-unknown = Choose Try again.
+onboarding-nearby-detail = Details: { $detail }
+onboarding-nearby-permission-title = Permission denied: this computer was not allowed to save the pairing
+onboarding-nearby-permission = Tilo could not write where this computer keeps its device identity. Choose Try again once that is fixed.
+onboarding-nearby-storage-full-title = This computer's disk is full
+onboarding-nearby-storage-full = The pairing could not be saved. Free up some space, then choose Try again.
+onboarding-nearby-read-only-title = This computer's storage is read-only
+onboarding-nearby-read-only = The pairing could not be saved. Choose Try again once the storage can be written to.
+onboarding-nearby-unreachable-title = Your other device could not be reached
+onboarding-nearby-unreachable = Check that both devices are on the same network, then choose Try again.
+onboarding-nearby-timed-out-title = No trusted device approved this computer in time
+onboarding-nearby-timed-out = Choose Try again, then approve it on your other device.
+onboarding-nearby-invalid-identity-title = Your other device returned an invalid identity
+onboarding-nearby-invalid-identity = Choose Try again.
+onboarding-nearby-not-started-title = Nearby setup could not start
+onboarding-nearby-not-started = Choose Try again.
 onboarding-nearby-unavailable = Nearby setup is unavailable in this session
 onboarding-nearby-cancelled = Pairing cancelled. Choose Try again to start over.
 onboarding-nearby-code = Check that your other device shows the same code, then approve it there.
 onboarding-nearby-connected = Connected. Your workspaces will appear automatically.
-onboarding-nearby-invalid-identity = Your other device returned an invalid identity. Choose Try again.
-onboarding-nearby-failed = Pairing did not finish: the pairing window closed or approval was cancelled. Choose Try again.
-onboarding-nearby-failed-detail = Pairing did not finish: { $detail }. Choose Try again.
-onboarding-nearby-timed-out = Pairing did not finish: no trusted device approved it in time. Choose Try again.
 
 # First-login identity setup: encrypted backup
 onboarding-backup-title = Back up your Tilo identity
@@ -1745,31 +1779,25 @@ onboarding-done-system-care-body = Tilo checks signed system updates automatical
 onboarding-tour-take = Take a quick tour
 onboarding-finish = Continue to desktop
 
-# First-login setup: media codecs
-onboarding-codecs-title = Install media codecs?
-onboarding-codecs-body = H.264 and HEVC, the formats most videos, cameras and calls use, are patented and not part of Tilo. You can add them now with one click.
-onboarding-codecs-enables-title = What it enables
-onboarding-codecs-enables-hardware = Hardware-accelerated video on AMD and Intel graphics.
-onboarding-codecs-enables-playback = H.264 and HEVC playback in videos you open.
-onboarding-codecs-enables-encoding = H.264 and HEVC encoding for screen sharing, recording and calls.
-onboarding-codecs-source-title = Where it comes from
-onboarding-codecs-source = This computer downloads them directly from RPM Fusion and from Cisco (OpenH264), under those projects' own licences, and checks every package's signature. Tilo does not host or distribute them. You can remove them at any time in Settings, Updates.
-onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when the codecs are ready.
+# First-login setup: more video and audio formats
+onboarding-codecs-title = Play more video and audio formats
+onboarding-codecs-note = Downloaded to this device from the formats' publishers. You can turn it off in Settings.
+onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when it is ready.
 onboarding-codecs-progress = Progress: { $percent }%
 onboarding-codecs-starting = Starting…
-onboarding-codecs-installing-title = Installing media codecs
-onboarding-codecs-installing-message = { $status } Setup can continue while the download runs. You will get a notification when the codecs are ready.
-onboarding-codecs-offline-title = Media codecs will install once you are online
-onboarding-codecs-offline-message = This computer is not connected to the internet. Your choice is saved: the codecs install automatically as soon as it is online, and you will get a notification.
-onboarding-codecs-installed-title = Media codecs installed
-onboarding-codecs-failed-title = Media codecs could not be installed
-onboarding-codecs-failed-message = Try again, or install them later from Settings, Updates.
-onboarding-codecs-failed-message-detail = { $error } Try again, or install them later from Settings, Updates.
-onboarding-codecs-installer-failed = The installer could not start: { $error }
+onboarding-codecs-installing-title = Installing more formats
+onboarding-codecs-installing-message = { $status } Setup can continue while the download runs. You will get a notification when it is ready.
+onboarding-codecs-offline-title = Installs once you are online
+onboarding-codecs-offline-message = This device is not connected to the internet. Your choice is saved: the download starts by itself once it is online, and you will get a notification.
+onboarding-codecs-installed-title = More video and audio formats are on
+onboarding-codecs-failed-title = Could not install more formats
+onboarding-codecs-failed-message = Try again, or later from Settings, Updates.
+onboarding-codecs-failed-message-detail = { $error } Try again, or later from Settings, Updates.
+onboarding-codecs-installer-failed = The download could not start: { $error }
 onboarding-codecs-skip = Skip
 onboarding-codecs-not-now = Not now
 onboarding-codecs-retry = Try again
-onboarding-codecs-install = Install media codecs
+onboarding-codecs-install = Install
 
 # Desktop tour
 onboarding-tour-eyebrow = Desktop tour
@@ -1785,7 +1813,7 @@ onboarding-tour-navigate-title = Everything is close at hand
 onboarding-tour-navigate-intro = Tilo keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.
 onboarding-tour-search-title = Search
 onboarding-tour-search-title-mac = Search
-onboarding-tour-search-keys = Super+K or Super+Space
+onboarding-tour-search-keys = Super+Space
 onboarding-tour-search-keys-mac = Command+K or Option+Space
 onboarding-tour-search-body = Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.
 onboarding-tour-overview-title = Overview
@@ -2330,6 +2358,21 @@ nearby-error-folder-too-large = folder exceeds the size limit
 nearby-error-source-changed = nearby transfer source changed while staging
 nearby-error-name-not-portable = source name is not portable
 
+# AirDrop lab receiver verification
+airdrop-verify-title = Verify AirDrop receiver
+airdrop-verify-send-once = Send once
+airdrop-verify-detail = File: { $name }
+    Size: { $bytes } bytes
+    Receiver: { $endpoint }
+    Enter the receiver's SHA-256 certificate fingerprint as 64 hexadecimal digits from its trusted console or another independently verified channel. This sends the staged file once, only if the fingerprint matches. Cancel if you cannot verify the receiver.
+airdrop-error-unavailable = AirDrop lab requires an unlocked local session, file-transfer permission and current Files access.
+airdrop-error-source = AirDrop lab accepts one readable regular file up to 16 MiB.
+airdrop-error-busy = Another AirDrop attempt is still running. Cancel it before starting another.
+airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before a new attempt.
+airdrop-error-declined = AirDrop transfer was cancelled before sending.
+airdrop-error-verification = Fingerprint differs. Check the receiver; nothing sent.
+airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.
+
 # A document a tab could not restore
 hosted-document-unavailable = { $path } is unavailable: { $error }
 
@@ -2347,3 +2390,92 @@ a11y-speaker-listener = { $group } can calibrate with this microphone
 a11y-speaker-listener-description = Speaker calibration may listen with this microphone; activate to stop
 speaker-calibration-listening-refused = { $microphone } was not allowed to listen, so nothing can be measured from where you sit
 speaker-error-listening-unavailable = choose a microphone that can listen where you sit
+lock-screen-unlock = Unlock session
+shortcut-name-dictation-toggle = Start or finish dictation
+shortcut-name-dictation-finish = Finish dictation
+shortcut-name-dictation-cancel = Cancel dictation
+dictation-title = Dictation
+dictation-consent = Record your microphone for this dictation? Audio stays on this device.
+dictation-preparing = Checking the focused editable field…
+dictation-loading = Loading local recognition. The microphone is off.
+dictation-listening = Microphone on · Speak, then finish to insert.
+dictation-finishing = Microphone off · Finishing your text…
+dictation-stopping = Stopping dictation…
+dictation-editable-required = Focus an editable field. Passwords cannot receive dictation.
+dictation-busy = The previous dictation is still stopping. Try again shortly.
+dictation-target-changed = The field changed. Dictation was canceled without inserting text.
+dictation-timeout = Dictation timed out. No text was inserted.
+dictation-unavailable = Local dictation is unavailable. No text was inserted.
+dictation-model-required = Install an approved local speech model before using dictation.
+dictation-language-unavailable = This speech model does not support the requested language.
+dictation-microphone-unavailable = Microphone access is unavailable. Check your input device.
+dictation-audio-interrupted = Microphone audio was interrupted. No text was inserted.
+dictation-action-start-detail = Request one-session microphone consent for the focused field, or finish the current recording.
+dictation-action-finish-detail = Stop the microphone and insert the final corrected text into its original field.
+dictation-action-cancel-detail = Stop dictation and discard its private draft.
+dictation-stopping-microphone = Stopping microphone…
+
+search-action-axis-enable = Enable experimental axis navigation
+search-action-axis-enable-subtitle = This session: step between groups and gather focus into view
+search-action-axis-disable = Disable experimental axis navigation
+search-action-axis-disable-subtitle = Restore ordinary window navigation for this session
+search-action-axis-gather = Gather the focused window into view
+search-action-axis-gather-subtitle = Experimental axis navigation: reveal focus without animation
+axis-navigation-disabled = Experimental axis navigation is disabled
+
+search-provider-device-shell = Device shell
+terminal-request-device-shell = Request this device's own shell
+terminal-device-shell-owner-required = Only the device owner can request its own shell
+
+terminal-inspect-device-shell = Inspect this device's shell session
+terminal-run-device-shell = Run a command in this device's shell
+terminal-read-device-shell = Read this device's shell output
+
+terminal-device-shell-session-param = Exact local session UUID from Inspect
+terminal-device-shell-command-param = One reviewed command in this device shell
+
+terminal-device-shell-confirm-param = Confirm this reviewed device-shell operation
+
+shortcut-name-tab-menu = Show tab menu
+search-action-tab-menu = Show tab menu
+search-action-tab-menu-subtitle = Actions for the focused tab
+search-action-tab-menu-unavailable = No focused tab is available
+
+dictation-transcript-retained = Microphone off · Text is too long to insert in one step. Kept privately for 10 minutes. Copy exports all text to your clipboard; discard removes it.
+dictation-transcript-copied = Complete transcript copied. Paste it into your chosen field. The private draft remains until you discard it or 10 minutes expire.
+dictation-copy-failed = Clipboard unavailable. Your complete transcript is still kept privately; retry copying or discard it.
+search-action-tab-drag-cancel = Cancel tab drag
+search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
+search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.
+
+display-confirm-answer-pending = Saving the display answer…
+display-confirm-answer-failed = Could not save the display answer: { $reason }
+
+display-sheet-saving-layout = Saving display layout…
+
+session-diagnostics-title = Session timing diagnostics
+session-diagnostics-configure = Configure timing for subsequent app launches
+session-diagnostics-inspect = Inspect session timing diagnostics
+session-diagnostics-presentation = Record content-free input and presentation timing
+session-diagnostics-gpu_stages = Record GPU stage timing
+session-diagnostics-gpu_timestamps = Enable GPU timestamps
+session-diagnostics-gpu_dispatch_timestamps = Enable GPU dispatch timestamps
+session-diagnostics-dispatch-requires-timestamps = GPU dispatch timing requires GPU timestamps.
+
+device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
+search-action-activity-acknowledge = Acknowledge viewed activity
+search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending
+search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment
+search-action-activity-tasks = Review workspace goals and agent work
+search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
+search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
+
+task-review-inspect = Inspect task evidence
+task-review-steer = Change task instructions
+task-review-cancel = Cancel task run
+task-review-retry = Retry task
+task-review-status = Inspect task review availability
+task-review-provider = Task review
+
+shell-launch-registry-unavailable = The app process registry is unavailable.
+shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.

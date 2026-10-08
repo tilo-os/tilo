@@ -2428,7 +2428,7 @@ impl Widget for IdentityFlow {
         Some("identity_flow")
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         match self.current {
             IdentityFlowScreen::CreateIdentity => self.create_identity.sync(state, path),
             IdentityFlowScreen::RecoveryShare => self.recovery_share.sync(state, path),
@@ -2500,7 +2500,9 @@ impl Widget for IdentityFlow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        match self.current {
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| match self.current {
             IdentityFlowScreen::CreateIdentity => {
                 self.create_identity
                     .draw(scene, transform, text_renderer, theme, presence);
@@ -2539,7 +2541,7 @@ impl Widget for IdentityFlow {
                     self.rect,
                 );
             }
-        }
+        });
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

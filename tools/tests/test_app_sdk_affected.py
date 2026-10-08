@@ -26,6 +26,8 @@ dep_dirs = {
     'ui': 'crates/ui',
     'shell': 'crates/session/shell',
     'tilo-app-cli': 'crates/dev/tilo-app-cli',
+    'browser-runtime-input': 'crates/browser/runtime-input',
+    'browser-runtime-leaf': 'crates/browser/runtime-leaf',
 }
 
 
@@ -39,6 +41,13 @@ class AppSdkAffectedTests(unittest.TestCase):
             package(self.root, 'crates/dev/tilo-app-cli', 'tilo-app-cli'),
             # The CLI builds this through a subprocess, not a Cargo dependency.
             package(self.root, 'crates/browser/tilo-browser-compute', 'tilo-browser-compute'),
+            # Only the runtime reaches this chain; no app depends on it.
+            package(self.root, 'crates/browser/runtime-leaf', 'browser-runtime-leaf'),
+            package(self.root, 'crates/browser/runtime-input', 'browser-runtime-input',
+                    ('browser-runtime-leaf',)),
+            package(self.root, 'crates/browser/tilo-browser-runtime', 'tilo-browser-runtime',
+                    ('browser-runtime-input',)),
+            package(self.root, 'crates/browser/tilo-web-desktop', 'tilo-web-desktop'),
             package(self.root, 'apps/calculator', 'calculator', ('ui',)),
         ]}
 
@@ -61,6 +70,30 @@ class AppSdkAffectedTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(self.check(path))
 
+    def test_browser_runtime_code_and_font_loader_assets_run_the_lanes(self):
+        for path in ('crates/browser/tilo-browser-runtime/src/browser.rs',
+                     'crates/browser/tilo-browser-runtime/web/font-loader.mjs'):
+            with self.subTest(path=path):
+                self.assertTrue(self.check(path))
+
+    def test_desktop_bundle_and_its_smoke_script_run_the_lanes(self):
+        for path in ('crates/browser/tilo-web-desktop/src/lib.rs',
+                     'crates/browser/tilo-web-desktop/scripts/smoke.mjs'):
+            with self.subTest(path=path):
+                self.assertTrue(self.check(path))
+
+    def test_runtime_only_transitive_dependencies_run_the_lanes(self):
+        self.assertTrue(self.check('crates/browser/runtime-input/src/lib.rs'))
+        self.assertTrue(self.check('crates/browser/runtime-leaf/src/lib.rs'))
+
+    def test_workflow_events_watch_the_selector_and_graph(self):
+        workflow = (ROOT / '.forgejo/workflows/app-sdk.yml').read_text()
+        for event, following in (('pull_request', 'push'), ('push', 'workflow_dispatch')):
+            section = workflow.split(f'  {event}:\n', 1)[1].split(f'  {following}:', 1)[0]
+            for path in ('tools/ci/app_sdk_affected.py', 'tools/ci/workspace_graph.py'):
+                with self.subTest(event=event, path=path):
+                    self.assertIn(f'      - "{path}"', section)
+
     def test_a_crate_no_app_reaches_skips_the_lanes(self):
         self.assertFalse(self.check('crates/session/shell/src/lib.rs'))
         self.assertFalse(self.check('os/Containerfile', 'docs/ci.md'))
@@ -69,6 +102,8 @@ class AppSdkAffectedTests(unittest.TestCase):
         self.assertTrue(self.check('rust-toolchain.toml'))
         self.assertTrue(self.check('.forgejo/workflows/app-sdk.yml'))
         self.assertTrue(self.check('crates/stray-file.rs'))
+        self.assertTrue(self.check('tools/ci/app_sdk_affected.py'))
+        self.assertTrue(self.check('tools/ci/workspace_graph.py'))
 
 
 if __name__ == '__main__':

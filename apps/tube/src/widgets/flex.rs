@@ -1,4 +1,4 @@
-//! `Flex` — the workhorse layout + surface + click primitive for Tube.
+//! `Flex` — retained layout for Tube content.
 //!
 //! The toolkit ships `Row`/`Column`/`Container`, but each bakes in a fixed
 //! padding/gap/background and none of them are clickable. Tube's grid,
@@ -8,22 +8,20 @@
 //!
 //! * direction (row / column), gap, padding, wrap
 //! * sizing per-axis (auto / fill / fixed px / percent) + flex grow
-//! * an optional rounded fill + border read from the [`Theme`]
 //! * an optional click [`Action`] pushed onto the shared [`ActionBus`],
-//!   with a hover/press surface treatment
 //! * optional clip (for scroll regions / rounded thumbnails)
 //!
-//! All colours come in as [`Color`] arguments resolved by the caller from
-//! the live `Theme`, so theming stays OS-controlled.
+//! Shared child controls own their semantic appearance; this container
+//! supplies layout and clipping only.
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::style_helpers::{fr, length, minmax, percent, repeat};
 use taffy::{Dimension, NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -89,18 +87,10 @@ pub enum Justify {
     Between,
 }
 
-/// Background fill + border treatment for a box.
-#[derive(Clone, Copy)]
-pub struct Surface {
-    pub fill: Option<Color>,
-    pub radius: f64,
-    pub border: Option<(f64, Color)>,
-}
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent layout toggle set by its own builder method \
-              (wrap, block, clip, overlay, float), not a state machine"
+              (wrap, block, clip, float), not a state machine"
 )]
 pub struct Flex {
     children: Vec<Box<dyn Widget>>,
@@ -125,18 +115,11 @@ pub struct Flex {
     shrink: f32,
     block: bool,
     clip: bool,
-    /// When set, this box is absolutely positioned filling its containing
-    /// block (inset 0 on all sides) so it stacks *over* its siblings — used for
-    /// the command-palette overlay on top of the shell.
-    overlay: bool,
-    /// Like `overlay` for positioning (absolute, fills the containing block and
-    /// stacks over siblings) but WITHOUT the modal pointer capture: events that
-    /// miss this box's interactive children fall through to the content beneath.
+    /// Absolutely positioned, filling the containing block and stacking over
+    /// its siblings, without modal pointer capture: events that miss this
+    /// box's interactive children fall through to the content beneath.
     /// Used for a small on-video affordance (the `SponsorBlock` "Skip" button).
     float: bool,
-
-    surface: Option<Surface>,
-    hover_surface: Option<Surface>,
 
     // Click support.
     bus: Option<ActionBus>,
@@ -182,10 +165,7 @@ impl Flex {
             shrink: 0.0,
             block: false,
             clip: false,
-            overlay: false,
             float: false,
-            surface: None,
-            hover_surface: None,
             bus: None,
             action: None,
             action_emitter: None,
@@ -331,16 +311,6 @@ impl Flex {
         self
     }
 
-    /// Make this box an absolutely-positioned overlay filling its containing
-    /// block (inset 0), so it stacks on top of its siblings. The containing
-    /// block is the nearest positioned ancestor — the shell root sets itself
-    /// `position: relative` implicitly by being the flex parent.
-    #[must_use]
-    pub fn overlay(mut self) -> Self {
-        self.overlay = true;
-        self
-    }
-
     /// Float this box above its in-flow siblings (absolute, fills the containing
     /// block) with correct z-order + hit priority but no modal capture — clicks
     /// that miss its children pass through to the content beneath. For a small
@@ -352,24 +322,18 @@ impl Flex {
     }
 
     #[must_use]
-    pub fn surface(mut self, s: Surface) -> Self {
-        self.surface = Some(s);
-        self
-    }
-    #[must_use]
-    pub fn hover_surface(mut self, s: Surface) -> Self {
-        self.hover_surface = Some(s);
-        self
-    }
 
-    /// Make the whole box a button that pushes `action` on click.
-    #[must_use]
     pub fn on_click(mut self, bus: &ActionBus, action: Action) -> Self {
         let fallback = action.accessible_label();
         self.bus = Some(bus.clone());
         self.action = Some(action);
-        self.accessible_name = Some(fallback.to_string());
-        self.tooltip = Some(fallback.to_string());
+        // A name the control was already given (its visible label) stays.
+        if self.accessible_name.is_none() {
+            self.accessible_name = Some(fallback.to_string());
+        }
+        if self.tooltip.is_none() {
+            self.tooltip = Some(fallback.to_string());
+        }
         self
     }
 
@@ -422,24 +386,6 @@ impl Flex {
     pub fn id(mut self, id: &str) -> Self {
         self.test_id = Some(id.to_string());
         self
-    }
-
-    fn shape(&self, radius: f64) -> RoundedRect {
-        RoundedRect::from_rect(self.rect, radius)
-    }
-
-    fn paint_surface(&self, scene: &mut Scene, transform: Affine, s: &Surface) {
-        if let Some(fill) = s.fill {
-            scene.fill(Fill::NonZero, transform, fill, None, &self.shape(s.radius));
-        }
-        if let Some((w, c)) = s.border {
-            // A crisp inset stroke: half the width inside the rect, so the
-            // border covers the surface's outermost pixels instead of
-            // bleeding half a pixel onto the ground beside it.
-            let outline =
-                RoundedRect::from_rect(self.rect.inset(-w / 2.0), (s.radius - w / 2.0).max(0.0));
-            scene.stroke(&Stroke::new(w), transform, c, None, &outline);
-        }
     }
 
     fn dispatch_child_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
@@ -529,14 +475,14 @@ impl Widget for Flex {
             } else {
                 taffy::Display::Flex
             },
-            position: if self.overlay || self.float {
+            position: if self.float {
                 taffy::Position::Absolute
             } else {
                 taffy::Position::Relative
             },
             // Absolute + inset 0 => fill the containing block, stacking over
             // in-flow siblings.
-            inset: if self.overlay || self.float {
+            inset: if self.float {
                 taffy::Rect {
                     left: length(0.0_f32),
                     right: length(0.0_f32),
@@ -642,16 +588,6 @@ impl Widget for Flex {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Background / hover surface.
-        let surf = if self.hovered {
-            self.hover_surface.as_ref().or(self.surface.as_ref())
-        } else {
-            self.surface.as_ref()
-        };
-        if let Some(s) = surf {
-            self.paint_surface(scene, transform, s);
-        }
-
         if self.clip {
             scene.push_layer(
                 Fill::NonZero,
@@ -684,14 +620,6 @@ impl Widget for Flex {
     ) {
         if presence.should_cull(self.get_rect()) {
             return;
-        }
-        let surf = if self.hovered {
-            self.hover_surface.as_ref().or(self.surface.as_ref())
-        } else {
-            self.surface.as_ref()
-        };
-        if let Some(s) = surf {
-            self.paint_surface(scene, transform, s);
         }
         if self.clip {
             scene.push_layer(
@@ -830,7 +758,7 @@ impl Widget for Flex {
     fn perform_action(
         &mut self,
         action_kind: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action_kind {
@@ -854,11 +782,8 @@ impl Widget for Flex {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        // An overlay captures all pointer events so it behaves modally — the
-        // parent routes exclusively to it, keeping clicks off the shell beneath
-        // (e.g. the top-bar menu button under the command-palette scrim). A
-        // `float` deliberately does NOT capture (see `is_floating`).
-        self.overlay || self.children.iter().any(|c| c.wants_pointer_capture())
+        // A `float` deliberately does NOT capture (see `is_floating`).
+        self.children.iter().any(|c| c.wants_pointer_capture())
     }
 
     fn is_floating(&self) -> bool {
@@ -958,7 +883,7 @@ mod accessibility_tests {
         assert!(Widget::perform_action(
             &mut control,
             &ui::a11y::Action::Activate,
-            &mut AutoCommit::new(),
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(

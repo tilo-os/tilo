@@ -44,6 +44,37 @@ impl AppImage {
     pub fn pixels(&self, device_px: u32) -> Option<ImageData> {
         self.0.pixels(device_px.clamp(1, MAX_DEVICE_PX))
     }
+
+    /// The image at `url` in `store`: a media row's thumbnail, a cover. The
+    /// store loads it off the UI thread the first time it is painted; until
+    /// then (or when it cannot be loaded) it has no pixels and the row paints
+    /// its glyph.
+    #[must_use]
+    pub fn from_image_store(
+        store: &crate::image_store::ImageStore,
+        url: impl Into<String>,
+    ) -> Self {
+        Self::new(StoreImage {
+            url: url.into(),
+            store: store.clone(),
+        })
+    }
+}
+
+/// An [`AppImage`] read from an [`ImageStore`](crate::image_store::ImageStore).
+struct StoreImage {
+    url: String,
+    store: crate::image_store::ImageStore,
+}
+
+impl AppImageSource for StoreImage {
+    fn key(&self) -> &str {
+        &self.url
+    }
+
+    fn pixels(&self, _device_px: u32) -> Option<ImageData> {
+        self.store.get(&self.url)
+    }
 }
 
 impl std::fmt::Debug for AppImage {

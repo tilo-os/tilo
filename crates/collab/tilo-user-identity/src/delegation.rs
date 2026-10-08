@@ -69,7 +69,10 @@ impl Authority {
     pub fn granted_by(self, capabilities: &DeviceCapabilities) -> bool {
         match self {
             Self::Device => true,
-            Self::Person => capabilities.can_own_workspaces || !capabilities.can_act_as_host,
+            Self::Person => {
+                capabilities.can_own_workspaces
+                    || (!capabilities.can_act_as_host && !capabilities.can_administer_devices)
+            }
             Self::OwnWorkspaces => capabilities.can_own_workspaces,
             Self::AdmitDevices => capabilities.can_admit_devices,
             Self::Host => capabilities.can_act_as_host,
@@ -106,6 +109,12 @@ pub enum RootOnly {
     BackupIdentity,
     /// Replace or recover the identity's keys.
     RotateIdentity,
+    /// Certify a device's disk-unlock boot key.
+    CertifyBootKey,
+    /// Approve a device's disk-unlock policy.
+    SignUnlockSetting,
+    /// Export the identity's secret-sync key.
+    ExportSecretSyncKey,
 }
 
 impl RootOnly {
@@ -116,6 +125,9 @@ impl RootOnly {
             Self::CertifyDevice => "Certifying this device",
             Self::BackupIdentity => "Backing up the identity",
             Self::RotateIdentity => "Changing the identity's keys",
+            Self::CertifyBootKey => "Certifying a boot key",
+            Self::SignUnlockSetting => "Changing disk-unlock policy",
+            Self::ExportSecretSyncKey => "Reading the secret-sync key",
         }
     }
 
@@ -530,6 +542,37 @@ mod tests {
             &policy(&ada.user, Authority::Person, &none),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn device_administration_does_not_grant_person_or_enrollment_authority() {
+        let ada = person("Ada");
+        let administrator = device(&ada, DeviceCapabilities::administrator(), None);
+        let joined = device(&ada, DeviceCapabilities::joined(), None);
+        let none = RevocationList::new();
+        verify_chain(
+            administrator.cert(),
+            &policy(&ada.user, Authority::Device, &none),
+        )
+        .unwrap();
+        for authority in [
+            Authority::Person,
+            Authority::OwnWorkspaces,
+            Authority::AdmitDevices,
+        ] {
+            assert_eq!(
+                verify_chain(administrator.cert(), &policy(&ada.user, authority, &none)),
+                Err(ChainError::NotPermitted(authority))
+            );
+        }
+        verify_chain(joined.cert(), &policy(&ada.user, Authority::Person, &none)).unwrap();
+        assert_eq!(
+            verify_chain(
+                joined.cert(),
+                &policy(&ada.user, Authority::AdmitDevices, &none)
+            ),
+            Err(ChainError::NotPermitted(Authority::AdmitDevices))
+        );
     }
 
     #[test]

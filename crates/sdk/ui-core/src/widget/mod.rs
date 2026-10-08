@@ -1,8 +1,10 @@
 mod action_directory_identity;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
-mod resource_operation;
+pub(crate) mod resource_operation;
+// The raw operation protocol between the host and the toolkit's own widgets,
+// reached from outside the toolkit only through `crate::host_operation`.
 pub(crate) use resource_operation::start_without_document_writes;
-pub use resource_operation::{OperationRequest, ResourceOperation, start_in_children};
+pub(crate) use resource_operation::{ResourceOperation, ResourceOperationStart, start_in_children};
 
 use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
@@ -19,6 +21,37 @@ use crate::time::Instant;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+/// Private foreground feedback, stripped of logical keys and typed text.
+/// Observers cannot consume the input or obtain a document edit context.
+#[derive(Clone, PartialEq, Eq)]
+pub enum PhysicalInput {
+    Key {
+        key: winit::keyboard::PhysicalKey,
+        state: winit::event::ElementState,
+    },
+    Focused(bool),
+    /// Immutable configuration from the ordinary focused native event stream.
+    Layout(Option<std::sync::Arc<winit::keyboard::KeyboardLayout>>),
+}
+
+impl PhysicalInput {
+    pub fn from_window_event(event: &WindowEvent) -> Option<Self> {
+        match event {
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic: false,
+                ..
+            } => Some(Self::Key {
+                key: event.physical_key,
+                state: event.state,
+            }),
+            WindowEvent::Focused(focused) => Some(Self::Focused(*focused)),
+            WindowEvent::KeyboardLayoutChanged(layout) => Some(Self::Layout(layout.clone())),
+            _ => None,
+        }
+    }
+}
+
 /// The app's model, lent to a widget pass. The toolkit only passes it on to
 /// children; the layer that owns the model reads it (the document runtime
 /// through [`crate::doc::document`]). A host passes its model by reference
@@ -31,29 +64,6 @@ pub type ModelPath = dyn std::any::Any;
 /// Shared disabled-state opacity: wrap draw output in
 /// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
 pub const DISABLED_ALPHA: f32 = 0.45;
-
-/// Result of admitting an effect/view operation into a widget.
-///
-/// `Accepted` is deliberately distinct from success: the widget must later
-/// report progress and exactly one terminal [`tilo_actions::InvocationUpdate`]
-/// from [`Widget::poll_resource_operation`]. This keeps queued and streaming
-/// work from being reported as completed merely because it entered a queue.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ResourceOperationStart {
-    Completed(tilo_actions::ActionOutput),
-    Accepted,
-}
-
-impl ResourceOperationStart {
-    /// The output of an operation that finished on return; `None` while it
-    /// is still pending.
-    pub fn completed(self) -> Option<tilo_actions::ActionOutput> {
-        match self {
-            Self::Completed(output) => Some(output),
-            Self::Accepted => None,
-        }
-    }
-}
 
 /// Machine-readable classification of a control's activation path.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -528,9 +538,22 @@ pub trait Continuable {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &crate::collaboration::ContinuationMetadata,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool;
+
+    /// Apply a live owner view to an already-bound resource. This opt-in
+    /// capability receives no writable document and must preserve focus.
+    /// Missing resources or anchors are refused so the host can defer or
+    /// cancel the projection when its authenticated source disappears.
+    fn restore_live_continuation_metadata(
+        &mut self,
+        _metadata: &crate::collaboration::ContinuationMetadata,
+        _state: &AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
+    }
 }
 
 /// Optional session collaboration capability for widgets that own live
@@ -559,6 +582,37 @@ pub trait NativeViewLifecycle {
 
 /// Optional capture and detachable-surface capability.
 pub trait FloatingSurfaceProvider {
+    /// Route native keyboard focus to the exact presentation instance.
+    fn on_floating_surface_focus_changed(&mut self, _id: Option<&str>, _focused: bool) {}
+
+    /// Identify the native surface delivering the current input event. The
+    /// host resets this immediately after dispatch; it grants no authority.
+    fn on_floating_surface_event_source(&mut self, _id: Option<&str>) {}
+
+    /// The retained semantic subtree presented in one secondary window.
+    fn floating_surface_accessibility(&self, _id: &str) -> Option<crate::a11y::AccessNode> {
+        None
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        _id: &str,
+        _target: &str,
+        _action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> bool {
+        false
+    }
+
+    /// IME purpose and desktop-logical caret rect for one secondary window.
+    fn floating_surface_ime(
+        &self,
+        _id: &str,
+    ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)> {
+        None
+    }
+
     /// One-shot request to hand app content to the shared floating-surface
     /// host. Shell and in-app hosts consume the same description, so `PiP` does
     /// not require a second rendering/widget API.
@@ -640,7 +694,7 @@ pub trait AudiencePresentationProvider {
     fn handle_audience_presentation_event(
         &mut self,
         _event: &WindowEvent,
-        _state: &mut AutoCommit,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
         false
@@ -683,11 +737,87 @@ pub trait CompleteContentProvider {
     ) -> bool;
 }
 
+/// The document as a host lends it to one pass that may change it: read
+/// freely, changed only through a typed action the action host applies (a
+/// resource's dispatcher applies it), so every change is an action that is
+/// attributed, recorded in history and undone like any other.
+/// Direct CRDT mutation is rejected at the widget boundary:
+///
+/// ```compile_fail
+/// use automerge::{ROOT, transaction::Transactable};
+/// use tilo_ui::widget::Edits;
+/// fn bypass(edits: &mut Edits<'_>) {
+///     edits.put(ROOT, "bypass", true).unwrap();
+/// }
+/// ```
+pub struct Edits<'a> {
+    doc: &'a mut AutoCommit,
+}
+
+impl<'a> Edits<'a> {
+    /// Lend `doc` to one pass.
+    #[doc(hidden)]
+    pub fn lend(doc: &'a mut AutoCommit) -> Self {
+        Self { doc }
+    }
+
+    /// The document as it stands, with what this pass applied.
+    pub fn doc(&self) -> &AutoCommit {
+        self.doc
+    }
+
+    /// The same document, lent on to a part of the pass.
+    pub fn reborrow(&mut self) -> Edits<'_> {
+        Edits {
+            doc: &mut *self.doc,
+        }
+    }
+
+    /// Apply `action` of the action type `type_id` now, through `host`, under
+    /// `context`.
+    ///
+    /// # Errors
+    /// Returns the action's refusal; nothing is written then.
+    #[doc(hidden)]
+    pub fn apply<A>(
+        &mut self,
+        host: &mut crate::action_host::ActionHost,
+        type_id: &str,
+        action: &A,
+        context: tilo_actions::ActionContext,
+    ) -> Result<(), tilo_actions::ActionError>
+    where
+        A: tilo_actions::Action + serde::Serialize,
+    {
+        host.try_dispatch_with_context(self.doc, type_id, action, context)
+    }
+
+    /// The lent document, for the hosts that pass it on to a record of
+    /// their own.
+    pub(crate) fn document_mut(&mut self) -> &mut AutoCommit {
+        self.doc
+    }
+}
+
+impl std::ops::Deref for Edits<'_> {
+    type Target = AutoCommit;
+
+    fn deref(&self) -> &Self::Target {
+        self.doc()
+    }
+}
+
+/// Where `doc` stands, to tell whether a settle pass changed it.
+pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
+    use automerge::transaction::Transactable as _;
+    (doc.base_heads(), doc.pending_ops())
+}
+
 /// Host services associated with one retained widget event dispatch.
 pub struct EventCtx<'a> {
     pub scale_factor: f64,
     pub modifiers: &'a winit::event::Modifiers,
-    pub state: &'a mut AutoCommit,
+    pub state: Edits<'a>,
     pub path: &'a ObjId,
     pub handled: &'a mut bool,
     pub focus_target: &'a mut Option<NodeId>,
@@ -701,13 +831,18 @@ impl EventCtx<'_> {
         EventCtx {
             scale_factor: self.scale_factor,
             modifiers: self.modifiers,
-            state: &mut *self.state,
+            state: self.state.reborrow(),
             path,
             handled: &mut *self.handled,
             focus_target: &mut *self.focus_target,
             node_id,
             taffy: self.taffy,
         }
+    }
+
+    /// The document this event may change, through typed actions only.
+    pub fn edits(&mut self) -> Edits<'_> {
+        self.state.reborrow()
     }
 
     /// The stylus that made the `CursorMoved` or `MouseInput` being
@@ -822,6 +957,14 @@ pub trait Widget {
             .map(crate::history_mode::HistoryOwner::component)
     }
 
+    /// Records this widget keeps open beside the document it shows, each
+    /// synced on its own route: a framework app's records in the person's
+    /// own room ([`crate::record::person`]). They take no part in this
+    /// widget's history or controls.
+    fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
+        Vec::new()
+    }
+
     #[doc(hidden)]
     #[allow(
         private_interfaces,
@@ -838,6 +981,16 @@ pub trait Widget {
             child.visit_components(request)?;
         }
         Ok(())
+    }
+
+    /// SDK model service visits retained owners independently of visible children.
+    /// The default preserves the original custom component visitor exactly.
+    #[doc(hidden)]
+    fn visit_retained_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        self.visit_components(request.inner())
     }
 
     #[doc(hidden)]
@@ -929,15 +1082,27 @@ pub trait Widget {
     /// Pull model state into this widget before layout. The default syncs the
     /// children [`Widget::children_mut`] returns; a widget overrides it only to
     /// read state of its own, or to sync children it does not expose there.
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         for child in self.children_mut() {
             child.sync(state, path);
         }
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         false
     }
+
+    /// Apply, after the sync pass, what the widget took up there and must
+    /// write: a worker's answer, a chooser's file, an event a child queued.
+    /// Writes go only through typed actions on `edits` (a resource's
+    /// dispatcher); the host syncs again when the document changed. The
+    /// default settles the children [`Widget::children_mut`] returns.
+    fn settle(&mut self, edits: &mut Edits<'_>, path: &ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -999,6 +1164,10 @@ pub trait Widget {
         theme: &Theme,
         presence: &PresenceCtx,
     );
+
+    /// Observe this app's ordinary foreground physical input before framework
+    /// shortcuts consume it. Keep feedback ephemeral; this is not an input grant.
+    fn observe_physical_input(&mut self, _input: PhysicalInput) {}
 
     /// Handle one input event with the runtime services for this retained node.
     fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
@@ -1096,6 +1265,15 @@ pub trait Widget {
             .find_map(Widget::take_action_palette_request)
     }
 
+    /// One-shot request to open the host's search palette, the same one the
+    /// platform search shortcut opens. An app's own search button latches it
+    /// so search stays one shared host surface rather than an app overlay.
+    fn take_search_request(&mut self) -> bool {
+        self.children_mut()
+            .into_iter()
+            .any(Widget::take_search_request)
+    }
+
     /// `point` is logical coords, same space as [`Widget::get_rect`];
     /// `None` defers to the default arrow. The host hit-tests the whole
     /// tree via `node_map` and picks the smallest-area claim, so containers
@@ -1133,6 +1311,12 @@ pub trait Widget {
         None
     }
 
+    /// Which side of the control its tooltip goes: below by default,
+    /// beside it for a control in a vertical rail.
+    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+        crate::widget::tooltip::TooltipSide::Below
+    }
+
     fn tooltip_target_at(
         &self,
         point: vello::kurbo::Point,
@@ -1163,6 +1347,12 @@ pub trait Widget {
     }
 
     fn set_focus(&mut self, _focused: bool) {}
+
+    /// The form's validation verdict for this control, set by
+    /// [`Field::with_error`]: an invalid control edges itself in danger ink
+    /// and reports `invalid` to assistive technology. Controls without a
+    /// field face ignore it.
+    fn set_invalid(&mut self, _invalid: bool) {}
 
     /// An explicit runner focus request, after resolving the actual keyboard
     /// owner. Retained flags and layout restoration are not user gestures.
@@ -1264,7 +1454,7 @@ pub trait Widget {
     fn perform_action(
         &mut self,
         _action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         false
@@ -1314,7 +1504,7 @@ pub trait Widget {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let _ = key_path;
@@ -1333,7 +1523,7 @@ pub trait Widget {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         // `AccessNode::with_keyed_action_routes` publishes a custom-painted
@@ -1384,6 +1574,47 @@ pub trait Widget {
         None
     }
 
+    /// Opaque local invalidation of deferred input, including selection edits
+    /// that leave the caret rectangle unchanged. The host supplies an ephemeral
+    /// secret key; no text or selection is retained in the resulting digest.
+    /// The default shares the accessibility door and excludes protected or
+    /// read-only controls. Text controls can override it to avoid cloning text.
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let caret = self.ime_cursor_rect()?;
+        let mut index = 0_usize;
+        let mut selected = None;
+        let mut ambiguous = false;
+        self.for_each_child(&mut |child| {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+                if selected.is_some() {
+                    ambiguous = true;
+                }
+                selected =
+                    Some(child.ime_edit_fingerprint(key).map(|stamp| {
+                        crate::ime::scoped_fingerprint(&index.to_le_bytes(), stamp, key)
+                    }));
+            }
+            index = index.saturating_add(1);
+        });
+        if ambiguous {
+            return None;
+        }
+        if let Some(selected) = selected {
+            return selected;
+        }
+        let node = self.accessibility()?;
+        if node.state.protected || node.state.read_only {
+            return None;
+        }
+        let selection = node.text_selection?;
+        Some(crate::ime::edit_fingerprint(
+            &node.value?,
+            selection.anchor,
+            selection.focus,
+            key,
+        ))
+    }
+
     /// Default `true`; the exception is a widget standing in for a process
     /// that has started but not drawn. Must **latch**: once `true`, never
     /// `false` again for the same content, or an un-presenting widget would
@@ -1410,7 +1641,13 @@ pub trait Widget {
     /// [`crate::app::UserEvent::External`] (e.g. a worker thread streaming
     /// output into a status log). Default no-op; the App redraws and
     /// re-syncs after dispatch, so mutating state here is enough.
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {}
+    fn on_external_event(
+        &mut self,
+        _payload: &str,
+        _state: &mut crate::widget::Edits<'_>,
+        _root: &ModelPath,
+    ) {
+    }
 
     /// Global back/forward gesture (swipe/edge-pull), recognised by
     /// [`crate::gesture::NavGestureRecognizer`] and delivered to the whole
@@ -1419,7 +1656,7 @@ pub trait Widget {
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AppModel,
+        state: &AppModel,
         path: &ModelPath,
     ) -> bool {
         for child in self.children_mut() {
@@ -1549,7 +1786,7 @@ pub trait Widget {
     /// Host → widget: the live state of the undo history, published once per
     /// frame to every laid-out widget.
     ///
-    /// A widget only ever receives `&mut AutoCommit`, which carries the
+    /// A widget receives a read-only document or an [`Edits`] action loan, which carries the
     /// document but not its history — so without this a control could not tell
     /// whether there was anything to undo, and every app was reduced to
     /// printing the shortcut and hoping. Store the status (embed an
@@ -1598,7 +1835,7 @@ pub trait Widget {
     /// declined, not an error.
     fn apply_room_action(
         &mut self,
-        _doc: &mut AutoCommit,
+        _doc: &mut crate::widget::Edits<'_>,
         _type_id: &str,
         _payload: &[u8],
     ) -> bool {
@@ -1628,7 +1865,7 @@ pub trait Widget {
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         start_in_children(self, op, doc, path)
@@ -1668,7 +1905,13 @@ pub trait Widget {
     fn accepts_drop(&self, _payload: &DragPayload) -> bool {
         false
     }
-    fn on_drop(&mut self, _payload: DragPayload, _state: &mut AppModel, _path: &ModelPath) {}
+    fn on_drop(
+        &mut self,
+        _payload: DragPayload,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) {
+    }
     fn wants_pointer_capture(&self) -> bool {
         false
     }
@@ -1741,6 +1984,15 @@ pub trait Widget {
         let mut pending = false;
         self.for_each_child(&mut |child| pending |= child.has_pending_visual_work());
         pending
+    }
+
+    /// Temporary feedback currently presented, such as a save acknowledgement.
+    /// Captures may intentionally include it; scene-invariance checks can wait
+    /// for it to disappear separately from unfinished placeholder work.
+    fn has_transient_feedback(&self) -> bool {
+        self.children()
+            .into_iter()
+            .any(Widget::has_transient_feedback)
     }
 
     /// Default `true` (dirty every frame). Opt into incremental redraw by
@@ -1870,6 +2122,21 @@ pub trait Widget {
 /// This keeps host/container call sites concise while the core [`Widget`]
 /// contract contains only capability accessors.
 pub trait FloatingSurfaceWidgetExt {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool);
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>);
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode>;
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool;
+    fn floating_surface_ime(
+        &self,
+        id: &str,
+    ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)>;
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest>;
@@ -1895,6 +2162,43 @@ pub trait FloatingSurfaceWidgetExt {
 }
 
 impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_focus_changed(id, focused);
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_event_source(id);
+        }
+    }
+
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        capability::capability::<dyn FloatingSurfaceProvider>(self)?
+            .floating_surface_accessibility(id)
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).is_some_and(|provider| {
+            provider.perform_floating_surface_accessibility_action(id, target, action, state, path)
+        })
+    }
+
+    fn floating_surface_ime(
+        &self,
+        id: &str,
+    ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)> {
+        capability::capability::<dyn FloatingSurfaceProvider>(self)?.floating_surface_ime(id)
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
@@ -1976,7 +2280,7 @@ pub trait AudiencePresentationWidgetExt {
     fn handle_audience_presentation_event(
         &mut self,
         event: &WindowEvent,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool;
     fn on_audience_presentation_closed(&mut self);
@@ -2015,7 +2319,7 @@ impl<T: Widget + ?Sized> AudiencePresentationWidgetExt for T {
     fn handle_audience_presentation_event(
         &mut self,
         event: &WindowEvent,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         capability::capability_mut::<dyn AudiencePresentationProvider>(self)
@@ -2184,6 +2488,7 @@ pub mod binding;
 pub mod capability;
 pub mod controls;
 pub mod decorator;
+pub mod document_effects;
 pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
@@ -2194,7 +2499,9 @@ pub use layout::{
 };
 
 mod button;
-pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
+pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors};
+mod control_size;
+pub use control_size::ControlSize;
 mod checkbox;
 pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
@@ -2205,7 +2512,7 @@ mod form;
 mod form_composition;
 mod layout_info;
 pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
-pub use form_composition::{Field, Form, FormPage, FormSection};
+pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
     ManualConflict, ManualLayout, PageLayout, SectionLayout,
@@ -2218,10 +2525,10 @@ pub use manual::{
 };
 mod row;
 pub use row::Row;
-mod list_row;
-pub use list_row::ListRow;
 mod toggle;
-pub use toggle::{Toggle, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors};
+pub use toggle::{
+    Toggle, ToggleColors, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors,
+};
 mod stack;
 pub use stack::Stack;
 mod container;
@@ -2234,25 +2541,22 @@ mod divider;
 pub use divider::{Divider, DividerAxis};
 mod link;
 pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
-mod nav_split;
-pub use nav_split::{
-    DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH, FlapState, NavSplit, PushNav, PushPane, SplitLayout,
-    SplitMode,
-};
-mod app_shell;
-pub use app_shell::{
-    AppShell, DEFAULT_SHELL_BREAKPOINT, DEFAULT_SHELL_SIDEBAR_WIDTH, NarrowScreen, ShellLayout,
-};
+mod flap;
+pub use flap::{FlapState, SplitLayout};
 mod sidebar;
 pub use sidebar::{
-    DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_WIDTH, SidebarDrawer, SidebarNav, SidebarNavItem,
-    SidebarNavSection, SidebarSide,
+    DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_DOCKED_WIDTH, DEFAULT_DRAWER_WIDTH, SidebarDrawer,
+    SidebarSide,
 };
 mod nav_shell;
+pub mod window_header;
 pub use nav_shell::{
-    Affordance, ContentLayout, DEFAULT_NAVSHELL_BREAKPOINT, DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
-    DEFAULT_NAVSHELL_SIDEBAR_WIDTH, NavPane, NavShell, ShellMode,
+    InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
+    SidebarPlacement,
 };
+pub use window_header::{HISTORY_CONTROL_ID, HistoryControl, HistoryOpener, WindowHeader};
+mod nav_list;
+pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
@@ -2260,14 +2564,16 @@ pub use document_viewport::{
 };
 mod floating_window;
 pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
-mod segmented;
-pub use segmented::{
-    ColorSwatchPicker, DEFAULT_PALETTE, SegmentTone, TriStateControl, packed_color,
-};
 mod text;
 pub use text::Text;
 mod spacer;
 pub use spacer::Spacer;
+mod when;
+pub use when::{Absent, When, optional};
+mod slot;
+pub use slot::{Slot, SlotHandle, Switch};
+mod columns;
+pub use columns::Columns;
 mod image;
 pub use image::{Image, ImageDecodeError, ImageFit};
 mod image_crop;
@@ -2275,20 +2581,24 @@ pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
 pub use slider::{Slider, SliderFace};
 mod text_input;
-pub use text_input::{TextActionRequest, TextInput, TextInputKind};
+pub use text_input::{
+    AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextInput, TextInputKind,
+    paint_preedit_underline,
+};
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
 pub mod autocomplete;
-pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion};
+pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList};
 mod number_input;
-pub use number_input::NumberInput;
+pub use number_input::{NumberInput, NumberStepperFace, StepperPart};
 pub mod marks;
 pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
 pub mod block_editor;
+pub mod paint_damage;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
     DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview, legacy_block_id,
@@ -2302,13 +2612,13 @@ pub use page_palette::PageJumpPalette;
 pub mod page_sidebar;
 pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
-pub use dropdown::Dropdown;
+pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
 pub mod tabs;
-pub use tabs::{TabBar, TabDescriptor, draw_app_mark};
+pub use tabs::{TabBar, TabDescriptor, TabMark, draw_app_mark};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
-    Scrollbar,
+    Scrollbar, TrackMark,
 };
 pub mod date_indexed_scrollbar;
 pub use date_indexed_scrollbar::{
@@ -2319,14 +2629,17 @@ pub mod drag;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
 pub use scrollable::{ScrollAxis, Scrollable};
+mod scroll_region;
+pub use scroll_region::ScrollRegion;
+pub use scrollbar::BarFade;
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{AppKind, TileContent, TileHost};
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
-    AppCommand, AppHostIntent, AppWidget, DocumentOpenCapability, DocumentOpenOutcome,
-    DocumentOpenReply, HostShellAllow, IconDescriptor,
+    AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, DocumentOpenCapability,
+    DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor,
 };
 pub mod command_palette;
 pub mod input_hint;
@@ -2336,8 +2649,10 @@ pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
-mod floating_surface;
-pub use context_menu::{ContextMenu, MenuItem};
+pub mod floating_surface;
+pub use context_menu::{ContextMenu, MenuButton, MenuItem};
+pub mod context_menu_area;
+pub use context_menu_area::{ContextMenuArea, MenuEntry};
 pub mod data_table;
 mod virtual_table_semantics;
 pub use virtual_table_semantics::{
@@ -2346,7 +2661,10 @@ pub use virtual_table_semantics::{
 };
 mod virtual_list_semantics;
 pub use virtual_list_semantics::{ListSemanticRow, VirtualListSemantics};
-pub mod table;
+pub(crate) mod block_editor_table;
+pub mod table {
+    pub use super::block_editor_table::*;
+}
 pub use table::Table;
 pub mod icon_grid;
 pub use icon_grid::{IconGrid, IconGridItem};
@@ -2363,7 +2681,7 @@ pub use resize_handle::{
 mod group_row;
 pub use group_row::{
     CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan, StripLane,
-    TabDropTarget, WheelJumpAccum, wheel_jump_detents,
+    TabDropTarget, WheelJumpAccum, pan_within_canvas, wheel_jump_detents,
 };
 mod strip_view;
 pub use strip_view::{STRIP_COOLDOWN_MS, StripView};
@@ -2378,7 +2696,7 @@ pub mod file_picker;
 pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome};
 
 pub mod progress_bar;
-pub use progress_bar::ProgressBar;
+pub use progress_bar::{ProgressBar, ProgressBarFace};
 pub mod page_preview;
 pub use page_preview::PagePreview;
 pub mod spinner;
@@ -2386,19 +2704,20 @@ pub use spinner::Spinner;
 pub mod date_picker;
 pub use date_picker::{DatePicker, ExternalDatePickerHit};
 pub mod time_picker;
+pub mod timeline_density;
 pub use time_picker::{TimePicker, TimeValue};
+pub use timeline_density::TimelineDensity;
 pub mod color_picker;
 pub mod color_swatch;
-pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorSwatch};
-pub use color_swatch::ColorSwatchFace;
-pub mod popover_widget;
-pub use popover_widget::PopoverWidget;
+pub use color_picker::{ColorPicker, ColorPickerOutcome};
+pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
 pub mod popover;
-pub use popover::Popover;
+pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
 pub mod modal_dialog;
-pub use modal_dialog::ModalDialog;
-pub mod modal_frame;
-pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
+pub use modal_dialog::{
+    ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSheet, ModalSpec,
+    SheetResponse,
+};
 pub mod native_view;
 pub use native_view::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
@@ -2413,17 +2732,18 @@ pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
-pub use avatar::{Avatar, AvatarRing};
+pub use avatar::{Avatar, AvatarFace, AvatarSize, PresenceStatus, initials_for_name};
 pub mod badge;
-pub use badge::{Badge, BadgeTone};
+pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
-pub use icon::IconWidget;
+pub use icon::{IconSize, IconWidget};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
     TrendRange, TrendStyle,
 };
-mod chart_legend;
+pub(crate) mod chart_labels;
+pub mod chart_legend;
 pub mod chart_navigation;
 pub use chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action,
@@ -2470,11 +2790,14 @@ pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
 pub mod funnel_chart;
 pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
 pub mod gauge;
-pub use gauge::{BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, RingGauge};
+pub use gauge::{
+    BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingFace,
+    ProgressRingSize, RingReading,
+};
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
 pub mod resizable_split;
-pub use resizable_split::ResizableSplit;
+pub use resizable_split::{ResizableSplit, SplitHandle, SplitOrientation, SplitRatio};
 pub mod video_player;
 pub use video_player::VideoPlayer;
 pub mod webview;
@@ -2488,11 +2811,36 @@ pub use tree_view::{
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
 };
 pub mod virtual_list;
-pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, VirtualList};
-pub mod action_row;
-pub use action_row::ActionRowFace;
-pub mod choice_card;
-pub use choice_card::{ChoiceCard, ChoiceCardFace};
+pub use virtual_list::{
+    DuplicateListKey, ListModel, ListRowState, RowSelection, VecListModel, VirtualList,
+};
+mod activation;
+pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
+pub mod media_card;
+pub use media_card::{
+    ArtPainter, MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize,
+    MediaSource, OwnedBadge, justified_rows,
+};
+pub mod capture_button;
+pub use capture_button::{CaptureButtonFace, CaptureKind};
+pub mod transport;
+pub use transport::{TransportControl, TransportFace};
+pub mod drop_zone;
+pub use drop_zone::{DropZone, DropZoneFace};
+pub mod skeleton;
+pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
+pub mod stepper;
+pub use stepper::{Stepper, StepperFace};
+pub mod property_list;
+pub use property_list::{
+    Property, PropertyColumn, PropertyList, PropertyListFace, PropertyRow, PropertyValue,
+    property_label_column,
+};
+pub mod list_row;
+pub use list_row::{
+    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowStatus, RowValue, SwipeAction,
+    badge_column_width,
+};
 pub mod keyframe;
 pub use keyframe::{KeyframeFace, KeyframeState};
 pub mod disclosure_header;
@@ -2503,30 +2851,37 @@ pub use synthetic_focus::{
     semantic_focus_order, semantic_target_at_path, semantic_target_bounds,
 };
 pub mod toggle_group;
-pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
+pub use toggle_group::{
+    Segment, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
+    SegmentedTouchResult, ToggleGroup, segment_colors,
+};
 
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
 pub mod empty_state;
-pub use empty_state::{EmptyState, EmptyStateContent};
+pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout};
+pub mod find_bar;
+pub use find_bar::{
+    FindBar, FindMatch, FindMode, FindOptions, FindScope, Findable, paint_find_match, with_findable,
+};
 pub mod search_field;
-pub use search_field::SearchField;
+pub use search_field::{FilterCount, Filterable, Filtered, SearchField, apply_filter, sync_filter};
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
-pub use stat_tile::{StatTile, StatTileContent, Trend};
+pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
 pub mod banner;
-pub use banner::{Banner, BannerContent, BannerKind};
+pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
 pub mod chip;
-pub use chip::{Chip, ChipLead, ChipStyle};
-mod card_composition;
-pub use card_composition::{Actions, ContentCard};
+pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
 pub mod card;
+mod tone;
+pub use tone::Tone;
 pub mod collaboration_overview;
-pub use card::{Card, CardGrid, card_column_width, card_columns};
+pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
 mod section;
-pub use section::{DEFAULT_SECTION_GAP, Section};
+pub use section::{ObjectHeader, Section, SectionHeader, SectionHeaderFace, StatusLine};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
@@ -2614,7 +2969,7 @@ mod tests {
     impl Widget for CollabProbe {
         crate::provides!(dyn Collaborative, dyn AudiencePresentationProvider);
 
-        fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+        fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
         fn build_layout(
             &mut self,
@@ -2853,7 +3208,6 @@ pub(crate) mod control_result_probe {
         pub(crate) calls: Rc<Cell<usize>>,
         pub(crate) polls: Rc<Cell<usize>>,
         pub(crate) commits: Rc<Cell<usize>>,
-        pub(crate) flushes: Rc<Cell<usize>>,
         pub(crate) pending: Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>,
         pub(crate) payloads: Rc<RefCell<Vec<String>>>,
     }
@@ -2880,14 +3234,13 @@ pub(crate) mod control_result_probe {
     }
     #[allow(
         clippy::struct_excessive_bools,
-        reason = "independent test switches exercise acceptance, confirmation, typing, and persistence"
+        reason = "independent test switches exercise acceptance, confirmation and typing"
     )]
     pub(crate) struct Probe {
         observed: Observed,
         accepted: bool,
         pub(crate) confirmation: bool,
         pub(crate) terminal_after: Option<(usize, bool)>,
-        pub(crate) owned_flush: Option<Result<(), String>>,
         pub(crate) dirty_typing: bool,
         pub(crate) typed_text: bool,
     }
@@ -2900,7 +3253,6 @@ pub(crate) mod control_result_probe {
                     accepted,
                     confirmation: false,
                     terminal_after: None,
-                    owned_flush: None,
                     dirty_typing: false,
                     typed_text: false,
                 },
@@ -2911,9 +3263,7 @@ pub(crate) mod control_result_probe {
     impl Widget for Probe {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources,
-            dyn crate::component_lifecycle::ComponentLifecycle,
-            dyn crate::undo::UndoPoints
+            dyn crate::resources::PublishesResources
         );
 
         fn poll_resource_operation(
@@ -2978,7 +3328,7 @@ pub(crate) mod control_result_probe {
         fn start_operation(
             &mut self,
             op: &ResourceOperation<'_>,
-            _: &mut AutoCommit,
+            _: &mut crate::widget::Edits<'_>,
             _: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
             let Some(request) = op.unscoped() else {
@@ -2995,27 +3345,6 @@ pub(crate) mod control_result_probe {
             } else {
                 ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
             }))
-        }
-    }
-
-    impl crate::undo::UndoPoints for Probe {
-        fn needs_commit(&self) -> bool {
-            self.dirty_typing
-        }
-        fn on_commit(&mut self) {
-            self.observed
-                .commits
-                .set(self.observed.commits.get().saturating_add(1));
-            self.dirty_typing = false;
-        }
-    }
-
-    impl crate::component_lifecycle::ComponentLifecycle for Probe {
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-            self.observed
-                .flushes
-                .set(self.observed.flushes.get().saturating_add(1));
-            self.owned_flush.clone()
         }
     }
 
@@ -3131,3 +3460,10 @@ pub(crate) mod control_result_probe {
         }
     }
 }
+
+pub mod keyboard_map;
+pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
+/// Logical screen topology canvas shared by local and native peer displays.
+pub mod display_arrangement;
+mod graph_canvas;
+pub use graph_canvas::{GraphCanvas, GraphCanvasConnection, GraphCanvasNode};

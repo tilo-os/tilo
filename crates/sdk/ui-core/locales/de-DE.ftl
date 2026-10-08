@@ -2,6 +2,7 @@ counter = Wert: { $count }
 btn_1 = Klick Mich
 tab-modified = Nicht gespeicherte Änderungen
 
+standalone-history-title = Verlauf
 standalone-history-restore = Diese Version wiederherstellen…
 standalone-history-restore-title = Diese Version wiederherstellen?
 standalone-history-restore-body = Das Dokument kehrt zum Stand nach „{ $version }“ zurück. Dabei entsteht eine neue Änderung: Spätere Versionen bleiben im Verlauf, und Rückgängig macht die Wiederherstellung rückgängig.
@@ -16,6 +17,8 @@ standalone-history-restore-unavailable = Diese Version kann hier nicht wiederher
 standalone-history-preview-resource = Dokument
 host-search = Suchen…
 host-search-placeholder = Suchen
+dropdown-search-placeholder = Auswahl durchsuchen
+dropdown-search-description = Zum Filtern tippen. Mit den Pfeiltasten auswählen und mit Eingabe bestätigen.
 host-undo = Widerrufen
 host-undo-named = { $change } widerrufen
 host-redo = Wiederholen
@@ -81,6 +84,7 @@ history-mode-unavailable = Verlauf nicht verfügbar
 history-mode-content-unavailable = Früherer Inhalt nicht verfügbar
 history-mode-back-to-activity = Zurück zur Aktivität
 history-mode-back-to-live = Zurück zur aktuellen Version
+history-mode-earlier = Frühere Änderungen anzeigen
 history-mode-before = Vorher
 history-mode-after = Nachher
 history-mode-showing-before = Frühere Version: Vorher
@@ -254,6 +258,11 @@ terminal-run-on = Ausführen auf:
 terminal-run-on-this-device = Diesem Gerät
 terminal-host-awaiting-allow = Warte darauf, dass du die eigene Shell dieses Geräts erlaubst
 terminal-host-denied = Die eigene Shell dieses Geräts wurde nicht erlaubt
+terminal-no-runtime-status = Hier kann keine Umgebung starten — Eingabetaste öffnet die eigene Shell dieses Geräts
+terminal-no-runtime-title = Die Umgebung dieses Terminals kann auf diesem Gerät nicht starten.
+terminal-no-runtime-host = Drücke die Eingabetaste, um stattdessen die eigene Shell dieses Geräts zu öffnen (ohne Sandbox; Tilo fragt dich vorher),
+terminal-no-runtime-picker = oder wähle oben in diesem Tab im Zielmenü einen anderen Ort.
+terminal-no-runtime-install = Eine Umgebung braucht ein env-runtime-Image: aktualisiere Tilo oder installiere eines aus dem App Store.
 terminal-env-title = Umgebungen
 terminal-env-tools = Werkzeuge
 terminal-env-no-tools = Noch keine Werkzeuge — pkg install in der Umgebung ausführen
@@ -290,6 +299,7 @@ block-editor-code-exit-hint = Ctrl+Enter: Code verlassen
 block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Kopiert
 block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+Enter: darüber schreiben · Tab / Shift+Tab: einrücken / ausrücken · Ctrl+Shift+C: Code kopieren
+widget-breadcrumb = Pfad
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
@@ -368,6 +378,16 @@ relative-ago-years = { $count ->
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
 participant-agent = { $name } · Agent
+interaction-agent = Agent
+interaction-collaborator = Mitwirkende Person
+interaction-action-status = { $action } ({ $phase }) - { $name }
+interaction-inspecting = Prüft
+interaction-applying = Wendet an
+interaction-waiting = Wartet
+interaction-committed = Übernommen
+interaction-failed = Fehlgeschlagen
+interaction-cancelled = Abgebrochen
+interaction-progress = { $label } - { $done }/{ $total }
 participant-unknown-agent = Unbekannter Agent
 
 # Der Verlauf als veröffentlichte Aktionen, für Palette, Skripte, Agenten und Hilfstechnologien.
@@ -414,6 +434,28 @@ history-day-yesterday = Gestern
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
 
+save-status-saving = Wird gespeichert…
+save-status-saved = Gespeichert
+save-status-failed = Speichern fehlgeschlagen
+save-status-retry = Erneut versuchen
+save-status-dismiss = Schließen
+
+# Suchleiste: das Band oben in einem Dokument, das darin sucht.
+find-bar-name = Suchen
+find-bar-placeholder = Suchen
+find-bar-replace-placeholder = Ersetzen durch
+find-bar-match-case = Groß-/Kleinschreibung
+find-bar-whole-word = Ganzes Wort
+find-bar-regex = Regulärer Ausdruck
+find-bar-text = Text
+find-bar-hex = Hex
+find-bar-previous = Vorheriger Treffer
+find-bar-next = Nächster Treffer
+find-bar-close = Suche schließen
+find-bar-replace = Ersetzen
+find-bar-replace-all = Alle ersetzen
+find-bar-position = { $current } von { $total }
+find-bar-no-matches = Keine Treffer
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
@@ -426,3 +468,27 @@ block-editor-replace = Ersetzen
 
 block-editor-replace-all = Alle ersetzen
 block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld
+
+widget-sidebar-resize = Breite der Seitenleiste ändern
+widget-inspector-resize = Breite des Inspektors ändern
+
+dictation-record-once = Einmal aufnehmen
+dictation-finish = Fertig
+dictation-cancel = Abbrechen
+
+dictation-copy-transcript = Transkript kopieren
+dictation-discard-transcript = Transkript verwerfen
+
+dropdown-no-matches = Keine passende Auswahl
+
+# Shared native screen topology canvas
+display-arrangement-name = Bildschirmanordnung
+display-arrangement-description = Zieh einen Bildschirm neben einen anderen, um ihn dort zu platzieren. Das Positionsmenü jedes Bildschirms erledigt dasselbe per Tastatur.
+display-arrangement-empty = Keine Bildschirme zum Anordnen
+display-arrangement-item = Bildschirm { $number }: { $name }
+display-arrangement-item-primary = Bildschirm { $number }: { $name }, primär
+display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
+
+device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.
+device-display-request-pending = Eine Anfrage zur Bildschirmposition steht bereits aus.
+device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.

@@ -600,6 +600,7 @@ mod tests {
             app: app.to_string(),
             broker_peer_id: None,
             descriptor: tilo_actions::door::ActionDescriptor {
+                semantic_identity: None,
                 address: tilo_actions::door::ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),
                 resource_label: resource.rsplit(':').next().unwrap_or(resource).to_string(),
@@ -642,11 +643,7 @@ mod tests {
         doc.commit();
         let wp = &surface::CONTRACTS[0];
         assert_eq!(wp.namespace, "word-processor");
-        surface::offers(
-            &[(wp, &doc)],
-            &surface::View::default(),
-            &permitting("so.tilo.word-processor"),
-        )
+        surface::offers(&[(wp, &doc)], &[], &permitting("so.tilo.word-processor"))
     }
 
     fn permitting(app: &str) -> ui::permissions::PermissionContext {

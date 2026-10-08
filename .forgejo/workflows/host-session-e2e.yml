@@ -45,7 +45,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -142,13 +142,21 @@ jobs:
           set -euo pipefail
           cd "$WORK/rpms"
           python3 - <<'EOF'
-          import json, os, pathlib
+          import hashlib, json, os, pathlib
           rpms = sorted(p.name for p in pathlib.Path(".").glob("*.rpm"))
+          artifacts = {}
+          for name in rpms:
+              path = pathlib.Path(name)
+              digest = hashlib.sha256()
+              with path.open("rb") as package:
+                  while block := package.read(1024 * 1024):
+                      digest.update(block)
+              artifacts[name] = {"byte_size": path.stat().st_size, "sha256": digest.hexdigest()}
           pathlib.Path("source.json").write_text(json.dumps({
               "workflow": os.environ["WORKFLOW"],
               "run": int(os.environ["RUN_NUMBER"]), "run_id": int(os.environ["RUN_ID"]),
               "commit": os.environ["GITHUB_SHA"], "ref": os.environ["GITHUB_REF_NAME"],
-              "artifact": os.environ["ARTIFACT"], "rpms": rpms}, indent=1) + "\n")
+              "artifact": os.environ["ARTIFACT"], "rpms": rpms, "artifacts": artifacts}, indent=1) + "\n")
           EOF
           cat source.json
 

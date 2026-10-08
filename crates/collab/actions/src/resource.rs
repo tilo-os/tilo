@@ -316,6 +316,28 @@ impl ResourceViewMountSpec {
     }
 }
 
+/// Explicit range-navigation binding. Offsets retain the reference's Chars or
+/// Bytes unit; the app validates them against its current text before moving.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceViewRangeSpec {
+    pub action: String,
+    pub start_param: String,
+    pub end_param: String,
+    pub unit_param: String,
+}
+
+impl ResourceViewRangeSpec {
+    pub fn new(action: impl Into<String>) -> Self {
+        Self {
+            action: action.into(),
+            start_param: "start".into(),
+            end_param: "end".into(),
+            unit_param: "unit".into(),
+        }
+    }
+}
+
 /// An explicit presentation of a resource, separate from the actions used to
 /// open or mount it.
 ///
@@ -331,6 +353,8 @@ pub struct ResourceViewSpec {
     pub open_action: String,
     pub primary: bool,
     pub mount: Option<ResourceViewMountSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<ResourceViewRangeSpec>,
 }
 
 impl ResourceViewSpec {
@@ -346,6 +370,7 @@ impl ResourceViewSpec {
             open_action: open_action.into(),
             primary: false,
             mount: None,
+            range: None,
         }
     }
 
@@ -364,6 +389,12 @@ impl ResourceViewSpec {
     #[must_use]
     pub fn with_mount(mut self, mount: ResourceViewMountSpec) -> Self {
         self.mount = Some(mount);
+        self
+    }
+
+    #[must_use]
+    pub fn with_range(mut self, range: ResourceViewRangeSpec) -> Self {
+        self.range = Some(range);
         self
     }
 
@@ -408,6 +439,47 @@ impl ResourceViewSpec {
                 }
             }
         }
+        if let Some(range) = &self.range {
+            let names = [&range.start_param, &range.end_param, &range.unit_param];
+            if names.iter().any(|name| name.trim().is_empty())
+                || names[0] == names[1]
+                || names[0] == names[2]
+                || names[1] == names[2]
+            {
+                errors.push("range parameter names must be non-empty and distinct".into());
+            }
+            if let Some(action) = resource.actions.iter().find(|a| a.id == range.action) {
+                if action.kind != OperationKind::View
+                    || action.contract.confirmation != ConfirmationPolicy::None
+                {
+                    errors.push("range action must be a view without confirmation".into());
+                }
+                for (name, ty) in [
+                    (&range.start_param, ParamType::Integer),
+                    (&range.end_param, ParamType::Integer),
+                    (&range.unit_param, ParamType::Text),
+                ] {
+                    if !action
+                        .params()
+                        .iter()
+                        .any(|p| p.name.as_ref() == name && p.ty == ty)
+                    {
+                        errors.push(format!(
+                            "range parameter `{name}` has the wrong type or is missing"
+                        ));
+                    }
+                }
+                if action
+                    .params()
+                    .iter()
+                    .any(|p| p.required && !names.iter().any(|n| p.name.as_ref() == *n))
+                {
+                    errors.push("range action requires unrelated input".into());
+                }
+            } else {
+                errors.push("range action is not exported".into());
+            }
+        }
         errors
     }
 }
@@ -443,6 +515,41 @@ fn validate_view_action(
     }
 }
 
+/// Descriptive source-domain identity, independent of the live dispatch alias.
+/// This metadata grants no permission or authority.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResourceSemanticIdentity {
+    pub kind: String,
+    pub key: String,
+}
+
+impl ResourceSemanticIdentity {
+    pub const MAX_KIND_BYTES: usize = 128;
+    pub const MAX_KEY_BYTES: usize = 4096;
+
+    #[must_use]
+    pub fn new(kind: impl Into<String>, key: impl Into<String>) -> Option<Self> {
+        let identity = Self {
+            kind: kind.into(),
+            key: key.into(),
+        };
+        identity.is_valid().then_some(identity)
+    }
+
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        !self.kind.is_empty()
+            && self.kind.len() <= Self::MAX_KIND_BYTES
+            && self
+                .kind
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+            && !self.key.is_empty()
+            && self.key.len() <= Self::MAX_KEY_BYTES
+            && !self.key.chars().any(char::is_control)
+    }
+}
+
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](Resource::children).
 #[derive(Clone)]
@@ -456,6 +563,8 @@ pub struct Resource {
     /// Optional shell-rendered metadata used by system search and resource
     /// browsers. Invalid or oversized values are omitted at the boundary.
     pub presentation: Option<ResourcePresentation>,
+    /// Exact original typed identity retained before host namespacing.
+    pub semantic_identity: Option<ResourceSemanticIdentity>,
     pub children: Vec<Resource>,
     pub actions: Vec<ActionSpec>,
     /// Explicit presentations of this resource. Actions remain invocation
@@ -470,6 +579,7 @@ impl Resource {
             kind: kind.into(),
             label: label.into(),
             presentation: None,
+            semantic_identity: None,
             children: Vec::new(),
             actions: Vec::new(),
             views: Vec::new(),
@@ -525,8 +635,10 @@ pub enum Collects {
 /// How an [`ActionSpec`] produces its replayable [`EncodedAction`] when chosen.
 #[derive(Clone)]
 pub enum ActionInput {
-    /// Fires immediately with this pre-encoded action.
-    Immediate(EncodedAction),
+    /// Fires immediately with this pre-encoded action. Cloned publications
+    /// share immutable bytes; modifying this public lane uses copy-on-write
+    /// and never changes the private execution witness.
+    Immediate(Arc<EncodedAction>),
     /// A no-argument operation built only at final admitted owner execution.
     /// Enumeration and confirmation retain declared intent, not minted bytes.
     Deferred {
@@ -684,6 +796,9 @@ pub struct ActionSpec {
     /// Classifies one invocation's bound arguments when the action's risk
     /// depends on them. See [`ActionSpec::with_risk`].
     risk_of: Option<RiskClassifier>,
+    /// Classifies what one invocation's bound arguments need the invoker to
+    /// be allowed. See [`ActionSpec::with_permission_of`].
+    permission_of: Option<PermissionClassifier>,
     /// Names one invocation in history from the action it built. See
     /// [`ActionSpec::with_history_label`].
     history_label_of: Option<HistoryLabeler>,
@@ -692,6 +807,9 @@ pub struct ActionSpec {
 
 /// Classifies the risk of one invocation from its bound arguments.
 pub type RiskClassifier = Arc<dyn Fn(&ActionArgs) -> RiskLevel + Send + Sync>;
+
+/// Classifies what one invocation needs the invoker to be allowed.
+pub type PermissionClassifier = Arc<dyn Fn(&ActionArgs) -> PermissionRequirement + Send + Sync>;
 
 /// Names one invocation in history from the encoded action it built, or
 /// declines with `None`.
@@ -757,8 +875,11 @@ impl ActionSpec {
     }
 
     fn validate_built(&self, encoded: EncodedAction) -> Result<EncodedAction, ArgError> {
+        // A refusal carries the builder's reason to the caller, as a typed
+        // action's does.
         if let Some(expected) = self.deferred_invocation_type()
             && encoded.type_id != expected
+            && encoded.type_id != INVALID_ARGUMENTS_TYPE
         {
             return Err(ArgError::Constraint {
                 name: "deferred".into(),
@@ -854,6 +975,7 @@ impl ActionSpec {
                 deferred_type: Some(type_id),
             },
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         }
@@ -879,7 +1001,8 @@ impl ActionSpec {
     {
         let locus = action.locus();
         let encoded = EncodedAction::encode(type_id, action)?;
-        let for_build = encoded.clone();
+        let encoded = Arc::new(encoded);
+        let for_build = Arc::clone(&encoded);
         Ok(Self {
             id: id.into(),
             label: label.into(),
@@ -890,8 +1013,9 @@ impl ActionSpec {
             contract: ActionContract::default(),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
-            build: InvocationBuilder::Fixed(Arc::new(for_build)),
+            build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         })
@@ -911,7 +1035,8 @@ impl ActionSpec {
         locus: ExecutionLocus,
         encoded: EncodedAction,
     ) -> Self {
-        let for_build = encoded.clone();
+        let encoded = Arc::new(encoded);
+        let for_build = Arc::clone(&encoded);
         Self {
             id: id.into(),
             label: label.into(),
@@ -922,8 +1047,9 @@ impl ActionSpec {
             contract: ActionContract::default(),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
-            build: InvocationBuilder::Fixed(Arc::new(for_build)),
+            build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         }
@@ -973,6 +1099,7 @@ impl ActionSpec {
                 build,
             },
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         }
@@ -996,7 +1123,8 @@ impl ActionSpec {
         debug_assert_ne!(kind, OperationKind::Document);
         let type_id = type_id.into();
         let encoded = EncodedAction::encode_operation(type_id.clone(), payload)?;
-        let for_build = encoded.clone();
+        let encoded = Arc::new(encoded);
+        let for_build = Arc::clone(&encoded);
         Ok(Self {
             id: id.into(),
             label: label.into(),
@@ -1011,8 +1139,9 @@ impl ActionSpec {
             },
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
-            build: InvocationBuilder::Fixed(Arc::new(for_build)),
+            build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         })
@@ -1063,6 +1192,7 @@ impl ActionSpec {
                 build,
             },
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         }
@@ -1167,6 +1297,7 @@ impl ActionSpec {
                 deferred_type: None,
             },
             risk_of: None,
+            permission_of: None,
             history_label_of: None,
             continuation_resolver: None,
         }
@@ -1294,6 +1425,68 @@ impl ActionSpec {
         push_tag(&mut self.contract, crate::contract::ARGUMENT_RISK_TAG);
         self.risk_of = Some(Arc::new(classify));
         self
+    }
+
+    /// Classify what each invocation needs the invoker to be allowed from
+    /// its bound arguments, for an action whose consequence depends on them
+    /// (a generic edit: a reply needs commenting, a deletion writing). The
+    /// declared [`ActionContract::permission`] stays the least any
+    /// invocation needs, which is what a host offers the action under;
+    /// every gate that admits an invocation asks
+    /// [`permission_for_json`](Self::permission_for_json) or
+    /// [`permission_for_argument`](Self::permission_for_argument) too.
+    #[must_use]
+    pub fn with_permission_of(
+        mut self,
+        classify: impl Fn(&ActionArgs) -> PermissionRequirement + Send + Sync + 'static,
+    ) -> Self {
+        self.permission_of = Some(Arc::new(classify));
+        self
+    }
+
+    /// What one invocation with these bound arguments needs: the
+    /// classifier's verdict, else the declared permission.
+    pub fn permission_for_args(&self, args: &ActionArgs) -> PermissionRequirement {
+        self.permission_of
+            .as_ref()
+            .map_or(self.contract.permission, |classify| classify(args))
+    }
+
+    /// [`permission_for_args`](Self::permission_for_args) for arguments that
+    /// arrived as JSON. Arguments that do not bind build no action, so they
+    /// need what the declaration says.
+    pub fn permission_for_json(
+        &self,
+        supplied: &serde_json::Map<String, serde_json::Value>,
+    ) -> PermissionRequirement {
+        if self.permission_of.is_none() {
+            return self.contract.permission;
+        }
+        ActionArgs::bind_json(&self.params, supplied).map_or(self.contract.permission, |args| {
+            self.permission_for_args(&args)
+        })
+    }
+
+    /// [`permission_for_args`](Self::permission_for_args) for the palette
+    /// and legacy text door: typed JSON behind
+    /// [`ARGUMENTS_JSON_PREFIX`](crate::ARGUMENTS_JSON_PREFIX), one line of
+    /// text for the primary parameter, or nothing.
+    pub fn permission_for_argument(&self, argument: Option<&str>) -> PermissionRequirement {
+        if self.permission_of.is_none() {
+            return self.contract.permission;
+        }
+        if let Some(json) =
+            argument.and_then(|text| text.strip_prefix(crate::ARGUMENTS_JSON_PREFIX))
+        {
+            return serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                .map_or(self.contract.permission, |arguments| {
+                    self.permission_for_json(&arguments)
+                });
+        }
+        let supplied = argument.map_or_else(Vec::new, |text| primary_argument(&self.params, text));
+        ActionArgs::bind(&self.params, supplied).map_or(self.contract.permission, |args| {
+            self.permission_for_args(&args)
+        })
     }
 
     /// The risk of one invocation: the classifier's verdict for these
@@ -1473,7 +1666,9 @@ impl ActionSpec {
             }
         };
         self.input = match self.input {
-            ActionInput::Immediate(encoded) => ActionInput::Immediate(wrap(encoded)),
+            ActionInput::Immediate(encoded) => {
+                ActionInput::Immediate(Arc::new(wrap(encoded.as_ref().clone())))
+            }
             ActionInput::Deferred { build, .. } => ActionInput::Deferred {
                 type_id: wrapped_type.to_owned(),
                 build: Arc::new(move || wrap(build())),
@@ -1612,7 +1807,7 @@ fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String
         .find(|p| p.required)
         .or_else(|| params.first())
     else {
-        return ActionInput::Immediate(build(&ActionArgs::none()));
+        return ActionInput::Immediate(Arc::new(build(&ActionArgs::none())));
     };
     let name = primary.name.to_string();
     let ty = primary.ty;

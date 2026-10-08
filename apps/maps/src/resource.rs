@@ -130,7 +130,7 @@ pub enum MapsEffect {
         query: String,
     },
     /// Use my location.
-    #[effect(job, permission = "read")]
+    #[effect(job, device_only, permission = "read")]
     Locate,
     /// Show traffic.
     #[effect(permission = "read")]
@@ -160,13 +160,13 @@ pub enum MapsEffect {
         poi: String,
     },
     /// Delete offline area.
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, device_only, permission = "read")]
     DeleteOfflineArea {
         #[param("The offline area's id")]
         area: String,
     },
     /// Clear offline areas.
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, device_only, permission = "read")]
     ClearOfflineAreas,
 }
 
@@ -228,9 +228,7 @@ impl ResourceSurface<Maps, MapsEffect> for MapsApp {
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
-        if let Some(scenario) = scenario {
-            self.stage_scenario(scenario);
-        }
+        self.stage_scenario(scenario);
     }
 
     fn effect(&mut self, effect: MapsEffect, cx: &mut EffectCx<Maps, Self>) -> EffectAnswer {
@@ -377,6 +375,44 @@ mod tests {
     }
 
     #[test]
+    fn painted_travel_modes_swipe_through_the_canonical_document_action() {
+        use winit::event::TouchPhase::{Cancelled, Ended, Started};
+        fn bounds(node: &ui::headless::InspectionNode, target: &str) -> Option<vello::kurbo::Rect> {
+            fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<vello::kurbo::Rect> {
+                if node.action_target.as_deref() == Some(target) {
+                    return node.bounds.map(ui::a11y::AccessBounds::to_rect);
+                }
+                node.children.iter().find_map(|child| find(child, target))
+            }
+            node.semantics
+                .as_ref()
+                .and_then(|node| find(node, target))
+                .or_else(|| node.children.iter().find_map(|child| bounds(child, target)))
+        }
+        let mut app = TestApp::<MapsShell>::capture(Some("route")).unwrap();
+        app.settle();
+        assert_eq!(app.state().mode, TravelMode::Car);
+        let start = bounds(&app.harness().inspection().root, "maps.mode:transit")
+            .unwrap()
+            .center();
+        app.harness().touch(1, Started, start.x, start.y);
+        app.harness().touch(1, Ended, start.x - 90.0, start.y);
+        app.settle();
+        assert_eq!(app.state().mode, TravelMode::Transit);
+        let start = bounds(&app.harness().inspection().root, "maps.mode:transit")
+            .unwrap()
+            .center();
+        app.harness().touch(2, Started, start.x, start.y);
+        app.harness().touch(2, Cancelled, start.x - 90.0, start.y);
+        app.settle();
+        assert_eq!(app.state().mode, TravelMode::Transit);
+        app.harness().touch(3, Started, start.x, start.y);
+        app.harness().touch(3, Ended, start.x + 90.0, start.y);
+        app.settle();
+        assert_eq!(app.state().mode, TravelMode::Car);
+    }
+
+    #[test]
     fn every_scenario_stages_its_places_and_plans_through_map_actions() {
         use ui::framework::testing::TestApp;
         // Coordinates are stored rounded, so a place is compared by what
@@ -393,7 +429,7 @@ mod tests {
         for scenario in MapsShell::scenarios() {
             let app = TestApp::<MapsShell>::capture(Some(scenario)).unwrap();
             let state = app.state();
-            if matches!(*scenario, "empty" | "traffic-empty") {
+            if crate::scenario::Sample::of(Some(scenario)) == crate::scenario::Sample::Empty {
                 assert!(state.places.is_empty(), "`{scenario}` is a first run");
                 assert!(state.route.is_none(), "`{scenario}` plans nothing");
                 continue;
@@ -404,26 +440,25 @@ mod tests {
                 "`{scenario}` holds the city"
             );
             assert_eq!(state.recents, sample.recents, "`{scenario}` searched");
-            assert_eq!(
-                state.transit.len(),
-                sample.transit.len(),
-                "`{scenario}` planned transit"
-            );
-            match *scenario {
-                "transit" | "transit-arrive" => {
-                    assert_eq!(state.mode, TravelMode::Transit);
-                    assert!(state.route.is_none(), "`{scenario}` draws no road");
-                }
-                "pois" | "offline" => assert!(state.route.is_none()),
-                _ => {
-                    assert_eq!(
-                        state.route.as_ref().map(|route| route.geometry.len()),
-                        sample.route.as_ref().map(|route| route.geometry.len()),
-                        "`{scenario}` routes"
-                    );
-                    assert_eq!(state.mode, sample.mode);
-                    assert_eq!(state.dest_name, sample.dest_name);
-                }
+            let staged = crate::scenario::Scenario::of(Some(scenario));
+            if staged.is_transit() {
+                assert_eq!(state.mode, TravelMode::Transit);
+                assert_eq!(
+                    state.transit.len(),
+                    sample.transit.len(),
+                    "`{scenario}` planned transit"
+                );
+                assert!(state.route.is_none(), "`{scenario}` draws no road");
+            } else if staged.has_route() {
+                assert_eq!(
+                    state.route.as_ref().map(|route| route.geometry.len()),
+                    sample.route.as_ref().map(|route| route.geometry.len()),
+                    "`{scenario}` routes"
+                );
+                assert_eq!(state.mode, sample.mode);
+                assert_eq!(state.dest_name, sample.dest_name);
+            } else {
+                assert!(state.route.is_none(), "`{scenario}` plans no route");
             }
             assert!(state.regions.is_empty(), "offline areas are not the map's");
         }

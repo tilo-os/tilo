@@ -16,5 +16,7 @@ mod image_apps;
 mod lifecycle;
 #[path = "runtime_cli.rs"]
 mod runtime_cli;
+#[path = "runtime_package.rs"]
+mod runtime_package;
 #[path = "trust.rs"]
 mod trust;

@@ -15,6 +15,18 @@ the pinned runtime profile, and the staged runtime payload. Compilation receipts
 must establish the executable's provenance; a matching hash alone does not prove
 which source produced a binary.
 
+Assembly also pins that source's product font catalog and its license notices,
+then copies them to `Contents/Resources/fonts`. The exact relative link
+`Contents/MacOS/fonts -> ../Resources/fonts` serves the renderer's first catalog
+location beside the executable while keeping resource data in Apple's standard
+location. This is the only allowed bundle symlink. The source's own font validator checks its
+catalog version and hashes; fixture-only fonts are excluded. The compiled-in
+manifest must match byte for byte. Missing, changed, executable or symlinked
+font resources or a changed lookup link fail verification. This prevents an installed app from depending
+on the build checkout for its product fonts, including a checkout under a
+privacy-protected directory. Older receipts without a font catalog remain
+verifiable as historical artifacts; a fresh assembly always includes it.
+
 ```sh
 python3 dist/macos/collection_local_apps.py assemble \
   --source-root /path/to/qualified/tilo --revision SOURCE_COMMIT \
@@ -132,6 +144,42 @@ Sources: [GStreamer HTTP source](https://gstreamer.freedesktop.org/documentation
 [Fontconfig configuration](https://fontconfig.pages.freedesktop.org/fontconfig/fontconfig-user.html),
 [Pango backend selection](https://gitlab.gnome.org/GNOME/pango/-/blob/main/pango/pangocairo-fontmap.c),
 and [LibThai dictionary selection](https://github.com/tlwg/libthai/blob/master/src/thbrk/brk-common.c).
+
+## Video Player and Video Editor profiles
+
+These are separate app-pinned profiles built on Tube's reviewed media set. A
+profile cannot be reused under another app name or silently add package roots.
+The launcher and data policy are unchanged. All three media deltas remain
+bounded to 24 MiB of additional code; this does not change the Music/Remote limit.
+
+Video Player's file chooser includes AVI alongside MP4, MOV, WebM and Matroska.
+Its profile adds `avi` (232,720 bytes), with no additional library or package.
+The full delta from the base payload is 47 images (18,322,416 bytes) and the
+same 70 data/notice files as Tube. A completed bundle contains 92 code objects.
+
+Video Editor's default features include both preview and export. Its profile
+adds `avi`, `x264`, `opus`, `ogg`, `wavparse`, `aiff`, `asf`, `flac`, `flv`,
+`mpegpsdemux`, `mpegtsdemux`, `id3demux` and `apetag` beyond Tube. These bring five
+libraries: `libgstmpegts`, `libFLAC`, `libogg`, `libgstsdp` and `libgstrtsp`.
+Only FLAC and libogg are additional packages; x264 and Opus libraries are already
+in the base payload. MP4/MOV export uses the app's existing H.264/AAC selection;
+WebM uses VP8/Opus. Adding the installed plugins does not change that selection
+policy or introduce a Cisco download or a hardware-encoding claim.
+
+The Editor delta beyond Tube is 18 images (2,780,752 bytes). From the base payload
+it is 64 images (20,870,448 bytes) and 168 resource/notice files (1,671,792 bytes),
+including the Bad/Ugly catalogs and the new packages' notices. A completed bundle
+contains 109 code objects. Package versions, image names, input hashes, notice
+hashes and data assets are all validated before copying. An extra package record
+or a second version cannot redirect resource collection.
+
+The profiles support static assembly of the default compiled apps, not proof of
+every import recognized by their file probes. Some probe extensions intentionally
+return unknown metadata in production; this profile does not promise all of
+them. After signing access is available, exercise AVI and the usual MP4/WebM/MOV
+playback paths, subtitle/font/dictionary behavior, waveform/audio preview, and
+real MP4/MOV/WebM exports with audio, cancellation and end-of-stream completion.
+Do not call the apps runtime-qualified or installable until those checks pass.
 
 ## Music and Remote main-process profiles
 

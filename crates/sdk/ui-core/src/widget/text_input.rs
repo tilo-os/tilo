@@ -19,19 +19,21 @@ use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
 use crate::text_break::{grapheme_indices, graphemes};
 use crate::text_edit::{CaretWord, Edit, EditCore, Motion, TypingRun, word_at_caret};
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{FontChoice, TextKind, TextRenderer, TextScaling, TextStyle, TextWeight};
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
     clipboard_paste_primary, extend_span_drag, grapheme_boundary_at_or_before, line_boundaries,
     prev_char_boundary, word_boundaries,
 };
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
+use crate::widget::control_size::ControlSize;
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -47,6 +49,24 @@ use preparation::Preparation;
 #[path = "text_input_reveal.rs"]
 mod reveal;
 use reveal::RevealToggle;
+
+/// Paint the pending input method composition on a shaped line. Editors
+/// supply the segment from their own projection (proportional formula text
+/// or a fixed-width code line); its appearance follows the shared input role.
+pub fn paint_preedit_underline(
+    scene: &mut Scene,
+    transform: Affine,
+    segment: vello::kurbo::Line,
+    theme: &crate::Theme,
+) {
+    scene.stroke(
+        &Stroke::new(theme.caret_width / 2.0),
+        transform,
+        theme.tokens.colors.text_primary,
+        None,
+        &segment,
+    );
+}
 
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
@@ -124,11 +144,28 @@ pub enum TextInputKind {
     Code,
     Number,
     Password,
+    /// A code or key typed or pasted in the clear: verification and
+    /// recovery codes, TOTP secrets, API and licence keys, Wi-Fi keys.
+    Secret,
 }
 
 impl TextInputKind {
     fn checks_spelling(self) -> bool {
         matches!(self, Self::Prose)
+    }
+
+    /// What the field's text is, for the features it is set with while
+    /// typing.
+    #[must_use]
+    pub const fn text_kind(self) -> TextKind {
+        match self {
+            Self::Prose | Self::Name | Self::Search => TextKind::Prose,
+            Self::Username | Self::Email | Self::Path => TextKind::Identifier,
+            Self::Url => TextKind::Url,
+            Self::Code => TextKind::Code,
+            Self::Number => TextKind::Numeric,
+            Self::Password | Self::Secret => TextKind::Secret,
+        }
     }
 }
 
@@ -136,15 +173,15 @@ fn is_autocorrect_boundary(character: char) -> bool {
     character.is_whitespace() || (character.is_ascii_punctuation() && character != '\'')
 }
 
-pub(super) const FONT_SIZE: f32 = 16.0;
-/// Caret centres against this band, not `FONT_SIZE`, to line up with where
+/// Caret centres against this band, not the font size, to line up with where
 /// cosmic-text draws the glyphs.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
 /// Spellcheck runs immediately, but the word containing the caret stays
 /// visually quiet for this long after an edit so its underline does not
 /// flicker while the user is still forming it.
 const SPELL_EDIT_SETTLE: Duration = Duration::from_millis(250);
-const ML_PAD_X: f64 = 10.0;
+/// Where a wrapping document line's text starts inside its rect.
+pub(crate) const ML_PAD_X: f64 = 10.0;
 const ML_PAD_Y: f64 = 8.0;
 const GUTTER_DIGIT_RATIO: f64 = 0.62;
 const GUTTER_PAD_L: f64 = 8.0;
@@ -171,6 +208,14 @@ pub(super) struct SingleLineAttributes {
     pub links: Vec<(usize, usize)>,
 }
 
+#[derive(PartialEq)]
+struct PersonalSpelling {
+    owner: Option<[u8; 32]>,
+    generation: u64,
+    language: String,
+    snapshot: Option<crate::personal_dictionary::Snapshot>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (hover/focus/drag/dirty/secret/etc), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -180,10 +225,13 @@ pub struct TextInput {
     path: Vec<PathSegment>,
     rect: Rect,
     is_hovered: bool,
+    /// The form marked the value invalid ([`Widget::set_invalid`]).
+    invalid: bool,
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
     text: String,
+    pending_paste: Option<PendingPaste>,
     /// Caret, selection (always on grapheme boundaries), the IME composition,
     /// and the optional per-character admission rule for domain-specific
     /// fields (for example a spreadsheet cell-reference box), which applies to
@@ -218,21 +266,10 @@ pub struct TextInput {
     /// A programmatic/model change can alter multiline measurement without
     /// pretending to be a user edit through `take_dirty`.
     model_layout_dirty: bool,
-    /// Gates whether edits splice into `state`, materialising a missing path
-    /// lazily on the first effective edit.
-    crdt_bound: bool,
-    /// Action-owned parents can retain a bound text object for reconciliation
-    /// while keeping optimistic input entirely local until they dispatch their
-    /// own semantic operation.
-    direct_crdt_writes: bool,
-    /// Distinguishes an uninitialised binding (where a local initial value may
-    /// remain visible) from a path removed by undo or a remote model change.
-    path_was_present: bool,
     /// Optional local-only mirror for secrets and other values that must not
     /// enter an Automerge history. The owner controls its lifetime and can
     /// zero/clear it immediately after use.
     external_buffer: Option<Arc<Mutex<String>>>,
-    on_change_path: String,
     last_mouse_pos: Point,
     char_x_positions: Vec<f64>,
     /// Authoritative cosmic-text geometry for a visible, unmasked single-line
@@ -250,6 +287,10 @@ pub struct TextInput {
     scroll_x: f64,
     /// A wrapped row inside a compound code fence shares its parent's spacing.
     compact_multiline: bool,
+    /// What the field's text is; its 1× size is the role's.
+    text_role: TextRole,
+    /// A document editor built on this field (a heading block, a code view)
+    /// sets its own 1× base size instead of a role's.
     font_size_override: Option<f32>,
     /// Theme scale captured during `build_layout`; direct measurement falls
     /// back to the renderer when no themed layout pass has occurred.
@@ -261,9 +302,9 @@ pub struct TextInput {
     /// Renders without the rounded-rect chrome, for block-editor cells that
     /// should read as document copy, not a form field.
     plain: bool,
-    /// Direct Automerge `Text` binding, wins over `on_change_path` — how
-    /// `BlockEditor` binds text nested inside a `List`, which a flat string
-    /// key can't address.
+    /// The Automerge `Text` this input shows, read on every sync. Edits stay
+    /// local for the owner to submit ([`Self::take_dirty`]); how
+    /// `BlockEditor` binds text nested inside a `List`.
     bound_text: Option<ObjId>,
     /// Stamped on every inserted run so peers can highlight "what they wrote".
     local_author: Option<String>,
@@ -290,6 +331,8 @@ pub struct TextInput {
     spell_spans: Vec<(usize, usize)>,
     /// Per-user vocabulary layered over every installed language.
     spell_dictionary: Option<spellcheck::Dictionary>,
+    /// Ephemeral view of the shared host service, never an app vocabulary store.
+    personal_spelling: Option<PersonalSpelling>,
     ignored_spellings: HashSet<String>,
     /// Caches both preview hits and misses so idle redraws never re-query a
     /// dictionary for the same caret word.
@@ -308,6 +351,8 @@ pub struct TextInput {
     /// Per-row action parallel to `context_menu`'s items (separators → `None`).
     context_actions: Vec<Option<CtxAction>>,
     accessible_name: String,
+    /// Shown while the field is empty, focused or not: it names what the
+    /// field takes until the first character (or IME preedit) replaces it.
     placeholder: String,
     /// Measurement switches with this so the caret/selection stay aligned with the draw.
     mono: bool,
@@ -351,6 +396,73 @@ pub struct TextInput {
     /// trait hook does not receive a theme.
     last_caret_width: f64,
     interaction: crate::interaction::InteractionEnvironment,
+    /// The single-line band's height, shared with buttons of the same size.
+    control_size: ControlSize,
+    /// A wrapping field is at least this many lines tall.
+    min_lines: usize,
+    /// The theme's field inset from the latest layout or paint: the
+    /// horizontal text inset of a chrome'd field, single- or multiline.
+    field_pad_x: f64,
+    /// The single-line band of the latest layout; a wrapping chrome'd field
+    /// is never shorter.
+    band_height: f64,
+    /// A plain field inside a toolkit document view keeps the document's own
+    /// text inset instead of the zero inset of a plain app field.
+    document_inset: bool,
+    /// Called with the text on a submitting Enter.
+    on_submit: Option<TextChangeCallback>,
+    /// Route a submitting Enter through an exported resource action.
+    submit_action: Option<ActionEmitter<String>>,
+    /// A trailing icon button inside the field.
+    accessory: Option<Accessory>,
+    /// `font_size_override` is a document-space size, never grown by the text
+    /// scale ([`Self::with_content_size`]).
+    content_sized: bool,
+    /// Colours spans of a single-line field's text ([`Self::with_span_highlighter`]).
+    span_highlighter: Option<SpanHighlighter>,
+}
+
+struct PendingPaste {
+    result: std::sync::mpsc::Receiver<Option<String>>,
+    text: zeroize::Zeroizing<String>,
+    caret: TextPosition,
+    anchor: usize,
+}
+
+/// Colours spans of a field's text from the theme: each `(range, colour)`
+/// is a byte range of the text and the ink it takes (a reference in a
+/// formula, in the colour of the cells it outlines).
+pub type SpanHighlighter =
+    Box<dyn Fn(&str, &Theme) -> Vec<(std::ops::Range<usize>, vello::peniko::Color)>>;
+
+/// What a field's trailing accessory does when pressed.
+pub enum AccessoryAction {
+    /// Empty the field, as an edit by the person; shown only while the
+    /// field holds text.
+    Clear,
+    /// Run the callback.
+    Run(Box<dyn FnMut()>),
+    /// A toggle that stays pressed (a "clear this for every photo" switch):
+    /// shown whatever the field holds, standing on the selection lift while
+    /// on and announced as a pressed toggle. A press flips it and passes the
+    /// new state; the host keeps it in step with
+    /// [`TextInput::set_accessory_pressed`].
+    Toggle {
+        pressed: bool,
+        on_toggle: Box<dyn FnMut(bool)>,
+    },
+}
+
+/// The action target of a field's trailing accessory, for agents and
+/// assistive technology.
+const ACCESSORY_TARGET: &str = "text-input-accessory";
+
+/// A trailing icon button inside a field.
+struct Accessory {
+    icon: crate::icons::Icon,
+    name: String,
+    action: AccessoryAction,
+    hovered: bool,
 }
 
 /// One on-screen row: a whole short logical line, or one soft-wrapped
@@ -382,7 +494,7 @@ struct LineWrap {
     lines: Vec<VisualLine>,
 }
 
-pub(crate) const AUTHOR_MARK: &str = "author";
+pub(crate) use tilo_resource::text::AUTHOR_MARK;
 
 /// Which logical line each multiline-body visual row belongs to, which rows
 /// start one, and the logical line holding the caret.
@@ -424,9 +536,11 @@ impl TextInput {
             path,
             rect: Rect::ZERO,
             is_hovered: false,
+            invalid: false,
             is_focused: false,
             caret_paint_suppressed: false,
             text: String::new(),
+            pending_paste: None,
             core: EditCore::new(),
             typing: TypingRun::default(),
             is_dragging: false,
@@ -434,7 +548,6 @@ impl TextInput {
             drag_unit: DragUnit::Char,
             drag_anchor_span: (0, 0),
             drag_select: DragSelect::new(),
-            on_change_path: String::new(),
             last_mouse_pos: Point::ZERO,
             char_x_positions: Vec::new(),
             single_layout: None,
@@ -452,10 +565,8 @@ impl TextInput {
             last_notified_text: String::new(),
             local_state: None,
             model_layout_dirty: false,
-            crdt_bound: false,
-            direct_crdt_writes: true,
-            path_was_present: false,
             external_buffer: None,
+            text_role: TextRole::Body,
             font_size_override: None,
             layout_text_scale: None,
             gutter_text_scale: 1.0,
@@ -473,6 +584,7 @@ impl TextInput {
             spell_cache_key: None,
             spell_spans: Vec::new(),
             spell_dictionary: None,
+            personal_spelling: None,
             ignored_spellings: HashSet::new(),
             autocorrection_preview_key: None,
             autocorrection_preview: None,
@@ -508,6 +620,16 @@ impl TextInput {
             last_scroll_caret: None,
             last_caret_width: 2.0,
             interaction: crate::interaction::InteractionEnvironment::default(),
+            control_size: ControlSize::Regular,
+            min_lines: 0,
+            field_pad_x: f64::from(crate::tokens::Spacing::BASE.s3),
+            band_height: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            document_inset: false,
+            on_submit: None,
+            submit_action: None,
+            accessory: None,
+            content_sized: false,
+            span_highlighter: None,
         }
     }
 
@@ -530,24 +652,20 @@ impl TextInput {
         self.local_author = author;
     }
 
-    /// After binding, `sync` reads from `obj` regardless of the string-path mode.
+    /// Show the text object `obj`, read on every sync. What the user types
+    /// stays local until the owner takes it ([`Self::take_dirty`]) and
+    /// submits it as an action.
     pub fn bind_text(&mut self, obj: ObjId) {
         self.local_state = None;
         self.bound_text = Some(obj);
-        self.crdt_bound = true;
     }
 
-    /// Detach an explicit nested-Text binding without changing live input state.
+    /// Stop showing a text object, keeping what the input shows.
     ///
-    /// A direct binding replaces any earlier local or flat-path mode. Detaching
-    /// therefore leaves the input intentionally unbound until an owner calls
-    /// [`Self::bind_text`] again; it does not revive a discarded fallback.
+    /// A binding replaces any earlier local mode, so the input stays unbound
+    /// until an owner calls [`Self::bind_text`] again.
     pub fn clear_text_binding(&mut self) {
-        if self.bound_text.take().is_none() {
-            return;
-        }
-        self.crdt_bound = false;
-        self.path_was_present = false;
+        self.bound_text = None;
     }
 
     /// For `BlockEditor` to match local blocks to doc list elements by object identity.
@@ -567,24 +685,19 @@ impl TextInput {
         let text = state
             .text(obj)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
-        if self.adopt_model_text(text) {
-            self.dirty = true;
-        }
+        // Showing the document's text is not a user edit.
+        self.adopt_model_text(text);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
         Ok(())
     }
 
     /// Replace text read from model state without reporting a user edit.
-    /// Returns whether the value changed so direct bindings can preserve
-    /// their existing reconciliation signal.
-    fn adopt_model_text(&mut self, text: String) -> bool {
-        if self.text == text {
-            return false;
+    fn adopt_model_text(&mut self, text: String) {
+        if self.text != text {
+            self.text = text;
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
-        self.text = text;
-        self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
-        true
     }
 
     /// Capture the resolved theme scale before a renderer-backed measurement.
@@ -595,57 +708,10 @@ impl TextInput {
         }
     }
 
-    /// Keep the binding readable while an owning action bridge handles user writes.
-    pub fn set_direct_crdt_writes(&mut self, enabled: bool) {
-        self.direct_crdt_writes = enabled;
-    }
-
-    fn resolve_text_obj(&self, state: &AutoCommit, root: &ObjId) -> Option<ObjId> {
-        if !self.direct_crdt_writes {
-            return None;
-        }
-        if self.action.is_some() {
-            return None;
-        }
-        if let Some(obj) = &self.bound_text {
-            return Some(obj.clone());
-        }
-        if self.crdt_bound
-            && let Ok(Some((Value::Object(ObjType::Text), id))) =
-                state.get(root, self.on_change_path.as_str())
-        {
-            return Some(id);
-        }
-        None
-    }
-
-    /// Materialise a path-bound text object after the first effective edit.
-    ///
-    /// Path bindings deliberately stay absent while the user only focuses or
-    /// navigates the field. When an edit was applied locally without an
-    /// existing Automerge text object, publish the complete resulting value as
-    /// one text object so sibling document readers observe that first edit.
-    fn persist_first_path_edit(&self, previous_text: &str, state: &mut AutoCommit, root: &ObjId) {
-        if self.action.is_some()
-            || !self.crdt_bound
-            || self.bound_text.is_some()
-            || self.on_change_path.is_empty()
-            || self.text == previous_text
-            || self.resolve_text_obj(state, root).is_some()
-        {
-            return;
-        }
-        let Ok(obj) = state.put_object(root, self.on_change_path.as_str(), ObjType::Text) else {
-            return;
-        };
-        if !self.text.is_empty() {
-            let _ = state.splice_text(&obj, 0, 0, self.text.as_str());
-        }
-    }
-
+    /// Set the field’s text in `role` (default [`TextRole::Body`]).
     #[must_use]
-    pub fn with_font_size(mut self, size: f32) -> Self {
-        self.font_size_override = Some(size);
+    pub fn with_text_role(mut self, role: TextRole) -> Self {
+        self.set_text_role(role);
         self
     }
 
@@ -655,7 +721,25 @@ impl TextInput {
         self
     }
 
-    pub fn set_font_size(&mut self, size: f32) {
+    /// Change the field's text role; see [`Self::with_text_role`].
+    pub fn set_text_role(&mut self, role: TextRole) {
+        if self.text_role != role || self.font_size_override.is_some() {
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.text_role = role;
+            self.font_size_override = None;
+            self.content_sized = false;
+        }
+    }
+
+    /// The field's text role.
+    #[must_use]
+    pub fn text_role(&self) -> TextRole {
+        self.text_role
+    }
+
+    /// A document editor built on this field (a heading block, a code view)
+    /// sets its own 1× base size; chrome fields take a role.
+    pub(crate) fn set_base_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
             self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.font_size_override = Some(size);
@@ -833,6 +917,8 @@ impl TextInput {
         display.hash(&mut hash);
         family.hash(&mut hash);
         size.to_bits().hash(&mut hash);
+        self.kind.text_kind().hash(&mut hash);
+        self.text_role.weight().hash(&mut hash);
         (self.align as u8).hash(&mut hash);
         width.map(f32::to_bits).hash(&mut hash);
         if self.core.has_preedit() {
@@ -856,6 +942,7 @@ impl TextInput {
             span.family.hash(&mut hash);
             span.background.hash(&mut hash);
             span.baseline.hash(&mut hash);
+            span.kind.hash(&mut hash);
         }
         hash.finish()
     }
@@ -1046,11 +1133,9 @@ impl TextInput {
         display
     }
 
-    /// No CRDT integration — for a field with no CRDT path to spend.
+    /// A field with no document binding.
     pub fn local() -> Self {
-        let mut s = Self::new(Vec::new());
-        s.crdt_bound = false;
-        s
+        Self::new(Vec::new())
     }
 
     /// Explicit host language without discovery or background dictionary warmup.
@@ -1071,22 +1156,6 @@ impl TextInput {
         let (value, binding) = crate::local_state::LocalBinding::new(state);
         let mut input = Self::local().with_initial_value(&value);
         input.local_state = Some(binding);
-        input
-    }
-
-    /// Create an input bound to one root-level document string.
-    ///
-    /// The path may contain either an Automerge string scalar or `Text`
-    /// object. The first effective edit upgrades a missing path (or scalar)
-    /// to collaborative `Text`; focus and selection alone do not materialise
-    /// model state. Pair with
-    /// [`Text::from_document_string`](super::Text::from_document_string) for a
-    /// synchronized read-only view without app-owned callbacks.
-    pub fn from_document_string(path: impl Into<String>) -> Self {
-        let path = path.into();
-        let mut input = Self::local();
-        input.crdt_bound = !path.is_empty();
-        input.on_change_path = path;
         input
     }
 
@@ -1122,13 +1191,16 @@ impl TextInput {
         if self.text == s {
             return;
         }
-        if self.secret {
+        self.pending_paste = None;
+        if self.holds_secret() {
             self.text.zeroize();
             self.last_notified_text.zeroize();
         }
         self.text = s.to_string();
         self.core.collapse();
+        self.core.set_caret(self.text.len());
         self.clamp_to_text();
+        self.scroll_x = 0.0;
         self.dirty = false;
         self.model_layout_dirty = self.multiline || self.single_attributes.is_some();
         self.typing.close();
@@ -1171,13 +1243,15 @@ impl TextInput {
         self
     }
 
-    fn notify_user_change(&mut self) {
+    fn notify_user_change(&mut self, physical_text: bool) {
         if !self.dirty || self.last_notified_text == self.text {
             return;
         }
         self.last_notified_text.clone_from(&self.text);
         if let Some(action) = &mut self.action {
-            let _ = action.emit(self.text.clone());
+            let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
+                action.emit(self.text.clone())
+            });
         } else {
             self.publish_local_state();
         }
@@ -1194,20 +1268,16 @@ impl TextInput {
         }
     }
 
-    /// Local-mode only. In CRDT-bound mode prefer a real key event instead,
-    /// so the splice carries authorship marks.
+    /// Insert `s` at the caret as the user's edit.
     pub fn insert_at_cursor(&mut self, s: &str) {
-        // `insert_str` only touches the CRDT when given an object id.
-        let mut sink = AutoCommit::new();
-        self.insert_str(s, &mut sink, None);
+        self.insert_str(s);
         self.last_notified_text.clone_from(&self.text);
         self.publish_local_state();
     }
 
     /// Delete the selected text in a host-owned local projection.
     pub(super) fn delete_local_selection(&mut self) {
-        let mut sink = AutoCommit::new();
-        self.delete_selection(&mut sink, None);
+        self.delete_selection();
         self.last_notified_text.clone_from(&self.text);
         self.publish_local_state();
     }
@@ -1223,6 +1293,7 @@ impl TextInput {
 
     /// Does not count as a user edit (dirty stays false).
     pub fn set_cursor_pos(&mut self, pos: usize) {
+        self.pending_paste = None;
         self.core
             .set_caret(grapheme_boundary_at_or_before(&self.text, pos));
         self.goal_x = None;
@@ -1230,6 +1301,7 @@ impl TextInput {
 
     /// Seat the caret at an exact shaped position without counting as an edit.
     pub fn set_caret_position(&mut self, position: TextPosition) {
+        self.pending_paste = None;
         self.core.set_caret_position(TextPosition::with_affinity(
             grapheme_boundary_at_or_before(&self.text, position.byte),
             position.affinity,
@@ -1316,6 +1388,17 @@ impl TextInput {
         }
     }
 
+    /// Where the field's text starts inside its rect: the multiline inset
+    /// (and code gutter) of a wrapping field, the horizontal padding of a
+    /// single-line one.
+    pub fn text_inset_x(&self, theme: &Theme) -> f64 {
+        if self.multiline {
+            self.ml_left()
+        } else {
+            self.text_padding_x(theme)
+        }
+    }
+
     /// Single source of truth for both the local and any peer caret, so they line up.
     pub fn text_band(&self) -> (f64, f64) {
         if !self.multiline
@@ -1327,7 +1410,7 @@ impl TextInput {
                 f64::from(layout.buffer.metrics().line_height),
             );
         }
-        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
+        let text_size = self.effective_font_size();
         let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
         (text_y, line_height)
@@ -1479,7 +1562,8 @@ impl TextInput {
     }
 
     fn effective_font_size(&self) -> f32 {
-        self.font_size_override.unwrap_or(FONT_SIZE)
+        self.font_size_override
+            .unwrap_or_else(|| crate::tokens::typography::stock().size(self.text_role))
     }
 
     fn line_height(&self) -> f64 {
@@ -1686,6 +1770,7 @@ impl TextInput {
     /// Restore a document selection's active endpoint after its per-block
     /// bands have been painted, retaining wrap/bidi affinity.
     pub(super) fn set_selection_at(&mut self, anchor: usize, cursor: TextPosition) {
+        self.pending_paste = None;
         let anchor = anchor.min(self.text.len());
         let byte = cursor.byte.min(self.text.len());
         self.core
@@ -1857,11 +1942,7 @@ impl TextInput {
                 color,
                 origin,
                 None,
-                &TextStyle::new(size).with_family(if self.mono {
-                    FontChoice::Monospace
-                } else {
-                    FontChoice::SansSerif
-                }),
+                &TextStyle::new(size).with_family(self.role_family()),
             );
         }
     }
@@ -1922,7 +2003,7 @@ impl TextInput {
             self.single_layout.take(),
             browser_emoji,
         );
-        if self.secret {
+        if self.holds_secret() {
             layout.discard_prepared_inputs();
         }
         tr.note_browser_rich_layout(&layout);
@@ -1936,22 +2017,25 @@ impl TextInput {
     }
 
     fn multiline_style(&self, scale: f32) -> TextStyle {
-        let family = self.family.clone().unwrap_or(if self.mono {
-            FontChoice::Monospace
-        } else {
-            FontChoice::SansSerif
-        });
-        TextStyle::new(self.effective_font_size() * scale)
+        let family = self.family.clone().unwrap_or(self.role_family());
+        // Already grown by the text scale here, so the renderer paints it as
+        // given.
+        // The role sets the weight too: a heading line is semibold in
+        // measurement and paint alike.
+        let mut style = TextStyle::new(self.effective_font_size() * scale)
             .with_line_height(LINE_HEIGHT_RATIO)
-            .with_family(family)
+            .with_weight(self.text_role.weight())
+            .with_family(family);
+        style.scaling = TextScaling::Resolved;
+        style.kind = self.kind.text_kind();
+        if self.kind == TextInputKind::Code {
+            // Source wraps under its own indentation.
+            style.wrap_mode = crate::text_render::TextWrapMode::Indented;
+        }
+        style
     }
 
-    fn update_gutter_metrics(
-        &mut self,
-        tr: &mut TextRenderer,
-        renderer_style: &TextStyle,
-        scale: f32,
-    ) {
+    fn update_gutter_metrics(&mut self, tr: &mut TextRenderer, style: &TextStyle, scale: f32) {
         if !self.gutter || !self.multiline {
             self.measured_gutter_width = 0.0;
             return;
@@ -1963,7 +2047,7 @@ impl TextInput {
             .count()
             .saturating_add(1);
         let label = lines.max(10).to_string();
-        let (number_width, _) = tr.measure_style(&label, None, renderer_style);
+        let (number_width, _) = tr.measure_style(&label, None, style);
         self.measured_gutter_width =
             f64::from(number_width) + (GUTTER_PAD_L + GUTTER_PAD_R) * f64::from(scale);
     }
@@ -1995,13 +2079,14 @@ impl TextInput {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> f32 {
-        self.gutter_text_scale = f64::from(theme.text_scale);
-        let available = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
-        let style = self.multiline_style(theme.text_scale);
+        self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
+        let available = (f64::from(width) - self.ml_left() - self.ml_pad_x()).max(1.0);
+        let style = self.multiline_style(self.scale_for(theme.text_scale));
         #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
         let available_width = available as f32;
         self.ensure_shaped_layout(tr, theme, &style, available_width);
-        let minimum = self.effective_font_size() * theme.text_scale * LINE_HEIGHT_RATIO;
+        let minimum =
+            self.effective_font_size() * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO;
         let height = self
             .single_layout
             .as_ref()
@@ -2044,7 +2129,11 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.bg_hover.with_alpha_factor(0.35),
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
+                .with_alpha_factor(0.35),
             None,
             &gutter,
         );
@@ -2073,7 +2162,11 @@ impl TextInput {
         let Some(layout) = &self.single_layout else {
             return;
         };
-        let band_color = theme.bg_hover.with_alpha_factor(0.6);
+        let band_color = theme
+            .tokens
+            .colors
+            .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
+            .with_alpha_factor(0.6);
         for (top, height) in layout.logical_line_bands(caret_byte) {
             let y0 = self.single_origin.y + f64::from(top);
             let band = Rect::new(
@@ -2175,7 +2268,7 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.you,
             None,
             &caret,
         );
@@ -2193,15 +2286,14 @@ impl TextInput {
         shape: &RoundedRect,
     ) {
         let size = self.effective_font_size();
-        let style = self.multiline_style(theme.text_scale);
-        let renderer_style = tr.renderer_input_style(&style);
-        self.update_gutter_metrics(tr, &renderer_style, theme.text_scale);
+        let style = self.multiline_style(self.scale_for(theme.text_scale));
+        self.update_gutter_metrics(tr, &style, self.scale_for(theme.text_scale));
         let left = self.ml_left();
         #[allow(
             clippy::cast_possible_truncation,
             reason = "widget width is a bounded on-screen size for vello/layout math, never near f32's range"
         )]
-        let available_width = (self.rect.width() - left - ML_PAD_X).max(1.0) as f32;
+        let available_width = (self.rect.width() - left - self.ml_pad_x()).max(1.0) as f32;
         self.ensure_shaped_layout(tr, theme, &style, available_width);
 
         let caret_position = if self.core.has_preedit() {
@@ -2240,7 +2332,7 @@ impl TextInput {
         self.draw_current_line_band(scene, transform, theme, caret_byte, gutter_width);
 
         if let Some((start, end)) = self.selection_range() {
-            let color = theme.accent_primary.with_alpha_factor(0.35);
+            let color = theme.tokens.colors.intent.selection_tint;
             for rect in self.selection_rects(theme, start, end) {
                 scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
             }
@@ -2256,13 +2348,13 @@ impl TextInput {
             transform * Affine::translate((self.single_origin.x, self.single_origin.y));
         if self.shows_placeholder() {
             let placeholder = crate::i18n!(&self.placeholder);
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &placeholder,
-                size,
-                theme.text_dim,
+                theme.tokens.colors.text_tertiary,
                 text_transform,
                 Some(available_width),
+                &self.placeholder_style(size),
             );
         } else if let Some(layout) = &self.single_layout {
             let color = if self.effectively_disabled() {
@@ -2278,7 +2370,7 @@ impl TextInput {
             transform,
             tr,
             theme,
-            &renderer_style,
+            &style,
             caret_byte,
             gutter_width,
         );
@@ -2356,7 +2448,11 @@ impl TextInput {
             return;
         }
         let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
-        let band_color = theme.bg_hover.with_alpha_factor(0.6);
+        let band_color = theme
+            .tokens
+            .colors
+            .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
+            .with_alpha_factor(0.6);
         for (row, &lor) in self.lines.iter().zip(line_of_row.iter()) {
             if lor != caret_line {
                 continue;
@@ -2491,7 +2587,7 @@ impl TextInput {
         let lh = self.line_height();
         let left = self.ml_left();
         let gutter_w = self.code_gutter_w();
-        let avail_w = self.rect.width() - left - ML_PAD_X;
+        let avail_w = self.rect.width() - left - self.ml_pad_x();
         self.build_lines(tr, avail_w);
         self.refresh_highlight();
         self.update_ml_body_scroll(lh);
@@ -2509,7 +2605,7 @@ impl TextInput {
         self.draw_body_current_line_band(scene, transform, theme, &rows, lh, gutter_w);
 
         if let Some((s, e)) = self.selection_range() {
-            let sel_color = theme.accent_primary.with_alpha_factor(0.35);
+            let sel_color = theme.tokens.colors.intent.selection_tint;
             for r in self.selection_rects(theme, s, e) {
                 scene.fill(vello::peniko::Fill::NonZero, transform, sel_color, None, &r);
             }
@@ -2526,7 +2622,14 @@ impl TextInput {
                     self.rect.x0 + left,
                     self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
                 ));
-            tr.draw_text(scene, &placeholder, size, theme.text_dim, origin, None);
+            tr.draw_style(
+                scene,
+                &placeholder,
+                theme.tokens.colors.text_tertiary,
+                origin,
+                None,
+                &self.placeholder_style(size),
+            );
         }
 
         let text_color = if self.effectively_disabled() {
@@ -2544,7 +2647,7 @@ impl TextInput {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.accent_primary,
+                theme.tokens.colors.intent.you,
                 None,
                 &caret,
             );
@@ -2701,26 +2804,12 @@ impl TextInput {
         self.reveal.set_field_id(id);
     }
 
-    /// Bind this input to one root-level document string.
-    ///
-    /// Prefer [`Self::from_document_string`] when constructing a new field;
-    /// this builder remains useful when the rest of the input is assembled
-    /// dynamically first.
-    #[must_use]
-    pub fn with_on_change_path(mut self, path: &str) -> Self {
-        self.local_state = None;
-        self.on_change_path = path.to_string();
-        self.crdt_bound = !path.is_empty();
-        self
-    }
-
     /// Mirror edits into caller-owned process-local memory without creating a
     /// CRDT object. Intended for passwords/PINs; use with [`Self::local`].
     #[must_use]
     pub fn with_external_buffer(mut self, buffer: Arc<Mutex<String>>) -> Self {
         self.local_state = None;
         self.external_buffer = Some(buffer);
-        self.crdt_bound = false;
         self
     }
 
@@ -2742,6 +2831,14 @@ impl TextInput {
 
     pub fn is_secret(&self) -> bool {
         self.secret
+    }
+
+    /// Whether the field holds a secret: a masked field, or one whose kind is
+    /// a password or key even while it shows its text in the clear. Such a
+    /// value never reaches the accessibility tree, a review, presence, the
+    /// primary selection or an input method's suggestions.
+    fn holds_secret(&self) -> bool {
+        self.secret || matches!(self.kind.text_kind(), TextKind::Secret)
     }
 
     /// Only meaningful together with `with_secret`. Secret fields start
@@ -2905,7 +3002,7 @@ impl TextInput {
     }
 
     fn ml_left(&self) -> f64 {
-        ML_PAD_X + self.code_gutter_w()
+        self.ml_pad_x() + self.code_gutter_w()
     }
 
     /// Threads the cross-line carry over all lines so block comments / fenced
@@ -2917,10 +3014,10 @@ impl TextInput {
             self.hl_line_starts.clear();
             return;
         };
-        if !self.secret && self.hl_text.as_deref() == Some(self.text.as_str()) {
+        if !self.holds_secret() && self.hl_text.as_deref() == Some(self.text.as_str()) {
             return;
         }
-        self.hl_text = (!self.secret).then(|| Arc::from(self.text.as_str()));
+        self.hl_text = (!self.holds_secret()).then(|| Arc::from(self.text.as_str()));
         self.hl_spans.clear();
         self.hl_line_starts.clear();
         let mut carry = 0u64;
@@ -2994,7 +3091,366 @@ impl TextInput {
     }
 
     pub fn shows_placeholder(&self) -> bool {
-        !self.placeholder.is_empty() && self.text.is_empty() && !self.is_focused
+        !self.placeholder.is_empty() && self.text.is_empty() && !self.is_composing()
+    }
+
+    /// How tall a single-line field is: the height of a button of the same
+    /// size, so fields and buttons share a row. Regular (32) by default.
+    #[must_use]
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.set_control_size(size);
+        self
+    }
+
+    /// Change the field's [`ControlSize`]; see [`Self::control_size`].
+    pub fn set_control_size(&mut self, size: ControlSize) {
+        if self.control_size != size {
+            self.control_size = size;
+            self.model_layout_dirty = true;
+        }
+    }
+
+    /// A wrapping field at least `lines` lines tall, with the same text
+    /// inset as a single-line field and never shorter than one.
+    #[must_use]
+    pub fn with_min_lines(mut self, lines: usize) -> Self {
+        self.multiline = true;
+        self.min_lines = lines;
+        self.model_layout_dirty = true;
+        self
+    }
+
+    /// Run `callback` with the text when the person presses Enter: the
+    /// field's commit for a tree-owned field nobody polls. Enter submits
+    /// (Shift+Enter still breaks a wrapping field's line).
+    #[must_use]
+    pub fn on_submit(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        self.enter_submits = true;
+        self.on_submit = Some(Box::new(callback));
+        self
+    }
+
+    /// Route Enter through an exported resource action with the text as its
+    /// input; see [`Self::on_submit`].
+    #[must_use]
+    pub fn on_submit_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.enter_submits = true;
+        self.submit_action = Some(ActionEmitter::new(binding));
+        self
+    }
+
+    /// A trailing clear button inside the field while it holds text.
+    #[must_use]
+    pub fn with_clear_button(self) -> Self {
+        self.with_trailing_accessory(crate::icons::Icon::X, "Clear", AccessoryAction::Clear)
+    }
+
+    /// A trailing icon button inside the field, named `name` for assistive
+    /// technology (a reveal toggle, a picker).
+    #[must_use]
+    pub fn with_trailing_accessory(
+        mut self,
+        icon: crate::icons::Icon,
+        name: &str,
+        action: AccessoryAction,
+    ) -> Self {
+        self.accessory = Some(Accessory {
+            icon,
+            name: name.to_string(),
+            action,
+            hovered: false,
+        });
+        self
+    }
+
+    /// Whether the trailing accessory is a toggle that is on.
+    #[must_use]
+    pub fn accessory_pressed(&self) -> Option<bool> {
+        match self.accessory.as_ref().map(|accessory| &accessory.action) {
+            Some(AccessoryAction::Toggle { pressed, .. }) => Some(*pressed),
+            _ => None,
+        }
+    }
+
+    /// Turn a toggle accessory on or off (the host syncing from its model).
+    /// No-op for any other accessory.
+    pub fn set_accessory_pressed(&mut self, on: bool) {
+        if let Some(Accessory {
+            action: AccessoryAction::Toggle { pressed, .. },
+            ..
+        }) = self.accessory.as_mut()
+            && *pressed != on
+        {
+            *pressed = on;
+        }
+    }
+
+    /// Edit text that belongs to a document in place, at the document's own
+    /// `px` size (a note on a zoomed page): the text scale does not grow it,
+    /// the document's zoom does.
+    #[must_use]
+    pub fn with_content_size(mut self, px: f32) -> Self {
+        self.set_content_size(Some(px));
+        self
+    }
+
+    /// Change or clear the document-space size of [`Self::with_content_size`].
+    pub fn set_content_size(&mut self, px: Option<f32>) {
+        let sized = px.is_some();
+        if self.font_size_override != px || self.content_sized != sized {
+            self.font_size_override = px;
+            self.content_sized = sized;
+            self.model_layout_dirty = true;
+        }
+    }
+
+    /// Colour spans of a single-line field's text (references in a
+    /// formula); see [`SpanHighlighter`]. A wrapping field takes a
+    /// [`Highlighter`] instead.
+    #[must_use]
+    pub fn with_span_highlighter(
+        mut self,
+        highlighter: impl Fn(&str, &Theme) -> Vec<(std::ops::Range<usize>, vello::peniko::Color)>
+        + 'static,
+    ) -> Self {
+        self.span_highlighter = Some(Box::new(highlighter));
+        self
+    }
+
+    /// Keep the document's text inset on a plain field inside a toolkit
+    /// document view (a block, a table cell, a code view).
+    pub(crate) fn keep_document_inset(&mut self) {
+        self.document_inset = true;
+    }
+
+    /// Where the trailing accessory sits: a square at the field's trailing
+    /// edge, one band tall, while it is shown.
+    fn accessory_rect(&self) -> Option<Rect> {
+        let accessory = self.accessory.as_ref()?;
+        if self.multiline
+            || (matches!(accessory.action, AccessoryAction::Clear) && self.text.is_empty())
+        {
+            return None;
+        }
+        let edge = self.rect.height();
+        (self.rect.width() > edge * 2.0).then(|| {
+            Rect::new(
+                self.rect.x1 - edge,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y0 + edge,
+            )
+        })
+    }
+
+    /// The room the accessory takes from the text.
+    fn accessory_room(&self) -> f64 {
+        self.accessory_rect().map_or(0.0, |rect| rect.width())
+    }
+
+    /// Paint the trailing accessory: a plain icon button, lifted under the
+    /// pointer.
+    fn draw_accessory(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let (Some(rect), Some(accessory)) = (self.accessory_rect(), self.accessory.as_ref()) else {
+            return;
+        };
+        let inset = f64::from(theme.tokens.spacing.s1);
+        let face = rect.inset(-inset);
+        let enabled = !self.effectively_disabled();
+        let on = enabled
+            && matches!(
+                accessory.action,
+                AccessoryAction::Toggle { pressed: true, .. }
+            );
+        // An "on" toggle is the selection lift, as a toggled toolbar glyph
+        // is, and stays one under the pointer.
+        let lift = if on {
+            Some(theme.tokens.colors.intent.selection)
+        } else {
+            (accessory.hovered && enabled).then_some(theme.tokens.colors.intent.selection_hover)
+        };
+        if let Some(lift) = lift {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                lift,
+                None,
+                &RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
+            );
+        }
+        let ink = if on {
+            theme.tokens.colors.text_primary
+        } else {
+            theme.text_dim
+        };
+        let edge = f64::from(theme.tokens.metrics.icon_sm);
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::from_center_size(rect.center(), (edge, edge)),
+            accessory.icon,
+            ink,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
+
+    /// A press on the accessory: run it. Returns whether it took the press.
+    fn press_accessory(&mut self) -> bool {
+        let Some(rect) = self.accessory_rect() else {
+            return false;
+        };
+        if !rect.contains(self.last_mouse_pos) {
+            return false;
+        }
+        self.run_accessory()
+    }
+
+    /// Run the trailing accessory, from a press or an accessibility action.
+    fn run_accessory(&mut self) -> bool {
+        let Some(accessory) = self.accessory.as_mut() else {
+            return false;
+        };
+        match &mut accessory.action {
+            AccessoryAction::Run(callback) => callback(),
+            AccessoryAction::Toggle { pressed, on_toggle } => {
+                *pressed = !*pressed;
+                on_toggle(*pressed);
+            }
+            AccessoryAction::Clear => {
+                self.core.set_selection(0, self.text.len());
+                self.delete_selection();
+            }
+        }
+        true
+    }
+
+    /// Shape the single line in the span highlighter's colours.
+    fn apply_span_highlighter(&mut self, theme: &Theme) {
+        let Some(highlight) = &self.span_highlighter else {
+            return;
+        };
+        if self.masked() {
+            return;
+        }
+        let mut ranges = highlight(&self.text, theme);
+        ranges.sort_by_key(|(range, _)| (range.start, range.end));
+        let mut spans = Vec::new();
+        let mut cursor = 0usize;
+        for (range, color) in ranges {
+            let start = range.start.max(cursor).min(self.text.len());
+            let end = range.end.min(self.text.len());
+            if start >= end
+                || !self.text.is_char_boundary(start)
+                || !self.text.is_char_boundary(end)
+            {
+                continue;
+            }
+            if cursor < start
+                && let Some(before) = self.text.get(cursor..start)
+            {
+                spans.push(RichSpan::new(before));
+            }
+            if let Some(mid) = self.text.get(start..end) {
+                spans.push(RichSpan::new(mid).color(Some([color.r(), color.g(), color.b()])));
+            }
+            cursor = end;
+        }
+        if (cursor < self.text.len() || spans.is_empty())
+            && let Some(tail) = self.text.get(cursor..)
+        {
+            spans.push(RichSpan::new(tail));
+        }
+        self.single_attributes = Some(SingleLineAttributes {
+            spans,
+            ..SingleLineAttributes::default()
+        });
+    }
+
+    /// A submitting Enter: tell whoever listens.
+    fn fire_submit(&mut self) {
+        self.submit_requested = true;
+        if let Some(action) = &mut self.submit_action {
+            let _ = action.emit(self.text.clone());
+        }
+        if let Some(callback) = self.on_submit.as_mut() {
+            callback(&self.text);
+        }
+    }
+
+    /// The text scale this field grows by: none for document-space text.
+    fn scale_for(&self, scale: f32) -> f32 {
+        if self.content_sized { 1.0 } else { scale }
+    }
+
+    /// The family the field's text sets in: the app's explicit one, else the
+    /// role's (Reading is serif, Code is mono, the rest the UI face).
+    fn role_family(&self) -> FontChoice {
+        if self.mono {
+            return FontChoice::Monospace;
+        }
+        match self.text_role {
+            TextRole::Reading => FontChoice::Serif,
+            TextRole::Code => FontChoice::Monospace,
+            _ => FontChoice::SansSerif,
+        }
+    }
+
+    /// The style the placeholder draws in: the field's own family and size,
+    /// so a serif or mono field shows a serif or mono prompt.
+    fn placeholder_style(&self, size: f32) -> TextStyle {
+        let mut style = TextStyle::new(size)
+            .with_weight(self.text_role.weight())
+            .with_family(self.family.clone().unwrap_or_else(|| self.role_family()));
+        if self.content_sized {
+            style.scaling = TextScaling::Content;
+        }
+        style
+    }
+
+    /// The horizontal inset of a wrapping field's text: the single-line
+    /// inset of a chrome'd field, none for a plain field whose parent
+    /// supplies the gutter, the document's own inside a toolkit document.
+    fn ml_pad_x(&self) -> f64 {
+        if !self.plain {
+            self.field_pad_x
+        } else if self.document_inset {
+            ML_PAD_X
+        } else {
+            0.0
+        }
+    }
+
+    /// The single-line band at `scale`: the control height, grown with the
+    /// line plus `spacing.s1` above and below at large text.
+    pub(crate) fn band_in(&self, theme: &Theme) -> f64 {
+        let line_px = f64::from(
+            self.effective_font_size() * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO,
+        );
+        let grown = (line_px + 2.0 * f64::from(theme.tokens.spacing.s1)).ceil();
+        self.control_size.height(theme).max(grown)
+    }
+
+    /// Adopt the theme's field geometry.
+    fn adopt_field_theme(&mut self, theme: &Theme) {
+        let pad = f64::from(theme.padding_standard);
+        let band = self.band_in(theme);
+        if (pad - self.field_pad_x).abs() > f64::EPSILON || (band - self.band_height).abs() > 0.01 {
+            self.field_pad_x = pad;
+            self.band_height = band;
+            self.model_layout_dirty |= self.multiline;
+        }
+    }
+
+    /// The least height of a wrapping chrome'd field: one band, or
+    /// `min_lines` lines and the vertical inset.
+    fn multiline_floor(&self, scale: f32) -> f64 {
+        if self.plain {
+            return 0.0;
+        }
+        let line =
+            f64::from(self.effective_font_size() * self.scale_for(scale) * LINE_HEIGHT_RATIO);
+        let lines = f64::from(u32::try_from(self.min_lines).unwrap_or(u32::MAX));
+        (lines * line + 2.0 * self.multiline_padding_y()).max(self.band_height)
     }
 
     fn masked(&self) -> bool {
@@ -3100,34 +3556,18 @@ impl TextInput {
         self.goal_x = None;
     }
 
-    /// Apply an [`Edit`] from the core to the mirror and, when bound, the
-    /// CRDT text, stamping the local author over inserted text. Returns
-    /// whether the edit landed.
-    fn apply_edit(&mut self, edit: &Edit, state: &mut AutoCommit, obj_id: Option<&ObjId>) -> bool {
+    /// Apply an [`Edit`] from the core to the shown text, for the owner to
+    /// take as the user's edit. Returns whether the edit landed.
+    fn apply_edit(&mut self, edit: &Edit) -> bool {
         if edit.is_noop() {
             return false;
         }
-        let Some(splice) = edit.char_splice(&self.text) else {
+        if edit.char_splice(&self.text).is_none() {
             // Computed against text that has since moved under the caret.
             self.clamp_to_text();
             return false;
-        };
-        if let Some(obj_id) = obj_id {
-            edit.splice_automerge(state, obj_id, &self.text);
-            // Latest-wins per position, so a peer typing into another's text
-            // splits their run correctly.
-            if let Some(author) = &self.local_author
-                && splice.inserted > 0
-            {
-                let mark = automerge::marks::Mark::new(
-                    AUTHOR_MARK.to_string(),
-                    author.clone(),
-                    splice.at,
-                    splice.at.saturating_add(splice.inserted),
-                );
-                let _ = state.mark(obj_id, mark, automerge::marks::ExpandMark::None);
-            }
         }
+        self.pending_paste = None;
         edit.apply(&mut self.text);
         self.goal_x = None;
         self.typing.touch();
@@ -3136,29 +3576,29 @@ impl TextInput {
     }
 
     /// No-op if there's no selection.
-    fn delete_selection(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn delete_selection(&mut self) {
         if !self.core.has_selection() {
             return;
         }
         let edit = self.core.delete_selection();
-        self.apply_edit(&edit, state, obj_id);
+        self.apply_edit(&edit);
     }
 
-    fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn insert_str(&mut self, s: &str) {
         let edit = self.core.insert(s);
-        self.apply_insert(&edit, state, obj_id);
+        self.apply_insert(&edit);
     }
 
-    fn apply_insert(&mut self, edit: &Edit, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn apply_insert(&mut self, edit: &Edit) {
         if edit.inserted.is_empty() {
             return;
         }
         self.last_autocorrection = None;
-        self.apply_edit(edit, state, obj_id);
+        self.apply_edit(edit);
     }
 
     /// `width == 0` removes a single leading whitespace char instead of a tab-stop.
-    fn outdent(&mut self, width: usize, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn outdent(&mut self, width: usize) {
         let caret = self.core.caret();
         let Some(before_caret) = self.text.get(..caret) else {
             return;
@@ -3187,7 +3627,7 @@ impl TextInput {
             removed: remove,
             inserted: String::new(),
         };
-        if self.apply_edit(&edit, state, obj_id) {
+        if self.apply_edit(&edit) {
             self.core
                 .set_caret(caret.saturating_sub(remove).max(line_start));
         }
@@ -3218,26 +3658,56 @@ impl TextInput {
         }
     }
 
-    fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+    fn do_cut(&mut self) {
         if let Some(s) = self.shareable_selection() {
             let owned = s.to_string();
             // Delete only once the text is on a clipboard; a failed copy
             // must not lose the selection.
             if crate::text_selection::clipboard_copy_accepted(&owned) {
-                self.delete_selection(state, obj_id);
+                self.delete_selection();
             }
         }
     }
 
     /// Single-line strips all control characters; multiline keeps newlines
     /// (normalising `\r\n`/`\r` to `\n`) and tabs.
-    fn do_paste(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
-        if let Some(paste) = clipboard_paste() {
+    fn do_paste(&mut self) {
+        self.pending_paste = Some(PendingPaste {
+            result: crate::text_selection::request_clipboard_paste(),
+            text: zeroize::Zeroizing::new(self.text.clone()),
+            caret: self.core.caret_position(),
+            anchor: self.core.anchor(),
+        });
+        self.poll_pending_paste();
+    }
+
+    fn poll_pending_paste(&mut self) -> bool {
+        let Some(pending) = self.pending_paste.as_ref() else {
+            return false;
+        };
+        if self.effectively_disabled()
+            || self.text != *pending.text
+            || self.core.caret_position() != pending.caret
+            || self.core.anchor() != pending.anchor
+            || self.core.has_preedit()
+        {
+            self.pending_paste = None;
+            return false;
+        }
+        let paste = match pending.result.try_recv() {
+            Ok(value) => value,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        self.pending_paste = None;
+        if let Some(paste) = paste {
             let cleaned = self.clean_pasted_text(&paste);
             if !cleaned.is_empty() {
-                self.insert_str(&cleaned, state, obj_id);
+                self.insert_str(&cleaned);
+                return true;
             }
         }
+        false
     }
 
     fn clean_pasted_text(&self, paste: &str) -> String {
@@ -3266,8 +3736,7 @@ impl TextInput {
     }
 
     fn field_allows_spelling(&self) -> bool {
-        !self.secret
-            && self.kind != TextInputKind::Password
+        !self.holds_secret()
             && self.spellcheck.unwrap_or_else(|| {
                 self.kind.checks_spelling()
                     && !self.mono
@@ -3280,11 +3749,7 @@ impl TextInput {
         self.field_allows_spelling() && crate::text_assistance::preferences().check_spelling
     }
 
-    fn autocorrect_previous_word(
-        &mut self,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-    ) -> Option<Autocorrection> {
+    fn autocorrect_previous_word(&mut self) -> Option<Autocorrection> {
         if !self.autocorrect_enabled() || self.has_selection() || self.core.caret() == 0 {
             return None;
         }
@@ -3301,7 +3766,7 @@ impl TextInput {
         let (start, end) = (preview.start, preview.end);
         let (original, replacement) = (preview.original, preview.replacement);
         self.core.set_selection(start, end);
-        self.insert_str(&replacement, state, obj_id);
+        self.insert_str(&replacement);
         let replacement_end = start.saturating_add(replacement.len());
         Some(Autocorrection {
             start,
@@ -3336,6 +3801,7 @@ impl TextInput {
     /// for [`SUGGESTION_SETTLE`](crate::text_edit::SUGGESTION_SETTLE) — a
     /// pause at the end of a word or the caret coming back to an earlier one.
     pub(super) fn refresh_suggestion_at(&mut self, now: Instant) {
+        self.refresh_personal_spelling();
         let offers = self.autocorrect_enabled() || self.checks_spelling();
         if !offers || !self.is_focused || self.core.has_preedit() {
             self.caret_word.clear();
@@ -3364,6 +3830,48 @@ impl TextInput {
         self.autocorrection_preview = preview;
     }
 
+    fn personal_word(&self, word: &str) -> bool {
+        self.personal_spelling.as_ref().is_some_and(|personal| {
+            personal
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.contains(word, &personal.language))
+        })
+    }
+
+    fn refresh_personal_spelling(&mut self) {
+        if self.holds_secret() || (!self.checks_spelling() && !self.autocorrect_enabled()) {
+            self.personal_spelling = None;
+            self.spell_dictionary = None;
+            return;
+        }
+        if !self.spell_active && !self.is_focused {
+            return;
+        }
+        let current = PersonalSpelling {
+            owner: crate::local_identity::bound().map(|identity| identity.group_public_key),
+            generation: crate::local_identity::generation(),
+            language: self.spell_language.replace('_', "-").to_ascii_lowercase(),
+            snapshot: crate::personal_dictionary::snapshot().ok(),
+        };
+        if self.personal_spelling.as_ref() != Some(&current) {
+            if self.personal_spelling.as_ref().is_some_and(|previous| {
+                previous.owner != current.owner || previous.generation != current.generation
+            }) {
+                self.ignored_spellings.clear();
+            }
+            let words = current
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.hints(&current.language).collect::<Vec<_>>())
+                .unwrap_or_default();
+            self.spell_dictionary = Some(spellcheck::Dictionary::from_words(words));
+            self.personal_spelling = Some(current);
+            self.spell_cache_key = None;
+            self.clear_suggestion();
+        }
+    }
+
     fn suggestion_for(
         &mut self,
         range: Range<usize>,
@@ -3381,8 +3889,9 @@ impl TextInput {
         let original = self.text.get(range.clone())?.to_string();
         let dictionary = self
             .spell_dictionary
-            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+            .get_or_insert_with(spellcheck::Dictionary::default);
         if dictionary.contains(&original)
+            || self.personal_word(&original)
             || self.ignored_spellings.contains(&original.to_lowercase())
         {
             return None;
@@ -3413,7 +3922,8 @@ impl TextInput {
     }
 
     /// Replace the previewed word with its correction (a click on the chip).
-    fn accept_suggestion(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn accept_suggestion(&mut self) -> bool {
+        self.refresh_personal_spelling();
         let Some(preview) = self.autocorrection_preview.take() else {
             return false;
         };
@@ -3421,13 +3931,8 @@ impl TextInput {
             self.clear_suggestion();
             return false;
         }
-        let previous_text = self.text.clone();
-        let obj_id = self.resolve_text_obj(state, root);
         self.core.set_selection(preview.start, preview.end);
-        self.insert_str(&preview.replacement, state, obj_id.as_ref());
-        if obj_id.is_none() {
-            self.persist_first_path_edit(&previous_text, state, root);
-        }
+        self.insert_str(&preview.replacement);
         self.clear_suggestion();
         self.suggestion_chip = None;
         self.spell_cache_key = None;
@@ -3435,12 +3940,14 @@ impl TextInput {
     }
 
     fn autocorrection_candidate(&mut self) -> Option<AutocorrectionPreview> {
+        self.spell_active = true;
+        self.refresh_personal_spelling();
         let (start, end) = self.word_ending_at_caret()?;
         let original = self.text.get(start..end)?.to_string();
         let dictionary = self
             .spell_dictionary
-            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
-        if dictionary.contains(&original) {
+            .get_or_insert_with(spellcheck::Dictionary::default);
+        if dictionary.contains(&original) || self.personal_word(&original) {
             return None;
         }
         let replacement = spellcheck::probable_correction(&self.spell_language, &original)?;
@@ -3454,26 +3961,16 @@ impl TextInput {
         })
     }
 
-    fn insert_word_boundary(
-        &mut self,
-        boundary: &str,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-    ) {
-        let correction = self.autocorrect_previous_word(state, obj_id);
-        self.insert_str(boundary, state, obj_id);
+    fn insert_word_boundary(&mut self, boundary: &str) {
+        let correction = self.autocorrect_previous_word();
+        self.insert_str(boundary);
         if let Some(mut correction) = correction {
             correction.boundary_end = self.core.caret();
             self.last_autocorrection = Some(correction);
         }
     }
 
-    fn undo_last_autocorrection(
-        &mut self,
-        remove_boundary: bool,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-    ) -> bool {
+    fn undo_last_autocorrection(&mut self, remove_boundary: bool) -> bool {
         let Some(correction) = self.last_autocorrection.clone() else {
             return false;
         };
@@ -3496,11 +3993,12 @@ impl TextInput {
             correction.end
         };
         self.core.set_selection(correction.start, replace_end);
-        self.insert_str(&correction.original, state, obj_id);
+        self.insert_str(&correction.original);
         true
     }
 
     fn refresh_spelling(&mut self) {
+        self.refresh_personal_spelling();
         if !self.checks_spelling() || self.text.is_empty() {
             self.spell_spans.clear();
             self.spell_cache_key = None;
@@ -3518,10 +4016,18 @@ impl TextInput {
         let mut spans = spellcheck::spans_for_language(&self.spell_language, &self.text);
         let dictionary = self
             .spell_dictionary
-            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+            .get_or_insert_with(spellcheck::Dictionary::default);
+        let personal = self.personal_spelling.as_ref();
         spans.retain(|&(start, end)| {
             self.text.get(start..end).is_some_and(|word| {
-                !dictionary.contains(word) && !self.ignored_spellings.contains(&word.to_lowercase())
+                !dictionary.contains(word)
+                    && !personal.is_some_and(|personal| {
+                        personal
+                            .snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.contains(word, &personal.language))
+                    })
+                    && !self.ignored_spellings.contains(&word.to_lowercase())
             })
         });
         self.spell_spans = spans;
@@ -3611,7 +4117,7 @@ impl TextInput {
             scene.stroke(
                 &Stroke::new(1.5),
                 transform,
-                theme.accent_primary,
+                theme.tokens.colors.semantic.info,
                 None,
                 &line,
             );
@@ -3638,8 +4144,8 @@ impl TextInput {
         } else {
             preview.replacement.clone()
         };
-        let size = theme.tokens.typography.scale.sm;
-        let (text_width, text_height) = text_renderer.measure(&label, size, None);
+        let style = theme.text(TextRole::Caption);
+        let (text_width, text_height) = text_renderer.measure_style(&label, None, &style);
         let pad_x = 8.0_f64;
         let pad_y = 4.0_f64;
         let width = f64::from(text_width) + pad_x * 2.0;
@@ -3655,7 +4161,7 @@ impl TextInput {
         };
         let rect = Rect::new(x, y, x + width, y + height);
         self.suggestion_chip = Some(rect);
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.detail));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -3666,17 +4172,17 @@ impl TextInput {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.accent_primary,
+            crate::surface::edge_on(theme.tokens.colors.surfaces.overlay),
             None,
             &shape,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(rect.x0 + pad_x, rect.y0 + pad_y)),
             None,
+            &style,
         );
     }
 
@@ -3727,11 +4233,17 @@ impl TextInput {
                     replacement,
                 }));
             }
-            menu.push(MenuItem::action(
-                format!("Add ‘{word}’ to dictionary"),
-                || {},
-            ));
-            actions.push(Some(CtxAction::AddToDictionary(word.clone())));
+            if self
+                .personal_spelling
+                .as_ref()
+                .is_some_and(|personal| personal.snapshot.is_some())
+            {
+                menu.push(MenuItem::action(
+                    format!("Add ‘{word}’ to dictionary"),
+                    || {},
+                ));
+                actions.push(Some(CtxAction::AddToDictionary(word.clone())));
+            }
             menu.push(MenuItem::action("Ignore in this field", || {}));
             actions.push(Some(CtxAction::IgnoreInField(word)));
             menu.push(MenuItem::separator());
@@ -3775,19 +4287,14 @@ impl TextInput {
     }
 
     /// Out-of-range / separator rows are ignored.
-    fn dispatch_context_action(
-        &mut self,
-        idx: usize,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-    ) -> bool {
+    fn dispatch_context_action(&mut self, idx: usize) -> bool {
         let Some(Some(action)) = self.context_actions.get(idx).cloned() else {
             return false;
         };
         match action {
-            CtxAction::Cut => self.do_cut(state, obj_id),
+            CtxAction::Cut => self.do_cut(),
             CtxAction::Copy => self.do_copy(),
-            CtxAction::Paste => self.do_paste(state, obj_id),
+            CtxAction::Paste => self.do_paste(),
             CtxAction::SelectAll => self.do_select_all(),
             CtxAction::ApplySpelling {
                 start,
@@ -3795,15 +4302,20 @@ impl TextInput {
                 replacement,
             } => {
                 self.core.set_selection(start, end);
-                self.insert_str(&replacement, state, obj_id);
+                self.insert_str(&replacement);
                 self.spell_cache_key = None;
             }
             CtxAction::AddToDictionary(word) => {
-                let dictionary = self
-                    .spell_dictionary
-                    .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
-                if dictionary.add_word(&word) {
-                    let _ = dictionary.save_user_dict();
+                let result = crate::personal_dictionary::snapshot().and_then(|snapshot| {
+                    crate::personal_dictionary::edit(
+                        snapshot.revision,
+                        crate::personal_dictionary::Edit::Add(
+                            crate::personal_dictionary::Word::new(&word, None)?,
+                        ),
+                    )
+                });
+                if let Err(error) = result {
+                    tracing::warn!(%error, "could not add the shared personal word");
                 }
                 self.spell_cache_key = None;
                 self.refresh_spelling();
@@ -3814,7 +4326,7 @@ impl TextInput {
                 self.refresh_spelling();
             }
             CtxAction::UndoAutocorrection => {
-                let _ = self.undo_last_autocorrection(false, state, obj_id);
+                let _ = self.undo_last_autocorrection(false);
             }
             CtxAction::TextAction(index) => {
                 if let (Some(action), Some((start, end)), Some(selected)) = (
@@ -3909,9 +4421,221 @@ impl TextInput {
     }
 }
 
+/// How a field stands: what its chrome shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a POD bundle of independent interaction flags a field can be in any combination of"
+)]
+struct FieldState {
+    hovered: bool,
+    focused: bool,
+    invalid: bool,
+    disabled: bool,
+}
+
+/// A field's chrome: the raised face, a half lift under the pointer, the
+/// derived rest edge, your colour as the focus ring and danger ink for a
+/// rejected value. Shared by [`TextInput`] and [`FieldFace`].
+fn paint_field_chrome(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    shape: &RoundedRect,
+    state: FieldState,
+) {
+    let disabled = state.disabled;
+    let rest = theme.tokens.colors.surfaces.raised;
+    // Focus keeps the rest fill: the ring alone marks it, so a focused
+    // field reads as the same field. Hover is a half lift of an idle one.
+    let bg_color = if state.hovered && !state.focused && !disabled {
+        theme.tokens.colors.lift_on(rest, 0.5)
+    } else {
+        rest
+    };
+    // Disabled is the rest face under one group alpha (HIG §9.5), so rest
+    // and disabled never look alike; a "one step darker" fill with the
+    // same declared border did, on the dark preset.
+    if disabled {
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            crate::widget::DISABLED_ALPHA,
+            transform,
+            shape,
+        );
+    }
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        bg_color,
+        None,
+        shape,
+    );
+    // Rest edge derived from the field fill; focus keeps `border_focus`;
+    // a value the form rejected edges the field in danger ink, the one
+    // status colour a field takes.
+    let colors = &theme.tokens.colors;
+    let (border_w, border_color) = if state.focused && !disabled {
+        (2.0, colors.border_focus)
+    } else if state.invalid && !disabled {
+        (
+            1.5,
+            colors.ink_on_any(
+                &[bg_color, colors.surfaces.content],
+                colors.semantic.danger,
+                crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            ),
+        )
+    } else {
+        (1.0, crate::surface::edge_on(rest))
+    };
+    // Rest edge and focus ring share one half-pixel-inset outline, so
+    // the hairline never bleeds onto the ground and the ring sits where
+    // the edge was.
+    scene.stroke(
+        &Stroke::new(border_w),
+        transform,
+        border_color,
+        None,
+        &crate::surface::edge_outline(shape.rect(), shape.radii().top_left),
+    );
+    if disabled {
+        scene.pop_layer();
+    }
+}
+
+/// An immediate-mode text field: the [`TextInput`] look for a painted host
+/// (a formula bar, a cell editor) that shapes and edits its own text.
+///
+/// Size the rect from the face: [`FieldFace::height`] for a field of a
+/// [`ControlSize`], [`FieldFace::text_rect`] for where its text goes.
+/// `paint_chrome` paints only the frame, for a host that draws its own
+/// text (or hosts a [`TextInput`] with plain chrome inside it); `paint`
+/// adds the value, or the placeholder in the weaker placeholder ink.
+pub struct FieldFace<'a> {
+    rect: Rect,
+    text: &'a str,
+    placeholder: &'a str,
+    role: TextRole,
+    state: FieldState,
+}
+
+impl<'a> FieldFace<'a> {
+    /// A field at `rect` showing `text`.
+    #[must_use]
+    pub fn new(rect: Rect, text: &'a str) -> Self {
+        Self {
+            rect,
+            text,
+            placeholder: "",
+            role: TextRole::Body,
+            state: FieldState::default(),
+        }
+    }
+    /// Shown, in the placeholder ink, while the text is empty.
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: &'a str) -> Self {
+        self.placeholder = placeholder;
+        self
+    }
+    /// What the text is (default [`TextRole::Body`]).
+    #[must_use]
+    pub fn text_role(mut self, role: TextRole) -> Self {
+        self.role = role;
+        self
+    }
+    #[must_use]
+    pub fn hovered(mut self, hovered: bool) -> Self {
+        self.state.hovered = hovered;
+        self
+    }
+    #[must_use]
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.state.focused = focused;
+        self
+    }
+    /// The value was rejected: the edge takes danger ink.
+    #[must_use]
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.state.invalid = invalid;
+        self
+    }
+    #[must_use]
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.state.disabled = disabled;
+        self
+    }
+
+    /// The height of a single-line field of `size` in `theme`, the height of
+    /// a button of the same size, grown with a Body line at large text.
+    #[must_use]
+    pub fn height(size: ControlSize, theme: &Theme) -> f64 {
+        let line = f64::from(theme.text(TextRole::Body).size * LINE_HEIGHT_RATIO);
+        let grown = (line + 2.0 * f64::from(theme.tokens.spacing.s1)).ceil();
+        size.height(theme).max(grown)
+    }
+
+    /// Where the text goes: the field inset by the field's text inset.
+    #[must_use]
+    pub fn text_rect(&self, theme: &Theme) -> Rect {
+        let pad = f64::from(theme.padding_standard).min(self.rect.width() / 2.0);
+        Rect::new(
+            self.rect.x0 + pad,
+            self.rect.y0,
+            self.rect.x1 - pad,
+            self.rect.y1,
+        )
+    }
+
+    /// Paint only the frame.
+    pub fn paint_chrome(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
+        paint_field_chrome(scene, transform, theme, &shape, self.state);
+    }
+
+    /// Paint the frame and the text (or the placeholder), elided to one
+    /// line and centred in the band.
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.paint_chrome(scene, transform, theme);
+        let (shown, ink) = if self.text.is_empty() {
+            (self.placeholder, theme.tokens.colors.text_tertiary)
+        } else if self.state.disabled {
+            (self.text, theme.text_dim)
+        } else {
+            (self.text, theme.text_primary)
+        };
+        if shown.is_empty() {
+            return;
+        }
+        let style = theme.text(self.role);
+        let room = self.text_rect(theme);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a field width is a bounded on-screen size, far inside f32"
+        )]
+        let width = room.width().max(1.0) as f32;
+        let line = text.elide_to_width_style(shown, width, &style);
+        let (_, h) = text.measure_style(&line, None, &style);
+        let y = room.y0 + (room.height() - f64::from(h)) / 2.0;
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine transform composition over f64 screen coordinates"
+        )]
+        let origin = transform * Affine::translate((room.x0, y));
+        text.draw_style(scene, &line, ink, origin, None, &style);
+    }
+}
+
 impl Drop for TextInput {
     fn drop(&mut self) {
-        if self.secret {
+        if self.holds_secret() {
             self.text.zeroize();
             self.last_notified_text.zeroize();
         }
@@ -3934,8 +4658,11 @@ impl Widget for TextInput {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = crate::doc::document(state, root);
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if self.poll_pending_paste() {
+            self.notify_user_change(false);
+        }
+        let (state, _) = crate::doc::document_ref(state, root);
         let local_value = self
             .local_state
             .as_mut()
@@ -3951,44 +4678,9 @@ impl Widget for TextInput {
             value.zeroize();
             value.push_str(&self.text);
         }
-        // Directly-bound Text wins over the string-path mode entirely.
         if self.bound_text.is_some() {
             let _ = self.adopt_bound_text(state);
-            return;
         }
-        if !self.crdt_bound {
-            return;
-        }
-        match state.get(root, self.on_change_path.as_str()) {
-            Ok(Some((val, obj_id))) => {
-                self.path_was_present = true;
-                match val {
-                    Value::Scalar(s) => {
-                        if let automerge::ScalarValue::Str(text) = s.as_ref() {
-                            self.adopt_model_text(text.to_string());
-                        }
-                    }
-                    Value::Object(ObjType::Text) => {
-                        if let Ok(text) = state.text(&obj_id) {
-                            self.adopt_model_text(text);
-                        }
-                    }
-                    Value::Object(_) => {}
-                }
-            }
-            Ok(None) if self.path_was_present => {
-                self.path_was_present = false;
-                self.adopt_model_text(String::new());
-                self.core.set_caret(0);
-                self.goal_x = None;
-            }
-            Ok(None) | Err(_) => {
-                // Keep an app-provided initial value until the binding has
-                // existed. An error is likewise not evidence of deletion.
-            }
-        }
-        self.clamp_to_text();
-        self.last_notified_text.clone_from(&self.text);
     }
 
     fn build_layout(
@@ -3997,25 +4689,28 @@ impl Widget for TextInput {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.capture_layout_text_scale(theme.text_scale);
+        self.capture_layout_text_scale(self.scale_for(theme.text_scale));
+        self.adopt_field_theme(theme);
         // Multiline is measured (grows with content, see `measure`). Single-
-        // line is the 40 px form-field band — until the scaled line no
-        // longer fits it: at 2× text the 16 px face shapes a 40 px line,
-        // which left zero slack in a 40 px band, so the band grows to the
-        // line plus the same vertical inset the multiline body keeps
-        // (`ML_PAD_Y` each side). At 1× a 20 px line leaves the band at 40.
+        // line is the control band of its size (Regular, 32, by default), so
+        // a field and a button share a row — until the scaled line no longer
+        // fits it, when the band grows to the line plus `spacing.s1` above
+        // and below.
         let height = if self.multiline {
             Dimension::auto()
         } else {
-            let line_px = f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
-                * f64::from(theme.text_scale);
-            let band = (line_px + ML_PAD_Y * 2.0).max(40.0);
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "a control band is a few dozen logical pixels, far inside f32"
             )]
-            let band = band as f32;
-            Dimension::length(band.max(self.interaction.minimum_target()))
+            let band = self.band_height as f32;
+            // A fine pointer keeps the size's band (a Small field beside a
+            // Small button); a coarse one grows it to the touch target.
+            if self.interaction.supports_hover() {
+                Dimension::length(band)
+            } else {
+                Dimension::length(band.max(self.interaction.minimum_target()))
+            }
         };
         let style = Style {
             size: Size {
@@ -4059,12 +4754,12 @@ impl Widget for TextInput {
         // Taffy measures before painting. Retain the renderer scale here too,
         // so a freshly opened editor reserves its full accessibility gutter
         // on the very first layout rather than correcting on frame two.
-        self.gutter_text_scale = f64::from(text_renderer.text_scale());
+        self.gutter_text_scale = f64::from(self.scale_for(text_renderer.text_scale()));
         if !self.multiline {
             if !self.masked() && self.single_attributes.is_some() {
                 let scale = self
                     .layout_text_scale
-                    .unwrap_or_else(|| text_renderer.text_scale());
+                    .unwrap_or_else(|| self.scale_for(text_renderer.text_scale()));
                 let display = self.layout_display_text();
                 self.build_single_line_metrics(
                     text_renderer,
@@ -4083,15 +4778,15 @@ impl Widget for TextInput {
         if !self.masked() {
             let scale = self
                 .layout_text_scale
-                .unwrap_or_else(|| text_renderer.text_scale());
+                .unwrap_or_else(|| self.scale_for(text_renderer.text_scale()));
             let style = self.multiline_style(scale);
-            let renderer_style = text_renderer.renderer_input_style(&style);
-            self.update_gutter_metrics(text_renderer, &renderer_style, scale);
+            self.update_gutter_metrics(text_renderer, &style, scale);
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "layout width originates as f32; nonnegative insets only reduce it before shaping at f32 precision"
             )]
-            let available_width = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0) as f32;
+            let available_width =
+                (f64::from(width) - self.ml_left() - self.ml_pad_x()).max(1.0) as f32;
             if self.single_layout.is_none()
                 || !self
                     .shaped_preparation
@@ -4139,16 +4834,19 @@ impl Widget for TextInput {
                 // Taffy rounds layout boxes to pixels. Never round intrinsic
                 // text below its last row: subpixel inner overflow would eat
                 // the first wheel event instead of scrolling the outer pane.
-                height: height.ceil() as f32,
+                height: height.max(self.multiline_floor(scale)).ceil() as f32,
             };
         }
-        let avail_w = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
+        let avail_w = (f64::from(width) - self.ml_left() - self.ml_pad_x()).max(1.0);
         self.build_lines(text_renderer, avail_w);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
         )]
-        let height = self.content_height() as f32;
+        let height = self
+            .content_height()
+            .max(self.multiline_floor(self.layout_text_scale.unwrap_or(1.0)))
+            as f32;
         self.model_layout_dirty = false;
         taffy::Size { width, height }
     }
@@ -4162,14 +4860,16 @@ impl Widget for TextInput {
         presence: &crate::presence::PresenceCtx,
     ) {
         self.last_caret_width = theme.caret_width;
-        self.gutter_text_scale = f64::from(theme.text_scale);
-        if self.secret && !self.text.is_empty() {
+        self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
+        self.adopt_field_theme(theme);
+        if self.holds_secret() && (!self.text.is_empty() || self.core.has_preedit()) {
             crate::secret_paint::note_secret_painted();
         }
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
         }
+        self.draw_accessory(scene, transform, theme);
 
         if self.multiline {
             if self.masked() {
@@ -4186,8 +4886,9 @@ impl Widget for TextInput {
         }
         self.multiline_shaped = false;
 
-        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
-        let line_height = f64::from(text_size * theme.text_scale * LINE_HEIGHT_RATIO);
+        let text_size = self.effective_font_size();
+        let line_height =
+            f64::from(text_size * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO);
         let padding_x = if self.plain {
             // The parent already adds whatever gutter the document layout wants.
             0.0
@@ -4200,9 +4901,14 @@ impl Widget for TextInput {
         // normal text now gets every position from the same shaped paragraph
         // used for paint and hit-testing. Masked fields keep the prefix path
         // because bullet byte offsets intentionally differ from the secret.
+        self.apply_span_highlighter(theme);
         let display = self.layout_display_text();
-        let total_w =
-            self.build_single_line_metrics(text_renderer, &display, text_size, theme.text_scale);
+        let total_w = self.build_single_line_metrics(
+            text_renderer,
+            &display,
+            text_size,
+            self.scale_for(theme.text_scale),
+        );
         self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
@@ -4212,7 +4918,7 @@ impl Widget for TextInput {
         let text_clip = if self.has_reveal_control() {
             let mut clip = self.rect;
             clip.x1 = (clip.x1 - RevealToggle::width_for(clip.height())).max(clip.x0);
-            RoundedRect::from_rect(clip, f64::from(theme.tokens.radii.md))
+            RoundedRect::from_rect(clip, f64::from(theme.tokens.radii.control))
         } else {
             shape
         };
@@ -4223,6 +4929,22 @@ impl Widget for TextInput {
             transform,
             &text_clip,
         );
+        // The text never runs under the trailing accessory.
+        let accessory = self.accessory_room();
+        if accessory > 0.0 {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                transform,
+                &Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x1 - accessory,
+                    self.rect.y1,
+                ),
+            );
+        }
 
         self.draw_single_line_decorations(scene, transform, theme, true);
         self.draw_single_line_selection(scene, transform, theme);
@@ -4237,6 +4959,9 @@ impl Widget for TextInput {
             self.draw_single_line_caret(scene, transform, theme);
         }
 
+        if accessory > 0.0 {
+            scene.pop_layer();
+        }
         scene.pop_layer();
         if self.has_reveal_control() {
             self.refresh_reveal_control();
@@ -4252,6 +4977,17 @@ impl Widget for TextInput {
         // Single guard that makes both pointer and keyboard input no-ops when disabled.
         if self.effectively_disabled() {
             return;
+        }
+        if matches!(event,
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
+        ) || matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::Ime(winit::event::Ime::Preedit(..) | winit::event::Ime::Commit(..))
+        ) {
+            self.pending_paste = None;
         }
         self.clamp_to_text();
 
@@ -4278,10 +5014,10 @@ impl Widget for TextInput {
             && self
                 .suggestion_chip
                 .is_some_and(|chip| chip.contains(self.last_mouse_pos))
-            && self.accept_suggestion(ctx.state, ctx.path)
+            && self.accept_suggestion()
         {
             *ctx.handled = true;
-            self.notify_user_change();
+            self.notify_user_change(false);
             return;
         }
 
@@ -4310,8 +5046,6 @@ impl Widget for TextInput {
                 self.handle_left_click(
                     *element_state,
                     *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
                     ctx.focus_target,
                     ctx.node_id,
                     ctx.handled,
@@ -4322,13 +5056,7 @@ impl Widget for TextInput {
                 button: MouseButton::Middle,
                 ..
             } if self.is_hovered && !self.effectively_disabled() => {
-                self.handle_middle_click(
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.handled,
-                );
+                self.handle_middle_click(ctx.focus_target, ctx.node_id, ctx.handled);
             }
             WindowEvent::Touch(touch) => {
                 self.handle_touch_event(
@@ -4354,20 +5082,21 @@ impl Widget for TextInput {
                     text.as_deref(),
                     *element_state,
                     *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
                     ctx.handled,
                 );
             }
             WindowEvent::Ime(winit::event::Ime::Commit(t)) => {
-                self.handle_ime_commit(t, ctx.state, ctx.path, ctx.handled);
+                self.handle_ime_commit(t, ctx.handled);
             }
             WindowEvent::Ime(winit::event::Ime::Preedit(t, cursor)) => {
                 self.handle_ime_preedit(t, *cursor, ctx.handled);
             }
             _ => {}
         }
-        self.notify_user_change();
+        self.notify_user_change(matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(winit::event::Ime::Commit(_))
+        ));
     }
 
     fn name(&self) -> &'static str {
@@ -4406,6 +5135,12 @@ impl Widget for TextInput {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.has_reveal_control() && self.reveal.contains(point) {
             Some(winit::window::CursorIcon::Pointer)
+        } else if !self.effectively_disabled()
+            && self
+                .accessory_rect()
+                .is_some_and(|rect| rect.contains(point))
+        {
+            Some(winit::window::CursorIcon::Default)
         } else if !self.effectively_disabled() && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
@@ -4454,12 +5189,16 @@ impl Widget for TextInput {
     fn is_focusable(&self) -> bool {
         !self.effectively_disabled()
     }
+    fn set_invalid(&mut self, invalid: bool) {
+        self.invalid = invalid;
+    }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
         if focused {
             self.spell_active = true;
         }
         if !focused {
+            self.pending_paste = None;
             self.core.clear_preedit();
         }
     }
@@ -4507,18 +5246,25 @@ impl Widget for TextInput {
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(if self.secret {
+        Some(if self.holds_secret() {
             winit::window::ImePurpose::Password
         } else {
             winit::window::ImePurpose::Normal
         })
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        (!self.holds_secret() && !self.core.has_preedit()).then(|| {
+            crate::ime::edit_fingerprint(&self.text, self.core.anchor(), self.core.caret(), key)
+        })
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A secret (password) input never leaks its value into the a11y tree —
-        // it reports `protected` and a `None` value instead.
-        let value = (!self.secret).then(|| self.text.clone());
+        // A secret (password or key) input never leaks its value into the a11y
+        // tree — it reports `protected` and a `None` value instead.
+        let secret = self.holds_secret();
+        let value = (!secret).then(|| self.text.clone());
         let role = if self.multiline {
             Role::MultilineTextInput
         } else {
@@ -4530,8 +5276,9 @@ impl Widget for TextInput {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
                 disabled: self.effectively_disabled(),
-                protected: self.secret,
+                protected: secret,
                 multiline: self.multiline,
+                invalid: self.invalid,
                 ..Default::default()
             });
         if !self.id.is_empty() {
@@ -4540,7 +5287,7 @@ impl Widget for TextInput {
         if self.action.is_none() && self.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("text_input"));
         }
-        if !self.secret {
+        if !secret {
             node = node.with_text_selection(self.core.anchor(), self.core.caret());
         }
         if !self.accessible_name.is_empty() {
@@ -4551,24 +5298,62 @@ impl Widget for TextInput {
             // explicit name still wins when the prompt is merely an example.
             node = node.with_name(crate::i18n!(&self.placeholder));
         }
+        if let (Some(rect), Some(accessory)) = (self.accessory_rect(), self.accessory.as_ref()) {
+            let (role, checked) = match accessory.action {
+                AccessoryAction::Toggle { pressed, .. } => (Role::ToggleButton, Some(pressed)),
+                _ => (Role::Button, None),
+            };
+            node = node.with_children(vec![
+                AccessNode::new(role)
+                    .with_name(crate::i18n!(&accessory.name))
+                    .with_bounds(rect)
+                    .with_state(AccessState {
+                        disabled: self.effectively_disabled(),
+                        checked,
+                        ..Default::default()
+                    })
+                    .with_action_target(ACCESSORY_TARGET),
+            ]);
+        }
         Some(node)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        (path == [0]).then(|| self.accessory_rect()).flatten()
+    }
+
+    /// The trailing accessory is a named control of its own: activating it
+    /// (an agent, a screen reader) does what a press does.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _root: &ModelPath,
+    ) -> bool {
+        if target != ACCESSORY_TARGET
+            || !matches!(action, crate::a11y::Action::Activate)
+            || self.effectively_disabled()
+            || self.accessory_rect().is_none()
+        {
+            return false;
+        }
+        self.run_accessory()
     }
 
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
-        root: &ModelPath,
+        _state: &mut crate::widget::Edits<'_>,
+        _root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        let (state, root) = crate::doc::document(state, root);
 
         if self.effectively_disabled() {
             return false;
         }
         match action {
             Action::SetValue(value) => {
-                let previous_text = self.text.clone();
                 let cleaned = if self.multiline {
                     value
                         .replace("\r\n", "\n")
@@ -4580,18 +5365,14 @@ impl Widget for TextInput {
                     value.chars().filter(|c| !c.is_control()).collect()
                 };
                 self.core.select_all(&self.text);
-                let obj = self.resolve_text_obj(state, root);
                 // SetValue replaces the complete value, including an empty
                 // replacement. insert_str intentionally ignores empty typing.
                 if cleaned.is_empty() {
-                    self.delete_selection(state, obj.as_ref());
+                    self.delete_selection();
                 } else {
-                    self.insert_str(&cleaned, state, obj.as_ref());
+                    self.insert_str(&cleaned);
                 }
-                if obj.is_none() {
-                    self.persist_first_path_edit(&previous_text, state, root);
-                }
-                self.notify_user_change();
+                self.notify_user_change(false);
                 true
             }
             Action::SetSelection { anchor, focus } => {
@@ -4640,7 +5421,7 @@ impl Widget for TextInput {
 
     fn text_review(&self) -> Option<(usize, String)> {
         // A secret field never surfaces its contents.
-        if !self.is_focused || self.secret {
+        if !self.is_focused || self.holds_secret() {
             return None;
         }
         Some((self.core.caret(), self.text.clone()))
@@ -4735,7 +5516,7 @@ impl Widget for TextInput {
         presence: &crate::presence::PresenceCtx,
     ) {
         if self.context_menu.is_open() {
-            Widget::draw(
+            Widget::draw_overlay(
                 &mut self.context_menu,
                 scene,
                 transform,
@@ -4748,12 +5529,6 @@ impl Widget for TextInput {
 }
 
 impl crate::undo::UndoPoints for TextInput {
-    fn needs_commit(&self) -> bool {
-        self.typing.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.typing.close();
-    }
     fn get_state(&self) -> Option<String> {
         if self.core.has_selection() {
             let anchor = self.core.anchor();
@@ -4791,25 +5566,17 @@ impl crate::undo::UndoPoints for TextInput {
 }
 
 impl crate::presence::capability::PublishesPresence for TextInput {
-    /// The widget's path, else the document field it edits (an input bound
-    /// with [`TextInput::with_on_change_path`] or
-    /// [`TextInput::from_document_string`] has no structural path), so peers
-    /// editing the same field share carets.
+    /// The widget's path, so peers editing the same field share carets.
     fn presence_key(&self) -> Option<PresenceKey> {
-        if !self.path.is_empty() {
-            return Some(PresenceKey::Widget {
-                path: self.path.clone(),
-            });
-        }
-        (!self.on_change_path.is_empty()).then(|| PresenceKey::Widget {
-            path: vec![PathSegment::Field(self.on_change_path.clone())],
+        (!self.path.is_empty()).then(|| PresenceKey::Widget {
+            path: self.path.clone(),
         })
     }
 
     /// The caret, or the selection when one is extended, while focused. A
     /// secret field publishes nothing.
     fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        if !self.is_focused || self.secret {
+        if !self.is_focused || self.holds_secret() {
             return None;
         }
         let key = self.presence_key()?;
@@ -4835,9 +5602,15 @@ impl crate::widget::controls::ActionControls for TextInput {
         if let Some(action) = &mut self.action {
             let _ = action.install_custody(domain, attachment);
         }
+        if let Some(action) = &mut self.submit_action {
+            let _ = action.install_custody(domain, attachment);
+        }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
+        self.action
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| self.submit_action.as_mut().and_then(ActionEmitter::take))
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = self.field_action_bindings();
@@ -4854,10 +5627,7 @@ impl crate::widget::controls::ActionControls for TextInput {
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-        self.reveal.set_enabled(!self.effectively_disabled());
+        TextInput::refresh_control_action_availability(self, allowed);
     }
 }
 
@@ -4865,18 +5635,35 @@ impl TextInput {
     /// The binding of the field's own value.
     fn field_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("text_input");
+        let mut bindings = self.value_bindings(control_id);
+        if let Some(action) = &self.submit_action {
+            bindings.push(action.metadata(control_id));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+        if let Some(action) = &mut self.submit_action {
+            action.refresh_availability(allowed);
+        }
+        self.reveal.set_enabled(!self.effectively_disabled());
+    }
+}
+
+impl TextInput {
+    /// What the field's value is bound to, for the control-binding audit.
+    fn value_bindings(&self, control_id: &str) -> Vec<ControlBindingMetadata> {
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
-        } else if self.crdt_bound || self.bound_text.is_some() {
+        } else if self.bound_text.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(
-                    if self.on_change_path.is_empty() {
-                        "<nested-text>".to_string()
-                    } else {
-                        self.on_change_path.clone()
-                    },
-                ),
+                kind: ControlBindingKind::CollaborativeDocument("<nested-text>".to_string()),
             }]
         } else if self.on_change.is_some() {
             vec![ControlBindingMetadata {
@@ -4900,51 +5687,18 @@ impl TextInput {
         theme: &Theme,
         shape: &RoundedRect,
     ) {
-        let disabled = self.effectively_disabled();
-        let rest = theme.tokens.colors.surfaces.raised;
-        let bg_color = if self.is_focused && !disabled {
-            theme.bg_active
-        } else {
-            rest
-        };
-        // Disabled is the rest face under one group alpha (HIG §9.5), so rest
-        // and disabled never look alike; a "one step darker" fill with the
-        // same declared border did, on the dark preset.
-        if disabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                shape,
-            );
-        }
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        paint_field_chrome(
+            scene,
             transform,
-            bg_color,
-            None,
+            theme,
             shape,
+            FieldState {
+                hovered: self.is_hovered,
+                focused: self.is_focused,
+                invalid: self.invalid,
+                disabled: self.effectively_disabled(),
+            },
         );
-        // Rest edge derived from the field fill; focus keeps `border_focus`.
-        let (border_w, border_color) = if self.is_focused && !disabled {
-            (2.0, theme.tokens.colors.border_focus)
-        } else {
-            (1.0, crate::surface::edge_on(rest))
-        };
-        // Rest edge and focus ring share one half-pixel-inset outline, so
-        // the hairline never bleeds onto the ground and the ring sits where
-        // the edge was.
-        scene.stroke(
-            &Stroke::new(border_w),
-            transform,
-            border_color,
-            None,
-            &crate::surface::edge_outline(shape.rect(), shape.radii().top_left),
-        );
-        if disabled {
-            scene.pop_layer();
-        }
     }
 
     /// Rebuilds `self.char_x_positions` (and, when unmasked, `self.single_layout`)
@@ -4976,15 +5730,13 @@ impl TextInput {
             }
             width
         } else {
-            let family = self.family.clone().unwrap_or(if self.mono {
-                FontChoice::Monospace
-            } else {
-                FontChoice::SansSerif
-            });
+            let family = self.family.clone().unwrap_or(self.role_family());
             let layout_size = text_size * text_scale;
-            let style = TextStyle::new(layout_size)
+            let mut style = TextStyle::new(layout_size)
                 .with_line_height(LINE_HEIGHT_RATIO)
+                .with_weight(self.text_role.weight())
                 .with_family(family.clone());
+            style.kind = self.kind.text_kind();
             let base = self.shaped_signature(display, &family, layout_size, None);
             let attributes = self.valid_single_attributes();
             let signature = attributes.map_or(base, |a| {
@@ -5012,7 +5764,7 @@ impl TextInput {
                         browser_emoji,
                     )
                 };
-                if self.secret {
+                if self.holds_secret() {
                     layout.discard_prepared_inputs();
                 }
                 text_renderer.note_browser_rich_layout(&layout);
@@ -5080,6 +5832,7 @@ impl TextInput {
         let visible_width = (self.rect.width()
             - padding_x
             - self.trailing_text_inset(padding_x)
+            - self.accessory_room()
             - caret_width * 2.0)
             .max(0.0);
         if self.is_focused {
@@ -5098,7 +5851,7 @@ impl TextInput {
         let Some((sel_start, sel_end)) = self.selection_range() else {
             return;
         };
-        let sel_color = theme.accent_primary.with_alpha_factor(0.35);
+        let sel_color = theme.tokens.colors.intent.selection_tint;
         for sel_rect in self.selection_rects(theme, sel_start, sel_end) {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -5154,7 +5907,7 @@ impl TextInput {
                 let color = if backgrounds {
                     theme.tokens.colors.surfaces.raised
                 } else {
-                    theme.tokens.colors.accent[5]
+                    theme.tokens.colors.text_primary
                 };
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -5192,13 +5945,15 @@ impl TextInput {
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
             let placeholder_origin = transform * Affine::translate((self.single_origin.x, text_y));
-            text_renderer.draw_text(
+            // The placeholder sets in the field's own style, in the tertiary
+            // ink: a prompt, clearly weaker than any value.
+            text_renderer.draw_style(
                 scene,
                 &placeholder,
-                text_size,
-                theme.text_dim,
+                theme.tokens.colors.text_tertiary,
                 placeholder_origin,
                 None,
+                &self.placeholder_style(text_size),
             );
         }
         #[allow(
@@ -5227,11 +5982,7 @@ impl TextInput {
                 text_color,
                 text_origin,
                 None,
-                &TextStyle::new(text_size).with_family(if self.mono {
-                    FontChoice::Monospace
-                } else {
-                    FontChoice::SansSerif
-                }),
+                &TextStyle::new(text_size).with_family(self.role_family()),
             );
         }
     }
@@ -5257,7 +6008,7 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.you,
             None,
             &cursor_rect,
         );
@@ -5282,13 +6033,20 @@ impl TextInput {
         handled: &mut bool,
     ) {
         let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-        if self.update_pointer_position(logical_pos) {
-            *handled = true;
+        // Hover damage updates this field, but siblings still need the same
+        // motion to clear/arm their hover state. Only an owned drag consumes it.
+        self.update_pointer_position(logical_pos);
+        let over_accessory = self
+            .accessory_rect()
+            .is_some_and(|rect| rect.contains(logical_pos));
+        if let Some(accessory) = self.accessory.as_mut() {
+            accessory.hovered = over_accessory;
         }
 
         if !self.is_dragging {
             return;
         }
+        *handled = true;
         let raw_position = self.resolve_position(logical_pos);
         let raw = raw_position.byte;
         let (anchor_lo, anchor_hi) = self.drag_anchor_span;
@@ -5391,8 +6149,6 @@ impl TextInput {
         &mut self,
         element_state: ElementState,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         handled: &mut bool,
@@ -5402,12 +6158,7 @@ impl TextInput {
             if element_state == ElementState::Pressed {
                 let point = [self.last_mouse_pos.x, self.last_mouse_pos.y];
                 if let Some(idx) = self.context_menu.item_at(point) {
-                    let previous_text = self.text.clone();
-                    let obj_id_opt = self.resolve_text_obj(state, root);
-                    self.dispatch_context_action(idx, state, obj_id_opt.as_ref());
-                    if obj_id_opt.is_none() {
-                        self.persist_first_path_edit(&previous_text, state, root);
-                    }
+                    self.dispatch_context_action(idx);
                 } else {
                     self.context_menu.close();
                 }
@@ -5420,6 +6171,9 @@ impl TextInput {
             // finger's own touch already pressed, and a second press would
             // count as a double click.
             ElementState::Pressed if self.active_touch.is_some() => *handled = true,
+            ElementState::Pressed if self.is_hovered && self.press_accessory() => {
+                *handled = true;
+            }
             ElementState::Pressed if self.is_hovered => {
                 self.handle_left_press(modifiers, focus_target, node_id, handled);
             }
@@ -5446,33 +6200,24 @@ impl TextInput {
     /// The selection as it may leave the field — for the clipboard, the
     /// primary selection or a host's text action. Never a secret's.
     fn shareable_selection(&self) -> Option<&str> {
-        (!self.secret).then(|| self.selected_str()).flatten()
+        (!self.holds_secret())
+            .then(|| self.selected_str())
+            .flatten()
     }
 
     fn handle_middle_click(
         &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         handled: &mut bool,
     ) {
         let primary = clipboard_paste_primary();
-        self.handle_middle_click_with_primary(
-            primary.as_deref(),
-            state,
-            root,
-            focus_target,
-            node_id,
-            handled,
-        );
+        self.handle_middle_click_with_primary(primary.as_deref(), focus_target, node_id, handled);
     }
 
     fn handle_middle_click_with_primary(
         &mut self,
         primary: Option<&str>,
-        state: &mut AutoCommit,
-        root: &ObjId,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         handled: &mut bool,
@@ -5483,17 +6228,11 @@ impl TextInput {
         let position = self.resolve_position(self.last_mouse_pos);
         self.core.set_caret_position(position);
         self.goal_x = None;
-
-        let previous_text = self.text.clone();
-        let obj_id = self.resolve_text_obj(state, root);
         if let Some(paste) = primary {
             let cleaned = self.clean_pasted_text(paste);
             if !cleaned.is_empty() {
-                self.insert_str(&cleaned, state, obj_id.as_ref());
+                self.insert_str(&cleaned);
             }
-        }
-        if obj_id.is_none() {
-            self.persist_first_path_edit(&previous_text, state, root);
         }
         *handled = true;
     }
@@ -5567,21 +6306,15 @@ impl TextInput {
         *handled = true;
     }
 
-    fn handle_enter_key(
-        &mut self,
-        shift: bool,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-        handled: &mut bool,
-    ) {
+    fn handle_enter_key(&mut self, shift: bool, handled: &mut bool) {
         let correction = (self.enter_submits || self.multiline)
-            .then(|| self.autocorrect_previous_word(state, obj_id))
+            .then(|| self.autocorrect_previous_word())
             .flatten();
         if self.enter_submits && !shift {
-            self.submit_requested = true;
+            self.fire_submit();
             *handled = true;
         } else if self.multiline {
-            self.insert_str("\n", state, obj_id);
+            self.insert_str("\n");
             *handled = true;
         }
         if let Some(mut correction) = correction {
@@ -5591,61 +6324,37 @@ impl TextInput {
     }
 
     /// Only reached when `self.tab_spaces.is_some()` — otherwise the host keeps Tab for focus traversal.
-    fn handle_tab_key(
-        &mut self,
-        shift: bool,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-        handled: &mut bool,
-    ) {
+    fn handle_tab_key(&mut self, shift: bool, handled: &mut bool) {
         let width = self.tab_spaces.unwrap_or(0);
         if shift {
-            self.outdent(width, state, obj_id);
+            self.outdent(width);
         } else if width == 0 {
-            self.insert_str("\t", state, obj_id);
+            self.insert_str("\t");
         } else {
             let spaces = " ".repeat(width);
-            self.insert_str(&spaces, state, obj_id);
+            self.insert_str(&spaces);
         }
         *handled = true;
     }
 
-    fn handle_backspace_key(
-        &mut self,
-        ctrl: bool,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-        handled: &mut bool,
-    ) {
-        if !ctrl && self.undo_last_autocorrection(true, state, obj_id) {
+    fn handle_backspace_key(&mut self, ctrl: bool, handled: &mut bool) {
+        if !ctrl && self.undo_last_autocorrection(true) {
             *handled = true;
             return;
         }
         self.last_autocorrection = None;
         let edit = self.core.delete_backward(&self.text, ctrl);
-        self.apply_edit(&edit, state, obj_id);
+        self.apply_edit(&edit);
         *handled = true;
     }
 
-    fn handle_delete_key(
-        &mut self,
-        ctrl: bool,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-        handled: &mut bool,
-    ) {
+    fn handle_delete_key(&mut self, ctrl: bool, handled: &mut bool) {
         let edit = self.core.delete_forward(&self.text, ctrl);
-        self.apply_edit(&edit, state, obj_id);
+        self.apply_edit(&edit);
         *handled = true;
     }
 
-    fn handle_ctrl_shortcut(
-        &mut self,
-        c: &str,
-        state: &mut AutoCommit,
-        obj_id: Option<&ObjId>,
-        handled: &mut bool,
-    ) {
+    fn handle_ctrl_shortcut(&mut self, c: &str, handled: &mut bool) {
         let lc = c.to_lowercase();
         match lc.as_str() {
             "a" => {
@@ -5657,11 +6366,11 @@ impl TextInput {
                 *handled = true;
             }
             "x" => {
-                self.do_cut(state, obj_id);
+                self.do_cut();
                 *handled = true;
             }
             "v" => {
-                self.do_paste(state, obj_id);
+                self.do_paste();
                 *handled = true;
             }
             _ => {}
@@ -5719,8 +6428,6 @@ impl TextInput {
         text: Option<&str>,
         element_state: ElementState,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
         handled: &mut bool,
     ) {
         if element_state != ElementState::Pressed {
@@ -5735,9 +6442,6 @@ impl TextInput {
         if !self.is_focused {
             return;
         }
-        let previous_text = self.text.clone();
-        let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
-        let obj_id = obj_id_opt.as_ref();
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
@@ -5754,51 +6458,40 @@ impl TextInput {
             }
             Key::Named(NamedKey::Home) => self.handle_home(shift, ctrl, handled),
             Key::Named(NamedKey::End) => self.handle_end(shift, ctrl, handled),
-            Key::Named(NamedKey::Enter) => self.handle_enter_key(shift, state, obj_id, handled),
+            Key::Named(NamedKey::Enter) => self.handle_enter_key(shift, handled),
             Key::Named(NamedKey::Tab) if self.tab_spaces.is_some() => {
-                self.handle_tab_key(shift, state, obj_id, handled);
+                self.handle_tab_key(shift, handled);
             }
             Key::Named(NamedKey::Backspace) => {
-                self.handle_backspace_key(ctrl, state, obj_id, handled);
+                self.handle_backspace_key(ctrl, handled);
             }
-            Key::Named(NamedKey::Delete) => self.handle_delete_key(ctrl, state, obj_id, handled),
+            Key::Named(NamedKey::Delete) => self.handle_delete_key(ctrl, handled),
             Key::Named(NamedKey::Space) => {
-                self.insert_word_boundary(" ", state, obj_id);
+                self.insert_word_boundary(" ");
                 *handled = true;
             }
             Key::Character(c) if ctrl => {
-                self.handle_ctrl_shortcut(c.as_str(), state, obj_id, handled);
+                self.handle_ctrl_shortcut(c.as_str(), handled);
             }
             _ => {
                 if let Some(t) = text
                     && !t.chars().all(char::is_control)
                 {
                     if t.chars().next().is_some_and(is_autocorrect_boundary) {
-                        self.insert_word_boundary(t, state, obj_id);
+                        self.insert_word_boundary(t);
                     } else {
-                        self.insert_str(t, state, obj_id);
+                        self.insert_str(t);
                     }
                     *handled = true;
                 }
             }
         }
-        if obj_id_opt.is_none() {
-            self.persist_first_path_edit(&previous_text, state, root);
-        }
     }
 
-    fn handle_ime_commit(
-        &mut self,
-        t: &str,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-    ) {
+    fn handle_ime_commit(&mut self, t: &str, handled: &mut bool) {
         if !self.is_focused {
             return;
         }
-        let previous_text = self.text.clone();
-        let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
         let trailing_boundary = t
             .char_indices()
             .next_back()
@@ -5811,22 +6504,15 @@ impl TextInput {
             if let Some(prefix) = t.get(..boundary_at)
                 && !prefix.is_empty()
             {
-                self.insert_str(prefix, state, obj_id_opt.as_ref());
+                self.insert_str(prefix);
             }
             let mut encoded = [0; 4];
-            self.insert_word_boundary(
-                boundary.encode_utf8(&mut encoded),
-                state,
-                obj_id_opt.as_ref(),
-            );
+            self.insert_word_boundary(boundary.encode_utf8(&mut encoded));
             *handled = true;
         } else {
             let edit = self.core.commit(t);
-            self.apply_insert(&edit, state, obj_id_opt.as_ref());
+            self.apply_insert(&edit);
             *handled = true;
-        }
-        if obj_id_opt.is_none() {
-            self.persist_first_path_edit(&previous_text, state, root);
         }
     }
 

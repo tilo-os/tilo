@@ -24,7 +24,7 @@ ROOTS = ('out', 'usr/lib/tilo-runtime', 'usr/share/tilo-apps')
 ANCESTORS = {'usr', 'usr/lib', 'usr/share'}
 IMAGE_TREE = re.compile(r'usr/share/tilo-apps/pkgs/[0-9a-f]{64}/.+')
 PURPOSE = 'tilo-development-native-builder'
-REQUIRED = ('shell fs terminal file-explorer settings tilo-model-manager tilo-model-gateway '
+REQUIRED = ('shell fs tilo-model-manager tilo-speech-worker tilo-model-gateway '
             'tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-greeter tilo-installer '
             'tilo-runtime-mcp tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init '
             'tilo tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager '
@@ -38,7 +38,7 @@ def immutable(value):
 
 
 def expected_inputs(repo, revision, architecture, base, rpms, epoch, jobs=2,
-                    runtime_version='2026.07', engine_runtime_version='2026.10.0-chromium'):
+                    runtime_version='2026.07', engine_runtime_version='2026.10.1-chromium'):
     repo = Path(repo)
     require(re.fullmatch('[0-9a-f]{40}', revision) and architecture in tools.ARCHES, 'source/native architecture required')
     require(tools.command('git', '-C', str(repo), 'rev-parse', 'HEAD').decode().strip() == revision,
@@ -126,7 +126,8 @@ def inventory(root, inputs):
     for name in ('runtime-bundle-publisher.hex', 'app-publisher.hex'):
         require(re.fullmatch(rb'[0-9a-f]{64}\n?', tools.read_bounded(root / 'out' / name, 128)),
                 'builder publisher identity missing')
-    require((root / 'usr/lib/tilo-runtime' / inputs['runtime_version']).is_dir()
+    # The runtime is baked under its release and ABI digest.
+    require(len(list((root / 'usr/lib/tilo-runtime').glob(inputs['runtime_version'] + '+native.*'))) == 1
             and (root / 'usr/share/tilo-apps/registry.toml').is_file(), 'runtime or app store missing')
     return result
 

@@ -738,7 +738,11 @@ fn the_person_home_child_refuses_planted_links() {
             .unwrap();
         let mut stdin = process.stdin.take().unwrap();
         if let Some(input) = input {
-            std::io::Write::write_all(&mut stdin, input).unwrap();
+            // A refusing child may exit before consuming stdin. Its status
+            // and the unchanged target below still prove the refusal.
+            if let Err(error) = std::io::Write::write_all(&mut stdin, input) {
+                assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+            }
         }
         drop(stdin);
         process.wait_with_output().unwrap()

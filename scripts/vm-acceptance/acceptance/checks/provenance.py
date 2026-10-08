@@ -13,6 +13,18 @@ def commit(ctx, res):
     res.metrics.update(p)
     expect(p.get("record"), p.get("why", "no provenance record for this disk"))
     expect(not p.get("mismatch"), p.get("mismatch", ""))
+    swap = p.get("swap")
+    if not swap:
+        return
+    # Base image plus components swapped in from a ref: say so, and pass only when every
+    # requested swap is the layer its slot runs. Anything else is a mixed image nobody asked for.
+    base = (p["record"].get("commit") or "?")[:12]
+    done = [c for c in swap["components"] if not c.get("error") and (c.get("layer") or c["component"].startswith("app:"))]
+    res.detail = (f"base {base} + {', '.join(c['component'] for c in done) or 'nothing'} "
+                  f"swapped from {swap['ref']} ({swap['commit'][:12]})")
+    failed = [f"{c['component']}: {c.get('error') or 'not a layer of slot ' + c['slot'] + ' after the swap'}"
+              for c in swap["components"] if c not in done]
+    expect(not failed, "not swapped: " + "; ".join(failed))
 
 
 @check("P02", AREA, "A headful slot with two outputs is up")
