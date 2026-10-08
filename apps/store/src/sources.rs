@@ -622,6 +622,7 @@ mod tests {
             runtime: String::new(),
             source: String::new(),
             held: false,
+            payload_bytes: 0,
             system: !user_managed,
         }
     }

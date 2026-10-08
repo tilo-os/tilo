@@ -80,6 +80,7 @@ pub fn agent_package_row(
         runtime: String::new(),
         source: String::new(),
         held: false,
+        payload_bytes: 0,
         system: false,
     }
 }

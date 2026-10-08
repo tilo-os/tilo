@@ -720,6 +720,8 @@ inputs = [
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   "crates/dev/tilo-app-cli/src/guide.rs",
+  # Focused source lookup verifies the embedded shared-checklist test bytes.
+  "crates/dev/tilo-app-cli/tests/json_output.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
   # Android packaging copies the standalone font catalog out of the SDK.

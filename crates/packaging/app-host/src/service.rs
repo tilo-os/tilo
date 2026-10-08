@@ -80,13 +80,23 @@ fn listed(package: InstalledPackage) -> Option<Listed> {
     // A row without a signed package root has no identity to hand out.
     let id = package.package_id()?;
     let manifest_text = std::fs::read_to_string(&package.manifest_path).ok()?;
-    let size_bytes = package_store::tree_size(&package.payload_root);
+    let size_bytes = payload_bytes(&package);
     Some(Listed {
         package,
         id,
         manifest_text,
         size_bytes,
     })
+}
+
+/// Bytes of `package`'s payload tree: the size recorded at install, or —
+/// for a row written before sizes were recorded — the tree measured on disk.
+fn payload_bytes(package: &InstalledPackage) -> u64 {
+    if package.payload_bytes > 0 {
+        package.payload_bytes
+    } else {
+        package_store::tree_size(&package.payload_root)
+    }
 }
 
 /// The visible package with signed root `id`.
