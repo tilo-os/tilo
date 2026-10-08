@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc};
 use ed25519_dalek::{Signer as _, Verifier as _};
 use serde::{Deserialize, Serialize};
+use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 /// Room-document map of accepted successions, keyed by the hex key of the
@@ -30,6 +31,25 @@ const SUCCESSION_DOMAIN: &[u8] = b"tilo/governor-succession/v1\0";
 pub const MAX_SUCCESSIONS: usize = 16;
 /// Most cutoff heads one record names.
 const MAX_CUTOFF_HEADS: usize = 64;
+type RoomHistory = BTreeMap<ChangeHash, (Vec<u8>, Vec<ChangeHash>)>;
+
+fn ancestors(
+    changes: &RoomHistory,
+    heads: impl IntoIterator<Item = ChangeHash>,
+) -> Result<BTreeSet<ChangeHash>, String> {
+    let mut covered = BTreeSet::new();
+    let mut queue = heads.into_iter().collect::<VecDeque<_>>();
+    while let Some(hash) = queue.pop_front() {
+        if !covered.insert(hash) {
+            continue;
+        }
+        let (_, deps) = changes
+            .get(&hash)
+            .ok_or("room history lacks the succession cutoff")?;
+        queue.extend(deps.iter().copied());
+    }
+    Ok(covered)
+}
 
 /// The root's statement that `successor` governs `room` in place of the
 /// revoked `previous` governing device, whose governance ends at `cutoff`.
@@ -195,36 +215,34 @@ impl GovernorSuccession {
         hex::encode(self.previous.device_public_key)
     }
 
-    /// Check that `doc` holds the previous governor's history exactly up to
-    /// the cutoff: every cutoff head is present and every change the
-    /// previous governor wrote is one of its ancestors.
+    /// Check custody before the succession: every cutoff head is present,
+    /// every previous-governor change is covered, and later changes do not
+    /// alter governance, regardless of their Automerge actor.
     ///
     /// # Errors
     ///
-    /// Returns an error if a cutoff head is missing or the previous governor
-    /// wrote past it.
+    /// Returns an error if a cutoff head is missing, the previous governor
+    /// wrote past it, or another actor changed governance past it.
     pub fn check_cutoff(&self, doc: &AutoCommit) -> Result<(), String> {
+        self.check_history(doc, false)
+    }
+
+    /// A published succession permits its successor's transition and the
+    /// history descending from it. Governance before that transition must
+    /// still be covered, including changes later reverted or merged away.
+    pub(crate) fn check_recorded_history(&self, doc: &AutoCommit) -> Result<(), String> {
+        self.check_history(doc, true)
+    }
+
+    fn check_history(&self, doc: &AutoCommit, recorded: bool) -> Result<(), String> {
         let mut doc = doc.clone();
+        doc.reset_diff_cursor();
         let changes = doc
             .get_changes_meta(&[])
             .into_iter()
             .map(|meta| (meta.hash, (meta.actor.to_bytes().to_vec(), meta.deps)))
-            .collect::<BTreeMap<_, _>>();
-        let mut covered = BTreeSet::new();
-        let mut queue = self
-            .cutoff
-            .iter()
-            .map(|head| ChangeHash(*head))
-            .collect::<VecDeque<_>>();
-        while let Some(hash) = queue.pop_front() {
-            if !covered.insert(hash) {
-                continue;
-            }
-            let (_, deps) = changes
-                .get(&hash)
-                .ok_or("room history lacks the succession cutoff")?;
-            queue.extend(deps.iter().copied());
-        }
+            .collect::<RoomHistory>();
+        let covered = ancestors(&changes, self.cutoff.iter().map(|head| ChangeHash(*head)))?;
         let previous = self.previous.device_public_key;
         if changes
             .iter()
@@ -233,6 +251,41 @@ impl GovernorSuccession {
             return Err(
                 "the revoked governor wrote room history after its succession cutoff".into(),
             );
+        }
+        // Read causal projections of already admitted state. Isolation does
+        // not replay or decode change bytes in the host, unlike fork_at.
+        let mut before = doc.clone();
+        let mut after = doc;
+        let key = self.key();
+        for (hash, (actor, deps)) in &changes {
+            if covered.contains(hash) {
+                continue;
+            }
+            before.isolate_at(deps);
+            let preceding = recorded_all(&before)?;
+            let contains = |records: &BTreeMap<String, Vec<Self>>| {
+                records
+                    .get(&key)
+                    .is_some_and(|records| records.contains(self))
+            };
+            if recorded && contains(&preceding) {
+                continue;
+            }
+            after.isolate_at(&[*hash]);
+            let following = recorded_all(&after)?;
+            if recorded
+                && contains(&following)
+                && actor.as_slice() == self.successor.device_public_key
+            {
+                let preceding_history = ancestors(&changes, deps.iter().copied())?;
+                if !covered.is_subset(&preceding_history) {
+                    return Err("the succession transition does not descend from its cutoff".into());
+                }
+                continue;
+            }
+            if !crate::room::governance_unchanged(Some(&before), &after) || preceding != following {
+                return Err("room governance changed after the succession cutoff before its successor took over".into());
+            }
         }
         Ok(())
     }
@@ -304,8 +357,26 @@ pub enum Walk {
     /// room history checked against each cutoff.
     Follow { now_ns: u64 },
     /// Re-reading successions the replica followed before: each link's
-    /// signatures, without the time or the history it was checked at then.
+    /// signatures and history, without requiring certificates to remain live.
     Followed,
+}
+
+/// Recheck stored history under the governing identity, including when a
+/// caller already pins its successor. Expired historical certificates remain
+/// valid evidence of a succession followed while they were live.
+pub(crate) fn check_recorded_ancestry(
+    doc: &AutoCommit,
+    room: &str,
+    authority: &DeviceCert,
+) -> Result<(), String> {
+    for record in recorded_all(doc)?.into_values().flatten() {
+        if record.previous.user_public_key == authority.user_public_key
+            && record.verify_at(room, &record.previous, None).is_ok()
+        {
+            record.check_recorded_history(doc)?;
+        }
+    }
+    Ok(())
 }
 
 /// Walk the successions `doc` records from the governing device `pinned`:
@@ -353,9 +424,7 @@ pub fn chain(
         if links.len() >= MAX_SUCCESSIONS {
             return Err("governor succession chain is too long".into());
         }
-        if matches!(walk, Walk::Follow { .. }) {
-            record.check_cutoff(doc)?;
-        }
+        record.check_recorded_history(doc)?;
         current = record.successor.clone();
         links.push(record);
     }

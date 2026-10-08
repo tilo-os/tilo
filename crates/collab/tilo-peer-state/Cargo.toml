@@ -12,6 +12,8 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 fnv.workspace = true
 flate2.workspace = true
 automerge.workspace = true
+# Read isolation uses the shared patch-log-free Automerge view wrappers.
+tilo-automerge.workspace = true
 # Untrusted automerge bytes are decoded in isolated workers first.
 tilo-automerge-isolate.workspace = true
 serde.workspace = true
@@ -30,8 +32,6 @@ neighbour-wire = { path = "../neighbour-wire" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 
 [dev-dependencies]
-# The sanctioned patch-log-free way to take changes into an AutoCommit (clippy.toml).
-tilo-automerge.workspace = true
 # Real channel content keys for the sealed compaction tests.
 channel-crypto = { path = "../channel-crypto" }
 

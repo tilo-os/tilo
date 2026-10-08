@@ -3415,6 +3415,9 @@ impl StatePeer {
                     .map_err(err)
             })
             .transpose()?;
+        if let Some(doc) = peer.core.room_doc.as_deref() {
+            crate::succession::check_recorded_ancestry(doc, &peer.core.room, &peer.core.authority)?;
+        }
         if peer.core.authority != pinned {
             let doc = peer
                 .core
