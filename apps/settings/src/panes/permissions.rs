@@ -20,12 +20,16 @@
 use ui::tokens::SpacingStep;
 
 use crate::i18n::{t, t_args};
+use crate::panes::model::{ModelPane, PaneModel, Shared};
 use crate::widgets::{
     El, StatusTone, caption, card, cards, error_row, gap, rows, semantic_status_pill, value_row,
 };
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use serde::Deserialize;
+use std::cell::{OnceCell, RefCell};
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
@@ -73,6 +77,160 @@ pub(crate) fn answer(
     }
 }
 
+struct PrivacySnapshot {
+    privacy: os_actions::PrivacyStatus,
+    security: DeviceSecurity,
+    workspace_state: Option<String>,
+}
+
+#[cfg(test)]
+impl PrivacySnapshot {
+    fn unavailable() -> Self {
+        Self {
+            privacy: os_actions::PrivacyStatus::default(),
+            security: DeviceSecurity {
+                disk_encryption: "perm-unavailable",
+                secure_boot: "perm-unavailable",
+                firewall: Err("Device security could not be observed.".into()),
+            },
+            workspace_state: None,
+        }
+    }
+}
+
+trait PrivacyControl: Send + Sync {
+    fn read(&self) -> Result<PrivacySnapshot, String>;
+}
+
+struct DevicePrivacy;
+impl PrivacyControl for DevicePrivacy {
+    fn read(&self) -> Result<PrivacySnapshot, String> {
+        Ok(PrivacySnapshot {
+            privacy: os_actions::get_privacy_status_checked()?,
+            security: device_security(),
+            workspace_state: load_text(),
+        })
+    }
+}
+
+pub(crate) struct PrivacyArea {
+    cx: PaneCx,
+    control: Option<Arc<dyn PrivacyControl>>,
+    model: OnceCell<Shared<PrivacyModel>>,
+}
+
+impl PrivacyArea {
+    pub(crate) fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            control: cx
+                .reaches_devices()
+                .then(|| Arc::new(DevicePrivacy) as Arc<dyn PrivacyControl>),
+            model: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn pane(&self) -> Box<dyn Widget> {
+        let model = self.model.get_or_init(|| {
+            Rc::new(RefCell::new(PrivacyModel::new(
+                self.cx.clone(),
+                self.control.clone(),
+            )))
+        });
+        Box::new(ModelPane::new(Rc::clone(model)))
+    }
+
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get() {
+            model.borrow_mut().poll_read();
+        }
+    }
+
+    #[cfg(test)]
+    fn with_control(cx: &PaneCx, control: Arc<dyn PrivacyControl>) -> Self {
+        Self {
+            cx: cx.clone(),
+            control: Some(control),
+            model: OnceCell::new(),
+        }
+    }
+}
+
+struct PrivacyModel {
+    cx: PaneCx,
+    snapshot: Option<Result<PrivacySnapshot, String>>,
+    reading: Option<std::sync::mpsc::Receiver<Result<PrivacySnapshot, String>>>,
+    changed: bool,
+}
+
+impl PrivacyModel {
+    fn new(cx: PaneCx, control: Option<Arc<dyn PrivacyControl>>) -> Self {
+        let mut model = Self {
+            cx,
+            snapshot: None,
+            reading: None,
+            changed: false,
+        };
+        if let Some(control) = control {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let wake = ui::WakeHandle::new();
+            match ui::background::Background::current().spawn("privacy_snapshot", move || {
+                if sender.send(control.read()).is_ok() {
+                    wake.wake();
+                }
+            }) {
+                Ok(()) => model.reading = Some(receiver),
+                Err(error) => model.snapshot = Some(Err(error.to_string())),
+            }
+        }
+        model
+    }
+
+    fn poll_read(&mut self) {
+        let Some(receiver) = &self.reading else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(t("perm-read-disconnected")),
+        };
+        self.reading = None;
+        self.snapshot = Some(result);
+        self.changed = true;
+    }
+}
+
+impl PaneModel for PrivacyModel {
+    fn compose(&self) -> Box<dyn Widget> {
+        match &self.snapshot {
+            Some(Ok(snapshot)) => build_observed_view(&self.cx, snapshot),
+            Some(Err(error)) => cards(vec![card(
+                &t("perm-this-device"),
+                rows(vec![caption(&t_args(
+                    "perm-read-error",
+                    &[("error", error.as_str().into())],
+                ))]),
+            )]),
+            None => cards(vec![card(
+                &t("perm-this-device"),
+                rows(vec![caption(&t(if self.reading.is_some() {
+                    "perm-read-loading"
+                } else {
+                    "perm-read-preview"
+                }))]),
+            )]),
+        }
+    }
+    fn poll(&mut self) -> bool {
+        self.poll_read();
+        std::mem::take(&mut self.changed)
+    }
+    fn name(&self) -> &'static str {
+        "PrivacyPane"
+    }
+}
+
 /// The compositor's persisted workspace tree, beside `settings.json`.
 fn state_path() -> Option<PathBuf> {
     settings_store::config_path(std::path::Path::new("state.json"))
@@ -84,10 +242,10 @@ fn load_text() -> Option<String> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DeviceSecurity {
-    disk_encryption: String,
-    secure_boot: String,
+    disk_encryption: &'static str,
+    secure_boot: &'static str,
     /// The firewall in force, or why that could not be read.
-    firewall: Result<String, String>,
+    firewall: Result<&'static str, String>,
 }
 
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
@@ -114,43 +272,43 @@ fn command_output(program: &str, args: &[&str]) -> Result<String, String> {
 /// `lsblk` reports every ancestor of `/`; any `crypt` layer means the live
 /// root filesystem is encrypted. An unavailable probe stays unknown rather
 /// than guessing from a partition name.
-fn disk_encryption_status() -> String {
+fn disk_encryption_status() -> &'static str {
     let Some(source) = command_stdout("findmnt", &["-no", "SOURCE", "/"]) else {
-        return t("perm-unavailable");
+        return "perm-unavailable";
     };
     let Some(chain) = command_stdout("lsblk", &["-s", "-n", "-o", "TYPE", &source]) else {
-        return t("perm-unavailable");
+        return "perm-unavailable";
     };
     if chain.lines().any(|line| line.trim() == "crypt") {
-        t("perm-encrypted")
+        "perm-encrypted"
     } else {
-        t("perm-not-encrypted")
+        "perm-not-encrypted"
     }
 }
 
-fn secure_boot_status() -> String {
+fn secure_boot_status() -> &'static str {
     let Ok(entries) = std::fs::read_dir("/sys/firmware/efi/efivars") else {
-        return t("perm-unavailable");
+        return "perm-unavailable";
     };
     let Some(path) = entries.flatten().map(|e| e.path()).find(|p| {
         p.file_name()
             .is_some_and(|n| n.to_string_lossy().starts_with("SecureBoot-"))
     }) else {
-        return t("perm-disabled");
+        return "perm-disabled";
     };
     // EFI variable files start with four attribute bytes, followed by the
     // one-byte SecureBoot value.
     match std::fs::read(path).ok().and_then(|v| v.get(4).copied()) {
-        Some(1) => t("perm-enabled"),
-        Some(_) => t("perm-disabled"),
-        None => t("perm-unavailable"),
+        Some(1) => "perm-enabled",
+        Some(_) => "perm-disabled",
+        None => "perm-unavailable",
     }
 }
 
 /// firewalld when it runs, otherwise the nftables ruleset. "Not active" is
 /// only said when the ruleset was read and is empty; a ruleset that could
 /// not be read (it needs privileges) is reported as unreadable.
-fn firewall_status() -> Result<String, String> {
+fn firewall_status() -> Result<&'static str, String> {
     firewall_from(command_output("firewall-cmd", &["--state"]), || {
         command_output("nft", &["list", "ruleset"])
     })
@@ -159,13 +317,13 @@ fn firewall_status() -> Result<String, String> {
 fn firewall_from(
     firewalld: Result<String, String>,
     nft: impl FnOnce() -> Result<String, String>,
-) -> Result<String, String> {
+) -> Result<&'static str, String> {
     if firewalld.as_deref() == Ok("running") {
-        return Ok(t("perm-firewall-firewalld"));
+        return Ok("perm-firewall-firewalld");
     }
     match nft() {
-        Ok(ruleset) if !ruleset.trim().is_empty() => Ok(t("perm-firewall-nftables")),
-        Ok(_) => Ok(t("perm-firewall-off")),
+        Ok(ruleset) if !ruleset.trim().is_empty() => Ok("perm-firewall-nftables"),
+        Ok(_) => Ok("perm-firewall-off"),
         Err(nft_error) => Err(match firewalld {
             Err(firewalld_error) => format!("{firewalld_error}; {nft_error}"),
             Ok(_) => nft_error,
@@ -418,13 +576,9 @@ fn app_block(grants: &AppGrants) -> El {
     rows(items)
 }
 
-pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
-    build_view(cx, load_text().as_deref())
-}
-
 /// Include the hosted disk-unlock model beside the device security summary.
-pub(crate) fn build_with_disk_unlock(cx: &PaneCx, disk_unlock: El) -> Box<dyn Widget> {
-    crate::widgets::rows(vec![build(cx), disk_unlock])
+pub(crate) fn build_with_disk_unlock(privacy: El, disk_unlock: El) -> Box<dyn Widget> {
+    crate::widgets::rows(vec![privacy, disk_unlock])
 }
 
 fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
@@ -469,15 +623,14 @@ fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> El {
     card(&t("perm-active-use"), rows(usage_rows))
 }
 
-fn device_security_card() -> El {
-    let security = device_security();
+fn device_security_card(security: &DeviceSecurity) -> El {
     card(
         &t("perm-device-security"),
         rows(vec![
-            value_row(&t("perm-disk"), &security.disk_encryption),
-            value_row(&t("perm-secure-boot"), &security.secure_boot),
+            value_row(&t("perm-disk"), &t(security.disk_encryption)),
+            value_row(&t("perm-secure-boot"), &t(security.secure_boot)),
             match &security.firewall {
-                Ok(firewall) => value_row(&t("perm-firewall"), firewall),
+                Ok(firewall) => value_row(&t("perm-firewall"), &t(firewall)),
                 Err(error) => error_row(
                     &t("perm-firewall"),
                     &t_args("perm-firewall-error", &[("error", error.as_str().into())]),
@@ -586,18 +739,19 @@ fn enforcement_card() -> El {
     )
 }
 
-/// Core builder, split from [`build`] so it can be exercised against an
+/// Pure snapshot composition, exercised against an
 /// explicit state document in tests without touching the real config dir.
-fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
+fn build_observed_view(cx: &PaneCx, snapshot: &PrivacySnapshot) -> Box<dyn Widget> {
+    let state_json = snapshot.workspace_state.as_deref();
     let workspace_access = state_json.map(project).transpose();
 
     let mut panel: Vec<El> = Vec::new();
 
-    let privacy = os_actions::get_privacy_status();
+    let privacy = &snapshot.privacy;
     panel.push(scope_card());
-    panel.push(privacy_hardware_card(&privacy));
-    panel.push(active_privacy_use_card(&privacy));
-    panel.push(device_security_card());
+    panel.push(privacy_hardware_card(privacy));
+    panel.push(active_privacy_use_card(privacy));
+    panel.push(device_security_card(&snapshot.security));
     panel.push(workspace_grants_intro_card(cx));
 
     match workspace_access {
@@ -615,8 +769,187 @@ fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
 }
 
 #[cfg(test)]
+fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
+    let mut snapshot = PrivacySnapshot::unavailable();
+    snapshot.workspace_state = state_json.map(str::to_owned);
+    build_observed_view(cx, &snapshot)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    struct HeldPrivacy {
+        entered: std::sync::mpsc::Sender<std::thread::ThreadId>,
+        gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        refusal: Option<String>,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    impl PrivacyControl for HeldPrivacy {
+        fn read(&self) -> Result<PrivacySnapshot, String> {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.entered.send(std::thread::current().id()).unwrap();
+            self.gate
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap();
+            if let Some(error) = &self.refusal {
+                return Err(error.clone());
+            }
+            let mut snapshot = PrivacySnapshot::unavailable();
+            snapshot.security.disk_encryption = "perm-encrypted";
+            snapshot.workspace_state = Some(r#"{"workspaces":[]}"#.into());
+            Ok(snapshot)
+        }
+    }
+
+    #[test]
+    fn mounted_privacy_open_does_not_wait_for_device_services_on_ui() {
+        let (entered, entries) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let control: Arc<dyn PrivacyControl> = Arc::new(HeldPrivacy {
+            entered,
+            gate: std::sync::Mutex::new(gate),
+            refusal: None,
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        app.with_surface::<SettingsApp, _>(|settings| {
+            *settings.privacy_mut() = PrivacyArea::with_control(&settings.host().clone(), control);
+        })
+        .unwrap();
+        let helper = std::thread::spawn(move || {
+            let thread = entries.recv_timeout(Duration::from_secs(3)).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            release.send(()).unwrap();
+            thread
+        });
+        let address = crate::effects::open_pane_address(crate::categories::Category::Permissions);
+        let start = std::time::Instant::now();
+        app.call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        let elapsed = start.elapsed();
+        let reader = helper.join().unwrap();
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "mounted Privacy open blocks device reads on UI: {elapsed:?}, reader={reader:?}"
+        );
+        assert_ne!(reader, std::thread::current().id());
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| {
+                    let mut labels = Vec::new();
+                    text_labels(h.root_widget(), &mut labels);
+                    labels.contains(&t("perm-encrypted"))
+                        && labels.contains(&t("perm-no-grants-title"))
+                })
+        );
+    }
+
+    #[test]
+    fn privacy_snapshot_wakes_its_owner_and_stays_retained_on_layout() {
+        use ui::headless::{Framed, viewport};
+        let mut scope = ui::WakeScope::new();
+        let (woke, wakes) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        let _entry = scope.enter();
+        let (entered, entries) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let control = Arc::new(HeldPrivacy {
+            entered,
+            gate: std::sync::Mutex::new(gate),
+            refusal: None,
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let area = PrivacyArea::with_control(&cx(), control.clone());
+        let _ = area.pane();
+        let pane = ModelPane::new(Rc::clone(area.model.get().unwrap()));
+        entries.recv_timeout(Duration::from_secs(3)).unwrap();
+        let mut app = Framed::new(
+            ui::State::new(),
+            pane,
+            viewport((1200.0, 900.0)),
+            ui::Theme::dark(),
+        );
+        let mut labels = Vec::new();
+        text_labels(Framed::harness(&app).root_widget(), &mut labels);
+        assert!(labels.contains(&t("perm-read-loading")));
+        assert!(!labels.contains(&t("perm-encrypted")));
+        assert!(!labels.contains(&t("perm-no-active-use")));
+        let schedule = Framed::harness(&app).frame_schedule();
+        assert!(!schedule.needs_animation_frame);
+        assert!(schedule.next_wake_deadline.is_none());
+        release.send(()).unwrap();
+        wakes.recv_timeout(Duration::from_secs(3)).unwrap();
+        // Ordinary app polling can adopt a closed pane without stealing its composition signal.
+        area.poll();
+        Framed::harness_mut(&mut app)
+            .relayout_at(viewport((1100.0, 900.0)))
+            .unwrap();
+        let mut labels = Vec::new();
+        text_labels(Framed::harness(&app).root_widget(), &mut labels);
+        assert!(labels.contains(&t("perm-encrypted")));
+        assert!(labels.contains(&t("perm-no-grants-title")));
+        for width in [1000.0, 1200.0] {
+            Framed::harness_mut(&mut app)
+                .relayout_at(viewport((width, 900.0)))
+                .unwrap();
+        }
+        assert_eq!(control.reads.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(area.model.get().unwrap().borrow().reading.is_none());
+    }
+
+    #[test]
+    fn privacy_snapshot_failure_never_claims_observed_device_posture() {
+        use ui::headless::{Framed, viewport};
+        let (entered, entries) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let area = PrivacyArea::with_control(
+            &cx(),
+            Arc::new(HeldPrivacy {
+                entered,
+                gate: std::sync::Mutex::new(gate),
+                refusal: Some("fixture privacy service failed".into()),
+                reads: std::sync::atomic::AtomicUsize::new(0),
+            }),
+        );
+        let mut app = Framed::new(
+            ui::State::new(),
+            {
+                let _ = area.pane();
+                ModelPane::new(Rc::clone(area.model.get().unwrap()))
+            },
+            viewport((1200.0, 900.0)),
+            ui::Theme::dark(),
+        );
+        entries.recv_timeout(Duration::from_secs(3)).unwrap();
+        release.send(()).unwrap();
+        assert!(
+            Framed::harness_mut(&mut app).wait_until(ui::time::Duration::from_secs(3), |h| {
+                let mut labels = Vec::new();
+                text_labels(h.root_widget(), &mut labels);
+                labels
+                    .iter()
+                    .any(|label| label.contains("fixture privacy service failed"))
+            })
+        );
+        let mut labels = Vec::new();
+        text_labels(Framed::harness(&app).root_widget(), &mut labels);
+        for claim in [
+            "perm-encrypted",
+            "perm-no-active-use",
+            "perm-no-grants-title",
+        ] {
+            assert!(!labels.contains(&t(claim)));
+        }
+    }
 
     fn cx() -> PaneCx {
         PaneCx::in_file(std::env::temp_dir().join("tilo-settings-permissions-unused.json"))
@@ -631,11 +964,11 @@ mod tests {
     fn an_unreadable_firewall_is_not_reported_as_off() {
         let denied = || Err("nft: Operation not permitted (you must be root)".to_string());
         assert_eq!(
-            firewall_from(Ok("running".into()), denied),
+            firewall_from(Ok("running".into()), denied).map(t),
             Ok(t("perm-firewall-firewalld"))
         );
         assert_eq!(
-            firewall_from(Err("firewall-cmd: not running".into()), denied),
+            firewall_from(Err("firewall-cmd: not running".into()), denied).map(t),
             Err(
                 "firewall-cmd: not running; nft: Operation not permitted (you must be root)".into()
             )
@@ -644,13 +977,15 @@ mod tests {
             firewall_from(
                 Err("firewall-cmd: not running".into()),
                 || Ok(String::new())
-            ),
+            )
+            .map(t),
             Ok(t("perm-firewall-off"))
         );
         assert_eq!(
             firewall_from(Err("firewall-cmd: not running".into()), || {
                 Ok("table inet filter {}".into())
-            }),
+            })
+            .map(t),
             Ok(t("perm-firewall-nftables"))
         );
     }

@@ -68,6 +68,17 @@ pub fn get_privacy_status() -> PrivacyStatus {
     status
 }
 
+/// Read device privacy posture without treating an unreadable capture graph as idle.
+///
+/// # Errors
+/// Returns the actual `PipeWire` capture-graph read failure. Unknown microphone
+/// or hardware-kill posture remains unknown in the returned status.
+pub fn get_privacy_status_checked() -> Result<PrivacyStatus, String> {
+    let mut status = get_privacy_status_from(Path::new("/sys/class/rfkill"), Path::new("/dev"));
+    status.active_media = active_media_uses()?;
+    Ok(status)
+}
+
 fn get_privacy_status_from(rfkill: &Path, dev: &Path) -> PrivacyStatus {
     let mut status = PrivacyStatus {
         microphone_muted: crate::audio::get_source_state().ok().map(|s| s.muted),
