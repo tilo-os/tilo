@@ -3,8 +3,8 @@
 
 use guillotiere::{AllocId, AtlasAllocator, size2};
 use peniko::ImageData;
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 
 const DEFAULT_ATLAS_SIZE: i32 = 1024;
 const MAX_ATLAS_SIZE: i32 = 8192;
@@ -203,6 +203,18 @@ impl ImageCache {
             self.evicted_in_resolve += 1;
         }
         self.evicted_in_resolve != 0
+    }
+
+    /// At the atlas cap, reclaim only images absent from the complete current encoding.
+    /// Ordinary reuse keeps the generation grace; pressure cannot evict a later section.
+    pub(crate) fn evict_unneeded_entries(&mut self, needed: &HashSet<u64>) -> bool {
+        let mut evicted = false;
+        for (_id, resident) in self.map.extract_if(|id, _| !needed.contains(id)) {
+            self.atlas.deallocate(resident.alloc_id);
+            self.evicted_in_resolve += 1;
+            evicted = true;
+        }
+        evicted
     }
 
     fn repack_to_size(&mut self, size: i32) -> bool {

@@ -297,6 +297,7 @@ struct ProducedSections {
     topbar: Scene,
     workspace: Scene,
     workspace_overlays: Scene,
+    desktop_extras: Scene,
     /// Strips drawn in canvas coordinates, as the scene showed them.
     strips: Option<Vec<StripBlit>>,
     topbar_bounds: Option<Rect>,
@@ -2006,6 +2007,7 @@ impl FrameBuilder {
                 &sections.workspace,
                 &sections.workspace_overlays,
                 &sections.topbar,
+                &sections.desktop_extras,
                 &sections.quick_settings,
                 &sections.above_quick_settings,
             ]
@@ -2015,6 +2017,7 @@ impl FrameBuilder {
             let mut chrome = Scene::new();
             chrome.append(&sections.workspace_overlays, None);
             chrome.append(&sections.topbar, None);
+            chrome.append(&sections.desktop_extras, None);
             chrome.append(&sections.quick_settings, None);
             chrome.append(&sections.above_quick_settings, None);
             FrameCache {
@@ -2041,6 +2044,7 @@ impl FrameBuilder {
         // reserved top-bar band, while anchored surfaces such as the center
         // widget editor must remain above app tabs and client content.
         scene.append(&sections.topbar, None);
+        scene.append(&sections.desktop_extras, None);
         scene.append(&sections.quick_settings, None);
         scene.append(&sections.above_quick_settings, None);
         if self.watch_configured_theme && self.night_light {
@@ -2073,6 +2077,7 @@ impl FrameBuilder {
             topbar: sections.topbar,
             workspace: sections.workspace,
             workspace_overlays: sections.workspace_overlays,
+            desktop_extras: sections.desktop_extras,
             strips,
             topbar_bounds: sections.topbar_bounds,
             quick_settings: sections.quick_settings,
@@ -2134,6 +2139,7 @@ impl FrameBuilder {
             &previous.workspace,
             &previous.workspace_overlays,
             &previous.topbar,
+            &previous.desktop_extras,
             &previous.quick_settings,
             &previous.above_quick_settings,
         ];
@@ -2142,6 +2148,7 @@ impl FrameBuilder {
             &current.workspace,
             &current.workspace_overlays,
             &current.topbar,
+            &current.desktop_extras,
             &current.quick_settings,
             &current.above_quick_settings,
         ];
@@ -2314,7 +2321,9 @@ impl FrameBuilder {
         if previous.global_filter || current_global_filter {
             return None;
         }
-        if !previous.backdrop.encoding_eq(&current.backdrop) {
+        if !previous.backdrop.encoding_eq(&current.backdrop)
+            || !previous.desktop_extras.encoding_eq(&current.desktop_extras)
+        {
             return None;
         }
         let image_regions = self.foreign_damage_regions(previous, current, images)?;
