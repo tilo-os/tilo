@@ -10,7 +10,7 @@ import concurrent.futures
 import json
 import urllib.request
 import urllib.error
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -605,6 +605,50 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 PROOF.wait_for_agent_reply("socket", "room", "", "parent", "agent", None, output)
             self.assertIs(raised.exception, timeout)
             self.assertNotIn("private", " ".join(raised.exception.__notes__))
+
+    def test_agent_reply_requires_exact_controlled_response_and_correlation(self):
+        action = {"application": "so.tilo.chat", "room": "room", "record": "",
+                  "operation": "read-messages"}
+        reply = {"id": "m_reply", "parent": "m_parent", "author": "agent:tide",
+                 "agentIntent": None, "text": "Fixture response."}
+
+        def observe(message):
+            with patch.object(PROOF, "actions", return_value=[action]), \
+                    patch.object(PROOF, "invoke", return_value={}), \
+                    patch.object(PROOF, "wait_terminal", return_value={}), \
+                    patch.object(PROOF, "terminal_value", return_value={
+                        "content": {"messages": [message]},
+                    }):
+                return PROOF.agent_reply_observation(
+                    "socket", "room", "", "m_parent", "tide", None,
+                )
+
+        evidence = observe(reply)
+        self.assertEqual(evidence, {
+            "typed_actor": "agent:tide",
+            "parent": "m_parent",
+            "reply_id": "m_reply",
+            "reply_matches_fixture": True,
+        })
+        self.assertNotIn(reply["text"], json.dumps(evidence))
+
+        private = "private model fallback or wrong response"
+        for changed in ({"text": private}, {"text": ""}, {"text": None}):
+            with self.subTest(changed=changed), self.assertRaisesRegex(
+                    RuntimeError, "controlled response"):
+                observe({**reply, **changed})
+        self.assertIsNone(observe({**reply, "parent": "m_foreign"}))
+        self.assertIsNone(observe({**reply, "author": "person:fixture"}))
+
+        ordinary = inspect.getsource(PROOF.wait_for_agent_reply)
+        physical = inspect.getsource(PROOF.physical_send_after_stop)
+        self.assertIn("agent_reply_observation(", ordinary)
+        self.assertIn("agent_reply_observation(", physical)
+        self.assertNotIn("expected_reply=", ordinary)
+        self.assertNotIn("expected_reply=", physical)
+        self.assertIn('"reply_matches_fixture": reply["reply_matches_fixture"]',
+                      inspect.getsource(PROOF.managed_task_and_message_lifecycle))
+        self.assertIn('"reply_matches_fixture": reply["reply_matches_fixture"]', physical)
 
     def test_message_terminal_timeout_saves_only_closed_evidence_and_failure_scene(self):
         original = "00000000-0000-0000-0000-000000000063"
@@ -1635,12 +1679,19 @@ class PresentedEditorTargetTests(unittest.TestCase):
         engine = source.index("fcitx_rime_active(env)", readiness)
         raw_baseline = source.index('{"op": "type", "text": committed_before}')
         baseline_preedit = source.index("chat_input_method_preedit_active(socket)", raw_baseline)
+        baseline_refusal = source.index("preserve_attached_preedit_refusal(", baseline_preedit)
+        ascii_guard = source.index("baseline_is_exact_rime_ascii_passthrough(", baseline_refusal)
+        recovery = source.index("recover_rime_chinese_mode(", ascii_guard)
         raw_commit = source.index('{"op": "key", "key": "Enter"}', raw_baseline)
         first_preedit = source.index('{"op": "type", "text": "nihao"}', raw_commit)
         composed_preedit = source.index("chat_input_method_preedit_active(socket)", first_preedit)
         self.assertLess(readiness, engine)
         self.assertLess(engine, raw_baseline)
         self.assertLess(raw_baseline, baseline_preedit)
+        self.assertLess(baseline_preedit, baseline_refusal)
+        self.assertLess(baseline_refusal, ascii_guard)
+        self.assertLess(ascii_guard, recovery)
+        self.assertLess(recovery, raw_commit)
         self.assertLess(baseline_preedit, raw_commit)
         self.assertLess(raw_commit, first_preedit)
         self.assertLess(first_preedit, composed_preedit)
@@ -1667,17 +1718,90 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
         for results in (
                 [Result(1)],
-                [Result(0, "0\n")],
-                [Result(0, "1\n")],
-                [Result(0, "")],
-                [Result(0), Result(1)],
-                [Result(0), Result(0, "keyboard-us\n")],
-                [Result(0), Result(0, "")]):
+                [Result(0, "0\n"), Result(0, "rime\n")],
+                [Result(0, "1\n"), Result(0, "rime\n")],
+                [Result(0, ""), Result(0, "rime\n")],
+                [Result(0, "2\n"), Result(1)],
+                [Result(0, "2\n"), Result(0, "keyboard-us\n")],
+                [Result(0, "2\n"), Result(0, "")]):
             with self.subTest(results=[result.returncode for result in results]), \
                     patch.object(PROOF.subprocess, "run", side_effect=results):
                 self.assertFalse(PROOF.fcitx_rime_active(env))
         with patch.object(PROOF.subprocess, "run", side_effect=OSError("absent")):
             self.assertFalse(PROOF.fcitx_rime_active(env))
+
+    def test_rime_ascii_recovery_requires_the_exact_closed_failure(self):
+        seat = {
+            "keyboard_is_chat": True,
+            "text_input_is_chat": True,
+            "text_input_active": True,
+            "input_method_connected": True,
+            "input_method_keyboard_grabbed": True,
+            "input_method_preedit_accepted": False,
+        }
+        engine = {
+            "fcitx_state_observable": True,
+            "fcitx_state_active": True,
+            "fcitx_engine_observable": True,
+            "fcitx_engine_rime": True,
+        }
+
+        def observed(*, matches=True, bounds=None, seat_changes=None, engine_changes=None):
+            with patch.object(PROOF, "private_editor_value_matches", return_value=matches), \
+                    patch.object(PROOF, "private_editor_numeric_bounds", return_value=(
+                        bounds or {"character_count": 5, "caret": 5, "selection": None}
+                    )), \
+                    patch.object(PROOF, "chat_input_method_observation", return_value={
+                        **seat, **(seat_changes or {}),
+                    }), \
+                    patch.object(PROOF, "fcitx_rime_observation", return_value={
+                        **engine, **(engine_changes or {}),
+                    }), \
+                    patch.object(PROOF, "same_fcitx_process", return_value=True):
+                return PROOF.baseline_is_exact_rime_ascii_passthrough(
+                    "socket", {}, "nihao", {}, {},
+                )
+
+        self.assertTrue(observed())
+        self.assertFalse(observed(matches=False))
+        self.assertFalse(observed(bounds={
+            "character_count": 5, "caret": 4, "selection": None,
+        }))
+        self.assertFalse(observed(seat_changes={"input_method_preedit_accepted": True}))
+        self.assertFalse(observed(engine_changes={"fcitx_state_active": False}))
+
+    def test_rime_ascii_recovery_uses_physical_chord_then_proves_real_preedit(self):
+        frames = iter(({"frame_seq": 7}, {"frame_seq": 8}))
+
+        def immediately(_label, observe, _process):
+            result = observe()
+            self.assertTrue(result)
+            return result
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "baseline_is_exact_rime_ascii_passthrough",
+                             return_value=True), \
+                patch.object(PROOF, "physical_chord") as physical, \
+                patch.object(PROOF, "wait_for", side_effect=immediately), \
+                patch.object(PROOF, "private_editor_value_matches", return_value=True), \
+                patch.object(PROOF, "presented_primary_frame",
+                             side_effect=lambda *_args: next(frames)), \
+                patch.object(PROOF, "chat_input_method_preedit_active", return_value=True), \
+                patch.object(PROOF, "same_fcitx_process", return_value=True), \
+                patch.object(PROOF, "fcitx_rime_active", return_value=True), \
+                patch.object(PROOF, "call", return_value={"ok": {}}) as control, \
+                patch.object(PROOF, "require_ok"):
+            frame = PROOF.recover_rime_chinese_mode(
+                "socket", pathlib.Path(directory), "1600x900", {}, None, {}, {}, "nihao",
+            )
+
+        self.assertEqual(frame, {"frame_seq": 8})
+        self.assertEqual(physical.call_args_list, [
+            call("socket", "z", ctrl=True),
+            call("socket", "2", ctrl=True, shift=True),
+        ])
+        self.assertIn(call("socket", {"op": "type", "text": "nihao"}),
+                      control.call_args_list)
 
 
     def test_attached_preedit_refusal_records_only_closed_fixture_evidence(self):
@@ -1688,35 +1812,72 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "require_ok"), \
                 patch.object(PROOF, "private_editor_value_matches",
                              side_effect=lambda _access, value: values[value]), \
-                patch.object(PROOF, "chat_text_input_active", return_value=True), \
-                patch.object(PROOF, "chat_input_method_ready", return_value=True), \
+                patch.object(PROOF, "private_editor_numeric_bounds", return_value={
+                    "character_count": 10, "caret": 10, "selection": None,
+                }), \
+                patch.object(PROOF, "chat_input_method_observation", return_value={
+                    "keyboard_is_chat": True,
+                    "text_input_is_chat": True,
+                    "text_input_active": True,
+                    "input_method_connected": True,
+                    "input_method_keyboard_grabbed": True,
+                    "input_method_preedit_accepted": False,
+                }), \
+                patch.object(PROOF, "fcitx_rime_observation", return_value={
+                    "fcitx_state_observable": True,
+                    "fcitx_state_active": True,
+                    "fcitx_engine_observable": True,
+                    "fcitx_engine_rime": True,
+                }), \
                 patch.object(PROOF, "same_fcitx_process", return_value=True):
             output = pathlib.Path(directory)
             PROOF.preserve_attached_preedit_refusal(
                 "socket", output, "1600x900", {"private": private},
-                "nihao", "nihao你好", {},
+                {
+                    "phase": "attached_preedit_before_float",
+                    "baseline": "nihao",
+                    "direct_latin": "nihaonihao",
+                    "rime_commit": "nihao你好",
+                }, {}, {},
             )
             evidence = json.loads((output / "ime-attached-preedit-refused.json").read_text())
         self.assertFalse(evidence["baseline_retained"])
         self.assertTrue(evidence["direct_latin_committed"])
         self.assertFalse(evidence["rime_candidate_committed"])
-        self.assertTrue(evidence["input_method_ready"])
+        self.assertTrue(evidence["fcitx_state_active"])
+        self.assertTrue(evidence["fcitx_engine_rime"])
+        self.assertFalse(evidence["input_method_preedit_accepted"])
+        self.assertEqual(evidence["field_bounds"], {
+            "character_count": 10, "caret": 10, "selection": None,
+        })
         self.assertFalse(evidence["private_content_recorded"])
         self.assertNotIn(private, json.dumps(evidence))
 
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(PROOF, "call", side_effect=RuntimeError("snapshot failed")), \
                 patch.object(PROOF, "private_editor_value_matches", return_value=False), \
-                patch.object(PROOF, "chat_text_input_active", return_value=True), \
-                patch.object(PROOF, "chat_input_method_ready", return_value=True), \
+                patch.object(PROOF, "private_editor_numeric_bounds", return_value={
+                    "character_count": 0, "caret": 0, "selection": None,
+                }), \
+                patch.object(PROOF, "chat_input_method_observation", return_value={
+                    "input_method_preedit_accepted": False,
+                }), \
+                patch.object(PROOF, "fcitx_rime_observation", return_value={
+                    "fcitx_state_active": True,
+                }), \
                 patch.object(PROOF, "same_fcitx_process", return_value=True):
             output = pathlib.Path(directory)
             PROOF.preserve_attached_preedit_refusal(
-                "socket", output, "1600x900", {}, "nihao", "nihao你好", {},
+                "socket", output, "1600x900", {}, {
+                    "phase": "baseline_preedit_before_float",
+                    "baseline": "",
+                    "direct_latin": "nihao",
+                    "rime_commit": "你好",
+                }, {}, {},
             )
             evidence = json.loads((output / "ime-attached-preedit-refused.json").read_text())
         self.assertNotIn("diagnostic_unavailable", evidence)
-        self.assertTrue(evidence["input_method_ready"])
+        self.assertTrue(evidence["fcitx_state_active"])
 
     def test_detached_commit_refusal_records_only_closed_fixture_evidence(self):
         private = "private editor text"

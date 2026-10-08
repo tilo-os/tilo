@@ -1442,26 +1442,66 @@ def preserve_ime_drag_refusal(socket, output, size, drag):
             pass
 
 
+def private_editor_numeric_bounds(access):
+    """Return bounded geometry of the private field, never its text or hash."""
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    path = access["composer"]
+    reply = client.call(path, "org.a11y.atspi.Text.GetText", "--", "0", "-1")
+    value = atspi.text_reply(reply)
+    if value is None or len(value) > 32_000:
+        raise RuntimeError("the actual private editor length is unobservable")
+    caret = client.call(path, "org.freedesktop.DBus.Properties.Get",
+                        "org.a11y.atspi.Text", "CaretOffset")
+    matched = re.fullmatch(r"\(<(?:int32 )?(-?\d+)>,\)", caret.strip())
+    if matched is None:
+        raise RuntimeError("the actual private editor caret is unobservable")
+    caret_offset = int(matched.group(1))
+    if not 0 <= caret_offset <= len(value):
+        raise RuntimeError("the actual private editor caret is invalid")
+    count = client.call(path, "org.a11y.atspi.Text.GetNSelections")
+    matched_count = re.fullmatch(r"\((?:int32 )?(\d+),\)", count.strip())
+    if matched_count is None or int(matched_count.group(1)) > 1:
+        raise RuntimeError("the actual private editor selection is unobservable")
+    selection = None
+    if int(matched_count.group(1)) == 1:
+        reply = client.call(path, "org.a11y.atspi.Text.GetSelection", "0")
+        selected = re.fullmatch(r"\((?:int32 )?(-?\d+),\s*(?:int32 )?(-?\d+)\)", reply.strip())
+        if selected is None:
+            raise RuntimeError("the actual private editor selection endpoints are unobservable")
+        selection = [int(selected.group(1)), int(selected.group(2))]
+        if not 0 <= selection[0] <= selection[1] <= len(value):
+            raise RuntimeError("the actual private editor selection endpoints are invalid")
+    return {"character_count": len(value), "caret": caret_offset, "selection": selection}
+
+
 def preserve_attached_preedit_refusal(
-        socket, output, size, access, baseline, rime_commit, fcitx_identity):
+        socket, output, size, access, expectations, fcitx_identity, env):
     """Record only fixture-known equality and protocol booleans on refusal."""
     evidence_path = output / "ime-attached-preedit-refused.json"
     try:
-        direct_latin = baseline + "nihao"
+        seat = chat_input_method_observation(socket)
+        engine = fcitx_rime_observation(env)
         evidence_path.write_text(json.dumps({
-            "phase": "attached_preedit_before_float",
-            "baseline_retained": private_editor_value_matches(access, baseline),
-            "direct_latin_committed": private_editor_value_matches(access, direct_latin),
-            "rime_candidate_committed": private_editor_value_matches(access, rime_commit),
-            "text_input_active": chat_text_input_active(socket),
-            "input_method_ready": chat_input_method_ready(socket),
+            "phase": expectations["phase"],
+            "baseline_retained": private_editor_value_matches(
+                access, expectations["baseline"]
+            ),
+            "direct_latin_committed": private_editor_value_matches(
+                access, expectations["direct_latin"]
+            ),
+            "rime_candidate_committed": private_editor_value_matches(
+                access, expectations["rime_commit"]
+            ),
+            "field_bounds": private_editor_numeric_bounds(access),
+            **seat,
+            **engine,
             "same_input_method_process": same_fcitx_process(fcitx_identity),
             "private_content_recorded": False,
         }, indent=2) + "\n")
     except Exception:
         try:
             evidence_path.write_text(json.dumps({
-                "phase": "attached_preedit_before_float",
+                "phase": expectations["phase"],
                 "diagnostic_unavailable": True,
                 "private_content_recorded": False,
             }, indent=2) + "\n")
@@ -1473,6 +1513,87 @@ def preserve_attached_preedit_refusal(
         )}))
     except Exception:
         pass
+
+
+def baseline_is_exact_rime_ascii_passthrough(socket, access, expected, fcitx_identity, env):
+    """Recognize only the closed, independently observed ASCII failure."""
+    seat = chat_input_method_observation(socket)
+    engine = fcitx_rime_observation(env)
+    bounds = private_editor_numeric_bounds(access)
+    return bool(
+        private_editor_value_matches(access, expected)
+        and bounds == {"character_count": len(expected), "caret": len(expected),
+                       "selection": None}
+        and seat == {
+            "keyboard_is_chat": True,
+            "text_input_is_chat": True,
+            "text_input_active": True,
+            "input_method_connected": True,
+            "input_method_keyboard_grabbed": True,
+            "input_method_preedit_accepted": False,
+        }
+        and engine == {
+            "fcitx_state_observable": True,
+            "fcitx_state_active": True,
+            "fcitx_engine_observable": True,
+            "fcitx_engine_rime": True,
+        }
+        and same_fcitx_process(fcitx_identity)
+    )
+
+
+def recover_rime_chinese_mode(
+        socket, output, size, access, process, fcitx_identity, env, expected):
+    """Undo proven ASCII pass-through and use Rime's physical mode chord."""
+    if not baseline_is_exact_rime_ascii_passthrough(
+            socket, access, expected, fcitx_identity, env):
+        raise RuntimeError("the failed Rime baseline was not exact ASCII pass-through")
+    physical_chord(socket, "z", ctrl=True)
+    wait_for(
+        "physical undo of the exact Rime ASCII pass-through",
+        lambda: private_editor_value_matches(access, ""),
+        process,
+    )
+    before = presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+    )
+    if before is None:
+        raise RuntimeError("Chat disappeared before the physical Rime mode switch")
+
+    # The shipped Rime default imports numbered_mode_switch: Ctrl+Shift+2
+    # toggles ascii_mode. This is deterministic only because the exact ASCII
+    # state was independently observed above; no controller changes mode.
+    physical_chord(socket, "2", ctrl=True, shift=True)
+    if not same_fcitx_process(fcitx_identity) or not fcitx_rime_active(env):
+        raise RuntimeError("the physical Rime mode switch changed input-method custody")
+    require_ok(call(socket, {"op": "type", "text": expected}))
+
+    def genuine_preedit():
+        return bool(
+            chat_input_method_preedit_active(socket)
+            and private_editor_value_matches(access, "")
+            and same_fcitx_process(fcitx_identity)
+            and fcitx_rime_active(env)
+        )
+
+    wait_for("genuine Rime preedit after the physical mode switch", genuine_preedit, process)
+
+    def fresh_candidate_frame():
+        frame = presented_primary_frame(
+            call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+        )
+        return frame if frame is not None and frame["frame_seq"] > before["frame_seq"] \
+            and genuine_preedit() else None
+
+    frame = wait_for(
+        "fresh Rime candidate frame after the physical mode switch",
+        fresh_candidate_frame,
+        process,
+    )
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"ime-preedit-recovered-{size}.png"
+    )}))
+    return frame
 
 
 def preserve_detached_commit_refusal(
@@ -1559,11 +1680,27 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     # complete pinyin spelling: a lone `u` is not a valid luna-pinyin syllable
     # and may pass through without ever creating a composition.
     require_ok(call(socket, {"op": "type", "text": committed_before}))
-    wait_for(
-        "a genuine Rime baseline preedit",
-        lambda: chat_input_method_preedit_active(socket),
-        process,
-    )
+    try:
+        wait_for(
+            "a genuine Rime baseline preedit",
+            lambda: chat_input_method_preedit_active(socket),
+            process,
+        )
+    except Exception:
+        preserve_attached_preedit_refusal(
+            socket, output, size, access, {
+                "phase": "baseline_preedit_before_float",
+                "baseline": "",
+                "direct_latin": committed_before,
+                "rime_commit": "你好",
+            }, fcitx_identity, env,
+        )
+        if not baseline_is_exact_rime_ascii_passthrough(
+                socket, access, committed_before, fcitx_identity, env):
+            raise
+        recover_rime_chinese_mode(
+            socket, output, size, access, process, fcitx_identity, env, committed_before,
+        )
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     wait_for(
         "the pre-detach committed edit",
@@ -1587,7 +1724,12 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
             return None
         if not private_editor_value_matches(access, committed_before):
             preserve_attached_preedit_refusal(
-                socket, output, size, access, committed_before, committed_after, fcitx_identity,
+                socket, output, size, access, {
+                    "phase": "attached_preedit_before_float",
+                    "baseline": committed_before,
+                    "direct_latin": committed_before + "nihao",
+                    "rime_commit": committed_after,
+                }, fcitx_identity, env,
             )
             raise RuntimeError("Rime committed before the Float handoff")
         return frame if chat_text_input_active(socket) else None
@@ -2697,8 +2839,33 @@ def chat_input_method_preedit_active(socket):
     )
 
 
-def fcitx_rime_active(env):
-    """Read the isolated composer's active state and exact current engine."""
+def chat_input_method_observation(socket):
+    """Return only closed booleans from the compositor's authoritative seat."""
+    seat = chrome_state(socket).get("seat_focus")
+    required = (
+        "text_input_active", "input_method_connected",
+        "input_method_keyboard_grabbed", "input_method_preedit_active",
+    )
+    if not isinstance(seat, dict) or any(type(seat.get(key)) is not bool for key in required):
+        raise RuntimeError("the compositor input-method state is unobservable")
+    keyboard = seat.get("keyboard")
+    text_input = seat.get("text_input")
+    return {
+        "keyboard_is_chat": isinstance(keyboard, dict)
+            and keyboard.get("app_id") == "so.tilo.chat",
+        "text_input_is_chat": isinstance(text_input, dict)
+            and text_input.get("app_id") == "so.tilo.chat",
+        "text_input_active": seat["text_input_active"],
+        "input_method_connected": seat["input_method_connected"],
+        "input_method_keyboard_grabbed": seat["input_method_keyboard_grabbed"],
+        # This is accepted only after the compositor's client and serial checks;
+        # it does not expose either identifier or claim why acceptance failed.
+        "input_method_preedit_accepted": seat["input_method_preedit_active"],
+    }
+
+
+def fcitx_rime_observation(env):
+    """Observe exact active-state and engine equality without exporting output."""
     command = "/usr/bin/fcitx5-remote"
     try:
         active = subprocess.run(
@@ -2708,15 +2875,38 @@ def fcitx_rime_active(env):
         # fcitx5-remote exits successfully after printing the state: 0 is
         # closed, 1 inactive and 2 active.  A live Rime engine is not enough;
         # inactive contexts pass physical keys through as ordinary Latin.
-        if active.returncode != 0 or active.stdout.strip() != "2":
-            return False
+        active_known = active.returncode == 0
+        state_active = active_known and active.stdout.strip() == "2"
+        if not active_known:
+            return {
+                "fcitx_state_observable": False,
+                "fcitx_state_active": False,
+                "fcitx_engine_observable": False,
+                "fcitx_engine_rime": False,
+            }
         current = subprocess.run(
             [command, "-n"], env=env, text=True, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, timeout=2,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return current.returncode == 0 and current.stdout.strip() == "rime"
+        return {
+            "fcitx_state_observable": False,
+            "fcitx_state_active": False,
+            "fcitx_engine_observable": False,
+            "fcitx_engine_rime": False,
+        }
+    return {
+        "fcitx_state_observable": active_known,
+        "fcitx_state_active": state_active,
+        "fcitx_engine_observable": current.returncode == 0,
+        "fcitx_engine_rime": current.returncode == 0 and current.stdout.strip() == "rime",
+    }
+
+
+def fcitx_rime_active(env):
+    """Read the isolated composer's active state and exact current engine."""
+    observed = fcitx_rime_observation(env)
+    return observed["fcitx_state_active"] and observed["fcitx_engine_rime"]
 
 
 def require_action(socket, action_id, query=""):
@@ -3381,7 +3571,9 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     return evidence
 
 
-def agent_reply_observation(socket, room, record, parent, agent, process, *, diagnostic_path=None):
+def agent_reply_observation(
+        socket, room, record, parent, agent, process, *,
+        expected_reply="Fixture response.", diagnostic_path=None):
     """Read the canonical reply in memory and return content-free evidence."""
     reads = [row for row in actions(socket)
              if row.get("application") == "so.tilo.chat"
@@ -3409,8 +3601,10 @@ def agent_reply_observation(socket, room, record, parent, agent, process, *, dia
             if not isinstance(reply.get("id"), str) or not reply["id"] \
                     or reply.get("agentIntent") is not None:
                 raise RuntimeError("managed Agent reply metadata is malformed")
+            if reply.get("text") != expected_reply:
+                raise RuntimeError("managed Agent reply did not match the controlled response")
             return {"typed_actor": reply["author"], "parent": parent,
-                    "reply_id": reply["id"]}
+                    "reply_id": reply["id"], "reply_matches_fixture": True}
     return None
 
 
@@ -3711,7 +3905,9 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
                 "original_invocation": original["invocation"], "request_row": original["request_row"],
                 "captured_draft_revision": revision, "exact_draft_cleared": True,
                 "reply_actor": reply["typed_actor"], "reply_parent": reply["parent"],
-                "reply_row": reply["reply_id"], "waiting": waiting, "committed": committed,
+                "reply_row": reply["reply_id"],
+                "reply_matches_fixture": reply["reply_matches_fixture"],
+                "waiting": waiting, "committed": committed,
                 "old_task_response_still_held_until_reply": True, "provider_request_count": 4,
                 "private_content_recorded": False, "test_owned_draft_rendered": True}
     (output / "physical-send-after-stop.json").write_text(json.dumps(evidence, indent=2) + "\n")
@@ -4802,6 +4998,7 @@ def managed_task_and_message_lifecycle(
         "message_invocation": message_invocation,
         "reply_actor": reply["typed_actor"],
         "reply_parent": reply["parent"],
+        "reply_matches_fixture": reply["reply_matches_fixture"],
         "reply_while_task_working": True,
         "direction_invocation": terminal_invocation(direction_receipt),
         "saved_revision": revision,
@@ -5355,12 +5552,14 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             and lifecycle_evidence is not None
             and lifecycle_evidence.get("semantic_start") is True
             and lifecycle_evidence.get("reply_actor") == "agent:tide"
+            and lifecycle_evidence.get("reply_matches_fixture") is True
             and lifecycle_evidence.get("applied_revision")
                 == lifecycle_evidence.get("saved_revision")
             and lifecycle_evidence.get("terminal_status") == "cancelled"
             and physical_send_evidence is not None
             and physical_send_evidence.get("same_managed_process") is True
             and physical_send_evidence.get("reply_actor") == "agent:tide"
+            and physical_send_evidence.get("reply_matches_fixture") is True
             and physical_send_evidence.get("provider_request_count") == 4
             and revocation_evidence is not None
             and revocation_evidence.get("owner_membership_revoked") is True
