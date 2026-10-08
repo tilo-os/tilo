@@ -184,7 +184,7 @@ mod tests {
             (1, 0),
             "only the first shared write copies"
         );
-        let value = |doc: &CachedDocument| doc.get(ROOT, "value").unwrap().unwrap().0.to_i64();
+        let value = |doc: &CachedDocument| doc.get(ROOT, "value").unwrap().unwrap().0.as_i64();
         assert_eq!(value(&old), Some(2));
         assert_eq!(value(&readers[0]), Some(2));
         assert_eq!(value(&cached), Some(4));
