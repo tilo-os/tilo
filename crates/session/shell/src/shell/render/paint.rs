@@ -2048,6 +2048,25 @@ impl VelloDrmBridge {
             device,
             &dev_handle.queue,
         ));
+        // The default subscriber suppresses info events. Preserve the actual selected adapter
+        // in the session flight recorder without requiring a different renderer or log filter.
+        eprintln!(
+            "COMPOSITOR-ADAPTER {}",
+            serde_json::json!({
+                "process_id": std::process::id(),
+                "present_device_generation": target.present_generation,
+                "name": adapter_info.name,
+                "backend": format!("{:?}", adapter_info.backend),
+                "device_type": format!("{:?}", adapter_info.device_type),
+                "driver": adapter_info.driver,
+                "driver_info": adapter_info.driver_info,
+                "vendor": adapter_info.vendor,
+                "device": adapter_info.device,
+                "pci_bus_id": adapter_info.device_pci_bus_id,
+                "target_width": width,
+                "target_height": height,
+            })
+        );
         let bgra_blitter = TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm);
         let (readback_buf, padded_bytes_per_row) = Self::allocate_staging(device, width, height);
 
