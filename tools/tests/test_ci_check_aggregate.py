@@ -288,7 +288,8 @@ class CheckAggregateTests(unittest.TestCase):
             clippy = section(self.workflow, "clippy", 2)
             self.assertIn("cargo check --locked -p tilo-ui --no-default-features --lib", clippy)
             self.assertIn("cargo check --locked -p tilo-ui --no-default-features --lib", check)
-            self.assertIn("key: cargo-deps-", clippy)
+            self.assertIn("key: ${{ steps.rust-build.outputs.cargo-cache-key }}", clippy)
+            self.assertIn("cargo-download-cache-hit: ${{ steps.rust-build.outputs.cargo-cache-hit }}", clippy)
             checks = section(self.workflow, "checks", 2)
             self.assertIn("if: always()", checks)
             self.assertIn(

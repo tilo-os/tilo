@@ -2485,3 +2485,6 @@ task-review-cancel = Cancel task run
 task-review-retry = Retry task
 task-review-status = Inspect task review availability
 task-review-provider = Task review
+
+shell-launch-registry-unavailable = The app process registry is unavailable.
+shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.

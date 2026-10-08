@@ -246,30 +246,11 @@ impl NotificationStack {
     ) {
         for n in banners {
             let actions = ctx.host.actions_for(n);
-            let height = TOAST_HEIGHT
-                + if actions.len() >= 2 {
-                    ui::widget::ButtonFace::height(ui::widget::ControlSize::Small, ctx.theme)
-                        + 2.0 * f64::from(ctx.theme.tokens.spacing.s4)
-                } else {
-                    0.0
-                };
-            if y + height > self.viewport.y1 - EDGE_INSET {
-                break;
-            }
-            let (alpha, slide_dx) = Self::animation_state(n, now, self.reduce_motion, width);
-            if alpha <= 0.0 {
-                y += height + TOAST_GAP;
-                continue;
-            }
-            let card_x0 = x0_rest + slide_dx;
-            let card_rect = Rect::new(card_x0, y, card_x0 + width, y + height);
-            bounds.expand(card_rect.y0, card_rect.y1);
             // The stack owns what to show and click routing; the toast
             // widget owns the card's look and hands back the close rect.
             let mut card = ToastCard::new(&n.title, n.severity.toast_kind())
                 .body(if n.show_preview { &n.body } else { "" })
                 .caption(n.app_name.as_deref().unwrap_or(""))
-                .alpha(alpha)
                 .closable(true)
                 .actionable(!n.actions.is_empty());
             if let Some((_, label)) = actions.first() {
@@ -279,6 +260,21 @@ impl NotificationStack {
                 card.secondary_action = card.primary_action;
                 card.primary_action = label;
             }
+            let height =
+                ui::widget::toast::minimum_card_height(ctx.text_renderer, ctx.theme, &card)
+                    .max(TOAST_HEIGHT);
+            if y + height > self.viewport.y1 - EDGE_INSET {
+                break;
+            }
+            let (alpha, slide_dx) = Self::animation_state(n, now, self.reduce_motion, width);
+            if alpha <= 0.0 {
+                y += height + TOAST_GAP;
+                continue;
+            }
+            card.alpha = alpha;
+            let card_x0 = x0_rest + slide_dx;
+            let card_rect = Rect::new(card_x0, y, card_x0 + width, y + height);
+            bounds.expand(card_rect.y0, card_rect.y1);
             let hit = ui::widget::toast::paint_card(
                 ctx.scene,
                 ctx.transform,
@@ -652,6 +648,52 @@ pub(super) mod tests {
             );
             assert!(stack.action_rects.is_empty());
             assert!(!stack.click_at(&host, actions[1].2.center()));
+        }
+    }
+
+    #[test]
+    fn scaled_attributed_banner_reserves_text_above_real_action_controls() {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
+            let host = TestHost::default();
+            host.actions.replace(vec![
+                ("dismiss".into(), "Dismiss".into()),
+                ("snooze".into(), "Snooze".into()),
+            ]);
+            host.push(
+                Notification::new("Meeting begins", "Join your workspace")
+                    .with_app_name("Calendar"),
+            );
+            let mut stack = NotificationStack::new();
+            stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 600.0));
+            let mut text = TextRenderer::new();
+            stack.draw(
+                &host,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+            );
+            let card = stack.hit_rects[0].1;
+            let actions_top = stack
+                .action_rects
+                .iter()
+                .map(|(_, _, rect)| rect.y0)
+                .reduce(f64::min)
+                .expect("real shared actions");
+            let content_height: f64 = [
+                ("Calendar", theme.text(TextRole::Caption)),
+                ("Meeting begins", theme.text(TextRole::Label).strong()),
+                ("Join your workspace", theme.text(TextRole::Caption)),
+            ]
+            .into_iter()
+            .map(|(label, style)| f64::from(text.measure_style(label, None, &style).1))
+            .sum();
+            assert!(
+                actions_top - card.y0 >= content_height + 2.0 * f64::from(theme.tokens.spacing.s2),
+                "painted text requires {content_height}px plus padding before actions at {}px",
+                actions_top - card.y0
+            );
         }
     }
 
