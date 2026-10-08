@@ -87,7 +87,7 @@ def measured_cpu(stderr, successful):
     return receipt['user'] + receipt['system']
 
 
-def observe(command, cpus, executable_identity=None, max_threads=None):
+def observe(command, cpus, executable_identity=None, max_threads=None, capture_lines=False):
     if max_threads is not None and (type(max_threads) is not int or max_threads < 1):
         raise ValueError('positive integer native thread limit required')
     def limits():
@@ -98,6 +98,7 @@ def observe(command, cpus, executable_identity=None, max_threads=None):
     child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              preexec_fn=limits, start_new_session=True)
     buffers = {'stdout': bytearray(), 'stderr': bytearray()}
+    stdout_events, line_tail = [], bytearray()
     peaks, guarded, sampled_cpu = {}, None, 0
     try:
         with selectors.DefaultSelector() as selector:
@@ -132,6 +133,17 @@ def observe(command, cpus, executable_identity=None, max_threads=None):
                         selector.unregister(key.fileobj)
                     else:
                         buffers[key.data].extend(data)
+                        if capture_lines and key.data == 'stdout':
+                            line_tail.extend(data)
+                            while b'\n' in line_tail:
+                                if len(stdout_events) >= 4096:
+                                    guarded = 'bounded_output'
+                                    line_tail.clear()
+                                    break
+                                line, _, remaining = line_tail.partition(b'\n')
+                                line_tail = bytearray(remaining)
+                                stdout_events.append({'wall_seconds': time.monotonic()-start,
+                                                      'line': line.decode()})
                         if len(buffers[key.data]) > 1024 * 1024:
                             guarded = 'bounded_output'
                 if child.poll() is not None and not selector.get_map():
@@ -140,15 +152,19 @@ def observe(command, cpus, executable_identity=None, max_threads=None):
         if not all(key in peaks for key in ('VmPeak', 'VmSize', 'VmHWM', 'VmRSS', 'Threads')):
             raise RuntimeError('cannot observe actual decoder process memory')
         cpu = measured_cpu(buffers['stderr'].decode(), code == 0)
-        return dict(exit=code, guarded=guarded, memory_peak=peaks,
+        result = dict(exit=code, guarded=guarded, memory_peak=peaks,
                     cpu_seconds=cpu, sampled_cpu_lower_bound_seconds=sampled_cpu,
                     wall_seconds=time.monotonic()-start,
                     stdout=buffers['stdout'].decode(), stderr=buffers['stderr'].decode())
+        if capture_lines:
+            result['stdout_events'] = stdout_events
+        return result
     finally:
         if child.poll() is None:
             os.killpg(child.pid, signal.SIGKILL)
         child.wait(timeout=5)
-        child.stdout.close(); child.stderr.close()
+        child.stdout.close()
+        child.stderr.close()
 
 
 def main():

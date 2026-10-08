@@ -289,9 +289,15 @@ timings do not measure microphone or source-paced first-word latency.
 the unchanged transient-service envelope. It reads only four receipt-checked
 runtime/model/licence files and one pinned public fixture in its native namespace.
 Executable-inode tracking observes the owned decoder even when it changes its
-thread name; missing process observation still fails. A direct static-library
-C API adapter failed to link because the builder lacks the archive's libc++
-closure. The C API, cancellation, resident repeats, silence/noise, dictionary,
+thread name; missing process observation still fails. The direct static-library
+C API adapter initially failed to link, then linked using a privately verified
+runtime closure. It exceeded the unchanged native thread budget. The subsequent
+[release and paced-input review](dictation-whistle-paced-review.md) distinguishes
+that archive from the official wrapper-selected 3.2.0 shared runtime, which also
+reached 12 threads during initialization before audio submission. Six bounded
+source-paced CLI controls located duplicate decoding overhead, incorrect early
+hypotheses and incomplete name accuracy; they do not qualify resident streaming.
+The C API, cancellation, resident repeats, silence/noise, personal dictionary,
 physical devices and production trust remain unqualified.
 
 ## Release integration dependency

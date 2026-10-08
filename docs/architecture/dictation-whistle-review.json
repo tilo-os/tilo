@@ -69,9 +69,10 @@
       "Streaming returns committed words and a pending tail; stop flushes the tail and the next process call begins a new stream.",
       "The header exposes neither asynchronous cancellation nor a thread-count setter; retain owned-process confinement and cancellation/reaping."
     ],
-    "native_execution": "pinned x86-64 CLI completed four exposed public development cases; see dictation-whistle-cli-qualification.json. Direct C API adapter did not link; no production admission.",
+    "native_execution": "Pinned CLI completed four exposed complete-file cases and six separately source-paced prefix trials. Direct C API initially failed to link; it subsequently linked with a privately verified runtime closure, then failed native thread admission. The current wrapper-selected 3.2.0 shared runtime also fails the same guard. See dictation-whistle-native-review.json and dictation-whistle-paced-review.json; no production admission.",
     "native_telemetry": "not established by wrapper or header inspection",
-    "physical_devices": "not run"
+    "physical_devices": "not run",
+    "current_shared_runtime_comparison": "dictation-whistle-paced-review.json"
   },
   "wrapper": {
     "url": "https://github.com/cactus-compute/needle/tree/af2654dffa4987f7e2cbbacdf59c2f854fd18302",
@@ -80,7 +81,9 @@
     "native_C_CXX_Rust_source_files_in_this_tree": 0,
     "file_sha256": {
       "needle/agent/whistle.py": "51dbc1edcf7b5757379f555172f360b7c61891f9e82d54b374faa1f969cef055",
-      "needle/_telemetry.py": "28cc691445c91700b4b894ecc797085e9985d0bd7c113da2539fce74fd0612cc"
+      "needle/_telemetry.py": "28cc691445c91700b4b894ecc797085e9985d0bd7c113da2539fce74fd0612cc",
+      "needle/__init__.py": "ac165eeaae8a896ac1f6ac0d8a430dbce781beb938c55fa14daafa57e7b4928d",
+      "needle/agent/fetch.py": "eff3ac9ab72cfa4c798b9eb1d0eb3da271dbf658e66da75ce96b94a43a50d9e6"
     },
     "observed_behavior": [
       "Automatic runtime/model fetch and a whole-weight read are upstream wrapper behavior, not Tilo catalogue authority.",
@@ -88,9 +91,12 @@
       "Tracking defaults enabled, creates an installation identifier and sends event/version/platform metadata; source states prompts and outputs are excluded.",
       "Disable tracking in confined review and deny network independently; do not import this wrapper into the live compositor."
     ],
-    "source_scope": "No native engine sources were present in this inspected GitHub tree. This does not establish whether sources exist elsewhere."
+    "source_scope": "No native engine sources were present in this inspected GitHub tree. This does not establish whether sources exist elsewhere.",
+    "package_version": "3.1.0 (pyproject inspected, not installed or imported)",
+    "selected_engine_version": "3.2.0 for _load_cdll(3) used by Whistle"
   },
   "remaining_qualification": [
+    "Supported native thread control: both exact static archive and current wrapper-selected shared library start 12 threads against the unchanged two-thread budget.",
     "Audited native provenance and complete runtime closure under existing trust policy.",
     "Existing speech worker actor/protocol, signed catalogue and licence acceptance; no alternate downloader or access authority.",
     "Original-field identity, explicit supported-language validation, bounded drafts, atomic final insertion and undo.",
