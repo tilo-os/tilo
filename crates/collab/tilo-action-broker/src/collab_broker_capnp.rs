@@ -23,6 +23,8 @@ use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
 #[cfg(test)]
 mod app_settings_tests;
+#[cfg(test)]
+mod authority_sample_tests;
 mod canonical_route;
 mod committed_document;
 mod durable_local_invocation;
@@ -100,7 +102,9 @@ use crate::collab_outbound::PeerPublisher;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
 use collab_types::foreign_device::{cap_applies, foreign_device_role, on_foreign_device};
 use collab_types::{Principal, Role as CapRole};
-use tilo_desktop_model::{DesktopTree, WorkspaceTaskStatus};
+#[cfg(test)]
+use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::WorkspaceTaskStatus;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AuthorizedDocumentRoute {
@@ -727,14 +731,17 @@ fn admit_verified_join(
     verified: VerifiedJoinIdentity,
 ) -> Result<AdmittedJoinIdentity, String> {
     admit_verified_join_at(
-        tree,
+        crate::services::room_in(tree, &route.cluster_id),
         route,
         verified,
         tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
     )
 }
+/// Admit a verified identity into `route`'s room. `workspace` is the
+/// committed workspace of exactly `route.cluster_id` from one authority
+/// sample (`None` when this host has none).
 fn admit_verified_join_at(
-    tree: &DesktopTree,
+    workspace: Option<&tilo_desktop_model::Workspace>,
     route: &CrdtRoute,
     verified: VerifiedJoinIdentity,
     now: u64,
@@ -761,10 +768,7 @@ fn admit_verified_join_at(
             agent_id: None,
         });
     }
-    let workspace = tree
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.room.to_string() == route.cluster_id)
+    let workspace = workspace
         .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
     let mut role = workspace
         .role_of_at(&principal_id, now)
@@ -795,15 +799,18 @@ fn admit_agent_delegation(
     agent_id: &str,
 ) -> Result<(), String> {
     admit_agent_delegation_at(
-        tree,
+        crate::services::room_in(tree, &route.cluster_id),
         route,
         admitted,
         agent_id,
         tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
     )
 }
+/// Delegate an admitted administrator's session to `agent_id`. `workspace`
+/// is the committed workspace of exactly `route.cluster_id` from the same
+/// authority sample that admitted the person.
 fn admit_agent_delegation_at(
-    tree: &DesktopTree,
+    workspace: Option<&tilo_desktop_model::Workspace>,
     route: &CrdtRoute,
     admitted: &mut AdmittedJoinIdentity,
     agent_id: &str,
@@ -813,11 +820,8 @@ fn admit_agent_delegation_at(
         agent: agent_id.to_owned(),
     }
     .validate()?;
-    let workspace = tree
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.room.to_string() == route.cluster_id)
-        .ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
+    let workspace =
+        workspace.ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
     if admitted.verified.capped
         || (workspace.owner.as_ref() != Some(&admitted.principal_id)
             && workspace.decide_at(
@@ -963,12 +967,9 @@ fn verify_join_identity_with_host_scope(
     };
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
-    let mut admitted = admit_verified_join_at(
-        &membership.snapshot()?,
-        route,
-        verified,
-        now_ns / 1_000_000_000,
-    )?;
+    let mut admitted = membership.decide_in_room(&route.cluster_id, |workspace| {
+        admit_verified_join_at(workspace, route, verified, now_ns / 1_000_000_000)
+    })??;
     admitted.certificate = Some(cert);
     admitted.host_scope = host_scope.cloned();
     Ok(admitted)
@@ -3088,17 +3089,14 @@ impl CapnpBrokerState {
         let now = self.policy_now_ns()?;
         tilo_user_identity::verify_device_cert_at(certificate, now)
             .map_err(|_| "worker certificate rejected")?;
-        let tree = self
-            .membership
+        let verified =
+            VerifiedJoinIdentity::of(certificate, self.capped_in(&route.cluster_id, certificate));
+        self.membership
             .as_ref()
             .ok_or("current workspace authority unavailable")?
-            .snapshot()?;
-        admit_verified_join_at(
-            &tree,
-            &route,
-            VerifiedJoinIdentity::of(certificate, self.capped_in(&route.cluster_id, certificate)),
-            now / 1_000_000_000,
-        )?;
+            .decide_in_room(&route.cluster_id, |workspace| {
+                admit_verified_join_at(workspace, &route, verified, now / 1_000_000_000)
+            })??;
         let mut workers = self
             .workers
             .lock()
@@ -3284,11 +3282,13 @@ impl CapnpBrokerState {
 
     fn owner_health(&self) -> Result<(), String> {
         if self.durable_owner_required {
+            // A probe: the committed authority must be readable; nothing is copied.
             self.membership
                 .as_ref()
                 .ok_or("current workspace authority unavailable")?
-                .snapshot()?;
+                .with_tree(&mut |_| {})?;
         }
+
         if let Some(reason) = self
             .owner_commit_failure
             .lock()
@@ -4297,56 +4297,51 @@ impl CapnpBrokerState {
         Ok(Some(token))
     }
 
-    /// Check the descriptor returned by an untrusted app capability against
-    /// the current workspace authority, not the authority that existed when a
-    /// cursor was issued. Resource-only rows are rejected by callers because
-    /// they carry no contract from which policy can be evaluated.
-    fn permits_directory_action(
+    /// Decide validated directory rows against the current workspace
+    /// authority, not the authority that existed when a cursor was issued.
+    /// Every row of one page is decided on one committed sample, whatever
+    /// the page's length; the borrow ends before the reply is serialized.
+    fn permits_directory_actions(
         &self,
         cluster_id: &str,
         actor: &BrokerActor,
         app_id: &str,
-        resource: &str,
-        action: &str,
-        contract: &tilo_actions::ActionContract,
-    ) -> Result<bool, capnp::Error> {
+        questions: &[DirectoryQuestion<'_>],
+    ) -> Result<Vec<bool>, capnp::Error> {
         let now = self.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
-        let Some(verb) = (match contract.permission {
-            tilo_actions::PermissionRequirement::None => None,
-            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
-        }) else {
-            return Ok(true);
-        };
+        if questions.iter().all(|question| question.verb.is_none()) {
+            return Ok(vec![true; questions.len()]);
+        }
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("the action broker has no workspace authority".into())
         })?;
-        let tree = membership.snapshot().map_err(capnp::Error::failed)?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == cluster_id)
-            .ok_or_else(|| {
-                capnp::Error::failed("the application workspace is no longer hosted".into())
-            })?;
-        let caller = actor.policy_in(workspace, now);
-        let allowed = workspace.decide_at(
-            &caller,
-            &ResourceRef::Action {
-                app: app_id.to_string(),
-                resource: resource.to_string(),
-                action: action.to_string(),
-            },
-            verb,
-            now,
-        ) == CapDecision::Allow;
-        // The authorization result is independent of the membership guard;
-        // release it before serializing the directory reply.
-        drop(tree);
-        Ok(allowed)
+        membership
+            .decide_in_room(cluster_id, |workspace| {
+                let workspace = workspace
+                    .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+                let caller = actor.policy_in(workspace, now);
+                Ok::<Vec<bool>, String>(
+                    questions
+                        .iter()
+                        .map(|question| {
+                            question.verb.is_none_or(|verb| {
+                                workspace.decide_at(
+                                    &caller,
+                                    &ResourceRef::Action {
+                                        app: app_id.to_string(),
+                                        resource: question.resource.to_string(),
+                                        action: question.action.to_string(),
+                                    },
+                                    verb,
+                                    now,
+                                ) == CapDecision::Allow
+                            })
+                        })
+                        .collect(),
+                )
+            })
+            .and_then(std::convert::identity)
+            .map_err(capnp::Error::failed)
     }
 
     #[allow(
@@ -4373,15 +4368,6 @@ impl CapnpBrokerState {
             .membership
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
-        let tree = membership.snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == cluster_id)
-            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?
-            .clone();
-        drop(tree);
-        let caller = actor.policy_in(&workspace, now);
         let published = self.published_surfaces_for_scope(scope);
         let live_apps = self
             .surfaces
@@ -4394,40 +4380,65 @@ impl CapnpBrokerState {
                     .collect::<std::collections::HashSet<_>>()
             })
             .unwrap_or_default();
+        let applications = self
+            .services
+            .launcher
+            .as_ref()
+            .map(|service| service.applications())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|app| {
+                scope.is_none_or(|scope| {
+                    app.package_id == scope.app_id
+                        && scope.record_id.is_empty()
+                        && scope.resource == format!("app.{}", app.package_id)
+                        && scope.action == "open"
+                })
+            })
+            .filter(|app| !live_apps.contains(&app.package_id))
+            .collect::<Vec<_>>();
+        // One policy sample decides every row; serialization runs after the
+        // committed authority is released.
+        let (published, applications) = membership.decide_in_room(cluster_id, |workspace| {
+            let workspace = workspace
+                .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+            let caller = actor.policy_in(workspace, now);
+            let allows = |resource: &ResourceRef, verb: Verb| {
+                workspace.decide_at(&caller, resource, verb, now) == CapDecision::Allow
+            };
+            let published = published
+                .into_iter()
+                .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
+                .map(|mut surface| {
+                    surface.actions.retain(|action| {
+                        scope.is_none_or(|scope| {
+                            action.resource == scope.resource && action.action == scope.action
+                        }) && permission_verb(action.contract.permission).is_none_or(|verb| {
+                            allows(
+                                &ResourceRef::Action {
+                                    app: surface.app_id.clone(),
+                                    resource: action.resource.clone(),
+                                    action: action.action.clone(),
+                                },
+                                verb,
+                            )
+                        })
+                    });
+                    surface
+                })
+                .collect::<Vec<_>>();
+            let applications = applications
+                .into_iter()
+                .filter(|app| allows(&ResourceRef::App(app.package_id.clone()), Verb::Write))
+                .collect::<Vec<_>>();
+            Ok::<_, String>((published, applications))
+        })??;
         let mut surfaces = published
             .into_iter()
-            .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
             .filter_map(|surface| {
                 let actions = surface
                     .actions
                     .into_iter()
-                    .filter(|action| {
-                        scope.is_none_or(|scope| {
-                            action.resource == scope.resource && action.action == scope.action
-                        })
-                    })
-                    .filter(|action| {
-                        let Some(verb) = (match action.contract.permission {
-                            tilo_actions::PermissionRequirement::None => None,
-                            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-                            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-                            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-                            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-                            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
-                        }) else {
-                            return true;
-                        };
-                        workspace.decide_at(
-                            &caller,
-                            &ResourceRef::Action {
-                                app: surface.app_id.clone(),
-                                resource: action.resource.clone(),
-                                action: action.action.clone(),
-                            },
-                            verb,
-                            now,
-                        ) == CapDecision::Allow
-                    })
                     .map(|action| {
                         let input = match action.input {
                             PublishedInput::None => serde_json::json!({"kind": "none"}),
@@ -4468,31 +4479,7 @@ impl CapnpBrokerState {
                 })
             })
             .collect::<Vec<_>>();
-        for app in self
-            .services
-            .launcher
-            .as_ref()
-            .map(|service| service.applications())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|app| {
-                scope.is_none_or(|scope| {
-                    app.package_id == scope.app_id
-                        && scope.record_id.is_empty()
-                        && scope.resource == format!("app.{}", app.package_id)
-                        && scope.action == "open"
-                })
-            })
-            .filter(|app| !live_apps.contains(&app.package_id))
-            .filter(|app| {
-                workspace.decide_at(
-                    &caller,
-                    &ResourceRef::App(app.package_id.clone()),
-                    Verb::Write,
-                    now,
-                ) == CapDecision::Allow
-            })
-        {
+        for app in applications {
             let package_id = app.package_id;
             let display_name = app.display_name;
             surfaces.push(serde_json::json!({
@@ -4919,37 +4906,38 @@ impl CapnpBrokerState {
         {
             return Err(format!("the application action is unavailable: {reason}"));
         }
-        self.authorize_invocation_permission(
-            &offered.0.route.cluster_id,
-            &offered.0.app_id,
-            &offered.1.resource,
-            &offered.1.action,
-            offered.1.contract.permission,
-            actor,
-            now,
-        )?;
-        if !actor.is_agent {
-            // A person is authorized on the route record (Artifact) too,
-            // not only on (app, action).
-            let tree = self
-                .membership
-                .as_ref()
-                .ok_or("workspace authority unavailable")?
-                .snapshot()?;
-            let workspace = tree
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room.to_string() == offered.0.route.cluster_id)
-                .ok_or("workspace no longer hosted")?;
-            crate::published_authorization::authorize_person_published(
-                workspace,
-                now,
-                &actor.id,
-                actor.capped,
-                &offered.0,
-                &offered.1,
-            )?;
-        }
+        // Every check of this admission is decided on one committed sample,
+        // so a policy change cannot land between the action check and the
+        // record check.
+        self.membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_room(&offered.0.route.cluster_id, |workspace| {
+                let workspace = workspace.ok_or("workspace no longer hosted")?;
+                durable_local_invocation::authorize_action_in(
+                    workspace,
+                    &offered.0.app_id,
+                    &offered.1.resource,
+                    &offered.1.action,
+                    offered.1.contract.permission,
+                    actor,
+                    now,
+                )?;
+                if !actor.is_agent {
+                    // A person is authorized on the route record (Artifact)
+                    // too, not only on (app, action).
+                    crate::published_authorization::authorize_person_published(
+                        workspace,
+                        now,
+                        &actor.id,
+                        actor.capped,
+                        &offered.0,
+                        &offered.1,
+                    )?;
+                }
+                Ok::<(), String>(())
+            })??;
+
         if (durable.is_some() || execution.is_some())
             && !self
                 .stable_invocation_subscribers
@@ -5416,25 +5404,17 @@ impl CapnpBrokerState {
             .membership
             .as_ref()
             .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
-        let task_snapshot = {
-            let tree = membership.snapshot()?;
-            let lookup = match tree
-                .workspaces
+        // The cloned task is the complete copy needed below; workspace
+        // authority is never retained across subscriber work.
+        let task = membership.decide_in_room(cluster_id, |workspace| match workspace {
+            Some(workspace) => workspace
+                .tasks
                 .iter()
-                .find(|workspace| workspace.room.to_string() == cluster_id)
-            {
-                Some(workspace) => match workspace.tasks.iter().find(|task| task.id == task_id) {
-                    Some(task) => Ok((workspace.id, task.clone())),
-                    None => Err("the task no longer exists".to_string()),
-                },
-                None => Err("the task workspace is no longer hosted".to_string()),
-            };
-            // The copied id and cloned task are the complete snapshot needed
-            // below; never retain workspace authority across subscriber work.
-            drop(tree);
-            lookup
-        };
-        let (_workspace_id, task) = task_snapshot?;
+                .find(|task| task.id == task_id)
+                .cloned()
+                .ok_or_else(|| "the task no longer exists".to_string()),
+            None => Err("the task workspace is no longer hosted".to_string()),
+        })??;
         let agent_id = task
             .assigned_agent
             .clone()
@@ -5545,19 +5525,15 @@ impl CapnpBrokerState {
             .membership
             .as_ref()
             .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
-        let tree = membership.snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == run.cluster_id)
-            .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
-        let cancelled = workspace
-            .tasks
-            .iter()
-            .find(|task| task.id == run.task_id)
-            .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled);
-        drop(tree);
-        Ok(cancelled)
+        membership.decide_in_room(&run.cluster_id, |workspace| {
+            let workspace =
+                workspace.ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
+            Ok(workspace
+                .tasks
+                .iter()
+                .find(|task| task.id == run.task_id)
+                .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled))
+        })?
     }
 
     fn record_task_run_update(
@@ -5859,39 +5835,41 @@ impl CapnpBrokerState {
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
-        let mut current = admit_verified_join_at(
-            &membership.snapshot().map_err(capnp::Error::failed)?,
-            route,
-            admitted.verified.clone(),
-            now / 1_000_000_000,
-        )
-        .map_err(|error| {
-            capnp::Error::failed(format!(
-                "certified collaboration session is no longer admitted: {error}"
-            ))
-        })?;
-        current.certificate.clone_from(&admitted.certificate);
-        current.host_scope.clone_from(&admitted.host_scope);
-        current
-            .worker_registration
-            .clone_from(&admitted.worker_registration);
-        if let Some(agent_id) = &admitted.agent_id {
-            admit_agent_delegation_at(
-                &membership.snapshot().map_err(capnp::Error::failed)?,
-                route,
-                &mut current,
-                agent_id,
-                now / 1_000_000_000,
-            )
-            .map_err(|error| {
-                capnp::Error::failed(format!(
-                    "certified agent session is no longer admitted: {error}"
-                ))
-            })?;
-        } else {
-            current.display_handle.clone_from(&admitted.display_handle);
-        }
-        Ok(current)
+        // The person and any delegated agent are revalidated on one sample.
+        membership
+            .decide_in_room(&route.cluster_id, |workspace| {
+                let mut current = admit_verified_join_at(
+                    workspace,
+                    route,
+                    admitted.verified.clone(),
+                    now / 1_000_000_000,
+                )
+                .map_err(|error| {
+                    format!("certified collaboration session is no longer admitted: {error}")
+                })?;
+                current.certificate.clone_from(&admitted.certificate);
+                current.host_scope.clone_from(&admitted.host_scope);
+                current
+                    .worker_registration
+                    .clone_from(&admitted.worker_registration);
+                if let Some(agent_id) = &admitted.agent_id {
+                    admit_agent_delegation_at(
+                        workspace,
+                        route,
+                        &mut current,
+                        agent_id,
+                        now / 1_000_000_000,
+                    )
+                    .map_err(|error| {
+                        format!("certified agent session is no longer admitted: {error}")
+                    })?;
+                } else {
+                    current.display_handle.clone_from(&admitted.display_handle);
+                }
+                Ok::<_, String>(current)
+            })
+            .and_then(std::convert::identity)
+            .map_err(capnp::Error::failed)
     }
 
     /// Bind a certified operation to the route, typed document protocol and
@@ -5959,37 +5937,38 @@ impl CapnpBrokerState {
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
-        let tree = membership.snapshot().map_err(capnp::Error::failed)?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == route.cluster_id)
-            .ok_or_else(|| {
-                capnp::Error::failed("certified document workspace is no longer available".into())
-            })?;
-        let mut role = match &admitted.agent_id {
-            Some(agent) => workspace.role_of_agent_at(agent, now),
-            None => workspace.role_of_at(&admitted.principal_id, now),
-        }
-        .ok_or_else(|| capnp::Error::failed("current document membership expired".into()))?;
-        if admitted.verified.capped {
-            role = foreign_device_role(role, &workspace.capabilities, now);
-        }
-        let mut current = admitted.clone();
-        current.role = role;
-        let actor = current
-            .policy_actor(workspace, now)
-            .with_principal(Principal::App(route.app_id.clone()));
-        let resource = ResourceRef::Artifact {
-            app: Some(route.app_id.clone()),
-            kind: ArtifactKind::Note,
-            instance: envelope.artifact,
-        };
-        let required = collab_types::caps::verb_for_opclass(envelope.op_class);
-        let decision = workspace.decide_at(&actor, &resource, required, now);
-        let role_allows = role_permits(role, ArtifactKind::Note, envelope.op_class);
-        drop(tree);
-        if decision != CapDecision::Allow || !role_allows {
+        let allowed = membership
+            .decide_in_room(&route.cluster_id, |workspace| {
+                let workspace = workspace.ok_or_else(|| {
+                    "certified document workspace is no longer available".to_string()
+                })?;
+                let mut role = match &admitted.agent_id {
+                    Some(agent) => workspace.role_of_agent_at(agent, now),
+                    None => workspace.role_of_at(&admitted.principal_id, now),
+                }
+                .ok_or_else(|| "current document membership expired".to_string())?;
+                if admitted.verified.capped {
+                    role = foreign_device_role(role, &workspace.capabilities, now);
+                }
+                let mut current = admitted.clone();
+                current.role = role;
+                let actor = current
+                    .policy_actor(workspace, now)
+                    .with_principal(Principal::App(route.app_id.clone()));
+                let resource = ResourceRef::Artifact {
+                    app: Some(route.app_id.clone()),
+                    kind: ArtifactKind::Note,
+                    instance: envelope.artifact,
+                };
+                let required = collab_types::caps::verb_for_opclass(envelope.op_class);
+                Ok::<bool, String>(
+                    workspace.decide_at(&actor, &resource, required, now) == CapDecision::Allow
+                        && role_permits(role, ArtifactKind::Note, envelope.op_class),
+                )
+            })
+            .and_then(std::convert::identity)
+            .map_err(capnp::Error::failed)?;
+        if !allowed {
             return Err(capnp::Error::failed(
                 "current workspace capability denies this document action".into(),
             ));
@@ -6378,20 +6357,32 @@ impl CapnpBrokerState {
         admitted: &AdmittedJoinIdentity,
     ) -> Result<Vec<ui::collaboration::Collaborator>, String> {
         let now = self.policy_now_ns()? / 1_000_000_000;
-        let tree = self
+        let (agents, people) = self
             .membership
             .as_ref()
             .ok_or("native context has no membership authority")?
-            .snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == route.cluster_id)
-            .ok_or("native context workspace is unavailable")?;
-        let mut agents = workspace.agent_members_in_room_at(&route.cluster_id, now);
-        agents.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut people = workspace.roster_in_room_at(&route.cluster_id, now);
-        people.sort_by(|left, right| left.0.cmp(&right.0));
+            .decide_in_room(&route.cluster_id, |workspace| {
+                let workspace = workspace.ok_or("native context workspace is unavailable")?;
+                let mut agents = workspace.agent_members_in_room_at(&route.cluster_id, now);
+                agents.sort_by(|left, right| left.0.cmp(&right.0));
+                let mut people = workspace.roster_in_room_at(&route.cluster_id, now);
+                people.sort_by(|left, right| left.0.cmp(&right.0));
+                // Presence may supply a label, but only owner-backed
+                // membership supplies the identity. An offline member
+                // remains a member.
+                let people = people
+                    .into_iter()
+                    .map(|(person, _)| {
+                        let name = workspace
+                            .collaborators
+                            .iter()
+                            .find(|row| row.id == person)
+                            .map_or_else(|| person.clone(), |row| row.name.clone());
+                        (person, name)
+                    })
+                    .collect::<Vec<_>>();
+                Ok::<_, &str>((agents, people))
+            })??;
         let mut collaborators =
             Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));
         if admitted.agent_id.is_none() {
@@ -6406,17 +6397,10 @@ impl CapnpBrokerState {
                 is_self: true,
             });
         }
-        for (person, _) in people {
+        for (person, name) in people {
             if admitted.agent_id.is_none() && person == admitted.principal_id {
                 continue;
             }
-            // Presence may supply a label, but only owner-backed membership
-            // supplies the identity. An offline member remains a member.
-            let name = workspace
-                .collaborators
-                .iter()
-                .find(|row| row.id == person)
-                .map_or_else(|| person.clone(), |row| row.name.clone());
             collaborators.push(ui::collaboration::Collaborator {
                 id: person,
                 name,
@@ -6784,16 +6768,23 @@ impl collab_service::Server for CapnpCollabService {
                     let membership = state.membership.as_ref().ok_or_else(|| {
                         capnp::Error::failed("agent session has no workspace authority".into())
                     })?;
-                    admit_agent_delegation_at(
-                        &membership.snapshot().map_err(capnp::Error::failed)?,
-                        &route,
-                        &mut verified_identity,
-                        &participant_handle,
-                        state.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000,
-                    )
-                    .map_err(|error| {
-                        capnp::Error::failed(format!("agent collaboration join rejected: {error}"))
-                    })?;
+                    let now = state.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
+                    membership
+                        .decide_in_room(&route.cluster_id, |workspace| {
+                            admit_agent_delegation_at(
+                                workspace,
+                                &route,
+                                &mut verified_identity,
+                                &participant_handle,
+                                now,
+                            )
+                        })
+                        .and_then(std::convert::identity)
+                        .map_err(|error| {
+                            capnp::Error::failed(format!(
+                                "agent collaboration join rejected: {error}"
+                            ))
+                        })?;
                 }
                 other => {
                     return Err(capnp::Error::failed(format!(
@@ -9410,36 +9401,29 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "the action broker has no workspace authority".into(),
             ));
         };
-        let workspace = {
-            let tree = match membership.snapshot() {
-                Ok(tree) => tree,
-                Err(error) => return Promise::err(capnp::Error::failed(error)),
-            };
-            let Some(workspace) = tree
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room.to_string() == self.route().cluster_id)
-            else {
-                return Promise::err(capnp::Error::failed(
-                    "the application workspace is no longer hosted".into(),
-                ));
-            };
-            let workspace = workspace.clone();
-            drop(tree);
-            let now = match self.state.policy_now_ns() {
-                Ok(now) => now / 1_000_000_000,
-                Err(error) => return Promise::err(capnp::Error::failed(error)),
-            };
-            let caller = actor.policy_in(&workspace, now);
-            if workspace.decide_at(&caller, &ResourceRef::App(app_id.clone()), Verb::Write, now)
-                != CapDecision::Allow
-            {
-                return Promise::err(capnp::Error::failed(
-                    "the caller is not allowed to launch that application".into(),
-                ));
-            }
-            workspace
+        let now = match self.state.policy_now_ns() {
+            Ok(now) => now / 1_000_000_000,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
+        // The launcher keeps the one admitted room's workspace past the
+        // read, so only that workspace is copied, after the check passes.
+        let workspace = match membership
+            .decide_in_room(&self.route().cluster_id, |workspace| {
+                let workspace = workspace.ok_or("the application workspace is no longer hosted")?;
+                let caller = actor.policy_in(workspace, now);
+                if workspace.decide_at(&caller, &ResourceRef::App(app_id.clone()), Verb::Write, now)
+                    != CapDecision::Allow
+                {
+                    return Err("the caller is not allowed to launch that application");
+                }
+                Ok(workspace.clone())
+            })
+            .and_then(|decided| decided.map_err(str::to_owned))
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
         let now = match self.state.policy_now_ns() {
             Ok(now) => now / 1_000_000_000,
@@ -9640,10 +9624,6 @@ impl channel_handle::Server for CapnpChannelHandle {
 /// apply current authority. `Ok(false)` means a structurally valid row is
 /// simply not visible to this actor; it must not suppress permitted
 /// siblings on the same source page.
-#[allow(
-    clippy::too_many_lines,
-    reason = "directory row authorization validates every capability-bearing field before the result reaches shell search"
-)]
 fn permits_directory_row(
     state: &CapnpBrokerState,
     cluster_id: &str,
@@ -9651,6 +9631,48 @@ fn permits_directory_row(
     app_id: &str,
     row: &runtime_collab::ActionDirectoryRow,
 ) -> Result<bool, capnp::Error> {
+    let question = directory_row_question(row)?;
+    Ok(state
+        .permits_directory_actions(cluster_id, actor, app_id, &[question])?
+        .first()
+        .copied()
+        .unwrap_or(false))
+}
+
+/// What current authority must decide for one directory row: the action
+/// whose contract governs the row and the verb that contract requires
+/// (`None`: the contract requires none).
+struct DirectoryQuestion<'a> {
+    resource: &'a str,
+    action: &'a str,
+    verb: Option<Verb>,
+}
+
+impl<'a> DirectoryQuestion<'a> {
+    /// The question the row's decoded contract asks. Resource-only rows
+    /// carry the visibility contract.
+    fn of(
+        resource: &'a str,
+        action: &'a str,
+        contract: &tilo_actions::ActionContract,
+    ) -> Self {
+        Self {
+            resource,
+            action,
+            verb: permission_verb(contract.permission),
+        }
+    }
+}
+
+/// Validate every capability-bearing field of one untrusted directory row
+/// and name the policy question it asks. No authority is read here.
+#[allow(
+    clippy::too_many_lines,
+    reason = "directory row authorization validates every capability-bearing field before the result reaches shell search"
+)]
+fn directory_row_question(
+    row: &runtime_collab::ActionDirectoryRow,
+) -> Result<DirectoryQuestion<'_>, capnp::Error> {
     validate_directory_identifier(
         &row.parent_resource,
         "parent resource",
@@ -9732,14 +9754,11 @@ fn permits_directory_row(
             }
             let published = published_directory_action(row)?;
             validate_resource_view_descriptors(std::slice::from_ref(&published))?;
-            state.permits_directory_action(
-                cluster_id,
-                actor,
-                app_id,
+            Ok(DirectoryQuestion::of(
                 &row.resource,
                 action,
                 &descriptor.contract,
-            )
+            ))
         }
         (None, None) => {
             let Some(visibility) = &row.visibility else {
@@ -9753,14 +9772,11 @@ fn permits_directory_row(
                 DIRECTORY_MAX_IDENTIFIER_BYTES,
                 true,
             )?;
-            state.permits_directory_action(
-                cluster_id,
-                actor,
-                app_id,
+            Ok(DirectoryQuestion::of(
                 &row.resource,
                 &visibility.action,
                 &visibility.contract,
-            )
+            ))
         }
         _ => Err(capnp::Error::failed(
             "directory row mixes resource and action shapes".into(),
@@ -9788,13 +9804,19 @@ fn filter_directory_page(
         .map(published_directory_action)
         .collect::<Result<Vec<_>, _>>()?;
     validate_resource_view_descriptors(&page_actions)?;
-    let mut visible = Vec::with_capacity(page.rows.len());
-    for row in page.rows {
-        if permits_directory_row(state, cluster_id, actor, app_id, &row)? {
-            visible.push(row);
-        }
-    }
-    page.rows = visible;
+    let questions = page
+        .rows
+        .iter()
+        .map(directory_row_question)
+        .collect::<Result<Vec<_>, _>>()?;
+    let allowed = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
+    drop(questions);
+    page.rows = page
+        .rows
+        .into_iter()
+        .zip(allowed)
+        .filter_map(|(row, allowed)| allowed.then_some(row))
+        .collect();
     Ok(page)
 }
 
@@ -15384,16 +15406,23 @@ pub mod tests {
 
     #[cfg(test)]
     impl crate::services::WorkspaceAuthority for CountingCatalogueAuthority {
-        fn snapshot(&self) -> Result<tilo_desktop_model::DesktopTree, String> {
+        /// Every sample (`with_tree`, and `with_room`/`snapshot` through it)
+        /// counts once.
+        fn with_tree(
+            &self,
+            read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+        ) -> Result<(), String> {
             self.calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err("catalogue authority unavailable".into());
             }
-            self.tree
+            let tree = self
+                .tree
                 .lock()
-                .map_err(|_| "catalogue authority unavailable".to_string())
-                .map(|tree| tree.clone())
+                .map_err(|_| "catalogue authority unavailable".to_string())?;
+            read(&tree);
+            Ok(())
         }
     }
 

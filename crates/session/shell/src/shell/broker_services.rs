@@ -267,8 +267,14 @@ async fn record_receipt_elsewhere(
 
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
 impl WorkspaceAuthority for NativeWorkspaceAuthority {
-    fn snapshot(&self) -> Result<tilo_desktop_model::DesktopTree, String> {
-        Ok(self.0.read().desktop.clone())
+    /// Borrows the committed tree under the compositor's read lock for one
+    /// short policy read; nothing is copied.
+    fn with_tree(
+        &self,
+        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+    ) -> Result<(), String> {
+        read(&self.0.read().desktop);
+        Ok(())
     }
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         self.0.read().persist_path.as_ref().map(|path| {
