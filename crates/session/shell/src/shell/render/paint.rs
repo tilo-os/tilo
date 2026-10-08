@@ -2377,6 +2377,25 @@ impl VelloDrmBridge {
         )
     }
 
+    /// The PQ encode pipeline for `format` exists and encodes SDR white at `sdr_white_nits`.
+    fn prepare_hdr_encoder(&mut self, format: wgpu::TextureFormat, sdr_white_nits: f32) {
+        if !self
+            .hdr_encoders
+            .iter()
+            .any(|pipeline| pipeline.format() == format)
+        {
+            self.hdr_encoders
+                .push(HdrEncodePipeline::new(&self.target.device, format));
+        }
+        if let Some(pipeline) = self
+            .hdr_encoders
+            .iter()
+            .find(|pipeline| pipeline.format() == format)
+        {
+            pipeline.set_sdr_white(&self.target.queue, sdr_white_nits);
+        }
+    }
+
     /// Render `scene` into the target currently swapped into `self.target`, then run the
     /// final pass into `output`: a copy for `Bgra8Unorm`, the PQ encode (and the HDR
     /// composite when there are layers) otherwise. Waits for the completion marker.
@@ -2432,22 +2451,13 @@ impl VelloDrmBridge {
         } else {
             damage
         };
-        if hdr
-            && !self
-                .hdr_encoders
-                .iter()
-                .any(|pipeline| pipeline.format() == output.format)
-        {
-            self.hdr_encoders
-                .push(HdrEncodePipeline::new(&self.target.device, output.format));
+        if hdr {
+            self.prepare_hdr_encoder(output.format, sdr_white_nits);
         }
         let encode = self
             .hdr_encoders
             .iter()
             .find(|pipeline| hdr && pipeline.format() == output.format);
-        if let Some(pipeline) = encode {
-            pipeline.set_sdr_white(&self.target.queue, sdr_white_nits);
-        }
         let blitter = &self.bgra_blitter;
         let view = output.view;
         let format = output.format;
@@ -5285,7 +5295,9 @@ mod tests {
                     format: wgpu::TextureFormat::Bgra8Unorm,
                     size: view.size,
                 },
-                Instant::now() + tilo_test_env::hang_bound(),
+                Instant::now()
+                    .checked_add(tilo_test_env::hang_bound())
+                    .expect("the hang bound fits in an Instant"),
                 OutputSignal {
                     sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                     hdr_layers: &[],
@@ -5300,7 +5312,7 @@ mod tests {
             VelloDrmBridge::map_device_readback(&device, &buffer).expect("scanout stand-in maps");
         let mut pixels = Vec::new();
         for row in mapped.chunks(stride as usize).take(height as usize) {
-            pixels.extend_from_slice(&row[..width as usize * 4]);
+            pixels.extend_from_slice(&row[..(width as usize).saturating_mul(4)]);
         }
         drop(mapped);
         buffer.unmap();

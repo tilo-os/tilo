@@ -1611,7 +1611,7 @@ fn paint_scanouts(
             return PaintScanoutSample::default();
         };
         let renderer = RendererIdentity::of(bridge);
-        let mut rendered = DirectFrame::default();
+        let mut render_totals = DirectFrame::default();
         for entry in scanouts.iter_mut() {
             if entry.powered_off {
                 entry.present_by_readback = false;
@@ -1635,7 +1635,7 @@ fn paint_scanouts(
                     sparse,
                 } => {
                     direct.direct_queued |= queued;
-                    rendered.add(render_us, sparse);
+                    render_totals.add(render_us, sparse);
                     entry.readback_current = false;
                 }
                 // The output keeps its current image.
@@ -1643,8 +1643,8 @@ fn paint_scanouts(
                 DirectOutcome::Readback => readback = true,
             }
         }
-        if let Some(window) = phase_window.as_deref_mut() {
-            rendered.record(window);
+        if let Some(window) = phase_window {
+            render_totals.record(window);
         }
         // Only outputs on the direct path keep a retained surface.
         let live: Vec<OutputId> = scanouts
@@ -2016,7 +2016,7 @@ fn present_direct(
             }
         }
         scanout::DirectSubmit::Busy => {
-            if let Some(window) = phase_window.as_deref_mut() {
+            if let Some(window) = phase_window {
                 window.record_direct_drop();
             }
             // The surface is ahead of the image KMS shows: the next frame must not
