@@ -2094,3 +2094,6 @@ upd-policy-unobserved = Das System hat die angeforderte Aktualisierungsrichtlini
 upd-policy-disconnected = Der Dienst für Aktualisierungsrichtlinien antwortet nicht mehr.
 settings-storage-scan-loading = Speicher wird gelesen…
 settings-storage-scan-failed = Speicher konnte nicht gelesen werden: { $error }
+
+settings-storage-cleaning = App-Caches werden entfernt…
+settings-storage-clean-worker-ended = Die Cache-Bereinigung wurde vor Abschluss beendet.

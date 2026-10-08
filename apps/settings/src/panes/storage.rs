@@ -148,6 +148,25 @@ fn read_roots(roots: StorageRoots) -> StorageRead {
     }
 }
 
+trait StorageCleanupSource: Send + Sync {
+    fn clean(&self, preview: CleanupPreview, roots: StorageRoots) -> Result<StorageRead, String>;
+}
+
+struct DeviceStorageCleanup;
+
+impl StorageCleanupSource for DeviceStorageCleanup {
+    fn clean(&self, preview: CleanupPreview, roots: StorageRoots) -> Result<StorageRead, String> {
+        let selected: Vec<usize> = (0..preview.items.len()).collect();
+        desktop_policy::apply_cleanup(&preview, &selected).map_err(|error| error.to_string())?;
+        Ok(read_roots(roots))
+    }
+}
+
+struct CleanupJob {
+    result: std::sync::mpsc::Receiver<Result<StorageRead, String>>,
+    reply: EffectReply,
+}
+
 enum InitialStorageRead {
     Pending(std::sync::mpsc::Receiver<Result<StorageRead, String>>),
     Ready,
@@ -160,6 +179,9 @@ pub struct StorageModel {
     roots: StorageRoots,
     snapshot: StorageSnapshot,
     cleanup: Option<CleanupPreview>,
+    cleanup_source: Arc<dyn StorageCleanupSource>,
+    cleanup_job: Option<CleanupJob>,
+    cleanup_notice: Option<String>,
     sync_snapshot: Option<SyncStorageSnapshot>,
     sync_message: Option<String>,
     sync_busy: bool,
@@ -221,6 +243,9 @@ impl StorageModel {
             roots,
             snapshot,
             cleanup,
+            cleanup_source: Arc::new(DeviceStorageCleanup),
+            cleanup_job: None,
+            cleanup_notice: None,
             sync_snapshot: None,
             sync_message: None,
             sync_busy: false,
@@ -283,6 +308,10 @@ impl StorageModel {
 
     /// Start `effect`; `reply` is told how it ends.
     pub(crate) fn run(&mut self, effect: &StorageEffect, reply: EffectReply) {
+        if matches!(effect, StorageEffect::CleanUpCaches) {
+            self.clean_up_caches(reply);
+            return;
+        }
         let id = effect.id();
         self.replies.wait(id, reply);
         self.changed = true;
@@ -295,7 +324,7 @@ impl StorageModel {
             return;
         }
         match effect {
-            StorageEffect::CleanUpCaches => self.clean_up_caches(),
+            StorageEffect::CleanUpCaches => {}
             StorageEffect::FreeSyncedFiles => self.free_synced_files(),
             StorageEffect::OpenDisks => {
                 let result = os_actions::open_tool(ToolIntent::Disks {
@@ -314,35 +343,79 @@ impl StorageModel {
         }
     }
 
-    fn clean_up_caches(&mut self) {
-        if let Some(preview) = &self.cleanup {
-            let selected: Vec<usize> = (0..preview.items.len()).collect();
-            match desktop_policy::apply_cleanup(preview, &selected) {
-                Ok(_) => {
-                    self.snapshot = desktop_policy::scan_storage(&self.roots);
-                    self.cleanup = self
-                        .roots
-                        .app_cache
-                        .as_deref()
-                        .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
-                    self.replies.finish(
-                        StorageEffect::CLEAN_UP_CACHES.id,
-                        Ok(t("settings-storage-cleaned")),
-                    );
-                }
-                Err(error) => self.replies.finish(
-                    StorageEffect::CLEAN_UP_CACHES.id,
-                    Err(t_args(
-                        "settings-storage-clean-failed",
-                        &[("error", error.to_string().into())],
-                    )),
-                ),
+    fn clean_up_caches(&mut self, reply: EffectReply) {
+        if let Some(message) = self.initial_message() {
+            reply.finish(Err(message));
+            return;
+        }
+        if self.cleanup_job.is_some() {
+            reply.finish(Err(t("settings-storage-cleaning")));
+            return;
+        }
+        let Some(preview) = self.cleanup.clone() else {
+            reply.finish(Err(t("settings-storage-no-cache")));
+            return;
+        };
+        let source = Arc::clone(&self.cleanup_source);
+        let roots = self.roots.clone();
+        let (sender, result) = std::sync::mpsc::channel();
+        let wake = ui::WakeHandle::new();
+        match ui::background::Background::current().spawn("storage_cleanup", move || {
+            if sender.send(source.clean(preview, roots)).is_ok() {
+                wake.wake();
             }
-        } else {
-            self.replies.finish(
-                StorageEffect::CLEAN_UP_CACHES.id,
-                Err(t("settings-storage-no-cache")),
-            );
+        }) {
+            Ok(()) => {
+                self.cleanup_job = Some(CleanupJob { result, reply });
+                self.cleanup_notice = Some(t("settings-storage-cleaning"));
+            }
+            Err(error) => {
+                let message = t_args(
+                    "settings-storage-clean-failed",
+                    &[("error", error.to_string().into())],
+                );
+                self.cleanup_notice = Some(message.clone());
+                reply.finish(Err(message));
+            }
+        }
+        self.changed = true;
+    }
+
+    fn poll_cleanup(&mut self) {
+        let outcome = self
+            .cleanup_job
+            .as_ref()
+            .and_then(|job| match job.result.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(t("settings-storage-clean-worker-ended")))
+                }
+            });
+        if let Some(outcome) = outcome {
+            let Some(job) = self.cleanup_job.take() else {
+                return;
+            };
+            let result = match outcome {
+                Ok(read) => {
+                    self.roots = read.roots;
+                    self.snapshot = read.snapshot;
+                    self.cleanup = read.cleanup;
+                    self.cleanup_notice = Some(t("settings-storage-cleaned"));
+                    Ok(ui::tilo_actions::ActionOutput {
+                        value: None,
+                        resources: Vec::new(),
+                    })
+                }
+                Err(error) => {
+                    let message =
+                        t_args("settings-storage-clean-failed", &[("error", error.into())]);
+                    self.cleanup_notice = Some(message.clone());
+                    Err(message)
+                }
+            };
+            job.reply.finish(result);
+            self.changed = true;
         }
     }
 
@@ -531,6 +604,12 @@ impl StorageModel {
                 rows(vec![caption(&message)]),
             );
         }
+        if self.cleanup_job.is_some() {
+            return card(
+                &t("settings-storage-cleanup"),
+                rows(vec![caption(&t("settings-storage-cleaning"))]),
+            );
+        }
         match &self.cleanup {
             Some(preview) if !preview.items.is_empty() => {
                 let remove = t_args(
@@ -542,6 +621,9 @@ impl StorageModel {
                     StorageEffect::CleanUpCaches,
                 ));
                 let mut preview_rows = vec![caption(&t("settings-storage-cleanup-caption"))];
+                if let Some(message) = &self.cleanup_notice {
+                    preview_rows.push(caption(message));
+                }
                 let cache_item = t("settings-storage-cache-item");
                 preview_rows.extend(preview.items.iter().take(8).map(|i| {
                     value_row(
@@ -560,7 +642,11 @@ impl StorageModel {
             }
             _ => card(
                 &t("settings-storage-cleanup"),
-                rows(vec![caption(&t("settings-storage-cleanup-empty"))]),
+                rows(vec![caption(
+                    self.cleanup_notice
+                        .as_deref()
+                        .unwrap_or(&t("settings-storage-cleanup-empty")),
+                )]),
             ),
         }
     }
@@ -594,6 +680,10 @@ impl StorageModel {
 }
 
 #[cfg(test)]
+#[path = "storage_job_tests.rs"]
+mod job_tests;
+
+#[cfg(test)]
 #[path = "storage_startup_tests.rs"]
 mod startup_tests;
 
@@ -604,6 +694,7 @@ impl PaneModel for StorageModel {
 
     fn poll(&mut self) -> bool {
         self.poll_initial();
+        self.poll_cleanup();
         let waiting = (self.snapshot_result.is_some(), self.sync_result.is_some());
         if let Some(receiver) = &self.snapshot_result {
             match receiver.try_recv() {
@@ -700,6 +791,7 @@ impl PaneModel for StorageModel {
 
     fn busy(&self) -> bool {
         self.sync_busy
+            || self.cleanup_job.is_some()
             || self.snapshot_result.is_some()
             || matches!(self.initial, InitialStorageRead::Pending(_))
     }
