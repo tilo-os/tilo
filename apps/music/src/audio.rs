@@ -1536,7 +1536,9 @@ impl AudioBackend {
                             *error = Some(message);
                         }
                     }
-                    media::MediaEvent::Position { .. } | media::MediaEvent::Buffering { .. } => {}
+                    media::MediaEvent::Position { .. }
+                    | media::MediaEvent::Buffering { .. }
+                    | media::MediaEvent::MissingDecoder { .. } => {}
                 }
             }
             failed
