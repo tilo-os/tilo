@@ -407,6 +407,7 @@ impl NativeWorkspaceOwner {
             agent_messages: std::collections::BTreeMap::new(),
             agent_message_history_root: None,
             workspace_memberships: std::collections::BTreeMap::new(),
+            workspace_permission_profiles: std::collections::BTreeMap::new(),
             effect_receipts: std::collections::BTreeMap::new(),
             effect_history_root: None,
         };

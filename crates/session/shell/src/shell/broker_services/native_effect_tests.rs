@@ -190,7 +190,7 @@ fn certified_owner_queries_and_invokes_native_workspace_governance() {
 
 #[test]
 fn certified_native_profile_assignment_advances_local_policy_revision() {
-    use collab_types::caps::{CapDecision, ResourceRef, Verb};
+    use collab_types::caps::CapDecision;
     use tilo_action_broker::services::WorkspaceAuthority;
 
     let fixture = fixture();
@@ -206,23 +206,7 @@ fn certified_native_profile_assignment_advances_local_policy_revision() {
         super::NativeWorkspaceAuthority(native_workspace_owner::test_tree_of(&fixture.owner));
     let before = authority.snapshot().unwrap();
     let decision = |tree: &tilo_desktop_model::DesktopTree, agent: &str, action: &str| {
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == room)
-            .unwrap();
-        workspace.decide_at(
-            &workspace.actor_for_agent(agent),
-            &ResourceRef::Action {
-                app: "so.tilo.chat".into(),
-                action: action.into(),
-            },
-            Verb::Read,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
+        profile_action_decision(tree, &room, agent, action)
     };
     assert_eq!(
         decision(&before, "tide", "open-agent-conversation"),
@@ -262,19 +246,83 @@ fn certified_native_profile_assignment_advances_local_policy_revision() {
         decision(&after, "tide", "message"),
         CapDecision::DeniedByRole
     );
-    assert_eq!(
-        after.room_epoch(),
-        before.room_epoch(),
-        "local governance is not a peer merge"
-    );
     assert!(
-        after.external_revision > before.external_revision,
-        "actual governance advances its local revision"
+        after.room_epoch() > before.room_epoch(),
+        "actual signed owner governance advances its room policy witness"
+    );
+    publish_unrelated_owner_receipt(&fixture);
+    let projected = authority.snapshot().unwrap();
+    assert_eq!(
+        decision(&projected, "tide", "open-agent-conversation"),
+        CapDecision::Allow,
+        "a subsequent owner publication must retain the certified exact grant"
+    );
+    assert_eq!(
+        decision(&projected, "other", "open-agent-conversation"),
+        CapDecision::DeniedByRole
+    );
+    assert_eq!(
+        decision(&projected, "tide", "message"),
+        CapDecision::DeniedByRole
     );
     drop(authority);
     drop(session);
     drop(actions);
     drop(fixture);
+}
+
+fn profile_action_decision(
+    tree: &tilo_desktop_model::DesktopTree,
+    room: &str,
+    agent: &str,
+    action: &str,
+) -> collab_types::caps::CapDecision {
+    use collab_types::caps::{ResourceRef, Verb};
+    let workspace = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room.to_string() == room)
+        .unwrap();
+    workspace.decide_at(
+        &workspace.actor_for_agent(agent),
+        &ResourceRef::Action {
+            app: "so.tilo.chat".into(),
+            action: action.into(),
+        },
+        Verb::Read,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+}
+
+fn publish_unrelated_owner_receipt(fixture: &NativeFixture) {
+    use tilo_peer_state::owner_commit::{
+        CommitOperation, OwnerCommitRequest, OwnerCommitService as _,
+    };
+    let service = super::NativeOwnerCommitService::new(
+        native_workspace_owner::test_tree_of(&fixture.owner),
+        None,
+    );
+    let invocation = tilo_actions::InvocationId::new();
+    let effect = tilo_action_broker::policy::redacted_effect_receipt(
+        invocation,
+        &hex::encode(fixture.certificate.user_public_key),
+        tilo_actions::ActionContext::default(),
+        tilo_actions::EffectReceiptStatus::Succeeded,
+    );
+    let request = OwnerCommitRequest {
+        room: fixture.room.to_string(),
+        operation: CommitOperation::EffectReceipt {
+            invocation: invocation.0,
+            redacted: serde_json::to_vec(&effect).unwrap(),
+        },
+    };
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(service.commit_member_effect_receipt(request, fixture.certificate.clone()))
+        .unwrap();
 }
 
 fn invoke_certified_profile_action(

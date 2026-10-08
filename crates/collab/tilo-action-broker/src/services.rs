@@ -613,6 +613,8 @@ pub struct WorkspaceGovernanceRequest<'a> {
     /// `{"confirmation_phrase": ...}`).
     pub confirmation: &'a serde_json::Value,
     pub invocation: tilo_actions::InvocationId,
+    /// Actual retained Person evidence from the admitted transport, never action arguments.
+    pub certificate: Option<tilo_user_identity::DeviceCert>,
 }
 
 /// Workspace governance (permission profiles) owned by a host that holds the

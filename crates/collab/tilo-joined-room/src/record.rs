@@ -70,6 +70,9 @@ pub(crate) struct StoredRoom {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub workspace_memberships:
         BTreeMap<String, crate::workspace_membership::StoredMembershipReceipt>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub workspace_permission_profiles:
+        BTreeMap<String, crate::workspace_permission_profile::StoredPermissionProfileReceipt>,
     /// Exact broker terminal bindings, committed with the signed room checkpoint.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub effect_receipts: BTreeMap<String, crate::effect_receipt::StoredEffectReceipt>,

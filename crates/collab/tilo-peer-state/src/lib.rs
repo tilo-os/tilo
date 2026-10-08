@@ -45,6 +45,7 @@ pub mod desktop_command;
 pub mod document_import;
 pub mod owner_commit;
 pub mod workspace_membership;
+pub mod workspace_permission_profile;
 pub mod workspace_task;
 
 pub mod retained_proof;

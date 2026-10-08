@@ -188,7 +188,8 @@ impl RoomOwner {
             | CommitOperation::RetiredAgentRuntime
             | CommitOperation::DocumentImport { .. }
             | CommitOperation::WorkspaceTaskCommand { .. }
-            | CommitOperation::WorkspaceMembershipCommand { .. } => {
+            | CommitOperation::WorkspaceMembershipCommand { .. }
+            | CommitOperation::WorkspacePermissionProfileCommand { .. } => {
                 return Err("the runtime room owner commits documents and effect receipts".into());
             }
         }

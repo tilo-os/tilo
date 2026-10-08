@@ -32,6 +32,7 @@ mod local_outbox;
 mod owner_membership;
 mod workspace_effects;
 mod workspace_membership;
+mod workspace_permission_profile;
 mod workspace_tasks;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod media_governance;

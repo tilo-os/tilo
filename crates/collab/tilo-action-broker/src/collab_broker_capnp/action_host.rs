@@ -1649,6 +1649,7 @@ impl CapnpBrokerState {
                     &self.caller_actor(caller, room),
                     room,
                     launch,
+                    origin,
                     request,
                     argument.as_deref(),
                 );
@@ -1724,6 +1725,7 @@ impl CapnpBrokerState {
         actor: &BrokerActor,
         room: &str,
         launch: Option<&LaunchScope>,
+        origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
         argument: Option<&str>,
     ) -> Result<u64, ActionHostError> {
@@ -1801,15 +1803,11 @@ impl CapnpBrokerState {
         if let Some(governance) = self.services.workspace_governance.as_ref()
             && governance.handles(&address.action)
         {
+            let certificate = self
+                .governance_person_certificate(caller, room, origin)
+                .map_err(refusal)?;
             return self
-                .invoke_workspace_governance_action(
-                    room,
-                    actor,
-                    &address.resource,
-                    &address.action,
-                    argument,
-                    &confirmation_evidence(request.confirmation.as_ref()),
-                )
+                .invoke_workspace_governance_action(room, actor, request, argument, certificate)
                 .map_err(refusal);
         }
         Err(ActionHostError::UnknownAction)
@@ -2238,10 +2236,9 @@ impl CapnpBrokerState {
         &self,
         room: &str,
         actor: &BrokerActor,
-        resource: &str,
-        action: &str,
+        request: &InvokeRequest,
         argument: Option<&str>,
-        confirmation: &serde_json::Value,
+        certificate: Option<tilo_user_identity::DeviceCert>,
     ) -> Result<u64, String> {
         let governance = self
             .services
@@ -2251,15 +2248,16 @@ impl CapnpBrokerState {
         let id = self
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let invocation = request.invocation;
         governance.invoke(&crate::services::WorkspaceGovernanceRequest {
             room,
             actor,
-            resource,
-            action,
+            resource: &request.target.address.resource,
+            action: &request.target.address.action,
             argument,
-            confirmation,
+            confirmation: &confirmation_evidence(request.confirmation.as_ref()),
             invocation,
+            certificate,
         })?;
         self.record_completion(
             id,
@@ -2272,6 +2270,59 @@ impl CapnpBrokerState {
             },
         );
         Ok(id)
+    }
+
+    fn governance_person_certificate(
+        &self,
+        caller: &Caller,
+        room: &str,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+    ) -> Result<Option<tilo_user_identity::DeviceCert>, String> {
+        use super::published_invocation::InvocationCaller;
+        let admitted = match origin {
+            Some(InvocationCaller::Certified { caller, .. }) => {
+                if caller.room != room {
+                    return Err("governance original room changed".into());
+                }
+                self.current_action_caller(caller)?
+            }
+            Some(InvocationCaller::Local { route, admitted }) => {
+                if route.cluster_id != room {
+                    return Err("governance original room changed".into());
+                }
+                self.revalidate_admission(route, admitted)
+                    .map_err(|_| "governance original admission ended")?;
+                *admitted.clone()
+            }
+            None => return Ok(None),
+        };
+        let certificate = admitted
+            .certificate
+            .ok_or("governance original certificate absent")?;
+        let restricted = caller.is_foreign_device()
+            || admitted.verified.capped
+            || matches!(
+                origin,
+                Some(InvocationCaller::Certified {
+                    foreign_restriction: true,
+                    ..
+                })
+            );
+        if admitted.agent_id.is_some()
+            || certificate.capabilities.can_act_as_host
+            || !matches!(caller.principal(), CallerPrincipal::Person(_))
+            || caller.user_public_key() != Some(&certificate.user_public_key)
+            || caller.device_public_key() != Some(&certificate.device_public_key)
+            || super::cap_applies_in(
+                self.certificate_authority.get().map(AsRef::as_ref),
+                room,
+                restricted,
+                Some(&certificate.device_public_key),
+            )
+        {
+            return Err("governance requires original Person evidence".into());
+        }
+        Ok(Some(certificate))
     }
 
     /// Launch `app_id` into `workspace`, optionally opening content-addressed

@@ -42,6 +42,7 @@ pub mod testing;
 mod tests;
 pub mod voice;
 mod workspace_membership;
+mod workspace_permission_profile;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 

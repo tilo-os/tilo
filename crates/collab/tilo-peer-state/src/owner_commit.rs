@@ -58,6 +58,11 @@ pub enum CommitOperation {
         caller: tilo_user_identity::DeviceCert,
         command: crate::workspace_membership::WorkspaceMembershipCommand,
     },
+    WorkspacePermissionProfileCommand {
+        invocation: uuid::Uuid,
+        caller: tilo_user_identity::DeviceCert,
+        command: crate::workspace_permission_profile::WorkspacePermissionProfileCommand,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommitTarget {
@@ -80,6 +85,10 @@ pub enum CommitTarget {
         invocation: uuid::Uuid,
     },
     WorkspaceMembershipCommand {
+        device: [u8; 32],
+        invocation: uuid::Uuid,
+    },
+    WorkspacePermissionProfileCommand {
         device: [u8; 32],
         invocation: uuid::Uuid,
     },
@@ -153,6 +162,11 @@ impl OwnerCommitRequest {
                 caller,
                 command,
             } => membership_binding(*invocation, caller, command)?,
+            CommitOperation::WorkspacePermissionProfileCommand {
+                invocation,
+                caller,
+                command,
+            } => profile_binding(*invocation, caller, command)?,
             CommitOperation::Document {
                 app,
                 record,
@@ -200,6 +214,25 @@ impl OwnerCommitRequest {
         })
     }
 }
+fn profile_binding(
+    invocation: uuid::Uuid,
+    caller: &tilo_user_identity::DeviceCert,
+    command: &crate::workspace_permission_profile::WorkspacePermissionProfileCommand,
+) -> Result<(CommitTarget, Vec<u8>), String> {
+    if invocation.is_nil() || caller.capabilities.can_act_as_host {
+        return Err("invalid permission profile owner binding".into());
+    }
+    command.validate()?;
+    Ok((
+        CommitTarget::WorkspacePermissionProfileCommand {
+            device: caller.device_public_key,
+            invocation,
+        },
+        postcard::to_allocvec(&(invocation, caller, command))
+            .map_err(|_| "permission profile binding encoding failed")?,
+    ))
+}
+
 fn membership_binding(
     invocation: uuid::Uuid,
     caller: &tilo_user_identity::DeviceCert,
@@ -348,6 +381,13 @@ mod tests {
                 invocation,
             }),
             [vec![6], vec![9; 32], vec![16], vec![7; 16]].concat()
+        );
+        assert_eq!(
+            encoded(&CommitTarget::WorkspacePermissionProfileCommand {
+                device: [9; 32],
+                invocation,
+            }),
+            [vec![7], vec![9; 32], vec![16], vec![7; 16]].concat()
         );
         let request = OwnerCommitRequest {
             room: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),

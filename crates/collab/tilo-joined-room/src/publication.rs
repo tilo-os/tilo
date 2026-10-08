@@ -680,6 +680,11 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
         .any(|receipt| receipt.receipt.binding == entry.binding)
         && !view
             .record
+            .workspace_permission_profiles
+            .values()
+            .any(|receipt| receipt.receipt.binding == entry.binding)
+        && !view
+            .record
             .effect_receipts
             .values()
             .any(|receipt| receipt.receipt.binding == entry.binding)

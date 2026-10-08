@@ -1059,6 +1059,34 @@ impl NativeWorkspaceGovernance {
             .filter(|network| network.governed_elsewhere(room))
             .map(|network| (network, room))
     }
+
+    fn invoke_native_profile(
+        &self,
+        request: &WorkspaceGovernanceRequest<'_>,
+        owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+        command: tilo_peer_state::workspace_permission_profile::WorkspacePermissionProfileCommand,
+    ) -> Result<(), String> {
+        let caller = request
+            .certificate
+            .clone()
+            .ok_or("native permission profiles require original Person evidence")?;
+        let (key, governor) = tilo_identity_host::broker::trusted_current_device(request.room)
+            .map_err(|_| "native permission profile governor unavailable")?;
+        owner.commit_workspace_permission_profile_command(
+            tilo_peer_state::owner_commit::OwnerCommitRequest {
+                room: request.room.into(),
+                operation: tilo_peer_state::owner_commit::CommitOperation::WorkspacePermissionProfileCommand {
+                    invocation: request.invocation.0, caller, command,
+                },
+            }, &governor, &key, std::time::SystemTime::now(),
+        )?;
+        if let Some(network) = self.1.as_ref() {
+            let room = super::state::RoomId::parse(request.room)
+                .ok_or("invalid permission profile room")?;
+            network.schedule_native_owner_publication(room);
+        }
+        Ok(())
+    }
 }
 impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     fn app_id(&self) -> &str {
@@ -1149,6 +1177,16 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             return govern_elsewhere(network, room, operation);
         }
         let workspace_id = workspace.id;
+        let room = workspace.room;
+        if tree.requires_native_owner(room)
+            && let Some(command) = native_permission_profile_command(&operation)?
+        {
+            let owner = tree
+                .installed_native_owner()
+                .ok_or("native permission profile owner unavailable")?;
+            drop(tree);
+            return self.invoke_native_profile(request, &owner, command);
+        }
         apply_permission_profile_operation(
             &mut tree,
             workspace_index,
@@ -1177,6 +1215,50 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         tree.queue_save();
         drop(tree);
         Ok(())
+    }
+}
+
+fn native_permission_profile_command(
+    operation: &tilo_desktop::workspace_settings::PermissionProfileOperation,
+) -> Result<
+    Option<tilo_peer_state::workspace_permission_profile::WorkspacePermissionProfileCommand>,
+    String,
+> {
+    use tilo_desktop::workspace_settings::PermissionProfileOperation as Operation;
+    use tilo_peer_state::workspace_permission_profile::WorkspacePermissionProfileCommand as Command;
+    match operation {
+        Operation::Save {
+            name,
+            description,
+            rules,
+        } => Ok(Some(Command::Save {
+            profile: collab_types::PermissionProfile {
+                name: name.clone(),
+                description: description.clone(),
+                rules: rules.clone(),
+            },
+        })),
+        Operation::Assign {
+            profile,
+            subject_kind,
+            subject,
+            expires_unix,
+        } => {
+            let subject = match subject_kind.trim().to_ascii_lowercase().as_str() {
+                "person" => collab_types::Subject::person(subject.trim()),
+                "app" => collab_types::Subject::app(subject.trim()),
+                "agent" => collab_types::Subject::agent(subject.trim()),
+                _ => return Err("subject_kind must be person, app, or agent".into()),
+            };
+            Ok(Some(Command::Assign {
+                profile_name: profile.clone(),
+                subject,
+                expiry: (*expires_unix > 0)
+                    .then_some(*expires_unix)
+                    .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix),
+            }))
+        }
+        Operation::GrantAppAction { .. } | Operation::RevokeAppAction { .. } => Ok(None),
     }
 }
 
