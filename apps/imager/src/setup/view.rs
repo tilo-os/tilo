@@ -4942,7 +4942,7 @@ mod tests {
                 .unwrap()
                 .clone();
             let remove_a = match &remove_a.input {
-                tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+                tilo_actions::ActionInput::Immediate(encoded) => encoded.as_ref().clone(),
                 tilo_actions::ActionInput::Prompted { .. }
                 | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("remove must be immediate")
