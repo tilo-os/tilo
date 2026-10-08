@@ -87,6 +87,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Validate RPM lint exception paths before building
+        if: ${{ !inputs.rpm-artifact }}
+        run: python3 dist/rpm/test-rpmlint-config.py
       - name: Fetch the env-runtime environment image
         if: ${{ !inputs.rpm-artifact }}
         run: bash dist/ci/fetch-package-env-runtime.sh
