@@ -252,6 +252,9 @@ pub enum Command {
         /// Attested source inventory used to verify the builder inputs.
         #[arg(long)]
         source_inventory: Option<PathBuf>,
+        /// Content hashes the target has verified; at most eight.
+        #[arg(long)]
+        cached_layer: Vec<String>,
     },
     /// Package one app on the architecture-configured remote builder.
     #[command(
