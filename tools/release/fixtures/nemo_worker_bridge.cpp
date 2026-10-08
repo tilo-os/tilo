@@ -60,8 +60,12 @@ int request_options(Worker& worker, const char* input_language, const char* inpu
     language = input_language;
     const std::vector<std::pair<std::string, std::string>> aliases = {
         {"en", "en-US"}, {"de", "de-DE"}, {"fr", "fr-FR"},
-        {"es", "es-ES"}, {"ar", "ar-EG"}, {"zh", "zh-CN"}};
-    for (const auto& alias : aliases) if (language == alias.first) language = alias.second;
+        {"es", "es-ES"}, {"ar", "ar-AR"}, {"zh", "zh-CN"}};
+    // Respect the model's declared code before applying a fixed fallback.
+    // In this pinned model, "ar" and "es" are valid prompt entries themselves.
+    if (std::find(languages.begin(), languages.end(), language) == languages.end()) {
+        for (const auto& alias : aliases) if (language == alias.first) language = alias.second;
+    }
     if (std::find(languages.begin(), languages.end(), language) == languages.end()) {
         return -2;
     }
