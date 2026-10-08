@@ -38,6 +38,8 @@ pub struct InboundRemoteAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ReplyKey {
     Catalogue(u64),
+    ResourceSelection(u64),
+    ResourceSelectionPrompt(u64),
     Invoke(InvocationId),
     Observe(InvocationId),
     Cancel(InvocationId),
@@ -53,6 +55,12 @@ impl ReplyKey {
             RemoteActionMessage::CatalogueRequest { correlation, .. } => {
                 Self::Catalogue(*correlation)
             }
+            RemoteActionMessage::SelectResource { correlation, .. } => {
+                Self::ResourceSelection(*correlation)
+            }
+            RemoteActionMessage::ResourceSelectionPrompt { correlation, .. } => {
+                Self::ResourceSelectionPrompt(*correlation)
+            }
             RemoteActionMessage::Invoke(request) => Self::Invoke(request.invocation),
             RemoteActionMessage::Observe { invocation } => Self::Observe(*invocation),
             RemoteActionMessage::Cancel { invocation } => Self::Cancel(*invocation),
@@ -67,6 +75,12 @@ impl ReplyKey {
         Some(match message {
             RemoteActionMessage::CatalogueResponse { correlation, .. } => {
                 Self::Catalogue(*correlation)
+            }
+            RemoteActionMessage::ResourceSelectionResponse { correlation, .. } => {
+                Self::ResourceSelection(*correlation)
+            }
+            RemoteActionMessage::ResourceSelectionPromptResponse { correlation, .. } => {
+                Self::ResourceSelectionPrompt(*correlation)
             }
             RemoteActionMessage::Receipt(receipt) => Self::Invoke(receipt.invocation),
             RemoteActionMessage::Update { invocation, .. } => Self::Observe(*invocation),

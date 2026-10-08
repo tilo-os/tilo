@@ -1519,6 +1519,21 @@ fn native_resource_views(
     })
 }
 
+fn native_resource_selections(
+    membership: Option<&WorkspaceTreeHandle>,
+    network: Option<&Arc<super::network::ShellNetwork>>,
+) -> Option<Arc<dyn tilo_action_broker::services::ResourceSelectionServices>> {
+    membership.zip(network).map(|(tree, network)| {
+        Arc::new(super::resource_selection::NativeResourceSelections {
+            owner: Arc::new(NativeOwnerCommitService::new(
+                tree.clone(),
+                Some(network.clone()),
+            )),
+            network: network.clone(),
+        }) as Arc<dyn tilo_action_broker::services::ResourceSelectionServices>
+    })
+}
+
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
@@ -1588,6 +1603,7 @@ pub fn native_services(
         committed_documents,
         workspace_memberships,
         resource_views,
+        resource_selections: native_resource_selections(membership.as_ref(), network.as_ref()),
         desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
         local_person,

@@ -45,6 +45,36 @@ use crate::door::ActionAddress;
 use crate::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use crate::params::ARGUMENTS_JSON_PREFIX;
 
+pub const MAX_RESOURCE_SELECTION_CANDIDATES: usize = 64;
+
+/// A bounded request to choose an existing resource offering a semantic action.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceSelectionFilter {
+    pub app_id: String,
+    pub resource_kind: String,
+    pub action: String,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SelectedResource {
+    pub provider: CatalogueProvider,
+    pub row: CatalogueRow,
+    pub revision: String,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceSelectionCandidate {
+    pub token: uuid::Uuid,
+    pub selected: SelectedResource,
+}
+/// Inert metadata only: choosing a token confers no action permission.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceSelectionPromptRequest {
+    pub room: String,
+    pub source_app_id: String,
+    pub source_record_id: String,
+    pub candidates: Vec<ResourceSelectionCandidate>,
+    pub truncated: bool,
+}
+
 /// Version of the [`RemoteActionFrame`] schema this build speaks.
 ///
 /// Additive changes (a new optional field) keep the version; a change an
@@ -757,12 +787,33 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<CataloguePage, ActionHostError>,
     },
+    SelectResource {
+        correlation: u64,
+        filter: ResourceSelectionFilter,
+    },
+    ResourceSelectionResponse {
+        correlation: u64,
+        result: Result<Option<SelectedResource>, ActionHostError>,
+    },
+    ResourceSelectionPrompt {
+        correlation: u64,
+        request: ResourceSelectionPromptRequest,
+    },
+    ResourceSelectionPromptCancel {
+        correlation: u64,
+    },
+    ResourceSelectionPromptResponse {
+        correlation: u64,
+        result: Result<Option<uuid::Uuid>, ActionHostError>,
+    },
     /// Run one action.
     Invoke(InvokeRequest),
     /// Answer to [`Self::Invoke`]; a refusal is [`ReceiptStatus::Rejected`].
     Receipt(InvocationReceipt),
     /// Ask for an invocation's latest state.
-    Observe { invocation: InvocationId },
+    Observe {
+        invocation: InvocationId,
+    },
     /// Answer to [`Self::Observe`]; `None` for an id the caller does not own.
     /// A host may also push this unprompted as an invocation progresses.
     Update {
@@ -770,7 +821,9 @@ pub enum RemoteActionMessage {
         state: Option<InvocationState>,
     },
     /// Ask a running invocation to stop.
-    Cancel { invocation: InvocationId },
+    Cancel {
+        invocation: InvocationId,
+    },
     /// Answer to [`Self::Cancel`].
     CancelResponse {
         invocation: InvocationId,
@@ -860,6 +913,8 @@ impl RemoteActionMessage {
         matches!(
             self,
             Self::CatalogueRequest { .. }
+                | Self::SelectResource { .. }
+                | Self::ResourceSelectionPrompt { .. }
                 | Self::Invoke(_)
                 | Self::Observe { .. }
                 | Self::Cancel { .. }
@@ -931,6 +986,7 @@ impl RemoteActionFrame {
                     && matches!(
                         self.message,
                         RemoteActionMessage::CatalogueRequest { .. }
+                            | RemoteActionMessage::SelectResource { .. }
                             | RemoteActionMessage::Observe { .. }
                             | RemoteActionMessage::Cancel { .. }
                     ) =>
@@ -1026,6 +1082,18 @@ pub fn serve<H: ActionHost + ?Sized>(
                 correlation,
                 result,
             }),
+        RemoteActionMessage::SelectResource { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::ResourceSelectionResponse {
+                correlation,
+                result: Err(ActionHostError::NotPermitted),
+            })
+        }
+        RemoteActionMessage::ResourceSelectionPrompt { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::ResourceSelectionPromptResponse {
+                correlation,
+                result: Err(ActionHostError::NotPermitted),
+            })
+        }
         RemoteActionMessage::Invoke(request) => {
             let invocation = request.invocation;
             host.invoke(caller, request).map(move |result| {
@@ -1057,7 +1125,10 @@ pub fn serve<H: ActionHost + ?Sized>(
                 }),
             })
         }
-        RemoteActionMessage::CatalogueResponse { .. }
+        RemoteActionMessage::ResourceSelectionPromptCancel { .. }
+        | RemoteActionMessage::ResourceSelectionResponse { .. }
+        | RemoteActionMessage::ResourceSelectionPromptResponse { .. }
+        | RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
@@ -1084,6 +1155,18 @@ pub fn refuse(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::SelectResource { correlation, .. } => {
+            RemoteActionMessage::ResourceSelectionResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
+        RemoteActionMessage::ResourceSelectionPrompt { correlation, .. } => {
+            RemoteActionMessage::ResourceSelectionPromptResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::Invoke(request) => RemoteActionMessage::Receipt(InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Rejected { error },
@@ -1102,7 +1185,10 @@ pub fn refuse(
                 result: Err(error),
             }
         }
-        RemoteActionMessage::CatalogueResponse { .. }
+        RemoteActionMessage::ResourceSelectionPromptCancel { .. }
+        | RemoteActionMessage::ResourceSelectionResponse { .. }
+        | RemoteActionMessage::ResourceSelectionPromptResponse { .. }
+        | RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
@@ -1302,6 +1388,64 @@ mod tests {
 
     use super::*;
     use crate::{ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind};
+
+    #[test]
+    fn resource_selection_frames_preserve_parent_and_plain_hosts_refuse() {
+        let host = CountingHost::new();
+        let parent = InvocationId::new();
+        let request = RemoteActionMessage::SelectResource {
+            correlation: 73,
+            filter: ResourceSelectionFilter {
+                app_id: "so.tilo.code-editor".into(),
+                resource_kind: "code_editor.file".into(),
+                action: "read-text-snapshot".into(),
+            },
+        };
+        let frame = RemoteActionFrame::continuing(request.clone(), parent).unwrap();
+        let bytes = frame.encode().unwrap();
+        assert_eq!(
+            RemoteActionFrame::decode_continuation(&bytes).unwrap(),
+            frame
+        );
+        assert!(RemoteActionFrame::decode(&bytes).is_err());
+        let response = now(serve(&host, &alice(), request).unwrap());
+        assert_eq!(
+            response,
+            RemoteActionMessage::ResourceSelectionResponse {
+                correlation: 73,
+                result: Err(ActionHostError::NotPermitted)
+            }
+        );
+        let prompt = RemoteActionMessage::ResourceSelectionPrompt {
+            correlation: 74,
+            request: ResourceSelectionPromptRequest {
+                room: "room".into(),
+                source_app_id: "source".into(),
+                source_record_id: "record".into(),
+                candidates: Vec::new(),
+                truncated: false,
+            },
+        };
+        assert!(
+            RemoteActionFrame::continuing(prompt.clone(), parent).is_err(),
+            "host-only prompt cannot be sent as an application continuation"
+        );
+        assert_eq!(
+            now(serve(&host, &alice(), prompt).unwrap()),
+            RemoteActionMessage::ResourceSelectionPromptResponse {
+                correlation: 74,
+                result: Err(ActionHostError::NotPermitted)
+            }
+        );
+        assert!(
+            serve(
+                &host,
+                &alice(),
+                RemoteActionMessage::ResourceSelectionPromptCancel { correlation: 74 }
+            )
+            .is_none()
+        );
+    }
 
     #[test]
     fn execution_lifetime_is_shared_without_changing_caller_identity() {

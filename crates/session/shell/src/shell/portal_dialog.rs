@@ -36,6 +36,7 @@ use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest
 use crate::shell::i18n::{t, t_args};
 
 pub mod accessibility;
+pub(crate) mod resource_selection;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRequest {
@@ -344,6 +345,7 @@ pub struct DocumentImportRequest {
 }
 
 enum PendingDialog {
+    ResourceSelection(resource_selection::PendingResourceSelection),
     ShortcutStep {
         request: ShortcutStepRequest,
         reply: ShortcutStepReply,
@@ -887,6 +889,7 @@ impl PortalDialogQueue {
     fn view(&self, handle: &str) -> Option<DialogView> {
         let inner = self.inner.lock().ok()?;
         match inner.pending.get(handle)? {
+            PendingDialog::ResourceSelection(_) => None,
             PendingDialog::ShortcutStep {
                 request, validate, ..
             } => Some(DialogView::ShortcutStep {
@@ -1063,6 +1066,10 @@ impl PortalDialogQueue {
             .ok()
             .and_then(|mut inner| inner.pending.remove(handle));
         match pending {
+            Some(PendingDialog::ResourceSelection(selection)) => {
+                selection.reply.complete(None);
+                true
+            }
             Some(PendingDialog::ShortcutStep { reply, .. }) => {
                 reply(ShortcutStepDecision::Cancelled);
                 true
