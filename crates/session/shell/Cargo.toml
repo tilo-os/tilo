@@ -279,9 +279,9 @@ tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The authenticated relay client and co-edit session (`RelayClient`,
 # `RelayCoeditSession`) that carry workspace deltas through a home or
-# provider host, plus the Cloud native-owner path (workspace join, delivery
-# v3, peer actions, sync refresh).
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# provider host, plus room administration and the workspace join client.
+# The relay daemon itself (`tilo-relay`) is a dev-dependency only.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 # The native durable owner of enrolled rooms, kept inside the state file.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }

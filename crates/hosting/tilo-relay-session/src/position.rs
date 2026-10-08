@@ -6,7 +6,7 @@
 //! one when it reconnects, so the host replays only what that device has not
 //! received instead of the workspace's whole retained history. What it
 //! received is the host's per-device resume log (see
-//! [`crate::store::WorkspaceStore::append_resume`]); a position names a log
+//! `tilo_relay::store::WorkspaceStore::append_resume`); a position names a log
 //! and how many entries of it the device holds. It binds the workspace, the
 //! device and the store generation, so it is refused for another device and
 //! after the host's state was replaced, and the host then replays everything.

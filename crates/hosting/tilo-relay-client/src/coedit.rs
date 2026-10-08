@@ -3,7 +3,8 @@
 //! [`AttributedPresence`] inside an `Envelope::Presence`, and the
 //! [`Inbound`] events a session surfaces. Browser and native peers share
 //! these; the relay session that speaks them over iroh
-//! (`tilo_relay::coedit::RelayCoeditSession`) lives in `tilo-relay`.
+//! (`tilo_relay_session::coedit::RelayCoeditSession`) lives in
+//! `tilo-relay-session`.
 //!
 //! Presence carries its author inside the payload because the host's
 //! presence envelope has no author slot; see [`AttributedPresence`].
