@@ -10547,7 +10547,15 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         let registered = loop {
             app.pump_collab_presence();
-            if !captures.lock().unwrap().action_directories.is_empty() {
+            // Server receipt precedes the asynchronous reply. Observe the real
+            // transport acknowledgment before checking idle quiescence.
+            if app
+                .native_admission_snapshot()
+                .directory
+                .transport_directory_rpc_successes
+                == Some(1)
+                && !captures.lock().unwrap().action_directories.is_empty()
+            {
                 break true;
             }
             if std::time::Instant::now() >= deadline {
