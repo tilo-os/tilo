@@ -38,7 +38,7 @@
     }
   },
   "qualification": {
-    "status": "REVISION_TWO_SOURCE165_NATIVE62_SHORTCUT1_MOUNTED48_PASS_REPRO_SIGNED_PENDING",
+    "status": "PRIVATE_SOURCE165_REPRO_NATIVE62_SHORTCUT1_MOUNTED48_READER_PASS_DELIVERY_PENDING",
     "added_controller_regressions": 30,
     "existing_controller_tests_unchanged": 135,
     "upstream_baseline": {
@@ -122,7 +122,18 @@
       "evidence_parser_corrected_without_rerun": true
     },
     "unchanged_owner_guard_and_undo_tests": "PASS all42 unchanged guards/Undo, four native composition tests and one unchanged platform SelectAll smoke scenario; 95 owner source hashes unchanged",
-    "repeat_build": "PENDING revised-source A/B full byte comparison",
+    "repeat_build": {
+      "qualification_checks": "PASS_BYTE_IDENTICAL_INDEPENDENT_OUTPUT_GENERATIONS",
+      "receipt_path": "scripts/browser/cef-source/sdk-repeat-revision-two-receipt.json",
+      "receipt_sha256": "7e2f83ef5861c4e0eb3d5fb7c6f24c5139b518d0b88be8f1aa9e94f84eda2a5c",
+      "archive_sha256": "cece35681a153ef16446214a8be35a766a2f9f64a5b9149c63c900857a70c57f",
+      "archive_sha1": "f43ecdec645a57bf4562ee8be281ffc993abc1d1",
+      "archive_size": 167327081,
+      "sdk_inventory_entries": 960,
+      "public_packaging_CLI_actually_executed_for_B": true,
+      "original_packaging_source_review_head": "2f1ec83e7809ef6aa3b04e276823c069dde387e6",
+      "original_packaging_recipe_sha256": "d90038c1aa27981b7d2eb63092218c997b39c4817a38d6964a2eca062fe6c7b8"
+    },
     "signed_browser": "PENDING normal trusted main release and actual signed regression",
     "previous_revision": {
       "patch_sha256": "185bd544fb0dd8fa2616be1be250833521950da8e8658709d828f31292be609c",
@@ -203,6 +214,15 @@
       "binary_rebuilt": false,
       "binary_relabelled": false,
       "zero_retries": true
+    },
+    "actual_normal_reader": {
+      "qualification_checks": "PASS",
+      "receipt_path": "scripts/browser/cef-source/actual-reader-revision-two-receipt.json",
+      "receipt_sha256": "7aa45ce29937e2cfe09a28da0b0c147ff1469cc50e917bda30ab1313e5118fed",
+      "supported_path": "--fetch-only --platform linux64 --sdk-archive PRIVATE_VERIFIED_ARCHIVE",
+      "network_fetch": false,
+      "compiler_or_Cargo_called": false,
+      "production_lock_changed": false
     }
   },
   "artifact": null,
@@ -233,5 +253,15 @@
     "canonical_archive": "sorted entries, uid/gid0, empty owner names, epoch timestamps, no inode-dependent hardlinks",
     "input_qualification": "refuse wrong source/patch/profile, missing closure/header/license/architecture or existing output",
     "output_qualification": "UNQUALIFIED_DO_NOT_PUBLISH_OR_CONSUME"
+  },
+  "delivery_gate": {
+    "namespace_verification": "BLOCKED: supported public registry metadata GETs returned403 Cloudflare1010, retryablefalse, owner_action_requiredtrue; no retry/bypass",
+    "registry_source_change": "PR3609, e0f4747102ececd497b022ed536a0a7fef84d292",
+    "required_read_only_proof": "Actual existing outer app publisher key and live list-publishers namespaces/can_add_new; inner runtime key or source merge is not proof of migration",
+    "persistent_namespace_authority_changed": false,
+    "user_owns_merge": true,
+    "SDK_published": false,
+    "production_consumer_pins_changed": false,
+    "signed_Browser_regression": "PENDING authorized normal main signing/release after dependency integration"
   }
 }
