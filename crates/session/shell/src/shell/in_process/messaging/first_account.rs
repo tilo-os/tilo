@@ -202,22 +202,26 @@ struct Actor {
 }
 pub(in crate::shell::in_process) fn new(principal: String, wake: Wake) -> Rc<dyn FirstAccounts> {
     let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
-    let sms = super::sms_first::new(principal.clone(), wake);
-    combine(principal, signal, sms)
+    let sms = super::sms_first::new(principal.clone(), wake.clone());
+    let whatsapp = super::whatsapp_first::new(principal.clone(), wake);
+    combine(principal, signal, sms, whatsapp)
 }
 fn combine(
     principal: String,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
+    whatsapp: Rc<dyn FirstAccounts>,
 ) -> Rc<dyn FirstAccounts> {
     Rc::new(Combined {
         port: Arc::new(CombinedPort {
             principal,
             signal: signal.client(),
             sms: sms.client(),
+            whatsapp: whatsapp.client(),
         }),
         signal,
         sms,
+        whatsapp,
     })
 }
 fn with_source(principal: String, wake: Wake, source: Arc<dyn Source>) -> Rc<dyn FirstAccounts> {
@@ -761,18 +765,20 @@ struct Combined {
     port: Arc<CombinedPort>,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
+    whatsapp: Rc<dyn FirstAccounts>,
 }
 struct CombinedPort {
     principal: String,
     signal: EnrollmentClient,
     sms: EnrollmentClient,
+    whatsapp: EnrollmentClient,
 }
 impl CombinedPort {
     fn account(&self, account: &ServiceAccount) -> &EnrollmentClient {
-        if account.service == "sms" {
-            &self.sms
-        } else {
-            &self.signal
+        match account.service.as_str() {
+            "sms" => &self.sms,
+            "whatsapp" => &self.whatsapp,
+            _ => &self.signal,
         }
     }
 }
@@ -783,11 +789,16 @@ impl FirstAccounts for Combined {
     fn pump(&self, apps: &mut super::super::InProcessApps) {
         self.signal.pump(apps);
         self.sms.pump(apps);
+        self.whatsapp.pump(apps);
     }
 }
 impl EnrollmentHost for CombinedPort {
+    fn prepare(&self, service: String) -> EnrollmentReviewFuture {
+        let client = self.whatsapp.clone();
+        Box::pin(async move { client.prepare(service).await })
+    }
     fn begin(&self, service: String) -> PairingFuture {
-        let client = self.signal.clone();
+        let client = self.account(&ServiceAccount::new(&service, "")).clone();
         Box::pin(async move { client.begin(service).await })
     }
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture {
@@ -830,6 +841,19 @@ pub(super) fn fixture_sms(
     source: Arc<dyn super::sms_first::Source>,
 ) -> Rc<dyn FirstAccounts> {
     let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
-    let sms = super::sms_first::fixture(principal.clone(), wake, source);
-    combine(principal, signal, sms)
+    let sms = super::sms_first::fixture(principal.clone(), wake.clone(), source);
+    let whatsapp = super::whatsapp_first::new(principal.clone(), wake);
+    combine(principal, signal, sms, whatsapp)
+}
+
+#[cfg(test)]
+pub(super) fn fixture_whatsapp(
+    principal: String,
+    wake: Wake,
+    source: Arc<dyn super::whatsapp_first::Source>,
+) -> Rc<dyn FirstAccounts> {
+    let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
+    let sms = super::sms_first::new(principal.clone(), wake.clone());
+    let whatsapp = super::whatsapp_first::fixture(principal.clone(), wake, source);
+    combine(principal, signal, sms, whatsapp)
 }
