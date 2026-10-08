@@ -70,5 +70,44 @@ class BuildEnvironmentTests(unittest.TestCase):
             self.assertNotIn(key, build)
 
 
+class SourcePairBuildEnvironmentTests(unittest.TestCase):
+    def test_both_packages_keep_selected_builder_and_use_only_caller_build_configuration(self):
+        spec = importlib.util.spec_from_file_location(
+            "source_pair_proof", ROOT / "scripts/headless-examples/source-projection-proof.py")
+        assert spec and spec.loader
+        pair = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pair)
+        for caller in ({key: f"/caller-build/{key}" for key in XDG}, {}):
+            with self.subTest(caller=caller):
+                session = {key: f"/private-session/{key}" for key in XDG}
+                session.update({"CARGO": "/selected/cargo-compatible-builder",
+                                "TILO_IDENTITY_ROOT": "/private-session/identity"})
+                original = dict(session)
+                calls = []
+
+                def invoke(binary, args, environment):
+                    calls.append((binary, args, dict(environment)))
+                    if len(calls) == 3:
+                        raise PackagingReached()
+
+                with patch.dict(os.environ, caller, clear=True), patch.object(pair.bootstrap, "run", invoke):
+                    with self.assertRaises(PackagingReached):
+                        pair.package_pair(Path("/binaries"), Path("/private-session"), session)
+                self.assertEqual(session, original)
+                self.assertEqual(calls[0][2], original)
+                self.assertEqual(len(calls), 3)
+                for call, app in zip(calls[1:], ("code-editor", "git-client")):
+                    self.assertEqual(call[0], Path("/binaries/tilo-app"))
+                    self.assertEqual(call[1][0], "package")
+                    self.assertEqual(call[1][1], pair.bootstrap.REPO / "apps" / app)
+                    self.assertEqual(call[2]["CARGO"], original["CARGO"])
+                    self.assertEqual(call[2]["TILO_IDENTITY_ROOT"], original["TILO_IDENTITY_ROOT"])
+                    for key in XDG:
+                        if key in caller:
+                            self.assertEqual(call[2][key], caller[key])
+                        else:
+                            self.assertNotIn(key, call[2])
+
+
 if __name__ == "__main__":
     unittest.main()
