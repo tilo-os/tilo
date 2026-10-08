@@ -1743,6 +1743,20 @@ pub(crate) fn native_services_with_agent_runtime(
     });
     let launcher: Arc<dyn tilo_action_broker::services::LauncherServices> =
         Arc::new(NativeLauncher(membership.clone(), network.clone()));
+    let display_control = membership
+        .as_ref()
+        .zip(settings_store::installed_source())
+        .map(|(tree, source)| {
+            Arc::new(super::display_control::NativeDisplayControl {
+                tree: Arc::downgrade(tree),
+                source,
+            }) as Arc<dyn tilo_action_broker::services::DisplayControlServices>
+        });
+    let local_person = membership.as_ref().map(|tree| {
+        Arc::new(super::local_person::NativeLocalPerson {
+            tree: Arc::downgrade(tree),
+        }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
+    });
     let services = HostServices {
         #[cfg(target_os = "linux")]
         file_clipboard: native_file_clipboard(membership.as_ref()),
@@ -1755,6 +1769,7 @@ pub(crate) fn native_services_with_agent_runtime(
         resource_views,
         desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
+        local_person,
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),
@@ -1778,6 +1793,7 @@ pub(crate) fn native_services_with_agent_runtime(
         launchable_catalogue: launchable_catalogue_path(),
         // The session's records, installed before any broker starts.
         settings: settings_store::installed_source(),
+        display_control,
         live_activities: Some(super::live_activities::board()),
         ..Default::default()
     };

@@ -190,6 +190,44 @@ pub fn speaker_command(
         .map_err(|_| "the speaker service did not respond".to_string())?
 }
 
+static DISPLAY_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::OnceLock::new();
+
+/// Ask the native host to inspect or change its display transaction. Call off
+/// the frame thread; the existing bridge and response wait remain bounded.
+///
+/// # Errors
+/// Reports disconnected authority, refused requests and timed out replies.
+pub fn display_control(
+    command: Vec<u8>,
+    origin: runtime_collab::settings::DisplayOrigin,
+) -> Result<Vec<u8>, String> {
+    if command.len() > 64 * 1024 {
+        return Err("The display request exceeds its wire bound.".into());
+    }
+    let sender = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map_err(|_| "The display service is unavailable.")?
+        .as_ref()
+        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .ok_or("Displays need the certified collaboration service.")?;
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    if !enqueue_sdk_command(
+        &sender,
+        SdkCommand::DisplayControl {
+            origin,
+            command,
+            reply: reply_tx,
+        },
+        DISPLAY_COMMAND_BUDGET.get_or_init(BridgeState::new),
+    ) {
+        return Err("The display request queue is unavailable.".into());
+    }
+    reply_rx
+        .recv_timeout(Duration::from_secs(4))
+        .map_err(|_| "The display service did not respond.".to_string())?
+}
+
 /// Have the connected transport's worker send the app's unsent settings
 /// writes ([`super::channel_settings`]). Without a connected transport they
 /// wait for the primary route, whose join sends them.
@@ -532,6 +570,11 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::SpeakerCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
+    },
+    DisplayControl {
+        origin: runtime_collab::settings::DisplayOrigin,
+        command: Vec<u8>,
+        reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
     },
     /// Send the app's unsent settings writes over the primary route.
     FlushSettings,
@@ -1030,6 +1073,9 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             meter.string_capacity(app_id);
             serialized_bytes(command, &mut meter);
             meter.finish()
+        }
+        SdkCommand::DisplayControl { command, .. } => {
+            std::mem::size_of::<SdkCommand>().checked_add(command.capacity())
         }
         SdkCommand::Speakers {
             app_id, command, ..
@@ -3769,6 +3815,24 @@ async fn drive_shovel(
                         .map_err(|error| error.to_string())
                 } else {
                     Err("primary collaboration route is unavailable".into())
+                };
+                let _ = reply.send(result);
+            }
+            SdkCommand::DisplayControl {
+                command,
+                origin,
+                reply,
+            } => {
+                let result = if let Some(link) = settings_link.as_ref() {
+                    tokio::time::timeout(
+                        Duration::from_secs(3),
+                        link.handle.display_control(&command, origin),
+                    )
+                    .await
+                    .map_err(|_| "The display service timed out.".to_string())
+                    .and_then(|result| result.map_err(|error| error.to_string()))
+                } else {
+                    Err("The admitted settings channel is unavailable.".into())
                 };
                 let _ = reply.send(result);
             }

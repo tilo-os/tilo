@@ -7070,10 +7070,7 @@ fn spawn_session_peer_sync(
     state: &mut State,
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
 ) -> Option<Arc<crate::shell::network::ShellNetwork>> {
-    match crate::shell::network::ShellNetwork::spawn(
-        tree_handle.clone(),
-        &crate::shell::network::peer_key_path(),
-    ) {
+    match crate::shell::network::ShellNetwork::spawn_for_session(tree_handle.clone()) {
         Ok(handle) => Some(install_session_peer_sync(
             frame_builder,
             state,
@@ -7097,11 +7094,8 @@ fn start_session_peer_sync(
 ) -> crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork> {
     match crate::session_runtime::runtime() {
         Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
-            crate::shell::network::ShellNetwork::spawn(
-                tree_handle,
-                &crate::shell::network::peer_key_path(),
-            )
-            .map_err(|error| error.to_string())
+            crate::shell::network::ShellNetwork::spawn_for_session(tree_handle)
+                .map_err(|error| error.to_string())
         }),
         Err(error) => crate::session_runtime::PendingStart::finished(Err(format!(
             "the session runtime is unavailable: {error}"

@@ -99,6 +99,21 @@ pub fn user_unit(uid: u32) -> String {
     reason = "the trait documents its single error contract once"
 )]
 pub trait Apply {
+    /// Whether this actual account/session is the claimed device owner in wheel.
+    fn device_action_owner(&mut self, _session: &Session) -> bool {
+        false
+    }
+    /// Enroll the current encrypted root for the existing owner's actual session.
+    fn enroll_device_unlock(
+        &mut self,
+        _uid: u32,
+        _request: &tilo_vm_protocol::DeviceUnlockEnrol,
+    ) -> Result<tilo_vm_protocol::DeviceUnlockEnrolResult, DaemonError> {
+        Err(DaemonError::Apply {
+            step: "device unlock enrollment".into(),
+            detail: "this backend does not serve device unlock enrollment".into(),
+        })
+    }
     /// Create the slot's system user if missing; return its uid.
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError>;
     /// The uid of an existing account, which is left as it is.

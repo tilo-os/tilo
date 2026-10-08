@@ -1299,6 +1299,23 @@ impl CapnpBrokerState {
                         .map_err(|error| refusal(error.to_string()))?,
                 )
             }
+            Some(super::published_invocation::InvocationCaller::NativePerson {
+                room: original_room,
+                certificate,
+                ..
+            }) => {
+                if original_room != room
+                    || caller.principal()
+                        != &tilo_actions::remote::CallerPrincipal::Person(
+                            super::principal_id_for_root(certificate.user_public_key),
+                        )
+                {
+                    return Err(ActionHostError::NotPermitted);
+                }
+                self.current_native_person(room, certificate)
+                    .map_err(refusal)?;
+                None
+            }
             None => None,
         };
         if let Some(admitted) = admitted {
@@ -2280,6 +2297,36 @@ impl CapnpBrokerState {
     ) -> Result<Option<tilo_user_identity::DeviceCert>, String> {
         use super::published_invocation::InvocationCaller;
         let admitted = match origin {
+            Some(InvocationCaller::NativePerson {
+                room: original_room,
+                certificate,
+                ..
+            }) => {
+                if original_room != room
+                    || caller.room() != Some(room)
+                    || caller.principal()
+                        != &CallerPrincipal::Person(super::principal_id_for_root(
+                            certificate.user_public_key,
+                        ))
+                    || caller
+                        .user_public_key()
+                        .is_some_and(|key| key != &certificate.user_public_key)
+                    || caller
+                        .device_public_key()
+                        .is_some_and(|key| key != &certificate.device_public_key)
+                    || certificate.capabilities.can_act_as_host
+                    || super::cap_applies_in(
+                        self.certificate_authority.get().map(AsRef::as_ref),
+                        room,
+                        caller.is_foreign_device() || certificate.capabilities.foreign,
+                        Some(&certificate.device_public_key),
+                    )
+                {
+                    return Err("governance requires original Person evidence".into());
+                }
+                self.current_native_person(original_room, certificate)?;
+                return Ok(Some(certificate.clone()));
+            }
             Some(InvocationCaller::Certified { caller, .. }) => {
                 if caller.room != room {
                     return Err("governance original room changed".into());

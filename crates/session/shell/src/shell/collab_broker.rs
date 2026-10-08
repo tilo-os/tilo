@@ -829,6 +829,7 @@ fn spawn_inner(
     )));
     if certificate_provisioning.uses_harness_devices() && config.is_none() {
         services.native_certificates = None;
+        services.local_person = None;
     }
     let realtime_fabric = if config.is_none() {
         peer_sync.and_then(crate::shell::collab_broker_capnp::NativeRealtimeServices::from_network)
