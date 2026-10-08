@@ -16,12 +16,12 @@ from ci import qualified_native
 
 
 class QualifiedNativeTests(unittest.TestCase):
-    def test_builder_binding_is_evaluated_at_native_admission_without_a_selection_wait(self):
+    def test_native_admission_retains_general_lane_without_a_selection_wait(self):
         workflow = (ROOT / ".forgejo/workflows/check.yml").read_text()
         selection = workflow.split("  select:\n", 1)[1].split("  security:\n", 1)[0]
         self.assertNotIn("needs:", selection)
         self.assertNotIn("needs.builder", selection)
-        expression = "contains(matrix.qualified_builders, needs.builder.outputs.image) && matrix.qualified_runner || matrix.runner"
+        expression = "matrix.runner"
         for name in ("test", "clippy"):
             job = re.split(r"\n  \S", workflow.split(f"  {name}:\n", 1)[1], maxsplit=1)[0]
             self.assertIn("needs: [builder, select, security]", job)
@@ -88,6 +88,12 @@ class QualifiedNativeTests(unittest.TestCase):
                 self.assertEqual(row["runner"], "runner")
                 self.assertEqual(row["qualified_runner"], "runner-quality")
                 self.assertFalse(row["certify"])
+                with mock.patch.object(planner.qualified_native, "placement", return_value={}):
+                    deferred = planner.make_plan(fixture.metadata, fixture.root, ["collab-types/src/lib.rs"], 2)
+                for deferred_row in deferred["matrix"]["include"] + deferred["clippy_matrix"]["include"]:
+                    self.assertEqual(deferred_row["runner"], "runner")
+                    self.assertEqual(deferred_row["qualified_runner"], "")
+                    self.assertEqual(deferred_row["qualified_builders"], "")
                 self.assertEqual(plan["clippy_matrix"]["include"][0]["qualified_runner"], "runner-quality")
                 app_plan = planner.make_plan(fixture.metadata, fixture.root, ["apps/demo/src/lib.rs"], 2)
                 app_row = app_plan["matrix"]["include"][0]
