@@ -1047,6 +1047,41 @@ def current_same_primary_presentation(response, previous):
     return current
 
 
+def detached_ime_input_route(response, previous_child, previous_source):
+    """Require either the exact child seat or its authenticated live-preedit source."""
+    child = current_same_floating_presentation(response, previous_child)
+    if child is None:
+        raise RuntimeError("Float's exact native destination is no longer presented")
+    if type(child.get("keyboard_focused")) is not bool:
+        raise RuntimeError("Float's keyboard focus is unobservable")
+    if child.get("suspended") is not False or child.get("transferring") is not False:
+        raise RuntimeError("Float's input destination is suspended or still transferring")
+    route = child.get("input_route")
+    source_id = child.get("input_source_surface_id")
+    if child["keyboard_focused"] is True:
+        if route is not None or source_id is not None:
+            raise RuntimeError("focused Float exposes a contradictory input continuation")
+        return child, {
+            "child_keyboard_focused": True,
+            "source_preedit_continuation": False,
+        }
+    if route != "floating-preedit-source" or type(source_id) is not int:
+        raise RuntimeError("Float has neither its keyboard seat nor an authenticated preedit continuation")
+    if source_id != native_surface_id(previous_source):
+        raise RuntimeError("Float's preedit continuation names a foreign native source")
+    source = current_same_primary_presentation(response, previous_source)
+    if source is None or native_surface_id(source) != source_id:
+        raise RuntimeError("Float's preedit continuation source is stale or no longer presented")
+    if type(source.get("keyboard_focused")) is not bool:
+        raise RuntimeError("Float's preedit continuation source focus is unobservable")
+    if source["keyboard_focused"] is not True:
+        raise RuntimeError("Float's preedit continuation source no longer owns the keyboard seat")
+    return child, {
+        "child_keyboard_focused": False,
+        "source_preedit_continuation": True,
+    }
+
+
 def returned_ime_observation(first, current, same_process, text_input_active, same_input_method):
     """Closed Return diagnostics never include native IDs, editor text or errors."""
     return {
@@ -1434,14 +1469,11 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     # AT discovery is asynchronous. Keep the first frame above as evidence,
     # but verify the seat now, on that same native window, not its cached
     # pre-adoption observation. This still refuses an unfocused destination.
-    current_frame = current_same_floating_presentation(
-        call(socket, {"op": "foreign_frames"}), frame
+    frame, detached_input = detached_ime_input_route(
+        call(socket, {"op": "foreign_frames"}), frame, preedit_primary
     )
-    if current_frame is None:
-        raise RuntimeError("Float's exact native destination is no longer presented")
-    frame = current_frame
-    if detached_access["process"] != chat_process or frame["keyboard_focused"] is not True:
-        raise RuntimeError("Float replaced Chat or failed to transfer its keyboard seat")
+    if detached_access["process"] != chat_process:
+        raise RuntimeError("Float replaced the Chat process")
     if not private_editor_value_matches(detached_access, committed_before) \
             or not chat_text_input_active(socket):
         raise RuntimeError("Float committed or deactivated the live Rime preedit")
@@ -1571,6 +1603,8 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
         "pointer_return": True,
         "keyboard_float": True,
         "keyboard_return": True,
+        "detached_child_keyboard_focused": detached_input["child_keyboard_focused"],
+        "detached_source_preedit_continuation": detached_input["source_preedit_continuation"],
         "returned_primary_frame_seq": returned["frame_seq"],
         "private_content_recorded": False,
         "test_owned_preedit_rendered": True,

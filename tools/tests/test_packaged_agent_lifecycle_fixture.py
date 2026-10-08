@@ -1307,6 +1307,85 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 self.assertIsNone(result)
         self.assertFalse(previous["keyboard_focused"])
 
+    def test_detached_ime_accepts_only_exact_child_or_authenticated_source_continuation(self):
+        source = {
+            "app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 10,
+            "presented": True, "last_error": None, "keyboard_focused": True,
+        }
+        child = {
+            "app_id": "so.tilo.chat", "floating_id": "float-current",
+            "surface_id": 11, "frame_seq": 20, "presented": True,
+            "pixels_ready": True, "last_error": None, "keyboard_focused": False,
+            "suspended": False, "transferring": False,
+            "input_route": "floating-preedit-source", "input_source_surface_id": 7,
+        }
+        response = lambda rows: {"answer": {"frames": rows}}
+
+        observed, evidence = PROOF.detached_ime_input_route(
+            response([source, child]), child, source
+        )
+        self.assertIs(observed, child)
+        self.assertEqual(evidence, {
+            "child_keyboard_focused": False,
+            "source_preedit_continuation": True,
+        })
+
+        focused_child = {
+            **child, "keyboard_focused": True,
+            "input_route": None, "input_source_surface_id": None,
+        }
+        observed, evidence = PROOF.detached_ime_input_route(
+            response([{**source, "keyboard_focused": False}, focused_child]),
+            focused_child,
+            source,
+        )
+        self.assertIs(observed, focused_child)
+        self.assertEqual(evidence, {
+            "child_keyboard_focused": True,
+            "source_preedit_continuation": False,
+        })
+
+    def test_detached_ime_refuses_malformed_foreign_stale_and_ended_continuations(self):
+        source = {
+            "app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 10,
+            "presented": True, "last_error": None, "keyboard_focused": True,
+        }
+        child = {
+            "app_id": "so.tilo.chat", "floating_id": "float-current",
+            "surface_id": 11, "frame_seq": 20, "presented": True,
+            "pixels_ready": True, "last_error": None, "keyboard_focused": False,
+            "suspended": False, "transferring": False,
+            "input_route": "floating-preedit-source", "input_source_surface_id": 7,
+        }
+        response = lambda rows: {"answer": {"frames": rows}}
+        invalid = [
+            ({**child, "input_route": None}, source),
+            ({**child, "input_source_surface_id": "7"}, source),
+            ({**child, "keyboard_focused": None}, source),
+            ({**child, "input_source_surface_id": 8}, source),
+            (child, {**source, "surface_id": 8}),
+            (child, {**source, "keyboard_focused": None}),
+            (child, {**source, "keyboard_focused": False}),
+            ({**child, "floating_id": "float-foreign"}, source),
+            ({**child, "presented": False}, source),
+            ({**child, "suspended": True}, source),
+            ({**child, "transferring": True}, source),
+        ]
+        for current_child, current_source in invalid:
+            with self.subTest(child=current_child, source=current_source), self.assertRaises(RuntimeError):
+                PROOF.detached_ime_input_route(
+                    response([current_source, current_child]), child, source
+                )
+
+        ended = {key: value for key, value in child.items()
+                 if key not in {"input_route", "input_source_surface_id"}}
+        with self.assertRaises(RuntimeError):
+            PROOF.detached_ime_input_route(response([source, ended]), child, source)
+
+        contradictory = {**child, "keyboard_focused": True}
+        with self.assertRaises(RuntimeError):
+            PROOF.detached_ime_input_route(response([source, contradictory]), child, source)
+
     def test_return_diagnostics_are_only_closed_counts_and_actual_bools(self):
         private = "private-editor-and-native-identity"
         first = {"frame_seq": 10, "keyboard_focused": False, "surface_id": 7,
@@ -1343,6 +1422,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         for required in (
                 '"text": "nihao"', '"key": "Space"', 'committed_after = "u你好"',
                 "same_fcitx_process", "chat_text_input_active",
+                "detached_ime_input_route",
                 "ime-preedit-attached-", "ime-preedit-detached-",
                 "ime-preedit-returned-", "drag_agent_conversation",
                 "fresh_floating_presentation", "pre-detach edit undo after both handoffs",
