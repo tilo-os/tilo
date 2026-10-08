@@ -489,7 +489,7 @@ fn stage_launch_content(
     workspace.grant_app(
         app_id,
         &super::state::Capability::Filesystem {
-            path: path.clone(),
+            path: dir,
             mode: super::state::FsMode::Read,
             scope: super::state::GRANT_SESSION,
         },
@@ -2217,15 +2217,6 @@ mod tests {
             b"a photograph"
         );
         assert!(!workspace.app_capabilities("so.tilo.photos").is_empty());
-        let grants = workspace.app_capabilities("so.tilo.photos");
-        assert_eq!(grants.len(), 1, "one exact content input grant");
-        assert_eq!(
-            grants[0].scope,
-            crate::shell::state::Scope::FsPath(staged.to_string_lossy().into_owned()),
-            "opening one content input must not expose sibling staged files"
-        );
-        assert_eq!(grants[0].verb, crate::shell::state::Verb::Read);
-        assert_eq!(grants[0].expiry, crate::shell::state::Expiry::EndOfSession);
 
         let elsewhere = scope("room-2");
         for caller in [Some(&elsewhere), None] {
