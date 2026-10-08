@@ -2,6 +2,21 @@
 use std::sync::Arc;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
 
+/// Current native seat identity, installed only by the authenticated host.
+/// This Rust capability is never exposed through a wire request.
+pub trait LocalPersonServices: Send + Sync {
+    /// Derive the real local certificate for this person and current room.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a missing, replaced or revoked identity and retired room custody.
+    fn certificate(
+        &self,
+        room: &str,
+        person: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String>;
+}
+
 /// The normal desktop opening deadline, shared with placement retirement.
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -889,6 +904,31 @@ pub trait AppActionGrants: Send + Sync {
     /// that its call was decided.
     fn revoke(&self, room: &str, capability: &str);
 }
+/// Identity of an exact private Settings worker, derived by the broker.
+#[derive(Clone, Debug)]
+pub struct DisplayControlContext {
+    pub(crate) room: String,
+    pub(crate) root: [u8; 32],
+    pub(crate) device: [u8; 32],
+}
+impl DisplayControlContext {
+    pub fn room(&self) -> &str {
+        &self.room
+    }
+    pub fn root(&self) -> [u8; 32] {
+        self.root
+    }
+    pub fn device(&self) -> [u8; 32] {
+        self.device
+    }
+}
+/// The native host's separately authorized display transaction service.
+pub trait DisplayControlServices: Send + Sync {
+    /// # Errors
+    /// Refuses stale owner authority, invalid intent or failed persistence.
+    fn command(&self, context: &DisplayControlContext, command: &[u8]) -> Result<Vec<u8>, String>;
+}
+
 #[derive(Clone, Default)]
 pub struct HostServices {
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
@@ -905,6 +945,7 @@ pub struct HostServices {
     /// nothing can be proposed.
     pub document_imports: Option<Arc<dyn DocumentImports>>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
+    pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,
@@ -920,6 +961,7 @@ pub struct HostServices {
     /// and the shared sections (`settings_store::app_scope`). Without it
     /// apps have no settings beyond their own process.
     pub settings: Option<Arc<dyn settings_store::SettingsSource>>,
+    pub display_control: Option<Arc<dyn DisplayControlServices>>,
     /// Every app's live activity, as the host presents it. Without it no
     /// app shows anything outside its windows.
     pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,

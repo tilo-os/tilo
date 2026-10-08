@@ -12,7 +12,7 @@ use std::rc::Rc;
 use ui::LocalState;
 use ui::framework::{ActionControl, Actions, Dispatcher, EffectAnswer, Effected, Refused, RunMode};
 use ui::storage::{AppStorage, Settings as StoredSettings, SettingsRevision, SettingsSchema};
-use ui::tilo_resource::Binds;
+use ui::tilo_resource::{Binds, Effect};
 
 use crate::effects::SettingsEffect;
 use crate::resource::Settings;
@@ -140,8 +140,10 @@ impl PaneCx {
         effect: impl Binds<SettingsEffect, I>,
     ) -> C {
         match &self.door {
-            Some(door) => door.actions.bind_effect(control, effect),
-            None => control.unavailable(),
+            Some(door) if Self::may_effect(door, effect.action_id()) => {
+                door.actions.bind_effect(control, effect)
+            }
+            Some(_) | None => control.unavailable(),
         }
     }
 
@@ -152,11 +154,14 @@ impl PaneCx {
         row: &ui::tilo_actions::Resource,
         effect: impl Binds<SettingsEffect, I>,
     ) -> Option<ui::tilo_actions::ActionBinding<I>> {
-        self.door.as_ref()?;
+        let door = self.door.as_ref()?;
         let spec = row
             .actions
             .iter()
             .find(|spec| spec.id == effect.action_id())?;
+        if !door.dispatcher.may(spec.contract.permission) {
+            return None;
+        }
         let asked: Vec<String> = spec
             .params()
             .iter()
@@ -179,6 +184,7 @@ impl PaneCx {
     ) -> Option<ui::tilo_actions::ActionBinding<I>> {
         self.door
             .as_ref()
+            .filter(|door| Self::may_effect(door, effect.action_id()))
             .and_then(|door| door.actions.effect_binding(effect))
     }
 
@@ -189,10 +195,20 @@ impl PaneCx {
         control: C,
         effect: impl Into<SettingsEffect>,
     ) -> C {
+        let effect = effect.into();
         match &self.door {
-            Some(door) => door.actions.bind_effect_invocation(control, &effect.into()),
-            None => control.unavailable(),
+            Some(door) if Self::may_effect(door, effect.id()) => {
+                door.actions.bind_effect_invocation(control, &effect)
+            }
+            Some(_) | None => control.unavailable(),
         }
+    }
+
+    fn may_effect(door: &Door, id: &str) -> bool {
+        SettingsEffect::declarations()
+            .into_iter()
+            .find(|declaration| declaration.id == id)
+            .is_some_and(|declaration| door.dispatcher.may(declaration.permission))
     }
 
     /// The binding of one fully specified effect, for a shared navigation row.
@@ -201,9 +217,11 @@ impl PaneCx {
         &self,
         effect: impl Into<SettingsEffect>,
     ) -> Option<ui::tilo_actions::ActionBinding<()>> {
+        let effect = effect.into();
         self.door
             .as_ref()
-            .and_then(|door| door.actions.effect(&effect.into()))
+            .filter(|door| Self::may_effect(door, effect.id()))
+            .and_then(|door| door.actions.effect(&effect))
     }
 
     /// Invoke `effect` through the same door as a bound control.

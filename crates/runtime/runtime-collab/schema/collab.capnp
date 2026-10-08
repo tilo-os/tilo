@@ -901,6 +901,12 @@ interface LiveActivity {
   controls @1 (after :UInt64) -> (serial :UInt64, controlsJson :Data);
 }
 
+enum DisplayRequestOrigin {
+  unavailable @0;
+  localHost @1;
+  published @2;
+}
+
 interface AppSettings {
   # The view once its revision differs from `after`; at once for 0. A
   # caller follows changes by passing back the revision it was given.
@@ -909,6 +915,9 @@ interface AppSettings {
   # `section` (`app_personal` or `app_device_local`), answering the view
   # after the write. Any other section or entry is refused.
   update @1 (section :Text, valuesJson :Data) -> (revision :UInt64, documentJson :Data);
+  # Narrow display intent over an independently admitted private Settings
+  # worker. The host owns validation, prior state and transaction persistence.
+  displayControl @2 (commandJson :Data, publishedInvocation :Data, origin :DisplayRequestOrigin) -> (replyJson :Data);
 }
 
 struct ResourceViewRangeSpec {
