@@ -129,7 +129,7 @@ impl Drop for Registration {
         registry()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|watch| watch.strong_count() > 0 && !std::ptr::eq(watch.as_ptr(), &*self.0));
+            .retain(|watch| watch.strong_count() > 0 && watch.as_ptr() != Arc::as_ptr(&self.0));
     }
 }
 
