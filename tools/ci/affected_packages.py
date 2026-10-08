@@ -775,7 +775,8 @@ def make_plan(
     check_rows = []
     for arch, runner in runners.items():
         for shard in balance(selected, packages, effective_shards, test_seconds):
-            placement = qualified_native.placement(root, set(shard["packages"].split()[1::2]), arch)
+            placement = {"qualified_runner": "", "qualified_builders": "",
+                         **qualified_native.placement(root, set(shard["packages"].split()[1::2]), arch)}
             check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner, **placement})
     # Test shards cover the tested packages and scoped readers, split by
     # recorded test time. Packages too heavy to share a job get their own
@@ -801,7 +802,10 @@ def make_plan(
                    "filter": scoped_tests[name].filter} for name in scoped_names]
         # check_runner: a pull request runs its own check.yml against this
         # planner from the merged tree; older branches' check.yml reads it.
-        placement = qualified_native.placement(root, shard_names, arch)
+        # Older PR workflows still evaluate optional qualification fields.
+        # Empty strings retain their general fallback without missing lookups.
+        placement = {"qualified_runner": "", "qualified_builders": "",
+                     **qualified_native.placement(root, shard_names, arch)}
         certify = any(Path(packages[name]["manifest_path"]).resolve().parent.parent == root.resolve() / "apps"
                       and name != "agent" for name in test_names)
         return {**shard, "arch": arch, "runner": runner, "check_runner": runner, **placement,
