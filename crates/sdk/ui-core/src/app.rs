@@ -2109,7 +2109,11 @@ impl App {
 
     #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
-        self.accessibility.base_theme = Theme::configured();
+        self.accessibility.base_theme = self
+            .floating
+            .host_theme
+            .clone()
+            .unwrap_or_else(Theme::configured);
         self.theme_schedule =
             Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
                 .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
