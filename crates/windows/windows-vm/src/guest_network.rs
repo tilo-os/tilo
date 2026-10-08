@@ -103,7 +103,7 @@ impl GuestNetworkProxy {
     ) -> Result<Self, GuestNetworkError> {
         Self::start_limited(
             address,
-            hosts,
+            &hosts,
             require_guest_peer,
             launcher::netgate::MAX_CONNECTIONS,
         )
@@ -111,11 +111,11 @@ impl GuestNetworkProxy {
 
     fn start_limited(
         address: SocketAddr,
-        hosts: Vec<String>,
+        hosts: &[String],
         require_guest_peer: bool,
         max_connections: usize,
     ) -> Result<Self, GuestNetworkError> {
-        let policy = lease_policy(&hosts)?;
+        let policy = lease_policy(hosts)?;
         let listener = std::net::TcpListener::bind(address).map_err(GuestNetworkError::Bind)?;
         let endpoint = listener.local_addr().map_err(GuestNetworkError::Bind)?;
         listener
@@ -613,7 +613,7 @@ mod tests {
         let port = service.local_addr().unwrap().port();
         let proxy = GuestNetworkProxy::start_limited(
             "127.0.0.1:0".parse().unwrap(),
-            vec!["localhost".into()],
+            &["localhost".into()],
             false,
             1,
         )
