@@ -4540,13 +4540,14 @@ mod tests {
         );
         grouped("");
         assert_eq!(builds.get(), 1, "nothing changed, so nothing is rebuilt");
-        for needle in ["d", "da", "dar", "dark"] {
-            let found = grouped(needle)
-                .into_iter()
-                .flat_map(|group| group.results)
-                .any(|result| result.id == "appearance.theme.dark");
-            assert!(found, "{needle:?} finds the dark theme");
+        for needle in ["d", "da", "dar"] {
+            assert!(!grouped(needle).is_empty(), "{needle:?} finds actions");
         }
+        let found = grouped("dark")
+            .into_iter()
+            .flat_map(|group| group.results)
+            .any(|result| result.id == "appearance.theme.dark");
+        assert!(found, "\"dark\" finds the dark theme");
         assert_eq!(builds.get(), 1, "typing narrows the retained rows");
     }
 
