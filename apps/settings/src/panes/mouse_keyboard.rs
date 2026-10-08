@@ -3143,6 +3143,151 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    fn show_keyboard_preview(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
+        let address = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
+        app.call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap();
+        assert!(set(
+            app,
+            InputEffect::PreviewLayout {
+                source: "de".into()
+            }
+        ));
+        assert!(set(
+            app,
+            InputEffect::InspectKeyboardKey { key: "AD06".into() }
+        ));
+        for _ in 0..30 {
+            app.settle();
+            let rect = app.harness().targets()["input.keyboard_map"];
+            if rect.y0 >= 0.0 && rect.y1 <= f64::from(viewport.1) {
+                app.harness().dispatch_to_root(&WindowEvent::Focused(true));
+                return;
+            }
+            app.harness().send(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(
+                    f64::from(viewport.0) - 60.0,
+                    f64::from(viewport.1) / 2.0,
+                ),
+            });
+            app.harness().scroll(0.0, -3.0);
+        }
+        panic!("the mounted keyboard preview must become visible by ordinary scrolling");
+    }
+
+    fn preview_key_event(state: winit::event::ElementState) -> WindowEvent {
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            is_synthetic: false,
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(
+                        winit::keyboard::KeyCode::KeyY,
+                    ),
+                    state,
+                },
+                winit::keyboard::Key::Character("z".into()),
+                Some("z".into()),
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                Some("z".into()),
+                winit::keyboard::Key::Character("z".into()),
+            ),
+        }
+    }
+
+    fn mounted_map_scene(
+        app: &mut TestApp<SettingsShell>,
+        text: &mut ui::text_render::TextRenderer,
+    ) -> vello::Scene {
+        let theme = app.harness().theme().clone();
+        app.harness()
+            .with_widget_mut::<ui::KeyboardMap, _>(|map| {
+                let mut scene = vello::Scene::new();
+                ui::widget::Widget::draw(
+                    map,
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    text,
+                    &theme,
+                    &ui::PresenceCtx::empty(),
+                );
+                scene
+            })
+            .expect("the real mounted Settings keyboard map must exist")
+    }
+
+    #[test]
+    fn keyboard_map_mounted_preview_renders_pressed_feedback_in_each_theme() {
+        use ui::tilo_resource::Effect as _;
+        for (name, viewport, theme) in [
+            ("light-wide", (1472, 920), Theme::light()),
+            ("dark-narrow", (420, 640), Theme::dark().with_ui_scale(1.5)),
+            (
+                "contrast-narrow",
+                (420, 640),
+                Theme::high_contrast().with_ui_scale(1.5),
+            ),
+        ] {
+            let mut app = TestApp::<SettingsShell>::new().unwrap();
+            app.harness().resize(viewport).unwrap();
+            app.harness().set_theme(theme);
+            show_keyboard_preview(&mut app, viewport);
+            let before = app.settings::<InputPrefs>().get();
+            let out = std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("keyboard-map-review")
+                .join(name);
+            let read = |app: &mut TestApp<SettingsShell>| {
+                app.call_on(
+                    "settings.keyboard-map",
+                    InputEffect::InspectKeyboardMap.id(),
+                    serde_json::json!({}),
+                )
+                .unwrap()
+                .unwrap()
+            };
+            let rest = read(&mut app);
+            assert_eq!(rest["mode"], "preview");
+            assert_eq!(rest["available"], true);
+            assert_eq!(rest["pressed_physical_keys"], serde_json::json!([]));
+            app.harness().render_png(&out.join("released.png"));
+            let mut text = ui::text_render::TextRenderer::new();
+            let released_scene = mounted_map_scene(&mut app, &mut text);
+            app.harness()
+                .dispatch_to_root(&preview_key_event(winit::event::ElementState::Pressed));
+            assert_eq!(
+                read(&mut app)["pressed_physical_keys"],
+                serde_json::json!(["AD06"])
+            );
+            app.harness().render_png(&out.join("pressed.png"));
+            assert!(
+                !released_scene.encoding_eq(&mounted_map_scene(&mut app, &mut text)),
+                "{name}: an actual visible map must paint foreground physical-key feedback"
+            );
+            app.harness()
+                .dispatch_to_root(&preview_key_event(winit::event::ElementState::Released));
+            assert_eq!(
+                read(&mut app)["pressed_physical_keys"],
+                serde_json::json!([])
+            );
+            app.harness().render_png(&out.join("released-again.png"));
+            assert!(
+                released_scene.encoding_eq(&mounted_map_scene(&mut app, &mut text)),
+                "{name}: key release must restore the actual mounted map"
+            );
+            assert_eq!(app.settings::<InputPrefs>().get(), before);
+            assert!(app.harness().native_app_audit().is_certified());
+        }
+    }
+
     fn pane_with(input: &InputPrefs, catalog: Vec<CatalogEntry>) -> MouseKeyboardPane {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
