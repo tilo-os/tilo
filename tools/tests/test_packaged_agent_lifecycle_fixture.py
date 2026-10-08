@@ -2570,6 +2570,42 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertLess(diagnostic, assertion)
         self.assertIn('"ime-returned-first-frame-', source)
 
+    def test_keyboard_return_wait_requires_exact_ordinary_child_seat_before_enter(self):
+        child = {"app_id": "so.tilo.chat", "surface_id": 11, "floating_id": "private",
+                 "frame_seq": 22, "presented": True, "pixels_ready": True,
+                 "keyboard_focused": False, "suspended": False, "transferring": False,
+                 "last_error": None}
+        focused = {**child, "frame_seq": 23, "keyboard_focused": True}
+        response = lambda row: {"answer": {"frames": [row]}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "call", side_effect=[response(child), response(focused)]):
+            output = pathlib.Path(directory)
+            self.assertEqual(PROOF.wait_for_floating_keyboard_seat(
+                "socket", child, output, None), focused)
+            receipt = json.loads((output / "keyboard-return-child-seat.json").read_text())
+            self.assertEqual(receipt["observation_count"], 2)
+            self.assertFalse(receipt["initial"]["accepted"])
+            self.assertTrue(receipt["last"]["accepted"])
+            self.assertNotIn("private", json.dumps(receipt))
+            for changes in ({"surface_id": 99}, {"floating_id": "other"},
+                            {"frame_seq": 21}, {"keyboard_focused": None},
+                            {"input_route": "floating-preedit-source"}, {"suspended": True}):
+                with self.subTest(changes=changes), patch.object(PROOF, "call", return_value=response({**focused, **changes})):
+                    with self.assertRaises(RuntimeError):
+                        PROOF.wait_for_floating_keyboard_seat("socket", child, output, None)
+            with patch.object(PROOF, "call", return_value=response(child)), \
+                    patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
+                with self.assertRaises(PROOF.ProofTimeout):
+                    PROOF.wait_for_floating_keyboard_seat("socket", child, output, None)
+        for fixture in (PROOF.native_float_return, PROOF.native_ime_float_return):
+            source = inspect.getsource(fixture)
+            focus = source.index('focus_agent_conversation_control(keyboard_access, keyboard_access["control"], "Return")')
+            seat = source.index("wait_for_floating_keyboard_seat(", focus)
+            enter = source.index('{"op": "key", "key": "Enter"}', focus)
+            self.assertLess(focus, seat)
+            self.assertLess(seat, enter)
+
     def test_return_editor_classification_distinguishes_retired_nodes_without_private_values(self):
         access = {"bus": "private-bus", "composer": "private-path"}
         with patch.object(PROOF.atspi, "atspi_address", return_value="private-address"), \

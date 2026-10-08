@@ -1300,6 +1300,48 @@ def current_same_floating_presentation(response, previous):
     return current
 
 
+def wait_for_floating_keyboard_seat(socket, previous, output, process):
+    """Require the actual same ordinary child seat before a physical Return key."""
+    evidence = {"observation_count": 0, "initial": None, "last": None}
+
+    def observe():
+        sample = dict.fromkeys(("exact_child_exists", "presented", "pixels_ready",
+                                "keyboard_focused", "suspended", "transferring",
+                                "ordinary_route", "accepted"), False)
+        evidence["observation_count"] += 1
+        try:
+            rows = [row for row in foreign_frames(call(socket, {"op": "foreign_frames"}))
+                    if row.get("app_id") == previous["app_id"]
+                    and row.get("floating_id") == previous["floating_id"]
+                    and row.get("surface_id") == native_surface_id(previous)]
+            sample["exact_child_exists"] = len(rows) == 1
+            if len(rows) != 1:
+                raise RuntimeError("keyboard Return lost its exact detached native child")
+            current = rows[0]
+            names = ("presented", "pixels_ready", "keyboard_focused", "suspended", "transferring")
+            if type(current.get("frame_seq")) is not int \
+                    or current["frame_seq"] < previous["frame_seq"] \
+                    or any(type(current.get(name)) is not bool for name in names):
+                raise RuntimeError("keyboard Return child state is malformed or stale")
+            sample.update({name: current[name] for name in names})
+            sample["ordinary_route"] = current.get("input_route") is None \
+                and current.get("input_source_surface_id") is None
+            if not sample["ordinary_route"] or current["suspended"] \
+                    or current.get("last_error") is not None:
+                raise RuntimeError("keyboard Return child has no ordinary active input route")
+            sample["accepted"] = current["presented"] and current["pixels_ready"] \
+                and current["keyboard_focused"] and not current["transferring"]
+            return current if sample["accepted"] else None
+        finally:
+            if evidence["initial"] is None:
+                evidence["initial"] = sample.copy()
+            evidence["last"] = sample
+            (output / "keyboard-return-child-seat.json").write_text(
+                json.dumps(evidence, indent=2) + "\n")
+
+    return wait_for("keyboard Return's exact ordinary detached seat", observe, process)
+
+
 def float_return_evidence_proven(evidence):
     """Require the structured success field, not arbitrary container truthiness."""
     return isinstance(evidence, dict) and evidence.get("proven") is True
@@ -1781,9 +1823,11 @@ def native_float_return(socket, room, record, output, size, process):
         "keyboard-activated detached Tide editor",
         lambda: agent_conversation_accessibility("Tide", detached=True), process,
     )
+    keyboard_frame = wait_for_floating_keyboard_seat(socket, keyboard_frame, output, process)
     require_chat_keyboard_focus_after_click(socket, output, detached=True)
     keyboard_detached = private_editor_observation(keyboard_access, draft)
     focus_agent_conversation_control(keyboard_access, keyboard_access["control"], "Return")
+    keyboard_frame = wait_for_floating_keyboard_seat(socket, keyboard_frame, output, process)
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     wait_for("keyboard-activated detached Chat withdrawal", lambda: not floating_surface_presenting(
         call(socket, {"op": "foreign_frames"}), "so.tilo.chat",
@@ -2490,6 +2534,7 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     if not private_editor_value_matches(keyboard_access, ""):
         raise RuntimeError("keyboard Float changed the editor after Rime undo")
     focus_agent_conversation_control(keyboard_access, keyboard_access["control"], "Return")
+    keyboard_frame = wait_for_floating_keyboard_seat(socket, keyboard_frame, output, process)
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     wait_for(
         "keyboard Rime proof Float withdrawal",
