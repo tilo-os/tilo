@@ -2102,3 +2102,5 @@ perm-read-loading = Reading this device’s privacy and security state…
 perm-read-error = Privacy and security state could not be read: { $error }
 perm-read-disconnected = The privacy status reader disconnected.
 perm-read-preview = Device privacy and security state is unavailable in this preview.
+
+perm-read-refreshing = Refreshing this device’s privacy state. The values below are from the previous observation.

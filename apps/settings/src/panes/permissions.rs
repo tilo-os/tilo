@@ -140,6 +140,12 @@ impl PrivacyArea {
         Box::new(ModelPane::new(Rc::clone(model)))
     }
 
+    pub(crate) fn set_visible(&self, visible: bool) {
+        if let Some(model) = self.model.get() {
+            model.borrow_mut().set_visible(visible);
+        }
+    }
+
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
             model.borrow_mut().poll_read();
@@ -161,6 +167,9 @@ struct PrivacyModel {
     snapshot: Option<Result<PrivacySnapshot, String>>,
     reading: Option<std::sync::mpsc::Receiver<Result<PrivacySnapshot, String>>>,
     changed: bool,
+    control: Option<Arc<dyn PrivacyControl>>,
+    visible: bool,
+    refresh_at: Option<ui::time::Instant>,
 }
 
 impl PrivacyModel {
@@ -170,20 +179,49 @@ impl PrivacyModel {
             snapshot: None,
             reading: None,
             changed: false,
+            control: None,
+            visible: true,
+            refresh_at: None,
         };
-        if let Some(control) = control {
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let wake = ui::WakeHandle::new();
-            match ui::background::Background::current().spawn("privacy_snapshot", move || {
-                if sender.send(control.read()).is_ok() {
-                    wake.wake();
-                }
-            }) {
-                Ok(()) => model.reading = Some(receiver),
-                Err(error) => model.snapshot = Some(Err(error.to_string())),
+        model.control = control;
+        model.start_read();
+        model
+    }
+
+    fn set_visible(&mut self, visible: bool) {
+        // Selecting the same pane can reopen it from the narrow category list.
+        // It is still an explicit observation request, not a retained relayout.
+        self.visible = visible;
+        self.refresh_at = None;
+        if visible {
+            self.start_read();
+        }
+    }
+
+    fn start_read(&mut self) {
+        if self.reading.is_some() {
+            return;
+        }
+        let Some(control) = self.control.clone() else {
+            return;
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let wake = ui::WakeHandle::new();
+        self.refresh_at = None;
+        self.changed = true;
+        match ui::background::Background::current().spawn("privacy_snapshot", move || {
+            if sender.send(control.read()).is_ok() {
+                wake.wake();
+            }
+        }) {
+            Ok(()) => self.reading = Some(receiver),
+            Err(error) => {
+                self.snapshot = Some(Err(error.to_string()));
+                self.refresh_at = self
+                    .visible
+                    .then(|| ui::time::now() + Duration::from_secs(1));
             }
         }
-        model
     }
 
     fn poll_read(&mut self) {
@@ -197,6 +235,9 @@ impl PrivacyModel {
         };
         self.reading = None;
         self.snapshot = Some(result);
+        self.refresh_at = self
+            .visible
+            .then(|| ui::time::now() + Duration::from_secs(1));
         self.changed = true;
     }
 }
@@ -204,6 +245,10 @@ impl PrivacyModel {
 impl PaneModel for PrivacyModel {
     fn compose(&self) -> Box<dyn Widget> {
         match &self.snapshot {
+            Some(Ok(snapshot)) if self.reading.is_some() => cards(vec![
+                caption(&t("perm-read-refreshing")),
+                build_observed_view(&self.cx, snapshot),
+            ]),
             Some(Ok(snapshot)) => build_observed_view(&self.cx, snapshot),
             Some(Err(error)) => cards(vec![card(
                 &t("perm-this-device"),
@@ -224,10 +269,16 @@ impl PaneModel for PrivacyModel {
     }
     fn poll(&mut self) -> bool {
         self.poll_read();
+        if self.visible && self.refresh_at.is_some_and(|at| ui::time::now() >= at) {
+            self.start_read();
+        }
         std::mem::take(&mut self.changed)
     }
     fn name(&self) -> &'static str {
         "PrivacyPane"
+    }
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        self.visible.then_some(self.refresh_at).flatten()
     }
 }
 
@@ -949,6 +1000,132 @@ mod tests {
         ] {
             assert!(!labels.contains(&t(claim)));
         }
+    }
+
+    struct ChangingPrivacy {
+        entered: std::sync::mpsc::Sender<()>,
+        results: std::sync::Mutex<std::sync::mpsc::Receiver<Result<PrivacySnapshot, String>>>,
+    }
+    impl PrivacyControl for ChangingPrivacy {
+        fn read(&self) -> Result<PrivacySnapshot, String> {
+            self.entered.send(()).unwrap();
+            self.results
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+        }
+    }
+
+    fn changed_snapshot(active: bool) -> PrivacySnapshot {
+        let mut snapshot = PrivacySnapshot::unavailable();
+        snapshot.workspace_state = Some(if active {
+            sample_state()
+        } else {
+            r#"{"workspaces":[]}"#.into()
+        });
+        if active {
+            snapshot
+                .privacy
+                .active_media
+                .push(os_actions::ActiveMediaUse {
+                    client_id: 7,
+                    pid: 42,
+                    app_id: "so.tilo.camera".into(),
+                    label: "Observed camera".into(),
+                    binary: "/usr/bin/camera".into(),
+                    kind: os_actions::MediaKind::Camera,
+                });
+        }
+        snapshot
+    }
+
+    fn open_privacy(app: &mut ui::framework::testing::TestApp<crate::SettingsShell>) {
+        let address = crate::effects::open_pane_address(crate::categories::Category::Permissions);
+        app.call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+    }
+
+    fn await_privacy_label(
+        app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+        label: &str,
+    ) {
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| {
+                    let mut labels = Vec::new();
+                    text_labels(h.root_widget(), &mut labels);
+                    labels.iter().any(|value| value == label)
+                }),
+            "actual mounted Privacy snapshot never adopted {label}"
+        );
+    }
+
+    #[test]
+    fn mounted_privacy_reopen_and_visible_refresh_adopt_capture_and_grant_changes() {
+        let (entered, entries) = std::sync::mpsc::channel();
+        let (results, observed) = std::sync::mpsc::channel();
+        let control = Arc::new(ChangingPrivacy {
+            entered,
+            results: std::sync::Mutex::new(observed),
+        });
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        app.with_surface::<SettingsApp, _>(|settings| {
+            *settings.privacy_mut() = PrivacyArea::with_control(&settings.host().clone(), control);
+        })
+        .unwrap();
+        results.send(Ok(changed_snapshot(false))).unwrap();
+        open_privacy(&mut app);
+        entries.recv_timeout(Duration::from_secs(3)).unwrap();
+        await_privacy_label(&mut app, &t("perm-no-active-use"));
+        let other = crate::effects::open_pane_address(crate::categories::Category::Appearance);
+        app.call_on(&other.resource, &other.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        std::thread::sleep(Duration::from_millis(1100));
+        app.settle();
+        assert!(
+            entries.try_recv().is_err(),
+            "a hidden Privacy pane must not keep reading"
+        );
+        open_privacy(&mut app);
+        entries
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reopening must actually reread current device and workspace state");
+        let mut labels = Vec::new();
+        text_labels(app.harness().root_widget(), &mut labels);
+        assert!(labels.contains(&t("perm-read-refreshing")));
+        for _ in 0..3 {
+            app.settle();
+        }
+        assert!(
+            entries.try_recv().is_err(),
+            "refreshing must retain exactly one in-flight read"
+        );
+        results.send(Ok(changed_snapshot(true))).unwrap();
+        await_privacy_label(&mut app, "Observed camera");
+        await_privacy_label(&mut app, "Studio");
+        // Ordinary mounted idle scheduling must refresh again while the pane stays visible.
+        results.send(Ok(changed_snapshot(false))).unwrap();
+        await_privacy_label(&mut app, &t("perm-no-active-use"));
+        entries.recv_timeout(Duration::from_secs(1)).unwrap();
+        await_privacy_label(&mut app, &t("perm-no-grants-title"));
+        // A real refresh failure must replace the successful observation, never claim no capture.
+        results
+            .send(Err("current capture graph unavailable".into()))
+            .unwrap();
+        await_privacy_label(
+            &mut app,
+            &t_args(
+                "perm-read-error",
+                &[("error", "current capture graph unavailable".into())],
+            ),
+        );
+        let mut labels = Vec::new();
+        text_labels(app.harness().root_widget(), &mut labels);
+        assert!(!labels.contains(&t("perm-no-active-use")));
+        assert!(!labels.contains(&t("perm-no-grants-title")));
     }
 
     fn cx() -> PaneCx {

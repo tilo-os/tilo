@@ -2102,3 +2102,5 @@ perm-read-loading = Datenschutz- und Sicherheitsstatus dieses Geräts wird geles
 perm-read-error = Datenschutz- und Sicherheitsstatus konnte nicht gelesen werden: { $error }
 perm-read-disconnected = Die Verbindung zur Datenschutzabfrage wurde getrennt.
 perm-read-preview = Datenschutz- und Sicherheitsstatus des Geräts ist in dieser Vorschau nicht verfügbar.
+
+perm-read-refreshing = Der Datenschutzstatus dieses Geräts wird aktualisiert. Die folgenden Werte stammen aus der vorherigen Beobachtung.

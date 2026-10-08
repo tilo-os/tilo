@@ -390,6 +390,7 @@ impl SettingsApp {
     }
 
     pub fn select(&mut self, category: Category) {
+        self.privacy.set_visible(category == Category::Permissions);
         if category != Category::MouseKeyboard {
             self.keyboard_map_input.clear();
         }
