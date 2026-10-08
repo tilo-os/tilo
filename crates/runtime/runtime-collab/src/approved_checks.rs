@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 pub const MAX_REQUEST_BYTES: usize = 1024;
 pub const MAX_RECEIPT_BYTES: usize = 16384;
 pub const MAX_PREVIEW_BYTES: usize = 2048;
+pub const MAX_SELECTED_OUTPUTS: usize = 8;
+pub const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_TOTAL_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
 pub const ACTION_ID: &str = "run-approved-check";
 
 fn identifier(value: &str) -> bool {
@@ -99,6 +102,44 @@ pub struct Diagnostic {
     pub truncated: bool,
 }
 
+/// Owner-selected output bytes published into the existing scoped content store.
+/// These identities report captured bytes; they are neither executable authority nor
+/// authentication of claims made inside the output.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedOutput {
+    pub id: String,
+    pub role: String,
+    pub media_type: String,
+    pub size_bytes: u64,
+    pub content_hash: String,
+    pub sha256: String,
+}
+impl SelectedOutput {
+    /// Check the bounded public output vocabulary, without conferring authority.
+    pub fn valid(&self) -> bool {
+        identifier(&self.id)
+            && identifier(&self.role)
+            && media_type(&self.media_type)
+            && self.size_bytes <= MAX_OUTPUT_BYTES
+            && digest(&self.content_hash)
+            && digest(&self.sha256)
+    }
+}
+/// Bounded MIME type without parameters or control characters.
+pub fn media_type(value: &str) -> bool {
+    let Some((kind, subtype)) = value.split_once('/') else {
+        return false;
+    };
+    value.len() <= 128
+        && !kind.is_empty()
+        && !subtype.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/-._+".contains(&byte))
+        && !subtype.contains('/')
+}
+
 /// Observed execution metadata. This is not a grader verdict or a model score.
 /// The full private receipt remains with the trusted host under its content hash.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -112,6 +153,8 @@ pub struct Receipt {
     /// Actual source inventory identity; complete provenance remains in the private artifact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_source_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_outputs: Vec<SelectedOutput>,
     pub config_sha256: String,
     pub runtime_binary_sha256: String,
     pub supervisor_source_sha256: String,
@@ -149,6 +192,25 @@ impl Receipt {
                 .candidate_source_sha256
                 .as_ref()
                 .is_none_or(|value| digest(value))
+            && self.selected_outputs.len() <= MAX_SELECTED_OUTPUTS
+            && self.selected_outputs.iter().all(SelectedOutput::valid)
+            && self
+                .selected_outputs
+                .iter()
+                .map(|output| &output.id)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == self.selected_outputs.len()
+            && self
+                .selected_outputs
+                .iter()
+                .try_fold(0_u64, |sum, output| sum.checked_add(output.size_bytes))
+                .is_some_and(|sum| sum <= MAX_TOTAL_OUTPUT_BYTES)
+            && (self.selected_outputs.is_empty()
+                || self.candidate_source_sha256.is_some()
+                    && self.cleanup_observed
+                    && self.outcome == Outcome::Exited
+                    && self.exit_code.is_some())
             && [&self.stdout, &self.stderr].into_iter().all(|v| {
                 v.preview.len() <= MAX_PREVIEW_BYTES
                     && v.sha256.as_ref().is_none_or(|s| digest(s))
@@ -231,6 +293,7 @@ mod tests {
             },
             artifact_sha256: "a".repeat(64),
             candidate_source_sha256: None,
+            selected_outputs: Vec::new(),
             config_sha256: "b".repeat(64),
             runtime_binary_sha256: "c".repeat(64),
             supervisor_source_sha256: "d".repeat(64),
@@ -280,6 +343,44 @@ mod tests {
             "\"candidate_source_sha256\":",
             "\"candidate_source_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"candidate_source_sha256\":", 1);
         assert!(Receipt::decode(duplicate.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn approved_check_selected_outputs_are_bounded_unique_and_require_completed_fresh_source() {
+        let mut receipt = receipt();
+        receipt.candidate_source_sha256 = Some("f".repeat(64));
+        receipt.selected_outputs = vec![SelectedOutput {
+            id: "summary".into(),
+            role: "reported_evidence".into(),
+            media_type: "application/json".into(),
+            size_bytes: 3,
+            content_hash: "a".repeat(64),
+            sha256: "b".repeat(64),
+        }];
+        assert_eq!(
+            Receipt::decode(&receipt.encode().unwrap()).unwrap(),
+            receipt
+        );
+        let good = receipt.clone();
+        receipt
+            .selected_outputs
+            .push(receipt.selected_outputs[0].clone());
+        assert!(receipt.encode().is_err());
+        receipt = good.clone();
+        receipt.selected_outputs[0].size_bytes = MAX_OUTPUT_BYTES + 1;
+        assert!(receipt.encode().is_err());
+        receipt = good.clone();
+        receipt.candidate_source_sha256 = None;
+        assert!(receipt.encode().is_err());
+        receipt = good.clone();
+        receipt.cleanup_observed = false;
+        assert!(receipt.encode().is_err());
+        receipt = good.clone();
+        receipt.outcome = Outcome::Cancelled;
+        assert!(receipt.encode().is_err());
+        receipt = good;
+        receipt.selected_outputs[0].media_type = "application/json\nsecret".into();
+        assert!(receipt.encode().is_err());
     }
 
     #[test]

@@ -11,6 +11,7 @@ use tilo_peer_state::workspace_task::{
 const WORKSPACE: &str = "desktop:workspace";
 const TASK_PREFIX: &str = "desktop:task:";
 const MAX_ARGUMENT_BYTES: usize = 8192;
+const MAX_PHASE_HISTORY: usize = 32;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,6 +168,40 @@ fn manual(task: &WorkspaceTask) -> bool {
     task.route == WorkspaceTaskRoute::Manual && task.assigned_agent.is_none()
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn launch_task(envelope: &InvocationEnvelope) -> Result<Option<String>, String> {
+    if envelope.action != "launch" || !envelope.resource.starts_with(TASK_PREFIX) {
+        return Ok(None);
+    }
+    if envelope.argument.is_some() {
+        return Err(
+            "native task launch selects only its resource; arguments confer no authority".into(),
+        );
+    }
+    let id = envelope
+        .resource
+        .strip_prefix("desktop:")
+        .ok_or("invalid native task resource")?;
+    if id.len() > 256 || id.chars().any(char::is_control) || id == "task:" {
+        return Err("invalid native launch task identity".into());
+    }
+    Ok(Some(id.into()))
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn launch_actions(snapshot: &WorkspaceTaskSnapshot) -> Vec<PublishedAction> {
+    snapshot.tasks.iter().filter(|task| {
+        task.route == WorkspaceTaskRoute::Model && task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
+            && task.assigned_agent.is_some() && snapshot.controls.get(&task.id).is_some_and(|control| control.active_run.is_none())
+    }).map(|task| {
+        let mut operation = action(&format!("desktop:{}", task.id), "launch", &task.title, "Launch queued agent task", Vec::new(), false);
+        operation.description = Some("An admitted person asks the installed native host to launch this queued task. Process admission and execution state follow actual host and agent receipts.".into());
+        operation.operation_kind = tilo_actions::OperationKind::Effect;
+        operation.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: false };
+        operation
+    }).collect()
+}
+
 fn queue_action(workspace_label: &str) -> PublishedAction {
     use tilo_actions::{ActionParam, ParamType};
     let mut queue = action(
@@ -233,7 +268,7 @@ pub(super) fn actions(
             &target,
             "inspect",
             &task.title,
-            "Inspect task execution policy",
+            "Inspect task policy and admitted execution phases",
             Vec::new(),
             true,
         ));
@@ -332,10 +367,32 @@ pub(super) fn inspect(
         .controls
         .get(task_id)
         .ok_or("task control is absent")?;
+    // Owner receipts retain exact phase epochs after terminal clearing. Older
+    // sequence-only receipts cannot establish an epoch and are not qualified.
+    let mut phases = control.receipts.iter().rev().filter_map(|receipt| {
+        let WorkspaceTaskMutationResult::ExecutionPhaseReported {
+            task_id: recorded,
+            execution,
+        } = &receipt.result
+        else {
+            return None;
+        };
+        (recorded == task_id).then(|| {
+            serde_json::json!({
+                "execution": execution, "invocation": receipt.invocation,
+                "device": hex::encode(receipt.device),
+            })
+        })
+    });
+    let mut history: Vec<_> = phases.by_ref().take(MAX_PHASE_HISTORY).collect();
+    let history_truncated = phases.next().is_some();
+    history.reverse();
     let mut output = serde_json::json!({"task":task,"coordination_only":manual(task),
         "managed_route":!manual(task), "run_epoch":control.run_epoch,
         "execution_budget":control.execution_budget,"steps":control.steps,
         "active_run":control.active_run.is_some(),
+        "execution":control.execution,"execution_phase_history":history,
+        "execution_phase_history_truncated":history_truncated,
         "default_turn_ms":30_000,"default_total_ms":300_000});
     if manual(task) {
         output
@@ -562,6 +619,186 @@ mod tests {
         assert_eq!(owner.workspace_task_snapshot(room).unwrap(), snapshot);
     }
 
+    fn commit_phase_fixture(
+        owner: &tilo_joined_room::NativeWorkspaceOwner,
+        room: tilo_desktop_model::RoomId,
+        invocation: uuid::Uuid,
+        authority: tilo_peer_state::workspace_task::WorkspaceTaskAuthority,
+        command: WorkspaceTaskCommand,
+    ) {
+        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+        let request = OwnerCommitRequest {
+            room: room.to_string(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation,
+                authority,
+                command,
+            },
+        };
+        owner
+            .commit_workspace_task_command(request.clone(), std::time::SystemTime::now())
+            .unwrap()
+            .validate_for(&request)
+            .unwrap();
+    }
+
+    fn admit_phase_member(
+        owner: &tilo_joined_room::NativeWorkspaceOwner,
+        room: tilo_desktop_model::RoomId,
+        certificate: &tilo_user_identity::DeviceCert,
+        key: &ed25519_dalek::SigningKey,
+    ) {
+        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+        use tilo_peer_state::workspace_membership::{
+            AgentMembershipPreset, WorkspaceMembershipCommand,
+        };
+        let member = OwnerCommitRequest {
+            room: room.to_string(),
+            operation: CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::new_v4(),
+                caller: certificate.clone(),
+                command: WorkspaceMembershipCommand::AddAgent {
+                    agent: "scribe".into(),
+                    preset: AgentMembershipPreset::Contributor,
+                },
+            },
+        };
+        owner
+            .commit_workspace_membership_command(
+                member.clone(),
+                certificate,
+                key,
+                std::time::SystemTime::now(),
+            )
+            .unwrap()
+            .validate_for(&member)
+            .unwrap();
+    }
+
+    fn public_phase_history(count: u64) -> serde_json::Value {
+        use tilo_desktop_model::WorkspaceTaskExecutionPhase;
+        use tilo_peer_state::workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskFinish};
+        let (_directory, owner, certificate, key) = enrolled_queue_owner();
+        let room = tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+        admit_phase_member(&owner, room, &certificate, &key);
+        let commit = |invocation, authority, command| {
+            commit_phase_fixture(&owner, room, invocation, authority, command);
+        };
+        commit(
+            uuid::Uuid::new_v4(),
+            WorkspaceTaskAuthority::Person {
+                caller: certificate.clone(),
+            },
+            WorkspaceTaskCommand::Queue {
+                title: "Verify native public phase evidence".into(),
+                assigned_agent: "scribe".into(),
+                route: WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+        );
+        let task = owner.workspace_task_snapshot(room).unwrap().tasks[0]
+            .id
+            .clone();
+        commit(
+            uuid::Uuid::new_v4(),
+            WorkspaceTaskAuthority::Host {
+                attestor: certificate.clone(),
+            },
+            WorkspaceTaskCommand::StartRun {
+                task_id: task.clone(),
+                agent_id: "scribe".into(),
+            },
+        );
+        let mut request = envelope(&serde_json::json!({}));
+        request.resource = format!("desktop:{task}");
+        request.action = "inspect".into();
+        request.argument = None;
+        let started = inspect(&owner.workspace_task_snapshot(room).unwrap(), &request).unwrap();
+        assert!(started["execution"].is_null());
+        assert_eq!(started["execution_phase_history"], serde_json::json!([]));
+        for sequence in 0..count {
+            commit(
+                uuid::Uuid::from_u128(100_u128.checked_add(u128::from(sequence)).unwrap()),
+                WorkspaceTaskAuthority::Agent {
+                    attestor: certificate.clone(),
+                    agent_id: "scribe".into(),
+                },
+                WorkspaceTaskCommand::ExecutionPhase {
+                    task_id: task.clone(),
+                    run_epoch: 1,
+                    sequence,
+                    phase: if sequence == 0 {
+                        WorkspaceTaskExecutionPhase::Accepted
+                    } else {
+                        WorkspaceTaskExecutionPhase::Planning
+                    },
+                },
+            );
+        }
+        let active = inspect(&owner.workspace_task_snapshot(room).unwrap(), &request).unwrap();
+        assert_eq!(active["execution"]["run_epoch"], 1);
+        assert_eq!(
+            active["execution"]["sequence"],
+            count.checked_sub(1).unwrap()
+        );
+        commit(
+            uuid::Uuid::new_v4(),
+            WorkspaceTaskAuthority::Agent {
+                attestor: certificate.clone(),
+                agent_id: "scribe".into(),
+            },
+            WorkspaceTaskCommand::Finish {
+                task_id: task,
+                run_epoch: 1,
+                outcome: WorkspaceTaskFinish::Waiting,
+                summary: "Private provider unavailable".into(),
+            },
+        );
+        let observed = inspect(&owner.workspace_task_snapshot(room).unwrap(), &request).unwrap();
+        assert_eq!(observed["active_run"], false);
+        assert!(observed["execution"].is_null());
+        for entry in observed["execution_phase_history"].as_array().unwrap() {
+            assert_eq!(entry["device"], hex::encode(certificate.device_public_key));
+            assert_eq!(entry["execution"]["run_epoch"], 1);
+            assert_eq!(entry.as_object().unwrap().len(), 3);
+        }
+        observed
+    }
+
+    #[test]
+    fn public_inspect_retains_bounded_attributed_owner_phases_after_failure() {
+        let single = public_phase_history(1);
+        assert_eq!(single["execution_phase_history_truncated"], false);
+        assert_eq!(
+            single["execution_phase_history"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            single["execution_phase_history"][0]["execution"]["phase"],
+            "accepted"
+        );
+        assert_eq!(
+            single["execution_phase_history"][0]["invocation"],
+            uuid::Uuid::from_u128(100).to_string()
+        );
+        let bounded = public_phase_history(41);
+        assert_eq!(bounded["execution_phase_history_truncated"], true);
+        let history = bounded["execution_phase_history"].as_array().unwrap();
+        assert_eq!(history.len(), 32);
+        assert_eq!(history[0]["execution"]["sequence"], 9);
+        assert_eq!(history[31]["execution"]["sequence"], 40);
+        assert_eq!(
+            history[31]["invocation"],
+            uuid::Uuid::from_u128(140).to_string()
+        );
+        assert!(
+            history
+                .iter()
+                .all(|entry| entry["execution"]["phase"] == "planning")
+        );
+        assert!(!bounded.to_string().contains("request_digest"));
+    }
+
     #[test]
     fn managed_queue_arguments_cannot_choose_authority_or_run_state() {
         for field in [
@@ -587,6 +824,31 @@ mod tests {
             public.action = "queue-agent-task".into();
             assert!(command(&public).is_err());
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launch_public_resource_accepts_no_runtime_or_authority_arguments() {
+        let mut request = envelope(&serde_json::json!({}));
+        request.resource = "desktop:task:queued".into();
+        request.action = "launch".into();
+        request.argument = None;
+        assert_eq!(launch_task(&request).unwrap().unwrap(), "task:queued");
+        for input in [
+            serde_json::json!({}),
+            serde_json::json!({"actor":"owner"}),
+            serde_json::json!({"task":"other", "room":"foreign"}),
+            serde_json::json!({"pid":1}),
+            serde_json::json!({"provider":"external"}),
+        ] {
+            request.argument = Some(format!("{}{}", tilo_actions::ARGUMENTS_JSON_PREFIX, input));
+            assert!(launch_task(&request).is_err());
+        }
+        request.argument = None;
+        request.resource = "desktop:task:".into();
+        assert!(launch_task(&request).is_err());
+        request.resource = "desktop:task:bad\nidentity".into();
+        assert!(launch_task(&request).is_err());
     }
 
     #[test]

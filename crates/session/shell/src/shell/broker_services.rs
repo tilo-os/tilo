@@ -9,6 +9,8 @@ pub mod approved_checks;
 mod committed_document;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
+#[cfg(target_os = "linux")]
+pub mod managed_tasks;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use file_clipboard::test_support::TestTransferPause;
 #[cfg(test)]
@@ -1502,6 +1504,21 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
         tilo_identity_host::certificates::authorize_join(&room.to_string(), cert)
     }
 }
+fn native_resource_views(
+    membership: Option<&WorkspaceTreeHandle>,
+    network: Option<&Arc<super::network::ShellNetwork>>,
+) -> Option<Arc<dyn tilo_action_broker::services::NativeResourceViews>> {
+    membership.zip(network).map(|(tree, network)| {
+        Arc::new(resource_views::NativeResourceViews {
+            owner: Arc::new(NativeOwnerCommitService::new(
+                tree.clone(),
+                Some(network.clone()),
+            )),
+            network: network.clone(),
+        }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
+    })
+}
+
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
@@ -1514,18 +1531,7 @@ pub fn native_services(
         Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
             as Arc<dyn tilo_action_broker::services::WorkspaceMemberships>
     });
-    let resource_views = membership
-        .as_ref()
-        .zip(network.as_ref())
-        .map(|(tree, network)| {
-            Arc::new(resource_views::NativeResourceViews {
-                owner: Arc::new(NativeOwnerCommitService::new(
-                    tree.clone(),
-                    Some(network.clone()),
-                )),
-                network: network.clone(),
-            }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
-        });
+    let resource_views = native_resource_views(membership.as_ref(), network.as_ref());
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
             as Arc<dyn WorkspaceGovernanceServices>
@@ -1548,6 +1554,10 @@ pub fn native_services(
     let approved_checks = membership
         .as_ref()
         .map(|tree| approved_checks::service(tree.clone(), network.clone()));
+    #[cfg(target_os = "linux")]
+    let managed_tasks = membership
+        .as_ref()
+        .and_then(|tree| managed_tasks::service(tree.clone(), network.clone()));
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     let display_control = membership
         .as_ref()
@@ -1564,6 +1574,8 @@ pub fn native_services(
         }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
     });
     HostServices {
+        #[cfg(target_os = "linux")]
+        managed_tasks,
         #[cfg(target_os = "linux")]
         approved_checks,
         #[cfg(target_os = "linux")]

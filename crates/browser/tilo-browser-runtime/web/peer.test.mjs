@@ -922,3 +922,27 @@ test('leaving, cancelling and timing out pending room admission settle browser n
   await peer.dispose();
   await assert.rejects(leaving, /closed/);
 });
+
+
+test('concurrent peer disposal waits for the original profile release', async () => {
+  const runtime = fakeRuntime();
+  runtime.profile_value = () => undefined;
+  runtime.set_profile_value = () => {};
+  const desktop = fakeDesktop();
+  let finishRelease;
+  let releases = 0;
+  const releasing = new Promise(resolve => { finishRelease = resolve; });
+  desktop.openProfileStorage = async () => ({release() { releases++; return releasing; }});
+  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop, vaultStorage: vaultMemory()}));
+  const first = peer.dispose();
+  let secondFinished = false;
+  const second = peer.dispose().then(() => { secondFinished = true; });
+  try {
+    await settle();
+    assert.equal(releases, 1);
+    assert.equal(secondFinished, false, 'a second cleanup cannot reopen custody before storage releases');
+  } finally {
+    finishRelease();
+    await Promise.all([first, second]);
+  }
+});

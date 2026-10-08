@@ -32,9 +32,16 @@ impl Resource for GitClient {
     const KIND: &'static str = "git_client.repo";
     const LABEL: &'static str = "Repository";
     const ACTION_TYPE: &'static str = GIT_CLIENT_ACTION_TYPE;
+    const AUDITED_LOW_MUTATIONS: bool = true;
 
     type State = GitClientState;
     type Action = GitClientAction;
+
+    fn allows_low_mutation(action: &Self::Action) -> bool {
+        // Only retain bounded references already observed by the check. This
+        // writes no files, invokes no command and grants no content authority.
+        matches!(action, GitClientAction::RetainCheckOutputs { .. })
+    }
 
     fn register(registry: &mut tilo_actions::ActionRegistry) {
         register(registry);
@@ -46,10 +53,28 @@ impl Resource for GitClient {
 
     fn children(state: &GitClientState) -> Vec<PublishedResource> {
         document_children(&state.repo)
+            .into_iter()
+            .chain(crate::check_outputs::children(&state.check_outputs))
+            .collect()
     }
 
     fn child(state: &GitClientState, id: &str) -> Option<PublishedResource> {
         resolve_child(&state.repo, id)
+            .or_else(|| crate::check_outputs::child(&state.check_outputs, id))
+    }
+    const READABLE: bool = true;
+    fn read_content(
+        state: &GitClientState,
+        _doc: &Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        match item {
+            None => Ok(
+                serde_json::json!({"kind":Self::KIND,"repository":state.repository,"selected_outputs":crate::check_outputs::children(&state.check_outputs).iter().map(|resource| resource.id.0.clone()).collect::<Vec<_>>()}),
+            ),
+            Some(id) => crate::check_outputs::metadata(&state.check_outputs, id)
+                .ok_or_else(|| "resource has no readable selected check output".into()),
+        }
     }
 }
 
@@ -427,6 +452,284 @@ mod tests {
             .effect(&check)
             .expect_err("detached test app cannot manufacture admitted project custody");
         assert!(error.to_string().contains("approved"));
+    }
+
+    fn low_output_action(repository: &str) -> GitClientAction {
+        GitClientAction::RetainCheckOutputs {
+            repository: Some(repository.into()),
+            json: serde_json::json!({
+                "invocation":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "check_id":"delivery",
+                "candidate_source_sha256":"c".repeat(64),
+                "outputs":[{
+                    "id":"summary", "role":"reported_evidence",
+                    "media_type":"application/json", "size_bytes":3,
+                    "content_hash":"a".repeat(64), "sha256":"b".repeat(64)
+                }]
+            })
+            .to_string(),
+        }
+    }
+
+    #[test]
+    fn selected_output_low_door_uses_the_existing_dispatcher_and_keeps_other_values_confirmed() {
+        let (_dir, path) = scratch_repository("low-selected-output");
+        let path = path.to_str().unwrap();
+        let mut app = TestApp::<GitClientShell>::launched(&[path]).unwrap();
+        app.settle();
+        let action = low_output_action(path);
+        let selected = Invoke::<GitClient>::checked_apply(&action).unwrap();
+        assert_eq!(selected.id, ui::tilo_resource::APPLY_LOW);
+        assert_eq!(
+            ui::tilo_actions::Action::change_kind(&action),
+            ui::tilo_actions::ChangeKind::External
+        );
+        app.invoke(selected).unwrap();
+        app.settle();
+        let id =
+            crate::check_outputs::resource_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "summary");
+        assert_eq!(
+            app.call_on(&id, "read", serde_json::json!({}))
+                .unwrap()
+                .unwrap()["custody"],
+            "reported_reference"
+        );
+        for other in [
+            GitClientAction::WriteSharedRepo { json: "{}".into() },
+            GitClientAction::OpenRepository { path: path.into() },
+        ] {
+            assert_eq!(
+                Invoke::<GitClient>::checked_apply(&other).unwrap().id,
+                ui::tilo_resource::APPLY
+            );
+            assert!(
+                app.call(
+                    ui::tilo_resource::APPLY_LOW,
+                    serde_json::json!({"action":other})
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn selected_output_low_door_refuses_foreign_malformed_oversize_unsafe_and_revoked_edits() {
+        let (_dir, path) = scratch_repository("low-output-refusals");
+        let path = path.to_str().unwrap();
+        let mut app = TestApp::<GitClientShell>::launched(&[path]).unwrap();
+        app.settle();
+        let mut unsafe_action = low_output_action(path);
+        if let GitClientAction::RetainCheckOutputs { json, .. } = &mut unsafe_action {
+            let mut value: serde_json::Value = serde_json::from_str(json).unwrap();
+            value["outputs"][0]["id"] = "../private".into();
+            *json = value.to_string();
+        }
+        let mut oversized_action = low_output_action(path);
+        if let GitClientAction::RetainCheckOutputs { json, .. } = &mut oversized_action {
+            json.push_str(&" ".repeat(8193));
+            assert!(serde_json::from_str::<serde_json::Value>(json).is_ok());
+        }
+        let oversized = app
+            .call(
+                ui::tilo_resource::APPLY_LOW,
+                serde_json::json!({"action":oversized_action}),
+            )
+            .unwrap_err();
+        assert!(oversized.to_string().contains("check outputs exceed bound"));
+        let cases = [
+            low_output_action("foreign repository"),
+            GitClientAction::RetainCheckOutputs {
+                repository: Some(path.into()),
+                json: "invalid".into(),
+            },
+            unsafe_action,
+        ];
+        for action in cases {
+            assert!(
+                app.call(
+                    ui::tilo_resource::APPLY_LOW,
+                    serde_json::json!({"action":action})
+                )
+                .is_err()
+            );
+            assert!(
+                app.call("read", serde_json::json!({})).unwrap().unwrap()["selected_outputs"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert!(
+            app.call(
+                ui::tilo_resource::APPLY_LOW,
+                serde_json::json!({"action":{"Unknown":{}}})
+            )
+            .is_err()
+        );
+        let action = low_output_action(path);
+        app.set_role(ui::permissions::Role::Viewer);
+        assert!(
+            app.invoke(Invoke::<GitClient>::checked_apply(&action).unwrap())
+                .is_err()
+        );
+        assert!(app.state().check_outputs.is_empty());
+    }
+
+    #[test]
+    fn selected_check_outputs_are_real_readable_children_and_single_content_transfers() {
+        let (_dir, path) = scratch_repository("selected-outputs");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+        let invocation = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut outputs = crate::check_outputs::CheckOutputs {
+            invocation: invocation.into(),
+            check_id: "eda".into(),
+            candidate_source_sha256: "c".repeat(64),
+            outputs: vec![ui::invocation_scope::ApprovedCheckOutput {
+                id: "summary".into(),
+                role: "reported_evidence".into(),
+                media_type: "application/json".into(),
+                size_bytes: 3,
+                content_hash: "a".repeat(64),
+                sha256: "b".repeat(64),
+            }],
+        };
+        let mut second = outputs.outputs[0].clone();
+        second.id = "layout".into();
+        second.media_type = "image/png".into();
+        second.content_hash = "d".repeat(64);
+        outputs.outputs.push(second);
+        app.invoke(
+            Invoke::apply(&GitClientAction::RetainCheckOutputs {
+                repository: Some(path.to_str().unwrap().into()),
+                json: serde_json::to_string(&outputs).unwrap(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.settle();
+        let root_read = app.call("read", serde_json::json!({})).unwrap().unwrap();
+        assert_eq!(root_read["selected_outputs"].as_array().unwrap().len(), 2);
+        let id = crate::check_outputs::resource_id(invocation, "summary");
+        let read = app
+            .call_on(&id, "read", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert!(
+            app.call_on(&id, "read", serde_json::json!({"item":"foreign"}))
+                .is_err(),
+            "a child read cannot replace its bound item"
+        );
+        assert_eq!(read["custody"], "reported_reference");
+        assert_eq!(read["output"]["sha256"], "b".repeat(64));
+        let transfer = app
+            .effect_on(
+                &id,
+                &GitClientEffect::TransferCheckOutput {
+                    invocation: invocation.into(),
+                    output_id: "summary".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            transfer.resources,
+            vec![format!("tilo.content:{}", "a".repeat(64))]
+        );
+        assert!(transfer.value.is_none());
+        let second_id = crate::check_outputs::resource_id(invocation, "layout");
+        assert_eq!(
+            app.call_on(&second_id, "read", serde_json::json!({}))
+                .unwrap()
+                .unwrap()["output"]["media_type"],
+            "image/png"
+        );
+        let second_transfer = app
+            .effect_on(
+                &second_id,
+                &GitClientEffect::TransferCheckOutput {
+                    invocation: invocation.into(),
+                    output_id: "layout".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            second_transfer.resources,
+            vec![format!("tilo.content:{}", "d".repeat(64))]
+        );
+        let mut reopened = app.reopen().unwrap();
+        reopened.settle();
+        assert_eq!(
+            reopened
+                .call_on(&id, "read", serde_json::json!({}))
+                .unwrap(),
+            Some(read)
+        );
+    }
+
+    #[test]
+    fn selected_check_outputs_refuse_foreign_repository_and_removed_children() {
+        let (_dir, path) = scratch_repository("selected-output-fences");
+        let mut reopened = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        reopened.settle();
+        let invocation = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let outputs = crate::check_outputs::CheckOutputs {
+            invocation: invocation.into(),
+            check_id: "eda".into(),
+            candidate_source_sha256: "c".repeat(64),
+            outputs: vec![ui::invocation_scope::ApprovedCheckOutput {
+                id: "summary".into(),
+                role: "reported_evidence".into(),
+                media_type: "application/json".into(),
+                size_bytes: 3,
+                content_hash: "a".repeat(64),
+                sha256: "b".repeat(64),
+            }],
+        };
+        reopened
+            .invoke(
+                Invoke::apply(&GitClientAction::RetainCheckOutputs {
+                    repository: Some(path.to_str().unwrap().into()),
+                    json: serde_json::to_string(&outputs).unwrap(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        reopened.settle();
+        let id = crate::check_outputs::resource_id(invocation, "summary");
+        assert!(
+            reopened
+                .effect(&GitClientEffect::TransferCheckOutput {
+                    invocation: invocation.into(),
+                    output_id: "private-receipt".into()
+                })
+                .is_err()
+        );
+        assert!(
+            reopened
+                .invoke(
+                    Invoke::apply(&GitClientAction::RetainCheckOutputs {
+                        repository: Some("foreign".into()),
+                        json: serde_json::to_string(&outputs).unwrap()
+                    })
+                    .unwrap()
+                )
+                .is_err()
+        );
+        reopened
+            .invoke(
+                Invoke::apply(&GitClientAction::OpenRepository {
+                    path: "foreign".into(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        reopened.settle();
+        assert!(
+            reopened
+                .call_on(&id, "read", serde_json::json!({}))
+                .is_err(),
+            "changing repository removes current selected output references"
+        );
     }
 
     /// Undo takes back what the launch did in the record — opening the

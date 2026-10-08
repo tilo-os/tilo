@@ -653,6 +653,7 @@ async function connect({
   let actions;
   let voice;
   let disposed = false;
+  let disposal;
   let snapshot = {phase: 'authenticating', records: []};
   // The session's remote-action events are taken once per change and read
   // by every consumer: agents' and the room's actions share the path.
@@ -868,19 +869,23 @@ async function connect({
     throw error;
   }
 
-  async function dispose() {
-    if (disposed) return;
+  function dispose() {
+    if (disposal) return disposal;
     disposed = true;
-    for (const refuse of [...pendingRecordWaits]) refuse(new Error('Shared resource connection closed'));
-    for (const entry of [...surfaces.values()]) dropSurface(entry);
-    unsubscribeStorage?.();
-    agents?.dispose();
-    actions?.dispose();
-    voice?.dispose();
-    stopLive();
-    peer?.dispose();
-    listeners.clear();
-    await storage?.release();
+    // Abort and explicit Leave can overlap; both await the same storage release.
+    disposal = (async () => {
+      for (const refuse of [...pendingRecordWaits]) refuse(new Error('Shared resource connection closed'));
+      for (const entry of [...surfaces.values()]) dropSurface(entry);
+      unsubscribeStorage?.();
+      agents?.dispose();
+      actions?.dispose();
+      voice?.dispose();
+      stopLive();
+      peer?.dispose();
+      listeners.clear();
+      await storage?.release();
+    })();
+    return disposal;
   }
   signal?.addEventListener('abort', dispose, {once: true});
 

@@ -3629,6 +3629,74 @@ impl GitClientApp {
         Ok(())
     }
 
+    fn run_approved_check(
+        check_id: &str,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> EffectAnswer {
+        let checked = cx.approved_check(check_id)?;
+        let repository = cx
+            .document()
+            .and_then(|doc| crate::doc::GitClientState::from_doc(&doc).repository);
+        Ok(cx.spawn(
+            |_| checked,
+            move |_app, observed, cx| {
+                let receipt = observed?;
+                if !receipt.selected_outputs.is_empty()
+                    && cx.live().with(|state| state.repository != repository)
+                {
+                    return Err("repository changed before check output completion".into());
+                }
+                let resources = receipt
+                    .selected_outputs
+                    .iter()
+                    .map(|output| {
+                        ui::tilo_actions::content_resource(&output.content_hash)
+                            .ok_or_else(|| "invalid selected output content identity".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !receipt.selected_outputs.is_empty() {
+                    let outputs = crate::check_outputs::CheckOutputs::from_receipt(&receipt)?;
+                    cx.apply(&crate::actions::GitClientAction::RetainCheckOutputs {
+                        repository,
+                        json: serde_json::to_string(&outputs).map_err(|error| error.to_string())?,
+                    });
+                }
+                Ok(Effected::Done(ActionOutput {
+                    value: Some(serde_json::to_value(receipt).map_err(|error| error.to_string())?),
+                    resources,
+                }))
+            },
+        ))
+    }
+    fn transfer_check_output(
+        cx: &EffectCx<crate::resource::GitClient, Self>,
+        invocation: &str,
+        output_id: &str,
+    ) -> EffectAnswer {
+        let doc = cx.document().ok_or("no current repository document")?;
+        let entries = crate::check_outputs::read(&doc);
+        let entry = entries
+            .iter()
+            .find(|entry| entry.invocation == invocation)
+            .ok_or("selected check invocation no longer exists")?;
+        let output = entry
+            .outputs
+            .iter()
+            .find(|output| output.id == output_id)
+            .ok_or("selected check output no longer exists")?;
+        Effected::content(&output.content_hash)
+    }
+    fn effect_is_read(effect: &GitClientEffect) -> bool {
+        matches!(
+            effect,
+            GitClientEffect::TransferCheckOutput { .. }
+                | GitClientEffect::ShowChanges
+                | GitClientEffect::ShowHistory
+                | GitClientEffect::ShowBranches
+                | GitClientEffect::OpenChange { .. }
+                | GitClientEffect::OpenCommit { .. }
+        )
+    }
     pub(crate) fn answer_effect(
         &mut self,
         effect: GitClientEffect,
@@ -3638,25 +3706,18 @@ impl GitClientApp {
         if let Some(kept) = preference {
             return kept.map(|()| Effected::done());
         }
-        let view = matches!(
-            effect,
-            GitClientEffect::ShowChanges
-                | GitClientEffect::ShowHistory
-                | GitClientEffect::ShowBranches
-                | GitClientEffect::OpenChange { .. }
-                | GitClientEffect::OpenCommit { .. }
-        );
+        let view = Self::effect_is_read(&effect);
         if !view && self.repository_busy() {
             return Err(ui::i18n!("git-remote-busy"));
         }
         match effect {
             GitClientEffect::RunApprovedCheck { check_id } => {
-                let checked = cx.approved_check(&check_id)?;
-                return Ok(cx.spawn(
-                    |_| checked,
-                    |_app, observed, _cx| observed.map(Effected::value),
-                ));
+                return Self::run_approved_check(&check_id, cx);
             }
+            GitClientEffect::TransferCheckOutput {
+                invocation,
+                output_id,
+            } => return Self::transfer_check_output(cx, &invocation, &output_id),
             effect @ (GitClientEffect::ShowChanges
             | GitClientEffect::ShowHistory
             | GitClientEffect::ShowBranches

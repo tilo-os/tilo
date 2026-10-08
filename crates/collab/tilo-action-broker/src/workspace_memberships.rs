@@ -150,6 +150,17 @@ impl CapnpBrokerState {
                 &service.task_snapshot(&room)?,
                 &workspace.name,
             ));
+            #[cfg(target_os = "linux")]
+            if self
+                .services
+                .managed_tasks
+                .as_ref()
+                .is_some_and(|launch| launch.available(&room))
+            {
+                actions.extend(super::workspace_tasks::launch_actions(
+                    &service.task_snapshot(&room)?,
+                ));
+            }
             let existing = self
                 .workspace_membership_peers
                 .lock()
@@ -262,8 +273,79 @@ impl CapnpBrokerState {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    fn managed_launch_context(
+        self: &Arc<Self>,
+        room: &str,
+        task: String,
+        envelope: &InvocationEnvelope,
+        pending: &super::PendingInvocation,
+    ) -> Result<crate::services::ManagedTaskLaunchContext, String> {
+        let original = pending
+            .original
+            .as_ref()
+            .ok_or("native launch original custody unavailable")?;
+        let key = pending
+            .journal_key
+            .as_ref()
+            .ok_or("native launch durable admission unavailable")?;
+        let peer = pending.peer_id;
+        let certificate = original.owner_person_certificate(self, room, envelope)?;
+        let retained = original.clone();
+        let expected_key = key.clone();
+        let expected = certificate.clone();
+        let weak = Arc::downgrade(self);
+        let guard_state = weak.clone();
+        let retained_room = room.to_owned();
+        let guarded_room = retained_room.clone();
+        let retained_envelope = envelope.clone();
+        let context = crate::services::ManagedTaskLaunchContext {
+            room: retained_room,
+            task,
+            invocation: envelope.invocation.0,
+            certificate,
+            broker: weak,
+            recheck: Arc::new(move || {
+                let state = guard_state
+                    .upgrade()
+                    .filter(|state| state.is_accepting())
+                    .ok_or("original native launch host retired")?;
+                let pending = state
+                    .pending_invocations
+                    .lock()
+                    .map_err(|_| "native launch invocation registry unavailable")?;
+                let current = pending
+                    .get(&retained_envelope.id)
+                    .filter(|current| {
+                        current.journal_key.as_ref() == Some(&expected_key)
+                            && current.owner == expected_key.owner
+                            && current.update.invocation() == retained_envelope.invocation
+                            && !current.update.is_terminal()
+                            && current.cancellation_requested_at.is_none()
+                            && current
+                                .original
+                                .as_ref()
+                                .is_some_and(|original| Arc::ptr_eq(original, &retained))
+                    })
+                    .ok_or("original native launch durable admission ended")?;
+                if current.peer_id != peer {
+                    return Err("original native launch owner peer changed".into());
+                }
+                drop(pending);
+                if retained.owner_person_certificate(&state, &guarded_room, &retained_envelope)?
+                    != expected
+                {
+                    return Err("original native launch person changed".into());
+                }
+                Ok(())
+            }),
+        };
+        context.recheck()?;
+        Ok(context)
+    }
+
     async fn execute_workspace_membership(
-        &self,
+        self: &Arc<Self>,
         peer: u64,
         room: &str,
         envelope: &InvocationEnvelope,
@@ -306,6 +388,18 @@ impl CapnpBrokerState {
             .original
             .as_ref()
             .ok_or("membership original custody unavailable")?;
+        #[cfg(target_os = "linux")]
+        if let Some(task) = super::workspace_tasks::launch_task(envelope)? {
+            let launch = self
+                .services
+                .managed_tasks
+                .as_ref()
+                .filter(|launch| launch.available(room))
+                .ok_or("native task launch is not installed for this room")?;
+            return launch
+                .launch(self.managed_launch_context(room, task, envelope, &pending)?)
+                .await;
+        }
         let caller = original.owner_person_certificate(self, room, envelope)?;
         if let Some(command) = super::workspace_tasks::command(envelope)? {
             let request = OwnerCommitRequest {

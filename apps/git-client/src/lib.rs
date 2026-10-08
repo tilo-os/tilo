@@ -49,6 +49,7 @@
 pub mod actions;
 pub mod app;
 pub mod changes;
+mod check_outputs;
 pub mod diff;
 pub mod diffview;
 mod doc;

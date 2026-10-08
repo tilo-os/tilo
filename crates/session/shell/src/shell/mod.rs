@@ -1447,3 +1447,13 @@ pub fn install_approved_checks_from_args(
 ) -> Result<(), String> {
     broker_services::approved_checks::install_from_args(arguments)
 }
+
+/// Install one trusted private native-task runtime before collaborator admission.
+/// # Errors
+/// Refuses unsupported, ambiguous or untrusted host installation configuration.
+#[cfg(target_os = "linux")]
+pub fn install_managed_tasks_from_args(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    broker_services::managed_tasks::install_from_args(arguments)
+}

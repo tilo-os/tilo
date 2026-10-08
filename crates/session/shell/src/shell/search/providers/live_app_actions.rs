@@ -6,13 +6,12 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-#[cfg(test)]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_search::{Document, Matching, Page, SearchIndex};
 use ui::search::FieldWeight;
 
-use crate::shell::certified_action_session::ActionSessionSource;
+use crate::shell::certified_action_session::{ActionSessionSource, DesktopActionSession};
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::ActionReceipt;
@@ -247,6 +246,7 @@ pub fn job_cancel_id(id: u64) -> String {
 pub struct LiveAppActionsProvider {
     broker: AppActionBroker,
     action_sessions: ActionSessionSource,
+    job_observer: JobObserver,
     directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
     /// The palette owns at most one needle's directory projection.
@@ -348,13 +348,153 @@ struct AuxiliaryResume {
     directory: Option<DirectoryContinuation>,
 }
 
-/// A published local action, started through the session's action host
-/// confined to the room of the publishing surface: the same admission,
-/// permission and confirmation path every other caller takes. An action
-/// retained from a closed app names the host's launchable provider, and the
-/// host launches the app before delivering it.
+/// A bounded routing cache retains original certified sessions, not job state.
+const MAX_RETAINED_JOB_ROUTES: usize = 4096;
+
+#[derive(Clone)]
+struct RetainedJob {
+    session: DesktopActionSession,
+    invocation: tilo_actions::InvocationId,
+    person: String,
+    cancellable: bool,
+}
+#[derive(Default)]
+struct JobRoutes {
+    reserved: usize,
+    admitted: HashMap<u64, RetainedJob>,
+}
+#[derive(Clone)]
+struct JobObserver {
+    broker: AppActionBroker,
+    routes: Arc<Mutex<JobRoutes>>,
+}
+struct JobReservation(Arc<Mutex<JobRoutes>>);
+impl JobReservation {
+    fn retain(self, id: u64, route: RetainedJob) -> Result<(), ActionHostError> {
+        let mut routes = self.0.lock().map_err(|_| ActionHostError::Unavailable {
+            reason: t("search-app-job-routing-unavailable"),
+        })?;
+        if routes.admitted.contains_key(&id) {
+            return Err(ActionHostError::Unavailable {
+                reason: t("search-app-job-routing-already-retained"),
+            });
+        }
+        routes.admitted.insert(id, route);
+        drop(routes);
+        Ok(())
+    }
+}
+impl Drop for JobReservation {
+    fn drop(&mut self) {
+        if let Ok(mut routes) = self.0.lock() {
+            routes.reserved = routes.reserved.saturating_sub(1);
+        }
+    }
+}
+impl JobObserver {
+    fn new(broker: AppActionBroker) -> Self {
+        Self {
+            broker,
+            routes: Arc::default(),
+        }
+    }
+    fn reserve(&self) -> Result<JobReservation, String> {
+        let mut routes = self
+            .routes
+            .lock()
+            .map_err(|_| t("search-app-job-routing-unavailable"))?;
+        if routes.admitted.len().saturating_add(routes.reserved) >= MAX_RETAINED_JOB_ROUTES {
+            return Err(t("search-app-job-routing-capacity-exhausted"));
+        }
+        routes.reserved = routes.reserved.saturating_add(1);
+        drop(routes);
+        Ok(JobReservation(self.routes.clone()))
+    }
+    fn retained_count(&self) -> usize {
+        self.routes.lock().map_or(0, |routes| routes.admitted.len())
+    }
+    fn retained(&self, id: u64) -> Result<Option<RetainedJob>, String> {
+        let routes = self
+            .routes
+            .lock()
+            .map_err(|_| t("search-app-job-routing-unavailable"))?;
+        let route = routes.admitted.get(&id).cloned();
+        drop(routes);
+        Ok(route)
+    }
+    fn status(&self, id: u64, actor: &str) -> Option<tilo_actions::InvocationUpdate> {
+        let route = self.retained(id).ok()?;
+        match route {
+            Some(route) if route.person == actor => route.session.observe(route.invocation),
+            Some(route) => {
+                tracing::debug!(id, current_person = actor, original_person = route.person,
+                    invocation = %route.invocation.0, "job observation refused current Person projection");
+                None
+            }
+            None => {
+                let update = self.broker.status_for_actor(id, actor);
+                if update.is_none() {
+                    tracing::debug!(
+                        id,
+                        current_person = actor,
+                        "job observation unavailable through legacy local owner"
+                    );
+                }
+                update
+            }
+        }
+    }
+    fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
+        let route = self.retained(id)?;
+        match route {
+            Some(route) if route.person == actor => route.session.cancel(route.invocation),
+            Some(_) => Err(JOB_UNAVAILABLE_MESSAGE.into()),
+            None => self.broker.cancel(id, actor),
+        }
+    }
+    fn can_cancel(&self, id: u64, actor: &str) -> bool {
+        let route = self.retained(id);
+        match route {
+            Ok(Some(route)) => {
+                route.person == actor
+                    && route.cancellable
+                    && route
+                        .session
+                        .observe(route.invocation)
+                        .is_some_and(|update| !update.is_terminal())
+            }
+            Ok(None) => self.broker.can_cancel(id, actor),
+            Err(_) => false,
+        }
+    }
+    fn statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
+        let mut jobs = self.broker.statuses(actor);
+        let mut retained = match self.routes.lock() {
+            Ok(routes) => routes
+                .admitted
+                .iter()
+                .filter(|(_, route)| route.person == actor)
+                .map(|(id, route)| (*id, route.clone()))
+                .collect::<Vec<_>>(),
+            Err(_) => return Vec::new(),
+        };
+        retained.sort_unstable_by_key(|(id, _)| std::cmp::Reverse(*id));
+        for (id, route) in retained.into_iter().take(MAX_JOB_ROWS_PER_QUERY) {
+            if let Some(update) = route.session.observe(route.invocation) {
+                jobs.retain(|(existing, _)| *existing != id);
+                jobs.push((id, update));
+            }
+        }
+        jobs.sort_unstable_by_key(|(id, _)| std::cmp::Reverse(*id));
+        jobs
+    }
+}
+
+/// A published local action starts through the admitted room's action host.
 struct LocalStart {
     action_sessions: ActionSessionSource,
+    job_observer: JobObserver,
+    cancellable: bool,
     provider: String,
     room: String,
     address: tilo_actions::ActionAddress,
@@ -369,6 +509,10 @@ impl LocalStart {
         &self,
         args: &crate::shell::search::action_api::ActionArgs,
     ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
+        let reservation = match self.job_observer.reserve() {
+            Ok(reservation) => reservation,
+            Err(reason) => return Pending::ready(Err(ActionHostError::Unavailable { reason })),
+        };
         let argument = if self.typed_arguments {
             let mut values = args.to_json();
             values.remove("confirm");
@@ -400,18 +544,35 @@ impl LocalStart {
             Ok(session) => session,
             Err(error) => return Pending::ready(Err(ActionHostError::Refused { reason: error })),
         };
-        session.invoke_job(InvokeRequest {
-            on_behalf_of: None,
-            invocation: tilo_actions::InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: self.provider.clone(),
-                address: self.address.clone(),
-            },
-            argument,
-            context: None,
-            confirmation,
-            revision: None,
-        })
+        let retained = session.clone();
+        let person = self.expected_person.clone();
+        let cancellable = self.cancellable;
+        session
+            .invoke_job(InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: self.provider.clone(),
+                    address: self.address.clone(),
+                },
+                argument,
+                context: None,
+                confirmation,
+                revision: None,
+            })
+            .map(move |result| {
+                let (id, receipt) = result?;
+                reservation.retain(
+                    id,
+                    RetainedJob {
+                        session: retained,
+                        invocation: receipt.invocation,
+                        person,
+                        cancellable,
+                    },
+                )?;
+                Ok((id, receipt))
+            })
     }
 }
 
@@ -462,6 +623,7 @@ impl LiveAppActionsProvider {
     pub fn new(broker: AppActionBroker) -> Self {
         Self {
             action_sessions: ActionSessionSource::new(broker.clone()),
+            job_observer: JobObserver::new(broker.clone()),
             broker,
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
@@ -491,6 +653,13 @@ impl LiveAppActionsProvider {
         provider
     }
 
+    #[cfg(test)]
+    pub(crate) fn exhaust_job_routes_for_test(&self) -> impl Drop {
+        (0..MAX_RETAINED_JOB_ROUTES)
+            .map(|_| self.job_observer.reserve().unwrap())
+            .collect::<Vec<_>>()
+    }
+
     fn local_start(
         &self,
         surface: &PublishedSurface,
@@ -499,6 +668,11 @@ impl LiveAppActionsProvider {
     ) -> LocalStart {
         LocalStart {
             action_sessions: self.action_sessions.clone(),
+            job_observer: self.job_observer.clone(),
+            cancellable: matches!(
+                action.contract.execution,
+                tilo_actions::ExecutionMode::Background { cancellable: true }
+            ),
             provider: if surface.live {
                 surface.peer_id.to_string()
             } else {
@@ -909,7 +1083,7 @@ impl LiveAppActionsProvider {
             && (needle.is_empty() || "jobs status progress".contains(needle))
         {
             for (id, update) in self
-                .broker
+                .job_observer
                 .statuses(&actor)
                 .into_iter()
                 .take(MAX_JOB_ROWS_PER_QUERY)
@@ -924,7 +1098,7 @@ impl LiveAppActionsProvider {
                     cancel: false,
                     actor: actor.clone(),
                 });
-                if self.broker.can_cancel(id, &actor) && entries.len() < root_limit {
+                if self.job_observer.can_cancel(id, &actor) && entries.len() < root_limit {
                     entries.push(AuxiliaryEntry::Job {
                         id,
                         state,
@@ -1095,7 +1269,7 @@ impl LiveAppActionsProvider {
     )]
     fn job_result(&self, id: u64, state: &'static str, cancel: bool, actor: &str) -> SearchResult {
         if cancel {
-            let broker = self.broker.clone();
+            let broker = self.job_observer.clone();
             let actor = actor.to_string();
             let invoke_broker = broker.clone();
             let invoke_actor = actor.clone();
@@ -1124,7 +1298,7 @@ impl LiveAppActionsProvider {
                         .cancel(id, &invoke_actor)
                         .map_err(ActionError::Refused)?;
                     let update = invoke_broker
-                        .status_for_actor(id, &invoke_actor)
+                        .status(id, &invoke_actor)
                         .ok_or_else(|| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
                     Ok(ActionReceipt {
                         broker_invocation_id: Some(id),
@@ -1134,7 +1308,7 @@ impl LiveAppActionsProvider {
                 on_begin_invoke: None,
             };
         }
-        let status_broker = self.broker.clone();
+        let status_broker = self.job_observer.clone();
         let actor = actor.to_string();
         SearchResult {
             kind: ResourceKind::Custom("action-job".into()),
@@ -1153,7 +1327,7 @@ impl LiveAppActionsProvider {
                     return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
                 }
                 let update = status_broker
-                    .status_for_actor(id, &actor)
+                    .status(id, &actor)
                     .ok_or_else(|| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
                 Ok(ActionReceipt {
                     broker_invocation_id: Some(id),
@@ -1183,10 +1357,10 @@ impl LiveAppActionsProvider {
         if !ctx.wanted.is_empty() && !ctx.wanted.contains(&ResourceKind::Action) {
             return page;
         }
-        let Some(update) = self.broker.status_for_actor(id, &actor) else {
+        let Some(update) = self.job_observer.status(id, &actor) else {
             return page;
         };
-        if cancel && !self.broker.can_cancel(id, &actor) {
+        if cancel && !self.job_observer.can_cancel(id, &actor) {
             return page;
         }
         let row = self.job_result(id, job_state(&update), cancel, &actor);
@@ -1966,7 +2140,7 @@ impl SearchProvider for LiveAppActionsProvider {
         if self.projection.get() != QueryProjection::LocalOnly
             && (needle.is_empty() || "jobs status progress".contains(&needle))
         {
-            for (id, update) in self.broker.statuses(&actor) {
+            for (id, update) in self.job_observer.statuses(&actor) {
                 let state = job_state(&update);
                 let status_broker = self.broker.clone();
                 results.push(SearchResult {
@@ -1992,7 +2166,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     })),
                     on_begin_invoke: None,
                 });
-                if self.broker.can_cancel(id, &actor) {
+                if self.job_observer.can_cancel(id, &actor) {
                     let broker = self.broker.clone();
                     let actor = actor.clone();
                     let invoke_broker = broker.clone();
@@ -2275,12 +2449,13 @@ impl SearchProvider for LiveAppActionsProvider {
                 snapshot.source_generation == source_generation && snapshot.scope == scope
             });
         format!(
-            "{}:{source_generation}:{}:{}:{}:{}:{}",
+            "{}:{source_generation}:{}:{}:{}:{}:{}:{}",
             if ready { "ready" } else { "indexing" },
             self.directory_epoch.load(Ordering::Relaxed),
             // Listing publishers is a memory read; it never asks an app.
             self.directory_roots(ctx).1,
             self.broker.statuses_generation(),
+            self.job_observer.retained_count(),
             ctx.chrome.active_local_user(),
             ctx.include_programmatic,
         )

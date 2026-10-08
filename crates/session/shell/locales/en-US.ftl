@@ -1283,6 +1283,9 @@ search-app-job-streaming = streaming
 search-app-job-succeeded = succeeded
 search-app-job-failed = failed
 search-app-job-cancelled = cancelled
+search-app-job-routing-unavailable = Action job routing is unavailable.
+search-app-job-routing-already-retained = This action job is already being tracked.
+search-app-job-routing-capacity-exhausted = Too many action jobs are being tracked.
 search-app-resource-contains = { $app } · contains resources
 search-app-action-launches = { $resource } · { $app } · launches application
 

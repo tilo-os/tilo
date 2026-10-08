@@ -69,6 +69,14 @@ pub enum GitClientEffect {
         #[param("Check ID approved by this exact project host")]
         check_id: String,
     },
+    /// Transfer selected check output
+    #[effect(content, permission = "read", row, device_only = false)]
+    TransferCheckOutput {
+        #[param("Completed check invocation")]
+        invocation: String,
+        #[param("Owner-selected output ID")]
+        output_id: String,
+    },
     /// Show changes
     #[effect(view)]
     ShowChanges,
@@ -215,6 +223,11 @@ pub enum GitClientEffect {
 pub enum GitClientAction {
     /// Replace the shared repository projection (no working-tree lists).
     WriteSharedRepo { json: String },
+    /// Retain bounded captured output identities; never another job history.
+    RetainCheckOutputs {
+        repository: Option<String>,
+        json: String,
+    },
     /// Open the repository at `path` in this record.
     OpenRepository { path: String },
 }
@@ -225,7 +238,15 @@ impl Action for GitClientAction {
             GitClientAction::WriteSharedRepo { json } => {
                 SharedRepo::write_json(doc, json);
             }
+            GitClientAction::RetainCheckOutputs { repository, json } => {
+                crate::check_outputs::retain(doc, repository.as_deref(), json)?;
+            }
             GitClientAction::OpenRepository { path } => {
+                if ui::doc::read_str(doc, &automerge::ROOT, crate::doc::keys::REPOSITORY).as_deref()
+                    != Some(path.as_str())
+                {
+                    crate::check_outputs::clear(doc)?;
+                }
                 doc.put(
                     &automerge::ROOT,
                     crate::doc::keys::REPOSITORY,
@@ -246,7 +267,8 @@ impl Action for GitClientAction {
     /// it reaches every collaborator, and no undo takes it back.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
-            GitClientAction::WriteSharedRepo { .. } => tilo_actions::ChangeKind::External,
+            GitClientAction::WriteSharedRepo { .. }
+            | GitClientAction::RetainCheckOutputs { .. } => tilo_actions::ChangeKind::External,
             GitClientAction::OpenRepository { .. } => tilo_actions::ChangeKind::Content,
         }
     }
