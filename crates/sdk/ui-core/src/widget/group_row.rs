@@ -1864,6 +1864,17 @@ impl GroupRow {
             && self.width_basis_is_current()
     }
 
+    /// Mounted geometry for the current laid-out group order. A host must
+    /// also validate its own current workspace membership before exporting it.
+    pub fn laid_out_group(&self, id: u64) -> Option<&WindowGroup> {
+        if !self.group_layout_is_current() || !self.group_is_laid_out(id) {
+            return None;
+        }
+        self.groups
+            .iter()
+            .find(|group| group.id == id && !group.is_closing())
+    }
+
     fn width_basis_is_current(&self) -> bool {
         self.groups
             .iter()
@@ -4657,6 +4668,18 @@ mod tests {
     /// `Instant`'s valid range.
     fn earlier(t: Instant, ms: u64) -> Instant {
         t.checked_sub(Duration::from_millis(ms)).unwrap_or(t)
+    }
+
+    #[test]
+    fn laid_out_group_inspection_refuses_unlaid_and_reordered_geometry() {
+        let unlaid = GroupRow::new(vec![make_group(0, &[1])]);
+        assert!(unlaid.laid_out_group(0).is_none());
+        let mut mounted = make_row_with_groups(&[&[1], &[2]]);
+        assert!(mounted.laid_out_group(100).is_some());
+        assert!(mounted.laid_out_group(999).is_none());
+        assert!(mounted.reorder_group_by_id(100, 1));
+        assert!(mounted.laid_out_group(100).is_none());
+        assert!(mounted.laid_out_group(200).is_none());
     }
 
     fn make_group(id: u64, tab_ids: &[u64]) -> WindowGroup {

@@ -41,6 +41,7 @@ mod displays;
 mod emoji_layer;
 mod history;
 pub(crate) mod layers;
+mod mounted_geometry;
 mod now_playing;
 mod sheet_accessibility;
 mod shortcut_steps;

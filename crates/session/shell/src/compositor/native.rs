@@ -2902,6 +2902,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         serde_json::json!({
             "seat_focus": self.seat.map(State::seat_focus_json),
             "native_window_provenance": self.seat.map(|state| state.native_window_input_provenance_json(self.fb)),
+            "mounted_window_geometry": self.fb.host().mounted_window_geometry_json(),
             "host_window_provenance": self.seat.map(State::host_window_provenance_json),
             "overlays": {
                 "overview": overlays.overview,
@@ -15917,6 +15918,151 @@ mod tests {
 
     /// `chrome.displays` names what is painted: every connected display and
     /// the groups on it, including the one display left after an unplug.
+    fn mounted_group_geometry_fixture() -> FrameBuilder {
+        use crate::compositor::backend::{headless, output_geometry};
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
+        };
+        let mut workspace = Workspace::new(WorkspaceId(7), "Geometry");
+        workspace.strips = vec![Strip {
+            id: StripId(77),
+            name: String::new(),
+            window_groups: vec![WindowGroup {
+                id: 1,
+                tabs: vec![Tab {
+                    id: 101,
+                    title: String::new(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Test".into()),
+                        label: String::new(),
+                    },
+                }],
+                active_tab: 101,
+                width: WindowWidth::Fraction(600),
+                maximized: false,
+            }],
+        }];
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.active = workspace.id;
+        tree.desktop.active_strip.insert(workspace.id, StripId(77));
+        tree.desktop.workspaces = vec![workspace];
+        let mut frame = FrameBuilder::with_tree(tree, (1600, 900));
+        let outputs = headless::output_fixture("docked-laptop").unwrap();
+        frame.set_output_geometry(output_geometry(&outputs[..1]));
+        frame
+    }
+
+    #[test]
+    fn owner_state_projects_only_current_mounted_group_geometry() {
+        use crate::shell::state::{Workspace, WorkspaceId};
+        let mut frame = mounted_group_geometry_fixture();
+        let read = |frame: &FrameBuilder| {
+            FrameBuilderControlState {
+                fb: frame,
+                doc: None,
+                shares: None,
+                lock: None,
+                seat: None,
+            }
+            .chrome_state_json()["mounted_window_geometry"]
+                .clone()
+        };
+        assert_eq!(
+            read(&frame)["available"],
+            true,
+            "the constructor mounts and lays out the initial tree"
+        );
+        frame.relayout();
+        let mounted = read(&frame);
+        assert_eq!(mounted["available"], true, "{mounted:#}");
+        assert_eq!(mounted["groups"].as_array().unwrap().len(), 1);
+        assert_eq!(mounted["groups"][0]["group_id"], 1);
+        assert_eq!(mounted["groups"][0]["tabs"][0]["tab_id"], 101);
+        let rect = mounted["groups"][0]["group_rect"].as_array().unwrap();
+        assert!(rect[2].as_f64().unwrap() > rect[0].as_f64().unwrap());
+        let bar = frame.host().top_bar_rects()[0].1;
+        assert_eq!(
+            mounted["topbars"][0]["rect"],
+            serde_json::json!([bar.x0, bar.y0, bar.x1, bar.y1])
+        );
+        assert_eq!(
+            mounted["outputs"][0]["rect"],
+            serde_json::json!([
+                frame.host().output_geometry()[0].rect().x0,
+                frame.host().output_geometry()[0].rect().y0,
+                frame.host().output_geometry()[0].rect().x1,
+                frame.host().output_geometry()[0].rect().y1
+            ])
+        );
+        {
+            let chrome = frame.chrome_handle();
+            let mut state = chrome.borrow_mut();
+            let mut tree = state.tree_mut();
+            tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id = 102;
+            tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = 102;
+            drop(tree);
+            state.bump();
+        }
+        assert_eq!(read(&frame)["reason"], "stale_tab_membership");
+        frame.relayout();
+        assert_eq!(read(&frame)["groups"][0]["tabs"][0]["tab_id"], 102);
+        {
+            let chrome = frame.chrome_handle();
+            let mut state = chrome.borrow_mut();
+            let mut tree = state.tree_mut();
+            let foreign = Workspace::new(WorkspaceId(8), "Other");
+            tree.desktop.active = foreign.id;
+            tree.desktop.workspaces.push(foreign);
+            drop(tree);
+            state.bump();
+        }
+        assert_eq!(
+            read(&frame)["available"],
+            false,
+            "old room geometry must never leak after switch"
+        );
+        frame.relayout();
+        let empty = read(&frame);
+        assert_eq!(empty["available"], true, "{empty:#}");
+        assert!(empty["groups"].as_array().unwrap().is_empty());
+        assert_eq!(empty["workspace_id"], serde_json::json!(WorkspaceId(8)));
+    }
+
+    #[test]
+    fn owner_geometry_refuses_unadopted_maximize_and_group_replacement() {
+        let mut frame = mounted_group_geometry_fixture();
+        let before = frame.host().mounted_window_geometry_json();
+        frame.with_chrome(|state| {
+            state.tree_mut().desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
+            state.bump();
+        });
+        assert_eq!(
+            frame.host().mounted_window_geometry_json()["reason"],
+            "stale_group_presentation"
+        );
+        frame.relayout();
+        let maximized = frame.host().mounted_window_geometry_json();
+        assert_eq!(maximized["available"], true, "{maximized:#}");
+        assert_eq!(maximized["groups"][0]["maximized"], true);
+        let width = |row: &serde_json::Value| {
+            row["groups"][0]["group_rect"][2].as_f64().unwrap()
+                - row["groups"][0]["group_rect"][0].as_f64().unwrap()
+        };
+        assert!(
+            width(&maximized) > width(&before),
+            "actual mounted maximize must grow the group"
+        );
+        frame.with_chrome(|state| {
+            state.tree_mut().desktop.workspaces[0].strips[0].window_groups[0].id = 2;
+            state.bump();
+        });
+        assert_eq!(
+            frame.host().mounted_window_geometry_json()["reason"],
+            "stale_group_membership"
+        );
+    }
+
     #[test]
     fn state_dump_lists_the_remaining_display_after_an_unplug() {
         use crate::compositor::backend::{combined_geometry, headless, output_geometry};
