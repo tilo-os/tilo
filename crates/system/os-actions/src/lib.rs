@@ -46,6 +46,7 @@ pub mod brightness;
 pub mod codec_pack;
 pub mod ddc;
 pub mod display;
+pub mod extension;
 pub mod firmware;
 pub mod keyboard_backlight;
 #[cfg(target_os = "linux")]

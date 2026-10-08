@@ -75,3 +75,5 @@ pub fn default_socket_path() -> PathBuf {
     let base = xdg_paths::xdg::runtime_dir().unwrap_or_else(std::env::temp_dir);
     base.join("tilo").join("services").join("app-host.sock")
 }
+
+pub mod local_package;
