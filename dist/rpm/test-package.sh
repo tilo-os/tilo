@@ -33,6 +33,21 @@ rpm -q --requires tilo-session | grep -Eq '^tilo-session-apps(\([^)]*\))? = '
     '^(ld-linux|libc\.so|libstd-|libruntime_dylib\.so)'
 ! rpm -q --provides tilo-session-apps | grep -Eq \
     '^(ld-linux|libc\.so|libstd-|libruntime_dylib\.so)'
+test -x /usr/bin/app
+/usr/bin/app --help >/dev/null
+owner=/usr/share/tilo/trust/tilo-main-registry-owner.pub
+test "$(rpm -qf "$owner")" = "$(rpm -q tilo-session-apps)"
+grep -Eiq '^[0-9a-f]{64}$' "$owner"
+! grep -Eq '^0{64}$' "$owner"
+# An older Store could save an empty registry list when the pin was missing.
+# The installed reader must migrate it using the packaged authority.
+config=$(mktemp -d)
+mkdir -p "$config/tilo-store"
+printf 'registry = []\n' > "$config/tilo-store/registries.toml"
+XDG_CONFIG_HOME=$config /usr/bin/app repo list > "$config/repos.txt"
+grep -Fq 'Tilo main' "$config/repos.txt"
+grep -Fq "$(cat "$owner")" "$config/tilo-store/registries.toml"
+rm -rf -- "$config"
 test -s /usr/share/tilo-apps/registry.toml
 grep -Fxq 'id = "so.tilo.settings"' /usr/share/tilo-apps/registry.toml
 grep -q '^payload_root = "/usr/lib/tilo-apps/' /usr/share/tilo-apps/registry.toml

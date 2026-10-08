@@ -647,10 +647,13 @@ jobs:
           sudo -n true
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends binutils btrfs-progs curl dosfstools e2fsprogs jq mtools podman python3 qemu-utils skopeo sudo systemd uidmap util-linux zstd
+            sudo -n apt-get install -y --no-install-recommends binutils btrfs-progs curl dosfstools e2fsprogs fdisk jq mtools podman python3 qemu-utils skopeo sudo systemd uidmap util-linux zstd
           else
             sudo -n dnf install -y binutils btrfs-progs curl dosfstools e2fsprogs jq mtools podman python3 qemu-img skopeo sudo systemd util-linux zstd
           fi
+          # Debian splits sfdisk out of util-linux into fdisk. Fail before the
+          # source pull if disk verification tools are unavailable to root.
+          sudo -n sfdisk --version
       - name: Prepare disposable disk devices
         run: bash os/dev/ci-prepare-disk-devices.sh --kata-job
       - name: Install checksum-pinned Cosign

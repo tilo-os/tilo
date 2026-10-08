@@ -262,12 +262,10 @@ pub fn active_tab_id(st: &ChromeState) -> Option<TabId> {
     tab
 }
 
-/// Close `tab_id`: the replicated tree and document first, the atomic
-/// local state, then the exact foreign surface, in that order — so a
-/// crash, an unrelated revision or a slow client all observe absence. The
-/// `✕`, the keyboard chord, the tab menu's "Close Tab" and the `tab.close`
-/// action converge here; a pointer close has already begun its widget
-/// animation when this runs, the others let the resync take the tab out.
+/// Close `tab_id` through the tab's owner. Local content is removed durably;
+/// a confined native client first receives a close request and retains its
+/// visible tab until actual surface destruction admits the close. The `✕`,
+/// keyboard chord, tab menu and declared action converge here.
 ///
 /// # Errors
 ///
@@ -277,7 +275,7 @@ pub fn close_tab(st: &mut ChromeState, tab_id: TabId) -> Result<(), TabActionErr
     let closed = crate::shell::closed_tabs::capture_tab(&st.tree(), tab_id);
     close_tab_unrecorded(st, tab_id)?;
     if let Some(entry) = closed {
-        st.remember_closed_tab(entry);
+        st.remember_closed_tab_after_removal(entry);
     }
     Ok(())
 }
@@ -309,6 +307,34 @@ pub(crate) fn close_tab_unrecorded(
     let launch_key = foreign
         .as_ref()
         .map(|(app_id, surface_id)| host_launch_key(app_id, *surface_id));
+    // A confined/native client may defer close to save or show a decision.
+    // Its surface, tab and focus stay live until the real destroy callback.
+    // A restored/layout-only tab has no live client to answer and is removed
+    // immediately, as are supervised unconfined host launches.
+    #[cfg(any(test, target_os = "linux"))]
+    let supervised_unconfined = launch_key.as_deref().is_some_and(|key| {
+        let known = crate::shell::launcher::launch_key_for_surface(
+            foreign.as_ref().map_or(0, |(_, id)| *id),
+        )
+        .is_some()
+            || crate::shell::launcher::launch_key_for_app_id(
+                foreign.as_ref().map_or("", |(id, _)| id),
+            )
+            .is_some();
+        crate::shell::launcher::unconfined_launch_is_live(key)
+            || (!known
+                && !crate::shell::launcher::unconfined_launches_for_unresolved_close().is_empty())
+    });
+    #[cfg(not(any(test, target_os = "linux")))]
+    let supervised_unconfined = false;
+    if let Some((_, surface_id)) = &foreign
+        && !supervised_unconfined
+        && crate::shell::foreign::store().is_adopted(*surface_id)
+    {
+        st.request_surface_close(*surface_id);
+        st.bump();
+        return Ok(());
+    }
     let removed = {
         let mut tree = st.tree_mut();
         tab_binding::remove_tab(&mut tree, tab_id)

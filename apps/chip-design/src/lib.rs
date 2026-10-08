@@ -1,9 +1,11 @@
 //! Native structural operator design and bounded engineering evidence viewer.
 
 mod evidence_flow_view;
+mod launch;
 mod model;
 mod operator_graph;
 mod operator_graph_view;
+mod placement_view;
 mod resource;
 mod verification;
 mod view;
@@ -35,3 +37,9 @@ mod architecture_study_tests;
 
 #[cfg(test)]
 mod evidence_flow_tests;
+
+#[cfg(test)]
+mod placement_tests;
+
+#[cfg(test)]
+mod launch_tests;

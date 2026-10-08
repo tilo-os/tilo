@@ -1371,7 +1371,16 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     // Settle: the first frames lay the tab bars out at their final widths.
     let at_rest = acknowledged_notes_canvas(&mut frame);
     let rest = at_rest.cache.as_ref().expect("the frame as layers");
-    assert!(rest.strips.is_empty(), "a strip at rest is read in place");
+    let offsets = rest
+        .strips
+        .iter()
+        .map(|strip| strip.scroll_x)
+        .collect::<Vec<_>>();
+    assert_eq!(offsets.len(), 1, "the fixture has one retained strip");
+    assert!(
+        offsets[0] > 0,
+        "the canvas includes left rubber-band padding"
+    );
     assert!(
         rest.width > SIZE.0,
         "the fixture's strip is wider than the screen: {}",
@@ -1387,7 +1396,10 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
             .iter()
             .map(|strip| strip.scroll_x)
             .collect::<Vec<_>>(),
-        vec![120]
+        offsets
+            .iter()
+            .map(|offset| offset + 120)
+            .collect::<Vec<_>>()
     );
     assert!(
         pan.layers.backdrop.encoding_eq(&rest.layers.backdrop),
