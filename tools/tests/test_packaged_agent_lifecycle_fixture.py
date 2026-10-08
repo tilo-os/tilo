@@ -476,6 +476,28 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "private_content_recorded": False,
         })
 
+    def test_return_editor_continuity_reports_only_actual_field_equalities(self):
+        before = {"draft_matches": True, "caret": 8, "selection": [7, 8],
+                  "accessibility_focused": True, "private_content": "PRIVATE-CANARY"}
+        good = PROOF.closed_editor_continuity(before, before.copy())
+        self.assertTrue(all(good.values()))
+        for changed, field in (({"draft_matches": False}, "content_matches"),
+                               ({"caret": 7}, "caret_equal"),
+                               ({"selection": None}, "selection_equal"),
+                               ({"accessibility_focused": False}, "accessibility_focus_equal")):
+            with self.subTest(changed=changed):
+                observed = PROOF.closed_editor_continuity(before, {**before, **changed})
+                self.assertFalse(observed[field])
+                self.assertTrue(all(type(value) is bool for value in observed.values()))
+                self.assertNotIn("PRIVATE-CANARY", json.dumps(observed))
+                self.assertNotIn("[7", json.dumps(observed))
+        source = inspect.getsource(PROOF.native_float_return)
+        receipt = source.index('"return-editor-continuity.json"')
+        strict = source.index("if attached != before_return_editor:", receipt)
+        refusal = source.index('"Return changed private editor content, caret, selection or keyboard focus"', strict)
+        self.assertLess(receipt, strict)
+        self.assertLess(strict, refusal)
+
     def test_quick_composer_observation_counts_actual_wire_controls_without_private_names(self):
         wire_named = PROOF.atspi.AtspiClient.named
         tree = {f"/node/{index}": f"(<'{label}'>,)" for index, label in enumerate((
@@ -886,7 +908,13 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 with patch.object(PROOF, "wait_for", side_effect=lambda _l, fn, _p: fn()), \
                         patch.object(PROOF, "call", return_value={"err": {
                             "code": code, "message": private}}), \
-                        self.assertRaisesRegex(RuntimeError, "terminal observation was refused"):
+                        self.assertRaisesRegex(
+                            RuntimeError,
+                            "terminal observation was refused .*status_refusal="
+                            + (code if code in {
+                                "unknown_action", "invalid_arguments", "action_failed"
+                            } else "other"),
+                        ):
                     PROOF.wait_terminal("socket", {"receipt": receipt}, None, diagnostic_path=path)
                 self.assertEqual(json.loads(path.read_text()), {
                     "original_invocation": original,

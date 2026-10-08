@@ -1129,6 +1129,18 @@ def private_editor_observation(access, expected, *, deadline=None):
     return owned_editor_read(access, lambda: _private_editor_observation(access, expected), deadline)
 
 
+def closed_editor_continuity(before, after):
+    """Export field equality only, never private content or caret/selection offsets."""
+    return {
+        "content_matches": before.get("draft_matches") is True and after.get("draft_matches") is True,
+        "caret_equal": before.get("caret") == after.get("caret"),
+        "selection_equal": before.get("selection") == after.get("selection"),
+        "accessibility_focus_equal": before.get("accessibility_focused") == after.get("accessibility_focused"),
+        "accessibility_focused_before": before.get("accessibility_focused") is True,
+        "accessibility_focused_after": after.get("accessibility_focused") is True,
+    }
+
+
 def _private_editor_observation(access, expected):
     """Compare a test-owned draft locally; export neither its value nor hash."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
@@ -1923,6 +1935,8 @@ def native_float_return(socket, room, record, output, size, process):
     primary = wait_for("Chat's primary window to repaint after Return", repainted_primary, process)
     access = wait_for("returned Tide editor", lambda: agent_conversation_accessibility("Tide"), process)
     attached = private_editor_observation(access, draft)
+    (output / "return-editor-continuity.json").write_text(
+        json.dumps(closed_editor_continuity(before_return_editor, attached), indent=2) + "\n")
     if attached != before_return_editor:
         raise RuntimeError("Return changed private editor content, caret, selection or keyboard focus")
     physically_click_editor(socket, access, presented_content_geometry(primary))
@@ -3431,7 +3445,10 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
             status_refusal = code if code in {
                 "unknown_action", "invalid_arguments", "action_failed"
             } else "other"
-            raise RuntimeError("ordinary action terminal observation was refused")
+            raise RuntimeError(
+                "ordinary action terminal observation was refused "
+                f"(status_refusal={status_refusal})"
+            )
         receipt = response.get("answer", {}).get("receipt")
         if not isinstance(receipt, dict):
             raise RuntimeError("ordinary action terminal receipt is absent")
