@@ -51,6 +51,7 @@ mod reach;
 mod scenario;
 mod userspace;
 mod userspace_builder;
+pub(crate) mod userspace_prepare;
 
 #[derive(Debug, Clone, Copy)]
 struct ForeignRect {
@@ -915,6 +916,7 @@ impl App {
             Some(Command::Seat(command)) => self.seat(command),
             Some(Command::Shot { slot, output, .. }) => self.shot(slot, &output),
             Some(Command::Control { slot, args }) => self.control(slot, &args),
+            Some(Command::PrepareUserspace { arch }) => self.prepare_userspace(&arch),
             Some(Command::Flight(command)) => self.flight(command),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
             Some(Command::LayerPack {

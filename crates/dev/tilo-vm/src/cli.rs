@@ -117,6 +117,12 @@ pub enum Command {
     /// Build this worktree's dev image (and dev disk) into a directory, for vm upgrade --image and vm create --image.
     #[command(subcommand)]
     Image(ImageCommand),
+    /// Build and verify the matched userspace on its remote builder before the device is reachable.
+    PrepareUserspace {
+        /// Architecture of the device that will receive the normal userspace swap.
+        #[arg(long, value_parser = ["aarch64", "x86_64"])]
+        arch: String,
+    },
     /// Manage slots: your user, session and layer stack inside a VM.
     #[command(subcommand)]
     Slot(SlotCommand),

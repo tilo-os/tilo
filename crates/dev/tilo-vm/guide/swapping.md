@@ -36,8 +36,17 @@ receipt reports any desktop refresh it performed.
 ## Matched userspace cohort
 
 ```sh
+tilo-vm prepare-userspace --arch aarch64 # build and verify while the device is offline
 tilo-vm swap userspace --slot device --builder remote
 ```
+
+Preparation uses the configured architecture builder and the same frozen source
+inventory and nine-member producer as the swap. It checks every member's source,
+order, architecture and complete archive hash, and requires the producer to exit
+successfully. It contacts no device and selects no generation. The normal swap
+still validates the live device, storage, session and generation before activation;
+its builder reuses the compiled artifacts and existing component cache. Source
+changes after preparation are handled by the normal swap's new inventory.
 
 This worktree operation uses one frozen source inventory to build and import
 launcher, installer, apps plus their exact SDK, AppHost, NativeRuntimeHost,

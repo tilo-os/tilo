@@ -173,7 +173,7 @@ impl App {
     }
 }
 
-fn validate_member(
+pub(super) fn validate_member(
     packed: &Packed,
     component: &Component,
     digest: &str,

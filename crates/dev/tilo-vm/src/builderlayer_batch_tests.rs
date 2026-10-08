@@ -11,6 +11,66 @@ use tilo_vm_protocol::USERSPACE_COMPONENTS;
 
 type FixtureResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+#[test]
+fn offline_preparation_checks_the_real_producer_and_refuses_incomplete_or_foreign_cohorts() {
+    let fixture = Fixture::with_native_payload().unwrap();
+    let output = fixture.run("batch", None).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let manifest =
+        tilo_vm_protocol::Manifest::load(&fixture.root.path().join("os/components.toml"))
+            .unwrap()
+            .unwrap();
+    let arch = std::env::consts::ARCH;
+    let verify = |bytes: &[u8], digest: &str, arch: &str| {
+        crate::app::userspace_prepare::verify_prepared_stream(
+            &mut Stream::new(bytes),
+            &manifest,
+            digest,
+            arch,
+        )
+    };
+    let prepared = verify(&output.stdout, &fixture.snapshot.digest, arch).unwrap();
+    assert_eq!(prepared.len(), USERSPACE_COMPONENTS.len());
+    assert_eq!(
+        prepared
+            .iter()
+            .map(|member| member.component.as_str())
+            .collect::<Vec<_>>(),
+        USERSPACE_COMPONENTS
+    );
+    assert!(verify(&output.stdout, "foreign-source", arch).is_err());
+    assert!(
+        verify(
+            &output.stdout,
+            &fixture.snapshot.digest,
+            "foreign-architecture"
+        )
+        .is_err()
+    );
+    let last_end = output
+        .stdout
+        .windows(END.len())
+        .rposition(|bytes| bytes == END.as_bytes())
+        .expect("fixture producer includes the final payload checksum");
+    let cut = &output.stdout[..last_end + END.len() + 12];
+    assert!(verify(cut, &fixture.snapshot.digest, arch).is_err());
+    let mut corrupt = output.stdout.clone();
+    let data = corrupt
+        .windows(DATA.len())
+        .position(|bytes| bytes == DATA.as_bytes())
+        .expect("fixture producer includes payload bytes")
+        + DATA.len();
+    corrupt[data] = if corrupt[data] == b'A' { b'B' } else { b'A' };
+    assert!(verify(&corrupt, &fixture.snapshot.digest, arch).is_err());
+    let mut extra = output.stdout.clone();
+    extra.extend_from_slice(format!("{BEGIN}{{}}\n").as_bytes());
+    assert!(verify(&extra, &fixture.snapshot.digest, arch).is_err());
+}
+
 fn run_producer_child() -> FixtureResult<bool> {
     let Some(mode) = std::env::var_os("TILO_COHORT_FIXTURE_MODE") else {
         return Ok(false);
@@ -37,6 +97,37 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn with_native_payload() -> FixtureResult<Self> {
+        let mut fixture = Self::new()?;
+        // The original byte-stream fixture intentionally has non-ELF members.
+        // This admission fixture uses a real small native executable so the
+        // maintained producer independently observes its architecture.
+        std::fs::copy(
+            "/usr/bin/true",
+            fixture.root.path().join("target/fixture-architecture-elf"),
+        )?;
+        for script in [
+            "os/scripts/install-components.py",
+            "os/dev/assemble-app-runtime.py",
+        ] {
+            let path = fixture.root.path().join(script);
+            let text = std::fs::read_to_string(&path)?;
+            if !text.contains("(p/'binary').write_bytes(material)") {
+                return Err("fixture installer no longer exposes its native payload".into());
+            }
+            std::fs::write(
+                path,
+                text.replace(
+                    "(p/'binary').write_bytes(material)",
+                    "shutil.copyfile('target/fixture-architecture-elf',p/'binary')",
+                ),
+            )?;
+        }
+        let worktree = Worktree::detect(fixture.root.path()).ok_or("missing fixture worktree")?;
+        fixture.snapshot = Snapshot::create(&worktree, "userspace")?;
+        Ok(fixture)
+    }
+
     fn new() -> FixtureResult<Self> {
         let root = tempfile::tempdir()?;
         for dir in ["os/scripts", "os/dev", "target/release"] {
