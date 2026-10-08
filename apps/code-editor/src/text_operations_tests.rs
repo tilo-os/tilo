@@ -1,4 +1,5 @@
 //! File text operations exercised through the mounted app's public door.
+use automerge::transaction::Transactable as _;
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ActionAddress;
@@ -377,4 +378,100 @@ fn text_operations_low_group_retains_contextual_refusal_and_one_undo_step() {
     let before = app.read_document(|doc| doc.clone().save());
     assert!(invoke_low_project(&mut app, "apply-low", json!({"action":first})).is_err());
     assert_eq!(app.read_document(|doc| doc.clone().save()), before);
+}
+
+#[test]
+fn text_operations_snapshot_public_read_stamps_canonical_record() {
+    let (_directory, mut app, file) = fixture("snapshot fixture");
+    let descriptor = app
+        .actions()
+        .unwrap()
+        .into_iter()
+        .find(|action| {
+            action.address.action == "read-text-snapshot"
+                && action.resource_kind == "code_editor.file"
+        })
+        .unwrap();
+    assert_eq!(
+        descriptor.contract.permission,
+        ui::tilo_actions::PermissionRequirement::Read
+    );
+    let snapshot = invoke(
+        &mut app,
+        &file,
+        "read-text-snapshot",
+        json!({"start_chars":0,"max_chars":16}),
+    )
+    .unwrap()
+    .unwrap()
+    .value
+    .unwrap();
+    assert_eq!(snapshot["version"], 1);
+    assert_eq!(snapshot["content"]["text"], "snapshot fixture");
+    assert_eq!(snapshot["content"]["file"], file);
+    assert_eq!(snapshot["record"]["appId"], "so.tilo.code-editor");
+    assert_eq!(snapshot["record"]["recordId"], app.record().as_str());
+    let heads = app.read_document(|doc| {
+        crate::text_operations::committed_heads(doc, &doc.base_heads(), None).unwrap()
+    });
+    assert_eq!(snapshot["basis"]["heads"], json!(heads));
+    assert!(snapshot.get("origin").is_none());
+    assert_eq!(body(&app, &file), "snapshot fixture");
+}
+
+#[test]
+fn text_operations_snapshot_rejects_real_pending_edits_and_aba_revision() {
+    let (_directory, mut app, file) = fixture("before");
+    let (old_heads, expected) = app.read_document(|doc| {
+        let heads = doc.base_heads();
+        let encoded = crate::text_operations::committed_heads(doc, &heads, None).unwrap();
+        (heads, serde_json::to_string(&encoded).unwrap())
+    });
+    let selected = read(&mut app, &file, 0, 6);
+    invoke(&mut app, &file, "edit-text", edit_args(&selected, "after")).unwrap();
+    let selected = read(&mut app, &file, 0, 5);
+    invoke(&mut app, &file, "edit-text", edit_args(&selected, "before")).unwrap();
+    assert_eq!(body(&app, &file), "before");
+    let stale = invoke(
+        &mut app,
+        &file,
+        "read-text-snapshot",
+        json!({"start_chars":0,"max_chars":6,"expected_heads":expected}),
+    )
+    .unwrap_err();
+    assert!(stale.to_string().contains("stale_cursor"));
+    let current = invoke(
+        &mut app,
+        &file,
+        "read-text-snapshot",
+        json!({"start_chars":0,"max_chars":6}),
+    )
+    .unwrap()
+    .unwrap()
+    .value
+    .unwrap();
+    assert_eq!(current["content"]["text"], "before");
+    assert_ne!(
+        current["basis"]["heads"],
+        serde_json::from_str::<Value>(&expected).unwrap()
+    );
+    app.read_document(|doc| {
+        let heads = doc.base_heads();
+        assert_ne!(heads, old_heads);
+        let refused = crate::text_operations::committed_heads(doc, &heads, Some(&expected));
+        assert!(refused.unwrap_err().contains("revision changed"));
+        let mut pending = doc.clone();
+        pending
+            .put(automerge::ROOT, "pending-snapshot-fixture", true)
+            .unwrap();
+        let count = pending.pending_ops();
+        assert!(count > 0);
+        assert!(
+            crate::text_operations::committed_heads(&pending, &heads, None)
+                .unwrap_err()
+                .contains("uncommitted")
+        );
+        assert_eq!(pending.pending_ops(), count);
+        assert_eq!(pending.base_heads(), heads);
+    });
 }

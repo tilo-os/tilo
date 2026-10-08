@@ -2811,6 +2811,10 @@ impl Widget for CodeApp {
         dyn ui::widget::Continuable
     );
 
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::text_operations::SNAPSHOT_READERS
+    }
+
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
             [rect.x0, rect.y0, rect.x1, rect.y1]
