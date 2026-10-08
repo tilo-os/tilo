@@ -362,7 +362,7 @@ pub fn encode(
         (ActionInput::Deferred { .. }, Some(_)) => {
             Err(DoorError::UnexpectedArgument(address.clone()))
         }
-        (ActionInput::Immediate(encoded), None) => Ok(encoded.clone()),
+        (ActionInput::Immediate(encoded), None) => Ok(encoded.as_ref().clone()),
         (ActionInput::Immediate(_), Some(_)) => Err(DoorError::UnexpectedArgument(address.clone())),
         (ActionInput::Prompted { build, .. }, Some(text)) => {
             let encoded = build(text);

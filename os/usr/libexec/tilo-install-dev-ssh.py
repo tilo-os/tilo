@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply an explicit owner SSH key to a self-installed development image.
+"""Apply explicit owner SSH keys to a self-installed development image.
 
 The installer calls this only for a dev self-install with a setup handoff.
 It does not create a personal identity or change onboarding state.
@@ -13,22 +13,34 @@ import re
 import subprocess
 
 
-def public_key(path):
+MAX_KEYS = 16
+
+
+def public_keys(path):
+    """The request's keys, one OpenSSH public key per line, normalized."""
     info = path.lstat()
-    if not path.is_file() or path.is_symlink() or info.st_nlink != 1 or info.st_size > 8192:
+    if not path.is_file() or path.is_symlink() or info.st_nlink != 1 or info.st_size > 32768:
         raise ValueError("SSH key must be a bounded, non-linked regular file")
-    line = path.read_text(encoding="ascii").strip()
-    parts = line.split()
-    if len(parts) < 2 or "\n" in line or "\r" in line:
-        raise ValueError("expected one SSH public key without authorized_keys options")
-    if parts[0] not in ("ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"):
-        raise ValueError("unsupported SSH public key type")
-    blob = base64.b64decode(parts[1], validate=True)
-    length = int.from_bytes(blob[:4], "big")
-    if blob[4:4 + length] != parts[0].encode():
-        raise ValueError("SSH public key type differs from its wire encoding")
+    text = path.read_text(encoding="ascii")
+    if "\r" in text:
+        raise ValueError("expected SSH public keys without authorized_keys options")
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if not lines or len(lines) > MAX_KEYS:
+        raise ValueError(f"expected 1 to {MAX_KEYS} SSH public keys")
+    keys = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 2:
+            raise ValueError("expected SSH public keys without authorized_keys options")
+        if parts[0] not in ("ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"):
+            raise ValueError("unsupported SSH public key type")
+        blob = base64.b64decode(parts[1], validate=True)
+        length = int.from_bytes(blob[:4], "big")
+        if blob[4:4 + length] != parts[0].encode():
+            raise ValueError("SSH public key type differs from its wire encoding")
+        keys.append(" ".join(parts[:2]) + "\n")
     subprocess.run(["ssh-keygen", "-l", "-f", str(path)], check=True, capture_output=True)
-    return " ".join(parts[:2]) + "\n"
+    return "".join(keys)
 
 
 def directory(root, relative):
@@ -52,7 +64,7 @@ def label(path, installed):
 def apply(etc, username, key_path, labeler=label):
     if etc.is_symlink() or not etc.is_dir() or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", username):
         raise ValueError("invalid installed /etc or account")
-    key = public_key(key_path)
+    key = public_keys(key_path)
     keys = directory(etc, "ssh/authorized_keys")
     config = directory(etc, "ssh/sshd_config.d")
     wants = directory(etc, "systemd/system/multi-user.target.wants")
