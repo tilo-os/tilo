@@ -272,7 +272,7 @@
     "required_shell_tests_compile": {
       "passed": true,
       "receipt": "voice-nemo-language-shell-check.log",
-      "command": "rcargo --no-fallback --no-fetch check --locked -p shell --tests -j1",
+      "command": "cargo check --locked -p shell --tests -j1",
       "finished_seconds": 3.41,
       "native_CPP_separately_compiled": true
     },

@@ -2670,16 +2670,16 @@
   },
   "evidence": {
     "freeze_commit": "1188c9926c4714e1b458dc91a9cc42139b8557eb",
-    "private_evidence_directory": "/var/home/quinten/tilo/tilo/.worktrees/dictation-vocabulary-dependent",
+    "private_evidence_directory": "Outside Git; exact operator-private location retained in the task receipt",
     "scoring_script_sha256": "a85ffad301ce4154960d832565a879f08644a48319b2e6c1d383061f119a5433",
     "raw_transcripts_in_git": false,
-    "dataset_reconstruction": "Original temporary rcargo container vanished before exposure. Pinned public corpus reconstructed and exact frozen suite SHA matched before any of the 64 reserved runs. No configuration change or result selection.",
+    "dataset_reconstruction": "Original temporary build container vanished before exposure. Pinned public corpus reconstructed and exact frozen suite SHA matched before any of the 64 reserved runs. No configuration change or result selection.",
     "worker_identity_checks": "Same-size mutable model, different verity model, symlink, and untrained context2 rejected before Ready on ac3ea33503bec6ae7902bf4016628914b786d8465c54eaa2856d9c076a1ab40c. Final e7ca worker differed only by rustfmt; heldout and warm comparison use final e7ca.",
     "executed_checks": [
-      "rcargo native C++ object and library link under fresh PSI/memory/disk admission",
-      "rcargo --no-fallback --no-fetch rustc --locked -p local-model-service --no-default-features --features nemo-review --example nemo_speech_worker -j1 (native link args recorded privately)",
-      "rcargo --no-fallback --no-fetch clippy --locked -p local-model-service --no-default-features --features nemo-review --example nemo_speech_worker -j1 -- -D warnings PASS",
-      "rcargo --no-fallback --no-fetch check --locked -p shell --tests -j1 PASS2.35s",
+      "remote native C++ object and library link under fresh PSI/memory/disk admission",
+      "cargo rustc --locked -p local-model-service --no-default-features --features nemo-review --example nemo_speech_worker -j1 (native link args recorded privately)",
+      "cargo clippy --locked -p local-model-service --no-default-features --features nemo-review --example nemo_speech_worker -j1 -- -D warnings PASS",
+      "cargo check --locked -p shell --tests -j1 PASS2.35s",
       "Existing evaluation six tests and stream five tests PASS",
       "Actual context320 cancel, repeated silence, unsupported language and model identity refusals PASS"
     ],
@@ -2691,6 +2691,7 @@
       "Spoken numeric self-correction and unseen spoken names",
       "Production model catalogue, install and residency qualification"
     ],
-    "cold_start_limit": "Exact authenticated fs-verity witness removes repeated hash scan but native cold IO still takes about five seconds. Warm fresh-worker Ready 5005 to2836ms; CPU6.20 to6.58s, no efficiency claim for startup change."
+    "cold_start_limit": "Exact authenticated fs-verity witness removes repeated hash scan but native cold IO still takes about five seconds. Warm fresh-worker Ready 5005 to2836ms; CPU6.20 to6.58s, no efficiency claim for startup change.",
+    "command_presentation": "Cargo arguments are shown portably; all builds/checks executed remotely with the operator Cargo drop-in. Its exact command and wrapper-specific safety flags are retained in private receipts."
   }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the confined native worker bridge on rcargo's builder, without fetches.
+"""Build the confined native worker bridge on the remote build host, without fetches.
 
 Uses the existing exact reviewed source/dependencies and creates a fresh private
 source/build directory. Never edits or shares original native build objects.

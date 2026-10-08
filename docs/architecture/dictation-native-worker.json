@@ -220,7 +220,7 @@
     "default_all_target_clippy": "passed",
     "native_only_clippy": "passed",
     "python_focused_tests": "14 passed",
-    "shell_tests_compile": "passed rcargo --no-fallback --no-fetch check --locked -p shell --tests -j2; 1m26s",
+    "shell_tests_compile": "passed cargo check --locked -p shell --tests -j2; 1m26s",
     "descriptor_lazy_anchor_regression": "passed actual production reader; caller close/unlink; cache release; explicit retirement",
     "shared_pipe_regressions": "3 passed in 0.014s on production configure/serve_decoder: incremental PCM exactly once; completion retires session; native error emits no draft/final; unconfigured input emits no Ready",
     "shared_pipe_shell_compile": "passed required remote shell --tests check in22.36s"
