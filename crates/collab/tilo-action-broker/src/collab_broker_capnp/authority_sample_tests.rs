@@ -1,5 +1,5 @@
 //! How often one admission or one directory page reads the committed
-//! workspace authority, and that it borrows rather than copies it.
+//! workspace authority, and that no path asks it for an owned snapshot.
 use super::*;
 use crate::services::WorkspaceAuthority;
 use crate::test_support::{Workspace, WorkspaceId};
@@ -11,12 +11,12 @@ use tilo_desktop_model::DesktopTree;
 
 type Revision = Box<dyn FnOnce(&mut DesktopTree) + Send>;
 
-/// A committed authority that counts every sample and every owned copy,
+/// A committed authority that counts every sample and every owned snapshot,
 /// and can change policy just before a chosen sample reads it.
 struct SampledAuthority {
     tree: Mutex<DesktopTree>,
     samples: AtomicUsize,
-    copies: AtomicUsize,
+    owned_snapshots: AtomicUsize,
     /// Applied to the tree immediately before the numbered (1-based) sample.
     before: Mutex<Option<(usize, Revision)>>,
 }
@@ -26,7 +26,7 @@ impl SampledAuthority {
         Arc::new(Self {
             tree: Mutex::new(tree),
             samples: AtomicUsize::new(0),
-            copies: AtomicUsize::new(0),
+            owned_snapshots: AtomicUsize::new(0),
             before: Mutex::new(None),
         })
     }
@@ -35,13 +35,13 @@ impl SampledAuthority {
         self.samples.load(Ordering::SeqCst)
     }
 
-    fn copies(&self) -> usize {
-        self.copies.load(Ordering::SeqCst)
+    fn owned_snapshots(&self) -> usize {
+        self.owned_snapshots.load(Ordering::SeqCst)
     }
 
     fn reset(&self) {
         self.samples.store(0, Ordering::SeqCst);
-        self.copies.store(0, Ordering::SeqCst);
+        self.owned_snapshots.store(0, Ordering::SeqCst);
     }
 
     fn revise_before_sample(&self, sample: usize, revise: Revision) {
@@ -65,7 +65,7 @@ impl WorkspaceAuthority for SampledAuthority {
     }
 
     fn snapshot(&self) -> Result<DesktopTree, String> {
-        self.copies.fetch_add(1, Ordering::SeqCst);
+        self.owned_snapshots.fetch_add(1, Ordering::SeqCst);
         let mut copy = None;
         self.with_tree(&mut |tree| copy = Some(tree.clone()))?;
         copy.ok_or_else(|| "authority did not answer".into())
@@ -152,7 +152,7 @@ fn invocation_fixture(
 }
 
 #[test]
-fn action_host_invocation_admission_samples_authority_once_and_copies_nothing() {
+fn action_host_invocation_admission_samples_authority_once_without_an_owned_snapshot() {
     let (tree, room) = owned_room();
     let authority = SampledAuthority::new(tree);
     let (state, caller, mut app) = invocation_fixture(&authority, &room);
@@ -168,9 +168,9 @@ fn action_host_invocation_admission_samples_authority_once_and_copies_nothing() 
     assert!(app.try_recv().is_ok(), "the invocation reaches the app");
     // One sample decides whether the action is offered to the caller (before
     // any confirmation can reveal it); one decides every check of the
-    // admission itself. Neither copies the tree.
+    // admission itself. Neither asks for an owned snapshot of the tree.
     assert_eq!(authority.samples(), 2);
-    assert_eq!(authority.copies(), 0);
+    assert_eq!(authority.owned_snapshots(), 0);
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn admission_decides_on_one_consistent_sample() {
     // The action check and the record check share the admission's one
     // sample: there is no later read that could decide on other state.
     assert_eq!(authority.samples(), 2);
-    assert_eq!(authority.copies(), 0);
+    assert_eq!(authority.owned_snapshots(), 0);
 }
 
 const PAGE_ROWS: usize = 200;
@@ -333,12 +333,12 @@ async fn directory_page_samples_authority_once_regardless_of_rows() {
             let page = query_wide_page(&authority, &room, &BrokerActor::person(owner())).await;
             assert_eq!(page.rows.len(), PAGE_ROWS, "the owner sees every row");
             assert_eq!(authority.samples(), 1);
-            assert_eq!(authority.copies(), 0);
+            assert_eq!(authority.owned_snapshots(), 0);
 
             let page = query_wide_page(&authority, &room, &BrokerActor::person("stranger")).await;
             assert!(page.rows.is_empty(), "a stranger sees no row");
             assert_eq!(authority.samples(), 1);
-            assert_eq!(authority.copies(), 0);
+            assert_eq!(authority.owned_snapshots(), 0);
         })
         .await;
 }
