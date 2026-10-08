@@ -1310,6 +1310,7 @@ impl State {
             "text_input_active": self.text_input_active(),
             "input_method_connected": self.input_method_resource_client.is_some(),
             "input_method_keyboard_grabbed": self.seat.input_method().keyboard_grabbed(),
+            "input_method_preedit_active": self.input_method_preedit.is_active(),
             "on_screen_keyboard_surface": self.osk_surface,
         })
     }

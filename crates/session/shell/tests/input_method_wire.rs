@@ -572,6 +572,10 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
         observed["input_method_keyboard_grabbed"].as_bool(),
         Some(true)
     );
+    assert_eq!(
+        observed["input_method_preedit_active"].as_bool(),
+        Some(false)
+    );
 
     // Focusing the field enters its text input; enabling it with a caret
     // rectangle activates the input method.
@@ -658,6 +662,11 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
     h.pump();
     assert_eq!(h.clients[app].peer.preedit.last(), Some(&Some("ni".into())));
     assert!(h.state.input_method_preedit_active_for_tests());
+    assert_eq!(
+        h.state.seat_focus_json()["input_method_preedit_active"].as_bool(),
+        Some(true),
+        "the closed seat observation follows the accepted preedit"
+    );
     let serial = h.clients[im_client].peer.im_done;
     input_method.set_preedit_string(String::new(), 0, 0);
     input_method.commit_string("你".into());
@@ -665,6 +674,11 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
     h.pump();
     assert_eq!(h.clients[app].peer.committed, [Some("你".to_string())]);
     assert!(!h.state.input_method_preedit_active_for_tests());
+    assert_eq!(
+        h.state.seat_focus_json()["input_method_preedit_active"].as_bool(),
+        Some(false),
+        "committing clears the closed preedit observation"
+    );
     assert!(h.clients[app].peer.text_input_done >= 2);
 
     // The candidate window sits right below the caret: field origin
