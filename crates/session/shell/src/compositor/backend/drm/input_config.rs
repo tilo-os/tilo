@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use settings_store::hardware::{InputDeviceKind, TouchpadClickMethod, TouchpadScrollMethod};
 
@@ -494,8 +494,10 @@ pub const SETTINGS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// re-probe, an input device reconfiguration).
 pub struct SettingsWatch {
     path: Option<PathBuf>,
-    /// Modification time as of the last check. `None` before the first check, and while the file doesn't exist.
-    last: Option<SystemTime>,
+    /// The backend reads this committed source, rather than its compatibility copy.
+    source: Option<std::sync::Arc<dyn settings_store::SettingsSource>>,
+    /// Committed revision, or the file modification time for direct file readers.
+    last: Option<settings_store::SettingsStamp>,
     /// Whether a check has happened at all — distinguishes "no file yet" from "not looked yet", so the file appearing for the first time counts as a change rather than the baseline.
     primed: bool,
     /// Each section's fingerprint as of the last read.
@@ -513,13 +515,17 @@ impl Default for SettingsWatch {
 impl SettingsWatch {
     /// Watch the real settings file.
     pub fn new() -> Self {
-        Self::at(settings_store::settings_path())
+        Self {
+            source: settings_store::installed_source(),
+            ..Self::at(settings_store::settings_path())
+        }
     }
 
     /// Watch an explicit path — how the tests drive it without touching the user's real configuration.
     pub fn at(path: Option<PathBuf>) -> Self {
         Self {
             path,
+            source: None,
             last: None,
             primed: false,
             sections: settings_store::SectionDigest::default(),
@@ -538,8 +544,8 @@ impl SettingsWatch {
     /// The top-level sections that changed since the last look. Empty means
     /// there is nothing to re-apply: the check was rate-limited
     /// ([`Self::with_interval`]; calls in between are free), the file's mtime
-    /// did not move, or it moved without any section changing. The document
-    /// is read only when the mtime moved.
+    /// or committed revision did not move, or it moved without any section
+    /// changing. The document is read only when its authoritative stamp moves.
     pub fn changed_sections(&mut self, now: Instant) -> BTreeSet<String> {
         if let Some(next) = self.next_check
             && now < next
@@ -550,21 +556,38 @@ impl SettingsWatch {
         // need centuries of uptime); falling back to "now" just makes the
         // next call re-check immediately instead of panicking.
         self.next_check = Some(now.checked_add(self.interval).unwrap_or(now));
-        let Some(path) = self.path.as_ref() else {
-            return BTreeSet::new();
-        };
-        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let stamp = self.source.as_ref().map_or_else(
+            || self.path.as_deref().and_then(settings_store::stamp_at),
+            |source| Some(settings_store::SettingsStamp::Revision(source.revision())),
+        );
         let first_look = !self.primed;
         self.primed = true;
-        if mtime == self.last && !first_look {
+        if stamp == self.last && !first_look {
             return BTreeSet::new();
         }
-        self.last = mtime;
-        let sections = settings_store::SectionDigest::of(&settings_store::load_at(path));
+        self.last = stamp;
+        let document = self.source.as_ref().map_or_else(
+            || {
+                self.path
+                    .as_deref()
+                    .map(settings_store::load_at)
+                    .unwrap_or_default()
+            },
+            |source| source.load(),
+        );
+        let sections = settings_store::SectionDigest::of(&document);
         let changed = sections.changed_since(&self.sections);
         self.sections = sections;
         // The first look establishes the baseline rather than reporting a change — otherwise every session start would re-apply settings already applied at construction.
         if first_look { BTreeSet::new() } else { changed }
+    }
+
+    /// Wake after the authoritative source publishes its committed snapshot.
+    /// File notifications may precede that publication; neither consumes its edge.
+    pub fn listen(&self, listener: &std::sync::Arc<settings_store::Listener>) {
+        if let Some(source) = &self.source {
+            source.changes().listen(listener);
+        }
     }
 
     /// Let the next [`Self::changed_sections`] look regardless of the rate limit — for when a file-change notification says there is something to see.
@@ -1550,6 +1573,137 @@ mod tests {
             .checked_add(Duration::from_secs(seconds))
             .expect("a near-future mtime");
         f.set_modified(moved).expect("set mtime");
+    }
+
+    struct RestoreSettingsSource(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
+    impl Drop for RestoreSettingsSource {
+        fn drop(&mut self) {
+            settings_store::install_source(self.0.take());
+        }
+    }
+
+    #[test]
+    fn settings_watch_follows_synchronous_document_without_copy_changes() {
+        use settings_store::SettingsSource;
+        use std::sync::{Arc, mpsc};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings.json");
+        std::fs::write(&path, "{}").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(settings_store::SESSION_SETTINGS_ENV, &path);
+        let source = Arc::new(settings_store::HostDocument::new(
+            serde_json::Map::new(),
+            |_| Ok(()),
+        ));
+        let _restore = RestoreSettingsSource(settings_store::installed_source());
+        settings_store::install_source(Some(source.clone()));
+        let mut watch = SettingsWatch::new().with_interval(Duration::from_secs(3600));
+        assert!(watch.changed_sections(Instant::now()).is_empty());
+        let (sender, committed) = mpsc::channel();
+        let listener: Arc<settings_store::Listener> = Arc::new(move || {
+            sender.send(()).unwrap();
+        });
+        watch.listen(&listener);
+        source
+            .update_section(
+                "input",
+                serde_json::json!({"tap_to_click": true})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+        committed.recv_timeout(Duration::from_secs(5)).unwrap();
+        watch.check_now();
+        assert_eq!(watch.changed_sections(Instant::now()), sections(&["input"]));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{}",
+            "the committed source is authoritative even without a copy rewrite"
+        );
+        watch.check_now();
+        assert!(watch.changed_sections(Instant::now()).is_empty());
+    }
+
+    #[test]
+    fn settings_watch_waits_for_committed_display_intent_and_wakes_after_import() {
+        use settings_store::{SessionPaths, SessionSettings};
+        use std::sync::{Arc, mpsc};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings.json");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(settings_store::SESSION_SETTINGS_ENV, &path);
+        let session = Arc::new(SessionSettings::open(SessionPaths::beside(path.clone())).unwrap());
+        let source = session.host_view().unwrap();
+        let _restore = RestoreSettingsSource(settings_store::installed_source());
+        settings_store::install_source(Some(Arc::clone(&source)));
+        let (dir, name) = tilo_files::file_at(&path.with_file_name("settings.json.lock")).unwrap();
+        let held =
+            tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+        let mut watch = SettingsWatch::new().with_interval(Duration::ZERO);
+        assert!(watch.changed_sections(Instant::now()).is_empty());
+        let mut file_watch = SettingsWatch::at(Some(path.clone())).with_interval(Duration::ZERO);
+        assert!(file_watch.changed_sections(Instant::now()).is_empty());
+        let (sender, committed) = mpsc::channel();
+        let listener: Arc<settings_store::Listener> = Arc::new(move || {
+            sender.send(()).unwrap();
+        });
+        watch.listen(&listener);
+        let transaction = settings_store::hardware::DisplayTransaction::prepare_request(
+            settings_store::hardware::DisplaySet::default(),
+            settings_store::hardware::DisplayConfig::default(),
+        )
+        .unwrap();
+        // The external writer still holds the real copy lock after its atomic
+        // replacement. Import cannot win the race before the file notification.
+        let (dir, name) = tilo_files::file_at(&path).unwrap();
+        tilo_files::blocking::write_atomic(
+            &dir,
+            &name,
+            &serde_json::to_vec(&serde_json::json!({"display_transaction": transaction})).unwrap(),
+        )
+        .unwrap();
+        assert!(source.load().get("display_transaction").is_none());
+        watch.check_now();
+        assert!(
+            watch.changed_sections(Instant::now()).is_empty(),
+            "an uncommitted copy must not consume the display edge"
+        );
+        assert_eq!(
+            file_watch.changed_sections(Instant::now()),
+            sections(&["display_transaction"]),
+            "explicit file readers still observe the atomic replacement"
+        );
+        assert!(
+            committed.try_recv().is_err(),
+            "the held writer has not published a committed edge"
+        );
+        drop(held);
+        committed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the committed import must wake the native settings observer");
+        let bound = Instant::now() + Duration::from_secs(5);
+        while source.load().get("display_transaction").is_none() {
+            assert!(Instant::now() < bound, "canonical import did not complete");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        watch.check_now();
+        assert_eq!(
+            watch.changed_sections(Instant::now()),
+            sections(&["display_transaction"])
+        );
+        assert_eq!(
+            settings_store::hardware::DisplayTransaction::load()
+                .unwrap()
+                .id,
+            transaction.id
+        );
+        assert!(
+            watch.changed_sections(Instant::now()).is_empty(),
+            "the committed request is reported exactly once"
+        );
     }
 
     #[test]

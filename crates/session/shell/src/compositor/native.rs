@@ -8750,13 +8750,18 @@ pub fn run() {
     // deadline, so a write from Settings or a display transaction staged by
     // another process wakes the loop and is looked at on that tick.
     let settings_written = Arc::new(AtomicBool::new(false));
-    let _settings_file_watch = {
+    let settings_committed_watch: Arc<settings_store::Listener> = {
         let written = Arc::clone(&settings_written);
         let wake = Arc::clone(&session_wake);
-        settings_store::watch::watch_settings(move || {
+        Arc::new(move || {
             written.store(true, Ordering::Release);
             wake();
         })
+    };
+    settings_watch.listen(&settings_committed_watch);
+    let _settings_file_watch = {
+        let written = Arc::clone(&settings_committed_watch);
+        settings_store::watch::watch_settings(move || written())
         .map_err(|error| {
             tracing::warn!(%error, "settings file watch unavailable; an idle desktop applies Settings changes on its next wake");
         })
