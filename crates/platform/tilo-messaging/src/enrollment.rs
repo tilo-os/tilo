@@ -29,6 +29,20 @@ pub type EnrollmentReviewFuture =
     Pin<Box<dyn Future<Output = Result<EnrollmentReview, SendError>> + Send + 'static>>;
 pub type EnrollmentApprovalFuture =
     Pin<Box<dyn Future<Output = Result<String, SendError>> + Send + 'static>>;
+/// Private chooser projection. Selection is an opaque host token, never a bus
+/// path, phone number, ICCID, account editor right or modem permission.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SimChoice {
+    pub selection: String,
+    pub label: String,
+}
+impl std::fmt::Debug for SimChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SimChoice(<private>)")
+    }
+}
+pub type SimChoicesFuture =
+    Pin<Box<dyn Future<Output = Result<Vec<SimChoice>, SendError>> + Send + 'static>>;
 pub trait EnrollmentHost: Send + Sync {
     fn begin(&self, service: String) -> PairingFuture;
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture;
@@ -38,6 +52,16 @@ pub trait EnrollmentHost: Send + Sync {
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase;
     fn linked(&self, account: &ServiceAccount) -> Option<LinkedAccount>;
     fn cancel(&self, account: &ServiceAccount);
+    fn supports_sim_selection(&self) -> bool {
+        false
+    }
+    fn sim_choices(&self) -> SimChoicesFuture {
+        Box::pin(async { Err(SendError::Unavailable) })
+    }
+    fn select_sim(&self, _selection: String) -> EnrollmentReviewFuture {
+        Box::pin(async { Err(SendError::Unavailable) })
+    }
+    fn cancel_sim_selection(&self) {}
 }
 #[derive(Clone)]
 pub struct EnrollmentClient {
@@ -50,6 +74,59 @@ impl EnrollmentClient {
     }
     pub fn principal(&self) -> &str {
         &self.principal
+    }
+    pub fn supports_sim_selection(&self) -> bool {
+        self.host.supports_sim_selection()
+    }
+    /// # Errors
+    /// Refuses oversized, duplicate or malformed private chooser results.
+    pub async fn sim_choices(&self) -> Result<Vec<SimChoice>, SendError> {
+        let choices = self.host.sim_choices().await?;
+        let mut seen = std::collections::BTreeSet::new();
+        if choices.len() > 32
+            || choices.iter().any(|choice| {
+                choice.selection.is_empty()
+                    || choice.selection.len() > 128
+                    || choice
+                        .selection
+                        .chars()
+                        .any(|c| c.is_control() || c.is_whitespace())
+                    || choice.label.is_empty()
+                    || choice.label.len() > 256
+                    || choice.label.chars().any(char::is_control)
+                    || !seen.insert(&choice.selection)
+            })
+        {
+            self.host.cancel_sim_selection();
+            return Err(SendError::Revoked);
+        }
+        Ok(choices)
+    }
+    /// # Errors
+    /// Refuses an invalid choice or another service's unpublished identity.
+    pub async fn select_sim(&self, selection: String) -> Result<EnrollmentReview, SendError> {
+        if selection.is_empty()
+            || selection.len() > 128
+            || selection
+                .chars()
+                .any(|c| c.is_control() || c.is_whitespace())
+        {
+            return Err(SendError::InvalidRequest);
+        }
+        let review = self.host.select_sim(selection).await?;
+        if review.account.service != "sms"
+            || review.account.account.is_empty()
+            || review.generation == 0
+            || review.scope.is_empty()
+            || review.scope.len() > 512
+        {
+            self.host.cancel(&review.account);
+            return Err(SendError::Revoked);
+        }
+        Ok(review)
+    }
+    pub fn cancel_sim_selection(&self) {
+        self.host.cancel_sim_selection();
     }
     /// # Errors
     /// Refuses unsupported service selections and malformed private results.

@@ -323,6 +323,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn painted_screen_swipes_use_the_live_view_actions_without_document_edits() {
+        use winit::event::TouchPhase::{Cancelled, Ended, Started};
+        fn control(
+            node: &ui::headless::InspectionNode,
+            target: &str,
+        ) -> Option<ui::a11y::AccessNode> {
+            fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<ui::a11y::AccessNode> {
+                if node.action_target.as_deref() == Some(target) {
+                    return Some(node.clone());
+                }
+                node.children.iter().find_map(|child| find(child, target))
+            }
+            node.semantics
+                .as_ref()
+                .and_then(|node| find(node, target))
+                .or_else(|| {
+                    node.children
+                        .iter()
+                        .find_map(|child| control(child, target))
+                })
+        }
+        let (_dir, path) = scratch_repository("swipe-navigation");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+        let before = app.peer_document().get_heads();
+        let start = control(&app.harness().inspection().root, "git.screen.history")
+            .unwrap()
+            .bounds
+            .unwrap()
+            .to_rect()
+            .center();
+        app.harness().touch(1, Started, start.x, start.y);
+        app.harness().touch(1, Ended, start.x - 90.0, start.y);
+        app.settle();
+        assert!(
+            control(&app.harness().inspection().root, "git.screen.history")
+                .unwrap()
+                .state
+                .selected
+        );
+        let start = control(&app.harness().inspection().root, "git.screen.history")
+            .unwrap()
+            .bounds
+            .unwrap()
+            .to_rect()
+            .center();
+        app.harness().touch(2, Started, start.x, start.y);
+        app.harness().touch(2, Cancelled, start.x - 90.0, start.y);
+        app.settle();
+        assert!(
+            control(&app.harness().inspection().root, "git.screen.history")
+                .unwrap()
+                .state
+                .selected
+        );
+        app.harness().touch(3, Started, start.x, start.y);
+        app.harness().touch(3, Ended, start.x + 90.0, start.y);
+        app.settle();
+        assert!(
+            control(&app.harness().inspection().root, "git.screen.changes")
+                .unwrap()
+                .state
+                .selected
+        );
+        assert_eq!(
+            app.peer_document().get_heads(),
+            before,
+            "navigation changes no collaborative document"
+        );
+    }
+
     /// The `discard` screenshot is the host asking to confirm a changed
     /// file's destructive `discard-file`, which its "Discard file" pressed.
     #[test]

@@ -20,8 +20,8 @@ solid surfaces and reduced-motion behavior; no new desktop visual language.
 | Surface | Current observation | Next verification |
 | --- | --- | --- |
 | Notification center | #3039 landed: shared buttons, measured geometry, stable Clear/Undo focus. #3067 landed: shared Read control and wrapped ScrollRegion reading page, nested Back/Esc, accessible scrolling and covered-banner pointer precedence | [First increment captures](evidence/notification-center/README.md); [full-text reader evidence](evidence/notification-reader/README.md); reading, scrolling, cancellation, repeated actions, privacy, removal and resize |
-| Notification banners | Portable NotificationStack owns geometry and native host supplies effects | Dismiss hit target, error/quiet/locked states and large text; review active banners behind the history center (native capture evidence) |
-| Launcher / search | Shared CommandPalette now retains refused-action query/focus/selection with existing accessible status feedback, ignores held-Enter repeats, reuses callback errors, reserves both theme scales and uses shared armed-row ink. [Recovery qualification](evidence/launcher-recovery/README.md): 12 shared cases, seven native cases, six inspected variants and private live search/Escape pass | Provider revisions now preserve the selected stable resource and invoke refreshed callbacks; [ranking qualification](evidence/launcher-ranking/README.md) covers keyboard, pointer, query correction, removal, resize and three inspected variants. Empty/loading and real sandboxed app launch remain; VM/device coverage is blocked on this runner |
+| Notification banners | Portable NotificationStack now measures enlarged attribution/title/body and action rows through the shared toast card; the 200% text/action overlap is reproduced and repaired | [Measured-banner qualification](evidence/notification-banner-sizing/README.md) covers six before/after and six error captures, choice routing/stale geometry and capacity; hover/keyboard affordances, quiet/locked and live-device states remain |
+| Launcher / search | Shared CommandPalette now retains refused-action query/focus/selection with existing accessible status feedback, ignores held-Enter repeats, reuses callback errors, reserves both theme scales and uses shared armed-row ink. [Recovery qualification](evidence/launcher-recovery/README.md): 12 shared cases, seven native cases, six inspected variants and private live search/Escape pass | Provider revisions now preserve the selected stable resource and invoke refreshed callbacks; [ranking qualification](evidence/launcher-ranking/README.md) covers keyboard, pointer, query correction, removal, resize and three inspected variants. Empty-workspace launchpad now delegates pointer activation, release ownership, focus loss, Escape and held-submit suppression to shared PaintedTargets; native Search opens only on completed clicks. [Launchpad qualification](evidence/launchpad-release/README.md). Empty/loading and real sandboxed app launch remain; VM/device coverage is blocked on this runner |
 | Overview | #3057 and #3076 landed: shared creation/focus controls, compact scrolling, stable tab identity and interrupted activation. Exact #3076 merged-main checks passed 26 focused cases, seven native journeys and shell test compilation | Mixed-window preview and live device/workspace transitions remain; framing repair #3100 is integrated |
 | Window chrome | DesktopSurface composes toolkit GroupRow/StripView/WindowGroup | Inactive/focused tabs, close/menu states, resizing and shared header controls |
 | Menus / dialogs | #3110 and #3205 landed: shared ListRowFace/TooltipHost and ContextMenu current-output placement. Exact #3205 merged-main passes three output/capture cases, keyboard, pointer open/dismiss, action parity and shell test compilation; all six capture variants match inspected originals | Additional dialog/long-label/error states and VM hotplug/input coverage remain |
@@ -120,3 +120,25 @@ Tab menus #3205 landed normally at 499f0740d44bca4af2da986839489ed230d4877c from
 Launcher recovery #3277 merged normally at 4e2c99589a8d669e2626018a0f7b30a7183cfe2f. Exact merged-main checks passed 12 shared palette tests, seven native shell cases, shell tests compilation and a rebuilt private compositor search/Escape journey. Merged high-contrast, combined-scale and live captures were inspected. Ranking is the next independent increment; remaining inventory and VM/device limitations stay open.
 
 The live full-loop example now positively checks painted query pixels within the named input bounds. An actual nonblank closed-desktop capture is rejected; the production private search/Escape journey passes all existing and new assertions. [Qualification](evidence/headless-palette-visibility/README.md) distinguishes this observability improvement from an unproven animation failure.
+
+## Owned overview clock fixture (2026-10-07)
+
+On base 411d51e9, the overview harness's ambient clock pin was ignored by the
+native source's deliberately unknown fixture clock. HostedTileInputs now carries
+an explicit fixture-only ClockSnapshot; the harness supplies 09:41 without
+changing the fixture's Files services or the live clock. Five native chrome tests
+and thirteen overview interaction/pixel cases pass. The overview pixel oracle
+now requires an offscreen adapter rather than silently asserting only state.
+
+The original tracked overview PNG remains byte-identical (SHA-256
+06d93114eaf00a4a6ad297e9dd3b6f78873f2ec18caadfe12c433c1acd651406), with tolerance 4.
+This runner reproduces 7,082 differing pixels before and 6,807 after; the clock
+region now matches exactly, and all 275 before/after differences are confined
+to that region. The existing Home focus ring, shared creation row and fixture
+avatar differences remain for maintenance review. No baseline has been refreshed.
+The ready source PR carries inspected original PNG attachments and qualification
+results; protected landing and exact merged-main checks remain pending.
+
+Remaining primary-bar work is separate: collisions at 320 px, retained shared
+overflow controls and status/offline states. The qualified top-bar editor
+increment remains frozen while the Files CI prerequisite is resolved.

@@ -476,6 +476,7 @@ pub struct ShellOverlayHost {
     /// before layout. Empty in a bare `ui::App` host, where
     /// [`Self::strip_output_spans`] treats the window as the one display.
     outputs: Vec<OutputGeometry>,
+    keyboard_scope: String,
     palette: CommandPalette,
     palette_visible: bool,
     /// Search providers the palette fans out to. Built once at
@@ -1023,23 +1024,47 @@ fn magnifier_step(action: settings_store::hardware::ShortcutAction) -> Option<Ma
 /// settings, so it survives a settings reload and the next session, and
 /// return the keyboard group to select and the source's name. `None` with a
 /// single source.
-fn select_next_input_source() -> Option<(usize, String)> {
+fn select_next_input_source(scope: &str) -> Option<(usize, String)> {
     use crate::compositor::backend::drm::input_config::{KeyboardSettings, SECTION};
     let section = settings_store::load_section(SECTION);
-    let mut config = settings_store::hardware::RichInputConfig::from_section(&section);
+    let mut base = settings_store::hardware::RichInputConfig::from_section(&section);
+    let mut config = settings_store::keyboard_sources::effective(&base, scope);
     config.select_next_source()?;
     let mut values = serde_json::Map::new();
-    values.insert(
-        "keyboard_layout".into(),
-        serde_json::Value::String(config.keyboard_layout.clone()),
-    );
+    if scope == settings_store::keyboard_sources::ALL {
+        values.insert(
+            "keyboard_layout".into(),
+            serde_json::Value::String(config.keyboard_layout.clone()),
+        );
+    } else {
+        let mut inherited = settings_store::keyboard_sources::KeyboardProfile::from_input(&base);
+        if let Some(defaults) = base
+            .keyboard_assignments
+            .get(settings_store::keyboard_sources::ALL)
+        {
+            inherited.options.clone_from(&defaults.options);
+        }
+        let mut assignments = base.keyboard_assignments.clone();
+        let profile = assignments.entry(scope.into()).or_insert(inherited);
+        profile.active.clone_from(&config.keyboard_layout);
+        values.insert(
+            "keyboard_assignments".into(),
+            serde_json::to_value(&assignments).ok()?,
+        );
+        base.keyboard_assignments = assignments;
+    }
+    if scope == settings_store::keyboard_sources::ALL {
+        base.keyboard_layout.clone_from(&config.keyboard_layout);
+    }
+    config = settings_store::keyboard_sources::effective(&base, scope);
     if let Err(error) = settings_store::update_section(SECTION, values) {
         tracing::warn!(%error, "input source choice could not be saved");
+        return None;
     }
     // The keyboard switches to an XKB group: the active layout, or the
     // primary layout an input-method engine types on. The input-method
     // arbiter picks the engine up from the saved choice.
-    let keyboard = KeyboardSettings::from_section(&settings_store::load_section(SECTION));
+    let keyboard = KeyboardSettings::from_config(&config);
     let group = keyboard.active_index;
     let name = config.active_input_method().map_or_else(
         || keyboard.source_label(group),
@@ -2108,6 +2133,7 @@ impl ShellOverlayHost {
             onboarding_focus_reset: false,
             sidebar: None,
             outputs: Vec::new(),
+            keyboard_scope: settings_store::keyboard_sources::ALL.into(),
             palette,
             app_actions: None,
             palette_visible: false,
@@ -5007,6 +5033,12 @@ impl ShellOverlayHost {
                 {
                     return false;
                 }
+                // A foreign client's close request can be refused. Keep its
+                // live tab visible until the compositor sees destruction.
+                if Self::tab_still_present(&chrome, tab_id) {
+                    g.cancel_tab_close(tab_id);
+                    return true;
+                }
                 // The durable tree/document mutation must succeed before the
                 // widget begins its close animation. A visual-only close is
                 // precisely what allowed the next resync to restore a window.
@@ -5019,6 +5051,19 @@ impl ShellOverlayHost {
             }
         }
         false
+    }
+
+    fn tab_still_present(chrome: &Chrome, tab_id: u64) -> bool {
+        chrome
+            .borrow()
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .any(|tab| tab.id == tab_id)
     }
 
     /// Drain close buttons from the rendered rows into the same lifecycle
@@ -5044,7 +5089,29 @@ impl ShellOverlayHost {
                 );
             }
         }
-        Self::dispatch_desktop_intents(&chrome, intents) > 0
+        let changed = Self::dispatch_desktop_intents(&chrome, intents) > 0;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: the pointers belong to this exclusively borrowed host.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                let retained: Vec<_> = chrome
+                    .borrow()
+                    .tree()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .filter(|model| model.id == group.id)
+                    .flat_map(|model| model.tabs.iter())
+                    .map(|tab| tab.id)
+                    .collect();
+                for tab in retained {
+                    group.cancel_tab_close(tab);
+                }
+            }
+        }
+        changed
     }
 
     fn harvest_pending_width_changes(&self) {
@@ -6482,6 +6549,11 @@ impl ShellOverlayHost {
         began
     }
 
+    /// Select the physical keyboard whose sources the switch shortcut cycles.
+    pub(crate) fn set_keyboard_scope(&mut self, scope: String) {
+        self.keyboard_scope = scope;
+    }
+
     /// The modifier state changed with no key event to carry it (the
     /// control socket's modifier command, a backend's `ModifiersChanged`).
     /// A switcher held open by Alt commits once Alt is up.
@@ -7242,6 +7314,22 @@ impl ShellOverlayHost {
             }
         }
         None
+    }
+
+    /// The shared window grip overlays client content. Resolve it in laid-out
+    /// screen coordinates, after strip panning, before forwarding client input.
+    pub fn group_resize_hit(&self, group_id: u64, point: (f64, f64)) -> bool {
+        self.group_resize_rect(group_id)
+            .is_some_and(|rect| rect.contains(Point::new(point.0, point.1)))
+    }
+
+    /// Visible grip geometry shared by local routing and remote admission.
+    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+        self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.group_resize_rect(group_id)
+        })
     }
 
     /// Every tile laid out on this device, with the tab it shows, in
@@ -8742,6 +8830,15 @@ impl ShellOverlayHost {
             // the pointer is captured from a `Box<GroupRow>` owned through the
             // content tree, and the host outlives it.
             .map_or(0.0, |ptr| unsafe { (&*ptr).canvas_shift() })
+    }
+
+    /// [`GroupRow::canvas_pad`] of `strip`'s row, in layout pixels.
+    pub fn strip_canvas_pad(&self, strip: StripId) -> f64 {
+        self.group_row_ptrs.get(&strip).map_or(0.0, |&ptr| {
+            // SAFETY: same contract as every other `group_row_ptrs` accessor.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.canvas_pad()
+        })
     }
 
     /// Where on screen `strip` pans when it is drawn in canvas coordinates:
@@ -12771,7 +12868,7 @@ impl ShellOverlayHost {
                 }
             }
             A::NextInputSource => {
-                if let Some((index, name)) = select_next_input_source() {
+                if let Some((index, name)) = select_next_input_source(&self.keyboard_scope) {
                     let mut st = chrome.borrow_mut();
                     st.request_input_source(index);
                     st.show_osd(crate::shell::osd::Osd::input_source(&name));
@@ -17111,6 +17208,7 @@ impl Widget for ShellOverlayHost {
                 apps.bind_messaging_network_prompts(prompts.clone());
             }
             apps.pump_messaging_records();
+            apps.pump_feedback();
         }
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
@@ -17128,6 +17226,7 @@ impl Widget for ShellOverlayHost {
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
+        let display_storage_dirty = self.projection_overlay.poll_storage();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -17281,6 +17380,7 @@ impl Widget for ShellOverlayHost {
         content_dirty
             || quick_settings_dirty
             || radio_dirty
+            || display_storage_dirty
             || pairing_dirty
             || close_dirty
             || palette_dirty
@@ -19685,11 +19785,21 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 9] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 10] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
         [
+            (
+                "private-feedback",
+                self.chrome.as_ref().and_then(|chrome| {
+                    chrome
+                        .borrow()
+                        .hosted_inputs
+                        .in_process()
+                        .and_then(|apps| apps.borrow().feedback_deadline())
+                }),
+            ),
             (
                 "onboarding",
                 self.onboarding

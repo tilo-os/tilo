@@ -14,9 +14,10 @@ qualification or general Android application support.
 
 ## Reference and runtime
 
-The bookmark name **Vinix** was supplied without a URL. The likely reference is
-[vlang/vinix](https://github.com/vlang/vinix); the bookmark's identity remains
-unconfirmed. Its [Android documentation](https://github.com/vlang/vinix/blob/master/docs/android.md)
+The bookmark reference **Vinix** is confirmed as [vlang/vinix](https://github.com/vlang/vinix):
+the bookmarked post <https://x.com/v_language/status/2106302325950488863>
+links [vinix-os.org](https://vinix-os.org/), which links that repository
+(checked 2026-10-07; see issue #3476). Its [Android documentation](https://github.com/vlang/vinix/blob/master/docs/android.md)
 and [build inputs](https://github.com/vlang/vinix/blob/master/build-support/android/build.py)
 identify ATL/ART and the original Arity artifact. Vinix's reported ARM64 results
 and kernel adaptations do not establish Tilo compatibility.

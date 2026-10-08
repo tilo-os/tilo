@@ -401,6 +401,7 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
 #[test]
 fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
     let mut frame = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
+    frame.set_workspace_clip_supported(true);
     frame.relayout();
     let warm = frame.paint_with_damage();
     assert!(
@@ -423,6 +424,21 @@ fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
     assert!(
         following.scene.encoding().is_empty() && following.workspace_hold,
         "the rest of the switch stays on the content clip"
+    );
+    // Hot-unplugging to a single scanout changes presenter capability while
+    // the same transition is in flight. Its next frame must be complete.
+    frame.set_workspace_clip_supported(false);
+    let single = frame.paint_with_damage();
+    assert!(!single.workspace_hold && single.workspace_clip.is_none());
+    assert!(
+        !single.scene.encoding().is_empty(),
+        "single-output presenter needs actual scene pixels"
+    );
+    frame.set_workspace_clip_supported(true);
+    let multiple = frame.paint_with_damage();
+    assert!(
+        multiple.workspace_hold && multiple.scene.encoding().is_empty(),
+        "restored multi-output replay capability keeps its clip optimisation"
     );
 }
 
@@ -1355,7 +1371,16 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     // Settle: the first frames lay the tab bars out at their final widths.
     let at_rest = acknowledged_notes_canvas(&mut frame);
     let rest = at_rest.cache.as_ref().expect("the frame as layers");
-    assert!(rest.strips.is_empty(), "a strip at rest is read in place");
+    let offsets = rest
+        .strips
+        .iter()
+        .map(|strip| strip.scroll_x)
+        .collect::<Vec<_>>();
+    assert_eq!(offsets.len(), 1, "the fixture has one retained strip");
+    assert!(
+        offsets[0] > 0,
+        "the canvas includes left rubber-band padding"
+    );
     assert!(
         rest.width > SIZE.0,
         "the fixture's strip is wider than the screen: {}",
@@ -1371,7 +1396,10 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
             .iter()
             .map(|strip| strip.scroll_x)
             .collect::<Vec<_>>(),
-        vec![120]
+        offsets
+            .iter()
+            .map(|offset| offset + 120)
+            .collect::<Vec<_>>()
     );
     assert!(
         pan.layers.backdrop.encoding_eq(&rest.layers.backdrop),

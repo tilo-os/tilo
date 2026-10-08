@@ -40,3 +40,9 @@ osk-toolbar-paste = Paste
 osk-toolbar-left = Move caret left
 osk-toolbar-right = Move caret right
 osk-toolbar-hide = Hide keyboard
+
+osk-toolbar-indent = Indent
+osk-toolbar-dismiss = Hide keyboard
+
+osk-context-unavailable = The focused field action is unavailable.
+osk-context-stale = The field changed. Choose the action again.

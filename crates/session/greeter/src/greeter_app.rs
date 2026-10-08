@@ -2755,14 +2755,13 @@ mod tests {
         }
     }
 
-    fn paint(app: &mut GreeterApp, theme: &Theme) {
+    fn paint(app: &mut GreeterApp, theme: &Theme, text: &mut TextRenderer) {
         let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
         app.draw(
             &mut scene,
             Affine::IDENTITY,
-            &mut text,
+            text,
             theme,
             &PresenceCtx::default(),
         );
@@ -3640,8 +3639,9 @@ mod tests {
             let mut laid = Laid::new(&mut app, &doc, viewport, &theme);
             set_focus_by_id(&mut app, "greeter.password");
             // The first frame paints everything; what counts is every frame
-            // after it.
-            paint(&mut app, &theme);
+            // after it. Reuse the native host renderer across measurement and
+            // paint; replacing it is a separate whole-renderer invalidation.
+            paint(&mut app, &theme, &mut laid.text);
             Widget::mark_drawn(&mut app);
             let card = app.composed.as_deref().expect("composed");
             let row = find(card, "greeter.password")
@@ -3663,7 +3663,7 @@ mod tests {
                 if let Some(wake) = wake {
                     std::thread::sleep(wake.saturating_duration_since(Instant::now()));
                 }
-                paint(&mut app, &theme);
+                paint(&mut app, &theme, &mut laid.text);
                 let mut settled = Vec::new();
                 app.collect_damage(&mut settled);
                 Widget::mark_drawn(&mut app);
@@ -3682,7 +3682,7 @@ mod tests {
                 assert!(before == after, "a keystroke moved layout at {viewport:?}");
 
                 // As the native host does: paint, then collect what changed.
-                paint(&mut app, &theme);
+                paint(&mut app, &theme, &mut laid.text);
                 let mut damage = Vec::new();
                 app.collect_damage(&mut damage);
                 assert!(!damage.is_empty(), "the typed character must be painted");

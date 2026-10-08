@@ -39,6 +39,7 @@ pub fn item(state: &ProjectState, value: &str) -> Option<serde_json::Value> {
         "artifact" => {
             serde_json::json!({"relative_path":id,"sha256":record.receipt.artifact_sha256.get(id)?})
         }
+        "placement" => crate::placement_view::item(state, report, id)?,
         _ => return None,
     };
     Some(serde_json::json!({"custody":"reported_unverified","content":value}))
@@ -82,6 +83,9 @@ pub fn body(
         .push(canvas(cx, report, flow, selected));
     if let Some((kind, id)) = selected {
         page = page.push(inspector(cx, state, report, kind, id));
+        if let Some(placement) = crate::placement_view::body(cx, state, report, kind, id) {
+            page = page.push(placement);
+        }
     }
     let artifacts = record
         .receipt

@@ -85,6 +85,42 @@ impl BlockingClient {
             .map_err(|e| e.to_string())
     }
 
+    /// Review immutable file bytes using the host's current trusted attestors.
+    ///
+    /// # Errors
+    /// Returns why the host refused the local package.
+    pub fn review_local(&self, bytes: &[u8]) -> Result<crate::local_package::LocalReview, String> {
+        let mut request = self.client.review_local_request();
+        request.get().set_tapp_bytes(bytes);
+        let response = self.wait(request.send().promise)?;
+        let result = response.get().map_err(|e| e.to_string())?;
+        let json = result
+            .get_review_json()
+            .map_err(|e| e.to_string())?
+            .to_str()
+            .map_err(|e| e.to_string())?;
+        serde_json::from_str(json).map_err(|e| e.to_string())
+    }
+
+    /// Install exactly the immutable archive/root previously reviewed.
+    ///
+    /// # Errors
+    /// Returns current trust, payload, runtime or local update policy refusal.
+    pub fn install_local(
+        &self,
+        bytes: &[u8],
+        review: &crate::local_package::LocalReview,
+    ) -> Result<PackageId, String> {
+        let mut request = self.client.install_local_request();
+        let mut p = request.get();
+        p.set_tapp_bytes(bytes);
+        p.set_reviewed_root(&review.root);
+        p.set_reviewed_archive_hash(&review.archive_hash);
+        let response = self.wait(request.send().promise)?;
+        let result = response.get().map_err(|e| e.to_string())?;
+        parse_id(result.get_id().map_err(|e| e.to_string())?)
+    }
+
     /// Install a verified package through the privileged host service.
     ///
     /// # Errors

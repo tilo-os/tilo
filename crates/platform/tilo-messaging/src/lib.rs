@@ -33,7 +33,7 @@ pub use account::AccountState;
 mod enrollment;
 pub use enrollment::{
     EnrollmentApprovalFuture, EnrollmentClient, EnrollmentHost, EnrollmentPhase, EnrollmentReview,
-    EnrollmentReviewFuture,
+    EnrollmentReviewFuture, SimChoice, SimChoicesFuture,
 };
 
 mod setup;

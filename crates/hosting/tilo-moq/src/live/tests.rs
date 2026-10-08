@@ -680,7 +680,9 @@ async fn loopback_presence_exchange_reaches_both_sides() {
         tail.extend_from_slice(&[0x5a; 48]);
         presence(seq, &tail)
     };
-    let receive = |mut subscriber: moq_net::track::Subscriber, count: usize| async move {
+    let receive = |mut subscriber: moq_net::track::Subscriber,
+                   count: usize,
+                   priming_sequence: u64| async move {
         let mut samples = Vec::new();
         while samples.len() < count {
             let Ok(Ok(Some(datagram))) =
@@ -688,17 +690,31 @@ async fn loopback_presence_exchange_reaches_both_sides() {
             else {
                 break;
             };
-            let sent = u64::from_le_bytes(datagram.payload[8..16].try_into().unwrap());
-            if sent == 0 {
+            let sequence = u64::from_le_bytes(
+                datagram
+                    .payload
+                    .get(..8)
+                    .expect("presence sequence")
+                    .try_into()
+                    .unwrap(),
+            );
+            // Subscription priming can leave delayed hello frames queued.
+            // Only the known earlier sequence range belongs to that phase.
+            if sequence <= priming_sequence {
+                assert_eq!(datagram.payload.get(8..), Some(b"hello".as_slice()));
                 continue;
             }
+            assert_eq!(datagram.payload.len(), 64, "timestamped measurement frame");
+            assert_eq!(datagram.payload.get(16..), Some([0x5a; 48].as_slice()));
+            let sent = u64::from_le_bytes(datagram.payload[8..16].try_into().unwrap());
+            assert_ne!(sent, 0, "measurement frame has a real timestamp");
             samples.push(epoch.elapsed().as_nanos() as u64 - sent);
         }
         samples
     };
     const FRAMES: usize = 200;
-    let rx_b = tokio::spawn(receive(a_at_b, FRAMES));
-    let rx_a = tokio::spawn(receive(b_at_a, FRAMES));
+    let rx_b = tokio::spawn(receive(a_at_b, FRAMES, sa));
+    let rx_a = tokio::spawn(receive(b_at_a, FRAMES, sb));
     // 100 Hz each way, under the 120/s ceiling.
     for _ in 0..FRAMES {
         sa += 1;

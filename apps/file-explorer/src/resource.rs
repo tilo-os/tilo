@@ -378,6 +378,10 @@ impl FileExplorer {
         Self,
         (crate::files_app::ClipboardReceipt, String),
     > = ui::tilo_resource::ActionRef::new("record-clipboard-transfer", &["receipt", "device"]);
+    pub(crate) const RECORD_TRASH_RESTORE: ui::tilo_resource::ActionRef<
+        Self,
+        (crate::files_app::ClipboardReceipt, String),
+    > = ui::tilo_resource::ActionRef::new("record-trash-restore", &["receipt", "device"]);
     pub(crate) const SETTLE_CLIPBOARD_UNDO: ui::tilo_resource::ActionRef<Self, (String, String)> =
         ui::tilo_resource::ActionRef::new("settle-clipboard-undo", &["id", "operation"]);
     pub(crate) const SETTLE_CLIPBOARD_REDO: ui::tilo_resource::ActionRef<Self, (String, String)> =
@@ -421,34 +425,45 @@ impl Resource for FileExplorer {
     }
 }
 
+fn clipboard_record_declaration(name: &'static str, label: String) -> ActionDecl<FileExplorer> {
+    ActionDecl::new(
+        name,
+        label,
+        vec![
+            ActionParam::required(
+                "receipt",
+                ParamType::Object,
+                "Settled native transfer metadata; grants no authority",
+            ),
+            ActionParam::required("device", ParamType::Text, "Receiving device"),
+        ],
+        |args, _| {
+            let Some(ui::tilo_actions::ArgValue::Object(receipt)) = args.get("receipt") else {
+                return Err("clipboard receipt absent".into());
+            };
+            Ok(FilesDocAction::RecordClipboardTransfer {
+                receipt: serde_json::from_value(serde_json::Value::Object(receipt.clone()))
+                    .map_err(|error| error.to_string())?,
+                device: args
+                    .text("device")
+                    .ok_or("receiving device absent")?
+                    .to_owned(),
+            })
+        },
+    )
+    .tagged(ui::tilo_actions::PROGRAMMATIC_TAG)
+}
+
 fn clipboard_receipt_declarations() -> Vec<ActionDecl<FileExplorer>> {
     vec![
-        ActionDecl::new(
+        clipboard_record_declaration(
             "record-clipboard-transfer",
-            "Paste files",
-            vec![
-                ActionParam::required(
-                    "receipt",
-                    ParamType::Object,
-                    "Settled native transfer metadata; grants no authority",
-                ),
-                ActionParam::required("device", ParamType::Text, "Receiving device"),
-            ],
-            |args, _| {
-                let Some(ui::tilo_actions::ArgValue::Object(receipt)) = args.get("receipt") else {
-                    return Err("clipboard receipt absent".into());
-                };
-                Ok(FilesDocAction::RecordClipboardTransfer {
-                    receipt: serde_json::from_value(serde_json::Value::Object(receipt.clone()))
-                        .map_err(|error| error.to_string())?,
-                    device: args
-                        .text("device")
-                        .ok_or("receiving device absent")?
-                        .to_owned(),
-                })
-            },
-        )
-        .tagged(ui::tilo_actions::PROGRAMMATIC_TAG),
+            crate::i18n::t("files-history-paste-files"),
+        ),
+        clipboard_record_declaration(
+            "record-trash-restore",
+            crate::i18n::t("files-history-restore-file"),
+        ),
         ActionDecl::new(
             "settle-clipboard-undo",
             "Record file compensation",
@@ -686,7 +701,8 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     ) -> EffectAnswer {
         let recovery =
             matches!(effect, FilesEffect::RecoverClipboardTransfers) && self.hosted_clipboard();
-        let receipt = matches!(effect, FilesEffect::Paste) && self.hosted_clipboard();
+        let receipt = matches!(effect, FilesEffect::Paste | FilesEffect::Restore { .. })
+            && self.hosted_clipboard();
         Ok(match self.run_effect_for(effect, cx.invocation())? {
             Ran::Done(Some(answer)) => Effected::value(answer),
             Ran::Done(None) => Effected::done(),
@@ -726,8 +742,13 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                         .map_err(|error| error.to_string())?;
                         if receipt.completed > 0 {
                             files.follow_clipboard_receipt(&receipt);
+                            let action = if receipt.restore {
+                                FileExplorer::RECORD_TRASH_RESTORE
+                            } else {
+                                FileExplorer::RECORD_CLIPBOARD_TRANSFER
+                            };
                             cx.invoke(
-                                FileExplorer::RECORD_CLIPBOARD_TRANSFER.with((
+                                action.with((
                                     receipt.clone(),
                                     files
                                         .clipboard_device()

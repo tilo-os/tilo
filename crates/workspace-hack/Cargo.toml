@@ -235,6 +235,7 @@ wasmi_collections = { version = "1", default-features = false, features = ["std"
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
 wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
+wayland-protocols = { version = "0.32", default-features = false, features = ["client", "unstable"] }
 web-time = { version = "1", default-features = false, features = ["serde"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
@@ -474,6 +475,7 @@ wasmi_collections = { version = "1", default-features = false, features = ["std"
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
 wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
+wayland-protocols = { version = "0.32", default-features = false, features = ["client", "unstable"] }
 web-time = { version = "1", default-features = false, features = ["serde"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
@@ -518,11 +520,9 @@ tokio-websockets = { version = "0.13", default-features = false, features = ["cl
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
-wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
+wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
@@ -556,11 +556,9 @@ tokio-websockets = { version = "0.13", default-features = false, features = ["cl
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
-wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
+wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
@@ -594,11 +592,9 @@ tokio-websockets = { version = "0.13", default-features = false, features = ["cl
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
-wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
+wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
@@ -632,11 +628,9 @@ tokio-websockets = { version = "0.13", default-features = false, features = ["cl
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
-wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
-wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
+wayland-protocols = { version = "0.32", default-features = false, features = ["server", "staging"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
-wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
 x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
