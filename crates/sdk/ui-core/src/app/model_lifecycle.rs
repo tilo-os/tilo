@@ -77,6 +77,26 @@ impl super::App {
         self.native_input_snapshot()
     }
 
+    /// Independently sample the existing owner and read gates for diagnosis.
+    /// These observations never admit a mutation or acknowledge a capture.
+    ///
+    /// # Panics
+    /// A declared route has no original document owner.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_document_merge_phase_for_test(&self) -> Vec<serde_json::Value> {
+        self.document_routes.owners.iter().map(|entry| {
+            let owner = entry.owners.first().expect("declared document owner");
+            let (store, checkout) = owner.store_checkout();
+            serde_json::json!({
+                "route": entry.route.channel_id(),
+                "merge_ready": crate::bound_dispatch::can_merge_remote_owned_document(&store, &checkout).ok(),
+                "pending_remote": !entry.pending.is_empty(),
+                "committed_read_ready": self.collaboration.manager.document_route_ready(Some(&entry.route)),
+                "committed_queue": self.committed_documents.iter().filter(|(route, _)| route == &entry.route).count(),
+            })
+        }).collect()
+    }
+
     /// Observe the production guard for acknowledged private continuity.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn controlled_private_continuity_route_for_test(

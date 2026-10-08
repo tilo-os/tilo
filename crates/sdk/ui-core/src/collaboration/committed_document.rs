@@ -981,7 +981,8 @@ pub(super) async fn install(
                             revision = Some(next);
                             continue;
                         }
-                        Err(_) => {
+                        Err(error) => {
+                            tracing::warn!(%error, route = %key, "committed document capture failed");
                             revision = None;
                         }
                     }
@@ -990,7 +991,8 @@ pub(super) async fn install(
                     set_read_ready(&inbound, &ready, false);
                     revision = None;
                 }
-                _ => {
+                other => {
+                    tracing::warn!(result = ?other, route = %key, "committed document polling stopped");
                     set_read_ready(&inbound, &ready, false);
                     break;
                 }

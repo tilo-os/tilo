@@ -217,6 +217,13 @@ pub(super) async fn run(
     )
     .await;
     inspect_while_ui_caller_is_blocked(&context, &authority);
+    eprintln!(
+        "owner merge phases before edit: {:?}",
+        mounted
+            .iter()
+            .map(|app| app.code.app.controlled_document_merge_phase_for_test())
+            .collect::<Vec<_>>()
+    );
     let edited = format!("{BODY}// edited through a mounted resource action\n");
     mounted[0].invoke("replace-text", Some(&edited));
     drive(
@@ -229,6 +236,13 @@ pub(super) async fn run(
         2,
     )
     .await;
+    eprintln!(
+        "owner merge phases after first edit: {:?}",
+        mounted
+            .iter()
+            .map(|app| app.code.app.controlled_document_merge_phase_for_test())
+            .collect::<Vec<_>>()
+    );
     // A second fresh edit proves the receiving root remains connected after
     // its first remote merge; no app remount or record-graph copy occurs.
     let edited_again = format!("{edited}// second mounted device edits\n");
@@ -514,6 +528,7 @@ fn report_snapshots(
             .iter()
             .map(|app| serde_json::json!({
                 "connected": app.code.app.collaboration_is_connected(),
+                "owner_phase": app.code.app.controlled_document_merge_phase_for_test(),
                 "ui": app.code.app.controlled_native_input_snapshot_for_test(),
                 "native": committed_snapshot(&app.network.native_owner().unwrap()),
                 "publication": publication_snapshot(&app.network.native_owner().unwrap()),
@@ -547,6 +562,7 @@ fn committed_snapshot(owner: &NativeWorkspaceOwner) -> Option<serde_json::Value>
                     let body = cold_code::body(&document);
                     serde_json::json!({
                         "generation": view.generation(),
+                        "causally_complete": view.peer().plaintext_complete_heads(APP, cold_code::RECORD).is_some(),
                         "body_hash": hex::encode(Sha256::digest(body.as_bytes())),
                         "body_bytes": body.len(),
                         "heads": document.get_heads().iter().map(ToString::to_string).collect::<Vec<_>>(),
