@@ -22,6 +22,11 @@ name = "helper"
 path = "tests/helper.rs"
 required-features = ["custody"]
 
+[[test]]
+name = "icloud_auth"
+path = "tests/icloud_auth.rs"
+required-features = ["custody"]
+
 [features]
 default = ["custody"]
 # The custodian itself: sign-in, sealing, refresh and the daemon handoff,
@@ -40,6 +45,9 @@ custody = [
     "dep:cloud-source-onedrive",
     "dep:cloud-source-dropbox",
     "dep:cloud-source-icloud",
+    "dep:tilo-crypto",
+    "dep:base64",
+    "dep:uuid",
 ]
 
 [dependencies]
@@ -61,6 +69,11 @@ cloud-source-gdrive = { path = "../cloud-source-gdrive", optional = true }
 cloud-source-onedrive = { path = "../cloud-source-onedrive", optional = true }
 cloud-source-dropbox = { path = "../cloud-source-dropbox", optional = true }
 cloud-source-icloud = { path = "../cloud-source-icloud", optional = true }
+# iCloud's web sign-in (`icloud::auth`): Apple's SRP-6a from the crypto
+# crate, base64 on the wire and a frame id per sign-in.
+tilo-crypto = { path = "../tilo-crypto", default-features = false, features = ["srp"], optional = true }
+base64 = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
