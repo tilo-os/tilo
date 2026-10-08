@@ -6025,6 +6025,22 @@ impl FrameHarness {
         &self.control_failures
     }
 
+    /// Active jobs admitted through the existing bound-action dispatch, including
+    /// pointer-originated controls. Tests observe their original IDs and addresses
+    /// without dispatching, polling or creating an invocation.
+    #[must_use]
+    pub fn active_bound_jobs(
+        &self,
+    ) -> Vec<(
+        tilo_actions::InvocationId,
+        crate::bound_dispatch::BoundActionAddress,
+    )> {
+        self.bound_invocations
+            .iter()
+            .map(|(invocation, target)| (*invocation, target.address.clone()))
+            .collect()
+    }
+
     pub fn job_updates(
         &self,
         invocation: tilo_actions::InvocationId,

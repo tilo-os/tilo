@@ -620,6 +620,18 @@ mod tests {
         app.call_on(&open.resource, &open.action, serde_json::json!({}))
             .unwrap();
         app.settle();
+        let effect = SettingsEffect::from(DefaultAppsEffect::OpenWorkspaceAppsFiles);
+        let address = ui::tilo_actions::ActionAddress::new(
+            <Settings as tilo_resource::Resource>::KIND,
+            effect.id(),
+        );
+        assert!(app.harness().control_failures().is_empty());
+        assert!(
+            app.harness()
+                .active_bound_jobs()
+                .iter()
+                .all(|(_, target)| target.address != address)
+        );
         let started = std::time::Instant::now();
         app.harness()
             .click_named("open-workspace-app-defaults")
@@ -630,9 +642,29 @@ mod tests {
             elapsed < std::time::Duration::from_millis(150),
             "mounted Apps & Files blocked on the actual tool ACK: {elapsed:?}"
         );
-        // Keep the original caller alive until its actual service reply arrives.
-        std::thread::sleep(std::time::Duration::from_millis(350));
-        app.settle();
+        let jobs: Vec<_> = app
+            .harness()
+            .active_bound_jobs()
+            .into_iter()
+            .filter(|(_, target)| target.address == address)
+            .collect();
+        assert_eq!(jobs.len(), 1, "the real click starts exactly one tool job");
+        let invocation = jobs.first().unwrap().0;
+        // Retain the original caller until this pointer-originated job observes
+        // its actual service reply, rather than closing after a guessed delay.
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| {
+                    h.active_bound_jobs()
+                        .iter()
+                        .all(|(active, _)| *active != invocation)
+                }),
+            "the clicked tool job must observe its actual ACK within the contract"
+        );
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "the clicked tool job must complete without a bound-control failure"
+        );
     }
 
     #[cfg(unix)]
