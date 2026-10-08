@@ -29,6 +29,7 @@ filesystem = [
     "dep:iroh-gossip",
     "dep:automerge",
     "dep:tilo-automerge",
+    "dep:tilo-automerge-isolate",
     "dep:tilo-doc",
     "dep:tilo-doc-codecs",
     "dep:tilo-content",
@@ -128,6 +129,8 @@ ref-cast = { workspace = true }
 iroh-gossip = { workspace = true, optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
+# Conflict members can come from peers: the qdoc merge decodes them only here.
+tilo-automerge-isolate = { workspace = true, optional = true }
 tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
 tilo-content = { version = "0.1.0", path = "../content", optional = true, features = ["device"] }
 tilo-doc-codecs = { version = "0.1.0", path = "../../doc/tilo-doc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }

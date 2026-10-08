@@ -133,6 +133,10 @@ pub mod workspace_authority;
 #[cfg(feature = "filesystem")]
 mod tests;
 
+// The qdoc conflict merge decodes peer versions in Automerge workers.
+#[cfg(all(test, feature = "filesystem"))]
+tilo_automerge_isolate::test_worker!();
+
 #[cfg(feature = "filesystem")]
 pub use acl::{Access, AclEntry, AclHandle, IdentityKey, WorkspaceAcl};
 #[cfg(feature = "filesystem")]
