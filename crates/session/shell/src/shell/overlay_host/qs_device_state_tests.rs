@@ -10,9 +10,8 @@ use crate::shell::status::StatusBridge;
 struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
 
 impl Recorder {
-    fn push(&self, call: String) -> Result<(), String> {
+    fn push(&self, call: String) {
         self.0.borrow_mut().push(call);
-        Ok(())
     }
     fn calls(&self) -> Vec<String> {
         self.0.borrow().clone()
@@ -21,25 +20,32 @@ impl Recorder {
 
 impl crate::shell::quick_settings::actions::QsActions for Recorder {
     fn set_brightness(&self, pct: f32) -> Result<(), String> {
-        self.push(format!("brightness={pct:.1}"))
+        self.push(format!("brightness={pct:.1}"));
+        Ok(())
     }
     fn set_volume(&self, pct: f32) -> Result<(), String> {
-        self.push(format!("volume={pct:.1}"))
+        self.push(format!("volume={pct:.1}"));
+        Ok(())
     }
     fn set_mute(&self, muted: bool) -> Result<(), String> {
-        self.push(format!("mute={muted}"))
+        self.push(format!("mute={muted}"));
+        Ok(())
     }
     fn set_wifi(&self, enabled: bool) -> Result<(), String> {
-        self.push(format!("wifi={enabled}"))
+        self.push(format!("wifi={enabled}"));
+        Ok(())
     }
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
-        self.push(format!("bluetooth={enabled}"))
+        self.push(format!("bluetooth={enabled}"));
+        Ok(())
     }
     fn connect_wifi(&self, ssid: &str, _: Option<&str>) -> Result<(), String> {
-        self.push(format!("connect={ssid}"))
+        self.push(format!("connect={ssid}"));
+        Ok(())
     }
     fn set_power_profile(&self, profile: os_actions::PowerProfile) -> Result<(), String> {
-        self.push(format!("power={}", profile.cli_arg()))
+        self.push(format!("power={}", profile.cli_arg()));
+        Ok(())
     }
 }
 
