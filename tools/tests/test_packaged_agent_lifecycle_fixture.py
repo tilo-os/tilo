@@ -476,6 +476,32 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "private_content_recorded": False,
         })
 
+    def test_automatic_steer_requires_one_exact_owner_frontier_and_visible_status_without_picker(self):
+        task = {"task_id": "owner-task", "run_epoch": 7, "after_revision": 3,
+                "title": "Agent marker proof", "status": "in_progress",
+                "active_agent": "tide", "assigned_agent": "tide"}
+        current = {"complete": True, "tasks": [task]}
+        self.assertEqual(PROOF.automatic_single_task_status({"task": None}, current, task, "tide"),
+                         "Steer current task: Agent marker proof")
+        invalid = [{"complete": False, "tasks": [task]}, {"complete": True, "tasks": []},
+                   {"complete": True, "tasks": [task, task]}]
+        for changed in ({"task_id": "foreign"}, {"run_epoch": 8}, {"after_revision": 4},
+                        {"title": "Different task"}, {"active_agent": "other"},
+                        {"assigned_agent": "other"}, {"status": "done"}):
+            invalid.append({"complete": True, "tasks": [{**task, **changed}]})
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                PROOF.automatic_single_task_status({"task": None}, value, task, "tide")
+        with self.assertRaisesRegex(RuntimeError, "reconfirmation"):
+            PROOF.automatic_single_task_status({"task": "/actual-picker"}, current, task, "tide")
+        source = inspect.getsource(PROOF.exercise_agent_quick_composer)
+        binding = source.index("automatic_single_task_status(access, current_tasks(), before, agent)")
+        visible = source.index("agent_quick_composer_status(agent, {current_task_status})", binding)
+        send = source.index('"name": "agent-quick-send"', visible)
+        self.assertLess(binding, visible)
+        self.assertLess(visible, send)
+        self.assertIn("applied_revision == receipt_revision", source)
+
     def test_prime_chat_frontier_restarts_only_stale_same_owned_tree_under_original_deadline(self):
         access = {"process": 123, "agent": "Tide", "detached": False,
                   "bus": "chat", "window": "/current"}

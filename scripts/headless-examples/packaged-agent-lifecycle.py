@@ -4189,8 +4189,26 @@ def quick_composer_targets(response):
     return result
 
 
+def automatic_single_task_status(access, current, before, agent):
+    """Require the owner's one exact current task before trusting automatic Steer."""
+    if not isinstance(current, dict) or current.get("complete") is not True \
+            or not isinstance(current.get("tasks"), list) or len(current["tasks"]) != 1 \
+            or not isinstance(before, dict) or not isinstance(current["tasks"][0], dict):
+        raise RuntimeError("automatic Steer lacks one complete exact current owner task")
+    task = current["tasks"][0]
+    if access.get("task") is not None:
+        raise RuntimeError("automatic single-task Steer unexpectedly requires task reconfirmation")
+    if any(task.get(key) != before.get(key) for key in (
+            "task_id", "run_epoch", "after_revision", "title")) \
+            or task.get("status") != "in_progress" \
+            or task.get("active_agent") != agent or task.get("assigned_agent") != agent \
+            or not isinstance(task.get("title"), str) or not task["title"]:
+        raise RuntimeError("automatic Steer does not name the exact current Agent owner frontier")
+    return f"Steer current task: {task['title']}"
+
+
 def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
-                                 reopened_message_draft=None):
+                                 reopened_message_draft=None, current_tasks=None):
     """Use the actual shell controls while one genuine Agent run is current."""
     fixture_drafts = {
         "message": "Keep this marker Message draft private.",
@@ -4235,8 +4253,6 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
 
     activate_agent_quick_composer_control(access, "steer")
     access = wait_for("reopened Steer composer", composer, process)
-    if access["task"] is None:
-        raise RuntimeError("Steer did not publish its current Task picker")
     wait_for("Steer draft retained across close and reopen", lambda:
              draft_matches(fixture_drafts["steer"]), process)
     before = exact_task()
@@ -4247,6 +4263,11 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
     if type(run_epoch) is not int or run_epoch <= 0 \
             or type(before_revision) is not int or before_revision < 0:
         raise RuntimeError("the genuine marker task has no exact owner frontier")
+    if current_tasks is None:
+        raise RuntimeError("automatic Steer has no observable current owner task list")
+    current_task_status = automatic_single_task_status(access, current_tasks(), before, agent)
+    wait_for("automatic Steer's exact visible current-task binding", lambda:
+             agent_quick_composer_status(agent, {current_task_status}), process)
 
     require_ok(call(socket, {"op": "click_named", "name": "agent-quick-send"}))
 
@@ -4724,6 +4745,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     interaction = exercise_agent_quick_composer(
         socket, agent, exact_task, process,
         reopened_message_draft=reopened_message_draft,
+        current_tasks=lambda: current_agent_tasks(socket, room, agent, process),
     )
 
     wait_for("post-Steer normal third model turn",
