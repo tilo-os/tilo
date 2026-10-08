@@ -40,6 +40,8 @@ GLOBAL_INPUTS = (
     "Cargo.toml",
     "rust-toolchain.toml",
     "tools/ci/app_sdk_affected.py",
+    "tools/ci/sdk_web_tool.py",
+    "tools/tests/test_sdk_web_tool.py",
     "tools/ci/workspace_graph.py",
     "tools/policy/app_capability",
     "tools/policy/app_portability",

@@ -18,6 +18,8 @@ on:
       - "crates/**"
       - "rust-toolchain.toml"
       - "tools/ci/app_sdk_affected.py"
+      - "tools/tests/test_sdk_web_tool.py"
+      - "tools/ci/sdk_web_tool.py"
       - "tools/ci/workspace_graph.py"
       - "tools/policy/app_capability*"
       - "tools/policy/app_portability*"
@@ -36,6 +38,8 @@ on:
       - "crates/**"
       - "rust-toolchain.toml"
       - "tools/ci/app_sdk_affected.py"
+      - "tools/tests/test_sdk_web_tool.py"
+      - "tools/ci/sdk_web_tool.py"
       - "tools/ci/workspace_graph.py"
       - "tools/policy/app_capability*"
       - "tools/policy/app_portability*"
@@ -269,12 +273,51 @@ jobs:
           path: ${{ runner.temp }}/macos-shots
           if-no-files-found: ignore
 
+  # Build the native tool once for the two independent browser lanes. The
+  # artifact belongs to this run and its exact merged tree and builder image.
+  web-tool:
+    needs: [builder, policy]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
+    runs-on: runner
+    timeout-minutes: 30
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    outputs:
+      sha256: ${{ steps.stage.outputs.sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+      - name: Merge onto main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.builder.outputs.main }}
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Build shared browser build tool
+        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+      - name: Bind shared tool to the tested tree
+        id: stage
+        env:
+          TILO_CI_BUILDER: ${{ needs.builder.outputs.image }}
+        run: python3 tools/ci/sdk_web_tool.py stage "$RUNNER_TEMP/sdk-web-tool"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: app-sdk-web-tool
+          path: ${{ runner.temp }}/sdk-web-tool
+          if-no-files-found: error
+          retention-days: 1
+      - name: Report compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report || true
+
   # Web: the desktop bundle built from the app manifests and every registered
   # app mounted in headless Chromium on WebGPU.
   web:
     # The dev mount does not consume release artifacts; build both lanes in parallel.
-    needs: [builder, policy]
-    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
+    needs: [builder, policy, web-tool]
+    if: ${{ !cancelled() && needs.web-tool.result == 'success' && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner
@@ -306,8 +349,16 @@ jobs:
           command -v node || dnf install -y nodejs
       - name: Platform crates' browser modules (node --test)
         run: node --test crates/platform/*/web/*.test.mjs
-      - name: Build tilo-app
-        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+      - name: Download this run's browser build tool
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: app-sdk-web-tool
+          path: ${{ runner.temp }}/sdk-web-tool-downloaded
+      - name: Verify and install this run's browser build tool
+        env:
+          TILO_CI_BUILDER: ${{ needs.builder.outputs.image }}
+          TILO_CI_TOOL_SHA256: ${{ needs.web-tool.outputs.sha256 }}
+        run: python3 tools/ci/sdk_web_tool.py install "$RUNNER_TEMP/sdk-web-tool-downloaded"
       - name: Desktop bundle (dev profile)
         run: |
           target/debug/tilo-app build --target web --bundle desktop apps/calculator
@@ -387,8 +438,8 @@ jobs:
 
   # The release desktop bundle held to its size budget, beside the mount test.
   web-size:
-    needs: [builder, policy]
-    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
+    needs: [builder, policy, web-tool]
+    if: ${{ !cancelled() && needs.web-tool.result == 'success' && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner
@@ -412,8 +463,16 @@ jobs:
           if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen $WASM_BINDGEN_VERSION" ]; then
             cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
           fi
-      - name: Build tilo-app
-        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+      - name: Download this run's browser build tool
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: app-sdk-web-tool
+          path: ${{ runner.temp }}/sdk-web-tool-downloaded
+      - name: Verify and install this run's browser build tool
+        env:
+          TILO_CI_BUILDER: ${{ needs.builder.outputs.image }}
+          TILO_CI_TOOL_SHA256: ${{ needs.web-tool.outputs.sha256 }}
+        run: python3 tools/ci/sdk_web_tool.py install "$RUNNER_TEMP/sdk-web-tool-downloaded"
       - name: Release desktop bundle within its size budget
         run: |
           target/debug/tilo-app build --target web --bundle desktop --release apps/calculator

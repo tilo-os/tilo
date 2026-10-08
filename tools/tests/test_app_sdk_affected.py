@@ -86,6 +86,11 @@ class AppSdkAffectedTests(unittest.TestCase):
         self.assertTrue(self.check('crates/browser/runtime-input/src/lib.rs'))
         self.assertTrue(self.check('crates/browser/runtime-leaf/src/lib.rs'))
 
+    def test_shared_tool_inputs_run_both_browser_lanes(self):
+        for path in ('tools/ci/sdk_web_tool.py', 'tools/tests/test_sdk_web_tool.py'):
+            with self.subTest(path=path):
+                self.assertTrue(self.check(path))
+
     def test_workflow_events_watch_the_selector_and_graph(self):
         workflow = (ROOT / '.forgejo/workflows/app-sdk.yml').read_text()
         for event, following in (('pull_request', 'push'), ('push', 'workflow_dispatch')):
