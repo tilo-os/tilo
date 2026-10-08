@@ -2148,6 +2148,7 @@ dependencies = [
 name = "cloud-source"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -14239,10 +14240,10 @@ dependencies = [
  "bounded-command",
  "browser",
  "bytes",
- "chat",
  "capnp",
  "capnp-rpc",
  "channel-crypto",
+ "chat",
  "chrono",
  "code-editor",
  "collab-fixtures",

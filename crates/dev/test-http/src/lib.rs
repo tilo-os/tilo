@@ -69,6 +69,23 @@ impl Reply {
         self
     }
 
+    /// Send only the first half of the body and close the connection, the
+    /// way a dropped download ends. With `declare_length` the head still
+    /// announces the full length, so a client that holds the server to its
+    /// `Content-Length` notices; without it nothing does, and only a client
+    /// that knows how many bytes to expect can tell.
+    #[must_use]
+    pub fn cut_short(mut self, declare_length: bool) -> Self {
+        let full = self.body.len();
+        self.body.truncate(full.checked_div(2).unwrap_or_default());
+        if declare_length {
+            self.headers
+                .push(("Content-Length".to_owned(), full.to_string()));
+        }
+        self.content_length = false;
+        self
+    }
+
     fn reason(&self) -> &'static str {
         match self.status {
             200 => "OK",
@@ -453,6 +470,20 @@ mod tests {
             let response = roundtrip(responder.port(), "GET / HTTP/1.1\r\n\r\n");
             assert!(!response.to_ascii_lowercase().contains("content-length"));
             assert!(response.ends_with("abc"));
+        }
+
+        // Phase: cuts_a_body_short_with_or_without_its_length.
+        {
+            let responder = Responder::start(vec![
+                Reply::status(200).body("abcdef").cut_short(true),
+                Reply::status(206).body("abcdef").cut_short(false),
+            ]);
+            let declared = roundtrip(responder.port(), "GET / HTTP/1.1\r\n\r\n");
+            assert!(declared.contains("Content-Length: 6\r\n"), "{declared}");
+            assert!(declared.ends_with("\r\n\r\nabc"), "{declared}");
+            let undeclared = roundtrip(responder.port(), "GET / HTTP/1.1\r\n\r\n");
+            assert!(!undeclared.to_ascii_lowercase().contains("content-length"));
+            assert!(undeclared.ends_with("\r\n\r\nabc"), "{undeclared}");
         }
 
         // Phase: silent_responder_detects_no_connection.
