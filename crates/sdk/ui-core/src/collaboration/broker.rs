@@ -10900,7 +10900,9 @@ mod tests {
             "resource": format!("notes.page:{index:032x}"),
             "action": "open", "resource_kind": "note",
             "resource_label": format!("Notebook page {index}"),
-            "action_label": "Open page", "description": "Open this page in its notebook",
+            "action_label": "Open page",
+            // Full app metadata must exercise the retained-byte transport bounds.
+            "description": "Open this page in its notebook. Keep its notebook context, identify the original page, and show the existing page through the ordinary local reader. This catalogue description represents a full app-provided action explanation, including its expected navigation result.",
             "operation_kind": tilo_actions::OperationKind::View,
             "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
             "contract": tilo_actions::ActionContract::view(),
