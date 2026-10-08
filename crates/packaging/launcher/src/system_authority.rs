@@ -26,8 +26,8 @@
 //!   there is no raw-bus fallback, a failed proxy leaves the bus absent;
 //! - the `PipeWire` socket, when the session runs it (printing stays behind
 //!   the Print portal: no sandbox reaches the print spooler's socket);
-//! - the cloud account service's control socket, when it runs: sync now,
-//!   pause and resume a mounted account (no credential crosses it);
+//! - the cloud account service's runtime directory with its control socket:
+//!   sync now, pause and resume a mounted account (no credential crosses it);
 //! - the compositor's runtime state files (`$XDG_RUNTIME_DIR/tilo`: the
 //!   connected displays, input devices), read-only, with every
 //!   subdirectory (capabilities, identity projections, service sockets)
@@ -152,12 +152,15 @@ fn runtime_state_in(dir: PathBuf) -> Option<RuntimeState> {
 }
 
 /// The host sockets the control panel's clients use, for a session of `uid`:
-/// `PipeWire`, and the cloud account service's mount control
-/// (`runtime_fs::cloud::socket_in`), which carries no credential.
+/// `PipeWire`, and the cloud account service's runtime directory, which holds
+/// its mount control socket (`runtime_fs::cloud::socket_in`; no credential
+/// crosses it). The directory is bound rather than the socket: it lasts the
+/// whole session (user tmpfiles, `RuntimeDirectoryPreserve=`), so a service
+/// restart's new socket shows through.
 fn authority_sockets(uid: u32) -> Vec<PathBuf> {
     vec![
         PathBuf::from(format!("/run/user/{uid}/pipewire-0")),
-        PathBuf::from(format!("/run/user/{uid}/tilo-fs-cloud/control.sock")),
+        PathBuf::from(format!("/run/user/{uid}/tilo-fs-cloud")),
     ]
 }
 
