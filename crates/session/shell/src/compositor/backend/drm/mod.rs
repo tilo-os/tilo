@@ -3924,8 +3924,8 @@ mod per_output_presentation_tests {
         // Refresh periods in nanoseconds.
         let fast_period: u64 = 6_944_444;
         let slow_period: u64 = 16_666_667;
-        let mut fast = scanout::DirectScanoutState::new(0);
-        let mut slow = scanout::DirectScanoutState::new(0);
+        let mut monitor = scanout::DirectScanoutState::new(0);
+        let mut panel = scanout::DirectScanoutState::new(0);
         // The vblank (in nanoseconds) the panel's pending flip retires on.
         let mut slow_retires_at: Option<u64> = None;
         let (mut fast_renders, mut slow_renders, mut slow_skips) = (0_u32, 0_u32, 0_u32);
@@ -3934,16 +3934,16 @@ mod per_output_presentation_tests {
             let now = tick.saturating_mul(fast_period);
             // The frame's non-blocking drain: the panel's flip retired at its vblank.
             if slow_retires_at.is_some_and(|at| now >= at) {
-                assert!(slow.complete());
+                assert!(panel.complete());
                 slow_retires_at = None;
             }
-            let slot = fast
+            let monitor_slot = monitor
                 .render_slot()
                 .expect("the fast output's flip retired before the next frame");
-            assert!(fast.submit(slot));
+            assert!(monitor.submit(monitor_slot));
             fast_renders = fast_renders.saturating_add(1);
-            if let Some(slot) = slow.render_slot() {
-                assert!(slow.submit(slot));
+            if let Some(panel_slot) = panel.render_slot() {
+                assert!(panel.submit(panel_slot));
                 slow_renders = slow_renders.saturating_add(1);
                 let next_vblank = now
                     .checked_div(slow_period)
@@ -3959,7 +3959,7 @@ mod per_output_presentation_tests {
                 FlipWait::Await,
                 "the frame waits for the fast output"
             );
-            assert!(fast.complete());
+            assert!(monitor.complete());
             assert_eq!(
                 flip_wait(refresh_of(&outputs, OutputId(1)), fastest, Duration::ZERO),
                 FlipWait::Leave,
