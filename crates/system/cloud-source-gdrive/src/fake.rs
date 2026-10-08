@@ -76,6 +76,9 @@ pub enum FakeFault {
     ServerError,
     /// The next media download declares its length but sends half.
     TruncatedBody,
+    /// The next media download sends half its body, declares no length and
+    /// closes the connection.
+    ClosedEarly,
     /// `401 authError` once.
     ExpiredCredential,
 }
@@ -155,7 +158,9 @@ struct State {
     floor: u64,
     sessions: BTreeMap<String, Session>,
     faults: VecDeque<FakeFault>,
-    truncate: bool,
+    /// Cut the next media download short, declaring its full length when
+    /// `Some(true)` ([`Reply::cut_short`]).
+    cut: Option<bool>,
     offline: bool,
     /// Bytes another client commits to a file just before the next upload
     /// to it commits, to exercise the check-then-commit window.
@@ -229,10 +234,10 @@ impl FakeDrive {
 
     pub fn inject(&self, fault: FakeFault) {
         let mut state = self.lock();
-        if fault == FakeFault::TruncatedBody {
-            state.truncate = true;
-        } else {
-            state.faults.push_back(fault);
+        match fault {
+            FakeFault::TruncatedBody => state.cut = Some(true),
+            FakeFault::ClosedEarly => state.cut = Some(false),
+            fault => state.faults.push_back(fault),
         }
     }
 
@@ -658,7 +663,9 @@ fn fault_reply(fault: FakeFault) -> Reply {
             "Invalid Credentials",
             Some("Authorization"),
         ),
-        FakeFault::TruncatedBody => error(500, "internalError", "unused", None),
+        FakeFault::TruncatedBody | FakeFault::ClosedEarly => {
+            error(500, "internalError", "unused", None)
+        }
     }
 }
 
@@ -793,15 +800,15 @@ fn get(state: &mut State, call: &Call<'_>, id: &str, source: bool) -> Reply {
             );
         }
         let bytes = node.head().map(|r| r.bytes.clone()).unwrap_or_default();
-        let truncate = source && std::mem::take(&mut state.truncate);
-        return media(call, &bytes, &node.mime, truncate);
+        let cut = if source { state.cut.take() } else { None };
+        return media(call, &bytes, &node.mime, cut);
     }
     select_reply(&State::file_json(&node), call.param("fields"), FILE_DEFAULT)
 }
 
 const FILE_DEFAULT: &str = "kind,id,name,mimeType";
 
-fn media(call: &Call<'_>, bytes: &[u8], mime: &str, truncate: bool) -> Reply {
+fn media(call: &Call<'_>, bytes: &[u8], mime: &str, cut: Option<bool>) -> Reply {
     let len = bytes.len();
     let (status, body, range_header) = match call.request.header("range").and_then(parse_range) {
         Some((start, end)) => {
@@ -826,14 +833,10 @@ fn media(call: &Call<'_>, bytes: &[u8], mime: &str, truncate: bool) -> Reply {
     if let Some(range) = range_header {
         reply = reply.header("Content-Range", &range);
     }
-    if truncate {
-        let half = body.len() / 2;
-        return reply
-            .header("Content-Length", &body.len().to_string())
-            .body(body[..half].to_vec())
-            .without_content_length();
+    match cut {
+        Some(declare_length) => reply.body(body).cut_short(declare_length),
+        None => reply.body(body),
     }
-    reply.body(body)
 }
 
 fn parse_range(value: &str) -> Option<(usize, Option<usize>)> {
@@ -1049,8 +1052,8 @@ fn revision(state: &mut State, call: &Call<'_>, id: &str, rev: &str, source: boo
     };
     if call.param("alt") == Some("media") {
         state.stats.media_gets += 1;
-        let truncate = source && std::mem::take(&mut state.truncate);
-        return media(call, &found.bytes, &node.mime, truncate);
+        let cut = if source { state.cut.take() } else { None };
+        return media(call, &found.bytes, &node.mime, cut);
     }
     select_reply(
         &revision_json(found, &node.mime),
@@ -1755,7 +1758,7 @@ mod tests {
     fn timestamps_round_trip_through_the_client_parser() {
         let now = SystemTime::now();
         let text = format_rfc3339(now);
-        let parsed = api::parse_rfc3339(&text).unwrap();
+        let parsed = cloud_source::http::parse_rfc3339(&text).unwrap();
         let diff = now.duration_since(parsed).unwrap();
         assert!(diff.as_millis() < 1, "{text}");
     }
