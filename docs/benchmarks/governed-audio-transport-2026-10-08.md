@@ -89,7 +89,10 @@ backpressure.
 
 The follow-up focused run passed 12 SDK/host audio tests in 4.184 seconds.
 The separate raw-channel admission rejection test passed, and SDK all-targets
-plus shell tests compiled. Strict Clippy could not start because the remote
-builder rejected admission at 95.6% disk usage (80% high watermark). That is
-an infrastructure blocker, not a Clippy result; the ready PR must still pass
-its required CI checks. No local build fallback or device operation was used.
+plus shell tests compiled. Strict Clippy passed for the same targets in
+2 minutes 39 seconds. Its initial invocation had failed before Clippy started:
+the remote session's JSON parser received a disk-triggered garbage-collection
+status line while disk usage was 95.6%. A read-only observation subsequently
+showed 93.17% usage, below the 95% critical watermark, and justified the retry.
+No manual/shared cleanup, local build fallback or device operation was used.
+Required PR CI and matching installed acceptance remain separate qualifications.
