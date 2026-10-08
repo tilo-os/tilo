@@ -2112,3 +2112,41 @@ An earlier Base gate experiment never enabled Flash because it confused layer
 and head slots; its apparent timing gain is excluded from qualification. All
 recorded measurements here remain development evidence, with no physical
 shipping-profile, live microphone or release acceptance claim.
+
+
+### Whistle native thread admission
+
+The review-only source fixture `tools/release/fixtures/whistle_stream_review.cpp`
+links the pinned native C API with a private, signature-verified Fedora libc++
+closure. No packages, trust keys or models were installed. The initial linker
+failure remains historical evidence; this separately receipted closure links.
+
+Under two-CPU affinity and the unchanged speech limits, the actual C API used
+12 threads and reached the 180-second observer deadline. Its published header
+has no thread setter; setting commonly used thread environment variables did
+not limit this binary. The CLI's documented `--threads 2` is a distinct path.
+This native result fails qualification and establishes neither first-word
+latency nor successful silence/repeated-session behavior.
+
+The observer now accepts an explicit native thread budget. An actual replay
+stopped at six observed threads after 43.47 ms, with no high/max/OOM events;
+this is a failed admission, not faster speech recognition. A real child-thread
+test exercises the same termination route. The public CLI review now also
+requires at most two observed native threads. The exact binary, package
+signatures, source and failed-run receipts are recorded in
+`dictation-whistle-native-review.json`. The first private native-output JSON
+was overwritten by the guard replay; its captured sanitized scope log and
+owned process diagnostic remain, and no speech metric is inferred from it.
+
+The new guard also passed the pinned French CLI control with exactly two native
+threads, 45300 KiB peak RSS, 8.57 seconds native CPU and 4.370 seconds wall time.
+No guard or high/max/OOM event occurred. This validates bounded execution of the
+CLI file path; it remains distinct from source-paced or microphone latency.
+
+A separate five-file primary-source audit of Cactus revision
+`2cfcdb8568eb9192323b27fd0012a834517b4419` does not repair native provenance.
+Its inspected Needle test exercises LLM tool calling, and its transcription
+code uses directory-based Whisper/Parakeet graph bundles. No compatibility
+with this pinned Whistle `.cact`/C API is established. That repository has an
+eligibility-restricted commercial licence, distinct from the Apache-2.0
+Needle3 artifact licence; none of its code was incorporated or built.

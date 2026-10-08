@@ -87,7 +87,9 @@ def measured_cpu(stderr, successful):
     return receipt['user'] + receipt['system']
 
 
-def observe(command, cpus, executable_identity=None):
+def observe(command, cpus, executable_identity=None, max_threads=None):
+    if max_threads is not None and (type(max_threads) is not int or max_threads < 1):
+        raise ValueError('positive integer native thread limit required')
     def limits():
         resource.setrlimit(resource.RLIMIT_AS, (1073741824, 1073741824))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
@@ -120,6 +122,8 @@ def observe(command, cpus, executable_identity=None):
                             peaks[key] = max(peaks.get(key, 0), int(value.split()[0]))
                     if peaks.get('VmSize', 0) >= 960 * 1024:
                         guarded = 'address_space_headroom'
+                    if max_threads is not None and peaks.get('Threads', 0) > max_threads:
+                        guarded = 'native_thread_limit'
                 if guarded and child.poll() is None:
                     os.killpg(child.pid, signal.SIGKILL)
                 for key, _ in selector.select(.02):

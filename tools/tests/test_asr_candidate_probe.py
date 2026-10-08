@@ -18,6 +18,25 @@ spec.loader.exec_module(probe)
 
 
 class CandidateProbeTests(unittest.TestCase):
+    def test_actual_native_thread_excess_stops_owned_process_before_deadline(self):
+        code = ('import threading,time; '
+                '[threading.Thread(target=lambda:time.sleep(30),daemon=True).start() '
+                'for _ in range(3)]; time.sleep(30)')
+        executable = Path(sys.executable).stat()
+        result = probe.observe([sys.executable, '-c', code],
+                               {min(os.sched_getaffinity(0))},
+                               (executable.st_dev, executable.st_ino), max_threads=2)
+        self.assertEqual(result['guarded'], 'native_thread_limit')
+        self.assertNotEqual(result['exit'], 0)
+        self.assertGreater(result['memory_peak']['Threads'], 2)
+        self.assertLess(result['wall_seconds'], 10)
+        self.assertIsNone(result['cpu_seconds'])
+
+    def test_invalid_thread_limit_fails_before_process_launch(self):
+        for limit in (0, -1, True, 2.5, '2'):
+            with self.assertRaisesRegex(ValueError, 'native thread limit'):
+                probe.observe(['/nonexistent'], {0}, max_threads=limit)
+
     def test_receipted_executable_is_observed_despite_changed_thread_name(self):
         code = ('import ctypes,time; '
                 'ctypes.CDLL(None).prctl(15,b"renamed-runtime",0,0,0); '

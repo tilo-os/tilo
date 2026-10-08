@@ -128,9 +128,10 @@ def main():
                     language, '--threads', '2', '--audio-stream', '--audio-chunk', '2'])
     executable = (root / 'needle').stat()
     result = probe.observe(command, sorted(os.sched_getaffinity(0))[:2],
-                           (executable.st_dev, executable.st_ino))
+                           (executable.st_dev, executable.st_ino), max_threads=2)
     after = events()
     result.update(case=args.case, language=language, fixture_sha256=sha,
+                  native_thread_limit=2,
                   input_pcm_sha256=pcm_sha, audio_seconds=seconds,
                   materialization=receipts, scope_events_before=before,
                   scope_events_after=after, scope_peak_bytes=int((cg / 'memory.peak').read_text()),
