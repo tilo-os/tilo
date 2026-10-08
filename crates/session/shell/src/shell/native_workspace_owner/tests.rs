@@ -67,8 +67,12 @@ fn publications_and_encodes<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
     let value = run();
     (
         value,
-        PUBLICATIONS_ON_THIS_THREAD.with(std::cell::Cell::get) - publications,
-        persist::ENCODES_ON_THIS_THREAD.with(std::cell::Cell::get) - encodes,
+        PUBLICATIONS_ON_THIS_THREAD
+            .with(std::cell::Cell::get)
+            .saturating_sub(publications),
+        persist::ENCODES_ON_THIS_THREAD
+            .with(std::cell::Cell::get)
+            .saturating_sub(encodes),
     )
 }
 

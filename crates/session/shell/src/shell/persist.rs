@@ -1696,7 +1696,7 @@ mod tests {
             .write(true)
             .open(&log)
             .expect("open log")
-            .set_len(len - 5)
+            .set_len(len.saturating_sub(5))
             .expect("tear the last append");
 
         let restarted = load_tree_from(&path).expect("a torn log still loads");

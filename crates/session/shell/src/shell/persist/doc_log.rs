@@ -468,7 +468,7 @@ mod tests {
             .write(true)
             .open(&log_file)
             .expect("open log")
-            .set_len(len - 5)
+            .set_len(len.saturating_sub(5))
             .expect("truncate");
 
         let torn = load(&base, CAP)
