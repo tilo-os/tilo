@@ -2,6 +2,7 @@ import importlib.util
 import inspect
 import io
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ import concurrent.futures
 import json
 import urllib.request
 import urllib.error
+from contextlib import ExitStack
 from unittest.mock import call, patch
 
 
@@ -24,6 +26,89 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_native_marker_bootstrap_verdict_requires_three_completed_turns(self):
+        # Execute the actual bootstrap entry point and its persisted verdict.
+        # Native startup is stubbed here; its boundary is exercised separately
+        # by the real packaged proof, not by spawning services in a unit test.
+        for count, activated, accessible, status, expected in (
+                (3, True, True, "done", True),
+                (1, True, True, "done", False),
+                (4, True, True, "done", False),
+                (3, False, True, "done", False),
+                (3, True, False, "done", False),
+                (3, True, True, "cancelled", False)):
+            with self.subTest(count=count, activated=activated,
+                              accessible=accessible, status=status), \
+                    tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+                profile = pathlib.Path(directory) / "profile"
+                profile.mkdir()
+                output = pathlib.Path(directory) / "output"
+                output.mkdir()
+                frame = {"surface_id": 7, "frame_seq": 9}
+                category = {"application": "so.tilo.chat", "room": "room",
+                            "record": "record", "operation": "new-category"}
+                action = {**category, "provider": "broker:1", "id": "category"}
+                evidence = {"provider_request_count": count,
+                            "marker_activated": activated,
+                            "quick_composer_accessible": accessible,
+                            "terminal_status": status}
+
+                def wait(label, _predicate, *_args):
+                    if label == "bounded signed native governor fixture":
+                        (profile / "native-invitation.json").write_text(
+                            json.dumps({"empty_app_records": True}))
+                        return True
+                    if label == "Chat's ordinary semantic publication":
+                        return [category]
+                    if label == "actual durable Category and exact outgoing publication":
+                        return {"category_durable": True,
+                                "outgoing_publication_retained": True,
+                                "room": "room", "app": "so.tilo.chat", "record": "record"}
+                    if label in {"normal signed Chat to paint",
+                                 "Category edit's actual presented Chat frame",
+                                 "agent conversation's actual presented Chat frame"}:
+                        return frame
+                    return action
+
+                def finalize(_profile, _output, _processes, logs, _provider,
+                             runtime_owner, _fcitx):
+                    for log in logs:
+                        log.close()
+                    runtime_owner.cleanup()
+
+                replacements = {
+                    "scratch_session_env": ({"TILO_STATE_PATH": "owned"}, profile),
+                    "enroll_native": {"room": "room"},
+                    "actions": [action],
+                    "presented_primary_frame": frame,
+                    "call": {"answer": {"throwaway": True}},
+                    "invoke": {}, "wait_terminal": {},
+                    "admit_native_agents": [{"agent": "tide"}],
+                    "offered_agent_action": action,
+                    "public_action_observation": {},
+                    "managed_agent_marker_stage": evidence,
+                }
+                for name, value in replacements.items():
+                    stack.enter_context(patch.object(PROOF, name, return_value=value))
+                for name in ("enable_isolated_accessibility", "start_isolated_secret_service",
+                             "require_locked_cargo_metadata", "install_packages", "run",
+                             "capture_owned_chat_accessibility_transport", "require_ok"):
+                    stack.enter_context(patch.object(PROOF, name))
+                stack.enter_context(patch.object(PROOF, "HeldProvider"))
+                stack.enter_context(patch.object(PROOF, "wait_for", side_effect=wait))
+                stack.enter_context(patch.object(PROOF, "finalize_fixture", side_effect=finalize))
+                stack.enter_context(patch.object(PROOF.subprocess, "Popen"))
+                stack.enter_context(patch.object(
+                    PROOF.subprocess, "check_output", return_value="so.tilo.chat so.tilo.agent"))
+                stack.enter_context(patch.object(PROOF.time, "sleep"))
+                stack.enter_context(patch("sys.stdout", new=io.StringIO()))
+                proven = PROOF.bootstrap(pathlib.Path(directory), output,
+                                         native=True, marker_only=True)
+                retained = json.loads((output / "bootstrap.json").read_text())
+                self.assertIs(proven, expected)
+                self.assertIs(retained["native_agent_marker_proven"], expected)
+                self.assertEqual(retained["stage"], "native-marker")
+
     @staticmethod
     def permission_action():
         return {"provider": "broker:1", "id": "offered-message", "application": "so.tilo.chat",
@@ -2323,12 +2408,31 @@ class PresentedEditorTargetTests(unittest.TestCase):
             }))
             PROOF.configure_rime_input(profile)
             settings = json.loads(path.read_text())
+            production_default = (
+                PROOF.REPO / "os/usr/share/rime-data/default.custom.yaml"
+            ).read_bytes()
+            owned_default = (
+                profile / "data/fcitx5/rime/default.custom.yaml"
+            ).read_bytes()
+            owned_files = sorted(
+                item.relative_to(profile).as_posix()
+                for item in profile.rglob("*") if item.is_file()
+            )
         self.assertEqual(settings["appearance"], {"theme": "high-contrast"})
         self.assertEqual(settings["input"], {
             "repeat_delay": 270,
             "keyboard_layout": "ime/rime",
             "keyboard_layouts": ["us", "ime/rime"],
         })
+        self.assertEqual(owned_default, production_default)
+        self.assertEqual(
+            re.findall(rb"(?m)^\s*-\s+schema:\s*([^\s#]+)", owned_default),
+            [b"luna_pinyin_simp"],
+        )
+        self.assertEqual(owned_files, [
+            "config/tilo/settings.json",
+            "data/fcitx5/rime/default.custom.yaml",
+        ])
 
     def test_chat_text_input_requires_exact_keyboard_and_active_text_input(self):
         focused = {"seat_focus": {
@@ -2793,7 +2897,7 @@ class OwnedRimeSchemaTests(unittest.TestCase):
             profile = pathlib.Path(directory)
             root = profile / "data/fcitx5/rime"
             (root / "build").mkdir(parents=True)
-            (root / "build/luna_pinyin.schema.yaml").write_text(
+            (root / "build/luna_pinyin_simp.schema.yaml").write_text(
                 '__build_info:\n  timestamps: {}\nkey_binder:\n  bindings:\n'
                 '    - {accept: Control+Shift+at, toggle: ascii_mode, when: always}\n')
             env = {"XDG_DATA_HOME": str(profile / "data"),
@@ -2807,7 +2911,7 @@ class OwnedRimeSchemaTests(unittest.TestCase):
                 self.assertTrue(observed["rime_schema_exists"])
                 self.assertTrue(observed["rime_schema_deployed"])
                 self.assertTrue(observed["rime_schema_default_keybinder"])
-                self.assertFalse(observed["rime_selected_schema_is_luna_pinyin"])
+                self.assertFalse(observed["rime_selected_schema_is_luna_pinyin_simp"])
                 self.assertEqual(observed["rime_selected_schema_observed"], user not in (None, ""))
                 self.assertTrue(all(type(value) is bool for value in observed.values()))
                 self.assertNotIn("private-schema", json.dumps(observed))
@@ -2818,8 +2922,9 @@ class OwnedRimeSchemaTests(unittest.TestCase):
             root = profile / "data/fcitx5/rime"
             (root / "build").mkdir(parents=True)
             (root / "user.yaml").write_text(
-                'var:\n  previously_selected_schema: "luna_pinyin"\nprivate: never-export\n')
-            (root / "build/luna_pinyin.schema.yaml").write_text(
+                'var:\n  previously_selected_schema: "luna_pinyin_simp"\nprivate: never-export\n')
+            (root / "default.custom.yaml").write_bytes(PROOF.production_rime_default())
+            (root / "build/luna_pinyin_simp.schema.yaml").write_text(
                 '__build_info:\n  timestamps: {}\nkey_binder:\n  bindings:\n'
                 '    - {accept: Control+Shift+2, toggle: ascii_mode, when: always}\n')
             observed = PROOF.owned_rime_schema_observation({
@@ -2827,7 +2932,8 @@ class OwnedRimeSchemaTests(unittest.TestCase):
                 "XDG_CONFIG_HOME": str(profile / "config"),
             })
             self.assertTrue(observed["rime_selected_schema_observed"])
-            self.assertTrue(observed["rime_selected_schema_is_luna_pinyin"])
+            self.assertTrue(observed["rime_selected_schema_is_luna_pinyin_simp"])
+            self.assertTrue(observed["rime_default_custom_matches_production"])
             self.assertTrue(observed["rime_schema_deployed"])
             self.assertTrue(observed["rime_schema_default_keybinder"])
             self.assertTrue(all(type(value) is bool for value in observed.values()))

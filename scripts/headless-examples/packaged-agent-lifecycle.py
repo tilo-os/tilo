@@ -2913,8 +2913,24 @@ def chrome_state(socket):
     return chrome
 
 
+def production_rime_default():
+    """Read the bounded, repo-owned Rime default installed by the OS image."""
+    source = REPO / "os/usr/share/rime-data/default.custom.yaml"
+    try:
+        with source.open("rb") as stream:
+            raw = stream.read(4097)
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError("the production Rime default is unreadable") from error
+    if len(raw) > 4096 or re.findall(
+            r"(?m)^\s*-\s+schema:\s*([^\s#]+)\s*(?:#.*)?$", text
+    ) != ["luna_pinyin_simp"]:
+        raise RuntimeError("the production Rime default is not the known single schema")
+    return raw
+
+
 def configure_rime_input(profile):
-    """Merge the real Rime layout into this disposable session profile."""
+    """Merge the production Rime layout into this disposable session profile."""
     path = profile / "config/tilo/settings.json"
     if path.exists():
         settings = json.loads(path.read_text())
@@ -2934,6 +2950,13 @@ def configure_rime_input(profile):
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, indent=2) + "\n")
+    # The image installs this exact patch after the RPM transaction. Mirror it
+    # into Rime's standard user-data layer before the owned Fcitx process
+    # starts, so a manually provisioned proof container has the same sole
+    # schema without mutating its host or using a controller mode override.
+    rime_default = profile / "data/fcitx5/rime/default.custom.yaml"
+    rime_default.parent.mkdir(parents=True, exist_ok=True)
+    rime_default.write_bytes(production_rime_default())
 
 
 def chat_text_input_active(socket):
@@ -3016,8 +3039,9 @@ def owned_rime_schema_observation(env):
     """Read bounded configuration from only this disposable profile, never live options."""
     result = dict.fromkeys((
         "rime_user_config_present", "rime_user_config_empty",
-        "rime_selected_schema_observed", "rime_selected_schema_is_luna_pinyin",
+        "rime_selected_schema_observed", "rime_selected_schema_is_luna_pinyin_simp",
         "rime_schema_exists", "rime_schema_deployed", "rime_schema_default_keybinder",
+        "rime_default_custom_matches_production",
         "rime_data_directory_present", "rime_config_directory_present",
         "rime_deployed_directory_present",
     ), False)
@@ -3055,12 +3079,20 @@ def owned_rime_schema_observation(env):
             variables[0]) if len(variables) == 1 else []
         if len(selected) == 1 and selected[0].strip():
             result["rime_selected_schema_observed"] = True
-            result["rime_selected_schema_is_luna_pinyin"] = selected[0].strip() in (
-                "luna_pinyin", '"luna_pinyin"', "'luna_pinyin'",
+            result["rime_selected_schema_is_luna_pinyin_simp"] = selected[0].strip() in (
+                "luna_pinyin_simp", '"luna_pinyin_simp"', "'luna_pinyin_simp'",
             )
+    owned_default = bounded_config(root / "default.custom.yaml")
+    if owned_default is not None:
+        try:
+            result["rime_default_custom_matches_production"] = (
+                owned_default.encode("utf-8") == production_rime_default()
+            )
+        except RuntimeError:
+            pass
     # Fixed Luna deployment is independent of persisted selection. Its presence
     # never establishes the live schema or options; never interpolate YAML values.
-    schema = bounded_config(root / "build/luna_pinyin.schema.yaml")
+    schema = bounded_config(root / "build/luna_pinyin_simp.schema.yaml")
     if schema is None:
         return result
     result["rime_schema_exists"] = True
@@ -5765,7 +5797,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                     socket, enrollment["room"], category[0]["record"], provider, output, shell, size
                 )
                 proven = bool(
-                    marker_evidence.get("provider_request_count") == 1
+                    marker_evidence.get("provider_request_count") == 3
                     and marker_evidence.get("marker_activated") is True
                     and marker_evidence.get("quick_composer_accessible") is True
                     and marker_evidence.get("terminal_status") == "done"
