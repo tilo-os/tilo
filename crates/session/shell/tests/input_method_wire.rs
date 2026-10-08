@@ -685,6 +685,20 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
         vello::kurbo::Rect::new(300.0, 280.0, 600.0, 320.0)
     );
 
+    // A current serial alone is not an active text-input context. Once the
+    // field disables, a preedit cannot authorize floating continuation.
+    text_input.disable();
+    text_input.commit();
+    h.pump();
+    let serial = h.clients[im_client].peer.im_done;
+    input_method.set_preedit_string("inactive".into(), 8, 8);
+    input_method.commit(serial);
+    h.pump();
+    assert!(
+        !h.state.input_method_preedit_active_for_tests(),
+        "a valid serial without an active text input is not accepted"
+    );
+
     // Handing the seat to the on-screen keyboard disconnects the composer.
     h.state
         .set_input_method_owner(Some(TrustedInputMethod::OnScreenKeyboard));

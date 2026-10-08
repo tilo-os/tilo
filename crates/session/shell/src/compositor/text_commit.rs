@@ -120,20 +120,20 @@ impl TextFields {
         resource: &ZwpTextInputV3,
         request: &zwp_text_input_v3::Request,
         admitted: bool,
-    ) -> bool {
+    ) -> Option<bool> {
         if !admitted {
-            return false;
+            return None;
         }
         let id = resource.id();
         let field = self.fields.entry(id.clone()).or_default();
         match request {
             zwp_text_input_v3::Request::Enable => {
                 field.protocol_activation = Some(true);
-                false
+                None
             }
             zwp_text_input_v3::Request::Disable => {
                 field.protocol_activation = Some(false);
-                false
+                None
             }
             zwp_text_input_v3::Request::Commit => {
                 // `pending_enable` represents true. `pending_edit` alone is
@@ -148,7 +148,7 @@ impl TextFields {
                             .is_none_or(|active| active == &id) =>
                     {
                         self.active_protocol = Some(id);
-                        true
+                        Some(true)
                     }
                     Some(false)
                         if self
@@ -157,13 +157,13 @@ impl TextFields {
                             .is_none_or(|active| active == &id) =>
                     {
                         self.active_protocol = None;
-                        true
+                        Some(false)
                     }
-                    None if self.active_protocol.as_ref() == Some(&id) => true,
-                    _ => false,
+                    None if self.active_protocol.as_ref() == Some(&id) => Some(true),
+                    _ => None,
                 }
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -289,8 +289,11 @@ impl Dispatch<ZwpTextInputV3, TextInputUserData> for State {
         <TextInputManagerState as Dispatch<ZwpTextInputV3, TextInputUserData, Self>>::request(
             state, client, resource, request, data, dhandle, data_init,
         );
-        if input_method_done {
+        if let Some(active) = input_method_done {
             state.input_method_serial = state.input_method_serial.saturating_add(1);
+            if !active {
+                state.input_method_preedit = super::state::InputMethodPreeditState::Inactive;
+            }
         }
     }
 

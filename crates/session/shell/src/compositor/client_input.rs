@@ -452,6 +452,7 @@ impl State {
             self.input_method_serial = self.input_method_serial.saturating_add(protocol_done);
             if self.client_input.keyboard_focus.is_some() {
                 self.text_fields.protocol_focus_left();
+                self.input_method_preedit = super::state::InputMethodPreeditState::Inactive;
             }
         }
         self.client_input.keyboard_focus = target.as_ref().map(|(id, _)| *id);

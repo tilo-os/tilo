@@ -324,6 +324,24 @@ mod floating_source_focus_tests {
         );
         assert!(primary_floating_ime_state(&probe, "b", Vec2::ZERO).is_none());
 
+        let returned = primary_ime_state_for_held_child(
+            Some(ImeWindowState {
+                purpose: winit::window::ImePurpose::Normal,
+                x: 100,
+                y: 500,
+                width: 2,
+                height: 20,
+            }),
+            Vec2::new(-800.0, 200.0),
+        )
+        .unwrap();
+        assert_eq!(
+            (returned.x, returned.y, returned.width, returned.height),
+            (900, 300, 2, 20),
+            "the returned primary caret is expressed in the held child's coordinates"
+        );
+        assert!(primary_ime_state_for_held_child(None, Vec2::ZERO).is_none());
+
         let preedit = WindowEvent::Ime(winit::event::Ime::Preedit("composing".into(), None));
         let commit = WindowEvent::Ime(winit::event::Ime::Commit("committed".into()));
         let disabled = WindowEvent::Ime(winit::event::Ime::Disabled);
@@ -517,6 +535,7 @@ struct NativeFloatingWindow {
     id: String,
     token: String,
     desktop_rect: KurboRect,
+    coordinate_offset: Vec2,
     window: Arc<Window>,
     render: Option<RenderThreadHandle>,
     /// Device/surface creation is much slower than a frame on software and
@@ -670,6 +689,20 @@ fn primary_floating_ime_state(
 ) -> Option<ImeWindowState> {
     let (purpose, rect) = root.floating_surface_ime(id)?;
     Some(ImeWindowState::from_rect(purpose, rect - coordinate_offset))
+}
+
+fn primary_ime_state_for_held_child(
+    primary: Option<ImeWindowState>,
+    coordinate_offset: Vec2,
+) -> Option<ImeWindowState> {
+    let primary = primary?;
+    let rect = KurboRect::new(
+        f64::from(primary.x),
+        f64::from(primary.y),
+        f64::from(primary.x.saturating_add(primary.width)),
+        f64::from(primary.y.saturating_add(primary.height)),
+    ) - coordinate_offset;
+    Some(ImeWindowState::from_rect(primary.purpose, rect))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1528,6 +1561,7 @@ impl AppHandler {
         id: String,
         token: String,
         rect: KurboRect,
+        coordinate_offset: Vec2,
     ) -> Result<(), String> {
         let _entry = self.app.enter_wake_scope();
         if let Some(existing) = self
@@ -1544,6 +1578,7 @@ impl AppHandler {
                     .request_inner_size(native_floating_logical_size(rect));
             }
             existing.desktop_rect = rect;
+            existing.coordinate_offset = coordinate_offset;
             existing.prepared_at = crate::time::now();
             existing.adopted = false;
             existing.suspended = false;
@@ -1584,6 +1619,7 @@ impl AppHandler {
             id,
             token,
             desktop_rect: rect,
+            coordinate_offset,
             window,
             render: None,
             render_init: None,
@@ -1681,6 +1717,7 @@ impl AppHandler {
                             id.clone(),
                             token,
                             rect,
+                            Vec2::new(coordinate_offset[0], coordinate_offset[1]),
                         ) {
                             Ok(()) => {
                                 if continue_ime {
@@ -3928,6 +3965,17 @@ impl AppHandler {
                 if matches!(update, PrimaryPreeditUpdate::Finished) {
                     self.floating_ime_return_continuation = None;
                 }
+            }
+            let next = self
+                .floating_ime_return_continuation
+                .as_deref()
+                .filter(|id| *id == surface_id)
+                .and_then(|_| {
+                    let offset = self.floating_windows.get(index)?.coordinate_offset;
+                    primary_ime_state_for_held_child(self.app.ime_window_state(), offset)
+                });
+            if let Some(surface) = self.floating_windows.get_mut(index) {
+                apply_native_ime(&surface.window, next, &mut surface.ime_state);
             }
             return;
         }

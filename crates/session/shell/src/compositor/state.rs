@@ -6469,8 +6469,14 @@ impl
                 state.input_method_preedit.stage(false);
             }
             Request::Commit { serial } => {
+                let mut has_active_text_input = false;
+                state
+                    .seat
+                    .text_input()
+                    .with_active_text_input(|_, _| has_active_text_input = true);
                 let accepted = state.input_method_resource_client.as_ref() == Some(&client.id())
-                    && *serial == state.input_method_serial;
+                    && *serial == state.input_method_serial
+                    && has_active_text_input;
                 state.input_method_preedit.finish(accepted);
             }
             _ => {}
