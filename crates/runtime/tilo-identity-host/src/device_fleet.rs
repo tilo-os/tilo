@@ -632,9 +632,9 @@ impl FleetKey {
     /// caller then loads from disk and caches nothing).
     fn stamps(&self) -> Option<FleetStamps> {
         Some(FleetStamps {
-            fleet: FileStamp::of(&self.fleet)?,
+            fleet: FileStamp::of(&self.fleet).ok()?,
             home_peers: match &self.home_peers {
-                Some(path) => FileStamp::of(path)?,
+                Some(path) => FileStamp::of(path).ok()?,
                 None => None,
             },
         })
@@ -674,18 +674,18 @@ struct FileStamp {
 }
 
 impl FileStamp {
-    /// `Some(None)` for a missing file, `None` when it can't be examined.
-    fn of(path: &Path) -> Option<Option<Self>> {
+    /// `Ok(None)` for a missing file; an error when it can't be examined.
+    fn of(path: &Path) -> io::Result<Option<Self>> {
         match fs::metadata(path) {
-            Ok(meta) => Some(Some(Self {
+            Ok(meta) => Ok(Some(Self {
                 dev: meta.dev(),
                 ino: meta.ino(),
                 len: meta.len(),
-                modified: meta.modified().ok()?,
+                modified: meta.modified()?,
                 changed: (meta.ctime(), meta.ctime_nsec()),
             })),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Some(None),
-            Err(_) => None,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
         }
     }
 
