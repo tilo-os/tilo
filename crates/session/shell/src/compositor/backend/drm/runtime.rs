@@ -1569,6 +1569,8 @@ impl DrmDispatchState {
                 color_buffer: Vec::new(),
                 direct_targets: None,
                 direct_ineligible: None,
+                present_by_readback: false,
+                readback_current: false,
                 direct_degradation: DirectDegradation::default(),
                 hdr_direct_degradation: DirectDegradation::default(),
                 hdr_failure: None,
@@ -3600,9 +3602,16 @@ pub struct ScanoutEntry {
     /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
     /// readback presenter remains authoritative.
     pub direct_targets: Option<DirectScanoutTargets>,
-    /// Why this output's current shape cannot use direct scanout (more than
-    /// one output, a rotation, ...). Re-evaluated every frame.
+    /// Why this output's current shape cannot use direct scanout (a rotation,
+    /// an ICC profile, ...). Re-evaluated every frame.
     pub direct_ineligible: Option<&'static str>,
+    /// The current frame presents this output through the combined readback:
+    /// it is powered and its direct frame was not, or could not be, submitted.
+    pub present_by_readback: bool,
+    /// The dumb front shows the combined readback's latest image. False while
+    /// the output is direct and until its first readback frame, so readback
+    /// shortcuts that patch or skip pixels already shown never reach it stale.
+    pub readback_current: bool,
     /// Direct scanout failed: the readback presenter stands in until the
     /// retry this records.
     pub direct_degradation: DirectDegradation,
