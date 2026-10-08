@@ -557,6 +557,9 @@ jobs:
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: '8'
+    outputs:
+      cargo-download-cache-hit: ${{ steps.rust-build.outputs.cargo-cache-hit }}
+      cargo-download-cache-key: ${{ steps.rust-build.outputs.cargo-cache-key }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -628,7 +631,7 @@ jobs:
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ${{ steps.rust-build.outputs.cargo-cache-paths }}
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          key: ${{ steps.rust-build.outputs.cargo-cache-key }}
 
   # Apps with an Android host example (docs/android.md), linted for both
   # Android ABIs whenever they are selected, which includes every change to

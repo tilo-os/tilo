@@ -28,7 +28,9 @@ use super::{
 use crate::bindings;
 use crate::model::{StoreItem, StoreSource, StoreTrust};
 use crate::resource::{ReportProjection, StoreEffect, report_note_dispatcher};
-use crate::widgets::{CardAction, CardDetails, app_icon, category_label, provenance};
+use crate::widgets::{
+    CardAction, CardDetails, app_icon, category_label, provenance, visible_version,
+};
 
 /// How wide a page's content may grow, in lines of body text, so it widens
 /// with the text scale like every other text-sized measure.
@@ -149,9 +151,14 @@ impl StoreApp {
             ));
         }
         self.operation_error.as_ref().map(|error| {
+            let mut refresh = Button::new("store.error.refresh", &ui::i18n!("store-error-refresh"));
+            if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
+                refresh = refresh.on_action(binding);
+            }
             Box::new(
-                Banner::error("The last operation failed")
-                    .with_message(visible_operation_status(error)),
+                Banner::error(ui::i18n!("store-operation-failed"))
+                    .with_message(visible_operation_status(error))
+                    .with_action(refresh),
             ) as Element
         })
     }
@@ -997,7 +1004,9 @@ fn package_properties(item: &StoreItem) -> Vec<Property> {
         ));
     }
     if let Some(version) = item.versions.first() {
-        rows.push(Property::new("Latest version", &version.version).with_kind(TextKind::Numeric));
+        rows.push(
+            Property::new("Latest version", visible_version(item)).with_kind(TextKind::Numeric),
+        );
         if let Some(runtime) = &version.runtime {
             rows.push(Property::new(ui::i18n!("store-runtime-reference"), runtime));
         }
@@ -1047,6 +1056,13 @@ fn technical_properties(item: &StoreItem) -> Vec<Property> {
             .with_kind(TextKind::Identifier)
             .copyable(),
     ];
+    if !item.latest_version().is_empty() {
+        rows.push(
+            Property::new(ui::i18n!("store-build-version"), item.latest_version())
+                .with_kind(TextKind::Identifier)
+                .copyable(),
+        );
+    }
     if let Some(hash) = item
         .versions
         .first()
