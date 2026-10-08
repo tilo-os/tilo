@@ -817,6 +817,10 @@ fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
     h.pump();
     proxy.sync(&mut h.state, Some(field));
     h.pump();
+    assert!(
+        !h.state.text_input_active(),
+        "the early enable/commit cannot activate before an input method exists"
+    );
     let keyboard = h.connect(Some(TrustedInputMethod::OnScreenKeyboard));
     let input_method = {
         let client = &h.clients[keyboard];
@@ -828,8 +832,10 @@ fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
             .get_input_method(&seat, &qh, ())
     };
     h.pump();
-    // Promoting the keyboard surface reannounces the already-focused field.
-    h.state.reannounce_text_input_focus();
+    // Binding the input method must reannounce the already-focused field.
+    // The original enable/commit arrived before Smithay had an input-method
+    // instance and was therefore discarded; requiring an unrelated surface
+    // promotion here would leave a real editor inactive indefinitely.
     while h.clients[keyboard].peer.activated == 0 {
         assert!(
             std::time::Instant::now() < deadline,
