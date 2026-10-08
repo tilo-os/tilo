@@ -499,3 +499,15 @@ isolating GPU execution or certifying panel latency. A copy-submit entry/return
 pair distinguishes CPU submission blocking from the subsequent GPU completion
 wait; an app present-return → capture interval distinguishes delivery delay from
 capture-worker queueing. No join uses timestamp proximity.
+
+### Client close admission
+
+Closing a native client tab sends its ordinary `xdg_toplevel.close` request.
+The tab stays in the authoritative tree and remains visible while the client
+saves or presents its declared close decision. Only actual surface destruction
+removes and persists the tab; a successful close-request receipt does not mean
+that the application has exited. Chrome cancels a provisional pill/host fade
+when the tree still owns the tab, preserving position, metadata and focus.
+Undo history is published only after the captured tabs have actually gone.
+The existing separately supervised unconfined host-launch teardown retains its
+own scoped lifecycle; native close admission does not add a process kill rule.

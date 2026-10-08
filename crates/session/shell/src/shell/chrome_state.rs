@@ -771,6 +771,7 @@ pub struct ChromeState {
     continuity_suggestions: crate::shell::continuity_suggestion::ContinuitySuggestions,
     /// Recently closed tabs, for the Reopen Closed Tab action.
     closed_tabs: crate::shell::closed_tabs::ClosedTabStack,
+    pending_closed_tabs: Vec<crate::shell::closed_tabs::ClosedTab>,
     /// Toasts that undo a workspace deletion, by toast id: where the
     /// workspace was and what it held.
     workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
@@ -911,6 +912,7 @@ impl ChromeState {
             continuity_suggestions:
                 crate::shell::continuity_suggestion::ContinuitySuggestions::default(),
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
+            pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
@@ -1493,6 +1495,7 @@ impl ChromeState {
             return false;
         }
         self.observed_external_tree_revision = external;
+        self.publish_completed_closes();
         self.bump();
         true
     }
@@ -1735,6 +1738,50 @@ impl ChromeState {
         self.continuity_suggestions.dismiss(&suggestion);
         self.bump();
         Some(suggestion)
+    }
+
+    /// Publish Undo only after removal. A live client may
+    /// refuse its close request and keep the tab present.
+    pub fn remember_closed_tab_after_removal(
+        &mut self,
+        entry: crate::shell::closed_tabs::ClosedTab,
+    ) {
+        if self.pending_closed_tabs.iter().any(|pending| {
+            pending
+                .tabs
+                .iter()
+                .map(|content| content.tab.id)
+                .eq(entry.tabs.iter().map(|content| content.tab.id))
+        }) {
+            return;
+        }
+        self.pending_closed_tabs.push(entry);
+        self.publish_completed_closes();
+    }
+
+    fn publish_completed_closes(&mut self) {
+        let present: std::collections::HashSet<_> = self
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .map(|tab| tab.id)
+            .collect();
+        let entries = std::mem::take(&mut self.pending_closed_tabs);
+        for entry in entries {
+            if entry
+                .tabs
+                .iter()
+                .any(|content| present.contains(&content.tab.id))
+            {
+                self.pending_closed_tabs.push(entry);
+            } else {
+                self.remember_closed_tab(entry);
+            }
+        }
     }
 
     /// Remember a close for the normal Reopen Closed Tab action. Closing is

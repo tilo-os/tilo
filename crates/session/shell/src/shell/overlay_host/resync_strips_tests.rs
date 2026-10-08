@@ -1385,6 +1385,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
         group.active_tab = 1;
         tree.seed_doc_from_cache();
 
+        crate::shell::foreign::store().note_adopted(41);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.close_tab_in_group(group_id, Some(1)));
         assert_eq!(
@@ -1392,6 +1393,25 @@ fn group_actions_target_exactly_their_group_or_surface() {
             vec![41],
             "close requests are keyed by surface, never by shared app id"
         );
+        let _ = host.take_structure_dirty();
+        let retained = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("live close decision");
+        assert_eq!(
+            retained.active_tab_id(),
+            1,
+            "a deferred close retains focus"
+        );
+        assert_eq!(retained.tab_count(), 2, "both client hosts remain visible");
+        assert!(
+            chrome.borrow_mut().reopen_closed_tab().is_none(),
+            "no Undo before destruction"
+        );
+        crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+            &mut chrome.borrow_mut().tree_mut(),
+            41,
+        );
+        crate::shell::foreign::store().forget(41);
         let remaining = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
