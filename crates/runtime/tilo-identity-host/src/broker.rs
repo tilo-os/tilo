@@ -309,11 +309,22 @@ fn sign(
             app: app_id.to_string(),
             action: action.to_string(),
         };
+        // Only a grant that names an action authorises a signature. The
+        // grant every opened app holds is `Scope::Workspace`, which matches
+        // every resource, and this signs the device key over caller-chosen
+        // bytes: letting the open-grant satisfy it would make the device key
+        // an oracle for invites and signed ops to any app on the desktop.
+        let action_grants: Vec<CapOverride> = workspace
+            .capabilities
+            .iter()
+            .filter(|capability| matches!(capability.scope, Scope::Action { .. }))
+            .cloned()
+            .collect();
         decide_capability(
             &actor,
             &resource,
             Verb::Write,
-            &workspace.capabilities,
+            &action_grants,
             Some(unix_now()),
         ) == CapDecision::Allow
     }) else {
@@ -735,6 +746,22 @@ mod tests {
                 sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
                 Response::Denied(_)
             ));
+            // The grant every opened app holds matches every resource, but it
+            // does not name an action, so it must not unlock the device key.
+            tree.write().desktop.workspaces[0]
+                .capabilities
+                .push(CapOverride::grant(
+                    Subject::app("so.tilo.notes"),
+                    Scope::Workspace,
+                    Verb::Write,
+                ));
+            assert!(
+                matches!(
+                    sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
+                    Response::Denied(_)
+                ),
+                "a workspace-wide open grant must not authorise a signature"
+            );
             tree.write().desktop.workspaces[0]
                 .capabilities
                 .push(CapOverride::grant(

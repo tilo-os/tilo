@@ -3423,6 +3423,26 @@ pub(crate) fn put_member_capability(
     put_member_verb(doc, capabilities, user_public_key, member_verb(role))
 }
 
+/// The room a replication document declares (`ROOT.room`), if any.
+pub(crate) fn declared_room(doc: &AutoCommit) -> Option<String> {
+    match doc.get(ROOT, "room").ok().flatten() {
+        Some((automerge::Value::Scalar(value), _)) => match value.as_ref() {
+            automerge::ScalarValue::Str(room) => Some(room.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The scope a membership grant is written with: the room it is membership
+/// *of*. `Scope::Workspace` matches every resource — every path, device and
+/// host — so a member grant carrying it would read as authority over all of
+/// them wherever a person actor is evaluated against the room's capability
+/// list. Only a document that declares no room falls back to it.
+fn membership_scope(doc: &AutoCommit) -> Scope {
+    declared_room(doc).map_or(Scope::Workspace, Scope::Room)
+}
+
 fn put_member_verb(
     doc: &mut AutoCommit,
     capabilities: &automerge::ObjId,
@@ -3456,7 +3476,7 @@ fn put_member_verb(
     }
     let cap = CapOverride::grant(
         Subject::User(Ed25519PublicKey::from_bytes(user_public_key)),
-        Scope::Workspace,
+        membership_scope(doc),
         verb,
     )
     .with_id(id.clone());

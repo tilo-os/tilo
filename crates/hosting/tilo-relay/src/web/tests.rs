@@ -115,7 +115,9 @@ async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 
         handshake: challenge.handshake,
         ack2: crate::auth::HelloAck2 {
             sig_over_server_nonce: key
-                .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                .sign(&crate::auth::client_challenge_digest(
+                    &challenge.ack.server_nonce,
+                ))
                 .to_bytes(),
         },
     };
@@ -239,7 +241,9 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
             &challenge.handshake,
             &crate::auth::HelloAck2 {
                 sig_over_server_nonce: key
-                    .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                    .sign(&crate::auth::client_challenge_digest(
+                        &challenge.ack.server_nonce,
+                    ))
                     .to_bytes(),
             },
         )
