@@ -134,6 +134,8 @@ pub enum Request {
     LayerImport(LayerImport),
     #[serde(rename = "layer.list")]
     LayerList(LayerList),
+    #[serde(rename = "layer.verify")]
+    LayerVerify(LayerVerify),
     #[serde(rename = "swap")]
     Swap(Swap),
     #[serde(rename = "userspace.apply")]
@@ -182,6 +184,7 @@ impl Request {
             Self::LayerUploadChunk(_) => "layer.upload.chunk",
             Self::LayerImport(_) => "layer.import",
             Self::LayerList(_) => "layer.list",
+            Self::LayerVerify(_) => "layer.verify",
             Self::Swap(_) => "swap",
             Self::UserspaceApply(_) => "userspace.apply",
             Self::Rollback(_) => "rollback",
@@ -229,6 +232,7 @@ call! {
     LayerUploadChunk => LayerUploadChunkResult,
     LayerImport => LayerImportResult,
     LayerList => Vec<LayerInfo>,
+    LayerVerify => LayerInfo,
     Swap => ApplyResult,
     UserspaceApply => UserspaceResult,
     Rollback => ApplyResult,
@@ -326,6 +330,13 @@ pub struct LayerImport {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerList {}
+
+/// Verify stored content before reusing a layer. Optional on protocol 8 peers;
+/// clients must stream normally when this method is unavailable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerVerify {
+    pub hash: String,
+}
 
 /// Replace (or add) one component's layer in a slot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

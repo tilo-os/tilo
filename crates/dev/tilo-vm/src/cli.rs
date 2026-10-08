@@ -258,6 +258,9 @@ pub enum Command {
         /// Verified source snapshot inventory for this builder admission.
         #[arg(long)]
         source_inventory: Option<PathBuf>,
+        /// Content hashes the target has verified; at most eight.
+        #[arg(long)]
+        cached_layer: Vec<String>,
     },
     /// Build the canonical matched cohort in one remote admission.
     #[command(

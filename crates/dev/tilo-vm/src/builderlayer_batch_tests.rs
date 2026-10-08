@@ -85,7 +85,7 @@ fn run_producer_child() -> FixtureResult<bool> {
             .ok_or("missing fixture manifest")?;
         for name in USERSPACE_COMPONENTS {
             let component = manifest.get(name).ok_or("missing fixture component")?;
-            pack_with_source(name, &component.profile, &[], Some(&inventory))?;
+            pack_with_source(name, &component.profile, &[], Some(&inventory), &[])?;
         }
     }
     Ok(true)

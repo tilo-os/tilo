@@ -86,10 +86,11 @@ host_session_workflow = (ROOT / ".forgejo/workflows/host-session-e2e.yml").read_
 host_rpms = host_session_workflow.split("  rpms:\n", 1)[1].split("  host-session:\n", 1)[0]
 assert "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}" in host_rpms
 preflight, expensive_steps = host_rpms.split("      # A full clone", 1)
-assert "if: ${{ !inputs.rpm-artifact }}" in preflight
+assert "if: ${{ !inputs.rpm-artifact && !inputs.rpm-source-run }}" in preflight
 assert "Fetch the env-runtime environment image" in expensive_steps
 assert "dist/ci/run-package-job.sh" in expensive_steps
-owner_check = textwrap.dedent(preflight.split("        run: |\n", 1)[1])
+owner_preflight = preflight.split("      - name: Validate the app-store registry owner\n", 1)[1]
+owner_check = textwrap.dedent(owner_preflight.split("        run: |\n", 1)[1])
 for owner, accepted in (
     (None, False),
     ("", False),

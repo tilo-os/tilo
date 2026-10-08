@@ -1280,6 +1280,10 @@ fn dense_capture_does_not_inherit_another_producers_canvas_policy() {
     frame.host_mut().set_strip_scroll_for_test(120.0);
     frame.relayout();
     let _ = frame.paint();
+    // Compare the same production content on both draw-policy paths. A real
+    // startup save acknowledgment must not change Notes' status between them.
+    acknowledge_notes_saves(&mut frame);
+    assert_notes_startup_saved(&mut frame);
     let dense = frame.paint();
     let outer = ui::retained_present::RetainedScene::begin(true);
     let nested = frame.paint();
@@ -1288,6 +1292,7 @@ fn dense_capture_does_not_inherit_another_producers_canvas_policy() {
         "the enclosing presenter keeps its draw policy"
     );
     drop(outer);
+    assert_notes_startup_saved(&mut frame);
     assert_layer_cpu_pixels_match(&nested, &dense, SIZE);
 }
 

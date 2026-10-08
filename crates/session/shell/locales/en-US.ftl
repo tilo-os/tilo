@@ -2471,6 +2471,8 @@ search-action-activity-acknowledge-keywords = catch up read seen review acknowle
 search-action-activity-tasks = Review workspace goals and agent work
 search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
 search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
+host-history-task-refused-title = Task could not be changed
+host-history-task-refused-body = The workspace did not accept this change. Any draft is kept; check your identity and workspace permissions before retrying.
 
 search-action-workspace-create = Create a workspace
 search-action-workspace-create-subtitle = Create and switch to a new empty workspace

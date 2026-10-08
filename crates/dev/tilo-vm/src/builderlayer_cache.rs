@@ -21,12 +21,15 @@ struct Record {
     packed: Packed,
     hash: String,
     bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_hash: Option<String>,
 }
 
 pub(crate) struct Artifact {
     pub file: File,
     pub hash: String,
     pub bytes: u64,
+    pub content_hash: Option<String>,
 }
 
 pub(crate) struct Cache {
@@ -215,6 +218,14 @@ impl Cache {
             return Err(refuse());
         }
         let record: Record = serde_json::from_slice(&bytes).map_err(|_| refuse())?;
+        if record.content_hash.as_ref().is_some_and(|hash| {
+            hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }) {
+            return Err(refuse());
+        }
         if record.key != self.key || record.packed != *packed || record.bytes == 0 {
             return Err(refuse());
         }
@@ -226,6 +237,7 @@ impl Cache {
             file: archive,
             hash: record.hash,
             bytes: record.bytes,
+            content_hash: record.content_hash,
         }))
     }
 
@@ -248,6 +260,10 @@ impl Cache {
             packed: packed.clone(),
             hash,
             bytes,
+            content_hash: Some(
+                tilo_vm_protocol::layer_hash::tree_hash(tree)
+                    .map_err(CliError::io("hash cached layer content"))?,
+            ),
         };
         let path = staging.path().join("record.json");
         std::fs::write(&path, serde_json::to_vec(&record).map_err(|_| refuse())?)
@@ -282,6 +298,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".into()),
             toolchain: Some("rustc 1.97.1 (fixture)".into()),
             source_digest: Some("a".repeat(64)),
+            ..Packed::default()
         }
     }
 
@@ -376,6 +393,70 @@ type = "gui"
         foreign = packed();
         foreign.toolchain = Some("different compiler".into());
         assert!(reopened.load(&foreign).is_err());
+    }
+
+    #[test]
+    fn cached_archive_replay_preserves_verified_content_reuse_and_legacy_delivery() {
+        let root = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let tree = tree(root.path());
+        let cache = Cache::new(target.path(), &"3".repeat(64)).unwrap();
+        let artifact = cache.save(&packed(), &tree).unwrap();
+        let content = tilo_vm_protocol::layer_hash::tree_hash(&tree).unwrap();
+        assert_eq!(artifact.content_hash.as_deref(), Some(content.as_str()));
+        let archive = bytes(artifact);
+        for offered in [vec![content.clone()], Vec::new()] {
+            let mut output = Vec::new();
+            crate::builderlayer::emit_cached_to(
+                &packed(),
+                cache.load(&packed()).unwrap().unwrap(),
+                &offered,
+                &mut output,
+            )
+            .unwrap();
+            let mut stream = crate::builderlayer::Stream::new(output.as_slice());
+            let header = stream.header(&mut Vec::new()).unwrap();
+            assert_eq!(header.source_digest, packed().source_digest);
+            assert_eq!(header.layer_hash.as_deref(), Some(content.as_str()));
+            assert_eq!(header.reused, !offered.is_empty());
+            let mut payload = Vec::new();
+            stream.read_to_end(&mut payload).unwrap();
+            if header.reused {
+                assert!(payload.is_empty());
+                assert!(!String::from_utf8_lossy(&output).contains(crate::builderlayer::DATA));
+            } else {
+                assert_eq!(payload, archive);
+            }
+            stream.finish(&mut Vec::new()).unwrap();
+        }
+        let path = cache.root.join(&cache.key).join("record.json");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record.as_object_mut().unwrap().remove("content_hash");
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let mut output = Vec::new();
+        crate::builderlayer::emit_cached_to(
+            &packed(),
+            cache.load(&packed()).unwrap().unwrap(),
+            &[content],
+            &mut output,
+        )
+        .unwrap();
+        let mut stream = crate::builderlayer::Stream::new(output.as_slice());
+        let header = stream.header(&mut Vec::new()).unwrap();
+        assert!(!header.reused);
+        assert!(header.layer_hash.is_none());
+        let mut payload = Vec::new();
+        stream.read_to_end(&mut payload).unwrap();
+        assert_eq!(payload, archive);
+        stream.finish(&mut Vec::new()).unwrap();
+        record["content_hash"] = serde_json::json!("not-a-content-hash");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(cache.load(&packed()).is_err());
     }
 
     #[test]

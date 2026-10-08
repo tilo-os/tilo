@@ -3636,7 +3636,7 @@ mod tests {
     }
 
     fn cold_directory_local_fixture(
-        broker: crate::shell::collab_broker::AppActionBroker,
+        broker: &crate::shell::collab_broker::AppActionBroker,
         ctx: &SearchContext<'_>,
     ) -> (LiveAppActionsProvider, PublishedSurface, DirectoryCacheKey) {
         let cluster_id = ctx.chrome.tree().desktop.workspaces[0].room.to_string();
@@ -3663,7 +3663,7 @@ mod tests {
         let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         *provider.surface_snapshot.borrow_mut() =
             Some(LiveAppActionsProvider::build_local_snapshot(
-                &broker,
+                broker,
                 &LiveAppActionsProvider::build_scope(ctx),
                 &provider.build_probe,
             ));
@@ -3692,7 +3692,7 @@ mod tests {
             let state = chrome.borrow();
             let doc = AutoCommit::new();
             let ctx = context("Inspect playback", &state, &doc);
-            let (provider, surface, key) = cold_directory_local_fixture(broker, &ctx);
+            let (provider, surface, key) = cold_directory_local_fixture(&broker, &ctx);
             // An actual pending receiver, never a seeded or synthetic cache page.
             let reply = pending_directory_reply(&provider, key.clone());
             let first = provider.query_page(ctx, None, budget);
