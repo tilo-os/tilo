@@ -4306,10 +4306,10 @@ impl CapnpBrokerState {
         app_id: &str,
         questions: &[DirectoryQuestion<'_>],
     ) -> Result<Vec<bool>, capnp::Error> {
-        let now = self.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
         if questions.iter().all(|question| question.verb.is_none()) {
             return Ok(vec![true; questions.len()]);
         }
+        let now = self.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("the action broker has no workspace authority".into())
         })?;
@@ -4366,7 +4366,21 @@ impl CapnpBrokerState {
             .membership
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
-        let published = self.published_surfaces_for_scope(scope);
+        // Only this room's live surfaces and in-scope actions reach the
+        // borrow; everything else is dropped before authority is read.
+        let published = self
+            .published_surfaces_for_scope(scope)
+            .into_iter()
+            .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
+            .map(|mut surface| {
+                surface.actions.retain(|action| {
+                    scope.is_none_or(|scope| {
+                        action.resource == scope.resource && action.action == scope.action
+                    })
+                });
+                surface
+            })
+            .collect::<Vec<_>>();
         let live_apps = self
             .surfaces
             .lock()
@@ -4406,12 +4420,9 @@ impl CapnpBrokerState {
             };
             let published = published
                 .into_iter()
-                .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
                 .map(|mut surface| {
                     surface.actions.retain(|action| {
-                        scope.is_none_or(|scope| {
-                            action.resource == scope.resource && action.action == scope.action
-                        }) && permission_verb(action.contract.permission).is_none_or(|verb| {
+                        permission_verb(action.contract.permission).is_none_or(|verb| {
                             allows(
                                 &ResourceRef::Action {
                                     app: surface.app_id.clone(),
@@ -9421,10 +9432,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
 
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
-        let now = match self.state.policy_now_ns() {
-            Ok(now) => now / 1_000_000_000,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
+        // Authorship is judged at the same policy time as the launch check.
         let author = observed_launch::launch_author(&actor, &workspace, now);
         let started = self.begin_original_launch(
             &app_id,
