@@ -7325,7 +7325,7 @@ mod tests {
             KeyboardProfile {
                 sources: vec!["de".into()],
                 active: "de".into(),
-                options: Default::default(),
+                options: BTreeMap::default(),
             },
         );
         state.handle_keyboard_device_key("default", xkb::Keycode::new(50), true, None);

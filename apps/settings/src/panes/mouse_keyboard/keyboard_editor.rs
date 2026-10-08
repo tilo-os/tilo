@@ -5,6 +5,13 @@ use settings_store::keyboard_sources::{ALL, KeyboardProfile, OSK, SourceOptions}
 use ui::reorder::DropPlacement;
 use ui::widget::{ListRow, VirtualList};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum SourceView {
+    #[default]
+    Configured,
+    Live,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct EditorState {
     pub scope: String,
@@ -13,6 +20,7 @@ pub(super) struct EditorState {
     pub pending: Option<String>,
     pub options_open: bool,
     pub inspection_open: bool,
+    pub view: SourceView,
 }
 
 impl Default for EditorState {
@@ -24,11 +32,26 @@ impl Default for EditorState {
             pending: None,
             options_open: false,
             inspection_open: false,
+            view: SourceView::Configured,
         }
     }
 }
 
 impl InputArea {
+    fn note_legacy_source_view(&self, operation: &InputEffect) {
+        let view = match operation {
+            InputEffect::ShowLiveKeyboardMap => SourceView::Live,
+            InputEffect::PreviewLayout { .. } => SourceView::Configured,
+            _ => return,
+        };
+        let mut editor = self.editor.get();
+        editor.view = view;
+        editor.selected = None;
+        editor.adding = false;
+        editor.pending = None;
+        self.editor.set(editor);
+    }
+
     pub(super) fn keyboard_scopes(&self) -> Vec<(String, String)> {
         scopes(self.devices().as_ref(), self.osk_always)
     }
@@ -118,9 +141,7 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
         .iter()
         .any(|(scope, _)| scope == &editor.scope)
     {
-        return Some(Err(
-            "the keyboard is no longer available; its assignment has been retained".into(),
-        ));
+        return Some(Err(t("input-error-keyboard-retained")));
     }
     if editor.scope == OSK
         && matches!(
@@ -142,9 +163,10 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
     let result = match operation {
         InputEffect::SelectKeyboardScope { scope } => {
             if !area.keyboard_scopes().iter().any(|(id, _)| id == scope) {
-                return Some(Err("the keyboard is not currently available".into()));
+                return Some(Err(t("input-error-keyboard-unavailable")));
             }
             editor.scope.clone_from(scope);
+            editor.view = SourceView::Configured;
             editor.selected = None;
             editor.adding = false;
             editor.pending = None;
@@ -152,9 +174,10 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
         }
         InputEffect::SelectConfiguredSource { source } => {
             if !profile.sources.contains(source) {
-                return Some(Err("the source is not configured for this keyboard".into()));
+                return Some(Err(t("input-error-source-unconfigured")));
             }
             editor.selected = Some(source.clone());
+            editor.view = SourceView::Configured;
             Ok(Effected::done())
         }
         InputEffect::SetSourceOptionsVisible { visible } => {
@@ -166,6 +189,7 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
             Ok(Effected::done())
         }
         InputEffect::OpenSourcePicker => {
+            editor.view = SourceView::Configured;
             editor.adding = true;
             editor.pending = None;
             Ok(Effected::done())
@@ -181,7 +205,7 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
                     .iter()
                     .any(|entry| &entry.id == source)
             {
-                return Some(Err("the source is not available in the Add screen".into()));
+                return Some(Err(t("input-error-source-add-unavailable")));
             }
             editor.pending = Some(source.clone());
             Ok(Effected::done())
@@ -221,7 +245,7 @@ fn confirm_added_source(
         .pending
         .clone()
         .filter(|_| editor.adding)
-        .ok_or("choose a source to add")?;
+        .ok_or_else(|| t("input-error-source-choose"))?;
     let active = profile.active.clone();
     if editor.scope == OSK {
         mutate_sources(
@@ -297,8 +321,12 @@ pub(super) fn apply_scoped(
         .iter()
         .any(|(scope, _)| scope == &editor.scope)
     {
-        return Err("the keyboard is no longer available; its assignment has been retained".into());
+        return Err(t("input-error-keyboard-retained"));
     }
+    if editor.scope == OSK && matches!(operation, InputEffect::ShowLiveKeyboardMap) {
+        return Err(t("input-error-live-map-physical"));
+    }
+    area.note_legacy_source_view(&operation);
     // Preserve explicit legacy automation requests; the new screen always edits
     // a configured selection and never creates this independent preview state.
     if editor.selected.is_none()
@@ -345,37 +373,9 @@ pub(super) fn apply_scoped(
             | InputEffect::SetKeyboardModel { .. }
     ) {
         if editor.scope == OSK {
-            return Err("physical keyboard options do not apply to the on-screen keyboard".into());
+            return Err(t("input-error-source-physical-options"));
         }
-        let current = input.rich_input();
-        let options = profile
-            .options
-            .entry(selected)
-            .or_insert_with(|| SourceOptions {
-                model: Some(current.keyboard_model),
-                compose_key: current.compose_key,
-                caps_lock: current.caps_lock,
-                customised: true,
-            });
-        options.customised = true;
-        match operation {
-            InputEffect::SetComposeKey { key } => {
-                options.compose_key = stored_for(COMPOSE_KEY_CHOICES, COMPOSE_DISABLED, &key)
-                    .ok_or("invalid compose key")?
-            }
-            InputEffect::SetCapsLock { behaviour } => {
-                options.caps_lock = stored_for(&CAPS_LOCK_CHOICES, CAPS_LOCK_UNCHANGED, &behaviour)
-                    .ok_or("invalid Caps Lock behaviour")?
-            }
-            InputEffect::SetKeyboardModel { model }
-                if crate::keyboard_preview::valid_model(&model) =>
-            {
-                options.model = Some(model);
-                input.keyboard_inspected_key = "AD01".into();
-                input.keyboard_preview_level = 0;
-            }
-            _ => return Err("invalid keyboard option".into()),
-        }
+        apply_source_options(input, &mut profile, selected, operation)?;
     } else {
         mutate_sources(&mut profile, operation, area, &editor.scope)?;
     }
@@ -384,6 +384,42 @@ pub(super) fn apply_scoped(
         input.keyboard_layout.clone_from(&profile.active);
     }
     input.keyboard_assignments.insert(editor.scope, profile);
+    Ok(())
+}
+
+fn apply_source_options(
+    input: &mut InputPrefs,
+    profile: &mut KeyboardProfile,
+    selected: String,
+    operation: InputEffect,
+) -> Result<(), String> {
+    let current = input.rich_input();
+    let options = profile
+        .options
+        .entry(selected)
+        .or_insert_with(|| SourceOptions {
+            model: Some(current.keyboard_model),
+            compose_key: current.compose_key,
+            caps_lock: current.caps_lock,
+            customised: true,
+        });
+    options.customised = true;
+    match operation {
+        InputEffect::SetComposeKey { key } => {
+            options.compose_key = stored_for(COMPOSE_KEY_CHOICES, COMPOSE_DISABLED, &key)
+                .ok_or_else(|| t("input-error-source-compose"))?;
+        }
+        InputEffect::SetCapsLock { behaviour } => {
+            options.caps_lock = stored_for(&CAPS_LOCK_CHOICES, CAPS_LOCK_UNCHANGED, &behaviour)
+                .ok_or_else(|| t("input-error-source-caps"))?;
+        }
+        InputEffect::SetKeyboardModel { model } if crate::keyboard_preview::valid_model(&model) => {
+            options.model = Some(model);
+            input.keyboard_inspected_key = "AD01".into();
+            input.keyboard_preview_level = 0;
+        }
+        _ => return Err(t("input-error-source-option")),
+    }
     Ok(())
 }
 
@@ -407,7 +443,7 @@ fn apply_selected_inspection(
         })
         .unwrap_or(&profile.active);
     let mut selected_profile = profile.clone();
-    selected_profile.active = selected.clone();
+    selected_profile.active.clone_from(selected);
     let effective = selected_profile.effective(&input.rich_input());
     let mut preview = input.clone();
     preview.keyboard_preview = Some(selected.clone());
@@ -430,7 +466,7 @@ fn mutate_sources(
             .sources
             .iter()
             .position(|source| source == id)
-            .ok_or("the source is not configured")
+            .ok_or_else(|| t("input-error-source-missing"))
     };
     match operation {
         InputEffect::AddSource { source } => {
@@ -438,7 +474,7 @@ fn mutate_sources(
                 .iter()
                 .any(|entry| entry.id == source)
             {
-                return Err("the source cannot be added to this keyboard".into());
+                return Err(t("input-error-source-add"));
             }
             profile.active.clone_from(&source);
             profile.sources.push(source);
@@ -449,7 +485,7 @@ fn mutate_sources(
         }
         InputEffect::RemoveSource { source } => {
             if profile.sources.len() <= 1 {
-                return Err("the last source cannot be removed".into());
+                return Err(t("input-error-source-last"));
             }
             let index = position(&source, profile)?;
             profile.sources.remove(index);
@@ -459,12 +495,14 @@ fn mutate_sources(
                     .sources
                     .first()
                     .cloned()
-                    .ok_or("no source remains")?;
+                    .ok_or_else(|| t("input-error-source-empty"))?;
             }
         }
         InputEffect::MoveSourceUp { source } => {
             let index = position(&source, profile)?;
-            let before = index.checked_sub(1).ok_or("the source is already first")?;
+            let before = index
+                .checked_sub(1)
+                .ok_or_else(|| t("input-error-source-first"))?;
             profile.sources.swap(index, before);
         }
         InputEffect::MoveSourceDown { source } => {
@@ -472,7 +510,7 @@ fn mutate_sources(
             let after = index
                 .checked_add(1)
                 .filter(|index| *index < profile.sources.len())
-                .ok_or("the source is already last")?;
+                .ok_or_else(|| t("input-error-source-end"))?;
             profile.sources.swap(index, after);
         }
         InputEffect::ReorderSource {
@@ -488,13 +526,15 @@ fn mutate_sources(
             profile.sources.remove(from);
             let target_index = position(&target, profile)?;
             let destination = if after {
-                target_index.checked_add(1).ok_or("source index overflow")?
+                target_index
+                    .checked_add(1)
+                    .ok_or_else(|| t("input-error-source-overflow"))?
             } else {
                 target_index
             };
             profile.sources.insert(destination, source);
         }
-        _ => return Err("this is not a source operation".into()),
+        _ => return Err(t("input-error-source-operation")),
     }
     Ok(())
 }
@@ -575,10 +615,7 @@ impl MouseKeyboardPane {
                 )
                 .selected(id == &selected);
                 if id == &active {
-                    row = row.trailing(Box::new(
-                        Text::new(&t("input-sources-active"))
-                            .with_role(ui::tokens::TextRole::Caption),
-                    ));
+                    row = row.value(t("input-sources-active"));
                 }
                 Box::new(row)
             },
@@ -603,7 +640,7 @@ impl MouseKeyboardPane {
                     }
                 })
                 .on_activate(move |source| {
-                    on_activate.invoke(InputEffect::SelectConfiguredSource { source })
+                    on_activate.invoke(InputEffect::SelectConfiguredSource { source });
                 })
                 .with_reorder(
                     |_, source, target| {
@@ -701,29 +738,33 @@ impl MouseKeyboardPane {
         content.push(Box::new(controls));
         content.extend(self.selected_source_preview(&selected));
         if self.editor.get().scope != OSK {
-            let open = self.editor.get().options_open;
-            let button = self.cx.bind_invocation(
-                Button::new(
-                    "input.source.options",
-                    &t(if open {
-                        "input-source-hide"
-                    } else {
-                        "input-source-show"
-                    }),
-                ),
-                InputEffect::SetSourceOptionsVisible { visible: !open },
-            );
-            content.push(crate::widgets::card_with_action(
-                &t("input-source-options"),
-                Box::new(button),
-                rows(if open {
-                    self.selected_source_options(&selected)
-                } else {
-                    Vec::new()
-                }),
-            ));
+            content.push(self.source_options_card(&selected));
         }
         crate::widgets::card_with_action(&t("input-sources-title"), add, rows(content))
+    }
+
+    fn source_options_card(&self, selected: &str) -> El {
+        let open = self.editor.get().options_open;
+        let button = self.cx.bind_invocation(
+            Button::new(
+                "input.source.options",
+                &t(if open {
+                    "input-source-hide"
+                } else {
+                    "input-source-show"
+                }),
+            ),
+            InputEffect::SetSourceOptionsVisible { visible: !open },
+        );
+        crate::widgets::card_with_action(
+            &t("input-source-options"),
+            Box::new(button),
+            rows(if open {
+                self.selected_source_options(selected)
+            } else {
+                Vec::new()
+            }),
+        )
     }
 
     fn selected_source_options(&self, source: &str) -> Vec<El> {
@@ -881,8 +922,15 @@ fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
     let stored = ui::storage::Settings::<OskSourceSettings>::for_app("so.tilo.osk")
         .in_document(document.clone())
         .get();
-    let mut sources: Vec<_> = stored
-        .layouts
+    let configured = if stored.layouts.is_empty() {
+        osk::actions::LAYOUT_NAMES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    } else {
+        stored.layouts
+    };
+    let mut sources: Vec<_> = configured
         .into_iter()
         .filter(|source| matches!(source.as_str(), "qwerty" | "azerty"))
         .collect();
@@ -899,7 +947,7 @@ fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
     KeyboardProfile {
         sources,
         active,
-        options: Default::default(),
+        options: std::collections::BTreeMap::default(),
     }
 }
 
@@ -990,6 +1038,44 @@ mod tests {
         assert!(scopes.iter().any(|scope| scope["id"] == "fixture-input-0"));
         assert!(scopes.iter().any(|scope| scope["id"] == "fixture-input-1"));
         assert_eq!(result["editing"], ALL);
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+    }
+
+    #[test]
+    fn keyboard_sources_touch_selection_cancel_and_reorder_use_live_actions() {
+        use winit::event::TouchPhase;
+        let mut app = fixture_app("keyboard-touch", (1200, 900));
+        let mut input = app.settings::<InputPrefs>().get();
+        input.keyboard_layouts = vec!["us".into(), "de".into()];
+        app.settings::<InputPrefs>().set(&input).unwrap();
+        app.settle();
+        let target = app.harness().targets()["input.source.de"].center();
+        app.harness()
+            .touch(1, TouchPhase::Started, target.x, target.y);
+        app.harness()
+            .touch(1, TouchPhase::Cancelled, target.x, target.y);
+        app.settle();
+        assert_eq!(app.settings::<InputPrefs>().get(), input);
+        app.harness().tap_named("input.source.de").unwrap();
+        app.settle();
+        let result = app
+            .effect(&SettingsEffect::from(InputEffect::InspectKeyboardSources))
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(result["selected"], "de");
+        assert_eq!(app.settings::<InputPrefs>().get().keyboard_layout, "us");
+        app.harness().tap_named("input.source.move-up").unwrap();
+        app.settle();
+        assert_eq!(
+            app.settings::<InputPrefs>().get().keyboard_layouts,
+            ["de", "us"]
+        );
+        assert_eq!(app.settings::<InputPrefs>().get().keyboard_layout, "us");
+        let before = app.settings::<InputPrefs>().get();
+        app.harness().tap_named("input.sources.add").unwrap();
+        app.settle();
+        perform(&mut app, InputEffect::CloseSourcePicker);
         assert_eq!(app.settings::<InputPrefs>().get(), before);
     }
 
@@ -1130,6 +1216,17 @@ mod tests {
     fn keyboard_editor_osk_choices_are_independent_and_cancel_preserves_layout() {
         let mut app = fixture_app("keyboard-osk", (440, 820));
         let physical = app.settings::<InputPrefs>().get();
+        assert!(
+            app.effect(&SettingsEffect::from(InputEffect::ShowLiveKeyboardMap))
+                .is_err()
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), physical);
+        perform(
+            &mut app,
+            InputEffect::RemoveSource {
+                source: "azerty".into(),
+            },
+        );
         perform(&mut app, InputEffect::OpenSourcePicker);
         perform(
             &mut app,
@@ -1139,7 +1236,7 @@ mod tests {
         );
         perform(&mut app, InputEffect::CloseSourcePicker);
         app.surface::<SettingsApp, _>(|surface| {
-            assert_eq!(osk_profile(&surface.input().document).sources, ["qwerty"])
+            assert_eq!(osk_profile(&surface.input().document).sources, ["qwerty"]);
         })
         .unwrap();
         perform(&mut app, InputEffect::OpenSourcePicker);
@@ -1215,7 +1312,7 @@ mod tests {
                 app.harness().render_png(&directory.join("reordered.png"));
             }
             if matches!(scenario, "keyboard-many" | "keyboard-touch") {
-                app.harness().click("input.keyboard.scope");
+                app.harness().click_named("input.keyboard.scope").unwrap();
                 app.settle();
                 app.harness().render_png(&directory.join("devices.png"));
                 app.harness().key("Escape");
@@ -1314,6 +1411,18 @@ mod tests {
         };
         settings.set(&preferences).unwrap();
         app.settle();
+        app.surface::<SettingsApp, _>(|surface| {
+            let legacy = osk_profile(&surface.input().document);
+            assert_eq!(legacy.active, "azerty");
+            assert_eq!(legacy.sources, ["qwerty", "azerty"]);
+        })
+        .unwrap();
+        perform(
+            &mut app,
+            InputEffect::RemoveSource {
+                source: "qwerty".into(),
+            },
+        );
         perform(&mut app, InputEffect::OpenSourcePicker);
         perform(
             &mut app,

@@ -307,6 +307,11 @@ impl KeyboardLayout {
             Key::action("Emoji", KeyAction::Emoji, 1.5).with_icon(Icon::Smile),
             Key::action("space", KeyAction::Space, 5.0),
             Key::ch("."),
+            Key::action(
+                if name == "qwerty" { "FR" } else { "EN" },
+                KeyAction::Layout(if name == "qwerty" { "azerty" } else { "qwerty" }.into()),
+                1.5,
+            ),
             Key::action("Return", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
         ]);
         Self {

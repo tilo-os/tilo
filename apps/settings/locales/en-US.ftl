@@ -2008,3 +2008,23 @@ input-source-hide = Hide
 
 input-source-add-short = Add
 input-source-add-title = Add an input source
+
+# Keyboard source editing errors.
+input-error-keyboard-retained = the keyboard is no longer available; its assignment has been retained
+input-error-keyboard-unavailable = the keyboard is not currently available
+input-error-source-unconfigured = the source is not configured for this keyboard
+input-error-source-add-unavailable = the source is not available in the Add screen
+input-error-source-choose = choose a source to add
+input-error-source-physical-options = physical keyboard options do not apply to the on-screen keyboard
+input-error-source-compose = invalid compose key
+input-error-source-caps = invalid Caps Lock behaviour
+input-error-source-option = invalid keyboard option
+input-error-source-missing = the source is not configured
+input-error-source-add = the source cannot be added to this keyboard
+input-error-source-last = the last source cannot be removed
+input-error-source-empty = no source remains
+input-error-source-first = the source is already first
+input-error-source-end = the source is already last
+input-error-source-overflow = source index overflow
+input-error-source-operation = this is not a source operation
+input-error-live-map-physical = Live physical-keyboard inspection is unavailable for the on-screen keyboard.
