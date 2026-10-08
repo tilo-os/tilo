@@ -47,7 +47,7 @@ def receipt(path, size, sha):
         raise ValueError('public experiment hash receipt mismatch')
 
 
-def subjects(pid):
+def subjects(pid, executable_identity=None):
     found, pending, visited = [], [pid], set()
     while pending and len(visited) < 32:
         current = pending.pop()
@@ -55,8 +55,16 @@ def subjects(pid):
             continue
         visited.add(current)
         try:
-            name = Path(f'/proc/{current}/comm').read_text().strip()
-            if name in ('nemo-speech', 'asr-whisper-com', 'asr-nemo-compar', 'tilo-speech-wor'):
+            if executable_identity is None:
+                name = Path(f'/proc/{current}/comm').read_text().strip()
+                matched = name in ('nemo-speech', 'asr-whisper-com', 'asr-nemo-compar', 'tilo-speech-wor')
+            else:
+                # Thread names are mutable, including in upstream runtimes.
+                # The caller pins one executable inode before its owned launch;
+                # only that binary inside this descendant tree is observable.
+                executable = Path(f'/proc/{current}/exe').stat()
+                matched = (executable.st_dev, executable.st_ino) == executable_identity
+            if matched:
                 found.append(current)
             pending.extend(map(int, Path(f'/proc/{current}/task/{current}/children').read_text().split()))
         except (FileNotFoundError, ProcessLookupError):
@@ -79,7 +87,7 @@ def measured_cpu(stderr, successful):
     return receipt['user'] + receipt['system']
 
 
-def observe(command, cpus):
+def observe(command, cpus, executable_identity=None):
     def limits():
         resource.setrlimit(resource.RLIMIT_AS, (1073741824, 1073741824))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
@@ -96,7 +104,7 @@ def observe(command, cpus):
             while selector.get_map():
                 if time.monotonic() - start > 180:
                     guarded = 'deadline'
-                for pid in subjects(child.pid):
+                for pid in subjects(child.pid, executable_identity):
                     try:
                         status = Path(f'/proc/{pid}/status').read_text()
                     except (FileNotFoundError, ProcessLookupError):

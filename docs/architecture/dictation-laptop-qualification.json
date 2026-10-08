@@ -59,6 +59,9 @@
       "cpu_affinity_count": 2,
       "cold_ms": 1468.2385560008697,
       "first_partial_from_source_start_ms": 7952.771543990821,
+      "first_partial_has_lexical_text": false,
+      "first_lexical_partial_from_source_start_ms": 15315.895847976208,
+      "lexical_metric_provenance": "Derived from the first draft containing a Unicode letter or number in the unchanged private log; the original probe measured any nonempty reply, including punctuation.",
       "audio_transport": "source-paced draft batches",
       "worker_draft_policy": "full_context",
       "first_draft_seconds": 2,
@@ -129,7 +132,7 @@
     }
   ],
   "release_comparison": {
-    "build": "passed; rcargo --no-fallback --no-fetch build --release --locked -p local-model-service --bin tilo-speech-worker -j1",
+    "build": "passed; remote Cargo drop-in, build --release --locked -p local-model-service --bin tilo-speech-worker -j1; local fallback disabled",
     "duration": "9m19s",
     "worker_sha256": "4248d801597bab9b5b7d7ac05df177889a3d6e67a7a188da056e3f0b9874aa05",
     "worker_size_bytes": 2881528,

@@ -18,6 +18,24 @@ spec.loader.exec_module(probe)
 
 
 class CandidateProbeTests(unittest.TestCase):
+    def test_receipted_executable_is_observed_despite_changed_thread_name(self):
+        code = ('import ctypes,time; '
+                'ctypes.CDLL(None).prctl(15,b"renamed-runtime",0,0,0); '
+                'print("ready",flush=True); time.sleep(30)')
+        child = subprocess.Popen([sys.executable, '-c', code],
+                                 stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), 'ready')
+            info = Path(sys.executable).stat()
+            identity = (info.st_dev, info.st_ino)
+            self.assertEqual(probe.subjects(child.pid), [])
+            self.assertEqual(probe.subjects(child.pid, identity), [child.pid])
+            self.assertEqual(probe.subjects(child.pid, (identity[0], identity[1] + 1)), [])
+        finally:
+            child.terminate()
+            child.wait(timeout=5)
+            child.stdout.close()
+
     def test_actual_child_time_receipt_not_outer_wrapper_accounting(self):
         # The minimal policy image has no GNU time. Measure a real child's CPU
         # with the standard library; the remote native probe still requires

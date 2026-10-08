@@ -142,6 +142,7 @@ unsafe extern "C" {
     fn tilo_speech_load(bytes: *mut u8, length: usize) -> *mut c_void;
     fn tilo_speech_ready(context: *mut c_void) -> bool;
     fn tilo_speech_threads(context: *mut c_void, threads: i32) -> bool;
+    fn tilo_speech_flash_attention(context: *mut c_void) -> bool;
     fn tilo_speech_vocabulary(context: *mut c_void, text: *const c_char, length: usize) -> bool;
     fn tilo_speech_free(context: *mut c_void);
     fn tilo_speech_accepts(context: *mut c_void, language: *const c_char) -> bool;
@@ -162,6 +163,14 @@ unsafe extern "C" {
 pub struct SpeechEngine(NonNull<c_void>);
 #[cfg(feature = "whisper")]
 impl SpeechEngine {
+    /// Observe the attention strategy actually passed to the loaded native
+    /// engine. Qualification must not infer this from filenames or timings.
+    pub fn flash_attention_enabled(&self) -> bool {
+        // SAFETY: the exclusively owned live context returns one metadata
+        // boolean; no model/audio pointers or text cross this query.
+        unsafe { tilo_speech_flash_attention(self.0.as_ptr()) }
+    }
+
     /// Configure bounded native vocabulary tokens without rewriting output.
     /// Set before starting a new recognition session. Failed replacement clears
     /// the old binding; do not reuse a recognition draft cache across changes.

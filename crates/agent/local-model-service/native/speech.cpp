@@ -14,21 +14,25 @@
 // reaches diagnostics, and no closure or Rust userdata crosses a C callback.
 static void discard_log(enum ggml_log_level, const char *, void *) {}
 
-// The pinned GGML header identifies the reviewed small architecture. This
+// The pinned GGML header identifies the reviewed base/small architectures. This
 // chooses its allocation strategy only: the complete native loader still
-// parses the receipt-checked immutable input. Tiny/base retain their measured
+// parses the receipt-checked immutable input. Tiny retains its measured
 // non-flash path; no model, artifact-size or address-space admission changes.
-static bool small_model_flash(const uint8_t * header, size_t length) noexcept {
+static bool bounded_cpu_flash(const uint8_t * header, size_t length) noexcept {
     if (!header || length < 40) return false;
     auto word = [header](size_t offset) -> uint32_t {
         return uint32_t(header[offset]) | (uint32_t(header[offset + 1]) << 8)
             | (uint32_t(header[offset + 2]) << 16) | (uint32_t(header[offset + 3]) << 24);
     };
-    return word(0) == 0x67676d6c && word(12) == 768 && word(20) == 12
-        && word(28) == 768 && word(36) == 12;
+    // Head counts precede layer counts in the pinned GGML header.
+    const bool base = word(12) == 512 && word(16) == 8 && word(20) == 6
+        && word(28) == 512 && word(32) == 8 && word(36) == 6;
+    const bool small = word(12) == 768 && word(16) == 12 && word(20) == 12
+        && word(28) == 768 && word(32) == 12 && word(36) == 12;
+    return word(0) == 0x67676d6c && (base || small);
 }
 
-static bool small_model_flash_fd(int fd) noexcept {
+static bool bounded_cpu_flash_fd(int fd) noexcept {
     std::array<uint8_t, 40> header{};
     size_t offset = 0;
     while (offset < header.size()) {
@@ -38,7 +42,7 @@ static bool small_model_flash_fd(int fd) noexcept {
         if (count <= 0) return false;
         offset += static_cast<size_t>(count);
     }
-    return small_model_flash(header.data(), header.size());
+    return bounded_cpu_flash(header.data(), header.size());
 }
 
 struct PrivateTokens {
@@ -67,6 +71,7 @@ struct SpeechContext {
     whisper_context * model;
     whisper_state * state;
     int threads;
+    bool flash_attention;
     PrivateTokens vocabulary{};
 };
 
@@ -74,12 +79,12 @@ extern "C" void * tilo_speech_load(uint8_t * bytes, size_t length) noexcept try 
     whisper_log_set(discard_log, nullptr);
     auto params = whisper_context_default_params();
     params.use_gpu = false;
-    params.flash_attn = small_model_flash(bytes, length);
+    params.flash_attn = bounded_cpu_flash(bytes, length);
     // Copy the weights first. The verified input buffer is released by Rust
     // before decoder arenas are allocated, avoiding an unnecessary peak.
     auto * model = whisper_init_from_buffer_with_params_no_state(bytes, length, params);
     if (!model) return nullptr;
-    auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2};
+    auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2, params.flash_attn};
     if (!context) whisper_free(model);
     return context;
 } catch (...) {
@@ -125,13 +130,18 @@ extern "C" void * tilo_speech_load_fd(int fd, size_t length) noexcept try {
     whisper_log_set(discard_log, nullptr);
     auto params = whisper_context_default_params();
     params.use_gpu = false;
-    params.flash_attn = small_model_flash_fd(fd);
+    params.flash_attn = bounded_cpu_flash_fd(fd);
     auto * model = whisper_init_with_params_no_state(&loader, params);
     if (!model) return nullptr;
-    auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2};
+    auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2, params.flash_attn};
     if (!context) whisper_free(model);
     return context;
 } catch (...) { return nullptr; }
+
+extern "C" bool tilo_speech_flash_attention(void * context) noexcept {
+    const auto * ctx = static_cast<const SpeechContext *>(context);
+    return ctx && ctx->flash_attention;
+}
 
 extern "C" bool tilo_speech_threads(void * context, int threads) noexcept {
     auto * ctx = static_cast<SpeechContext *>(context);

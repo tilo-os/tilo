@@ -27,6 +27,30 @@ REVIEW_MODELS = dict(MODELS, **{
 })
 
 
+def has_lexical_text(text):
+    """Punctuation-only replies are visible but contain no recognized words."""
+    return any(character.isalnum() for character in text)
+
+
+def preparation_diagnostics(data, whisper=False):
+    prefix = b'SPEECH_PREPARATION ' if whisper else b'NATIVE_PREPARATION '
+    if len(data) > 4096 or not data.startswith(prefix):
+        raise RuntimeError('bounded preparation counters absent')
+    result = json.loads(data[len(prefix):])
+    expected = {'verify_ms', 'native_ms'}
+    if whisper:
+        expected.add('flash_attention')
+    if not isinstance(result, dict) or set(result) != expected:
+        raise RuntimeError('invalid preparation counters')
+    for name in ('verify_ms', 'native_ms'):
+        value = result[name]
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise RuntimeError('invalid preparation counters')
+    if whisper and type(result['flash_attention']) is not bool:
+        raise RuntimeError('invalid native attention observation')
+    return result
+
+
 def exact(pipe, count, deadline):
     output = bytearray()
     with selectors.DefaultSelector() as selector:
@@ -170,6 +194,8 @@ def main():
     parser.add_argument('--continuous-audio', action='store_true',
                         help='deliver public PCM every20ms while inference runs; native phase review only')
     parser.add_argument('--worker-cadence', action='store_true')
+    parser.add_argument('--worker-diagnostics', action='store_true')
+    parser.add_argument('--expect-attention', choices=('flash', 'standard'))
     parser.add_argument('--native-right-context', type=int, choices=(0, 1, 3), default=1)
     parser.add_argument('--first-draft-ms', type=int, choices=(500, 1000, 2000))
     parser.add_argument('--draft-interval-ms', type=int, choices=(250, 500, 1000), default=1000)
@@ -181,6 +207,10 @@ def main():
         parser.error('requires an unprivileged, owned hardware-free namespace')
     if args.continuous_audio and args.native_review_model is None:
         parser.error('continuous public PCM requires explicit native review')
+    if args.worker_diagnostics and args.native_review_model is not None:
+        parser.error('Whisper diagnostics exclude the native review backend')
+    if args.expect_attention and not args.worker_diagnostics:
+        parser.error('attention expectation requires actual worker diagnostics')
     if (args.worker_cadence or args.first_draft_ms is not None or args.draft_interval_ms != 1000 or args.native_right_context != 1) and (not args.continuous_audio or args.native_review_model is None):
         parser.error('alternate cadence/context requires explicit continuous native review')
     first_draft_seconds = args.first_draft_ms / 1000 if args.first_draft_ms is not None else args.first_draft_seconds
@@ -265,6 +295,8 @@ def main():
                 raise ValueError('unexpected isolated witness')
             worker_command = [str(args.worker), '--root', witness['root'],
                               '--catalog', witness['catalog'], '--keys', witness['keys']]
+            if args.worker_diagnostics:
+                worker_command.append('--diagnostics')
         else:
             worker_command = [str(args.worker), '--model', str(model_path)]
             if args.continuous_audio:
@@ -272,7 +304,7 @@ def main():
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         started = time.monotonic()
         worker = subprocess.Popen(worker_command, stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE if args.continuous_audio else subprocess.DEVNULL)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE if args.continuous_audio or args.worker_diagnostics else subprocess.DEVNULL)
         def sample_memory():
             while not finished.is_set():
                 try:
@@ -305,7 +337,7 @@ def main():
             first_draft_seconds, draft_interval_seconds = ((.5, .5) if policy == 'incremental' else (2, 1))
         cold_ms = (time.monotonic() - started) * 1000
         capture = time.monotonic()
-        sent, first_partial, revisions, drafts = 0, None, 0, []
+        sent, first_partial, first_lexical_partial, revisions, drafts = 0, None, None, 0, []
         previous = ''
         next_draft = capture + first_draft_seconds
         if args.continuous_audio:
@@ -346,6 +378,8 @@ def main():
             text = draft['text']
             if text and first_partial is None:
                 first_partial = (time.monotonic() - capture) * 1000
+            if first_lexical_partial is None and has_lexical_text(text):
+                first_lexical_partial = (time.monotonic() - capture) * 1000
             if previous and not text.startswith(previous):
                 revisions += 1
             drafts.append({'samples': sent // 2, 'wall_ms': (time.monotonic()-capture)*1000,
@@ -365,19 +399,15 @@ def main():
         final_ms = (time.monotonic() - final_started) * 1000
         if final.get('kind') != 'done' or final.get('sequence') != sequence:
             raise RuntimeError('production final failed')
-        if worker.wait(timeout=10) != 0 or first_partial is None:
-            raise RuntimeError('worker exit or visible partial missing')
+        if worker.wait(timeout=10) != 0 or first_partial is None or first_lexical_partial is None:
+            raise RuntimeError('worker exit or lexical partial missing')
         preparation = None
-        if args.continuous_audio:
+        if args.continuous_audio or args.worker_diagnostics:
             diagnostic = worker.stderr.read(4097)
             worker.stderr.close()
-            if len(diagnostic) > 4096 or not diagnostic.startswith(b'NATIVE_PREPARATION '):
-                raise RuntimeError('bounded native preparation counters absent')
-            preparation = json.loads(diagnostic.split(b' ', 1)[1])
-            if set(preparation) != {'verify_ms', 'native_ms'} or any(
-                    not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0
-                    for value in preparation.values()):
-                raise RuntimeError('invalid native preparation counters')
+            preparation = preparation_diagnostics(diagnostic, args.worker_diagnostics)
+            if args.expect_attention and preparation['flash_attention'] != (args.expect_attention == 'flash'):
+                raise RuntimeError('actual native attention strategy differs from expectation')
         finished.set()
         sampler.join(timeout=2)
         if memory_errors or not all(name in peak for name in ('VmPeak', 'VmSize', 'VmRSS', 'VmHWM', 'Threads')):
@@ -403,6 +433,7 @@ def main():
             'first_audio_frame_started_ms': source.first_started_ms if source is not None else None,
             'first_audio_frame_finished_ms': source.first_finished_ms if source is not None else None,
             'first_partial_from_source_start_ms': first_partial,
+            'first_lexical_partial_from_source_start_ms': first_lexical_partial,
             'non_prefix_partial_revisions': revisions, 'drafts': drafts,
             'finalization_ms': final_ms, 'final_text': final['text'],
             'cpu_user_seconds': usage_after.ru_utime-usage_before.ru_utime,
