@@ -28,9 +28,9 @@ def fingerprint(root: Path) -> str:
     return digest.hexdigest()
 
 
-def runner(root: Path, names: set[str], arch: str) -> str | None:
+def placement(root: Path, names: set[str], arch: str) -> dict:
     if arch != "x86_64" or names != {"collab-types"}:
-        return None
+        return {}
     try:
         receipt = json.loads((root / "tools/ci/qualified-native.json").read_text())
         proof = receipt["qualification"]
@@ -38,19 +38,18 @@ def runner(root: Path, names: set[str], arch: str) -> str | None:
                 or proof["tests_passed"] != 82 or proof["tests_skipped"] != 0
                 or not 0 < proof["cgroup_memory_peak_bytes"] < 3 * 1024**3
                 or any(proof[key] != 0 for key in ("memory_max_events", "oom_events", "oom_kill_events"))):
-            return None
+            return {}
         # Selection uses the merged tree; an older PR can still execute its
         # older workflow, whose empty certification would exceed this envelope.
         head = os.environ.get("HEAD_SHA")
         if not head:
-            return None
+            return {}
         workflow = subprocess.check_output(
             ["git", "show", f"{head}:.forgejo/workflows/check.yml"], cwd=root, stderr=subprocess.DEVNULL)
         if workflow != (root / ".forgejo/workflows/check.yml").read_bytes():
-            return None
-        if (receipt["schema"] == 1 and os.environ.get("TILO_CI_BUILDER") in receipt["builders"]
-                and receipt["input_sha256"] == fingerprint(root)):
-            return "runner-quality"
+            return {}
+        if receipt["schema"] == 1 and receipt["input_sha256"] == fingerprint(root):
+            return {"qualified_runner": "runner-quality", "qualified_builders": receipt["builders"]}
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError):
         pass
-    return None
+    return {}
