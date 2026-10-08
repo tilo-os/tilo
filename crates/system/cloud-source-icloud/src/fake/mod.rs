@@ -63,6 +63,9 @@ pub enum FakeFault {
     ServerError,
     /// The next content download declares its full length but sends half.
     TruncatedBody,
+    /// The next content download sends half its body, declares no length
+    /// and closes the connection.
+    ClosedEarly,
     /// The next setup/drivews/docws request is answered 421, as if the web
     /// session had lapsed; it works again afterwards.
     ExpiredSession,
@@ -382,7 +385,7 @@ fn take_fault(state: &mut State) -> Option<Reply> {
     let position = state
         .faults
         .iter()
-        .position(|fault| *fault != FakeFault::TruncatedBody)?;
+        .position(|fault| !matches!(fault, FakeFault::TruncatedBody | FakeFault::ClosedEarly))?;
     match state.faults.remove(position)? {
         FakeFault::RateLimited => Some(Reply::status(429).header("Retry-After", "1")),
         FakeFault::ServerError => Some(Reply::status(503)),
@@ -390,7 +393,7 @@ fn take_fault(state: &mut State) -> Option<Reply> {
             421,
             &serde_json::json!({"error": "Invalid global session"}),
         )),
-        FakeFault::TruncatedBody => None,
+        FakeFault::TruncatedBody | FakeFault::ClosedEarly => None,
     }
 }
 
