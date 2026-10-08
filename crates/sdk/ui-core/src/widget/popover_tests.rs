@@ -514,6 +514,74 @@ fn a_prompt_popover_submits_its_one_field_with_enter() {
 }
 
 #[test]
+fn labeled_content_popover_keeps_its_real_semantic_scope_through_title_and_open_changes() {
+    use crate::headless::Framed;
+    use crate::widget::{Column, Text};
+
+    let title = crate::LocalState::new("First heading".to_owned());
+    let content = Column::new().push(Box::new(Text::from_state(&title, Clone::clone)));
+    let popover = Popover::with_content(content)
+        .with_label("Content popup")
+        .anchored(Rect::new(100.0, 40.0, 180.0, 68.0))
+        .open(true);
+    let mut framed = Framed::new(crate::State::new(), popover, (800, 600), Theme::dark());
+    let _ = Framed::harness_mut(&mut framed).poll_frame();
+    let nodes = Framed::harness_mut(&mut framed).a11y_nodes();
+    let (scope_id, scope) = nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Content popup"))
+        .expect("the real content popover publishes its named scope");
+    assert_eq!(scope.role(), crate::accesskit::Role::Group);
+    assert!(
+        nodes.iter().any(
+            |(id, node)| scope.children().contains(id) && node.label() == Some("First heading")
+        )
+    );
+    let scope_id = *scope_id;
+    title.set("Second heading".to_owned());
+    Framed::harness_mut(&mut framed).relayout();
+    let nodes = Framed::harness_mut(&mut framed).a11y_nodes();
+    let (_, scope) = nodes
+        .iter()
+        .find(|(id, _)| *id == scope_id)
+        .expect("the popup scope is stable");
+    assert_eq!(scope.label(), Some("Content popup"));
+    assert!(
+        nodes
+            .iter()
+            .any(|(id, node)| scope.children().contains(id)
+                && node.label() == Some("Second heading"))
+    );
+    framed.set_open(false);
+    let _ = Framed::harness_mut(&mut framed).poll_frame();
+    let nodes = Framed::harness_mut(&mut framed).a11y_nodes();
+    let (_, closed) = nodes
+        .iter()
+        .find(|(id, _)| *id == scope_id)
+        .expect("the closed root retains its hidden semantic identity");
+    assert!(closed.is_hidden());
+    assert!(closed.children().is_empty(), "closed content is withdrawn");
+    assert!(
+        nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Second heading"))
+    );
+    framed.set_open(true);
+    let _ = Framed::harness_mut(&mut framed).poll_frame();
+    assert!(
+        Framed::harness_mut(&mut framed)
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label() == Some("Content popup") && !node.is_hidden())
+    );
+    let menu = opened()
+        .accessibility()
+        .expect("option menu remains semantic");
+    assert_eq!(menu.role, crate::a11y::Role::Menu);
+    assert_eq!(menu.children.len(), 5);
+}
+
+#[test]
 fn a_hosted_popover_lays_its_content_out_in_the_window_tree() {
     use crate::headless::Framed;
     use crate::widget::{Column, TextInput};

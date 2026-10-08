@@ -1289,7 +1289,18 @@ impl<C: Widget + 'static> Widget for Popover<C> {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let options = self.options.as_ref()?;
+        let Some(options) = self.options.as_ref() else {
+            // A labeled content panel needs its own stable semantic scope;
+            // a changing heading inside it is not the popup's identity.
+            return self.label.as_ref().map(|label| {
+                AccessNode::new(Role::Group)
+                    .with_name(label.clone())
+                    .with_state(AccessState {
+                        hidden: !self.open,
+                        ..Default::default()
+                    })
+            });
+        };
         let n = options.items.len();
         let children = options
             .items
