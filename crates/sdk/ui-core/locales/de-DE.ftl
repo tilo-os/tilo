@@ -495,3 +495,7 @@ display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
 device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.
 device-display-request-pending = Eine Anfrage zur Bildschirmposition steht bereits aus.
 device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
+
+terminal-editor-busy = Der Editor bestätigt noch die vorherige Eingabe. Prüfe das Feld, bevor du weiteren Text eingibst.
+terminal-editor-rejected = Das Feld wurde geändert, bevor diese Eingabe eingefügt werden konnte. Prüfe das Feld, bevor du es erneut versuchst.
+terminal-editor-unconfirmed = Der Editor hat diese Eingabe nicht bestätigt. Prüfe das Feld, bevor du es erneut versuchst.

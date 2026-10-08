@@ -16,6 +16,7 @@ name = "tilo-ush"
 path = "src/main.rs"
 
 [dependencies]
+getrandom.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }

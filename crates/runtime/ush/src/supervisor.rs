@@ -60,6 +60,8 @@ pub struct SessionOptions {
     /// The machine's root. `/` outside tests.
     pub host_root: PathBuf,
     pub verbose: bool,
+    /// Connected participant-private editing endpoint from this served session.
+    pub editor: Option<Arc<runtime_portal::editor::Socket>>,
 }
 
 impl Default for SessionOptions {
@@ -70,6 +72,7 @@ impl Default for SessionOptions {
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
             host_root: PathBuf::from("/"),
             verbose: false,
+            editor: None,
         }
     }
 }
@@ -314,6 +317,7 @@ impl Session {
             term: self.opts.term.clone(),
             env: Vec::new(),
             resolver: None,
+            editor: None,
         })
     }
 
@@ -407,6 +411,12 @@ impl Session {
         plan.resolver = Some(egress.resolv_conf().to_owned());
         plan.prepare()?;
         seed_guest_home(&plan.guest_home)?;
+        let editor = if self.opts.editor.is_some() && self.opts.command.is_empty() {
+            crate::editor::Prepared::prepare(&plan).unwrap_or(None)
+        } else {
+            None
+        };
+        plan.editor = editor.as_ref().map(|prepared| prepared.guest.clone());
 
         if self.opts.verbose {
             let argv = crate::guest::build_argv(&plan, None);
@@ -430,6 +440,12 @@ impl Session {
         command.extend(["guest-init".into(), "--".into()]);
         if user_command.is_empty() {
             command.push(shell.to_string_lossy().into_owned());
+            if plan.editor.is_some() {
+                command.extend([
+                    "--rcfile".into(),
+                    format!("{}/rc", crate::editor::GUEST_DIR),
+                ]);
+            }
             command.push("-i".into());
         } else {
             command.extend(user_command);
@@ -437,6 +453,22 @@ impl Session {
         plan.command = command;
 
         let mut child = crate::guest::spawn(&plan, Some(&netns))?;
+        plan.editor = None; // the parent must not retain the inherited producer FD
+        let _editor_worker = match (editor, self.opts.editor.as_ref()) {
+            (Some(editor), Some(app)) => {
+                if let Ok(worker) = editor.start(Arc::clone(app), child.id()) {
+                    Some(worker)
+                } else {
+                    app.retire();
+                    None
+                }
+            }
+            (_, Some(app)) => {
+                app.retire();
+                None
+            }
+            _ => None,
+        };
         let status = child.wait()?;
         let code = status.code().unwrap_or(1);
         if code != 0 && !broker.guest_connected() {
@@ -512,6 +544,9 @@ pub enum ServeRequest {
         /// as an earlier answer named it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_session: Option<String>,
+        /// Explicit opt-in; existing clients continue to receive exactly one FD.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        editor_protocol: Option<u8>,
     },
     /// The environments there are, for Terminal's picker and its
     /// environments panel.
@@ -594,6 +629,9 @@ pub enum ServeResponse {
         /// re-attaches to it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_session: Option<String>,
+        /// V1 bundles PTY first, private editor second, under this session's lifetime.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        editor_protocol: Option<u8>,
     },
     Denied {
         reason: String,
@@ -835,14 +873,32 @@ fn serve_request(
             return Ok(Served::Refused);
         }
     };
+    serve_guest_session(
+        stream,
+        writer,
+        store,
+        host_root,
+        req,
+        environment.as_deref(),
+    )
+}
+
+fn serve_guest_session(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    host_root: &Path,
+    req: ServeRequest,
+    environment: Option<&str>,
+) -> anyhow::Result<Served> {
     let record = environment
-        .clone()
-        .unwrap_or_else(|| tilo_environment::DEFAULT_RECORD.to_owned());
+        .unwrap_or(tilo_environment::DEFAULT_RECORD)
+        .to_owned();
 
     // The record must resolve before a terminal is handed out: a guest that
     // cannot be built would print why on its pty and exit, leaving the app a
     // dead pane and no chance to offer anything else.
-    if refused_unbuildable(writer, store, environment.as_deref(), &record)? {
+    if refused_unbuildable(writer, store, environment, &record)? {
         return Ok(Served::Refused);
     }
 
@@ -851,12 +907,18 @@ fn serve_request(
         rows,
         term,
         command,
+        editor_protocol,
         ..
     } = req
     else {
         return Ok(Served::Done);
     };
     let (master, slave) = open_pty(cols, rows)?;
+    let editor = if editor_protocol == Some(runtime_portal::editor::VERSION) && command.is_empty() {
+        Some(runtime_portal::editor::Socket::pair()?)
+    } else {
+        None
+    };
 
     let id = uuid::Uuid::new_v4().simple().to_string();
     AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
@@ -867,10 +929,11 @@ fn serve_request(
     ));
     let launch = Launch {
         store,
-        environment: environment.as_deref(),
+        environment,
         term: term.as_deref().unwrap_or("xterm-256color"),
         host_root,
         command: &command,
+        editor: editor.as_ref().map(|(_, supervisor)| supervisor),
     };
 
     // The guest gets the slave as its stdio; the app gets the master. A *child
@@ -881,15 +944,25 @@ fn serve_request(
     // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
-    reply(
-        writer,
-        &ServeResponse::Session {
-            session: id.clone(),
-            environment: record.clone(),
-            relay_session: None,
-        },
-        Some(master.as_raw_fd()),
-    )?;
+    let response = ServeResponse::Session {
+        session: id.clone(),
+        environment: record.clone(),
+        relay_session: None,
+        editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
+    };
+    if let Some((app, _)) = &editor {
+        use std::os::fd::AsFd;
+        let mut bytes = serde_json::to_vec(&response)?;
+        bytes.push(b'\n');
+        runtime_portal::fd_transport::send_with_fds(
+            writer.as_raw_fd(),
+            &bytes,
+            &[master.as_raw_fd(), app.as_fd().as_raw_fd()],
+        )?;
+    } else {
+        reply(writer, &response, Some(master.as_raw_fd()))?;
+    }
+    drop(editor);
     // Hold the master open until the app has it: closing before the descriptor
     // is received would hand over a dead terminal.
     drop(master);
@@ -1120,6 +1193,7 @@ fn serve_host(
             session: id.clone(),
             environment: "host".into(),
             relay_session: None,
+            editor_protocol: None,
         },
         Some(master.as_raw_fd()),
     )?;
@@ -1225,6 +1299,7 @@ fn serve_relay(
             session: id.clone(),
             environment: key.clone(),
             relay_session: Some(session_id),
+            editor_protocol: None,
         },
         Some(master.as_raw_fd()),
     )?;
@@ -1451,6 +1526,7 @@ struct Launch<'a> {
     term: &'a str,
     host_root: &'a Path,
     command: &'a [String],
+    editor: Option<&'a runtime_portal::editor::Socket>,
 }
 
 /// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
@@ -1466,6 +1542,21 @@ fn spawn_attached(
         cmd.arg("--environment").arg(record);
     }
     cmd.arg("--host-root").arg(launch.host_root);
+    if let Some(editor) = launch.editor {
+        use std::os::fd::AsFd;
+        use std::os::unix::process::CommandExt;
+        let fd = editor.as_fd().as_raw_fd();
+        cmd.arg("--editor-fd").arg(fd.to_string());
+        // SAFETY: only this owned endpoint is inherited by the trusted runtime.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     if !launch.command.is_empty() {
         cmd.arg("--").args(launch.command);
     }
@@ -1613,6 +1704,7 @@ mod tests {
             command: Vec::new(),
             requested_by: crate::host::RequestedBy::Person,
             relay_session: None,
+            editor_protocol: None,
         }
     }
 

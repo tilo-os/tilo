@@ -28,6 +28,10 @@ fn executing_peer_child() {
     let raw: i32 = raw.parse().expect("owned inherited socket");
     // SAFETY: the parent transferred this one owned socket to this child.
     let mut socket = unsafe { UnixStream::from_raw_fd(raw) };
+    if std::env::var_os("TILO_EXECUTING_PEER_PACKET").is_some() {
+        socket.write_all(b"different-task").expect("child packet");
+        return;
+    }
     if let Ok(raw) = std::env::var("TILO_EXECUTING_PEER_FORGED_PROOF") {
         let raw: i32 = raw.parse().expect("foreign socket descriptor");
         // SAFETY: the fixture transferred a separate parent-created proof.
@@ -39,6 +43,45 @@ fn executing_peer_child() {
         return;
     }
     complete(&mut socket).expect("real executing child startup");
+}
+
+#[test]
+fn producer_packets_require_the_original_task_and_no_extra_rights() {
+    let (host, mut app) = UnixStream::pair().expect("private producer channel");
+    arm(&host).expect("credential delivery");
+    host.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let (_owned, proof) = UnixStream::pair().expect("current producer proof");
+    let nonce = [83; 32];
+    send_answer(&app, &nonce, &proof).unwrap();
+    let peer = receive(&host, &nonce, unsafe { libc::geteuid() }).unwrap();
+    app.write_all(b"original").unwrap();
+    let mut bytes = [0; 64];
+    assert_eq!(peer.receive_packet(&host, &mut bytes).unwrap(), 8);
+    assert_eq!(&bytes[..8], b"original");
+
+    // Even the original process may not smuggle a new capability with its data.
+    send_answer(&app, &nonce, &proof).unwrap();
+    assert!(peer.receive_packet(&host, &mut bytes).is_err());
+
+    // A real exec child inherits the same channel but cannot impersonate its owner.
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", TEST, "--nocapture"])
+        .env(CHILD, app.as_raw_fd().to_string())
+        .env("TILO_EXECUTING_PEER_PACKET", "1");
+    let fd = app.as_raw_fd();
+    // SAFETY: only the already owned descriptor's child-side CLOEXEC is changed.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut other = command.spawn().unwrap();
+    assert!(peer.receive_packet(&host, &mut bytes).is_err());
+    assert!(other.wait().unwrap().success());
 }
 fn child(socket: &UnixStream, proof: Option<&UnixStream>) -> std::process::Child {
     let mut command = std::process::Command::new(std::env::current_exe().expect("test executable"));

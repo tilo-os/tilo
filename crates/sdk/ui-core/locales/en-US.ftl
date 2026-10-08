@@ -598,3 +598,7 @@ music-recommendations-enabled = Enabled
 music-recommendations-disabled = Disabled
 music-recommendations-enable = Enable input
 music-recommendations-disable = Disable input
+
+terminal-editor-busy = The editor is still confirming the previous input. Check the field before entering more text.
+terminal-editor-rejected = The field changed before this input could be inserted. Check the field before trying again.
+terminal-editor-unconfirmed = The editor did not confirm this input. Check the field before trying again.

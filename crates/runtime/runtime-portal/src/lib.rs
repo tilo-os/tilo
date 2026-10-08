@@ -395,6 +395,8 @@ mod tests {
 #[cfg(unix)]
 pub mod fd_transport;
 
+pub mod editor;
+
 #[cfg(all(unix, feature = "rpc"))]
 mod shared;
 
