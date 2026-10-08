@@ -76,7 +76,7 @@ pub(super) fn append(path: &Path, changes: &[LeafChange], origin: Option<&Change
 
 /// Rewrite the log with the newest lines that fit in half its capacity.
 fn compact(path: &Path) {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Some(text) = read_text(path) else {
         return;
     };
     let budget = usize::try_from(CAPACITY.div_euclid(2)).unwrap_or(usize::MAX);
@@ -101,9 +101,15 @@ fn compact(path: &Path) {
 /// (a crash mid-append) are skipped.
 #[must_use]
 pub(super) fn read(path: &Path) -> Vec<Value> {
-    std::fs::read_to_string(path)
+    read_text(path)
         .unwrap_or_default()
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
+}
+
+/// The log's text, or `None` when it cannot be read.
+fn read_text(path: &Path) -> Option<String> {
+    let (dir, name) = tilo_files::file_at(path).ok()?;
+    String::from_utf8(tilo_files::blocking::read(&dir, &name).ok()?).ok()
 }

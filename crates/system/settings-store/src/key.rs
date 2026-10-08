@@ -333,7 +333,8 @@ mod tests {
     #[test]
     fn update_is_atomic_under_concurrency() {
         let dir = tempfile::tempdir().unwrap();
-        let path = Arc::new(dir.path().join("settings.json"));
+        // No directory yet: the first flips race to create it, under the lock.
+        let path = Arc::new(dir.path().join("fresh/tilo/settings.json"));
         let threads: Vec<_> = (0..2)
             .map(|_| {
                 let path = Arc::clone(&path);
