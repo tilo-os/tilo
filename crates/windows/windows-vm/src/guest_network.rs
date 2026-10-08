@@ -87,7 +87,7 @@ pub struct GuestNetworkProxy {
 impl GuestNetworkProxy {
     /// Start on the dedicated host-only address. Failure is a denied grant,
     /// never a reason to attach the appliance to a NAT network.
-    pub fn start(hosts: Vec<String>) -> Result<Self, GuestNetworkError> {
+    pub fn start(hosts: &[String]) -> Result<Self, GuestNetworkError> {
         Self::start_at(
             SocketAddr::new(IpAddr::V4(HOST_ONLY_GATEWAY), 0),
             hosts,
@@ -98,12 +98,12 @@ impl GuestNetworkProxy {
     /// Injectable listener address for tests and service integration checks.
     pub fn start_at(
         address: SocketAddr,
-        hosts: Vec<String>,
+        hosts: &[String],
         require_guest_peer: bool,
     ) -> Result<Self, GuestNetworkError> {
         Self::start_limited(
             address,
-            &hosts,
+            hosts,
             require_guest_peer,
             launcher::netgate::MAX_CONNECTIONS,
         )
@@ -418,13 +418,13 @@ mod tests {
         // Phase `rejects_empty_or_unsafe_canonical_nethosts`.
         {
             assert!(matches!(
-                GuestNetworkProxy::start_at("127.0.0.1:0".parse().unwrap(), Vec::new(), false),
+                GuestNetworkProxy::start_at("127.0.0.1:0".parse().unwrap(), &[], false),
                 Err(GuestNetworkError::EmptyAllowlist)
             ));
             assert!(matches!(
                 GuestNetworkProxy::start_at(
                     "127.0.0.1:0".parse().unwrap(),
-                    vec!["bad host".into()],
+                    &["bad host".into()],
                     false
                 ),
                 Err(GuestNetworkError::InvalidHost(_))
@@ -439,7 +439,7 @@ mod tests {
                     matches!(
                         GuestNetworkProxy::start_at(
                             "127.0.0.1:0".parse().unwrap(),
-                            vec![address.into()],
+                            &[address.into()],
                             false
                         ),
                         Err(GuestNetworkError::InvalidHost(ref host)) if host == address
@@ -457,7 +457,7 @@ mod tests {
         {
             let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),
-                vec!["example.test".into()],
+                &["example.test".into()],
                 false,
             )
             .unwrap();
@@ -519,7 +519,7 @@ mod tests {
             let port = service.local_addr().unwrap().port();
             let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),
-                vec!["localhost".into()],
+                &["localhost".into()],
                 false,
             )
             .unwrap();
@@ -558,7 +558,7 @@ mod tests {
         {
             let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),
-                vec!["example.test".into()],
+                &["example.test".into()],
                 false,
             )
             .unwrap();
