@@ -38,7 +38,7 @@
     }
   },
   "qualification": {
-    "status": "REVISION_TWO_SOURCE165_AND_NATIVE62_PLUS_SHORTCUT_PASS_REPRO_MOUNTED_SIGNED_PENDING",
+    "status": "REVISION_TWO_SOURCE165_NATIVE62_SHORTCUT1_MOUNTED48_PASS_REPRO_SIGNED_PENDING",
     "added_controller_regressions": 30,
     "existing_controller_tests_unchanged": 135,
     "upstream_baseline": {
@@ -224,5 +224,14 @@
       "patch_sha256": "ad3c2e1cf80dc8ccdd031a9cd2c4780c49d312554f25b20a76e2699c0b209167",
       "option": "Supported pinned LLD ThinLTO8 backend/front-end threads; retain ThinLTO, PGO and all optimization."
     }
-  ]
+  ],
+  "packaging": {
+    "script": "scripts/browser/cef-source/package_candidate.py",
+    "script_sha256": "4b514e252a855ba9d5961bb7a7af8896e63194f0dc45a72625331245411f128e",
+    "source_date_epoch": 1788381918,
+    "date_metadata": "Pinned CEF date_util date/year frozen to Chromium commit epoch",
+    "canonical_archive": "sorted entries, uid/gid0, empty owner names, epoch timestamps, no inode-dependent hardlinks",
+    "input_qualification": "refuse wrong source/patch/profile, missing closure/header/license/architecture or existing output",
+    "output_qualification": "UNQUALIFIED_DO_NOT_PUBLISH_OR_CONSUME"
+  }
 }
