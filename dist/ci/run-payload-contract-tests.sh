@@ -35,6 +35,7 @@ fi
 "$repo_root/dist/session/tests/host-session-lifecycle.sh"
 python3 "$repo_root/dist/session/tests/flight-recorder.py"
 python3 "$repo_root/dist/session/tests/session-report.py"
+python3 "$repo_root/dist/session/tests/vm-e2e-exit-status.py"
 "$repo_root/dist/session/tests/private-dbus-handoff.sh"
 "$repo_root/dist/session/tests/private-user-manager-handoff.sh"
 python3 "$repo_root/dist/rpm/test-rpmlint-config.py"
