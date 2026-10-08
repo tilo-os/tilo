@@ -3027,7 +3027,7 @@ pub struct CapnpBrokerState {
     /// Last workspace authority revision projected into pushed catalogues.
     /// A capability-only change does not mutate any app surface, so it has
     /// its own revision fence instead of pretending the app republished.
-    action_catalogue_authority_epoch: Mutex<Option<u64>>,
+    action_catalogue_authority_epoch: Mutex<Option<(u64, u64)>>,
     /// Last launchable projection per app, workspace and record, kept across
     /// restarts. Catalogue state, never an executable capability by itself.
     launchable: launchable::LaunchableCatalogue,
@@ -4941,7 +4941,11 @@ impl CapnpBrokerState {
         let Some(membership) = &self.membership else {
             return Ok(());
         };
-        let epoch = membership.snapshot()?.room_epoch();
+        let tree = membership.snapshot()?;
+        // Peer merges and local governance use separate revision clocks.
+        // A local exact permission grant must wake retained empty catalogues
+        // even when no peer change has landed in this session.
+        let epoch = (tree.room_epoch(), tree.external_revision);
         let changed = {
             let mut previous = self
                 .action_catalogue_authority_epoch
@@ -16729,6 +16733,87 @@ pub mod tests {
         assert!(
             !owner_rx.has_changed().unwrap() && !other_rx.has_changed().unwrap(),
             "an unchanged authority epoch must not keep republishing catalogues"
+        );
+    }
+
+    #[test]
+    fn local_authority_revision_republishes_unchanged_surfaces_after_exact_agent_grant() {
+        let CountingCatalogueFixture {
+            state,
+            tree,
+            cluster,
+            ..
+        } = counting_catalogue_state("owner");
+        state
+            .surfaces
+            .lock()
+            .unwrap()
+            .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
+        let (tx, mut rx) = catalogue_test_channel();
+        let (foreign_tx, mut foreign_rx) = catalogue_test_channel();
+        state.action_catalogue_subscribers.lock().unwrap().extend([
+            (1, (cluster.clone(), BrokerActor::agent("scribe"), tx)),
+            (2, (cluster, BrokerActor::agent("other"), foreign_tx)),
+        ]);
+        state.publish_changed_action_catalogue_authority().unwrap();
+        assert!(
+            !current_catalogue(&mut rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+        assert!(
+            !current_catalogue(&mut foreign_rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+        {
+            let mut tree = tree.lock().unwrap();
+            tree.workspaces[0].grant_capability(CapOverride::grant(
+                Subject::agent("scribe"),
+                Scope::Action {
+                    app: "so.tilo.files".into(),
+                    action: "open".into(),
+                },
+                Verb::Write,
+            ));
+            tree.external_revision = tree.external_revision.wrapping_add(1);
+            assert_eq!(
+                tree.room_epoch(),
+                0,
+                "local revision alone must invalidate the watch"
+            );
+        }
+        state.publish_changed_action_catalogue_authority().unwrap();
+        assert!(
+            rx.has_changed().unwrap(),
+            "local policy grant must wake the retained empty catalogue"
+        );
+        assert!(
+            current_catalogue(&mut rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+        assert!(
+            !current_catalogue(&mut foreign_rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+        state.publish_changed_action_catalogue_authority().unwrap();
+        assert!(
+            !rx.has_changed().unwrap(),
+            "unchanged authority must not republish"
+        );
+        {
+            let mut tree = tree.lock().unwrap();
+            tree.workspaces[0].revoke_matching(|cap| cap.subject == Subject::agent("scribe"));
+            tree.external_revision = tree.external_revision.wrapping_add(1);
+        }
+        state.publish_changed_action_catalogue_authority().unwrap();
+        assert!(
+            !current_catalogue(&mut rx)
+                .unwrap()
+                .contains("files.entry:owner"),
+            "local revocation withdraws the exact action"
         );
     }
 

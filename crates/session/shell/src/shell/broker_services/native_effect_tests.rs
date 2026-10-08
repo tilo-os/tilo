@@ -189,6 +189,137 @@ fn certified_owner_queries_and_invokes_native_workspace_governance() {
 }
 
 #[test]
+fn certified_native_profile_assignment_advances_local_policy_revision() {
+    use collab_types::caps::{CapDecision, ResourceRef, Verb};
+    use tilo_action_broker::services::WorkspaceAuthority;
+
+    let fixture = fixture();
+    let actions = fixture.broker.app_action_broker().unwrap();
+    let room = fixture.room.to_string();
+    let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        fixture.certificate.user_public_key,
+    );
+    let session = ActionSessionSource::new(actions.clone())
+        .open(&room, Some(&person))
+        .unwrap();
+    let authority =
+        super::NativeWorkspaceAuthority(native_workspace_owner::test_tree_of(&fixture.owner));
+    let before = authority.snapshot().unwrap();
+    let decision = |tree: &tilo_desktop_model::DesktopTree, agent: &str, action: &str| {
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .unwrap();
+        workspace.decide_at(
+            &workspace.actor_for_agent(agent),
+            &ResourceRef::Action {
+                app: "so.tilo.chat".into(),
+                action: action.into(),
+            },
+            Verb::Read,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+    };
+    assert_eq!(
+        decision(&before, "tide", "open-agent-conversation"),
+        CapDecision::DeniedByRole
+    );
+    invoke_certified_profile_action(
+        &session,
+        &actions,
+        &room,
+        "profile.save",
+        &serde_json::json!({
+            "name": "Exact Agent view", "rules": [{
+                "scope": {"Action": {"app": "so.tilo.chat", "action": "open-agent-conversation"}},
+                "effect": "Grant", "verb": "Write"
+            }]
+        }),
+    );
+    invoke_certified_profile_action(
+        &session,
+        &actions,
+        &room,
+        "profile.assign",
+        &serde_json::json!({
+            "profile": "Exact Agent view", "subject_kind": "agent", "subject": "tide"
+        }),
+    );
+    let after = authority.snapshot().unwrap();
+    assert_eq!(
+        decision(&after, "tide", "open-agent-conversation"),
+        CapDecision::Allow
+    );
+    assert_eq!(
+        decision(&after, "other", "open-agent-conversation"),
+        CapDecision::DeniedByRole
+    );
+    assert_eq!(
+        decision(&after, "tide", "message"),
+        CapDecision::DeniedByRole
+    );
+    assert_eq!(
+        after.room_epoch(),
+        before.room_epoch(),
+        "local governance is not a peer merge"
+    );
+    assert!(
+        after.external_revision > before.external_revision,
+        "actual governance advances its local revision"
+    );
+    drop(authority);
+    drop(session);
+    drop(actions);
+    drop(fixture);
+}
+
+fn invoke_certified_profile_action(
+    session: &crate::shell::certified_action_session::DesktopActionSession,
+    actions: &collab_broker::AppActionBroker,
+    room: &str,
+    action: &str,
+    arguments: &serde_json::Value,
+) {
+    use tilo_actions::remote::{
+        CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+    let provider = tilo_actions::remote::workspace_provider(room);
+    let page = ready_remote(session.query(CatalogueQuery {
+        provider: Some(provider.clone()),
+        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+        ..Default::default()
+    }))
+    .unwrap();
+    let descriptor = page
+        .rows
+        .iter()
+        .find_map(|row| {
+            row.action.as_ref().filter(|descriptor| {
+                row.provider == provider && descriptor.address.action == action
+            })
+        })
+        .unwrap();
+    let (job, _) = ready_remote(session.invoke_job(InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider,
+            address: descriptor.address.clone(),
+        },
+        argument: InvokeArgument::Json(arguments.as_object().unwrap().clone()),
+        confirmation: Some(Confirmation::Confirmed),
+        revision: Some(page.revision),
+        context: None,
+        on_behalf_of: None,
+    }))
+    .unwrap();
+    wait_for_invocation(actions, job);
+}
+
+#[test]
 fn native_member_terminal_audit_uses_installed_governor_and_original_retry_receipt() {
     use tilo_peer_state::owner_commit::{
         CommitOperation, OwnerCommitRequest, OwnerCommitService as _,
