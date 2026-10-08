@@ -2888,6 +2888,10 @@ impl Backend for DrmBackend {
         self.inner.reload_input_settings();
     }
 
+    fn reload_display_settings(&mut self) {
+        self.inner.dispatch.reload_display_settings();
+    }
+
     fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
         self.inner.set_pointer_image(image);
     }
