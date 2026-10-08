@@ -977,3 +977,93 @@ fn a_form_page_titles_in_large_title_or_not_at_all() {
         "{names:?}"
     );
 }
+
+#[test]
+fn field_first_line_alignment_is_coherent_before_a_separate_label_callback() {
+    fn visible_label(widget: &dyn Widget) -> Rect {
+        if widget.name() == "Text" {
+            return widget.get_rect();
+        }
+        visible_label(widget.children()[0])
+    }
+    for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+        let mut field = Field::new("Name", TextInput::local());
+        for (width, scale, placement) in [
+            (700.0, 1.0, LabelPlacement::Beside),
+            (220.0, 2.0, LabelPlacement::Above),
+            (700.0, 2.0, LabelPlacement::Beside),
+            (220.0, 1.0, LabelPlacement::Above),
+            (700.0, 1.0, LabelPlacement::Beside),
+        ] {
+            field.label_placement = Some(placement);
+            let theme = theme.clone().with_text_scale(scale);
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let node = field.build_layout(&mut tree, &theme, &mut nodes);
+            let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+            let mut text = crate::font_catalog::fixture_renderer();
+            let available = Size {
+                width: AvailableSpace::Definite(width),
+                height: AvailableSpace::Definite(1000.0),
+            };
+            // SAFETY: the exclusively owned field and exact live node map
+            // remain stable throughout canonical measure/adjust callbacks.
+            unsafe {
+                bindings.rebuild(&field, &tree, node, &nodes);
+                for adjust_field in [true, false] {
+                    tree.compute_layout_with_measure(
+                        node,
+                        available,
+                        |known, available, node, _, _| {
+                            crate::bound_dispatch::layout_bound_node(
+                                &bindings,
+                                &nodes,
+                                node,
+                                |widget| widget.measure(known, available, &mut text),
+                            )
+                            .unwrap_or(Size::ZERO)
+                        },
+                    )
+                    .unwrap();
+                    if adjust_field {
+                        crate::bound_dispatch::layout_bound_node(
+                            &bindings,
+                            &nodes,
+                            node,
+                            |widget| widget.adjust_layout_with_measure(&mut tree, node, &mut text),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            // Observe actual layout geometry after the field changes its
+            // arrangement, before a separately ordered label callback runs.
+            field.apply_layout(&tree, node, Point::ZERO);
+            let label = visible_label(field.children()[0]);
+            let control = field.children()[1].children()[0].get_rect();
+            if placement == LabelPlacement::Beside {
+                assert!(
+                    (label.center().y - control.center().y).abs() < 1.0,
+                    "the field's first-line alignment must already be current: label={label:?} control={control:?} scale={scale}"
+                );
+            } else {
+                assert!(
+                    label.y1 <= control.y0,
+                    "stacked label must precede its control"
+                );
+            }
+            // The normal solver still runs every canonical child callback.
+            unsafe {
+                super::super::compute_widget_layout(
+                    &mut tree, node, available, &nodes, &bindings, &mut text,
+                )
+                .unwrap();
+            }
+            field.apply_layout(&tree, node, Point::ZERO);
+            let settled_label = visible_label(field.children()[0]);
+            let settled_control = field.children()[1].children()[0].get_rect();
+            assert_eq!(label, settled_label);
+            assert_eq!(control, settled_control);
+        }
+    }
+}

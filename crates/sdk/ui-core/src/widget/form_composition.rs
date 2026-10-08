@@ -945,6 +945,17 @@ impl Widget for Field {
             {
                 changed |= (label.top_inset - top).abs() > f32::EPSILON;
                 label.top_inset = top;
+                // Keep the owned label node coherent with this field's newly
+                // computed inset in the same admitted layout callback. The
+                // label's normal callback still runs and observes this style.
+                if let Some(&label_node) = self.parts.nodes.first()
+                    && let Ok(current) = tree.style(label_node)
+                    && current.padding.top != length(top)
+                {
+                    let mut style = current.clone();
+                    style.padding.top = length(top);
+                    changed |= tree.set_style(label_node, style).is_ok();
+                }
             }
         }
         if let Some(effective) = self.effective.as_mut() {
