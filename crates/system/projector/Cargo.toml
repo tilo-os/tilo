@@ -11,6 +11,7 @@ bounded-command = { path = "../bounded-command" }
 tilo-xdg-paths = { path = "../xdg-paths" }
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 fcast-sender-sdk.workspace = true
 mdns-sd.workspace = true
 getrandom.workspace = true
