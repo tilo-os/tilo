@@ -118,6 +118,7 @@ fn physical_observer_matches_real_note_dispatch_to_the_drawn_body_without_text_l
         assert_eq!(retry["state"], frame["state"]);
         assert_eq!(retry["observer_session"], frame["observer_session"]);
         assert!(!retry.to_string().contains("é"));
+        assert!(!retry.to_string().contains("Order"));
     }
     assert!(
         trace

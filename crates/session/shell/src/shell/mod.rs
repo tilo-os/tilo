@@ -938,6 +938,20 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
     }
 }
 
+fn mount_private_feedback(
+    apps: &mut in_process::InProcessApps,
+    room: &str,
+    tab: u64,
+) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
+    apps.mount(
+        tilo_desktop::feedback::definition(),
+        room,
+        tab,
+        ui::record::RecordId::for_tab(tab),
+        |_| {},
+    )
+}
+
 /// The tab as the framework app's own component, when the host mounts that
 /// app in its own process: the terminal on its tab's record, opening
 /// sessions through the session's process supervisor; Files on the room's
@@ -956,6 +970,9 @@ pub fn mount_in_process(
     let room = request.room.to_string();
     let tab = request.tab.id;
     let mounted = match kind {
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Feedback") => {
+            mount_private_feedback(&mut apps.borrow_mut(), &room, tab)
+        }
         ShellKind::Terminal => apps.borrow_mut().mount(
             terminal::definition(),
             &room,

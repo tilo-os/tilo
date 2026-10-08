@@ -2036,6 +2036,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn launching_on_a_runtime_link_requests_review_without_install() {
+        let runtime = "tilo-runtime/2026.10.4-chromium";
+        let arguments = [format!("tilo-store:runtime/{runtime}")];
+        let invocations = StoreShell::launch(&LaunchInput::new(&arguments, None), false);
+        let expected = Invoke::<Store>::effect(&StoreEffect::ShowRuntimeDetails {
+            runtime: runtime.to_owned(),
+            registry: None,
+        });
+
+        assert_eq!(invocations.len(), 1, "a runtime link requests only review");
+        assert!(invocations[0].is_effect());
+        assert_eq!(invocations[0].id, expected.id);
+        assert_eq!(invocations[0].arguments, expected.arguments);
+    }
+
     /// A `tilo-store:app/<id>` link asks for that app's details.
     #[test]
     fn launching_on_a_link_shows_that_app() {

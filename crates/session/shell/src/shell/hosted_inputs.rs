@@ -104,6 +104,13 @@ impl HostedTileInputs {
             ),
             native_apps: Arc::from([
                 NativeAppRegistration {
+                    package_id: tilo_desktop::feedback::PACKAGE,
+                    display_name: tilo_desktop::feedback::definition().title,
+                    kind: AppKind::Other("Feedback".into()),
+                    opens_extensions: &[],
+                    opens_mime_types: &[],
+                },
+                NativeAppRegistration {
                     package_id: FILES_PACKAGE_ID,
                     display_name: "Files",
                     kind: AppKind::FileExplorer,
