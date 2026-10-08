@@ -170,9 +170,10 @@ the exact vendored runtime and the public test model used on the builder.
 Dutch and Polish, with Apache-2.0 licensing. It runs on the dependency-free
 [Needle](https://github.com/cactus-compute/needle) CPU engine
 ([platform builds](https://huggingface.co/Cactus-Compute/needle3)), whose speech
-C API is `needle_load`, `needle_transcribe` and `needle_embed`. The one-pass API accepts
-at most 30 seconds of 16 kHz mono audio; the pinned review below also establishes
-a separate streaming API. Its model card's benchmark chart reports 4.31%/10.49% WER on LibriSpeech
+C API is `needle_load`, `needle_transcribe` and `needle_embed`. The one-pass API
+accepts at most 30 seconds of 16 kHz mono audio; the pinned review below also
+establishes a separate streaming API. Its model card's benchmark chart reports
+4.31%/10.49% WER on LibriSpeech
 test-clean/test-other, a 21.4% average over its seven FLEURS languages and
 11.1 ms to the first token on an Apple M4 Pro CPU. Those are the publisher's
 own measurements, not `speech_benchmark` results, and no older-CPU, Arm-board or

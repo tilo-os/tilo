@@ -235,6 +235,26 @@ pub enum StoreEffect {
         #[param("Whether to show package identity, digest and publisher key")]
         expanded: bool,
     },
+    /// Review a local Tilo package.
+    ///
+    /// Opening a package installs nothing. Its identity must match a verified repository offer or an existing trusted local attestation.
+    #[effect(job)]
+    ImportPackage {
+        #[param("Sandbox-readable .tapp path; omit to choose a file")]
+        path: Option<String>,
+        #[param("Handed content hash, instead of a path")]
+        content: Option<String>,
+        #[param("Optional handed file length; bytes are independently bounded and verified")]
+        reported_size: Option<u64>,
+    },
+    /// Install reviewed package.
+    #[effect(job)]
+    InstallImportedPackage {
+        #[param("Previously reviewed app identity")]
+        app: String,
+        #[param("Exact reviewed signed package root, without tapp: prefix")]
+        root: String,
+    },
     /// Open a Flatpak reference.
     ///
     /// Its app is shown ready to install; installing stays a separate step.
@@ -496,7 +516,10 @@ impl ResourceApp for StoreShell {
     const ID: &'static str = "so.tilo.store";
     const TITLE: &'static str = "App Store";
     const ICON: Option<&'static str> = Some("store");
-    const OPENS: &'static [&'static str] = &["application/vnd.flatpak.ref"];
+    const OPENS: &'static [&'static str] = &[
+        "application/vnd.flatpak.ref",
+        "application/vnd.tilo.package",
+    ];
     /// A `.flatpakref` to show, or a `tilo-store:app/<id>` link.
     const ARGUMENTS: usize = 1;
 
@@ -513,6 +536,30 @@ impl ResourceApp for StoreShell {
     /// installs anything: that stays the person's choice on the page.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Store>> {
         let effect = if let Some(file) = input.file() {
+            if std::path::Path::new(file.name())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("tapp"))
+                || file.media_type() == "application/vnd.tilo.package"
+            {
+                let Some(content) = input.content() else {
+                    return Vec::new();
+                };
+                // Oversized handoffs must reach the normal action refusal even
+                // when the bounded content store cannot retain their bytes.
+                let hash = if file.bytes().len() > crate::package_import::MAX_IMPORT_BYTES {
+                    ui::framework::content::hash_bytes(file.bytes())
+                } else {
+                    let Ok(hash) = content.put(file.bytes()) else {
+                        return Vec::new();
+                    };
+                    hash
+                };
+                return vec![Invoke::effect(&StoreEffect::ImportPackage {
+                    path: None,
+                    content: Some(hash),
+                    reported_size: Some(file.bytes().len() as u64),
+                })];
+            }
             let Ok(contents) = std::str::from_utf8(file.bytes()) else {
                 tracing::warn!(file = file.name(), "the opened reference is not text");
                 return Vec::new();
@@ -529,6 +576,15 @@ impl ResourceApp for StoreShell {
                         tracing::warn!(%error, "ignoring the App Store link");
                         return Vec::new();
                     }
+                }
+            } else if std::path::Path::new(argument)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("tapp"))
+            {
+                StoreEffect::ImportPackage {
+                    path: Some(argument.to_owned()),
+                    content: None,
+                    reported_size: None,
                 }
             } else {
                 StoreEffect::OpenReference {
@@ -605,6 +661,7 @@ impl ResourceSurface<Store, StoreEffect> for StoreApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Store>) {
+        self.package_content = cx.content();
         match cx.mode() {
             RunMode::Live => self.start_worker(cx.waker()),
             RunMode::Capture => {
@@ -1768,6 +1825,66 @@ mod tests {
         );
         ui::i18n::I18nManager::set_locale(&selected);
         ui::i18n::I18nManager::set_pseudo_locale(pseudo);
+    }
+
+    #[test]
+    fn package_import_file_handoff_refuses_unlisted_archive_without_installing() {
+        let _offline = offline();
+        let (bytes, _) = crate::package_import::tests::signed_fixture();
+        let (file, _) =
+            ui::application::OpenFile::new("signed.tapp", "application/vnd.tilo.package", bytes)
+                .unwrap();
+        let mut app = TestApp::<StoreShell>::handed(file).unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(10), |harness| {
+                    harness
+                        .resources()
+                        .iter()
+                        .any(|resource| resource.id.as_str() == Store::KIND)
+                })
+        );
+        settle_catalogue_worker(&mut app);
+        app.with_surface::<StoreApp, _>(|surface| {
+            let snapshot = surface.inspect_catalogue(None).unwrap();
+            assert!(snapshot["imported_package"].is_null());
+            assert_eq!(snapshot["error"], ui::i18n!("store-package-offer-required"));
+        })
+        .unwrap();
+        let root = find(&app.harness().resources(), Store::KIND).unwrap();
+        for id in ["import-package", "install-imported-package"] {
+            let spec = root.actions.iter().find(|action| action.id == id).unwrap();
+            assert!(spec.contract.validate_declaration().is_empty());
+            assert_eq!(spec.contract.result, ui::tilo_actions::ResultSpec::Job);
+        }
+    }
+
+    #[test]
+    fn package_import_oversize_handoff_reports_refusal() {
+        let _offline = offline();
+        let (file, _) = ui::application::OpenFile::new(
+            "large.tapp",
+            "application/vnd.tilo.package",
+            vec![0; crate::package_import::MAX_IMPORT_BYTES + 1],
+        )
+        .unwrap();
+        let mut app = TestApp::<StoreShell>::handed(file).unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(10), |harness| {
+                    harness
+                        .resources()
+                        .iter()
+                        .any(|resource| resource.id.as_str() == Store::KIND)
+                })
+        );
+        settle_catalogue_worker(&mut app);
+        app.with_surface::<StoreApp, _>(|surface| {
+            let snapshot = surface.inspect_catalogue(None).unwrap();
+            assert!(snapshot["imported_package"].is_null());
+            assert_eq!(snapshot["error"], ui::i18n!("store-package-size-refused"));
+        })
+        .unwrap();
     }
 
     /// Opening a `.flatpakref` shows its app ready to install — and

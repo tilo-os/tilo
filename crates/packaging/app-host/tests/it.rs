@@ -25,3 +25,6 @@ mod pin_unpin_changes_state;
 mod registry_roundtrip;
 #[path = "socket_activation.rs"]
 mod socket_activation;
+
+#[path = "local_trust.rs"]
+mod local_trust;
