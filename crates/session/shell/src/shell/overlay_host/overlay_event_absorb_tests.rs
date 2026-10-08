@@ -3448,3 +3448,64 @@ fn radio_details_navigation_owns_its_release_after_escape() {
             > before
     );
 }
+
+#[test]
+fn radio_details_lost_release_does_not_capture_a_fresh_content_click() {
+    for lost_focus in [true, false] {
+        for target in [
+            "quick_settings_network_details",
+            "quick_settings_bluetooth_details",
+        ] {
+            let actions = super::qs_device_state_tests::Recorder::default();
+            let mut h = build_harness_sized(1000.0, 980.0);
+            h.host = h.host.with_qs_actions(Box::new(actions.clone()));
+            {
+                let mut state = h.chrome.borrow_mut();
+                state.overlays.quick_settings = true;
+                state.quick_settings.radios.wifi_available = true;
+                state.quick_settings.bluetooth_available = true;
+            }
+            h.host.force_quick_settings_settled();
+            settle(&mut h, 1000.0, 980.0);
+            let rect = h
+                .host
+                .quick_settings_semantic_rects()
+                .into_iter()
+                .find_map(|(id, rect)| (id == target).then_some(rect))
+                .expect("radio details");
+            pump(&mut h, &cursor_moved_at(rect.center()));
+            assert!(pump(&mut h, &left_button_pressed()));
+            if lost_focus {
+                pump(&mut h, &WindowEvent::Focused(false));
+                pump(&mut h, &WindowEvent::Focused(true));
+            }
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert!(!h.chrome.borrow().overlays.quick_settings);
+            // The navigation release is deliberately absent. The next press
+            // begins an independent content gesture, with or without focus loss.
+            pump(&mut h, &cursor_moved_at(Point::new(8.0, 900.0)));
+            h.log.borrow_mut().clear();
+            pump(&mut h, &left_button_pressed());
+            assert!(
+                h.log
+                    .borrow()
+                    .iter()
+                    .any(|event| event == "MouseInput::Pressed"),
+                "the fresh content press is delivered: {target}, lost_focus={lost_focus}"
+            );
+            pump(&mut h, &left_button_released());
+            assert!(
+                h.log
+                    .borrow()
+                    .iter()
+                    .any(|event| event == "MouseInput::Released"),
+                "its matching release must also arrive: {target}, lost_focus={lost_focus}"
+            );
+            assert!(
+                actions.calls().is_empty(),
+                "navigation never writes a radio"
+            );
+        }
+    }
+}

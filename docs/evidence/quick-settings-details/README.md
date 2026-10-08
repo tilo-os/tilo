@@ -38,3 +38,11 @@ checks and the final image manifest identify their exact revision. This
 does not claim installed-device or QA VM acceptance. Narrow enlarged-text
 Devices/Clipboard summaries still elide in the baseline and after images;
 their presentation remains a separate inventory item.
+
+The navigation-release follow-up reproduces an absent release after focus
+loss: the next content press arrived but its release was swallowed at
+9da8791c351223159734ebdbecb9d29ba122cd37. The existing initial pointer
+observation stage now retires the flag on focus loss or a fresh left press.
+Four native cases cover both radios with and without focus loss, while the
+original page-change/Escape release-ownership regression remains required.
+This routing-only correction changes no painted component or screenshot.

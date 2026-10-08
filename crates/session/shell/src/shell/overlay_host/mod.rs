@@ -11367,6 +11367,19 @@ impl ShellOverlayHost {
     /// hover, for hit-testing overlay clicks in the absence of position
     /// data on `MouseInput`. First stage of `handle_event`.
     fn track_cursor_position(&mut self, event: &WindowEvent, scale_factor: f64) {
+        // Focus loss or a fresh press ends an abandoned navigation gesture.
+        // Escape alone keeps the matching release owned across page changes.
+        if matches!(
+            event,
+            WindowEvent::Focused(false)
+                | WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+        ) {
+            self.qs_navigation_release_pending = false;
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(p);
