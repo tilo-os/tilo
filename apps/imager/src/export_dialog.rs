@@ -245,50 +245,72 @@ mod tests {
         }
     }
 
-    /// Export dialog layout, dismissal and read-only accessibility.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn export_dialog_layout_input_and_accessibility() {
-        // Phase `responsive_layout_matches_the_existing_export_card`.
-        {
+    fn responsive_export_layout() {
+        for theme in [Theme::dark(), Theme::light()] {
             let mut dialog = ExportDialog::new();
             dialog.show("[install]\nhostname = tilo".into());
-            dialog.layout_in(
-                Rect::new(0.0, 0.0, 1280.0, 800.0),
-                &Theme::dark(),
-                &mut TextRenderer::new(),
-            );
+            let mut text = TextRenderer::new();
+            let desktop = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            dialog.layout_in(desktop, &theme, &mut text);
             let rect = dialog.dialog_rect();
             assert_eq!(rect.width(), 640.0);
+            assert_eq!(rect.center().x, desktop.center().x);
             assert!(
                 rect.height() <= 620.0,
-                "short profile uses its intrinsic shared-modal height"
+                "short profile keeps its intrinsic height"
             );
             assert!(rect.height() > 0.0);
+            assert_eq!(rect.intersect(desktop), rect);
 
-            dialog.layout_in(
-                Rect::new(0.0, 0.0, 800.0, 600.0),
-                &Theme::dark(),
-                &mut TextRenderer::new(),
-            );
-            let narrow = dialog.dialog_rect();
-            assert_eq!(narrow.width(), 800.0 * WIDTH_FRACTION);
-            assert!(narrow.height() <= 600.0 * 0.8);
+            let intermediate = Rect::new(0.0, 0.0, 800.0, 600.0);
+            dialog.layout_in(intermediate, &theme, &mut text);
+            let sheet = dialog.dialog_rect();
+            assert_eq!(sheet.width(), 800.0 * WIDTH_FRACTION);
+            assert!(sheet.height() <= 600.0 * 0.8);
+            assert_eq!(sheet.intersect(intermediate), sheet);
 
-            dialog.layout_in(
+            // Either short axis requires the shared full-window mobile page.
+            // Nonzero origins also prove this uses the actual content viewport.
+            for viewport in [
                 Rect::new(0.0, 0.0, 320.0, 640.0),
-                &Theme::dark(),
-                &mut TextRenderer::new(),
-            );
-            assert_eq!(
-                dialog.dialog_rect(),
-                Rect::new(0.0, 0.0, 320.0, 640.0),
-                "compact shared modals fill the whole window"
-            );
+                Rect::new(0.0, 0.0, 800.0, 320.0),
+                Rect::new(20.0, 40.0, 410.0, 884.0),
+            ] {
+                dialog.layout_in(viewport, &theme, &mut text);
+                // The real host supplies the window to its top-layer paint;
+                // the next layout places retained content in that viewport.
+                let presence = PresenceCtx::default();
+                let previous = presence.push_viewport(viewport);
+                dialog.draw_detached(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &presence,
+                );
+                presence.pop_viewport(previous);
+                dialog.layout_in(viewport, &theme, &mut text);
+                assert_eq!(
+                    dialog.dialog_rect(),
+                    viewport,
+                    "compact dialog fills its viewport"
+                );
+                let body = dialog.dialog.content().get_rect();
+                assert!(body.width() > 0.0 && body.height() > 0.0);
+                assert_eq!(
+                    body.intersect(viewport),
+                    body,
+                    "profile body remains reachable"
+                );
+            }
         }
+    }
+
+    /// Export dialog layout, dismissal and read-only accessibility.
+    #[test]
+    fn export_dialog_layout_input_and_accessibility() {
+        // Phase `responsive_layout_uses_desktop_sheets_and_compact_pages`.
+        responsive_export_layout();
 
         // Phase `escape_and_any_left_click_are_captured_and_dismiss`.
         {
