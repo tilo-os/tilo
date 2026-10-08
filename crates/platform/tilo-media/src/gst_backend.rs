@@ -363,6 +363,9 @@ pub struct GstState {
     /// Why the current source is not in hardware, kept to explain a later
     /// error: the refused decoder's reason, and its media type.
     refusal: Option<(&'static str, String)>,
+    /// The codec of a stream no installed decoder handles, announced with the
+    /// error the pipeline posts next.
+    missing_decoder: Option<String>,
     /// The RGBA bin's copy stage; see [`build_video_sink`].
     copy_stage: Option<gst::Element>,
 }
@@ -467,6 +470,7 @@ impl GstState {
             refused: BTreeSet::new(),
             resume: None,
             refusal: None,
+            missing_decoder: None,
             copy_stage,
         })
     }
@@ -519,6 +523,7 @@ impl GstState {
                 return;
             }
         };
+        self.missing_decoder = None;
         // A decoder refused by one stream may suit the next one.
         if self.uri.as_deref() != Some(uri.as_str()) {
             self.refused.clear();
@@ -1077,6 +1082,18 @@ impl GstState {
     /// Nothing could decode a stream: say whether hardware could have, and
     /// carry that into the error the pipeline is about to post.
     fn explain_missing_decoder(&mut self, missing: &gst::StructureRef) {
+        let caps = missing
+            .get::<gst::Caps>("detail")
+            .ok()
+            .and_then(|caps| caps.structure(0).map(ToOwned::to_owned));
+        if missing.get::<&str>("type").ok() == Some("decoder")
+            && let Some(st) = &caps
+        {
+            self.missing_decoder = Some(crate::event::codec_name(
+                st.name().as_str(),
+                st.get::<i32>("mpegversion").ok(),
+            ));
+        }
         let Some(media_type) = missing
             .get::<gst::Caps>("detail")
             .ok()
@@ -1155,6 +1172,9 @@ impl GstState {
                         Some((_, why)) => format!("{} ({why})", e.error()),
                         None => e.error().to_string(),
                     };
+                    if let Some(codec) = self.missing_decoder.take() {
+                        events.push(MediaEvent::MissingDecoder { codec });
+                    }
                     events.push(MediaEvent::Error(message));
                 }
                 MessageView::Element(el) => {
