@@ -26,12 +26,10 @@ pub(super) fn installed_launch() -> Result<ServiceLaunch, SendError> {
         options: launcher::run::RunOptions {
             app_id: Some(super::working_profile::SERVICE_PACKAGE.into()),
             expected_package_hash: Some(installed.package_id_hex),
-
             mode: launcher::run::LaunchMode::Service {
                 passthrough_argv: vec![],
             },
             no_services: true,
-            identity: launcher::run::IdentitySource::None,
             ..launcher::run::RunOptions::default()
         },
     })

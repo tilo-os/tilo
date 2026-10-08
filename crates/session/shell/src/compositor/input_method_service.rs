@@ -485,7 +485,6 @@ fn service_launch_command(
         socket,
         RoomId::nil(),
         None,
-        None,
         crate::compositor::render_node::resolved(),
         None,
     ))

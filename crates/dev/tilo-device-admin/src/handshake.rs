@@ -216,7 +216,10 @@ pub fn admit(
     if &cert.user_public_key != own_user_public_key {
         return Err(Refusal::OtherIdentity);
     }
-    if revocations.is_revoked_at(&cert.device_public_key, now_ns) {
+    if revocations
+        .revocation_of(&cert.user_public_key, &cert.device_public_key)
+        .is_some()
+    {
         return Err(Refusal::Revoked);
     }
     if !cert.capabilities.can_administer_devices {
@@ -444,6 +447,17 @@ mod tests {
         assert_eq!(
             admit(&admin, &person.user(), &revoked, 50),
             Err(Refusal::Revoked)
+        );
+        assert_eq!(
+            admit(&admin, &person.user(), &revoked, 15),
+            Err(Refusal::Revoked),
+            "a claimed time before the revocation never restores authority"
+        );
+        let foreign_revocations = stranger.revoke(admin.device_public_key);
+        assert_eq!(
+            admit(&admin, &person.user(), &foreign_revocations, 50),
+            Ok(()),
+            "another identity cannot revoke this person's administrator"
         );
     }
 

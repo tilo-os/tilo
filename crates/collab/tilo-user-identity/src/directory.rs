@@ -22,8 +22,8 @@
 //!
 //! 1. `verify_device_cert` — the author's cert chains to this
 //!    directory's user identity.
-//! 2. `!revocation_list.is_revoked_at(author, timestamp)` — the
-//!    author was not already revoked.
+//! 2. The user root has not revoked the author — permanently, whatever
+//!    time the delta claims.
 //! 3. Ed25519 signature check against `author_device_public_key`.
 //!
 //! Failed checks return `Err(DirectoryError::*)` and DO NOT merge —
@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::canonical::CanonicalError;
-use crate::cert::{DeviceCert, DeviceCertError, verify_device_cert_at};
+use crate::cert::{DeviceCert, DeviceCertError};
 use crate::revocation::{RevocationError, RevocationList};
 
 /// Signing-domain tag for a directory delta. Same shape as the
@@ -105,10 +105,9 @@ pub struct DirectoryUpdate {
     /// Device that authored the update. The receiver looks up the
     /// device's cert to check it chains to the user's root.
     pub author_device_public_key: [u8; 32],
-    /// Nanoseconds since epoch when the update was produced. Feeds
-    /// into `revocation_list.is_revoked_at` — a delta authored
-    /// after a device was revoked is rejected even if the delta
-    /// itself arrives quickly.
+    /// Nanoseconds since epoch when the update was produced, as the author
+    /// claims it. Advisory: revocation does not depend on it, since a
+    /// revoked key can claim any time.
     pub authored_at_ns: u64,
     /// Automerge incremental bytes.
     pub delta: Vec<u8>,
@@ -142,14 +141,17 @@ pub enum DirectoryError {
     /// The author's device cert did not verify or was expired.
     #[error("author device cert invalid: {0}")]
     Cert(#[from] DeviceCertError),
-    /// The author's device was revoked at or before the update's
-    /// `authored_at_ns`.
+    /// The user root revoked the author's device.
     #[error("author device was revoked")]
     Revoked,
     /// Delta signature did not verify against the author's device
     /// public key.
     #[error("delta signature did not verify")]
     BadSignature,
+    /// The author's certificate does not let it own the person's
+    /// workspaces (a dedicated host's, for one).
+    #[error("author device may not own workspaces")]
+    NotPermitted,
     /// Author's cert is for a *different* user identity than this
     /// directory belongs to.
     #[error("author identity does not match directory owner")]
@@ -749,7 +751,7 @@ impl WorkspaceDirectory {
     /// for a different user or a different device than the update
     /// claims, [`DirectoryError::Cert`] if the cert itself fails to
     /// verify or has expired, [`DirectoryError::Revoked`] if the
-    /// author device was revoked at or before `update.authored_at_ns`,
+    /// user root revoked the author device,
     /// [`DirectoryError::BadSignature`] if the delta's signature does
     /// not verify, and [`DirectoryError::Automerge`] if merging the
     /// delta into the local document fails.
@@ -760,20 +762,33 @@ impl WorkspaceDirectory {
         revocations: &RevocationList,
         now_ns: u64,
     ) -> Result<(), DirectoryError> {
-        // Cert must be for THIS directory's user.
-        if author_cert.user_public_key != self.user_public_key {
-            return Err(DirectoryError::WrongIdentity);
-        }
         // Cert must cover THIS device pubkey.
         if author_cert.device_public_key != update.author_device_public_key {
             return Err(DirectoryError::WrongIdentity);
         }
-        // Cert must verify + not have expired.
-        verify_device_cert_at(author_cert, now_ns)?;
-        // Author must not have been revoked at the time of authoring.
-        if revocations.is_revoked_at(&update.author_device_public_key, update.authored_at_ns) {
-            return Err(DirectoryError::Revoked);
-        }
+        // The author's certificate chains to this directory's person, is
+        // valid now, was never revoked (whatever time the delta claims), and
+        // lets the device own the person's workspaces: the directory is
+        // where workspaces are created, ordered and removed.
+        crate::delegation::verify_chain(
+            author_cert,
+            &crate::delegation::ChainPolicy {
+                user_public_key: &self.user_public_key,
+                authority: crate::delegation::Authority::OwnWorkspaces,
+                revocations,
+                now_ns,
+            },
+        )
+        .map_err(|error| match error {
+            crate::delegation::ChainError::OtherIdentity
+            | crate::delegation::ChainError::OtherDevice => DirectoryError::WrongIdentity,
+            crate::delegation::ChainError::Certificate(error) => DirectoryError::Cert(error),
+            crate::delegation::ChainError::Revoked => DirectoryError::Revoked,
+            crate::delegation::ChainError::NotPermitted(_) => DirectoryError::NotPermitted,
+            crate::delegation::ChainError::BadSignature
+            | crate::delegation::ChainError::InvalidDomain => DirectoryError::BadSignature,
+            crate::delegation::ChainError::Canonical(error) => DirectoryError::Canonical(error),
+        })?;
         // Signature must cover the delta bytes.
         let vk = ed25519_dalek::VerifyingKey::from_bytes(&update.author_device_public_key)
             .map_err(|_| DirectoryError::BadSignature)?;
@@ -1056,10 +1071,8 @@ mod tests {
             dir.add_workspace(1, "Personal").unwrap();
             let a_delta = dir.sync_incremental(&a_sk, 400).unwrap();
 
-            // Phone tries to publish an addition at t=600 (after
-            // revocation). Even though the phone still has its old
-            // cert, the apply-side rejects because the *update*
-            // timestamp postdates the revocation.
+            // Phone tries to publish an addition after the revocation.
+            // It still has its old cert; the apply side refuses it.
             let mut phone_dir = WorkspaceDirectory::new(f.user_pk, b_pk);
             phone_dir
                 .apply_incremental(&a_delta, &a_cert, &revs, 700)
@@ -1073,15 +1086,41 @@ mod tests {
                 DirectoryError::Revoked
             ));
 
-            // But a delta authored *before* the revocation cut-off is
-            // still accepted (grace: the change was legitimately made
-            // by a trusted device at the time).
+            // A delta the revoked key claims it made before the revocation
+            // is refused too: the key is lost, so its timestamps prove
+            // nothing.
             let mut phone_dir = WorkspaceDirectory::new(f.user_pk, b_pk);
-            phone_dir.add_workspace(3, "PreRevoke").unwrap();
-            let pre_delta = phone_dir.sync_incremental(&b_sk, 400).unwrap();
-            dir.apply_incremental(&pre_delta, &b_cert, &revs, 700)
-                .unwrap();
-            assert!(dir.list_workspaces().iter().any(|w| w.id == 3));
+            phone_dir.add_workspace(3, "Backdated").unwrap();
+            let backdated = phone_dir.sync_incremental(&b_sk, 400).unwrap();
+            assert!(matches!(
+                dir.apply_incremental(&backdated, &b_cert, &revs, 700)
+                    .unwrap_err(),
+                DirectoryError::Revoked
+            ));
+            assert!(!dir.list_workspaces().iter().any(|w| w.id == 3));
+        }
+
+        // Phase: a_dedicated_host_cannot_change_the_workspace_list.
+        {
+            let f = fresh_user();
+            let (_a_sk, a_pk, _a_cert) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "laptop",
+                DeviceCapabilities::primary(),
+            );
+            let (h_sk, h_pk, h_cert) =
+                enrol_device(&f.user_sk, f.user_pk, "server", DeviceCapabilities::host());
+            let mut server_dir = WorkspaceDirectory::new(f.user_pk, h_pk);
+            server_dir.add_workspace(9, "Planted").unwrap();
+            let delta = server_dir.sync_incremental(&h_sk, 400).unwrap();
+            let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
+            assert!(matches!(
+                dir.apply_incremental(&delta, &h_cert, &RevocationList::new(), 700)
+                    .unwrap_err(),
+                DirectoryError::NotPermitted
+            ));
+            assert!(dir.list_workspaces().is_empty());
         }
 
         // Phase: delta_signed_by_wrong_device_rejected.

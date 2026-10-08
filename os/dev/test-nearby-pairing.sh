@@ -218,9 +218,11 @@ note "VM A holds identity $identity"
 # --- the image owns the enrollment layout --------------------------------------
 layout="$(vm_b ssh 'stat -c "%n %a %U %G" /var/lib/tilo/enrollment-staging /var/lib/tilo/enrollment-commits /var/lib/tilo/peers')"
 printf '%s\n' "$layout" > "$out/b-enrollment-layout.txt"
-for dir in enrollment-staging enrollment-commits peers; do
-  grep -qx "/var/lib/tilo/$dir 2770 root tilo-identity" <<<"$layout" \
-    || die "/var/lib/tilo/$dir is not 2770 root:tilo-identity on a fresh install: $layout"
+grep -qx "/var/lib/tilo/enrollment-staging 3730 root tilo-identity" <<<"$layout" \
+  || die "/var/lib/tilo/enrollment-staging is not 3730 root:tilo-identity on a fresh install: $layout"
+for dir in enrollment-commits peers; do
+  grep -qx "/var/lib/tilo/$dir 3770 root tilo-identity" <<<"$layout" \
+    || die "/var/lib/tilo/$dir is not 3770 root:tilo-identity on a fresh install: $layout"
 done
 vm_b ssh "id -nG | tr ' ' '\n' | grep -qx tilo-identity" \
   || die "the installed account is not in the device-trust group"
@@ -364,12 +366,13 @@ sed -n '2,$p' <<<"$active" | grep -Fq "$stem" \
 # Joining keeps the device-trust layout: the directories stay root-owned and
 # group-shared, and what the join wrote stays readable by the group the
 # session and relay read the device identity through.
-layout_after="$(vm_b ssh 'stat -c "%n %a %U %G" /var/lib/tilo/user-identity /var/lib/tilo/device /var/lib/tilo/peers /var/lib/tilo/device-private /var/lib/tilo/device-private/keypair.bin')"
+layout_after="$(vm_b ssh "stat -c '%n %a %U %G' /var/lib/tilo/user-identity /var/lib/tilo/device /var/lib/tilo/peers /var/lib/tilo/peers/$identity /var/lib/tilo/device-private /var/lib/tilo/device-private/keypair.bin")"
 printf '%s\n' "$layout_after" > "$out/b-layout-after-join.txt"
 for expected in \
   '/var/lib/tilo/user-identity 2770 root tilo-identity' \
   '/var/lib/tilo/device 2770 root tilo-identity' \
-  '/var/lib/tilo/peers 2770 root tilo-identity' \
+  '/var/lib/tilo/peers 3770 root tilo-identity' \
+  "/var/lib/tilo/peers/$identity 2750 $TILO_USER tilo-identity" \
   '/var/lib/tilo/device-private 2750 root tilo-identity' \
   "/var/lib/tilo/device-private/keypair.bin $keypair_before"; do
   grep -qxF "$expected" <<<"$layout_after" \

@@ -65,6 +65,20 @@ fn load_stored(dir: &Path, identity_id: &str) -> io::Result<StoredFleet> {
     Ok(fleet)
 }
 
+/// Revoking needs the root, which a device enrolled by another one does not
+/// hold: name the devices that do.
+fn root_refusal(fleet: &StoredFleet, now_ns: u64) -> io::Error {
+    let mut revocations = tilo_user_identity::RevocationList::new();
+    for entry in &fleet.revocations {
+        let _ = revocations.insert(entry.clone());
+    }
+    let labels = tilo_user_identity::root_holder_labels(&fleet.certificates, &revocations, now_ns);
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        tilo_user_identity::RootOnly::RevokeDevice.refusal(labels),
+    )
+}
+
 fn current_device_key() -> io::Result<[u8; 32]> {
     let paths =
         tilo_user_identity::IdentityPaths::under(super::panes::device_mesh::identity_root());
@@ -157,6 +171,9 @@ pub(crate) fn revoke(device: [u8; 32], reason: RevocationReason) -> io::Result<(
         .map_or(0, |duration| {
             u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
         });
+    if !signer.is_single_device() {
+        return Err(root_refusal(&fleet, revoked_at_ns));
+    }
     let mut entry = RevocationEntry {
         user_public_key: identity.public_key,
         revoked_device_public_key: device,

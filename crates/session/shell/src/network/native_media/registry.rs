@@ -129,7 +129,6 @@ impl Registry {
 }
 
 fn check_identity(view: &NativeCommittedView, identity: &HostIdentity) -> Result<(), String> {
-    let now = tilo_clock::try_unix_now_ns().ok_or("native clock precedes epoch")?;
     let (cert, entries) = identity.current_native_material(view.workspace())?;
     if &cert != view.device()
         || identity.device_signing_key.verifying_key().to_bytes() != cert.device_public_key
@@ -140,7 +139,10 @@ fn check_identity(view: &NativeCommittedView, identity: &HostIdentity) -> Result
     for entry in entries {
         revoked.insert(entry).map_err(|error| error.to_string())?;
     }
-    if revoked.is_revoked_at(&cert.device_public_key, now) {
+    if revoked
+        .revocation_of(&cert.user_public_key, &cert.device_public_key)
+        .is_some()
+    {
         return Err("native selected device revoked".into());
     }
     Ok(())

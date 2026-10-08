@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The host side of the app identity service: the identity broker apps sign through, the identity registry, device fleet and collaboration identity provisioning."
+description = "The host side of the app identity service: the identity broker apps sign through, the identity registry, device fleet and collaboration identity provisioning, and the tilo-identity command."
 
 # No compositor: the desktop session and the standalone runtime both host it,
 # each supplying its workspaces and channel service through the broker's traits.
@@ -18,6 +18,10 @@ path = "src/lib.rs"
 throwaway-test-identity = []
 
 [dependencies]
+# `tilo-identity`, the command-line door to identity creation, enrollment
+# and the device fleet.
+anyhow.workspace = true
+clap.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 collab-types = { path = "../../collab/collab-types" }

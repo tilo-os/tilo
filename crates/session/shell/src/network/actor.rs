@@ -552,6 +552,11 @@ enum HostEvent {
     Closed,
 }
 
+/// How long a dial at addresses a peer was found at may take.
+const KNOWN_ADDRESS_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long after such a dial the path carrying it is reported.
+const PATH_REPORT_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
 struct TopicRuntime {
     sender: GossipSender,
     pump: tokio::task::JoinHandle<()>,
@@ -966,6 +971,64 @@ impl Drop for HostRuntime {
 }
 
 impl ActorState {
+    /// Open the gossip connection to `addr` at the addresses it names and
+    /// hand it to gossip, then ask to join every topic over it again.
+    ///
+    /// Gossip dials a peer it has no connection to, but that dial resolves
+    /// addresses only when it starts: a dial begun before the addresses were
+    /// known (the enrolled direct-peer list names only the endpoint id) waits
+    /// on internet lookups, fails without internet, and takes the joins
+    /// queued meanwhile with it. Dialling here uses the addresses at hand.
+    fn connect_known_addresses(&self, addr: EndpointAddr) {
+        let endpoint = self.endpoint.clone();
+        let gossip = self.gossip.clone();
+        let senders: Vec<GossipSender> = self
+            .topics
+            .values()
+            .map(|topic| topic.sender.clone())
+            .collect();
+        tokio::spawn(async move {
+            let id = addr.id;
+            let connection = match tokio::time::timeout(
+                KNOWN_ADDRESS_DIAL_TIMEOUT,
+                endpoint.connect(addr, GOSSIP_ALPN),
+            )
+            .await
+            {
+                Ok(Ok(connection)) => connection,
+                Ok(Err(error)) => {
+                    tracing::debug!(peer = %id.fmt_short(), %error, "dial at known addresses failed");
+                    return;
+                }
+                Err(_) => {
+                    tracing::debug!(peer = %id.fmt_short(), "dial at known addresses timed out");
+                    return;
+                }
+            };
+            if let Err(error) = gossip.handle_connection(connection.clone()).await {
+                tracing::debug!(peer = %id.fmt_short(), %error, "gossip refused the connection");
+                return;
+            }
+            for sender in senders {
+                let _ = sender.join_peers(vec![id]).await;
+            }
+            // Once the paths have settled, say which one carries the traffic:
+            // a local-network address or a relay.
+            tokio::time::sleep(PATH_REPORT_DELAY).await;
+            let paths = connection.paths();
+            let describe = |path: iroh::endpoint::Path<'_>| {
+                let kind = if path.is_relay() { "relay" } else { "ip" };
+                format!("{kind} {:?} rtt {:?}", path.remote_addr(), path.rtt())
+            };
+            let selected = paths
+                .iter()
+                .find(iroh::endpoint::Path::is_selected)
+                .map(describe);
+            let open: Vec<String> = paths.iter().map(describe).collect();
+            tracing::info!(peer = %id.fmt_short(), ?selected, ?open, "peer connection path");
+        });
+    }
+
     fn touch_or_mint_membership(
         &mut self,
         ws: WorkspaceId,
@@ -1321,6 +1384,9 @@ impl ActorState {
             Some(NetCmd::Connect { addr }) => {
                 let id = addr.id;
                 self.lookup.add_endpoint_info(addr.clone());
+                if addr.ip_addrs().next().is_some() {
+                    self.connect_known_addresses(addr.clone());
+                }
                 self.peers.insert(id, addr);
                 for topic in self.topics.values() {
                     if let Err(error) = topic.sender.join_peers(vec![id]).await {

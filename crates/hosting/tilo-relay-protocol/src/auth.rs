@@ -164,7 +164,10 @@ pub fn accept_hello(
     now_ns: u64,
 ) -> Result<AuthenticatedPeer, AuthError> {
     verify_device_cert_at(&hello.cert, now_ns)?;
-    if revocations.is_revoked_at(&hello.cert.device_public_key, now_ns) {
+    if revocations
+        .revocation_of(&hello.cert.user_public_key, &hello.cert.device_public_key)
+        .is_some()
+    {
         return Err(AuthError::Revoked);
     }
     if !policy.admits(&hello.cert, own_user_public_key) {
@@ -306,7 +309,10 @@ fn verify_hello_ack_cryptographic(
     challenge_client_nonce: &[u8; 32],
 ) -> Result<(), AuthError> {
     verify_device_cert_at(&ack.cert, now_ns)?;
-    if revocations.is_revoked_at(&ack.cert.device_public_key, now_ns) {
+    if revocations
+        .revocation_of(&ack.cert.user_public_key, &ack.cert.device_public_key)
+        .is_some()
+    {
         return Err(AuthError::Revoked);
     }
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)

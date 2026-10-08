@@ -3,7 +3,7 @@
 use launcher::owned_service::{
     ServiceAuthority, ServiceCancellation, ServiceEndpoint, ServiceLaunch, ServiceLeaseKey,
 };
-use launcher::run::{IdentitySource, LaunchMode, RunOptions};
+use launcher::run::{LaunchMode, RunOptions};
 use std::error::Error;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::sync::{
@@ -90,7 +90,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 passthrough_argv: vec![],
             },
             no_services: true,
-            identity: IdentitySource::None,
             ..RunOptions::default()
         },
     };

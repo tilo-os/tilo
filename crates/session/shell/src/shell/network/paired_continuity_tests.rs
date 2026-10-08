@@ -6,6 +6,24 @@ use crate::shell::device_fabric_runtime::{DeviceFabricRuntime, LocalFabricCapabi
 use crate::shell::personal_continuity::DeviceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
+fn enroll_session_pair(peers: &Path, left: &DeviceCert, right: &DeviceCert) -> PathBuf {
+    use tilo_relay_protocol::personal_devices::{DirectPeer, PersonPeers, encode_direct_peers};
+    assert_eq!(left.user_public_key, right.user_public_key);
+    let person =
+        PersonPeers::open_or_create_own(peers.parent().unwrap(), &left.user_public_key).unwrap();
+    let path = person.direct_peers_path();
+    std::fs::write(
+        &path,
+        encode_direct_peers(&[left, right].map(|cert| DirectPeer {
+            identity: cert.user_public_key,
+            device: cert.device_public_key,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    path
+}
+
 struct Session {
     network: Arc<ShellNetwork>,
     endpoint: iroh::Endpoint,
@@ -560,15 +578,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
     let mut right = Box::pin(Session::new(&root, 0x96, local_tree)).await;
     let peers_path = home.config().join("home-peers.json");
     home.env().set("TILO_HOME_PEERS_PATH", &peers_path);
-    std::fs::write(
-        peers_path.with_file_name("personal-device-peers.json"),
-        serde_json::to_vec(&[
-            hex::encode(left.cert.device_public_key),
-            hex::encode(right.cert.device_public_key),
-        ])
-        .unwrap(),
-    )
-    .unwrap();
+    enroll_session_pair(&peers_path, &left.cert, &right.cert);
     let registry = crate::shell::personal_continuity_registry::global_registry();
     {
         let mut reports = registry.lock().unwrap();
@@ -982,16 +992,8 @@ impl NativeEditorPair {
         })
     }
 
-    fn enroll(&self) {
-        std::fs::write(
-            self.peers.with_file_name("personal-device-peers.json"),
-            serde_json::to_vec(&[
-                hex::encode(self.left.cert.device_public_key),
-                hex::encode(self.right.cert.device_public_key),
-            ])
-            .unwrap(),
-        )
-        .unwrap();
+    fn enroll(&self) -> std::path::PathBuf {
+        enroll_session_pair(&self.peers, &self.left.cert, &self.right.cert)
     }
 
     fn send_view(
@@ -1222,7 +1224,7 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
         pair.send_view(20).await.is_empty(),
         "a shared certificate root is not enrollment"
     );
-    pair.enroll();
+    let enrolled_peers = pair.enroll();
     let first = pair.send_view(40).await;
     assert_eq!(first.len(), 1);
     pair.apply_target(&first[0], 40);
@@ -1230,7 +1232,7 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
     assert_eq!(second.len(), 1);
     assert!(second[0].generation > first[0].generation);
     pair.apply_target(&second[0], 70);
-    std::fs::remove_file(pair.peers.with_file_name("personal-device-peers.json")).unwrap();
+    std::fs::remove_file(enrolled_peers).unwrap();
     let stopped = in_owner_registry(&pair.right_registry, || {
         pair.right.network.pump_owner_views()
     });

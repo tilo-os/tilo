@@ -44,7 +44,10 @@ pub(super) fn validate_certificate(
 ) -> Result<(), String> {
     tilo_user_identity::verify_device_cert_at(certificate, at_ns)
         .map_err(|error| error.to_string())?;
-    if revocations.is_revoked_at(&certificate.device_public_key, at_ns) {
+    if revocations
+        .revocation_of(&certificate.user_public_key, &certificate.device_public_key)
+        .is_some()
+    {
         return Err("contribution attestation certificate was revoked".into());
     }
     Ok(())

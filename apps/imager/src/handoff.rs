@@ -321,8 +321,9 @@ pub fn apply_setup_handoff(
         if profile.user.username.trim().is_empty() {
             return Err("Choose the account name before enrolling this device.".into());
         }
-        let rooms = tilo_identity_host::provisioning::personal_rooms_export_path()
-            .unwrap_or_else(|| PathBuf::from("/var/lib/tilo/peers/personal-rooms.json"));
+        // Without a session export there are no rooms to share.
+        let rooms =
+            tilo_identity_host::provisioning::personal_rooms_export_path().unwrap_or_default();
         tilo_identity_host::provisioning::enroll_from_local_identity(
             &tilo_identity_host::provisioning::JoinedDeviceLayout {
                 target_root: root,
@@ -801,15 +802,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(copied, vec![peer]);
-        let direct: Vec<String> = serde_json::from_slice(
-            &fs::read(
-                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
-                    .with_file_name("personal-device-peers.json"),
-            )
-            .unwrap(),
+        let direct = tilo_relay_protocol::personal_devices::PersonPeers::find_own(
+            &tilo_relay_protocol::personal_devices::peers_dir(&dir.path().join("var/lib/tilo")),
+            &local_cert.user_public_key,
         )
+        .unwrap()
+        .expect("the person's directory exists on the target")
+        .read_direct_peers()
         .unwrap();
-        assert_eq!(direct, vec![hex::encode(local_cert.device_public_key)]);
+        assert_eq!(
+            direct,
+            vec![tilo_relay_protocol::personal_devices::DirectPeer {
+                identity: local_cert.user_public_key,
+                device: local_cert.device_public_key,
+            }]
+        );
         let target_identity = dir.path().join(format!(
             "var/home/{}/.config/tilo/identity",
             profile.user.username.trim()

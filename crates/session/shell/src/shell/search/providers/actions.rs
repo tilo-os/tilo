@@ -382,18 +382,37 @@ fn active_identity(
 
 const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
 
+/// This device's key with the certificate the selected identity issued for
+/// it, while that chain lets it own workspaces now: ownership steps are
+/// signed as the person by the device, so the identity's root never has to
+/// be here. Also returns the revocations this device's fleet holds, which
+/// the verification of every step takes into account.
 fn active_ownership_signer(
     state: &ChromeState,
     expected: collab_types::Ed25519PublicKey,
-) -> Result<runtime_identity::SigningIdentity, ActionError> {
+) -> Result<
+    (
+        tilo_user_identity::DeviceSigner,
+        tilo_user_identity::RevocationList,
+    ),
+    ActionError,
+> {
     let (_, profile) = active_identity(state)?;
     if profile.user_public_key != *expected.as_bytes() {
         return Err(ActionError::Refused(
             "the selected certified identity is not the required transfer signer".into(),
         ));
     }
-    runtime_identity::load_from_path(profile.record_path)
-        .map_err(|error| ActionError::Refused(format!("cannot sign ownership transfer: {error}")))
+    tilo_identity_host::broker::device_signer_for(
+        &profile,
+        tilo_user_identity::Authority::OwnWorkspaces,
+    )
+    .map_err(|error| {
+        ActionError::Refused(format!(
+            "this device cannot sign ownership steps for the selected identity ({error}); \
+             use a device of yours whose certificate lets it own workspaces"
+        ))
+    })
 }
 
 fn apply_ownership_action(
@@ -583,7 +602,7 @@ fn apply_ownership_proposal(
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
         .map(collab_types::Ed25519PublicKey::from_bytes)
         .ok_or_else(|| ActionError::Refused("workspace owner is not certified".into()))?;
-    let signer = active_ownership_signer(state, current_owner)?;
+    let (signer, local_revocations) = active_ownership_signer(state, current_owner)?;
     let mut proposal_id = [0_u8; 32];
     rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), &mut proposal_id);
     let room = state
@@ -592,25 +611,18 @@ fn apply_ownership_proposal(
         .active_workspace()
         .map(|workspace| workspace.room.to_string())
         .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
-    let mut proposal = collab_types::OwnershipTransferProposalV1 {
-        version: collab_types::OWNERSHIP_TRANSFER_VERSION,
-        workspace: room,
+    let proposal = collab_types::OwnershipTransferProposalV1::new(
+        room,
         proposal_id,
         current_owner,
-        recipient: collab_types::Ed25519PublicKey::from_bytes(recipient_bytes),
+        collab_types::Ed25519PublicKey::from_bytes(recipient_bytes),
         expires_unix,
-        signature: collab_types::Signature::from_bytes([0; 64]),
-    };
-    proposal.signature = collab_types::Signature::from_bytes(
-        signer
-            .sign(&proposal.signing_bytes().map_err(|error| {
-                ActionError::Refused(format!("cannot encode ownership offer: {error}"))
-            })?)
-            .map_err(|error| ActionError::Refused(error.to_string()))?,
-    );
+        &signer,
+    )
+    .map_err(|error| ActionError::Refused(format!("cannot sign ownership offer: {error}")))?;
     state
         .tree_mut()
-        .propose_workspace_ownership_transfer(workspace_id, proposal, now)
+        .propose_workspace_ownership_transfer(workspace_id, proposal, now, &local_revocations)
         .map_err(|error| ActionError::Refused(error.to_string()))
 }
 
@@ -623,28 +635,20 @@ fn apply_ownership_acceptance(state: &ChromeState) -> Result<(), ActionError> {
         .active_workspace()
         .and_then(|workspace| workspace.pending_ownership_transfer.clone())
         .ok_or_else(|| ActionError::Refused("no ownership offer is pending".into()))?;
-    let signer = active_ownership_signer(state, proposal.recipient)?;
-    let mut acceptance = collab_types::OwnershipTransferAcceptanceV1 {
-        version: collab_types::OWNERSHIP_TRANSFER_VERSION,
-        proposal_digest: proposal
-            .digest()
-            .map_err(|error| ActionError::Refused(error.to_string()))?,
-        recipient: proposal.recipient,
-        accepted_unix: now,
-        signature: collab_types::Signature::from_bytes([0; 64]),
-    };
-    acceptance.signature = collab_types::Signature::from_bytes(
-        signer
-            .sign(&acceptance.signing_bytes().map_err(|error| {
-                ActionError::Refused(format!("cannot encode ownership acceptance: {error}"))
-            })?)
-            .map_err(|error| ActionError::Refused(error.to_string()))?,
-    );
-    let audit = collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, now)
-        .map_err(|error| ActionError::Refused(error.to_string()))?;
+    let (signer, local_revocations) = active_ownership_signer(state, proposal.recipient)?;
+    let acceptance = collab_types::OwnershipTransferAcceptanceV1::new(&proposal, now, &signer)
+        .map_err(|error| {
+            ActionError::Refused(format!("cannot sign ownership acceptance: {error}"))
+        })?;
+    let revocations = state
+        .tree()
+        .known_identity_revocations_with(&local_revocations);
+    let audit =
+        collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, now, &revocations)
+            .map_err(|error| ActionError::Refused(error.to_string()))?;
     state
         .tree_mut()
-        .accept_workspace_ownership_transfer(workspace_id, audit, now)
+        .accept_workspace_ownership_transfer(workspace_id, audit, now, &local_revocations)
         .map_err(|error| ActionError::Refused(error.to_string()))
 }
 
@@ -657,26 +661,14 @@ fn apply_ownership_cancellation(state: &ChromeState) -> Result<(), ActionError> 
         .active_workspace()
         .and_then(|workspace| workspace.pending_ownership_transfer.clone())
         .ok_or_else(|| ActionError::Refused("no ownership offer is pending".into()))?;
-    let signer = active_ownership_signer(state, proposal.current_owner)?;
-    let mut cancellation = collab_types::OwnershipTransferCancellationV1 {
-        version: collab_types::OWNERSHIP_TRANSFER_VERSION,
-        proposal_digest: proposal
-            .digest()
-            .map_err(|error| ActionError::Refused(error.to_string()))?,
-        current_owner: proposal.current_owner,
-        cancelled_unix: now,
-        signature: collab_types::Signature::from_bytes([0; 64]),
-    };
-    cancellation.signature = collab_types::Signature::from_bytes(
-        signer
-            .sign(&cancellation.signing_bytes().map_err(|error| {
-                ActionError::Refused(format!("cannot encode ownership cancellation: {error}"))
-            })?)
-            .map_err(|error| ActionError::Refused(error.to_string()))?,
-    );
+    let (signer, local_revocations) = active_ownership_signer(state, proposal.current_owner)?;
+    let cancellation = collab_types::OwnershipTransferCancellationV1::new(&proposal, now, &signer)
+        .map_err(|error| {
+            ActionError::Refused(format!("cannot sign ownership cancellation: {error}"))
+        })?;
     state
         .tree_mut()
-        .cancel_workspace_ownership_transfer(workspace_id, &cancellation)
+        .cancel_workspace_ownership_transfer(workspace_id, &cancellation, now, &local_revocations)
         .map_err(|error| ActionError::Refused(error.to_string()))
 }
 

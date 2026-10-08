@@ -467,7 +467,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             Some((bundle_dir.as_path(), "smoke-1.0.0")),
             &[],
             None,
-            None,
             &CapabilityPlan::empty(),
         );
         assert!(
@@ -605,7 +604,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             Path::new("/host/payload"),
             Some((resolved_path.as_path(), resolved_ver.as_str())),
             &[],
-            None,
             None,
             &CapabilityPlan::empty(),
         );
@@ -775,7 +773,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             None,
             &[],
             Some(&plan),
-            None,
             &CapabilityPlan::empty(),
         );
         // The host source must be the proxy socket, NOT /run/user/1234/bus itself.
@@ -1032,15 +1029,8 @@ fn capability_files_on_disk_become_binds_or_nothing() {
             ..Default::default()
         };
         let plan = launcher::run::resolve_capabilities(&m, &opts);
-        let argv = launcher::sandbox::build_bwrap_argv(
-            &m,
-            Path::new("/host/pkg"),
-            None,
-            &[],
-            None,
-            None,
-            &plan,
-        );
+        let argv =
+            launcher::sandbox::build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, &plan);
 
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind-try"

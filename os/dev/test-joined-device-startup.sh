@@ -119,7 +119,8 @@ device="$(tilo-enroll device-key | sed -n 's/.*"device_public_key": *"\([0-9a-f]
 tilo-enroll certify --root-key "$work/root.key" --device "$device" \
   --label "Paired laptop" --capability own --out "$work/member.cert"
 installed="$(printf '%s\n' "$pass" | sudo -S -p '' \
-  tilo-enroll install-cert --identity-dir "$identity_dir" --cert "$work/member.cert")"
+  tilo-enroll install-cert --identity-dir "$identity_dir" --cert "$work/member.cert" \
+    --person-uid "$(id -u)")"
 record="${installed#installed }"
 [ -s "$record" ] || { echo "install-cert named no identity record: $installed" >&2; exit 1; }
 printf '%s' "$(basename "$record" .json)" > "$identity_dir/active"

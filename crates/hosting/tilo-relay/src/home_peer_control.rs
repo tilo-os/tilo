@@ -50,6 +50,9 @@ enum BrokerCommand {
         expected_device: String,
         #[arg(long)]
         expected_service: String,
+        /// Seconds to wait for the device; bounded to the pairing window.
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=270))]
+        timeout: u64,
     },
 }
 
@@ -369,11 +372,33 @@ fn apply(request: &ApplyRequest) -> anyhow::Result<()> {
     result
 }
 
+/// The account this root process acts for: the polkit requester, or the
+/// account that ran it through `sudo` (an SSH session has no polkit agent).
+/// Only root can start this helper, so either variable comes from the
+/// authenticating launcher.
 fn invoking_uid() -> anyhow::Result<u32> {
-    std::env::var("PKEXEC_UID")
-        .context("polkit did not identify the requesting user")?
+    invoking_uid_from(
+        std::env::var("PKEXEC_UID").ok().as_deref(),
+        std::env::var("SUDO_UID").ok().as_deref(),
+    )
+}
+
+fn invoking_uid_from(pkexec: Option<&str>, sudo: Option<&str>) -> anyhow::Result<u32> {
+    let (value, launcher) = match (pkexec, sudo) {
+        (Some(value), _) => (value, "polkit"),
+        (None, Some(value)) => (value, "sudo"),
+        (None, None) => bail!(
+            "neither polkit nor sudo identified the requesting user; run this through \
+             `tilo-identity`, Settings, pkexec or sudo"
+        ),
+    };
+    let uid: u32 = value
         .parse()
-        .context("polkit supplied an invalid requesting user")
+        .with_context(|| format!("{launcher} supplied an invalid requesting user"))?;
+    if uid == 0 {
+        bail!("run this as the account that owns the identity, not as root");
+    }
+    Ok(uid)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -591,27 +616,66 @@ fn enrollment_command_result(
     bail!("{incomplete}: {detail}")
 }
 
+/// The `tilo-enroll approve-device` command line for the person `uid`.
+fn approve_device_args(
+    identity_root: &Path,
+    identity_dir: &Path,
+    uid: u32,
+    home: &Path,
+    expected_device: &str,
+    expected_service: &str,
+    timeout: u64,
+) -> Vec<std::ffi::OsString> {
+    [
+        "approve-device".into(),
+        "--identity-root".into(),
+        identity_root.into(),
+        "--identity-dir".into(),
+        identity_dir.into(),
+        "--expected-device".into(),
+        expected_device.into(),
+        "--expected-service".into(),
+        expected_service.into(),
+        "--timeout".into(),
+        timeout.to_string().into(),
+        "--personal-rooms".into(),
+        home.join(".local/state/tilo")
+            .join(tilo_relay_protocol::personal_devices::ROOMS_FILE)
+            .into(),
+        "--person-uid".into(),
+        uid.to_string().into(),
+    ]
+    .into()
+}
+
+/// Run `tilo-enroll approve-device` for the person who invoked this helper,
+/// with their privileges (or the identity root owner's, for a seed-backed
+/// root), and return its output for `tilo-identity` and Settings.
 fn approve_personal_device(
     identity_root: &Path,
     identity_dir: &Path,
     expected_device: &str,
     expected_service: &str,
-) -> anyhow::Result<()> {
+    timeout: u64,
+) -> anyhow::Result<bounded_command::Output> {
     let uid = invoking_uid()?;
     let account = account_for_uid(uid)?;
     let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
     let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
     let mut command = Command::new("/usr/bin/tilo-enroll");
-    command
-        .arg("approve-device")
-        .arg("--identity-root")
-        .arg(&identity_root)
-        .arg("--identity-dir")
-        .arg(identity_dir)
-        .args(["--expected-device", expected_device])
-        .args(["--expected-service", expected_service]);
+    command.args(approve_device_args(
+        &identity_root,
+        &identity_dir,
+        uid,
+        &account.home,
+        expected_device,
+        expected_service,
+        timeout,
+    ));
     // A seed under the identity root is opened by whoever owns that root, as
-    // before. Without one the approval signs with the person's record.
+    // before; that run reads and writes the person's identity directory and
+    // room list only as the person (`--person-uid`). Without a seed the
+    // approval signs with the person's record and runs entirely as them.
     if tilo_user_identity::IdentityPaths::under(&identity_root)
         .user_privkey
         .exists()
@@ -622,7 +686,8 @@ fn approve_personal_device(
     }
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
-    enrollment_command_result(&output, "personal-device enrollment was not completed")
+    enrollment_command_result(&output, "personal-device enrollment was not completed")?;
+    Ok(output)
 }
 
 fn main() -> anyhow::Result<std::process::ExitCode> {
@@ -635,6 +700,10 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 
 fn run() -> anyhow::Result<()> {
     require_root()?;
+    // The requester's umask reaches this helper through pkexec; nothing it
+    // or its children create is group- or world-writable because of it.
+    // SAFETY: umask has no preconditions.
+    unsafe { libc::umask(0o022) };
     match Cli::parse().command {
         BrokerCommand::Apply => apply(&read_request()?),
         BrokerCommand::ApproveEnrollment {
@@ -653,14 +722,19 @@ fn run() -> anyhow::Result<()> {
             identity_dir,
             expected_device,
             expected_service,
+            timeout,
         } => {
             validate_peer_ids(&expected_device, &expected_service)?;
-            approve_personal_device(
+            let output = approve_personal_device(
                 &identity_root,
                 &identity_dir,
                 &expected_device,
                 &expected_service,
-            )
+                timeout,
+            )?;
+            // Pass the result through for `tilo-identity` and Settings.
+            std::io::Write::write_all(&mut std::io::stdout(), &output.stdout)?;
+            Ok(())
         }
     }
 }
@@ -669,6 +743,38 @@ fn run() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn a_root_run_approval_names_the_person_whose_home_it_touches() {
+        let args = approve_device_args(
+            Path::new("/var/lib/tilo"),
+            Path::new("/home/p/.local/share/tilo/identities"),
+            1000,
+            Path::new("/home/p"),
+            &"11".repeat(32),
+            &"22".repeat(32),
+            60,
+        );
+        let position = args.iter().position(|arg| arg == "--person-uid").unwrap();
+        assert_eq!(args[position + 1], "1000");
+        let rooms = args
+            .iter()
+            .position(|arg| arg == "--personal-rooms")
+            .unwrap();
+        assert_eq!(
+            args[rooms + 1],
+            "/home/p/.local/state/tilo/personal-rooms.json"
+        );
+    }
+
+    #[test]
+    fn the_requesting_account_comes_from_polkit_or_sudo_and_is_never_root() {
+        assert_eq!(invoking_uid_from(Some("1000"), Some("7")).unwrap(), 1000);
+        assert_eq!(invoking_uid_from(None, Some("1001")).unwrap(), 1001);
+        assert!(invoking_uid_from(None, None).is_err());
+        assert!(invoking_uid_from(None, Some("0")).is_err());
+        assert!(invoking_uid_from(Some("x"), None).is_err());
+    }
 
     #[test]
     fn enrollment_requests_run_as_the_invoking_user_with_bounded_diagnostics() {

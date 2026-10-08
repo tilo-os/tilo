@@ -64,6 +64,37 @@ pub fn collaboration_join_signing_bytes(workspace_id: &str) -> Vec<u8> {
     message
 }
 
+/// Domain tag of every app action signature the identity service makes.
+///
+/// It opens with ten `0xff` bytes: no postcard varint decodes from them, so
+/// no canonically encoded structure whose first field is length-prefixed
+/// (a document operation's payload, for one) encodes to bytes that begin
+/// with this tag, and an app's signature can never verify as one.
+pub const APP_ACTION_TAG: &[u8] = b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfftilo-app-action-v1\0";
+
+/// The exact bytes the identity service signs when app `app_id` asks it to
+/// sign `message` for its action `action`: [`APP_ACTION_TAG`], then `app_id`
+/// and `action` each as a big-endian `u64` length and its bytes, then
+/// `message`. The service takes `app_id` from the launch handshake, never
+/// from the app, so an app's signature can only ever be presented as that
+/// app's action. Because every such signature covers bytes that begin with
+/// this tag, it can never stand for a collaboration join, a document
+/// operation, a delegated signature or a transport challenge. Fixed wire ABI:
+/// verifiers rebuild these bytes.
+#[must_use]
+pub fn app_action_signing_bytes(app_id: &str, action: &str, message: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(APP_ACTION_TAG);
+    for field in [app_id.as_bytes(), action.as_bytes()] {
+        // A slice length always fits a u64 on the platforms Tilo builds for.
+        let len = u64::try_from(field.len()).unwrap_or(u64::MAX);
+        bytes.extend_from_slice(&len.to_be_bytes());
+        bytes.extend_from_slice(field);
+    }
+    bytes.extend_from_slice(message);
+    bytes
+}
+
 /// Small synchronous wire protocol used over a connected identity stream. The launcher writes `Handshake` before the sandbox starts, so
 /// an app cannot claim another package or workspace.
 pub mod wire {

@@ -261,7 +261,6 @@ fn start_child(fixture: &Fixture, protected_path: PathBuf) {
         None,
         &[],
         None,
-        None,
         executable
             .file_name()
             .expect("test payload name")

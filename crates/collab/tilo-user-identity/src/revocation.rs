@@ -6,8 +6,10 @@
 //! > "The device with public key `revoked_device_public_key` should
 //! > no longer be trusted as part of my fleet, effective now."
 //!
-//! Peers holding a valid revocation entry MUST reject any signature
-//! made by that device key on or after `revoked_at_ns`. The
+//! Peers holding a valid revocation entry MUST reject every signature
+//! that device key makes from then on, whatever time the signature claims:
+//! a stolen key can back-date what it signs. `revoked_at_ns` records when
+//! the person revoked it, for display and audit. The
 //! revocation list lives in the user's directory CRDT (see
 //! [`crate::WorkspaceDirectory`]) so it propagates to every device
 //! that syncs with the user, and once acknowledged cannot be
@@ -57,8 +59,9 @@ pub struct RevocationEntry {
     pub user_public_key: [u8; 32],
     /// The device public key being revoked. 32 bytes.
     pub revoked_device_public_key: [u8; 32],
-    /// When the revocation took effect. Peers reject the device's
-    /// changes issued at or after this timestamp.
+    /// When the person revoked the device, for display and audit. The
+    /// revocation applies to everything the key signs, whatever time it
+    /// claims.
     pub revoked_at_ns: u64,
     /// Why the device was revoked. Advisory.
     pub reason: RevocationReason,
@@ -160,9 +163,13 @@ pub fn verify_revocation_entry(entry: &RevocationEntry) -> Result<(), Revocation
 /// key — a compromised device could try to publish a later
 /// revocation to "reset" its cut-off, but only the user root can
 /// sign, so this collapses to "the user chose the earliest".
+///
+/// Entries are kept per issuing identity: a list may hold several people's
+/// revocations, and one identity's entry for a key never replaces another
+/// identity's entry for the same key.
 #[derive(Clone, Debug, Default)]
 pub struct RevocationList {
-    entries: HashMap<[u8; 32], RevocationEntry>,
+    entries: HashMap<([u8; 32], [u8; 32]), RevocationEntry>,
 }
 
 impl RevocationList {
@@ -184,7 +191,7 @@ impl RevocationList {
     /// `entry`'s signature does not verify.
     pub fn insert(&mut self, entry: RevocationEntry) -> Result<bool, RevocationError> {
         verify_revocation_entry(&entry)?;
-        let key = entry.revoked_device_public_key;
+        let key = (entry.user_public_key, entry.revoked_device_public_key);
         match self.entries.get(&key) {
             Some(existing) if existing.revoked_at_ns <= entry.revoked_at_ns => Ok(false),
             _ => {
@@ -194,19 +201,25 @@ impl RevocationList {
         }
     }
 
-    /// True if `device_public_key` has been revoked at any point.
+    /// True if any identity in the list revoked `device_public_key`. A
+    /// conservative question for callers holding one identity's list; a
+    /// verifier that knows whose device it checks asks
+    /// [`Self::revocation_of`].
     pub fn is_revoked(&self, device_public_key: &[u8; 32]) -> bool {
-        self.entries.contains_key(device_public_key)
+        self.entries
+            .keys()
+            .any(|(_, device)| device == device_public_key)
     }
 
-    /// True if `device_public_key` was revoked at or before
-    /// `at_ns`. Callers validating a signed change use this to ask
-    /// "was the signer already revoked when they made this
-    /// change?"
-    pub fn is_revoked_at(&self, device_public_key: &[u8; 32], at_ns: u64) -> bool {
-        self.entries
-            .get(device_public_key)
-            .is_some_and(|e| at_ns >= e.revoked_at_ns)
+    /// The revocation `user_public_key` signed for `device_public_key`, if
+    /// any. A revocation is permanent: it holds for every signature the key
+    /// makes, whatever time the signer claims.
+    pub fn revocation_of(
+        &self,
+        user_public_key: &[u8; 32],
+        device_public_key: &[u8; 32],
+    ) -> Option<&RevocationEntry> {
+        self.entries.get(&(*user_public_key, *device_public_key))
     }
 
     /// Iterate over the revocation entries currently held.
@@ -214,7 +227,7 @@ impl RevocationList {
         self.entries.values()
     }
 
-    /// Number of unique revoked devices in the list.
+    /// Number of revocations in the list, one per identity and device.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -345,10 +358,12 @@ mod tests {
             assert!(!list.insert(sign(300)).unwrap());
 
             assert!(list.is_revoked(&device_pk));
-            assert!(list.is_revoked_at(&device_pk, 100));
-            assert!(list.is_revoked_at(&device_pk, 200));
-            // Just before the cut-off — not revoked yet.
-            assert!(!list.is_revoked_at(&device_pk, 99));
+            assert_eq!(
+                list.revocation_of(&user_pk, &device_pk)
+                    .map(|entry| entry.revoked_at_ns),
+                Some(100)
+            );
+            assert!(list.revocation_of(&[0; 32], &device_pk).is_none());
         }
 
         // Phase: list_rejects_bad_signature.

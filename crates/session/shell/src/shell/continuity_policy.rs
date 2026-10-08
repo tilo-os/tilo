@@ -1,8 +1,11 @@
 //! Device-local privacy policy for the personal continuity fabric.
 //!
 //! This is the single typed boundary between the settings document and shell
-//! continuity brokers. Missing, malformed, or partially-written settings are
-//! intentionally interpreted as disabled.
+//! continuity brokers. Every capability is off unless the document opts it in
+//! with a literal `true`. The master switch is on unless the document turns
+//! it off: on its own it lets the person's linked devices find each other on
+//! the local network and see each other's presence. A malformed section or a
+//! non-boolean switch reads as off.
 
 use serde_json::{Map, Value};
 
@@ -58,16 +61,63 @@ pub struct ContinuityPolicySnapshot {
     app_continuations: bool,
 }
 
+/// The switches the section holds, besides `audit`.
+const SWITCHES: [&str; 10] = [
+    "enabled",
+    "clipboard",
+    "notifications",
+    "wifi_settings",
+    "media",
+    "display_input",
+    "file_transfer",
+    "realtime_sessions",
+    "typed_gamepad",
+    "app_continuations",
+];
+
+/// Whether the complete section is well formed: only known fields,
+/// boolean switches and an audit list of entries. Malformed input cannot
+/// enable discovery or release a continuity capability.
+fn well_formed(section: &Map<String, Value>) -> bool {
+    section.iter().all(|(name, value)| match name.as_str() {
+        "audit" => value.as_array().is_some_and(|entries| {
+            entries.iter().all(|entry| {
+                entry.as_object().is_some_and(|entry| {
+                    entry.get("recorded_at_secs").is_some_and(Value::is_u64)
+                        && entry.get("enabled").is_some_and(Value::is_boolean)
+                        && entry
+                            .get("capability")
+                            .is_none_or(|capability| capability.is_null() || capability.is_string())
+                        && entry.keys().all(|key| {
+                            matches!(key.as_str(), "recorded_at_secs" | "capability" | "enabled")
+                        })
+                })
+            })
+        }),
+        name if SWITCHES.contains(&name) => value.is_boolean(),
+        _ => false,
+    })
+}
+
 impl ContinuityPolicySnapshot {
     /// Parse the settings document. Only literal booleans opt a capability in.
     #[must_use]
     pub fn from_document(document: &Map<String, Value>) -> Self {
-        let Some(Value::Object(section)) = document.get("continuity") else {
-            return Self::default();
+        let section = match document.get("continuity") {
+            None => {
+                return Self {
+                    enabled: true,
+                    ..Self::default()
+                };
+            }
+            Some(Value::Object(section)) if well_formed(section) => section,
+            Some(_) => return Self::default(),
         };
         let flag = |name: &str| section.get(name).and_then(Value::as_bool).unwrap_or(false);
         Self {
-            enabled: flag("enabled"),
+            enabled: section
+                .get("enabled")
+                .is_none_or(|value| value == &Value::Bool(true)),
             clipboard: flag("clipboard"),
             notifications: flag("notifications"),
             wifi_settings: flag("wifi_settings"),
@@ -227,12 +277,28 @@ mod tests {
     )]
     fn continuity_policy_fails_closed_and_opts_in_each_capability_under_the_master_switch() {
         fn absent_malformed_and_partial_policy_fail_closed() {
-            for value in [
-                json!({}),
-                json!({"continuity": true}),
-                json!({"continuity": {"enabled": true}}),
+            for (value, master) in [
+                (json!({}), true),
+                (json!({"continuity": {}}), true),
+                (json!({"continuity": true}), false),
+                (json!({"continuity": {"enabled": "yes"}}), false),
+                (
+                    json!({"continuity": {"enabled": true, "unknown": 1}}),
+                    false,
+                ),
+                (json!({"continuity": {"clipboard": "yes"}}), false),
+                (json!({"continuity": {"audit": [{"enabled": true}]}}), false),
+                (
+                    json!({"continuity": {"audit": [
+                        {"recorded_at_secs": 4, "capability": "clipboard", "enabled": true},
+                        {"recorded_at_secs": 5, "capability": null, "enabled": false}
+                    ]}}),
+                    true,
+                ),
+                (json!({"continuity": {"enabled": true}}), true),
             ] {
                 let policy = ContinuityPolicySnapshot::from_document(&document(&value));
+                assert_eq!(policy.enabled(), master, "{value}");
                 for capability in [
                     ContinuityCapability::Clipboard,
                     ContinuityCapability::Notifications,

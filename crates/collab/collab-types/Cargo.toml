@@ -38,6 +38,9 @@ hex.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
+# Ownership transfer is signed by a device under its person's root
+# certificate.
+tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
 
 [dev-dependencies]
 serde_json.workspace = true

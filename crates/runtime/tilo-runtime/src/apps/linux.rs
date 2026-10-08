@@ -27,8 +27,6 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
     let wayland = wayland_socket()?;
     let runtime_dir = service_directory(&apps.root, sockets)
         .map_err(|error| format!("refusing to launch: the launcher's services: {error}"))?;
-    let identity = tilo_identity_host::registry::selected_identity_path(&apps.room)
-        .map_err(|error| format!("refusing to launch: the workspace identity: {error}"))?;
     let mut command = Command::new(&launcher);
     command
         .arg("run")
@@ -42,9 +40,6 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         .arg(&app.package_id)
         .arg("--wayland-socket")
         .arg(&wayland);
-    if let Some(identity) = identity {
-        command.arg("--identity").arg(identity);
-    }
     command
         .env("XDG_RUNTIME_DIR", &runtime_dir)
         .env(launcher::services::BLOB_SOCKET_ENV, &sockets.blobs)

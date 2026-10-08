@@ -1544,6 +1544,10 @@ fn spawn_background_tasks(
 
     let revocation_task = spawn_revocation_refresh_task(
         cfg.state_root.clone(),
+        RecordedRevocations {
+            identity_root: cfg.identity_root.clone(),
+            user_public_key: identity.device_cert.user_public_key,
+        },
         identity.revocations.clone(),
         revocations.clone(),
     );
@@ -1874,37 +1878,101 @@ fn spawn_home_peer_authority_refresh(
     })
 }
 
+/// Revocations the person's devices recorded beside this machine's identity
+/// root, in any of the person's directories
+/// ([`tilo_relay_protocol::personal_devices::recorded_revocations`]): a
+/// device revoked with `tilo-identity` reaches the relay without an admin
+/// command. Only the relay owner's own root counts.
+struct RecordedRevocations {
+    identity_root: PathBuf,
+    user_public_key: [u8; 32],
+}
+
+impl RecordedRevocations {
+    fn entries(&self) -> Vec<tilo_user_identity::RevocationEntry> {
+        tilo_relay_protocol::personal_devices::recorded_revocations(
+            &tilo_relay_protocol::personal_devices::peers_dir(&self.identity_root),
+            &self.user_public_key,
+        )
+        .iter()
+        .filter(|entry| entry.user_public_key == self.user_public_key)
+        .cloned()
+        .collect()
+    }
+}
+
 /// The revocation-refresh loop: every second, re-read the on-disk
-/// revocation log and, if every entry still applies cleanly against
-/// the identity's own base list, swap it in. A malformed entry
-/// leaves the previously-live list untouched rather than partially
-/// applying.
+/// revocation log and the person's recorded revocations and, if every
+/// entry still applies cleanly against the identity's own base list, swap
+/// it in. A malformed log entry leaves the previously-live list untouched
+/// rather than partially applying.
+///
+/// The recorded directories may be removed by their owners, so a recorded
+/// revocation is copied into the relay's own log the first time it is seen
+/// and kept in memory for good: removing the file later never un-revokes the
+/// device here.
 fn spawn_revocation_refresh_task(
     state_root: PathBuf,
+    recorded: RecordedRevocations,
     base_revocations: RevocationList,
     live_revocations: Arc<std::sync::RwLock<RevocationList>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut kept = RevocationList::new();
         loop {
             interval.tick().await;
-            let Ok(entries) = crate::store::load_revocations(&state_root) else {
-                continue;
-            };
-            let mut next = base_revocations.clone();
-            let mut valid = true;
-            for entry in entries {
-                if next.insert(entry).is_err() {
-                    valid = false;
-                    break;
-                }
-            }
-            if valid && let Ok(mut current) = live_revocations.write() {
+            if let Some(next) =
+                refresh_revocations_once(&state_root, &recorded, &base_revocations, &mut kept)
+                && let Ok(mut current) = live_revocations.write()
+            {
                 *current = next;
             }
         }
     })
+}
+
+/// One pass of the revocation refresh: the relay log over `base`, plus the
+/// recorded revocations, which join `kept` (and the log) for good. `None`
+/// when the log is unreadable or holds an entry that does not apply.
+fn refresh_revocations_once(
+    state_root: &std::path::Path,
+    recorded: &RecordedRevocations,
+    base: &RevocationList,
+    kept: &mut RevocationList,
+) -> Option<RevocationList> {
+    let entries = crate::store::load_revocations(state_root).ok()?;
+    let mut next = base.clone();
+    for entry in &entries {
+        next.insert(entry.clone()).ok()?;
+    }
+    // Recorded entries were verified when read; a bad file in the shared
+    // directory is skipped rather than blocking the log.
+    let fresh: Vec<_> = recorded
+        .entries()
+        .into_iter()
+        .filter(|entry| {
+            !entries.iter().any(|logged| {
+                logged.user_public_key == entry.user_public_key
+                    && logged.revoked_device_public_key == entry.revoked_device_public_key
+            })
+        })
+        .collect();
+    for entry in &fresh {
+        let _ = kept.insert(entry.clone());
+    }
+    if !fresh.is_empty() {
+        let mut persisted = entries;
+        persisted.extend(fresh);
+        if let Err(error) = crate::store::save_revocations(state_root, &persisted) {
+            tracing::warn!(%error, "could not keep recorded revocations in the relay log");
+        }
+    }
+    for entry in kept.iter() {
+        let _ = next.insert(entry.clone());
+    }
+    Some(next)
 }
 
 /// The metrics-persist loop: snapshot + save to disk every second.
@@ -2954,6 +3022,58 @@ fn parse_iroh_node_id(hex_id: &str) -> Option<PublicKey> {
 mod tests {
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert};
+
+    #[test]
+    fn a_recorded_revocation_stays_in_force_after_its_file_is_removed() {
+        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+        let state = tempfile::tempdir().unwrap();
+        let identity_root = tempfile::tempdir().unwrap();
+        let (root, user) = UserIdentity::generate("Ada", 1);
+        let mut entry = RevocationEntry {
+            user_public_key: user.public_key,
+            revoked_device_public_key: [7; 32],
+            revoked_at_ns: 5,
+            reason: RevocationReason::Stolen,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut entry, &root).unwrap();
+        let person = tilo_relay_protocol::personal_devices::PersonPeers::open_or_create_own(
+            &tilo_relay_protocol::personal_devices::peers_dir(identity_root.path()),
+            &user.public_key,
+        )
+        .unwrap();
+        person.record_revocation(&entry).unwrap();
+        let recorded = RecordedRevocations {
+            identity_root: identity_root.path().to_path_buf(),
+            user_public_key: user.public_key,
+        };
+        let mut kept = RevocationList::new();
+        let live =
+            refresh_revocations_once(state.path(), &recorded, &RevocationList::new(), &mut kept)
+                .unwrap();
+        assert!(live.revocation_of(&user.public_key, &[7; 32]).is_some());
+        // The shared directory loses the file; the relay keeps the revocation,
+        // in memory and in its own log.
+        std::fs::remove_dir_all(
+            person
+                .dir()
+                .join(tilo_relay_protocol::personal_devices::REVOCATIONS_DIR),
+        )
+        .unwrap();
+        let live =
+            refresh_revocations_once(state.path(), &recorded, &RevocationList::new(), &mut kept)
+                .unwrap();
+        assert!(live.revocation_of(&user.public_key, &[7; 32]).is_some());
+        let mut restarted = RevocationList::new();
+        let live = refresh_revocations_once(
+            state.path(),
+            &recorded,
+            &RevocationList::new(),
+            &mut restarted,
+        )
+        .unwrap();
+        assert!(live.revocation_of(&user.public_key, &[7; 32]).is_some());
+    }
 
     fn test_handshake_trust(
         live_policy: Arc<std::sync::RwLock<TrustPolicy>>,

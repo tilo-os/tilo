@@ -749,7 +749,7 @@ pub fn load_or_create_device_key(
 
 /// Whether the `renameat2` that just failed did so because the filesystem
 /// has no `RENAME_NOREPLACE` (gVisor's gofer mounts answer `EINVAL`).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn no_replace_rename_unsupported() -> bool {
     matches!(
         io::Error::last_os_error().raw_os_error(),
@@ -761,7 +761,7 @@ fn no_replace_rename_unsupported() -> bool {
 /// `RENAME_NOREPLACE` would, then drop the source name. Both names are in the
 /// same private directory for the moment between. Returns 0 or -1 with
 /// `errno` set, like the syscall it stands in for.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn link_claim(source: &CString, destination: &CString) -> libc::c_long {
     // SAFETY: both pointers refer to live NUL-terminated path buffers.
     let linked = unsafe {
@@ -833,7 +833,7 @@ fn publish_identity_bytes_no_clobber(
             "device-key temporary path contains a NUL byte",
         ))
     })?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     let result = unsafe {
         libc::syscall(
             libc::SYS_renameat2,
@@ -844,7 +844,7 @@ fn publish_identity_bytes_no_clobber(
             libc::RENAME_NOREPLACE,
         )
     };
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     let result = if result != 0 && no_replace_rename_unsupported() {
         link_claim(&source, &destination)
     } else {
@@ -862,14 +862,15 @@ fn publish_identity_bytes_no_clobber(
             libc::RENAME_EXCL,
         )
     };
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let result = {
-        let _ = fs::remove_file(&temp);
-        return Err(PersistError::Io(io::Error::new(
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+    let claim = {
+        let _ = (&source, &destination);
+        Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "atomic no-replace identity publication is unsupported on this platform",
-        )));
+        ))
     };
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
     let claim = if result == 0 {
         Ok(())
     } else {
@@ -1057,14 +1058,7 @@ pub fn provision_joined_device(
         user_public_key,
         device_public_key: device.verifying_key().to_bytes(),
         device_label: label.to_string(),
-        capabilities: DeviceCapabilities {
-            can_own_workspaces: true,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: true,
-            foreign: false,
-            can_administer_devices: false,
-        },
+        capabilities: DeviceCapabilities::joined(),
         issued_at_ns: now_ns,
         expires_at_ns: None,
         signature: [0; 64],

@@ -25,6 +25,8 @@
 //! - [`home_peer`] — the registry record written after enrolling an
 //!   always-on peer;
 //! - [`metrics`] — the counter snapshot the daemon persists for status UIs;
+//! - [`personal_devices`] — the person's other devices one machine dials,
+//!   the rooms they share and the session's presence snapshot of them;
 //! - [`process_lease`] — the PID + start-time pair carried across the
 //!   enrollment privilege boundary;
 //! - [`room_workspace_id`] / [`personal_continuity_workspace_id`] — the
@@ -58,6 +60,7 @@ pub mod legacy_window;
 pub mod live;
 pub mod mesh;
 pub mod metrics;
+pub mod personal_devices;
 pub mod policy;
 pub mod process_lease;
 pub mod retention;

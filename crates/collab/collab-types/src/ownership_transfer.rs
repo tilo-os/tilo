@@ -1,15 +1,67 @@
 //! Signed, two-party workspace ownership transfer protocol.
+//!
+//! Each step is signed as a person by one of their devices: the device key
+//! signs, and the record carries the certificate the person's root issued for
+//! that key ([`DelegatedSignature`]). The root itself never has to be on the
+//! device that offers, accepts or cancels. A verifier accepts a step only
+//! through [`verify_delegated`]: the certificate chains to the named person,
+//! is valid at the time checked, was not revoked by that person's root, and
+//! grants [`Authority::OwnWorkspaces`] — handing a workspace over, cancelling
+//! the offer and taking ownership all act as a workspace owner, so a device
+//! certified only to host may do none of them.
 
-use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-use crate::{
-    CanonicalError, Ed25519PublicKey, Signature, VerifyError, canonical_bytes, sign_event,
-    verify_event,
+use tilo_user_identity::{
+    Authority, ChainError, ChainPolicy, DelegatedSignature, IdentitySigner, RevocationList,
+    verify_delegated,
 };
 
-pub const OWNERSHIP_TRANSFER_VERSION: u16 = 1;
+use crate::{CanonicalError, Ed25519PublicKey, canonical_bytes};
+
+pub const OWNERSHIP_TRANSFER_VERSION: u16 = 2;
+
+const PROPOSAL_DOMAIN: &str = "tilo.ownership-transfer.proposal.v2";
+const ACCEPTANCE_DOMAIN: &str = "tilo.ownership-transfer.acceptance.v2";
+const CANCELLATION_DOMAIN: &str = "tilo.ownership-transfer.cancellation.v2";
+
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
+
+/// Check `signature` over `bytes` in `domain` as `person` at `at_unix`.
+fn verify_step(
+    signature: &DelegatedSignature,
+    domain: &str,
+    bytes: &[u8],
+    person: &Ed25519PublicKey,
+    revocations: &RevocationList,
+    at_unix: u64,
+) -> Result<(), OwnershipTransferError> {
+    verify_delegated(
+        signature,
+        domain,
+        bytes,
+        &ChainPolicy {
+            user_public_key: person.as_bytes(),
+            authority: Authority::OwnWorkspaces,
+            revocations,
+            now_ns: at_unix.saturating_mul(NANOS_PER_SECOND),
+        },
+    )?;
+    Ok(())
+}
+
+/// Sign `bytes` in `domain` with `signer`, which must speak for `person`.
+fn sign_step(
+    signer: &dyn IdentitySigner,
+    person: &Ed25519PublicKey,
+    domain: &str,
+    bytes: &[u8],
+) -> Result<DelegatedSignature, OwnershipTransferError> {
+    if &signer.user_public_key() != person.as_bytes() {
+        return Err(OwnershipTransferError::WrongSigner);
+    }
+    Ok(signer.sign_as_person(domain, bytes)?)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,23 +72,25 @@ pub struct OwnershipTransferProposalV1 {
     pub current_owner: Ed25519PublicKey,
     pub recipient: Ed25519PublicKey,
     pub expires_unix: u64,
-    pub signature: Signature,
+    pub signature: DelegatedSignature,
 }
 
 impl OwnershipTransferProposalV1 {
-    /// Create and sign an exact-recipient proposal.
+    /// Create an exact-recipient proposal, signed as `current_owner` by
+    /// `signer`.
     ///
     /// # Errors
     ///
-    /// Returns an error if canonical encoding fails.
+    /// Returns an error if `signer` speaks for someone other than
+    /// `current_owner`, cannot sign, or canonical encoding fails.
     pub fn new(
         workspace: String,
         proposal_id: [u8; 32],
         current_owner: Ed25519PublicKey,
         recipient: Ed25519PublicKey,
         expires_unix: u64,
-        owner_key: &SigningKey,
-    ) -> Result<Self, CanonicalError> {
+        signer: &dyn IdentitySigner,
+    ) -> Result<Self, OwnershipTransferError> {
         let mut proposal = Self {
             version: OWNERSHIP_TRANSFER_VERSION,
             workspace,
@@ -44,9 +98,14 @@ impl OwnershipTransferProposalV1 {
             current_owner,
             recipient,
             expires_unix,
-            signature: Signature::from_bytes([0; 64]),
+            signature: placeholder_signature(),
         };
-        proposal.signature = sign_event(&proposal.signing_bytes()?, owner_key)?;
+        proposal.signature = sign_step(
+            signer,
+            &current_owner,
+            PROPOSAL_DOMAIN,
+            &proposal.signing_bytes()?,
+        )?;
         Ok(proposal)
     }
 
@@ -57,7 +116,7 @@ impl OwnershipTransferProposalV1 {
     /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
-            b"tilo.ownership-transfer.proposal.v1".as_slice(),
+            PROPOSAL_DOMAIN.as_bytes(),
             self.version,
             &self.workspace,
             self.proposal_id,
@@ -77,12 +136,17 @@ impl OwnershipTransferProposalV1 {
         Ok(Sha256::digest(bytes).into())
     }
 
-    /// Verify signer, version, distinct recipient, and expiry.
+    /// Verify version, distinct recipient, expiry, and the owner's signature
+    /// at `now_unix` against the owner's `revocations`.
     ///
     /// # Errors
     ///
-    /// Returns the precise malformed, expired, or signature failure.
-    pub fn verify(&self, now_unix: u64) -> Result<(), OwnershipTransferError> {
+    /// Returns the precise malformed, expired, or signature-chain failure.
+    pub fn verify(
+        &self,
+        now_unix: u64,
+        revocations: &RevocationList,
+    ) -> Result<(), OwnershipTransferError> {
         if self.version != OWNERSHIP_TRANSFER_VERSION {
             return Err(OwnershipTransferError::UnsupportedVersion);
         }
@@ -92,8 +156,14 @@ impl OwnershipTransferProposalV1 {
         if now_unix >= self.expires_unix {
             return Err(OwnershipTransferError::Expired);
         }
-        verify_event(&self.signing_bytes()?, &self.signature, &self.current_owner)?;
-        Ok(())
+        verify_step(
+            &self.signature,
+            PROPOSAL_DOMAIN,
+            &self.signing_bytes()?,
+            &self.current_owner,
+            revocations,
+            now_unix,
+        )
     }
 }
 
@@ -104,28 +174,34 @@ pub struct OwnershipTransferAcceptanceV1 {
     pub proposal_digest: [u8; 32],
     pub recipient: Ed25519PublicKey,
     pub accepted_unix: u64,
-    pub signature: Signature,
+    pub signature: DelegatedSignature,
 }
 
 impl OwnershipTransferAcceptanceV1 {
-    /// Sign acceptance of one exact proposal as its named recipient.
+    /// Accept one exact proposal, signed as its named recipient by `signer`.
     ///
     /// # Errors
     ///
-    /// Returns an error if canonical encoding fails.
+    /// Returns an error if `signer` speaks for someone other than the
+    /// recipient, cannot sign, or canonical encoding fails.
     pub fn new(
         proposal: &OwnershipTransferProposalV1,
         accepted_unix: u64,
-        recipient_key: &SigningKey,
-    ) -> Result<Self, CanonicalError> {
+        signer: &dyn IdentitySigner,
+    ) -> Result<Self, OwnershipTransferError> {
         let mut acceptance = Self {
             version: OWNERSHIP_TRANSFER_VERSION,
             proposal_digest: proposal.digest()?,
             recipient: proposal.recipient,
             accepted_unix,
-            signature: Signature::from_bytes([0; 64]),
+            signature: placeholder_signature(),
         };
-        acceptance.signature = sign_event(&acceptance.signing_bytes()?, recipient_key)?;
+        acceptance.signature = sign_step(
+            signer,
+            &proposal.recipient,
+            ACCEPTANCE_DOMAIN,
+            &acceptance.signing_bytes()?,
+        )?;
         Ok(acceptance)
     }
 
@@ -136,7 +212,7 @@ impl OwnershipTransferAcceptanceV1 {
     /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
-            b"tilo.ownership-transfer.acceptance.v1".as_slice(),
+            ACCEPTANCE_DOMAIN.as_bytes(),
             self.version,
             self.proposal_digest,
             self.recipient,
@@ -144,17 +220,20 @@ impl OwnershipTransferAcceptanceV1 {
         ))
     }
 
-    /// Verify exact proposal, recipient, time bounds, and signature.
+    /// Verify the exact proposal, recipient, time bounds, and both signature
+    /// chains at `now_unix`.
     ///
     /// # Errors
     ///
-    /// Returns the precise proposal, expiry, encoding, or signature failure.
+    /// Returns the precise proposal, expiry, encoding, or signature-chain
+    /// failure.
     pub fn verify(
         &self,
         proposal: &OwnershipTransferProposalV1,
         now_unix: u64,
+        revocations: &RevocationList,
     ) -> Result<(), OwnershipTransferError> {
-        proposal.verify(now_unix)?;
+        proposal.verify(now_unix, revocations)?;
         if self.version != OWNERSHIP_TRANSFER_VERSION {
             return Err(OwnershipTransferError::UnsupportedVersion);
         }
@@ -164,8 +243,14 @@ impl OwnershipTransferAcceptanceV1 {
         if self.accepted_unix > now_unix || self.accepted_unix >= proposal.expires_unix {
             return Err(OwnershipTransferError::Expired);
         }
-        verify_event(&self.signing_bytes()?, &self.signature, &self.recipient)?;
-        Ok(())
+        verify_step(
+            &self.signature,
+            ACCEPTANCE_DOMAIN,
+            &self.signing_bytes()?,
+            &self.recipient,
+            revocations,
+            now_unix,
+        )
     }
 }
 
@@ -176,28 +261,34 @@ pub struct OwnershipTransferCancellationV1 {
     pub proposal_digest: [u8; 32],
     pub current_owner: Ed25519PublicKey,
     pub cancelled_unix: u64,
-    pub signature: Signature,
+    pub signature: DelegatedSignature,
 }
 
 impl OwnershipTransferCancellationV1 {
-    /// Sign cancellation of one exact proposal as its current owner.
+    /// Cancel one exact proposal, signed as its current owner by `signer`.
     ///
     /// # Errors
     ///
-    /// Returns an error if canonical encoding fails.
+    /// Returns an error if `signer` speaks for someone other than the
+    /// current owner, cannot sign, or canonical encoding fails.
     pub fn new(
         proposal: &OwnershipTransferProposalV1,
         cancelled_unix: u64,
-        owner_key: &SigningKey,
-    ) -> Result<Self, CanonicalError> {
+        signer: &dyn IdentitySigner,
+    ) -> Result<Self, OwnershipTransferError> {
         let mut cancellation = Self {
             version: OWNERSHIP_TRANSFER_VERSION,
             proposal_digest: proposal.digest()?,
             current_owner: proposal.current_owner,
             cancelled_unix,
-            signature: Signature::from_bytes([0; 64]),
+            signature: placeholder_signature(),
         };
-        cancellation.signature = sign_event(&cancellation.signing_bytes()?, owner_key)?;
+        cancellation.signature = sign_step(
+            signer,
+            &proposal.current_owner,
+            CANCELLATION_DOMAIN,
+            &cancellation.signing_bytes()?,
+        )?;
         Ok(cancellation)
     }
 
@@ -208,7 +299,7 @@ impl OwnershipTransferCancellationV1 {
     /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
-            b"tilo.ownership-transfer.cancellation.v1".as_slice(),
+            CANCELLATION_DOMAIN.as_bytes(),
             self.version,
             self.proposal_digest,
             self.current_owner,
@@ -216,14 +307,18 @@ impl OwnershipTransferCancellationV1 {
         ))
     }
 
-    /// Verify the cancellation against the exact pending proposal.
+    /// Verify the cancellation against the exact pending proposal, with the
+    /// owner's signature chain checked at `now_unix`.
     ///
     /// # Errors
     ///
-    /// Returns an error for mismatched records, encoding, or signature.
+    /// Returns an error for mismatched records, encoding, or the signature
+    /// chain.
     pub fn verify(
         &self,
         proposal: &OwnershipTransferProposalV1,
+        now_unix: u64,
+        revocations: &RevocationList,
     ) -> Result<(), OwnershipTransferError> {
         if self.version != OWNERSHIP_TRANSFER_VERSION
             || self.current_owner != proposal.current_owner
@@ -231,8 +326,14 @@ impl OwnershipTransferCancellationV1 {
         {
             return Err(OwnershipTransferError::WrongProposalOrRecipient);
         }
-        verify_event(&self.signing_bytes()?, &self.signature, &self.current_owner)?;
-        Ok(())
+        verify_step(
+            &self.signature,
+            CANCELLATION_DOMAIN,
+            &self.signing_bytes()?,
+            &self.current_owner,
+            revocations,
+            now_unix,
+        )
     }
 }
 
@@ -258,6 +359,7 @@ impl OwnershipTransferAuditV1 {
         proposal: OwnershipTransferProposalV1,
         acceptance: OwnershipTransferAcceptanceV1,
         committed_unix: u64,
+        revocations: &RevocationList,
     ) -> Result<Self, OwnershipTransferError> {
         let audit = Self {
             version: OWNERSHIP_TRANSFER_VERSION,
@@ -265,7 +367,7 @@ impl OwnershipTransferAuditV1 {
             acceptance,
             committed_unix,
         };
-        audit.verify()?;
+        audit.verify(revocations)?;
         Ok(audit)
     }
 
@@ -276,7 +378,7 @@ impl OwnershipTransferAuditV1 {
     /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
-            b"tilo.ownership-transfer.commit.v1".as_slice(),
+            b"tilo.ownership-transfer.commit.v2".as_slice(),
             self.version,
             &self.proposal,
             &self.acceptance,
@@ -285,21 +387,70 @@ impl OwnershipTransferAuditV1 {
     }
 
     /// Verify the outgoing owner's exact-recipient authorization and the
-    /// incoming owner's acceptance. Their successful verification is the
+    /// incoming owner's acceptance, both chains as of `committed_unix`, with
+    /// the revocations known now. Their successful verification is the
     /// commit rule; cancellation and acceptance ordering is resolved by the
     /// durable workspace state transaction.
     ///
     /// # Errors
     ///
-    /// Returns the precise acceptance, encoding, or signature failure.
-    pub fn verify(&self) -> Result<(), OwnershipTransferError> {
+    /// Returns the precise acceptance, encoding, or signature-chain failure.
+    pub fn verify(&self, revocations: &RevocationList) -> Result<(), OwnershipTransferError> {
         if self.version != OWNERSHIP_TRANSFER_VERSION {
             return Err(OwnershipTransferError::UnsupportedVersion);
         }
         self.acceptance
-            .verify(&self.proposal, self.committed_unix)?;
+            .verify(&self.proposal, self.committed_unix, revocations)?;
         Ok(())
     }
+}
+
+/// A signature slot before signing; never verifies.
+fn placeholder_signature() -> DelegatedSignature {
+    DelegatedSignature {
+        cert: tilo_user_identity::DeviceCert {
+            user_public_key: [0; 32],
+            device_public_key: [0; 32],
+            device_label: String::new(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 0,
+            expires_at_ns: None,
+            signature: [0; 64],
+        },
+        signature: [0; 64],
+    }
+}
+
+/// A fresh device key certified by `root` with `capabilities`, ready to sign
+/// ownership steps as that person. For tests and rendered fixtures, which
+/// hold a root key in place of an enrolled device.
+///
+/// # Panics
+///
+/// Never in practice: the certificate is built for the key it pairs with.
+#[doc(hidden)]
+#[must_use]
+#[allow(
+    clippy::missing_panics_doc,
+    clippy::expect_used,
+    reason = "the certificate is minted for exactly this key"
+)]
+pub fn fixture_device_signer(
+    root: &ed25519_dalek::SigningKey,
+    capabilities: tilo_user_identity::DeviceCapabilities,
+) -> tilo_user_identity::DeviceSigner {
+    let (key, device) = tilo_user_identity::DeviceIdentity::generate("Fixture device", 1);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device.public_key,
+        device_label: device.label,
+        capabilities,
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, root).expect("root signs its own certificate");
+    tilo_user_identity::DeviceSigner::new(key, cert).expect("the certificate names this key")
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -312,66 +463,188 @@ pub enum OwnershipTransferError {
     Expired,
     #[error("acceptance or cancellation does not match the exact proposal and recipient")]
     WrongProposalOrRecipient,
+    #[error("this device signs for another person than the transfer names")]
+    WrongSigner,
     #[error(transparent)]
     Canonical(#[from] CanonicalError),
-    #[error(transparent)]
-    Verify(#[from] VerifyError),
+    #[error("ownership-transfer signature: {0}")]
+    Chain(#[from] ChainError),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generate_keypair;
+    use tilo_user_identity::{
+        DeviceCapabilities, DeviceSigner, RevocationEntry, RevocationReason, UserIdentity,
+        sign_revocation_entry,
+    };
 
-    /// Owner authorisation plus exact recipient acceptance commits; another recipient, expiry and
-    /// tampering fail closed.
+    struct Person {
+        root: ed25519_dalek::SigningKey,
+        key: Ed25519PublicKey,
+    }
+
+    fn person() -> Person {
+        let (root, user) = UserIdentity::generate("person", 1);
+        Person {
+            root,
+            key: Ed25519PublicKey::from_bytes(user.public_key),
+        }
+    }
+
+    /// A device the person enrolled without giving it their root.
+    fn joined(person: &Person) -> DeviceSigner {
+        fixture_device_signer(&person.root, DeviceCapabilities::joined())
+    }
+
+    fn propose(
+        owner: &Person,
+        recipient: &Person,
+        signer: &DeviceSigner,
+    ) -> OwnershipTransferProposalV1 {
+        OwnershipTransferProposalV1::new(
+            "workspace".into(),
+            [3; 32],
+            owner.key,
+            recipient.key,
+            20,
+            signer,
+        )
+        .unwrap()
+    }
+
+    fn revoke(person: &Person, signer: &DeviceSigner) -> RevocationList {
+        let mut entry = RevocationEntry {
+            user_public_key: *person.key.as_bytes(),
+            revoked_device_public_key: signer.cert().device_public_key,
+            revoked_at_ns: 1,
+            reason: RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut entry, &person.root).unwrap();
+        let mut list = RevocationList::new();
+        list.insert(entry).unwrap();
+        list
+    }
+
     #[test]
-    fn ownership_transfer_commits_only_for_the_exact_recipient() {
-        // Phase: owner_authorization_and_exact_recipient_acceptance_commit.
-        {
-            let (owner_key, owner) = generate_keypair();
-            let (recipient_key, recipient) = generate_keypair();
-            let proposal = OwnershipTransferProposalV1::new(
-                "workspace".into(),
-                [3; 32],
-                owner,
-                recipient,
-                20,
-                &owner_key,
-            )
-            .unwrap();
-            let acceptance =
-                OwnershipTransferAcceptanceV1::new(&proposal, 10, &recipient_key).unwrap();
-            let audit = OwnershipTransferAuditV1::new(proposal, acceptance, 11).unwrap();
-            audit.verify().unwrap();
-        }
+    fn devices_without_the_root_hand_over_and_accept_ownership() {
+        let none = RevocationList::new();
+        let owner = person();
+        let recipient = person();
+        let proposal = propose(&owner, &recipient, &joined(&owner));
+        proposal.verify(10, &none).unwrap();
+        let acceptance =
+            OwnershipTransferAcceptanceV1::new(&proposal, 10, &joined(&recipient)).unwrap();
+        let audit = OwnershipTransferAuditV1::new(proposal.clone(), acceptance, 11, &none).unwrap();
+        audit.verify(&none).unwrap();
+        let cancellation =
+            OwnershipTransferCancellationV1::new(&proposal, 12, &joined(&owner)).unwrap();
+        cancellation.verify(&proposal, 12, &none).unwrap();
+    }
 
-        // Phase: other_recipient_expiry_and_tamper_fail_closed.
-        {
-            let (owner_key, owner) = generate_keypair();
-            let (recipient_key, recipient) = generate_keypair();
-            let (attacker_key, _) = generate_keypair();
-            let proposal = OwnershipTransferProposalV1::new(
-                "workspace".into(),
-                [4; 32],
-                owner,
-                recipient,
-                20,
-                &owner_key,
-            )
+    #[test]
+    fn other_recipients_expiry_and_tampering_fail_closed() {
+        let none = RevocationList::new();
+        let owner = person();
+        let recipient = person();
+        let attacker = person();
+        let proposal = propose(&owner, &recipient, &joined(&owner));
+        assert_eq!(
+            proposal.verify(20, &none),
+            Err(OwnershipTransferError::Expired)
+        );
+
+        // Another person's device cannot sign as the recipient...
+        assert_eq!(
+            OwnershipTransferAcceptanceV1::new(&proposal, 10, &joined(&attacker)).unwrap_err(),
+            OwnershipTransferError::WrongSigner
+        );
+        // ...nor pass off its own certificate for the recipient's.
+        let mut forged =
+            OwnershipTransferAcceptanceV1::new(&proposal, 10, &joined(&recipient)).unwrap();
+        forged.signature = joined(&attacker)
+            .sign_as_person(ACCEPTANCE_DOMAIN, &forged.signing_bytes().unwrap())
             .unwrap();
-            assert!(proposal.verify(20).is_err());
-            let forged = OwnershipTransferAcceptanceV1::new(&proposal, 10, &attacker_key).unwrap();
-            assert!(forged.verify(&proposal, 11).is_err());
-            let mut accepted =
-                OwnershipTransferAcceptanceV1::new(&proposal, 10, &recipient_key).unwrap();
-            accepted.proposal_digest[0] ^= 1;
-            assert!(accepted.verify(&proposal, 11).is_err());
-            let acceptance =
-                OwnershipTransferAcceptanceV1::new(&proposal, 10, &recipient_key).unwrap();
-            let mut audit = OwnershipTransferAuditV1::new(proposal, acceptance, 11).unwrap();
-            audit.acceptance.signature = Signature::from_bytes([0; 64]);
-            assert!(audit.verify().is_err());
-        }
+        assert_eq!(
+            forged.verify(&proposal, 11, &none),
+            Err(OwnershipTransferError::Chain(ChainError::OtherIdentity))
+        );
+
+        let mut accepted =
+            OwnershipTransferAcceptanceV1::new(&proposal, 10, &joined(&recipient)).unwrap();
+        accepted.proposal_digest[0] ^= 1;
+        assert!(accepted.verify(&proposal, 11, &none).is_err());
+
+        let mut tampered = proposal.clone();
+        tampered.expires_unix = 30;
+        assert_eq!(
+            tampered.verify(10, &none),
+            Err(OwnershipTransferError::Chain(ChainError::BadSignature))
+        );
+
+        // A signature over the proposal bytes cannot be replayed as a
+        // cancellation: each step signs in its own domain.
+        let mut replayed =
+            OwnershipTransferCancellationV1::new(&proposal, 12, &joined(&owner)).unwrap();
+        replayed.signature = proposal.signature.clone();
+        assert!(replayed.verify(&proposal, 12, &none).is_err());
+
+        let acceptance =
+            OwnershipTransferAcceptanceV1::new(&proposal, 10, &joined(&recipient)).unwrap();
+        let mut audit = OwnershipTransferAuditV1::new(proposal, acceptance, 11, &none).unwrap();
+        audit.acceptance.signature.signature = [0; 64];
+        assert!(audit.verify(&none).is_err());
+    }
+
+    #[test]
+    fn host_only_and_revoked_devices_cannot_act_as_owner() {
+        let none = RevocationList::new();
+        let owner = person();
+        let recipient = person();
+
+        let host = fixture_device_signer(&owner.root, DeviceCapabilities::host());
+        let proposal = propose(&owner, &recipient, &host);
+        assert_eq!(
+            proposal.verify(10, &none),
+            Err(OwnershipTransferError::Chain(ChainError::NotPermitted(
+                Authority::OwnWorkspaces
+            )))
+        );
+
+        let device = joined(&owner);
+        let proposal = propose(&owner, &recipient, &device);
+        let revoked = revoke(&owner, &device);
+        assert_eq!(
+            proposal.verify(10, &revoked),
+            Err(OwnershipTransferError::Chain(ChainError::Revoked))
+        );
+
+        // A revoked recipient device's acceptance is refused, and an audit
+        // re-verified after the revocation is learned no longer holds.
+        let fine = propose(&owner, &recipient, &joined(&owner));
+        let recipient_device = joined(&recipient);
+        let acceptance = OwnershipTransferAcceptanceV1::new(&fine, 10, &recipient_device).unwrap();
+        let audit = OwnershipTransferAuditV1::new(fine, acceptance, 11, &none).unwrap();
+        assert_eq!(
+            audit.verify(&revoke(&recipient, &recipient_device)),
+            Err(OwnershipTransferError::Chain(ChainError::Revoked))
+        );
+    }
+
+    #[test]
+    fn records_round_trip_through_their_wire_encodings() {
+        let owner = person();
+        let recipient = person();
+        let proposal = propose(&owner, &recipient, &joined(&owner));
+        let bytes = canonical_bytes(&proposal).unwrap();
+        let back: OwnershipTransferProposalV1 = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(back, proposal);
+        let json = serde_json::to_string(&proposal).unwrap();
+        assert_eq!(
+            serde_json::from_str::<OwnershipTransferProposalV1>(&json).unwrap(),
+            proposal
+        );
+        back.verify(10, &RevocationList::new()).unwrap();
     }
 }

@@ -64,7 +64,6 @@ impl NativeSignalWorkingProfile {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| SendError::AlreadyReserved)?;
         options.data_home = Some(self.ram.source());
-        options.identity = launcher::run::IdentitySource::None;
         options.no_services = true;
         Ok(())
     }

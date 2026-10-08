@@ -127,7 +127,8 @@ containerfile="$repo/os/Containerfile"
 # the destination, source bytes and executable mode remain the same.
 # The disk-unlock polkit action and exact-command read rule ship beside the
 # existing policies. Their two rootfs payload rows are the intentional delta.
-expected_contract=d62c84fe149b06832c2a75201c6e30a2cef878031d2aa6a349b92e8a8351f96c
+# The identity CLI adds exactly one component output at /usr/bin/tilo-identity.
+expected_contract=30ac8fe55d60b264bf32ff53048fb7496d8b321a03a46f9d349101435e7979e9
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

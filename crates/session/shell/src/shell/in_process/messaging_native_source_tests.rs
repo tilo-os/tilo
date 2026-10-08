@@ -1491,7 +1491,10 @@ fn exercise_native_ram_profile_handoff(account: &NativeSignalAccount, root: &std
             std::fs::read(profile.join("data/account")).unwrap(),
             b"fixture-profile-secret"
         );
-        assert_eq!(options.identity, launcher::run::IdentitySource::None);
+        assert!(
+            options.no_services,
+            "an owned provider has no identity service"
+        );
         assert!(options.no_services);
         assert!(working.configure_launch(&mut options).is_err());
         assert!(working.cancel_before_launch().is_err());

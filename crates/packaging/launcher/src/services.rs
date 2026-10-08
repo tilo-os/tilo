@@ -120,8 +120,7 @@ pub(crate) const ACCOUNT_CHILD_FD: i32 = 42;
 /// Bwrap private-service namespace information, closed before app execution.
 pub(crate) const SERVICE_NAMESPACE_CHILD_FD: i32 = 43;
 /// Every fixed child slot; declared services are numbered around them.
-pub(crate) const RESERVED_CHILD_FDS: [i32; 8] = [
-    runtime_identity::broker::BROKER_CHILD_FD,
+pub(crate) const RESERVED_CHILD_FDS: [i32; 7] = [
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
     CHOOSER_CHILD_FD,
