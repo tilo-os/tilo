@@ -7,17 +7,26 @@ use serde_json::{Value, json};
 pub enum Topic {
     Start,
     Actions,
+    #[value(alias = "undo", alias = "history", alias = "sync")]
+    Collaborate,
     Verify,
     Publish,
 }
 
 impl Topic {
-    const ALL: [Self; 4] = [Self::Start, Self::Actions, Self::Verify, Self::Publish];
+    const ALL: [Self; 5] = [
+        Self::Start,
+        Self::Actions,
+        Self::Collaborate,
+        Self::Verify,
+        Self::Publish,
+    ];
 
     fn id(self) -> &'static str {
         match self {
             Self::Start => "start",
             Self::Actions => "actions",
+            Self::Collaborate => "collaborate",
             Self::Verify => "verify",
             Self::Publish => "publish",
         }
@@ -27,6 +36,7 @@ impl Topic {
         match self {
             Self::Start => "Create an app and reload it",
             Self::Actions => "Resources, controls and agent actions",
+            Self::Collaborate => "Collaboration, history, undo and device sync",
             Self::Verify => "Diagnose, test and inspect the production view",
             Self::Publish => "Signing, registration, reusable CI and publication",
         }
@@ -40,6 +50,7 @@ impl Topic {
         match self {
             Self::Start => include_str!("../../../../docs/developers/tasks/start.md"),
             Self::Actions => include_str!("../../../../docs/developers/tasks/actions.md"),
+            Self::Collaborate => include_str!("../../../../docs/developers/tasks/collaborate.md"),
             Self::Verify => include_str!("../../../../docs/developers/tasks/verify.md"),
             Self::Publish => include_str!("../../../../docs/developers/tasks/publish.md"),
         }
@@ -59,7 +70,7 @@ pub fn run(topic: Option<Topic>, human: bool) -> Value {
         if human {
             println!("Offline task guides: tilo-app guide <topic>\n");
             for topic in Topic::ALL {
-                println!("  {:8} {}", topic.id(), topic.title());
+                println!("  {:12} {}", topic.id(), topic.title());
             }
         }
         json!({"topics": Topic::ALL.map(|topic| json!({
