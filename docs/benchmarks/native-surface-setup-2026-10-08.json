@@ -1,0 +1,4367 @@
+{
+  "scope": "isolated native llvmpipe/Vulkan SDK surface creation on owned Weston pixman/headless; actual validated clear submission and GPU poll; no Tilo VM or physical input/display timing claim",
+  "samples": [
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 1,
+      "wall_ms": 201.0432450006192,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 73.997746,
+        "submit_and_poll_ms": 80.276888,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 99134697
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 102548676
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 102582317
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 169535051
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 169700413
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 170004467
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 170032187
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 170071857
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 170089107
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 172523956
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 172577896
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 172855539
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 172881940
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 173107382
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 2,
+      "wall_ms": 144.80805499988492,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 66.59445,
+        "submit_and_poll_ms": 71.335545,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 51229182
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 54673712
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 54745433
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 54788893
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 65407686
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 65525558
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 67804134
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 67876575
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 114672336
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 114897119
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 115212602
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 115268403
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 115311623
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 115350944
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 115394274
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 115447175
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 115488635
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 117306226
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 117411718
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 117761772
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 3,
+      "wall_ms": 70.89096999970934,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 42.677974,
+        "submit_and_poll_ms": 43.941967999999996,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 19603567
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 19743379
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 19774619
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 19791549
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 29045076
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 29103897
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 29297389
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 29333069
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 60895445
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 61034766
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 61314559
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 61338080
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 61355790
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 61374040
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 61395870
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 61427501
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 61449181
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 61892326
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 61951157
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 62247340
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 4,
+      "wall_ms": 64.43588499951147,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 38.172521,
+        "submit_and_poll_ms": 39.889551000000004,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 20571378
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 20687439
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 20719080
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 57192911
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 57324373
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 57607086
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 57631907
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 57669887
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 57685987
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 58101272
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 58158523
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 58464406
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 58496677
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 58716019
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 5,
+      "wall_ms": 71.83326100039267,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 42.004915,
+        "submit_and_poll_ms": 43.29291,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 21201266
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 21361457
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 21392908
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 61514162
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 61668684
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 62038608
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 62061798
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 62093008
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 62109319
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 62554874
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 62608134
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 62923978
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 62954628
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 63177821
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 6,
+      "wall_ms": 68.58499300051335,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 39.724609,
+        "submit_and_poll_ms": 41.036215,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 20057722
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 20199594
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 20231264
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 20249004
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 27484218
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 27550849
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 27750271
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 27789041
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 58497707
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 58609688
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 58857101
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 58879351
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 58897661
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 58914581
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 58931842
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 58965952
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 58986282
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 59419417
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 59476558
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 59753381
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 7,
+      "wall_ms": 72.93320399912773,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 44.132,
+        "submit_and_poll_ms": 45.487486000000004,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 20404586
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 20535777
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 20567128
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 20584208
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 31589385
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 31651946
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 31849278
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 31886359
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 63176671
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 63290332
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 63575495
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 63601476
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 63620986
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 63638606
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 63655336
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 63687047
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 63704837
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 64127522
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 64185352
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 64499446
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 8,
+      "wall_ms": 68.24490899998636,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 39.054081,
+        "submit_and_poll_ms": 40.575679,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 20337776
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 20506838
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 20540148
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 57772249
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 57926920
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 58246814
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 58268424
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 58301265
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 58317195
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 58767340
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 58822411
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 59112284
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 59146515
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 59362697
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 9,
+      "wall_ms": 67.63135200071702,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 38.929171,
+        "submit_and_poll_ms": 40.526169,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 20459706
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 20601908
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 20632498
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 57857289
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 57969260
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 58277544
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 58300464
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 58330824
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 58346895
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 58789330
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 58844190
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 59124354
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 59152594
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 59362786
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 10,
+      "wall_ms": 69.61806500021339,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 41.405319000000006,
+        "submit_and_poll_ms": 42.226639000000006,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 19892060
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 20003892
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 20033912
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 20051762
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 27756931
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 27887863
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 28094215
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 28134926
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 59106614
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 59272036
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 59577639
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 59602810
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 59621820
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 59638840
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 59657090
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 59691021
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 59714831
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 60359998
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 60419169
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 60705342
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 11,
+      "wall_ms": 69.78890699974727,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 42.023617,
+        "submit_and_poll_ms": 42.792695,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 19634147
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 19736119
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 19765749
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 19782799
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 26125493
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 26257634
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 26470867
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 26512127
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 60214777
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 60374289
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 60675532
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 60699652
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 60718743
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 60735553
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 60752523
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 60784603
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 60802464
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 61274189
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 61334490
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 61623213
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 12,
+      "wall_ms": 66.2985969993315,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 38.980461,
+        "submit_and_poll_ms": 40.757801,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 18297282
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 18383233
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 18412663
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 55790316
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 55874607
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 56106099
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 56130930
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 56163280
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 56180730
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 56645116
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 56702306
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 56983369
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 57012450
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 57245803
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 13,
+      "wall_ms": 69.73387699963496,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 43.049547000000004,
+        "submit_and_poll_ms": 43.928098,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 19638888
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 19735849
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 19763909
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 61329590
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 61403421
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 61607943
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 61629223
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 61659063
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 61675024
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 62107289
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 62160859
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 62421752
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 62454373
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 62662435
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 14,
+      "wall_ms": 63.87783899936039,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 39.834691,
+        "submit_and_poll_ms": 41.139286,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 18919349
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 19017970
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 19046170
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 19063240
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 25968860
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 26035021
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 26249624
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 26294214
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 57363283
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 57509115
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 57773458
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 57797909
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 57816239
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 57833339
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 57851729
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 57884220
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 57901880
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 58339065
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 58400435
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 58718909
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 15,
+      "wall_ms": 71.42653600021731,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 42.812574999999995,
+        "submit_and_poll_ms": 44.193501000000005,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 20079813
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 20164334
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 20191754
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 20209614
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 30004527
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 30125509
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 30378762
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 30417712
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 61533742
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 61675894
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 61924597
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 61948797
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 61967087
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 61986807
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 62004857
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 62042758
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 62060428
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 62515913
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 62577674
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 62860357
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 16,
+      "wall_ms": 64.1693520001354,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 39.959162,
+        "submit_and_poll_ms": 40.842392999999994,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 18272561
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 18370512
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 18398353
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 56846897
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 56923948
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 57145981
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 57170111
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 57200741
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 57231922
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 57650297
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 57704607
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 57967380
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 57996041
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 58184843
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 17,
+      "wall_ms": 70.12384100016789,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 42.248448,
+        "submit_and_poll_ms": 43.406912,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 18773377
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 18859548
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 18889888
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 59643039
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 59716580
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 59923103
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 59946113
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 59983383
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 59999693
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 60451829
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 60506769
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 60765512
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 60791963
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 60995595
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 18,
+      "wall_ms": 68.99241799965239,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 42.270089,
+        "submit_and_poll_ms": 43.135999,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 18922349
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 19013380
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 19040260
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 19069411
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 30666915
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 30747616
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 30941078
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 30977059
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 59941854
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 60012394
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 60241457
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 60265117
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 60283047
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 60299858
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 60316008
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 60344818
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 60362728
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 60781043
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 60838464
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 61151788
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 19,
+      "wall_ms": 68.51540300067427,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 40.904743,
+        "submit_and_poll_ms": 41.614031000000004,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 18937369
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 19021470
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 19048280
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 19070000
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 27833772
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 27895122
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 28087015
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 28124085
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 58649968
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 58721669
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 58929141
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 58951412
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 58968332
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 58984672
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 59000902
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 59030912
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 59047883
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 59481518
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 59539278
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 59812891
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 20,
+      "wall_ms": 71.93603199993959,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 44.790077999999994,
+        "submit_and_poll_ms": 45.83648,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 19056351
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 19174112
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 19202792
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 62385712
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 62489593
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 62729636
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 62752126
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 62783776
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 62800636
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 63224871
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 63290902
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 63598596
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 63627136
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 63820038
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 21,
+      "wall_ms": 73.28414699986752,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 45.287084,
+        "submit_and_poll_ms": 46.72357,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 19884880
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 19994321
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 20020421
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 63733097
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 63827058
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 64064271
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 64085961
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 64122371
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 64139212
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 64571837
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 64628727
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 64910651
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 64941291
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 65146443
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 22,
+      "wall_ms": 68.39796100030071,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 40.483418,
+        "submit_and_poll_ms": 42.083377,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 19572917
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 19669998
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 19702058
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 19718778
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 27911863
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 27980314
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 28182966
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 28218547
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 58744750
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 58857111
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 59095984
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 59119604
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 59138694
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 59156155
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 59172845
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 59208825
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 59226365
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 59680791
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 59743281
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 60022245
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": false,
+      "run_index": 23,
+      "wall_ms": 71.59388800027955,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 41.931605,
+        "submit_and_poll_ms": 43.601765,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 20532057
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 20672689
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 20705919
+        },
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 20723109
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 29489011
+        },
+        {
+          "name": "gpu-adapter-report-start",
+          "ns": 29562582
+        },
+        {
+          "name": "gpu-adapter-report-done",
+          "ns": 29770974
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 29808534
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 61105016
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 61245198
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 61508321
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 61532251
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 61550072
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 61567732
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 61584592
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 61619932
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 61638403
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 62093658
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 62153539
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 62431082
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": false,
+      "run_index": 24,
+      "wall_ms": 68.83456600007776,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": false,
+        "surface_ms": 39.568758,
+        "submit_and_poll_ms": 41.322658,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 20470176
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 20622938
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 20658659
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 58446416
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 58593597
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 58852010
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 58882621
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 58915001
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 58932511
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 59414157
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 59479178
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 59757801
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 59787971
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 60006714
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 1,
+      "wall_ms": 76.4732540001205,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 2.119204,
+        "submit_and_poll_ms": 3.166817,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 65983223
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 66174565
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 66213016
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 66519089
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 66541169
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 66709761
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 66728932
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 66770532
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 66789552
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 67449320
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 67506021
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 67836034
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 67869325
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 68073887
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 2,
+      "wall_ms": 68.47554199976003,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.360915,
+        "submit_and_poll_ms": 2.7052310000000004,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 18416233
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 25629307
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 25716498
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 56345932
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 58130563
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 58217954
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 58236464
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 58263334
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 58519987
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 58540447
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 58557768
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 58575668
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 58592568
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 58631769
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 58650919
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 59099884
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 59185855
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 59461858
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 3,
+      "wall_ms": 68.60181299998658,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.7234500000000001,
+        "submit_and_poll_ms": 3.104096,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 17875327
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 27157214
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 27222555
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 57167771
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 58991542
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 59108484
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 59133724
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 59153484
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 59467448
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 59491668
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 59510308
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 59528619
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 59547579
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 59593479
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 59613650
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 60307238
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 60367388
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 60674892
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 4,
+      "wall_ms": 66.07493399951636,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.947482,
+        "submit_and_poll_ms": 2.735341,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 59516089
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 59607540
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 59637650
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 59945064
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 59966374
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 60113036
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 60131846
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 60172886
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 60191277
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 60858084
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 60916445
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 61185498
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 61213378
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 61431641
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 5,
+      "wall_ms": 67.98568700014584,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.583929,
+        "submit_and_poll_ms": 2.624971,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 59445297
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 59529788
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 59560569
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 59794721
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 59815132
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 59954873
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 59972483
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 60002684
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 60018444
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 60447159
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 60503029
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 60772973
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 60803763
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 61004025
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 6,
+      "wall_ms": 65.03842199981591,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.270205,
+        "submit_and_poll_ms": 2.4729389999999998,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 17111308
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 25199381
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 25269672
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 55192618
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 56769326
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 56820247
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 56839907
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 56857847
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 57097300
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 57117980
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 57134731
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 57151981
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 57169241
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 57205321
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 57225862
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 57650487
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 57708207
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 58005201
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 7,
+      "wall_ms": 70.19852200028254,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.631229,
+        "submit_and_poll_ms": 2.8977239999999997,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 17276720
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 27431727
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 27503778
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 58369385
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 60199206
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 60295807
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 60321388
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 60344178
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 60635441
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 60659082
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 60677522
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 60697712
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 60715132
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 60761773
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 60780943
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 61420370
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 61477201
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 61795745
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 8,
+      "wall_ms": 68.30965999961336,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 2.106764,
+        "submit_and_poll_ms": 3.4269000000000003,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 58249134
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 58387816
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 58421246
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 58761450
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 58783720
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 58940472
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 58961352
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 59002483
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 59021563
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 59699691
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 59756091
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 60088965
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 60122756
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 60326128
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 9,
+      "wall_ms": 68.82486599988624,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 2.453809,
+        "submit_and_poll_ms": 3.46212,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 58071901
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 58157242
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 58189013
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 58471086
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 58493146
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 58643938
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 58663738
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 58707939
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 58725899
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 59365956
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 59421407
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 59701280
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 59731380
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 59945173
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 10,
+      "wall_ms": 68.11026800005493,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.2368649999999999,
+        "submit_and_poll_ms": 2.5933200000000003,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 17866827
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 27285666
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 27348747
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 57841789
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 59491128
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 59542959
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 59561329
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 59577599
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 59785082
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 59806632
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 59823342
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 59840142
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 59857272
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 59888623
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 59906703
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 60359838
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 60421199
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 60696052
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 11,
+      "wall_ms": 69.96801900004357,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.244484,
+        "submit_and_poll_ms": 2.62998,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 18027578
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 26336295
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 26416235
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 57813229
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 59537769
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 59590989
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 59610619
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 59627840
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 59841722
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 59862692
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 59879543
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 59907503
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 59932683
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 59966334
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 59984104
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 60410129
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 60469229
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 60751073
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 12,
+      "wall_ms": 73.84255399938411,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 2.168875,
+        "submit_and_poll_ms": 3.43597,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 63560485
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 63705177
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 63740557
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 64094881
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 64168152
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 64344504
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 64369305
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 64424925
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 64444236
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 65085173
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 65140734
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 65465817
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 65498248
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 65702580
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 13,
+      "wall_ms": 74.4572009998592,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 2.031213,
+        "submit_and_poll_ms": 3.778814,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 63352603
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 63452484
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 63488044
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 63808088
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 63830838
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 63974560
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 63993080
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 64034601
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 64060701
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 64765399
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 64822900
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 65118833
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 65150894
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 65356286
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 14,
+      "wall_ms": 66.70987100005732,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.662029,
+        "submit_and_poll_ms": 2.829903,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 17943728
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 25062040
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 25143311
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 55189639
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 56972929
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 57093201
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 57119271
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 57138261
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 57413724
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 57437855
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 57455835
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 57474935
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 57495025
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 57538846
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 57560906
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 58244374
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 58307995
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 58599538
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 15,
+      "wall_ms": 66.3186969995877,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.285065,
+        "submit_and_poll_ms": 2.519229,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 18320632
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 23561973
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 23630173
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 54663552
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 56814587
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 56868778
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 56888258
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 56905468
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 57145481
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 57167461
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 57185091
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 57201912
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 57230362
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 57263562
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 57282162
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 57713897
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 57770868
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 58065102
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 16,
+      "wall_ms": 69.5964249998724,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 2.261026,
+        "submit_and_poll_ms": 3.107226,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 59120714
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 59253326
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 59284296
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 59515609
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 59537729
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 59683171
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 59701561
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 59733571
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 59751442
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 60198657
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 60258467
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 60525481
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 60563581
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 60760033
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 17,
+      "wall_ms": 68.9361069998995,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 2.5875,
+        "submit_and_poll_ms": 3.844204,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 58484117
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 58596068
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 58630078
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 58970942
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 58993722
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 59146234
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 59166484
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 59207385
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 59226095
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 59898733
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 59955574
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 60233837
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 60427959
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 61018526
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 18,
+      "wall_ms": 68.47035199916718,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.2245139999999999,
+        "submit_and_poll_ms": 2.63087,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 18262912
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 27002763
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 27066044
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 56693246
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 58374876
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 58427056
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 58446056
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 58463607
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 58696239
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 58717090
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 58733890
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 58750350
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 58766740
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 58798371
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 58816221
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 59240486
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 59296556
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 59567389
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 19,
+      "wall_ms": 70.08238100024755,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.547158,
+        "submit_and_poll_ms": 2.579179,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 17934638
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 27585489
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 27658310
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 59290046
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 61063127
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 61156648
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 61182028
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 61201698
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 61480191
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 61505442
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 61523852
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 61542802
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 61561222
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 61602223
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 61623773
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 62210660
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 62295651
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 62574694
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 20,
+      "wall_ms": 70.31534300040221,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.933913,
+        "submit_and_poll_ms": 3.144997,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 60034094
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 60117655
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 60147276
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 60444179
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 60467229
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 60613381
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 60633311
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 60676042
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 60695042
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 61356460
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 61411920
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 61709694
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 61742974
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 61939056
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 21,
+      "wall_ms": 70.93893000001117,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.641399,
+        "submit_and_poll_ms": 2.9795849999999997,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 60609701
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 60702462
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 60738333
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 60956795
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 60976906
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 61134767
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 61152538
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 61182028
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 61198438
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 61636193
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 61714564
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 61984587
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 62014988
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 62222400
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 22,
+      "wall_ms": 66.78830199962249,
+      "host_load": [
+        24.14501953125,
+        24.6513671875,
+        28.01220703125
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.204364,
+        "submit_and_poll_ms": 2.128555,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 18469753
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 25631666
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 25704807
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 56202790
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 57869479
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 57921440
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 57940360
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 57956410
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 58168063
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 58189423
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 58206473
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 58232983
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 58249343
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 58280314
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 58298444
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 58718179
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 58776850
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 59045203
+        }
+      ]
+    },
+    {
+      "role": "candidate",
+      "reuse_device": true,
+      "run_index": 23,
+      "wall_ms": 69.31670199992368,
+      "host_load": [
+        23.57275390625,
+        24.52392578125,
+        27.95263671875
+      ],
+      "artifact_sha256": "2d669b6160f1245e2d84df3a334ae805b777786e4811a226074b116d7c25670a",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.436607,
+        "submit_and_poll_ms": 2.417278,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "gpu-adapter-request-start",
+          "ns": 17311290
+        },
+        {
+          "name": "gpu-adapter-request-done",
+          "ns": 27774031
+        },
+        {
+          "name": "gpu-device-request-start",
+          "ns": 27846172
+        },
+        {
+          "name": "gpu-device-request-done",
+          "ns": 58413986
+        },
+        {
+          "name": "surface-native-create-start",
+          "ns": 59944993
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 60041164
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 60067145
+        },
+        {
+          "name": "gpu-surface-capabilities-start",
+          "ns": 60086535
+        },
+        {
+          "name": "gpu-surface-capabilities-done",
+          "ns": 60361268
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 60383758
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 60402049
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 60420209
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 60437649
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 60473529
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 60495470
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 61010006
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 61068456
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 61346360
+        }
+      ]
+    },
+    {
+      "role": "baseline",
+      "reuse_device": true,
+      "run_index": 24,
+      "wall_ms": 70.2165619995867,
+      "host_load": [
+        23.57275390625,
+        24.52392578125,
+        27.95263671875
+      ],
+      "artifact_sha256": "a377cc1eb3682fbc24457072560cbd6f18a8fbb8746afb335d56da8e75d01c1f",
+      "actual_surface": {
+        "scope": "SDK surface creation and validated clear submission; not display/input latency",
+        "reuse_device": true,
+        "surface_ms": 1.604489,
+        "submit_and_poll_ms": 2.835953,
+        "adapter": "llvmpipe (LLVM 22.1.8, 256 bits)",
+        "backend": "Vulkan",
+        "format": "Rgba8Unorm",
+        "device_count": 1
+      },
+      "events": [
+        {
+          "name": "surface-native-create-start",
+          "ns": 61496131
+        },
+        {
+          "name": "surface-native-create-done",
+          "ns": 61586982
+        },
+        {
+          "name": "surface-device-select-start",
+          "ns": 61618152
+        },
+        {
+          "name": "surface-device-select-done",
+          "ns": 61840915
+        },
+        {
+          "name": "surface-capabilities-start",
+          "ns": 61861145
+        },
+        {
+          "name": "surface-capabilities-done",
+          "ns": 62002237
+        },
+        {
+          "name": "surface-targets-create-start",
+          "ns": 62020047
+        },
+        {
+          "name": "surface-targets-create-done",
+          "ns": 62049847
+        },
+        {
+          "name": "surface-blitter-create-start",
+          "ns": 62066028
+        },
+        {
+          "name": "surface-blitter-create-done",
+          "ns": 62509383
+        },
+        {
+          "name": "surface-initial-configure-start",
+          "ns": 62586164
+        },
+        {
+          "name": "surface-initial-configure-done",
+          "ns": 62858037
+        },
+        {
+          "name": "probe-surface-checked-configure-start",
+          "ns": 62885637
+        },
+        {
+          "name": "probe-surface-checked-configure-done",
+          "ns": 63075009
+        }
+      ]
+    }
+  ],
+  "negative_controls": [
+    {
+      "role": "baseline",
+      "missing_named_adapter_refused": true,
+      "exit": 101
+    },
+    {
+      "role": "candidate",
+      "missing_named_adapter_refused": true,
+      "exit": 101
+    }
+  ],
+  "cleanup": "owned compositor terminated and private runtime removed",
+  "medians": {
+    "fresh": {
+      "baseline": 40.9820385,
+      "candidate": 41.977610999999996
+    },
+    "reuse": {
+      "baseline": 2.0689885,
+      "candidate": 1.3229899999999999
+    }
+  },
+  "baseline_source": "cec43c3558437dabe21a82ca8a01eaa18a9740f5",
+  "candidate_source_blobs": {
+    "crates/sdk/ui-core/src/gpu.rs": "6ed4152716233a0ea2f1064b42556a594ff7871f",
+    "crates/sdk/ui-core/src/app/native_runner.rs": "68804feb5c241b5299f179cf75737800921d2282",
+    "crates/sdk/ui-core/examples/startup_surface_probe.rs": "d50b3f0212e88ae3fea5ca2da8248a17cc5dbed3"
+  },
+  "assessment": {
+    "reuse_reduction_percent": 36.05619364244896,
+    "fresh": "No reliable fresh-device speedup: observed medians40.982\u219241.978ms, broad overlapping38\u201374ms ranges; means43.837\u219243.733ms. This is not a full app/OS startup result.",
+    "counter_scope": "Explicit SDK/probe configuration and capability calls only; does not count every upstream Vulkan query.",
+    "checked_configuration": "All48 actual configured-surface submissions passed validation: baseline earlier configuration1 plus checked configuration1; candidate earlier configuration0 plus checked configuration1.",
+    "rejected_variant": "Preferred-adapter probing without a surface did not improve fresh-device startup in an earlier16-sample experiment; omitted from final source.",
+    "limits": [
+      "native software Vulkan on owned Weston rather than Tilo VM",
+      "no physical GPU/input/display timing",
+      "no complete native app, full OS boot, steady frame-rate or matched idle/RAM qualification",
+      "existing VM display-path faults excluded from performance measurements"
+    ]
+  }
+}

@@ -159,9 +159,22 @@ image's NetworkManager, only for a root enrolled for sibling unlock: wired
 links come up with DHCP, plus the networks the owner chose for unlocking
 (`tilo-disk-encrypt enrol --sibling --network NAME`), and no others. Their
 credentials are stored with the device half: sealed to the TPM where there is
-one, otherwise in the clear, readable by anyone holding the disk, which
-Settings tells the owner when they choose them (`tilo-sibling-unlock status`
-reports the sealing). They unlock nothing on their own.
+one, otherwise in the clear, readable by anyone holding the disk. They unlock
+nothing on their own.
+
+Settings (Privacy & Security, "Disk unlock") shows each enrolled volume: whether
+its secrets are sealed to the TPM or stored in the clear in the disk header,
+saying plainly that anyone holding the disk can read the clear ones, which
+devices are asked, and which Wi-Fi networks may unlock it, with a control to
+use or stop using each saved Wi-Fi network. The description of an enrolment
+(`/var/lib/tilo/sibling-unlock/<uuid>.json`) is root's alone, since it names
+the networks the owner trusts; Settings reads it with `pkexec
+tilo-sibling-unlock volumes`, which polkit grants an administrator at the
+machine's seat without a prompt. Changing the networks runs the same enrolment
+(`tilo-sibling-unlock enrol --replace-networks`, or `tilo-disk-encrypt enrol
+--sibling --replace-networks`) after administrator authentication; it keeps
+the slot, its certificate and the siblings, and seals the new networks the way
+the old ones were.
 
 The owner can enroll an already-open encrypted root over the existing
 authenticated device-admin route, using its declared semantic resource:

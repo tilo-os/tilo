@@ -56,6 +56,13 @@ impl Default for KeyboardSettings {
 impl KeyboardSettings {
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let config = settings_store::hardware::RichInputConfig::from_section(section);
+        Self::from_config(&settings_store::keyboard_sources::effective(
+            &config,
+            settings_store::keyboard_sources::ALL,
+        ))
+    }
+
+    pub fn from_config(config: &settings_store::hardware::RichInputConfig) -> Self {
         let sources = config.sources();
         Self {
             model: config.keyboard_model.clone(),
@@ -79,7 +86,10 @@ impl KeyboardSettings {
     }
 
     pub fn load() -> Self {
-        Self::from_section(&settings_store::load_section(SECTION))
+        let config = settings_store::hardware::RichInputConfig::from_section(
+            &settings_store::load_section(SECTION),
+        );
+        Self::from_config(&settings_store::keyboard_sources::current(&config))
     }
 
     /// The legends printed on the keys of XKB group `index`, which the

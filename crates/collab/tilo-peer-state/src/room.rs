@@ -1,10 +1,15 @@
 //! Room-policy leaves shared by the shell and certified browser peer.
+mod admit;
 pub(crate) mod delivery_policy;
 pub(crate) mod key_hex;
 pub mod media;
 pub(crate) mod policy;
 pub(crate) mod private_policy;
 pub(crate) mod read;
+pub use admit::{
+    AdmittedRoom, AuthorityPin, ContentOwnership, RoomAdmission, RoomRefusal, Standing, Writer,
+    admit_room_changes,
+};
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::Role;
 use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
@@ -173,12 +178,17 @@ pub fn governance_change_allowed(
     pinned: Option<&str>,
     source: &str,
 ) -> bool {
-    (governance_of(before) == governance_of(Some(after))
+    governance_unchanged(before, after) || !local && pinned.is_none_or(|pinned| pinned == source)
+}
+/// Whether `after` carries the governance `before` does, compared by value: a
+/// peer echoing governance it learned re-states it under its own actor, which
+/// is not a change. Durable receipts and import proposals are governed too.
+pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
+    governance_of(before) == governance_of(Some(after))
         && before.and_then(crate::durability::governed_bytes)
             == crate::durability::governed_bytes(after)
         && crate::document_import::governed_bytes(before)
-            == crate::document_import::governed_bytes(Some(after)))
-        || !local && pinned.is_none_or(|pinned| pinned == source)
+            == crate::document_import::governed_bytes(Some(after))
 }
 /// Exact native membership capability projection; a certificate alone has no role.
 pub fn role_of(owner: Option<&str>, caps: &[CapOverride], user: &str, now: u64) -> Option<Role> {

@@ -2977,3 +2977,456 @@ mod record_publisher_integration_tests {
         .await;
     }
 }
+
+/// Counts the bytes each thread allocates (cumulative, never decremented),
+/// so a test can bound what a read path copies.
+mod allocation_count {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    pub struct Counting;
+
+    std::thread_local! {
+        static ALLOCATED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    fn add(bytes: usize) {
+        // A thread being torn down has no counter left; nothing is measured there.
+        let _ = ALLOCATED.try_with(|count| count.set(count.get().saturating_add(bytes as u64)));
+    }
+
+    // SAFETY: every call forwards to the system allocator with the caller's
+    // arguments; the counter only records sizes.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            add(layout.size());
+            // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract, which `System` shares.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            add(layout.size());
+            // SAFETY: as for `alloc`.
+            unsafe { System.alloc_zeroed(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: `ptr` came from this allocator, i.e. from `System`, with this layout.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            add(new_size);
+            // SAFETY: as for `dealloc`, and the caller upholds `realloc`'s size contract.
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+
+    /// Bytes this thread allocated while running `run`.
+    pub fn allocated_by(run: impl FnOnce()) -> u64 {
+        let before = ALLOCATED.with(Cell::get);
+        run();
+        ALLOCATED.with(Cell::get).saturating_sub(before)
+    }
+}
+
+/// FUSE writes stage per inode and read the committed content only where
+/// a read or the commit needs it.
+mod write_stage_tests {
+    use super::*;
+
+    use crate::namespace::ROOT_INO;
+    use crate::store::ContentStore;
+    use iroh::endpoint::{Endpoint, presets};
+    use iroh::protocol::Router;
+
+    fn pseudo(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x.to_le_bytes()[0]
+            })
+            .collect()
+    }
+
+    /// A peer serving committed content, and a mount on another endpoint
+    /// that knows the files by namespace entry only.
+    struct Remote {
+        dir: tempfile::TempDir,
+        router: Router,
+        source: Endpoint,
+        client: Endpoint,
+        source_store: ContentStore,
+        namespace: Arc<Mutex<Namespace>>,
+        fs: QuickFS,
+    }
+
+    impl Remote {
+        async fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let source = Endpoint::bind(presets::Minimal).await.unwrap();
+            let source_store = ContentStore::memory();
+            let router = Router::builder(source.clone())
+                .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
+                .spawn();
+            let client = Endpoint::bind(presets::Minimal).await.unwrap();
+            let hydrator = Arc::new(Hydrator::new(
+                client.clone(),
+                Arc::new(ContentStore::memory()),
+            ));
+            hydrator.add_peer(source.addr());
+            let namespace = Arc::new(Mutex::new(Namespace::new("stage-client").unwrap()));
+            let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+            let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+                .with_write_stage_dir(dir.path().join("stage"));
+            Self {
+                dir,
+                router,
+                source,
+                client,
+                source_store,
+                namespace,
+                fs,
+            }
+        }
+
+        /// A file whose committed content only the peer holds.
+        async fn file(&self, name: &str, bytes: &[u8]) -> (u64, Hash) {
+            let hash = self
+                .source_store
+                .write_content(bytes)
+                .await
+                .unwrap()
+                .unwrap();
+            let ino = self
+                .namespace
+                .lock()
+                .unwrap()
+                .create_file(ROOT_INO, name, Some(&hash), bytes.len() as u64, 1)
+                .unwrap();
+            (ino, hash)
+        }
+
+        /// Content bytes this mount has received from peers.
+        fn fetched(&self) -> u64 {
+            let (ranges, blobs) = self.fs.hydrator.received_bytes();
+            ranges.saturating_add(blobs)
+        }
+
+        async fn committed(&self, ino: u64) -> Vec<u8> {
+            let hash = self.fs.ns().hash_for(ino);
+            match hash {
+                Some(hash) => self.fs.hydrator.read(hash, 0, u64::MAX).await.unwrap(),
+                None => Vec::new(),
+            }
+        }
+
+        async fn close(self) {
+            drop(self.fs);
+            self.router.shutdown().await.unwrap();
+            self.source.close().await;
+            self.client.close().await;
+            drop(self.dir);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_to_remote_file_fetches_only_the_tail() {
+        const LEN: usize = 64 * 1024 * 1024;
+        let remote = Remote::new().await;
+        let original = pseudo(LEN, 0x217);
+        let (ino, base) = remote.file("video.mp4", &original).await;
+        assert_eq!(remote.fetched(), 0);
+
+        assert_eq!(remote.fs.write_buffer(ino, LEN as u64, b"!"), Ok(1));
+        let fetched = remote.fetched();
+        assert!(
+            fetched <= u64::from(crate::content::MAX_CHUNK_LEN),
+            "appending one byte fetched {fetched} bytes of a {LEN}-byte remote file"
+        );
+        let stage = remote.fs.stage(ino).unwrap();
+        assert!(stage.lock().is_file_backed());
+        assert_eq!(
+            remote.fs.presented_attr(ino).unwrap().0.size,
+            LEN as u64 + 1,
+            "stat sees the staged length"
+        );
+        // Read-your-writes across the boundary: the base's tail comes from
+        // the peer, the appended byte from the stage.
+        let StagedRead::Missing(missing) = remote
+            .fs
+            .read_staged(ino, LEN as u64 - 3, 16)
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("the base's tail is not local");
+        };
+        let tail = missing.finish(&remote.fs.hydrator).await.unwrap();
+        assert_eq!(&tail[..3], &original[LEN - 3..]);
+        assert_eq!(&tail[3..], b"!");
+
+        assert_eq!(remote.fs.flush_inode(ino), Ok(()));
+        let mut expected = original;
+        expected.push(b'!');
+        let reference = ContentStore::memory();
+        let previous = reference.write_content(&expected[..LEN]).await.unwrap();
+        assert_eq!(previous, Some(base));
+        let expected_hash = reference
+            .write_content_after(&expected, previous)
+            .await
+            .unwrap();
+        assert_eq!(remote.fs.ns().hash_for(ino), expected_hash);
+        assert_eq!(
+            blake3::hash(&remote.committed(ino).await),
+            blake3::hash(&expected)
+        );
+        remote.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn truncate_to_zero_does_not_hydrate() {
+        let remote = Remote::new().await;
+        let (unopened, _) = remote.file("big.iso", &pseudo(3 * 1024 * 1024, 1)).await;
+        let (rewritten, _) = remote.file("notes.txt", &pseudo(300_000, 2)).await;
+        let (open, _) = remote.file("open.bin", &pseudo(2 * 1024 * 1024, 3)).await;
+
+        // `: > big.iso` on a file nobody has open commits it empty.
+        assert_eq!(remote.fs.truncate_inode(unopened, 0), Ok(()));
+        // `open(O_TRUNC)` then a write: the truncation commits, the write
+        // stages over nothing.
+        assert_eq!(remote.fs.truncate_inode(rewritten, 0), Ok(()));
+        assert_eq!(remote.fs.write_buffer(rewritten, 0, b"fresh"), Ok(5));
+        // A truncation of an open file only shortens its stage.
+        assert_eq!(remote.fs.write_buffer(open, 7, b"x"), Ok(1));
+        assert_eq!(remote.fs.truncate_inode(open, 0), Ok(()));
+        assert_eq!(remote.fs.presented_attr(open).unwrap().0.size, 0);
+        assert_eq!(remote.fs.flush_inode(rewritten), Ok(()));
+        assert_eq!(remote.fs.flush_inode(open), Ok(()));
+
+        assert_eq!(remote.fetched(), 0, "no truncation read what it dropped");
+        assert_eq!(remote.fs.ns().hash_for(unopened), None);
+        assert_eq!(remote.fs.ns().getattr(unopened).unwrap().size, 0);
+        assert_eq!(remote.fs.ns().hash_for(open), None);
+        assert_eq!(remote.committed(rewritten).await, b"fresh");
+        remote.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn truncating_an_unopened_remote_file_reads_only_the_kept_prefix() {
+        let remote = Remote::new().await;
+        let original = pseudo(6 * 1024 * 1024, 4);
+        let (ino, _) = remote.file("log.bin", &original).await;
+        assert_eq!(remote.fs.truncate_inode(ino, 1000), Ok(()));
+        let fetched = remote.fetched();
+        assert!(
+            fetched <= u64::from(crate::content::MAX_CHUNK_LEN),
+            "keeping 1000 bytes fetched {fetched}"
+        );
+        assert_eq!(remote.committed(ino).await, &original[..1000]);
+        remote.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreachable_base_fails_the_commit_and_never_truncates() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("offline").unwrap()));
+        let elsewhere = ContentStore::memory()
+            .write_content(&pseudo(200_000, 5))
+            .await
+            .unwrap()
+            .unwrap();
+        let ino = namespace
+            .lock()
+            .unwrap()
+            .create_file(ROOT_INO, "remote.txt", Some(&elsewhere), 200_000, 1)
+            .unwrap();
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+            .with_write_stage_dir(dir.path().join("stage"));
+
+        // The write is accepted: it does not need the base.
+        assert_eq!(fs.write_buffer(ino, 200_000, b"tail"), Ok(4));
+        // The commit does, and no peer has it: close reports the failure and
+        // the committed content is untouched, never replaced by zeros.
+        assert_eq!(fs.flush_inode(ino), Err(EIO));
+        assert_eq!(fs.ns().hash_for(ino), Some(elsewhere));
+        assert_eq!(fs.ns().getattr(ino).unwrap().size, 200_000);
+        assert!(fs.read_full_blocking(ino).is_err());
+        assert_eq!(fs.staged_len(ino), Some(200_004), "the written bytes stay");
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn large_flush_does_not_block_other_inode_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("contention").unwrap()));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+            .with_write_stage_dir(dir.path().join("stage"));
+        let (large, delta) = fs.create_empty_file(ROOT_INO, "large.bin").unwrap();
+        fs.publish(delta);
+        let (small, delta) = fs.create_empty_file(ROOT_INO, "small.txt").unwrap();
+        fs.publish(delta);
+        let payload = pseudo(16 * 1024 * 1024, 6);
+        assert_eq!(
+            fs.write_buffer(large, 0, &payload),
+            Ok(u32::try_from(payload.len()).unwrap())
+        );
+        assert_eq!(fs.write_buffer(small, 0, b"other inode"), Ok(11));
+
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        *fs.commit_pause.lock().unwrap() = Some(Arc::new(move |ino| {
+            if ino == large {
+                entered_tx.send(()).unwrap();
+                let _ = release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(tilo_test_env::hang_bound());
+            }
+        }));
+        let handle = &tokio::runtime::Handle::current();
+        let fs = &fs;
+        tokio::task::block_in_place(|| {
+            std::thread::scope(|scope| {
+                let flushing = scope.spawn(move || {
+                    let _runtime = handle.enter();
+                    fs.flush_inode(large)
+                });
+                entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+                // `large` is mid-commit with its stage locked. Another
+                // inode's read, write and stat must not wait for it.
+                let (done_tx, done) = std::sync::mpsc::channel();
+                let other = scope.spawn(move || {
+                    let _runtime = handle.enter();
+                    let Some(BufferedRead::Staged(Ok(StagedRead::Ready(read)))) =
+                        fs.read_buffered(small, 0, 64)
+                    else {
+                        panic!("the small file is staged and complete");
+                    };
+                    let wrote = fs.write_buffer(small, 11, b"!");
+                    let len = fs.staged_len(small);
+                    done_tx.send(()).unwrap();
+                    (read, wrote, len)
+                });
+                let finished = done.recv_timeout(tilo_test_env::hang_bound());
+                release.send(()).unwrap();
+                assert!(
+                    finished.is_ok(),
+                    "another inode's read waited for a large commit"
+                );
+                let (read, wrote, len) = other.join().unwrap();
+                assert_eq!(read, b"other inode");
+                assert_eq!(wrote, Ok(1));
+                assert_eq!(len, Some(12));
+                assert_eq!(flushing.join().unwrap(), Ok(()));
+            });
+        });
+        let committed = fs.ns().hash_for(large).unwrap();
+        let bytes = fs.hydrator.read(committed, 0, u64::MAX).await.unwrap();
+        assert_eq!(
+            blake3::hash(&bytes),
+            blake3::hash(&payload),
+            "the large file committed its bytes"
+        );
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn document_read_does_not_clone_per_chunk() {
+        const CHUNK: u32 = 128 * 1024;
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("documents").unwrap()));
+        let doc = namespace
+            .lock()
+            .unwrap()
+            .create_document(ROOT_INO, "big.md", "md", 1)
+            .unwrap();
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
+        assert!(fs.is_document(doc));
+
+        // About 4 MiB of markdown, written and committed the way an editor
+        // saves it, then closed.
+        let paragraph = "Collaboration lives below applications. ".repeat(50);
+        let mut text = String::new();
+        while text.len() < 4 * 1024 * 1024 + 64 * 1024 {
+            text.push_str(&paragraph);
+            text.push_str("\n\n");
+        }
+        assert_eq!(
+            fs.write_buffer(doc, 0, text.as_bytes()),
+            Ok(u32::try_from(text.len()).unwrap())
+        );
+        assert_eq!(fs.flush_inode(doc), Ok(()));
+        fs.settle_last_close(doc, true);
+        assert!(fs.stage(doc).is_none());
+
+        // `stat` exports once; a change to another file keeps that export.
+        let size = fs.presented_attr(doc).unwrap().0.size;
+        assert!(size >= 4 * 1024 * 1024, "export is {size} bytes");
+        let exported = fs.document_export(doc).unwrap();
+        namespace
+            .lock()
+            .unwrap()
+            .create_file(ROOT_INO, "unrelated.txt", None, 0, 2)
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&exported, &fs.document_export(doc).unwrap()),
+            "a change elsewhere in the namespace re-exported the document"
+        );
+
+        let mut read = Vec::with_capacity(exported.len());
+        let allocated = allocation_count::allocated_by(|| {
+            let mut offset = 0_u64;
+            while offset < size {
+                match fs.read_buffered(doc, offset, CHUNK) {
+                    Some(BufferedRead::Shared(bytes, range)) => {
+                        read.extend_from_slice(&bytes[range]);
+                    }
+                    _ => panic!("a document read is served from its export"),
+                }
+                offset += u64::from(CHUNK);
+            }
+        });
+        assert_eq!(
+            blake3::hash(&read),
+            blake3::hash(&exported),
+            "the chunks reassemble the export"
+        );
+        assert!(
+            allocated <= 2 * size,
+            "reading a {size}-byte document in {CHUNK}-byte chunks allocated {allocated} bytes"
+        );
+
+        // An edit of the document itself is a new export.
+        assert_eq!(fs.write_buffer(doc, 0, b"# Title\n\n"), Ok(9));
+        assert_eq!(fs.flush_inode(doc), Ok(()));
+        fs.settle_last_close(doc, true);
+        assert!(!Arc::ptr_eq(&exported, &fs.document_export(doc).unwrap()));
+        drop(fs);
+        endpoint.close().await;
+    }
+}

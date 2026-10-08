@@ -3511,6 +3511,16 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         None => fs,
     };
 
+    // Written bytes of open files are staged in sparse files beside the
+    // cache rather than in memory, so a large write never has to fit in RAM.
+    let fs = match predictive_cache_root.as_ref().filter(|_| !read_only) {
+        Some(root) => fs.with_write_stage_dir(
+            root.join("write-stage")
+                .join(checked_history_workspace.to_string()),
+        ),
+        None => fs,
+    };
+
     let storage_authority = storage_sock.as_ref().map(|_| {
         fs::storage::StorageAuthority::new(
             Arc::clone(&fs.namespace),

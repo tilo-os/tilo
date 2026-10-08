@@ -2041,6 +2041,81 @@ mod tests {
     }
 
     #[test]
+    fn phone_diff_explains_opposite_only_lines_without_changing_the_comparison() {
+        use crate::actions::{DiffmergeAction, DiffmergeEffect};
+        let mut app = TestApp::<DiffmergeShell>::new().unwrap();
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&DiffmergeAction::OpenComparison {
+                left_label: "before.txt".into(),
+                left: "head\ntail\n".into(),
+                right_label: "after.txt".into(),
+                right: "head\none\ntwo\nthree\ntail\n".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.effect(&DiffmergeEffect::ShowDiff).unwrap();
+        app.harness().resize((390, 760)).unwrap();
+        app.settle();
+        let comparison = app.state().comparison;
+        let heads = app.peer_document().get_heads();
+        let expected =
+            crate::i18n::t_args("diff-gap-added-right", &[("count", crate::i18n::count(3))]);
+        assert!(
+            app.harness()
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label() == Some(expected.as_str())),
+            "the actual exported narrow source explains its three alignment rows"
+        );
+        let right = app
+            .with_surface::<DiffMergeApp, _>(|surface| {
+                let controls = surface.diff.access_controls();
+                let gap = controls
+                    .iter()
+                    .find(|node| node.name.as_deref() == Some(expected.as_str()))
+                    .unwrap();
+                let bounds = gap.bounds.unwrap().to_rect();
+                assert!(
+                    bounds.area() > 0.0
+                        && bounds.x0 >= 0.0
+                        && bounds.x1 <= 390.0
+                        && bounds.y0 >= 0.0
+                        && bounds.y1 <= 760.0
+                );
+                let source = controls
+                    .iter()
+                    .find(|node| {
+                        node.action_target.as_deref() == Some("diffmerge.diff-source:right")
+                    })
+                    .unwrap();
+                let bounds = source.bounds.unwrap().to_rect();
+                bounds.center()
+            })
+            .unwrap();
+        app.harness().click_at(right.x, right.y);
+        app.settle();
+        assert!(
+            app.with_surface::<DiffMergeApp, _>(|surface| surface.diff.compact_showing_right())
+                .unwrap()
+        );
+        assert!(
+            !app.harness()
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label() == Some(expected.as_str())),
+            "the opposite source contains the actual added lines rather than filler"
+        );
+        assert_eq!(app.state().comparison, comparison);
+        assert_eq!(
+            app.peer_document().get_heads(),
+            heads,
+            "explaining and switching aligned sources is only a local view"
+        );
+        assert!(app.harness().native_app_audit().is_certified());
+    }
+
+    #[test]
     fn stale_diff_block_operation_refuses_a_recomputed_block_at_the_same_index() {
         let mut app = DiffMergeApp::new();
         app.diff.set_inputs(
