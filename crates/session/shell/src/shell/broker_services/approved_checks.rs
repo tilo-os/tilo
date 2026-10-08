@@ -249,6 +249,14 @@ fn diagnostic(text: Option<&String>, sha256: Option<String>) -> Diagnostic {
         truncated: end != text.len(),
     }
 }
+fn failure_diagnostic(reason: Option<&String>) -> Option<Diagnostic> {
+    reason.map(|text| {
+        diagnostic(
+            Some(text),
+            Some(hex::encode(Sha256::digest(text.as_bytes()))),
+        )
+    })
+}
 impl ApprovedCheckServices for NativeChecks {
     fn run(&self, context: &ApprovedCheckContext) -> Result<Receipt, String> {
         context.recheck()?;
@@ -318,6 +326,7 @@ impl ApprovedCheckServices for NativeChecks {
             cleanup_observed: observed.cleanup_observed,
             stdout: diagnostic(observed.stdout.as_ref(), observed.stdout_sha256),
             stderr: diagnostic(observed.stderr.as_ref(), observed.stderr_sha256),
+            failure: failure_diagnostic(observed.failure.as_ref()),
         };
         receipt.encode()?;
         Ok(receipt)
@@ -328,6 +337,29 @@ impl ApprovedCheckServices for NativeChecks {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    #[test]
+    fn approved_check_supervisor_failure_keeps_complete_digest_and_utf8_preview() {
+        assert_eq!(failure_diagnostic(None), None);
+        let reason =
+            "Failed to connect to user scope bus via local transport: No such file or directory"
+                .to_owned();
+        let observed = failure_diagnostic(Some(&reason)).expect("observed host failure");
+        assert_eq!(observed.preview, reason);
+        assert_eq!(
+            observed.sha256,
+            Some(hex::encode(Sha256::digest(reason.as_bytes())))
+        );
+        assert!(!observed.truncated);
+        let long = format!("{}é", "x".repeat(MAX_PREVIEW_BYTES - 1));
+        let observed = failure_diagnostic(Some(&long)).expect("bounded host failure");
+        assert_eq!(observed.preview, "x".repeat(MAX_PREVIEW_BYTES - 1));
+        assert_eq!(
+            observed.sha256,
+            Some(hex::encode(Sha256::digest(long.as_bytes())))
+        );
+        assert!(observed.truncated);
+    }
 
     #[test]
     fn approved_check_startup_refuses_public_links_duplicate_flags_and_schema_ambiguity() {

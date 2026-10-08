@@ -119,6 +119,9 @@ pub struct Receipt {
     pub cleanup_observed: bool,
     pub stdout: Diagnostic,
     pub stderr: Diagnostic,
+    /// Host supervision failure, separate from the executed command's streams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<Diagnostic>,
 }
 impl Receipt {
     fn valid(&self) -> bool {
@@ -142,11 +145,14 @@ impl Receipt {
             ]
             .into_iter()
             .all(|v| digest(v))
-            && [&self.stdout, &self.stderr].into_iter().all(|v| {
-                v.preview.len() <= MAX_PREVIEW_BYTES
-                    && v.sha256.as_ref().is_none_or(|s| digest(s))
-                    && (v.sha256.is_some() || v.preview.is_empty() && !v.truncated)
-            })
+            && [&self.stdout, &self.stderr]
+                .into_iter()
+                .chain(self.failure.as_ref())
+                .all(|v| {
+                    v.preview.len() <= MAX_PREVIEW_BYTES
+                        && v.sha256.as_ref().is_none_or(|s| digest(s))
+                        && (v.sha256.is_some() || v.preview.is_empty() && !v.truncated)
+                })
             && (self.exit_code.is_none() || self.signal.is_none())
             && (self.outcome != Outcome::Exited
                 || self.cleanup_observed && (self.exit_code.is_some() || self.signal.is_some()))
@@ -241,6 +247,57 @@ mod tests {
                 preview: String::new(),
                 truncated: false,
             },
+            failure: None,
+        }
+    }
+
+    #[test]
+    fn approved_check_failure_diagnostic_survives_empty_command_streams_and_bounds() {
+        let mut value = receipt();
+        value.outcome = Outcome::Failed;
+        value.exit_code = None;
+        value.cleanup_observed = false;
+        value.stdout = value.stderr.clone();
+        value.failure = Some(Diagnostic {
+            sha256: Some("f".repeat(64)),
+            preview:
+                "Failed to connect to user scope bus via local transport: No such file or directory"
+                    .into(),
+            truncated: false,
+        });
+        let encoded = value.encode().unwrap();
+        let observed = Receipt::decode(&encoded).unwrap();
+        assert_eq!(observed.failure, value.failure);
+        assert!(observed.stdout.preview.is_empty());
+        assert!(observed.stderr.preview.is_empty());
+        assert!(!observed.cleanup_observed);
+        let duplicate = String::from_utf8(encoded).unwrap().replacen(
+            "\"failure\":",
+            "\"failure\":null,\"failure\":",
+            1,
+        );
+        assert!(Receipt::decode(duplicate.as_bytes()).is_err());
+        for invalid in [
+            Diagnostic {
+                sha256: None,
+                preview: "unbound reason".into(),
+                truncated: false,
+            },
+            Diagnostic {
+                sha256: Some("F".repeat(64)),
+                preview: "reason".into(),
+                truncated: false,
+            },
+            Diagnostic {
+                sha256: Some("f".repeat(64)),
+                preview: "x".repeat(MAX_PREVIEW_BYTES + 1),
+                truncated: true,
+            },
+        ] {
+            value.failure = Some(invalid);
+            assert!(value.encode().is_err());
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert!(Receipt::decode(&bytes).is_err());
         }
     }
 
