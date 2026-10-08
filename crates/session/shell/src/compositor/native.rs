@@ -8450,6 +8450,9 @@ pub fn run() {
         initial_size,
         crate::shell::session_record_store(),
     );
+    frame_builder
+        .host_mut()
+        .set_pixel_aligned_strip_pan(backend.pixel_aligned_strip_pan());
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
