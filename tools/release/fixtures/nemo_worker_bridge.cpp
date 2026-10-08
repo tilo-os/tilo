@@ -110,8 +110,9 @@ extern "C" __attribute__((visibility("default"))) void* tilo_nemo_load(const Til
     *status = -3;
     try {
         if (!input || input->descriptor < 0 || input->threads < 1 || input->threads > 2 ||
-            !input->language || !input->vocabulary || input->right_context < 0 ||
-            input->right_context > 1) return nullptr;
+            !input->language || !input->vocabulary ||
+            (input->right_context != 0 && input->right_context != 1 &&
+             input->right_context != 3)) return nullptr;
         ggml_log_set(discard_log, nullptr);
         nemo_speech::asr::RecognizerConfig config;
         config.model.descriptor = input->descriptor;
