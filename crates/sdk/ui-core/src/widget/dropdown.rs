@@ -1839,6 +1839,7 @@ impl Widget for Dropdown {
         };
         let value = if self.menu.is_some() { None } else { value };
         let mut node = AccessNode::new(role)
+            .with_semantic_key(self.test_id().unwrap_or("dropdown"))
             .with_optional_name(name)
             .with_optional_value(value)
             .with_state(AccessState {
