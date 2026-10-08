@@ -22,18 +22,23 @@ the owner of Spotify sessions and playback.
 
 ## First slice: private AirPlay authentication failure and retry
 
-The broker already hands the explicitly entered PIN/password to the Doubletake
-sender through `DOUBLETAKE_CODE`, not argv. Sender output can subsequently become
-a user-visible session error. Both stdout and stderr now redact exact occurrences
-of that submitted value before queueing diagnostics. The sender environment
-removes the broker's `TILO_PROJECTION_CREDENTIAL` and any ambient `DOUBLETAKE_CODE`
-before setting the one supplied for this attempt. Diagnostic retention on exit
+The shell sends the explicitly entered PIN/password inside the connect request
+on the projector's control socket, never in an environment variable or argument,
+and both ends wipe it from memory once used. The broker hands it to the
+Doubletake sender through `DOUBLETAKE_CODE`, the only interface that sender has;
+that one child process is the only place it is an environment variable. Sender
+output can subsequently become a user-visible session error. Both stdout and
+stderr now redact exact occurrences of that submitted value before queueing
+diagnostics. The sender environment removes any ambient
+`TILO_PROJECTION_CREDENTIAL` and `DOUBLETAKE_CODE` before setting the one
+supplied for this attempt. Diagnostic retention on exit
 uses the same eight-line tail as the running session.
 
 The regression journey starts a real child process using the production runner:
-a rejected credential emits diagnostics on both streams, fails without a ready
-marker, and reports useful errors with the credential redacted. A fresh explicit
-code retries, publishes readiness, then disconnects and clears session markers.
+a rejected credential emits diagnostics on both streams, fails without
+reporting the session connected, and reports useful errors with the credential
+redacted. A fresh explicit code retries, reports the session connected, then
+stops when the service asks it to.
 This verifies the broker boundary, not cryptographic receiver authentication.
 Exact-value redaction does not claim to remove transformed/encoded secrets or
 credentials independently loaded by the helper from its persistent store.
@@ -297,9 +302,11 @@ SDK context in the test, so the runtime-lifetime defect is observable in CI.
 Music continues to own Spotify playback; no new playback controller is introduced.
 
 `scripts/headless-examples/cast-session-proof.py` runs the prebuilt production
-projector against an independent bounded loopback receiver. Its default mode
+projector service (`tilo-projector serve` in an isolated runtime directory, driven
+by its `connect`/`disconnect` socket clients) against an independent bounded
+loopback receiver. Its default mode
 observes the DeviceAuth challenge, supplies an authentication error, and requires
-disconnect without readiness, control messages or a media URL. The explicit
+disconnect without a `Connected` event, control messages or a media URL. The explicit
 `--legacy-transport-only` mode retains the earlier LOAD/HLS/STOP witness for a
 baseline binary. Neither mode establishes decoded display output or physical
 receiver interoperability; the historical transport success was unauthenticated.

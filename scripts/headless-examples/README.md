@@ -52,8 +52,9 @@ have their own explicit external prerequisites.
 `airdrop-transfer-proof.py` boots its own isolated compositor, signed thin Files
 package and pinned OpenDrop loopback receiver. It exercises actual Files actions,
 trusted fingerprint entry, status/progress, cancellation and failure recovery.
-`cast-session-proof.py` drives the real prebuilt projector against a bounded TLS
-Cast receiver, checking media LOAD, tokenized HLS isolation and clean stop.
+`cast-session-proof.py` drives the real prebuilt projector service, through its
+control socket, against a bounded TLS Cast receiver, checking media LOAD,
+tokenized HLS isolation and clean stop.
 
 These proofs have explicit prerequisites and fail when they cannot observe the
 subject. They never build, configure radios or use the user's desktop/accounts.

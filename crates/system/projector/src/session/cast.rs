@@ -2,9 +2,10 @@
 //! capture profile.
 
 use std::collections::HashMap;
-use std::fs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fcast_sender_sdk::device::{
@@ -12,13 +13,20 @@ use fcast_sender_sdk::device::{
     MediaTrack, MediaTrackType, PlaybackState, ProtocolType, QueueState, ReceiverError, Source,
     TrackList,
 };
-use tilo_projector::{CaptureProfile, DisplayStreamPolicy};
+use tilo_projector::control::ConnectStage;
+use tilo_projector::{
+    CaptureProfile, DisplayStreamPolicy, ProjectionDevice, ProjectionOptions, ProjectionProtocol,
+};
 
+use super::context::SessionContext;
 use super::hls::video_ingest_loop;
 use super::paths::SessionPaths;
-use crate::cli::{parse_stream_policy, required, value_after};
+use super::receiver_address;
 use crate::error::ProjectorError;
 use crate::http::{MediaTelemetry, random_media_token, start_http_server, wake_http_listener};
+
+/// How often a streaming session samples receiver telemetry.
+const FEEDBACK_TICK: Duration = Duration::from_millis(100);
 
 struct SessionEvents {
     connected: Mutex<Option<mpsc::Sender<Result<ConnectedSession, String>>>>,
@@ -171,34 +179,27 @@ fn adapt_capture_profile(
     }
 }
 
-pub(crate) fn parse_cast_protocol(value: &str) -> Result<ProtocolType, ProjectorError> {
-    match value {
-        "f-cast" | "fcast" => Ok(ProtocolType::FCast),
-        "chromecast" => Ok(ProtocolType::Chromecast),
+/// The Cast SDK protocol for a receiver discovered as `protocol`.
+fn cast_protocol(protocol: ProjectionProtocol) -> Result<ProtocolType, ProjectorError> {
+    match protocol {
+        ProjectionProtocol::FCast => Ok(ProtocolType::FCast),
+        ProjectionProtocol::Chromecast => Ok(ProtocolType::Chromecast),
         other => Err(ProjectorError::Protocol(format!(
-            "{other} transport is not implemented by the HLS session"
+            "{} transport is not implemented by the HLS session",
+            other.label()
         ))),
     }
 }
 
-fn publish_capture_profile(
-    paths: &SessionPaths,
-    profile: CaptureProfile,
-) -> Result<(), ProjectorError> {
-    let bytes = serde_json::to_vec(&profile).map_err(|error| {
-        ProjectorError::Unavailable(format!("cannot encode capture profile: {error}"))
-    })?;
-    fs::write(&paths.profile, bytes).map_err(ProjectorError::io("cannot publish capture profile"))
+/// A connected receiver. It owns the SDK runtime: the device keeps only a
+/// handle, and dropping the runtime aborts the worker before the first
+/// media LOAD.
+struct CastReceiver {
+    _runtime: fcast_sender_sdk::context::CastContext,
+    device: Arc<dyn fcast_sender_sdk::device::CastingDevice>,
+    connected: ConnectedSession,
+    faults: mpsc::Receiver<String>,
 }
-
-/// `(runtime owner, device, connected session, receiver-message channel)` — the result of
-/// [`connect_cast_device`].
-type CastConnection = (
-    fcast_sender_sdk::context::CastContext,
-    Arc<dyn fcast_sender_sdk::device::CastingDevice>,
-    ConnectedSession,
-    mpsc::Receiver<String>,
-);
 
 /// Opens the receiver connection for a cast session and waits for the
 /// receiver's `Connected` event.
@@ -212,8 +213,8 @@ fn connect_cast_device(
     address: std::net::IpAddr,
     port: u16,
     name: String,
-) -> Result<CastConnection, ProjectorError> {
-    let context = fcast_sender_sdk::context::CastContext::new().map_err(|error| {
+) -> Result<CastReceiver, ProjectorError> {
+    let runtime = fcast_sender_sdk::context::CastContext::new().map_err(|error| {
         ProjectorError::Unavailable(format!("cannot initialise Cast session: {error}"))
     })?;
     let info = DeviceInfo {
@@ -223,9 +224,9 @@ fn connect_cast_device(
         port,
         txt_records: HashMap::new(),
     };
-    let device = context.create_device_from_info(info);
+    let device = runtime.create_device_from_info(info);
     let (connected_tx, connected_rx) = mpsc::channel();
-    let (fault_tx, fault_rx) = mpsc::channel();
+    let (fault_tx, faults) = mpsc::channel();
     device
         .connect(
             Some(ApplicationInfo {
@@ -246,30 +247,108 @@ fn connect_cast_device(
         .recv_timeout(Duration::from_secs(8))
         .map_err(|_| ProjectorError::Timeout("receiver did not accept the connection in time"))?
         .map_err(ProjectorError::Receiver)?;
-    // The device keeps only a runtime handle. Its CastContext owns the runtime;
-    // dropping it here aborts the worker before the first media LOAD.
-    Ok((context, device, connected, fault_rx))
+    Ok(CastReceiver {
+        _runtime: runtime,
+        device,
+        connected,
+        faults,
+    })
+}
+
+/// The local half of a cast session: video ingest from the compositor and
+/// the token-guarded HLS server the receiver fetches from. Dropping it stops
+/// and joins both.
+struct MediaServer {
+    stop: Arc<AtomicBool>,
+    video_socket: PathBuf,
+    receiver: std::net::IpAddr,
+    port: u16,
+    token: String,
+    telemetry: Arc<MediaTelemetry>,
+    video_thread: Option<JoinHandle<Result<(), ProjectorError>>>,
+    http_thread: Option<JoinHandle<()>>,
+}
+
+impl MediaServer {
+    fn start(
+        paths: &SessionPaths,
+        receiver: std::net::IpAddr,
+        audio: bool,
+    ) -> Result<Self, ProjectorError> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let video_paths = paths.clone();
+        let video_stop = stop.clone();
+        let video_thread = std::thread::Builder::new()
+            .name("tilo-proj-video".to_owned())
+            .spawn(move || video_ingest_loop(&video_paths, &video_stop, audio))
+            .map_err(ProjectorError::io("cannot start projection video ingest"))?;
+        let mut server = Self {
+            stop,
+            video_socket: paths.video_socket.clone(),
+            receiver,
+            port: 0,
+            token: random_media_token(),
+            telemetry: Arc::new(MediaTelemetry::new()),
+            video_thread: Some(video_thread),
+            http_thread: None,
+        };
+        // On failure `server` drops here and stops the video ingest.
+        let (port, http_thread) = start_http_server(
+            paths.root.clone(),
+            server.stop.clone(),
+            receiver,
+            server.token.clone(),
+            server.telemetry.clone(),
+        )?;
+        server.port = port;
+        server.http_thread = Some(http_thread);
+        Ok(server)
+    }
+
+    /// The playlist URL the receiver loads, served at `local_addr`.
+    fn playlist_url(&self, local_addr: &fcast_sender_sdk::IpAddr) -> String {
+        format!(
+            "http://{}:{}/{}/live.m3u8",
+            fcast_sender_sdk::url_format_ip_addr(local_addr),
+            self.port,
+            self.token
+        )
+    }
+}
+
+impl Drop for MediaServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        // Wake workers that are waiting in accept.
+        let _ = std::os::unix::net::UnixStream::connect(&self.video_socket);
+        if let Some(http_thread) = self.http_thread.take() {
+            wake_http_listener(self.receiver, self.port);
+            let _ = http_thread.join();
+        }
+        if let Some(video_thread) = self.video_thread.take() {
+            let _ = video_thread.join();
+        }
+    }
 }
 
 /// The pieces of a running cast session the adaptive feedback loop needs to
 /// read but does not own.
 struct CastFeedbackContext<'a> {
-    paths: &'a SessionPaths,
+    session: &'a SessionContext,
     device: &'a Arc<dyn fcast_sender_sdk::device::CastingDevice>,
     url: &'a str,
     telemetry: &'a MediaTelemetry,
     fault_rx: &'a mpsc::Receiver<String>,
 }
 
-/// Watches receiver telemetry until `ctx.paths.stop` appears, reloading the
-/// receiver after a stall and (when `adaptive`) publishing a new capture
+/// Watches receiver telemetry until the session is asked to stop, reloading
+/// the receiver after a stall and (when `adaptive`) publishing a new capture
 /// profile every 3 seconds.
 ///
 /// # Errors
 ///
 /// Returns an error if the receiver stops fetching the stream after three
-/// recovery attempts, if reloading the stream on the receiver fails, or if
-/// publishing a new capture profile fails.
+/// recovery attempts, or if reloading the stream on the receiver fails.
 fn run_adaptive_feedback_loop(
     ctx: &CastFeedbackContext<'_>,
     adaptive: bool,
@@ -283,8 +362,8 @@ fn run_adaptive_feedback_loop(
     let mut last_seen_requests = 0;
     let mut current_profile = initial_profile;
     let mut recovery_attempts = 0u8;
-    while !ctx.paths.stop.exists() {
-        std::thread::sleep(Duration::from_millis(100));
+    // The tick samples telemetry; a stop request ends the wait at once.
+    while !ctx.session.wait_stop(FEEDBACK_TICK) {
         let requests = ctx.telemetry.requests.load(Ordering::Acquire);
         let now_ms = ctx.telemetry.elapsed_millis();
         let last_request_ms = ctx.telemetry.last_request_ms.load(Ordering::Acquire);
@@ -330,7 +409,7 @@ fn run_adaptive_feedback_loop(
                 average_service_us,
             );
             if next != current_profile {
-                publish_capture_profile(ctx.paths, next)?;
+                ctx.session.publish_profile(next);
                 current_profile = next;
             }
             last_bytes = bytes;
@@ -362,52 +441,44 @@ fn initial_capture_profile(
     }
 }
 
-pub(crate) fn run_cast_session(args: &[String]) -> Result<(), ProjectorError> {
-    let protocol_arg = required(args, "--protocol")?;
-    let protocol = parse_cast_protocol(&protocol_arg)?;
-    let address_arg = required(args, "--address")?;
-    let address: std::net::IpAddr = address_arg
+pub(crate) fn run_cast_session(
+    device: &ProjectionDevice,
+    options: &ProjectionOptions,
+    context: &SessionContext,
+) -> Result<(), ProjectorError> {
+    let protocol = cast_protocol(device.protocol)?;
+    let address: std::net::IpAddr = receiver_address(device)?
         .trim_matches(['[', ']'])
         .parse()
         .map_err(|error| ProjectorError::Protocol(format!("invalid receiver address: {error}")))?;
-    let port = required(args, "--port")?
-        .parse::<u16>()
-        .map_err(|_| ProjectorError::Protocol("invalid --port".to_owned()))?;
-    let name = value_after(args, "--device").unwrap_or_else(|| "Wireless display".to_owned());
-    let audio = args.iter().any(|arg| arg == "--audio");
-    let stream_policy = parse_stream_policy(args)?;
-    let paths = SessionPaths::resolve()?;
-    paths.clear_markers();
-    let mut maximum_profile = stream_policy.ceiling(None);
+    let stream_policy = options.stream_policy;
+    context.publish_profile(initial_capture_profile(
+        stream_policy,
+        stream_policy.ceiling(None),
+    ));
+    let media = MediaServer::start(&context.paths, address, options.audio)?;
+    context.stage(ConnectStage::Handshake);
+    let receiver = connect_cast_device(protocol, address, device.port, device.name.clone())?;
+    let streamed = stream_to_receiver(context, &receiver, &media, stream_policy);
+    let _ = receiver.device.stop_playback();
+    let _ = receiver.device.disconnect();
+    drop(media);
+    streamed
+}
+
+/// Hands the receiver the stream once the compositor's first frames are in
+/// it, then keeps it flowing until the session is stopped or fails.
+fn stream_to_receiver(
+    context: &SessionContext,
+    receiver: &CastReceiver,
+    media: &MediaServer,
+    stream_policy: DisplayStreamPolicy,
+) -> Result<(), ProjectorError> {
+    let maximum_profile = stream_policy.ceiling(receiver.connected.receiver_resolution);
     let initial_profile = initial_capture_profile(stream_policy, maximum_profile);
-    publish_capture_profile(&paths, initial_profile)?;
-    fs::write(&paths.pid, std::process::id().to_string())
-        .map_err(ProjectorError::io("cannot record projection session"))?;
+    context.publish_profile(initial_profile);
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let video_paths = paths.clone();
-    let video_stop = stop.clone();
-    let video_thread = std::thread::Builder::new()
-        .name("tilo-proj-video".to_owned())
-        .spawn(move || video_ingest_loop(&video_paths, &video_stop, audio))
-        .map_err(ProjectorError::io("cannot start projection video ingest"))?;
-    let media_token = random_media_token();
-    let telemetry = Arc::new(MediaTelemetry::new());
-    let (http_port, http_thread) = start_http_server(
-        paths.root.clone(),
-        stop.clone(),
-        address,
-        media_token.clone(),
-        telemetry.clone(),
-    )?;
-
-    let (_context, device, connected, fault_rx) =
-        connect_cast_device(protocol, address, port, name)?;
-    maximum_profile = stream_policy.ceiling(connected.receiver_resolution);
-    let local_addr = connected.local_addr;
-    let initial_profile = initial_capture_profile(stream_policy, maximum_profile);
-    publish_capture_profile(&paths, initial_profile)?;
-
+    context.stage(ConnectStage::WaitingForFrames);
     let playlist_deadline = Instant::now()
         .checked_add(Duration::from_secs(8))
         .ok_or_else(|| {
@@ -415,51 +486,42 @@ pub(crate) fn run_cast_session(args: &[String]) -> Result<(), ProjectorError> {
                 "system clock cannot represent the playlist deadline".to_owned(),
             )
         })?;
-    while !paths.playlist.exists() && Instant::now() < playlist_deadline {
-        std::thread::sleep(Duration::from_millis(50));
+    // The muxer writes the playlist into the runtime directory; a stop
+    // request still ends this wait at once.
+    while !context.paths.playlist.exists() {
+        if Instant::now() >= playlist_deadline {
+            return Err(ProjectorError::Timeout(
+                "the compositor did not deliver video frames in time",
+            ));
+        }
+        if context.wait_stop(Duration::from_millis(50)) {
+            return Ok(());
+        }
     }
-    if !paths.playlist.exists() {
-        return Err(ProjectorError::Timeout(
-            "the compositor did not deliver video frames in time",
-        ));
-    }
-    let url = format!(
-        "http://{}:{http_port}/{media_token}/live.m3u8",
-        fcast_sender_sdk::url_format_ip_addr(&local_addr)
-    );
-    cast_load(&device, &url)?;
-    fs::write(&paths.ready, b"ready")
-        .map_err(ProjectorError::io("cannot publish projection readiness"))?;
+    let url = media.playlist_url(&receiver.connected.local_addr);
+    context.stage(ConnectStage::Loading);
+    cast_load(&receiver.device, &url)?;
+    context.ready();
 
     let feedback_ctx = CastFeedbackContext {
-        paths: &paths,
-        device: &device,
+        session: context,
+        device: &receiver.device,
         url: &url,
-        telemetry: &telemetry,
-        fault_rx: &fault_rx,
+        telemetry: &media.telemetry,
+        fault_rx: &receiver.faults,
     };
     run_adaptive_feedback_loop(
         &feedback_ctx,
         stream_policy.adaptive,
         maximum_profile,
         initial_profile,
-    )?;
-
-    let _ = device.stop_playback();
-    let _ = device.disconnect();
-    stop.store(true, Ordering::Release);
-    // Wake workers that are waiting in accept.
-    let _ = std::os::unix::net::UnixStream::connect(&paths.video_socket);
-    wake_http_listener(address, http_port);
-    let _ = video_thread.join();
-    let _ = http_thread.join();
-    paths.clear_markers();
-    Ok(())
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::process::{Command, Stdio};
@@ -547,14 +609,14 @@ mod tests {
 
             // Exercise the production connection helper: the returned owner must
             // keep its runtime alive while LOAD reaches the receiver.
-            let (_context, device, _connected, _fault_rx) = connect_cast_device(
+            let cast = connect_cast_device(
                 ProtocolType::FCast,
                 std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
                 port,
                 "FCast simulator".to_owned(),
             )
             .expect("production connection to simulator");
-            device
+            cast.device
                 .load(
                     LoadRequest::Url {
                         content_type: "application/vnd.apple.mpegurl".to_owned(),
@@ -673,7 +735,7 @@ mod tests {
                 std::thread::current().id()
             ));
             let paths = SessionPaths::for_root(root.clone()).expect("session paths");
-            paths.clear_markers();
+            paths.clear();
             // Large enough for every hardware encoder's minimum frame size.
             let size: u32 = 256;
             let mut pipeline =
