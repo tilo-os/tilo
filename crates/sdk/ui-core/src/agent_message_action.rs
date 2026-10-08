@@ -41,9 +41,18 @@ fn providers_failed(failure: ProvidersFailure<'_>) -> AgentMessagePoll {
 }
 
 fn observe_providers_poll(result: &str, class: Option<&str>, remote_class: Option<&str>) {
+    observe_message_poll("providers", result, class, remote_class);
+}
+
+fn observe_message_poll(
+    phase: &str,
+    result: &str,
+    class: Option<&str>,
+    remote_class: Option<&str>,
+) {
     #[cfg(test)]
     let row = serde_json::json!({
-        "phase": "providers", "result": result,
+        "phase": phase, "result": result,
         "refusal_class": class, "remote_class": remote_class,
     });
     #[cfg(test)]
@@ -54,12 +63,35 @@ fn observe_providers_poll(result: &str, class: Option<&str>, remote_class: Optio
     });
     tracing::debug!(
         target: "tilo_agent_delivery",
-        phase = "providers",
+        phase,
         result,
         refusal_class = class.unwrap_or("none"),
         remote_class = remote_class.unwrap_or("none"),
         "native-message-discovery"
     );
+}
+
+fn discovery_failed(phase: &str, class: &str) -> AgentMessagePoll {
+    observe_message_poll(phase, "failed", Some(class), None);
+    AgentMessagePoll::Failed
+}
+
+fn remote_failed(phase: &str, error: &tilo_actions::remote::ActionHostError) -> AgentMessagePoll {
+    observe_message_poll(phase, "failed", Some("remote_refused"), Some(error.code()));
+    AgentMessagePoll::Failed
+}
+
+fn submission_phase(submission: &AgentMessageSubmission) -> &'static str {
+    match submission {
+        AgentMessageSubmission::Providers(_) => "providers",
+        AgentMessageSubmission::LaunchRows(_) => "launch_rows",
+        AgentMessageSubmission::LaunchConfirm { .. } => "launch_confirm",
+        AgentMessageSubmission::LaunchInvoke { .. } => "launch_invoke",
+        AgentMessageSubmission::AwaitPublisher { .. } => "await_publisher",
+        AgentMessageSubmission::Rows(_) => "rows",
+        AgentMessageSubmission::Confirm { .. } => "confirm",
+        AgentMessageSubmission::Invoke { .. } => "invoke",
+    }
 }
 
 #[cfg(test)]
@@ -313,9 +345,16 @@ pub fn poll(
                 ProvidersFailure::PageBudget
             });
         }
-        return AgentMessagePoll::Failed;
+        return discovery_failed(
+            submission_phase(submission),
+            if crate::time::now() >= resolve_deadline {
+                "deadline_exhausted"
+            } else {
+                "page_budget_exhausted"
+            },
+        );
     }
-    match submission {
+    let result = match submission {
         AgentMessageSubmission::Providers(call) => poll_providers(workspace, call, pages_remaining),
         AgentMessageSubmission::LaunchRows(state) => {
             poll_launch_rows(actions, workspace, state, pages_remaining)
@@ -355,7 +394,22 @@ pub fn poll(
             pages_remaining,
         ),
         AgentMessageSubmission::Invoke { call, .. } => poll_invocation(call),
+    };
+    observe_submission_result(submission, &result);
+    result
+}
+
+fn observe_submission_result(submission: &AgentMessageSubmission, result: &AgentMessagePoll) {
+    if matches!(submission, AgentMessageSubmission::Providers(_)) {
+        return;
     }
+    let class = match result {
+        AgentMessagePoll::Waiting => "waiting",
+        AgentMessagePoll::Advance { .. } => "advance",
+        AgentMessagePoll::Succeeded => "succeeded",
+        AgentMessagePoll::Failed => return,
+    };
+    observe_message_poll(submission_phase(submission), class, None, None);
 }
 
 fn poll_providers(
@@ -440,7 +494,7 @@ fn poll_launch_rows(
     if let Some(call) = &state.call {
         let page = match call.get() {
             RemoteCall::Pending => return AgentMessagePoll::Waiting,
-            RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
+            RemoteCall::Refused(error) => return remote_failed("launch_rows", &error),
             RemoteCall::Done(page) => page,
         };
         pages_remaining = pages_remaining.saturating_sub(1);
@@ -450,22 +504,22 @@ fn poll_launch_rows(
                 .as_ref()
                 .is_some_and(|expected| expected != &page.revision)
         {
-            return AgentMessagePoll::Failed;
+            return discovery_failed("launch_rows", "invalid_page_or_revision");
         }
         for row in &page.rows {
             if is_chat_application_open_row(row, workspace) {
                 let Some(found) = row.target() else {
-                    return AgentMessagePoll::Failed;
+                    return discovery_failed("launch_rows", "missing_target");
                 };
                 if target.is_some() {
-                    return AgentMessagePoll::Failed;
+                    return discovery_failed("launch_rows", "ambiguous_target");
                 }
                 target = Some((found, page.revision.clone()));
             }
         }
         if page.next_cursor.is_empty() {
             let Some((target, revision)) = target else {
-                return AgentMessagePoll::Failed;
+                return discovery_failed("launch_rows", "no_match");
             };
             return AgentMessagePoll::Advance {
                 submission: AgentMessageSubmission::LaunchConfirm {
@@ -480,7 +534,7 @@ fn poll_launch_rows(
         cursor = page.next_cursor;
     }
     if !seen_cursors.insert(cursor.clone()) {
-        return AgentMessagePoll::Failed;
+        return discovery_failed("launch_rows", "repeated_cursor");
     }
     AgentMessagePoll::Advance {
         submission: AgentMessageSubmission::LaunchRows(Box::new(AgentLaunchRows {
@@ -509,7 +563,7 @@ fn poll_launch_confirmation(
 ) -> AgentMessagePoll {
     let page = match call.get() {
         RemoteCall::Pending => return AgentMessagePoll::Waiting,
-        RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
+        RemoteCall::Refused(error) => return remote_failed("launch_confirm", &error),
         RemoteCall::Done(page) => page,
     };
     let resolved = (page.rows.len() == 1).then(|| page.rows.first()).flatten();
@@ -520,7 +574,7 @@ fn poll_launch_confirmation(
             is_chat_application_open_row(row, workspace) && row.target().as_ref() == Some(target)
         })
     {
-        return AgentMessagePoll::Failed;
+        return discovery_failed("launch_confirm", "changed_confirmation");
     }
     let (invocation, call) = actions.invoke_tracked(target.clone(), InvokeArgument::None, None);
     AgentMessagePoll::Advance {
@@ -541,11 +595,13 @@ fn poll_launch_invocation(
             | tilo_actions::InvocationUpdate::Progress { .. }
             | tilo_actions::InvocationUpdate::Item { .. },
         ) => AgentMessagePoll::Waiting,
-        RemoteCall::Refused(_)
-        | RemoteCall::Done(
-            tilo_actions::InvocationUpdate::Failed { .. }
-            | tilo_actions::InvocationUpdate::Cancelled { .. },
-        ) => AgentMessagePoll::Failed,
+        RemoteCall::Refused(error) => remote_failed("launch_invoke", &error),
+        RemoteCall::Done(tilo_actions::InvocationUpdate::Failed { .. }) => {
+            discovery_failed("launch_invoke", "invocation_failed")
+        }
+        RemoteCall::Done(tilo_actions::InvocationUpdate::Cancelled { .. }) => {
+            discovery_failed("launch_invoke", "invocation_cancelled")
+        }
         RemoteCall::Done(tilo_actions::InvocationUpdate::Succeeded { .. }) => {
             let now = crate::time::now();
             AgentMessagePoll::Advance {
@@ -573,7 +629,14 @@ fn poll_await_publisher(
 ) -> AgentMessagePoll {
     let now = crate::time::now();
     if now >= until || pages_remaining == 0 {
-        return AgentMessagePoll::Failed;
+        return discovery_failed(
+            "await_publisher",
+            if now >= until {
+                "deadline_exhausted"
+            } else {
+                "page_budget_exhausted"
+            },
+        );
     }
     let Some(call) = call else {
         if now < retry_at {
@@ -594,12 +657,12 @@ fn poll_await_publisher(
     };
     let page = match call.get() {
         RemoteCall::Pending => return AgentMessagePoll::Waiting,
-        RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
+        RemoteCall::Refused(error) => return remote_failed("await_publisher", &error),
         RemoteCall::Done(page) => page,
     };
     if page.stale_cursor || page.budget_exhausted || !page.exhausted || !page.next_cursor.is_empty()
     {
-        return AgentMessagePoll::Failed;
+        return discovery_failed("await_publisher", "invalid_page_flags");
     }
     if page.providers.len() > 1
         || page.providers.iter().any(|provider| {
@@ -608,7 +671,7 @@ fn poll_await_publisher(
                 || !provider.record_id.is_empty()
         })
     {
-        return AgentMessagePoll::Failed;
+        return discovery_failed("await_publisher", "provider_count_or_route_mismatch");
     }
     let mut providers = page
         .providers
@@ -668,12 +731,12 @@ fn poll_rows(
     if let Some(answer) = state.call.as_ref() {
         let page = match answer.get() {
             RemoteCall::Pending => return AgentMessagePoll::Waiting,
-            RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
+            RemoteCall::Refused(error) => return remote_failed("rows", &error),
             RemoteCall::Done(page) => page,
         };
         pages_remaining = pages_remaining.saturating_sub(1);
-        if ingest_page(&mut state, page, agent).is_err() {
-            return AgentMessagePoll::Failed;
+        if let Err(class) = ingest_page(&mut state, page, agent) {
+            return discovery_failed("rows", class);
         }
     }
     if state.provider.is_some() && state.parent.is_none() {
@@ -695,13 +758,13 @@ fn poll_rows(
         return confirm_unique(actions, state, pages_remaining);
     };
     let Some(parent) = state.parent.clone() else {
-        return AgentMessagePoll::Failed;
+        return discovery_failed("rows", "missing_parent");
     };
     if !state
         .seen_requests
         .insert((provider.clone(), parent.clone(), state.cursor.clone()))
     {
-        return AgentMessagePoll::Failed;
+        return discovery_failed("rows", "repeated_cursor");
     }
     state.call = Some(actions.catalogue_page(CatalogueQuery {
         provider: Some(provider),
@@ -723,7 +786,7 @@ fn confirm_unique(
     pages_remaining: u16,
 ) -> AgentMessagePoll {
     let Some((target, revision)) = state.matches.pop() else {
-        return AgentMessagePoll::Failed;
+        return discovery_failed("rows", "no_match");
     };
     let call = actions.catalogue_page(CatalogueQuery::resolve(&target, revision.clone()));
     AgentMessagePoll::Advance {
@@ -747,11 +810,14 @@ fn poll_confirmation(
 ) -> AgentMessagePoll {
     let page = match call.get() {
         RemoteCall::Pending => return AgentMessagePoll::Waiting,
-        RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
+        RemoteCall::Refused(error) => return remote_failed("confirm", &error),
         RemoteCall::Done(page) => page,
     };
     if !is_exact_confirmation(&page, agent, target, revision) {
-        return AgentMessagePoll::Failed;
+        return discovery_failed(
+            "confirm",
+            confirmation_failure(&page, agent, target, revision),
+        );
     }
     let (invocation, call) =
         actions.invoke_tracked(target.clone(), InvokeArgument::Text(text.to_owned()), None);
@@ -763,12 +829,19 @@ fn poll_confirmation(
 
 fn poll_invocation(call: &LocalState<InvocationCall>) -> AgentMessagePoll {
     match call.get() {
-        RemoteCall::Refused(_) => AgentMessagePoll::Failed,
+        RemoteCall::Refused(error) => remote_failed("invoke", &error),
         RemoteCall::Done(update) if update.is_terminal() => {
             if matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }) {
                 AgentMessagePoll::Succeeded
             } else {
-                AgentMessagePoll::Failed
+                discovery_failed(
+                    "invoke",
+                    if matches!(update, tilo_actions::InvocationUpdate::Cancelled { .. }) {
+                        "invocation_cancelled"
+                    } else {
+                        "invocation_failed"
+                    },
+                )
             }
         }
         RemoteCall::Pending | RemoteCall::Done(_) => AgentMessagePoll::Waiting,
@@ -797,6 +870,33 @@ fn is_exact_confirmation(
         && unique_target(page, agent).as_ref() == Some(target)
 }
 
+fn confirmation_failure(
+    page: &CataloguePage,
+    agent: &str,
+    target: &RemoteActionTarget,
+    revision: &str,
+) -> &'static str {
+    if revision.is_empty() {
+        "empty_revision"
+    } else if page.revision != revision {
+        "revision_changed"
+    } else if !page.exhausted {
+        "inconsistent_completion"
+    } else if !page.next_cursor.is_empty() {
+        "cursor_not_empty"
+    } else if page.stale_cursor {
+        "stale_cursor"
+    } else if page.budget_exhausted {
+        "page_budget_exhausted"
+    } else if page.rows.len() != 1 {
+        "row_count_mismatch"
+    } else if unique_target(page, agent).as_ref() != Some(target) {
+        "changed_target"
+    } else {
+        "changed_confirmation"
+    }
+}
+
 fn is_message_row(row: &tilo_actions::remote::CatalogueRow, agent: &str) -> bool {
     let key = format!("chat.person:{agent}");
     row.app_id == "so.tilo.chat"
@@ -816,30 +916,42 @@ fn is_message_row(row: &tilo_actions::remote::CatalogueRow, agent: &str) -> bool
         })
 }
 
-fn ingest_page(state: &mut AgentMessageRows, page: CataloguePage, agent: &str) -> Result<(), ()> {
+fn ingest_page(
+    state: &mut AgentMessageRows,
+    page: CataloguePage,
+    agent: &str,
+) -> Result<(), &'static str> {
     let Some(provider) = state.provider.as_deref() else {
-        return Err(());
+        return Err("missing_provider");
     };
     let Some(parent) = state.parent.as_deref() else {
-        return Err(());
+        return Err("missing_parent");
     };
-    if page.revision.is_empty()
-        || page.stale_cursor
-        || page.budget_exhausted
-        || (page.next_cursor.is_empty() != page.exhausted)
-        || state
-            .revision
-            .as_ref()
-            .is_some_and(|expected| expected != &page.revision)
+    if page.revision.is_empty() {
+        return Err("empty_revision");
+    }
+    if page.stale_cursor {
+        return Err("stale_cursor");
+    }
+    if page.budget_exhausted {
+        return Err("page_budget_exhausted");
+    }
+    if page.next_cursor.is_empty() != page.exhausted {
+        return Err("inconsistent_completion");
+    }
+    if state
+        .revision
+        .as_ref()
+        .is_some_and(|expected| expected != &page.revision)
     {
-        return Err(());
+        return Err("revision_changed");
     }
     if page
         .rows
         .iter()
         .any(|row| row.provider != provider || row.parent_resource != parent)
     {
-        return Err(());
+        return Err("row_route_mismatch");
     }
     state.revision.get_or_insert_with(|| page.revision.clone());
     for row in &page.rows {
@@ -851,10 +963,10 @@ fn ingest_page(state: &mut AgentMessageRows, page: CataloguePage, agent: &str) -
             state.parents.push_back(row.resource.id.clone());
         }
         if is_message_row(row, agent) {
-            let target = row.target().ok_or(())?;
+            let target = row.target().ok_or("missing_target")?;
             state.matches.push((target, page.revision.clone()));
             if state.matches.len() > 1 {
-                return Err(());
+                return Err("ambiguous_target");
             }
         }
     }
@@ -1068,6 +1180,307 @@ mod tests {
                 })]
             );
             assert!(!serde_json::to_string(&rows).unwrap().contains("PRIVATE"));
+        }
+    }
+
+    fn diagnostic_rows(call: CatalogueCall) -> AgentMessageRows {
+        AgentMessageRows {
+            providers: VecDeque::new(),
+            provider: Some("chat-provider".into()),
+            parents: VecDeque::new(),
+            parent: Some(String::new()),
+            revision: None,
+            cursor: Vec::new(),
+            call: Some(LocalState::new(call)),
+            matches: Vec::new(),
+            seen_requests: HashSet::new(),
+            seen_resources: HashSet::new(),
+        }
+    }
+
+    fn diagnostic_catalogue_submission(phase: &str, call: CatalogueCall) -> AgentMessageSubmission {
+        let call = LocalState::new(call);
+        let target = message_row("scribe").target().unwrap();
+        match phase {
+            "launch_rows" => AgentMessageSubmission::LaunchRows(Box::new(AgentLaunchRows {
+                revision: None,
+                cursor: Vec::new(),
+                call: Some(call),
+                target: None,
+                seen_cursors: HashSet::new(),
+            })),
+            "launch_confirm" => AgentMessageSubmission::LaunchConfirm {
+                target,
+                revision: "PRIVATE-REVISION".into(),
+                call,
+            },
+            "await_publisher" => AgentMessageSubmission::AwaitPublisher {
+                call: Some(call),
+                retry_at: crate::time::now(),
+                until: crate::time::now() + RESOLVE_WINDOW,
+            },
+            "rows" => AgentMessageSubmission::Rows(Box::new(diagnostic_rows(call.get()))),
+            "confirm" => AgentMessageSubmission::Confirm {
+                target,
+                revision: "PRIVATE-REVISION".into(),
+                call,
+            },
+            _ => panic!("unknown test phase"),
+        }
+    }
+
+    fn assert_message_diagnostic(
+        submission: AgentMessageSubmission,
+        expected_result: &str,
+        cause: Option<&str>,
+        remote: Option<&str>,
+    ) {
+        PROVIDERS_FAILURE_ROWS.with_borrow_mut(|rows| *rows = Some(Vec::new()));
+        let result = poll(
+            &RemoteActions::session(),
+            "room-a",
+            "scribe",
+            "PRIVATE-TEXT",
+            &submission,
+            crate::time::now() + RESOLVE_WINDOW,
+            MAX_PAGES,
+        );
+        assert!(match expected_result {
+            "failed" => matches!(result, AgentMessagePoll::Failed),
+            "waiting" => matches!(result, AgentMessagePoll::Waiting),
+            "advance" => matches!(result, AgentMessagePoll::Advance { .. }),
+            "succeeded" => matches!(result, AgentMessagePoll::Succeeded),
+            _ => false,
+        });
+        let rows = PROVIDERS_FAILURE_ROWS.with_borrow_mut(|rows| rows.take().unwrap());
+        assert_eq!(
+            rows,
+            vec![serde_json::json!({
+                "phase": submission_phase(&submission), "result": expected_result,
+                "refusal_class": cause, "remote_class": remote,
+            })]
+        );
+        assert!(!serde_json::to_string(&rows).unwrap().contains("PRIVATE"));
+    }
+
+    #[test]
+    fn all_catalogue_phases_observe_actual_pending_and_private_remote_refusal() {
+        for phase in [
+            "launch_rows",
+            "launch_confirm",
+            "await_publisher",
+            "rows",
+            "confirm",
+        ] {
+            assert_message_diagnostic(
+                diagnostic_catalogue_submission(phase, RemoteCall::Pending),
+                "waiting",
+                None,
+                None,
+            );
+            assert_message_diagnostic(
+                diagnostic_catalogue_submission(
+                    phase,
+                    RemoteCall::Refused(tilo_actions::remote::ActionHostError::Refused {
+                        reason: "PRIVATE-ERROR".into(),
+                    }),
+                ),
+                "failed",
+                Some("remote_refused"),
+                Some("refused"),
+            );
+        }
+    }
+
+    #[test]
+    fn catalogue_leaf_failures_are_distinguished_without_page_payloads() {
+        for (phase, page, cause) in [
+            (
+                "launch_rows",
+                CataloguePage {
+                    exhausted: true,
+                    ..CataloguePage::default()
+                },
+                "no_match",
+            ),
+            (
+                "launch_rows",
+                CataloguePage {
+                    stale_cursor: true,
+                    ..CataloguePage::default()
+                },
+                "invalid_page_or_revision",
+            ),
+            (
+                "launch_confirm",
+                CataloguePage::default(),
+                "changed_confirmation",
+            ),
+            (
+                "confirm",
+                confirmed_page("PRIVATE-AGENT", "PRIVATE-REVISION"),
+                "changed_target",
+            ),
+            (
+                "await_publisher",
+                CataloguePage::default(),
+                "invalid_page_flags",
+            ),
+            ("rows", CataloguePage::default(), "empty_revision"),
+        ] {
+            assert_message_diagnostic(
+                diagnostic_catalogue_submission(phase, RemoteCall::Done(page)),
+                "failed",
+                Some(cause),
+                None,
+            );
+        }
+        let mut wrong_route = confirmed_page("scribe", "PRIVATE-REVISION");
+        wrong_route.rows[0].provider = "PRIVATE-PROVIDER".into();
+        assert_message_diagnostic(
+            diagnostic_catalogue_submission("rows", RemoteCall::Done(wrong_route)),
+            "failed",
+            Some("row_route_mismatch"),
+            None,
+        );
+        let mut state = diagnostic_rows(RemoteCall::Pending);
+        state.call = None;
+        state.provider = None;
+        assert_message_diagnostic(
+            AgentMessageSubmission::Rows(Box::new(state)),
+            "failed",
+            Some("no_match"),
+            None,
+        );
+        let mut state = diagnostic_rows(RemoteCall::Pending);
+        state.call = None;
+        state
+            .seen_requests
+            .insert(("chat-provider".into(), String::new(), Vec::new()));
+        assert_message_diagnostic(
+            AgentMessageSubmission::Rows(Box::new(state)),
+            "failed",
+            Some("repeated_cursor"),
+            None,
+        );
+    }
+
+    #[test]
+    fn rows_and_confirmation_metadata_failures_have_precise_closed_causes() {
+        let valid = confirmed_page("scribe", "PRIVATE-REVISION");
+        let mut cases = Vec::new();
+        let mut page = valid.clone();
+        page.revision.clear();
+        cases.push((page, "empty_revision", "revision_changed"));
+        let mut page = valid.clone();
+        page.stale_cursor = true;
+        cases.push((page, "stale_cursor", "stale_cursor"));
+        let mut page = valid.clone();
+        page.budget_exhausted = true;
+        cases.push((page, "page_budget_exhausted", "page_budget_exhausted"));
+        let mut page = valid.clone();
+        page.exhausted = false;
+        cases.push((page, "inconsistent_completion", "inconsistent_completion"));
+        for (page, rows_cause, confirm_cause) in cases {
+            assert_message_diagnostic(
+                diagnostic_catalogue_submission("rows", RemoteCall::Done(page.clone())),
+                "failed",
+                Some(rows_cause),
+                None,
+            );
+            assert_message_diagnostic(
+                diagnostic_catalogue_submission("confirm", RemoteCall::Done(page)),
+                "failed",
+                Some(confirm_cause),
+                None,
+            );
+        }
+        let mut state = diagnostic_rows(RemoteCall::Done(valid.clone()));
+        state.revision = Some("PRIVATE-OLD-REVISION".into());
+        assert_message_diagnostic(
+            AgentMessageSubmission::Rows(Box::new(state)),
+            "failed",
+            Some("revision_changed"),
+            None,
+        );
+        let mut page = valid.clone();
+        page.next_cursor = b"PRIVATE-CURSOR".to_vec();
+        assert_message_diagnostic(
+            diagnostic_catalogue_submission("confirm", RemoteCall::Done(page)),
+            "failed",
+            Some("cursor_not_empty"),
+            None,
+        );
+        let mut page = valid;
+        page.rows.clear();
+        assert_message_diagnostic(
+            diagnostic_catalogue_submission("confirm", RemoteCall::Done(page)),
+            "failed",
+            Some("row_count_mismatch"),
+            None,
+        );
+    }
+
+    #[test]
+    fn both_invocation_phases_observe_progress_success_and_private_terminal_failure() {
+        for launch in [false, true] {
+            let invocation = InvocationId::new();
+            let calls = [
+                (RemoteCall::Pending, "waiting", None, None),
+                (
+                    RemoteCall::Done(InvocationUpdate::Accepted { invocation }),
+                    "waiting",
+                    None,
+                    None,
+                ),
+                (
+                    RemoteCall::Done(InvocationUpdate::Succeeded {
+                        invocation,
+                        output: ActionOutput::default(),
+                    }),
+                    if launch { "advance" } else { "succeeded" },
+                    None,
+                    None,
+                ),
+                (
+                    RemoteCall::Done(InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "PRIVATE-CODE".into(),
+                            message: "PRIVATE-ERROR".into(),
+                            details: Some(serde_json::json!({"PRIVATE": "PRIVATE-TEXT"})),
+                            retryable: false,
+                        },
+                    }),
+                    "failed",
+                    Some("invocation_failed"),
+                    None,
+                ),
+                (
+                    RemoteCall::Done(InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("PRIVATE-ERROR".into()),
+                    }),
+                    "failed",
+                    Some("invocation_cancelled"),
+                    None,
+                ),
+                (
+                    RemoteCall::Refused(tilo_actions::remote::ActionHostError::NotPermitted),
+                    "failed",
+                    Some("remote_refused"),
+                    Some("not_permitted"),
+                ),
+            ];
+            for (call, result, cause, remote) in calls {
+                let call = LocalState::new(call);
+                let submission = if launch {
+                    AgentMessageSubmission::LaunchInvoke { invocation, call }
+                } else {
+                    AgentMessageSubmission::Invoke { invocation, call }
+                };
+                assert_message_diagnostic(submission, result, cause, remote);
+            }
         }
     }
 
