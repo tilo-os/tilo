@@ -94,6 +94,13 @@ pub trait Effect: Sized + 'static {
     /// One declaration per effect, in order.
     fn declarations() -> Vec<EffectDecl>;
 
+    /// Look up one fresh declaration, preserving the vocabulary's metadata.
+    /// Composite vocabularies can dispatch directly to the owning vocabulary
+    /// without allocating every unrelated declaration for each control.
+    fn declaration(id: &str) -> Option<EffectDecl> {
+        Self::declarations().into_iter().find(|decl| decl.id == id)
+    }
+
     /// This effect's id among the declarations.
     fn id(&self) -> &'static str;
 
@@ -119,6 +126,12 @@ pub trait Effect: Sized + 'static {
             .collect()
     }
 
+    /// One published effect by id. The default preserves customised
+    /// [`specs`](Self::specs); composite vocabularies can ask only its owner.
+    fn spec(id: &str) -> Option<ActionSpec> {
+        Self::specs().into_iter().find(|spec| spec.id == id)
+    }
+
     /// This effect with its arguments as one action that takes none: what a
     /// published child or a live row offers (open *this* snippet, stop
     /// *this* process), answered by the vocabulary's handler like any other
@@ -137,7 +150,7 @@ pub trait Effect: Sized + 'static {
             type_id: Self::OPERATION.to_owned(),
             payload: Vec::new(),
         });
-        match Self::declarations().into_iter().find(|decl| decl.id == id) {
+        match Self::declaration(id) {
             Some(decl) => decl.spec_with(Self::OPERATION, Vec::new(), move |_| encoded.clone()),
             None => ActionSpec::typed_operation(
                 id,
@@ -156,9 +169,7 @@ pub trait Effect: Sized + 'static {
     /// *this* file, to a name the caller gives. The bound arguments are this
     /// effect's own; an asked one the caller supplies replaces it.
     fn bound_asking(&self, asking: &[&str]) -> ActionSpec {
-        let params = Self::declarations()
-            .into_iter()
-            .find(|decl| decl.id == self.id())
+        let params = Self::declaration(self.id())
             .map(|decl| {
                 decl.params
                     .into_iter()
@@ -174,7 +185,7 @@ pub trait Effect: Sized + 'static {
     /// file as the choices of `app`.
     fn bound_asking_params(&self, params: Vec<ActionParam>) -> ActionSpec {
         let id = self.id();
-        let Some(decl) = Self::declarations().into_iter().find(|decl| decl.id == id) else {
+        let Some(decl) = Self::declaration(id) else {
             return self.bound();
         };
         let bound = self.arguments();
@@ -482,6 +493,78 @@ mod tests {
     }
 
     const SHADES: [&str; 2] = ["light", "dark"];
+
+    static CHOICES_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    fn fresh_choices() -> [String; 1] {
+        [CHOICES_READS
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .to_string()]
+    }
+    #[derive(Effect)]
+    #[effect(operation = "test.selected-effect")]
+    enum Selected {
+        /// Read status.
+        Status,
+        /// Choose one item.
+        Choose {
+            #[param(choices = fresh_choices())]
+            item: String,
+        },
+    }
+
+    #[test]
+    fn derived_single_lookup_and_binding_read_only_selected_fresh_choices() {
+        CHOICES_READS.store(0, std::sync::atomic::Ordering::SeqCst);
+        assert!(Selected::spec("status").is_some());
+        let _ = Selected::Status.bound();
+        assert!(Selected::spec("unknown").is_none());
+        assert_eq!(CHOICES_READS.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let first = Selected::spec("choose").unwrap();
+        let second = Selected::spec("choose").unwrap();
+        assert_eq!(first.params()[0].choices[0].as_ref(), "0");
+        assert_eq!(second.params()[0].choices[0].as_ref(), "1");
+        assert_eq!(CHOICES_READS.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    struct CustomSpecs;
+    impl Effect for CustomSpecs {
+        const OPERATION: &'static str = Sample::OPERATION;
+        fn declarations() -> Vec<EffectDecl> {
+            Sample::declarations()
+        }
+        fn specs() -> Vec<ActionSpec> {
+            Sample::specs()
+                .into_iter()
+                .map(|mut spec| {
+                    spec.contract.result = ResultSpec::Json {
+                        schema: serde_json::json!({"type": "object"}),
+                    };
+                    spec
+                })
+                .collect()
+        }
+        fn id(&self) -> &'static str {
+            "reload"
+        }
+        fn arguments(&self) -> serde_json::Map<String, serde_json::Value> {
+            serde_json::Map::new()
+        }
+        fn decode(_: &str, _: &serde_json::Map<String, serde_json::Value>) -> Result<Self, String> {
+            Ok(Self)
+        }
+    }
+
+    #[test]
+    fn single_spec_default_preserves_customised_published_results() {
+        let actual = CustomSpecs::spec("reload").unwrap();
+        assert_eq!(
+            actual.contract.result,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"}),
+            }
+        );
+        assert!(CustomSpecs::spec("unknown").is_none());
+    }
 
     #[test]
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {

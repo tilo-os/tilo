@@ -204,6 +204,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         .any(|variant| !matches!(variant.fields, Fields::Unit));
 
     let mut decls = Vec::new();
+    let mut lookups = Vec::new();
     let mut ids = Vec::new();
     let mut encodes = Vec::new();
     let mut decodes = Vec::new();
@@ -358,7 +359,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(Effect)
         };
-        decls.push(quote! {
+        let declaration = quote! {
             #krate::effect::EffectDecl {
                 id: #id,
                 label: #label,
@@ -376,7 +377,9 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 untrusted: #untrusted,
                 participant: #participant,
             }
-        });
+        };
+        lookups.push(quote!(#id => ::std::option::Option::Some(#declaration),));
+        decls.push(declaration);
 
         let field_idents: Vec<_> = fields.iter().map(|(field, _, _)| field.clone()).collect();
         let field_names: Vec<String> = field_idents.iter().map(ToString::to_string).collect();
@@ -429,6 +432,19 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
 
             fn declarations() -> ::std::vec::Vec<#krate::effect::EffectDecl> {
                 ::std::vec![#(#decls),*]
+            }
+
+            fn declaration(id: &str) -> ::std::option::Option<#krate::effect::EffectDecl> {
+                match id {
+                    #(#lookups)*
+                    _ => ::std::option::Option::None,
+                }
+            }
+
+            fn spec(id: &str) -> ::std::option::Option<#krate::__private::ActionSpec> {
+                <Self as #krate::Effect>::declaration(id)
+                    .filter(|declaration| !declaration.row)
+                    .map(|declaration| declaration.spec(Self::OPERATION))
             }
 
             fn id(&self) -> &'static str {

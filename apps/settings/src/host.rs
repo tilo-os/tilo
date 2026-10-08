@@ -205,9 +205,7 @@ impl PaneCx {
     }
 
     fn may_effect(door: &Door, id: &str) -> bool {
-        SettingsEffect::declarations()
-            .into_iter()
-            .find(|declaration| declaration.id == id)
+        SettingsEffect::declaration(id)
             .is_some_and(|declaration| door.dispatcher.may(declaration.permission))
     }
 

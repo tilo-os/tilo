@@ -23,6 +23,11 @@ use crate::settings_app::SettingsApp;
 /// The operation every Settings effect travels under.
 pub const OPERATION: &str = "settings.effect";
 
+type EffectOwner = (
+    fn(&str) -> Option<EffectDecl>,
+    fn(&str) -> Option<tilo_actions::ActionSpec>,
+);
+
 /// Declare [`SettingsEffect`] as the union of the areas' vocabularies, each
 /// answered by its module's `answer(app, effect, cx)`.
 macro_rules! settings_effects {
@@ -46,6 +51,14 @@ macro_rules! settings_effects {
                 let mut declarations = Vec::new();
                 $(declarations.extend(<$ty as Effect>::declarations());)*
                 declarations
+            }
+
+            fn declaration(id: &str) -> Option<EffectDecl> {
+                Self::owner(id).and_then(|(declaration, _)| declaration(id))
+            }
+
+            fn spec(id: &str) -> Option<tilo_actions::ActionSpec> {
+                Self::owner(id).and_then(|(_, spec)| spec(id))
             }
 
             fn id(&self) -> &'static str {
@@ -77,6 +90,27 @@ macro_rules! settings_effects {
                     return <$ty as Effect>::decode(id, arguments).map(Self::$variant);
                 })*
                 Err(format!("Settings has no effect `{id}`"))
+            }
+        }
+
+        impl SettingsEffect {
+            fn owner(id: &str) -> Option<EffectOwner> {
+                // Retain only immutable routing. Each owner's declarations and
+                // customised specs remain fresh, including choices and roles.
+                static OWNERS: std::sync::OnceLock<
+                    std::collections::HashMap<&'static str, EffectOwner>,
+                > = std::sync::OnceLock::new();
+                let owners = OWNERS.get_or_init(|| {
+                    let mut owners = std::collections::HashMap::new();
+                    $(for decl in <$ty as Effect>::declarations() {
+                        owners.entry(decl.id).or_insert((
+                            <$ty as Effect>::declaration as fn(&str) -> Option<EffectDecl>,
+                            <$ty as Effect>::spec as fn(&str) -> Option<tilo_actions::ActionSpec>,
+                        ));
+                    })*
+                    owners
+                });
+                owners.get(id).copied()
             }
         }
 
@@ -265,6 +299,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn single_effect_lookup_preserves_every_published_declaration() {
+        for declaration in SettingsEffect::declarations() {
+            let single = SettingsEffect::declaration(declaration.id).unwrap();
+            let resource = |spec| {
+                tilo_actions::Resource::new("comparison", "comparison", "comparison")
+                    .with_action(spec)
+            };
+            assert_eq!(
+                tilo_actions::door::survey(&[resource(single.spec(OPERATION))]),
+                tilo_actions::door::survey(&[resource(declaration.spec(OPERATION))]),
+                "single lookup preserves parameters, roles, risk and execution for {}",
+                declaration.id,
+            );
+        }
+        let selected: Vec<_> = SettingsEffect::specs()
+            .into_iter()
+            .map(|spec| SettingsEffect::spec(&spec.id).unwrap())
+            .collect();
+        let resource = |specs| tilo_actions::Resource {
+            actions: specs,
+            ..tilo_actions::Resource::new("comparison", "comparison", "comparison")
+        };
+        assert_eq!(
+            tilo_actions::door::survey(&[resource(selected)]),
+            tilo_actions::door::survey(&[resource(SettingsEffect::specs())]),
+        );
+        assert!(SettingsEffect::declaration("not-a-settings-effect").is_none());
+        assert!(SettingsEffect::spec("not-a-settings-effect").is_none());
+    }
+
+    #[test]
     fn navigation_read_keeps_pending_request_distinct_from_selected_content() {
         let app = SettingsApp::with_selected(Category::Network);
         app.request_pane(Category::MouseKeyboard);
@@ -384,5 +449,42 @@ mod tests {
             Ok(open)
         );
         assert!(SettingsEffect::decode("no-such-effect", &serde_json::Map::new()).is_err());
+    }
+
+    #[test]
+    fn mounted_appearance_control_composition_keeps_original_live_bindings() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        app.settle();
+        // Warm the identical storage, translations, text shaping and routing.
+        for _ in 0..2 {
+            app.surface_mut::<SettingsApp>()
+                .select(Category::DefaultApps);
+            app.harness().relayout();
+            app.surface_mut::<SettingsApp>()
+                .select(Category::Appearance);
+            app.harness().relayout();
+        }
+        let mut samples = Vec::new();
+        for _ in 0..7 {
+            app.surface_mut::<SettingsApp>()
+                .select(Category::DefaultApps);
+            app.harness().relayout();
+            let started = std::time::Instant::now();
+            app.surface_mut::<SettingsApp>()
+                .select(Category::Appearance);
+            app.harness().relayout();
+            samples.push(started.elapsed().as_nanos());
+            assert!(app.harness().targets().contains_key("appearance.theme"));
+        }
+        println!("APPEARANCE-RECOMPOSITION-FRAME-NS {samples:?}");
+        let address = open_pane_address(Category::DefaultApps);
+        app.call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key("open-workspace-app-defaults")
+        );
     }
 }

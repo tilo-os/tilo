@@ -137,7 +137,7 @@ impl<R: Resource> Actions<R> {
     /// effect is published beside the resource's actions by the handler a
     /// view or surface registers, not by the resource type.
     fn exporting<E: Effect>(&self, id: &str) -> Option<tilo_actions::Resource> {
-        let spec = E::specs().into_iter().find(|spec| spec.id == id)?;
+        let spec = E::spec(id)?;
         let published = self.published.borrow();
         Some(tilo_actions::Resource {
             id: published.id.clone(),
@@ -196,5 +196,75 @@ impl<R: Resource> Actions<R> {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_resource::{Doc, EffectDecl, ModelError, NoAction};
+
+    struct Document;
+    #[cfg(test)]
+    impl Resource for Document {
+        const KIND: &'static str = "test.effect-binding";
+        const LABEL: &'static str = "Effect binding";
+        type State = ();
+        type Action = NoAction;
+        fn read(_: &Doc) -> Result<(), ModelError> {
+            Ok(())
+        }
+    }
+
+    #[derive(tilo_resource::Effect)]
+    #[effect(operation = "test.effect-binding")]
+    enum Vocabulary {
+        /// Read status.
+        #[effect(permission = "read", returns)]
+        Status,
+        /// Delete one item.
+        #[effect(row, destructive)]
+        Delete { item: String },
+    }
+
+    struct Selective;
+    impl Effect for Selective {
+        const OPERATION: &'static str = Vocabulary::OPERATION;
+        fn declarations() -> Vec<EffectDecl> {
+            panic!("binding one control must not enumerate unrelated effects")
+        }
+        fn declaration(id: &str) -> Option<EffectDecl> {
+            Vocabulary::declaration(id)
+        }
+        fn spec(id: &str) -> Option<tilo_actions::ActionSpec> {
+            Vocabulary::spec(id)
+        }
+        fn id(&self) -> &'static str {
+            "status"
+        }
+        fn arguments(&self) -> serde_json::Map<String, serde_json::Value> {
+            serde_json::Map::new()
+        }
+        fn decode(_: &str, _: &serde_json::Map<String, serde_json::Value>) -> Result<Self, String> {
+            Err("not invoked in binding test".into())
+        }
+    }
+
+    #[test]
+    fn binding_one_effect_uses_its_fresh_declaration_and_refuses_row_effects() {
+        let actions = Actions::<Document>::new(Rc::new(tilo_actions::Resource::new(
+            "original-resource",
+            Document::KIND,
+            Document::LABEL,
+        )));
+        let selected = actions.exporting::<Selective>("status").unwrap();
+        let expected = actions.exporting::<Vocabulary>("status").unwrap();
+        assert_eq!(
+            tilo_actions::door::survey(&[selected]),
+            tilo_actions::door::survey(&[expected]),
+        );
+        assert!(actions.effect(&Selective).is_some());
+        assert!(actions.exporting::<Selective>("delete").is_none());
+        assert!(actions.exporting::<Selective>("unknown").is_none());
     }
 }
