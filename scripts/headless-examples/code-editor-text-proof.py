@@ -43,8 +43,8 @@ def package(binaries, profile, env):
     publisher = profile / "publisher.json"
     bootstrap.run(binaries / "tilo-app-package", ["keygen", "--out", publisher], env)
     tapp = profile / "code-editor.tapp"
-    # rcargo's Unix SSH ControlPath must fit the OS socket path bound. Reuse
-    # the ordinary operator build cache only for compilation; session apps,
+    # Reuse the ordinary operator build configuration only for compilation;
+    # Unix control sockets must fit the OS path bound. Session apps,
     # installation and the compositor retain their private XDG locations.
     build_env = dict(env)
     for variable in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
@@ -133,22 +133,14 @@ def run(args):
     env.update({"XDG_RUNTIME_DIR": str(runtime), "TILO_APPS_DATA_DIR": str(profile / "apps"), "TILO_RUNTIME_BUNDLE_DIR": str(profile / "runtimes"), "TILO_LAUNCHER_BIN": str(args.binaries / "tilo-launcher"), "TILO_STATE_PATH": str(profile / "config/tilo/state.json"), "TILO_HEADLESS_SIZE": "1024x768"})
     for variable in ("DISPLAY", "WAYLAND_DISPLAY", "TILO_APPS_SYSTEM_DIR"):
         env.pop(variable, None)
-    # rcargo uses the same XDG config convention as the desktop. Carry only its
-    # existing build configuration into this private profile; otherwise an
-    # isolated desktop accidentally routes the SDK's Cargo subprocess locally.
-    original_config = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "rcargo/config.toml"
-    if not original_config.is_file() or original_config.is_symlink():
-        raise RuntimeError("existing ordinary Cargo remote build configuration unavailable")
-    private_build_config = profile / "config/rcargo/config.toml"
-    private_build_config.parent.mkdir(mode=0o700)
-    descriptor = os.open(private_build_config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(original_config.read_bytes())
-    ordinary_cargo = shutil.which("cargo")
+    # The SDK packager honors CARGO. package() restores the ordinary build
+    # environment for that subprocess without copying compiler configuration
+    # into the isolated desktop profile.
+    ordinary_cargo = shutil.which(os.environ.get("CARGO", "cargo"))
     if ordinary_cargo is None:
         raise RuntimeError("ordinary Cargo entry point unavailable")
     env["CARGO"] = ordinary_cargo
-    private_json(output / "build-routing.json", {"cargo": ordinary_cargo, "configuration_sha256": digest(private_build_config), "private_runtime_config_copy": True, "packaging_uses_ordinary_xdg_build_environment": True})
+    private_json(output / "build-routing.json", {"cargo": ordinary_cargo, "private_runtime_config_copy": False, "packaging_uses_ordinary_xdg_build_environment": True})
     package_path = package(args.binaries, profile, env)
     if source_snapshot() != observed_sources:
         raise RuntimeError("observed qualification source changed during the signed app build")
