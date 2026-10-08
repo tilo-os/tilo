@@ -621,6 +621,49 @@ pub fn loop_definitions() -> Value {
     ])
 }
 
+/// A conversational turn can answer, but cannot discover or invoke actions.
+pub fn conversation_definitions() -> Value {
+    json!([{
+        "name": PLAN,
+        "description": "Reply to the person. No operation may be performed in this conversation.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reply": {"type": "string", "description": "Your reply to the person."},
+                "done": {"type": "boolean", "description": "Whether you could answer."}
+            },
+            "required": ["reply", "done"],
+            "additionalProperties": false
+        }
+    }])
+}
+
+/// Read only the no-action finish schema, without weakening action planning.
+///
+/// # Errors
+/// The response is malformed or proposes any action-bearing fields.
+pub fn read_conversation_finish(input: &Value) -> Result<Answer, String> {
+    let fields = input
+        .as_object()
+        .ok_or("conversation finish is not an object")?;
+    if fields
+        .keys()
+        .any(|key| !matches!(key.as_str(), "reply" | "done"))
+        || fields.get("done").and_then(Value::as_bool).is_none()
+    {
+        return Err("conversation finish must contain only a reply and done".into());
+    }
+    let reply = fields
+        .get("reply")
+        .and_then(Value::as_str)
+        .filter(|reply| !reply.trim().is_empty())
+        .ok_or("conversation finish has no reply")?;
+    Ok(Answer {
+        reply: Some(reply.to_owned()),
+        ..Answer::default()
+    })
+}
+
 /// What the loop's terminal [`PLAN`] said.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finish {

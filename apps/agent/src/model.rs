@@ -298,6 +298,59 @@ impl Chooser {
         self.choose_actions_live(rest, blocks, catalogue, most_steps, &mut |_| {})
     }
 
+    /// Answer one conversational Message through the selected model, with no
+    /// catalogue, discovery tools or executable action proposals.
+    ///
+    /// # Errors
+    /// The model is unavailable, its bounded turn fails, or its reply does not
+    /// match the no-action finish schema.
+    pub fn choose_conversation(
+        &self,
+        text: &str,
+        blocks: &[Block],
+    ) -> Result<tools::Answer, Route> {
+        let (protocol, model) = self.loop_model()?;
+        let conversation = Conversation::new(
+            protocol,
+            &model,
+            "Answer the person's message using the reply tool. Do not propose or perform operations.",
+            &action_user_turn(text, blocks),
+        );
+        self.begin_trace();
+        let began = ui::time::now();
+        let events = self.start_turn(
+            conversation.body(&tools::conversation_definitions()),
+            self.timeout,
+            0,
+        );
+        let fail = |reason| Route::Keywords(Fallback::Failed(reason));
+        loop {
+            let remaining = self
+                .timeout
+                .checked_sub(began.elapsed())
+                .ok_or_else(|| fail("conversation response timed out".into()))?;
+            match events.recv_timeout(remaining) {
+                Ok(TurnEvent::Frame { .. }) => {}
+                Ok(TurnEvent::Finished(result)) => {
+                    let body = result.map_err(fail)?;
+                    let (_, calls) = conversation.calls(&body).map_err(fail)?;
+                    let [call] = calls.as_slice() else {
+                        return Err(fail(
+                            "conversation response must contain one reply tool".into(),
+                        ));
+                    };
+                    if call.name != tools::PLAN {
+                        return Err(fail(
+                            "conversation response must contain one reply tool".into(),
+                        ));
+                    }
+                    return tools::read_conversation_finish(&call.input).map_err(fail);
+                }
+                Err(_) => return Err(fail("conversation response did not settle".into())),
+            }
+        }
+    }
+
     /// [`Self::choose_actions`], reporting what the model produces while it
     /// streams to `live` (display only; the decision is unchanged). The
     /// OpenAI-compatible dialect reports argument text as it arrives; the
@@ -1177,6 +1230,120 @@ mod tests {
     }
 
     struct CountingTurns(AtomicUsize);
+
+    struct ConversationReplyTurns {
+        protocol: agent_provider_config::ProviderProtocol,
+        calls: Vec<(&'static str, Value)>,
+        starts: AtomicUsize,
+    }
+
+    impl TurnTransport for ConversationReplyTurns {
+        fn start(&self, request: TurnRequest) -> std::sync::mpsc::Receiver<TurnEvent> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            let definitions = request.body["tools"].as_array().unwrap();
+            assert_eq!(definitions.len(), 1, "no discovery or action tools");
+            let definition = match self.protocol {
+                agent_provider_config::ProviderProtocol::Anthropic => &definitions[0],
+                agent_provider_config::ProviderProtocol::OpenAiCompatible => {
+                    &definitions[0]["function"]
+                }
+            };
+            assert_eq!(definition["name"], tools::PLAN);
+            let schema = definition
+                .get("input_schema")
+                .or_else(|| definition.get("parameters"))
+                .unwrap();
+            assert_eq!(schema["additionalProperties"], false);
+            assert_eq!(schema["properties"].as_object().unwrap().len(), 2);
+            assert!(schema["properties"].get("steps").is_none());
+            let body = match self.protocol {
+                agent_provider_config::ProviderProtocol::Anthropic => serde_json::json!({
+                    "content": self.calls.iter().enumerate().map(|(index, (name, input))|
+                        serde_json::json!({"type":"tool_use","id":index.to_string(),"name":name,"input":input}))
+                        .collect::<Vec<_>>()
+                }),
+                agent_provider_config::ProviderProtocol::OpenAiCompatible => serde_json::json!({
+                    "choices":[{"message":{"tool_calls":self.calls.iter().enumerate().map(|(index, (name, input))|
+                        serde_json::json!({"id":index.to_string(),"function":{"name":name,"arguments":input.to_string()}}))
+                        .collect::<Vec<_>>()}}]
+                }),
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(TurnEvent::Frame {
+                event: "tool_call_delta".into(),
+                output: "streamed display only".into(),
+            })
+            .unwrap();
+            tx.send(TurnEvent::Finished(Ok(body.to_string()))).unwrap();
+            rx
+        }
+    }
+
+    #[test]
+    fn conversational_provider_finish_returns_reply_without_an_action_plan() {
+        let input = serde_json::json!({"reply":"Fixture response.","done":true});
+        assert!(
+            tools::read_plan(&input, &Revealed::new(), 0).is_err(),
+            "action planner stays strict"
+        );
+        for protocol in [
+            agent_provider_config::ProviderProtocol::Anthropic,
+            agent_provider_config::ProviderProtocol::OpenAiCompatible,
+        ] {
+            let turns = Arc::new(ConversationReplyTurns {
+                protocol,
+                calls: vec![(tools::PLAN, input.clone())],
+                starts: AtomicUsize::new(0),
+            });
+            let chooser = Chooser::scripted(Duration::from_secs(1), protocol, turns.clone())
+                .fork_conversational();
+            let answer = chooser
+                .choose_conversation("Explain the result", &[])
+                .unwrap();
+            assert_eq!(answer.reply.as_deref(), Some("Fixture response."));
+            assert!(answer.actions.is_empty());
+            assert!(answer.arguments.is_empty());
+            assert_eq!(turns.starts.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn conversational_provider_refuses_actions_extra_fields_and_multiple_tools() {
+        let finish = serde_json::json!({"reply":"Fixture response.","done":true});
+        for calls in [
+            vec![(
+                tools::INVOKE,
+                serde_json::json!({"operation":"invented","parameters":{}}),
+            )],
+            vec![(
+                tools::PLAN,
+                serde_json::json!({"reply":"Fixture response.","done":true,"steps":[]}),
+            )],
+            vec![(tools::PLAN, finish.clone()), (tools::PLAN, finish.clone())],
+            vec![(
+                tools::PLAN,
+                serde_json::json!({"reply":"Fixture response.","done":"true"}),
+            )],
+        ] {
+            let protocol = agent_provider_config::ProviderProtocol::OpenAiCompatible;
+            let turns = Arc::new(ConversationReplyTurns {
+                protocol,
+                calls,
+                starts: AtomicUsize::new(0),
+            });
+            let chooser = Chooser::scripted(Duration::from_secs(1), protocol, turns.clone());
+            assert!(
+                chooser
+                    .choose_conversation("Explain the result", &[])
+                    .is_err()
+            );
+            assert_eq!(
+                turns.starts.load(Ordering::SeqCst),
+                1,
+                "no second turn or execution"
+            );
+        }
+    }
 
     impl TurnTransport for CountingTurns {
         fn start(&self, _: TurnRequest) -> std::sync::mpsc::Receiver<TurnEvent> {

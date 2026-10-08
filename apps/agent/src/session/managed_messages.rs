@@ -14,7 +14,6 @@ use runtime_collab::AgentMessageInput;
 use ui::collaboration::CollabRequest;
 
 use crate::model::{Chooser, Route};
-use crate::surface::Catalogue;
 use crate::tools::Answer;
 #[cfg(test)]
 use crate::wire::AgentMessageRpcOutcome;
@@ -707,12 +706,7 @@ fn commit_reply(
 }
 
 fn conversational_reply(chooser: &Chooser, text: &str) -> String {
-    let catalogue = Catalogue {
-        offers: Vec::new(),
-        facts: Vec::new(),
-        held: Vec::new(),
-    };
-    match chooser.choose_actions(text, &[], &catalogue, 0) {
+    match chooser.choose_conversation(text, &[]) {
         Ok(answer) => textual_reply(answer),
         Err(Route::Model { .. } | Route::Keywords(_)) => {
             crate::i18n::t("agent-message-model-unavailable")

@@ -109,16 +109,8 @@ impl Session {
     ) -> Result<bool> {
         // Message has no operation surface. Even a malicious model action
         // proposal becomes text explaining that nothing ran.
-        let catalogue = surface::Catalogue {
-            offers: Vec::new(),
-            facts: Vec::new(),
-            held: Vec::new(),
-        };
         let context = conversation_context(messages, summons);
-        let reply = match self
-            .chooser
-            .choose_actions(&summons.asked, &context, &catalogue, 0)
-        {
+        let reply = match self.chooser.choose_conversation(&summons.asked, &context) {
             Ok(answer) => textual_conversation_reply(answer),
             Err(route) => {
                 self.last_route = Some(route);
