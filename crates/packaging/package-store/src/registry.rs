@@ -86,6 +86,11 @@ pub struct InstalledPackage {
     /// update. Without it the newer of the user's and the image's copy runs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
+    /// Bytes of the payload tree, recorded once at install so listing a
+    /// package never walks its tree. `0` for a row written before it was
+    /// recorded; such a row is measured on disk instead.
+    #[serde(default)]
+    pub payload_bytes: u64,
     /// True for a package of the read-only system store. Not persisted:
     /// it describes which store a row was read from.
     #[serde(skip)]
@@ -294,6 +299,7 @@ mod tests {
                 runtime: String::new(),
                 source: String::new(),
                 held: false,
+                payload_bytes: 0,
                 system: false,
             };
             let mut registry = Registry::default();
