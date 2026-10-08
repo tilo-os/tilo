@@ -627,7 +627,7 @@ where
                                 result = &mut operation => break result?,
                                 frame = reader.read_next(), if backlog.len() < 32 => {
                                     let Some(frame) = frame? else { return Ok(()); };
-                                    let can_route = private_may_overtake(&frame, blocked_room, backlog.iter().map(|(frame, _)| frame));
+                                    let can_route = private_may_overtake(&frame, blocked_room, v2 && pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         // The state future may hold the authorization lane
                                         // needed by this private request. Keep polling it
@@ -707,7 +707,7 @@ where
                                 }
                                 frame = reader.read_next(), if backlog.len() < 32 => {
                                     let Some(frame) = frame? else { return Ok(()); };
-                                    let can_route = private_may_overtake(&frame, None, backlog.iter().map(|(frame, _)| frame));
+                                    let can_route = private_may_overtake(&frame, None, v2 && pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         if let Some(reply) = handle_private(frame, &peer, &session).await? {
                                             send_private_reply(&private_tx, reply).await?;
@@ -888,8 +888,17 @@ fn control_room(frame: &EnvelopeV2) -> Option<u64> {
 fn private_may_overtake<'a>(
     frame: &EnvelopeV2,
     active_control: Option<u64>,
+    heartbeat_ready: bool,
     mut queued: impl Iterator<Item = &'a EnvelopeV2>,
 ) -> bool {
+    // A transport-only heartbeat cannot depend on state admission finishing:
+    // its silence deadline would otherwise replace an authorized live session.
+    // Preserve Ready and earlier capability/unsubscribe reply ordering.
+    if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
+        return heartbeat_ready
+            && active_control.is_none()
+            && queued.all(|frame| control_room(frame).is_none());
+    }
     let EnvelopeV2::Directed(action) = frame else {
         return false;
     };
@@ -6194,6 +6203,7 @@ async fn handle_private(
     session: &SessionCtx<'_>,
 ) -> Result<Option<EnvelopeV2>, PeerError> {
     match frame {
+        EnvelopeV2::State(Envelope::Ping) => Ok(Some(EnvelopeV2::State(Envelope::Pong))),
         EnvelopeV2::EnableActions { room } => {
             if room.is_nil() || !current_action_peer(peer, session) {
                 return Err(PeerError::Protocol(
@@ -9079,6 +9089,16 @@ mod private_transport_tests {
         }
     }
 
+    #[tokio::test]
+    async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
+        capability_control_lookahead(false, 3).await;
+    }
+
+    #[tokio::test]
+    async fn heartbeat_does_not_overtake_queued_capability_control() {
+        capability_control_lookahead(false, 4).await;
+    }
+
     async fn capability_control_lookahead(reply_wait: bool, control: u8) {
         let (root, user) = UserIdentity::generate("owner", 1);
         let (a, _) = certified_device(&root, user.public_key, "a");
@@ -9195,7 +9215,143 @@ mod private_transport_tests {
             wires.push((reader, write));
         }
         let (mut ar, mut aw) = wires.remove(0);
-        let (mut br, _bw) = wires.remove(0);
+        let (mut br, mut bw) = wires.remove(0);
+        if control >= 3 {
+            let gated = control == 4;
+            let (release, reached) =
+                crate::store::test_barrier::install(store.root(), "membership-read");
+            let envelope = Envelope::Delta {
+                workspace_id: ids[2],
+                author_device_public_key: a.device_public_key,
+                authored_at_ns: 1,
+                signature: [0; 64],
+                delta: crate::coedit::CoeditPayload::RetainedDelta {
+                    channel: [3; 32],
+                    body: vec![4; 4096],
+                }
+                .encode()
+                .unwrap(),
+            };
+            aw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&envelope, true).unwrap(),
+            )
+            .await
+            .unwrap();
+            tilo_test_env::within("the state admission membership read", reached)
+                .await
+                .unwrap();
+            assert!(store.load_retained().unwrap().is_empty());
+            let request = DirectedAction {
+                room: rooms[1],
+                request_id: uuid::Uuid::from_u128(77),
+                source: a.device_public_key,
+                target: b.device_public_key,
+                message: ActionMessage::CatalogueRefresh { scope: None },
+            };
+            if gated {
+                aw.write_all(
+                    &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions {
+                        room: rooms[0],
+                    })
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            }
+            for frame in [
+                EnvelopeV2::State(Envelope::Ping),
+                EnvelopeV2::Directed(request.clone()),
+            ] {
+                aw.write_all(&tilo_delivery_protocol::transport_v2::encode(&frame).unwrap())
+                    .await
+                    .unwrap();
+            }
+            let Some(EnvelopeV2::Delivered { action, .. }) =
+                tilo_test_env::within("the unrelated-room private request", br.read_next())
+                    .await
+                    .unwrap()
+            else {
+                panic!("unrelated private request stalled during state admission")
+            };
+            assert_eq!(action, request);
+            let response = DirectedAction {
+                source: b.device_public_key,
+                target: a.device_public_key,
+                ..request
+            };
+            bw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(
+                    response.clone(),
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+            // A real later private response proves this reader and writer are
+            // live. Only an earlier control may hold the heartbeat behind it.
+            let first =
+                tilo_test_env::within("the heartbeat or later private reply", ar.read_next())
+                    .await
+                    .unwrap();
+            let later = if !gated && first == Some(EnvelopeV2::State(Envelope::Pong)) {
+                tilo_test_env::within("the private response after the heartbeat", ar.read_next())
+                    .await
+                    .unwrap()
+            } else {
+                None
+            };
+            assert!(store.load_retained().unwrap().is_empty());
+            drop(release);
+            let owner = crate::persistence::handle(&held_workspace).await;
+            crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+                .await
+                .unwrap();
+            let delivered_state =
+                tilo_test_env::within("the state delivery after admission release", br.read_next())
+                    .await
+                    .unwrap();
+            assert_eq!(delivered_state, Some(EnvelopeV2::State(envelope)));
+            let after_control = if gated
+                && matches!(&first, Some(EnvelopeV2::Delivered { action, .. }) if action == &response)
+            {
+                let ready = tilo_test_env::within("the queued capability reply", ar.read_next())
+                    .await
+                    .unwrap();
+                let pong = tilo_test_env::within("the heartbeat after its control", ar.read_next())
+                    .await
+                    .unwrap();
+                Some((ready, pong))
+            } else {
+                None
+            };
+            for task in tasks {
+                task.abort();
+                let _ = task.await;
+            }
+            if gated {
+                assert!(
+                    matches!(first, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
+                    "a heartbeat crossed its earlier capability control"
+                );
+                let (ready, pong) = after_control.unwrap();
+                assert!(matches!(
+                    ready,
+                    Some(EnvelopeV2::ActionsReady { room, .. }) if room == rooms[0]
+                ));
+                assert_eq!(pong, Some(EnvelopeV2::State(Envelope::Pong)));
+            } else {
+                assert_eq!(
+                    first,
+                    Some(EnvelopeV2::State(Envelope::Pong)),
+                    "a live transport withheld its heartbeat behind unrelated state admission"
+                );
+                assert!(
+                    matches!(later, Some(EnvelopeV2::Delivered { action, .. }) if action == response),
+                    "heartbeat progress lost the authorized private response"
+                );
+            }
+            return;
+        }
         let (release, reached) = crate::store::test_barrier::install(
             store.root(),
             if reply_wait {
@@ -10141,6 +10297,7 @@ mod private_transport_tests {
             !private_may_overtake(
                 &EnvelopeV2::Directed(action.clone()),
                 Some(id),
+                false,
                 std::iter::empty(),
             ),
             "private traffic must not overtake its room's state control"
