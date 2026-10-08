@@ -1745,15 +1745,32 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     return True
 
 
+MARKER_OPERATION_REFUSALS = (
+    "invalid_configured_address",
+    "no_trusted_catalogue",
+    "no_exact_resource_action",
+)
+
+
+class MarkerOperationRefusal(RuntimeError):
+    """Content-free reason the bounded marker provider refused one request."""
+
+    def __init__(self, reason):
+        if reason not in MARKER_OPERATION_REFUSALS:
+            raise ValueError("unknown marker operation refusal")
+        self.reason = reason
+        super().__init__("marker operation unavailable")
+
+
 def marker_operation_from_request(request, agent, resource):
     """Select one operation from the Agent's trusted live-catalogue prefix."""
     if not isinstance(agent, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", agent):
-        raise RuntimeError("marker proof requires one canonical Agent id")
+        raise MarkerOperationRefusal("invalid_configured_address")
     if not isinstance(resource, str) or not re.fullmatch(r"[a-zA-Z0-9._:-]{1,4096}", resource):
-        raise RuntimeError("marker proof requires the discovered current resource")
+        raise MarkerOperationRefusal("invalid_configured_address")
     messages = request.get("messages") if isinstance(request, dict) else None
     if not isinstance(messages, list):
-        raise RuntimeError("the model request has no bounded message list")
+        raise MarkerOperationRefusal("no_trusted_catalogue")
     prefix = "Operations published right now:\n\n"
     catalogue = None
     for message in messages:
@@ -1772,7 +1789,7 @@ def marker_operation_from_request(request, agent, resource):
             catalogue = catalogue[:min(boundaries)]
         break
     if catalogue is None:
-        raise RuntimeError("the model request has no trusted live catalogue")
+        raise MarkerOperationRefusal("no_trusted_catalogue")
     pattern = re.compile(
         rf"^  (broker:\d+:{re.escape(resource)}#open-agent-conversation) — ",
     )
@@ -1782,7 +1799,7 @@ def marker_operation_from_request(request, agent, resource):
         if (match := pattern.match(line)) is not None
     }
     if len(matches) != 1:
-        raise RuntimeError("the model request did not publish one exact Agent conversation action")
+        raise MarkerOperationRefusal("no_exact_resource_action")
     return next(iter(matches))
 
 
@@ -1805,6 +1822,7 @@ class HeldProvider:
         self.marker_agent = marker_agent
         self.marker_resource = marker_resource
         self.marker_operations = {}
+        self.marker_rejections = {reason: 0 for reason in MARKER_OPERATION_REFUSALS}
         self.closed = False
         self.request_lock = threading.Condition()
         owner = self
@@ -1840,9 +1858,10 @@ class HeldProvider:
                         marker_operation = marker_operation_from_request(
                             request, owner.marker_agent, owner.marker_resource
                         )
-                    except RuntimeError:
+                    except MarkerOperationRefusal as error:
                         with owner.request_lock:
                             owner.refused_requests += 1
+                            owner.marker_rejections[error.reason] += 1
                         self.send_error(409)
                         return
                 probe = owner.owner_admission_probe
@@ -1928,6 +1947,15 @@ class HeldProvider:
         with self.request_lock:
             return self.refused_requests
 
+    def marker_rejection_diagnostic(self):
+        """Return fixed counters only; request and exception content never escape."""
+        with self.request_lock:
+            counts = dict(self.marker_rejections)
+        return {
+            "rejection_count": sum(counts.values()),
+            "reasons": counts,
+            "private_content_recorded": False,
+        }
     def original_third_held(self):
         with self.request_lock:
             return self.allowed == 2 and 3 in self.waiting_ordinals
@@ -1998,6 +2026,17 @@ class HeldProvider:
         self.thread.join(timeout=5)
         if self.thread.is_alive():
             raise RuntimeError("owned provider fixture did not stop")
+
+
+def retain_marker_rejection_diagnostic(provider, output):
+    """Persist only a closed provider refusal when the marker stage aborts."""
+    diagnostic = provider.marker_rejection_diagnostic()
+    if diagnostic["rejection_count"] == 0:
+        return False
+    (output / "marker-provider-rejection.json").write_text(
+        json.dumps(diagnostic, indent=2) + "\n"
+    )
+    return True
 
 
 class ProofTimeout(RuntimeError):
@@ -2940,8 +2979,12 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
 
     provider.require_owner_admission(accepted_marker_task)
     startup = start_managed_agent(socket, room, agent, process)
-    wait_for("marker task's first controlled model request",
-             lambda: provider.request_count() == 1, process)
+    try:
+        wait_for("marker task's first controlled model request",
+                 lambda: provider.request_count() == 1, process)
+    except RuntimeError:
+        retain_marker_rejection_diagnostic(provider, output)
+        raise
     admission = provider.owner_admission(1)
     if admission is None:
         raise RuntimeError("marker provider request lacked owner task custody")

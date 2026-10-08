@@ -1174,6 +1174,64 @@ class PresentedEditorTargetTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             PROOF.marker_operation_from_request({"messages": []}, "Tide with spaces", "chat.person:tide")
 
+    def test_marker_operation_refusals_are_closed_and_content_free(self):
+        private = "private marker request text must not escape"
+        cases = [
+            ({"messages": []}, "Tide with spaces", "chat.person:tide",
+             "invalid_configured_address"),
+            ({"messages": [{"role": "user", "content": private}]},
+             "tide", "chat.person:tide", "no_trusted_catalogue"),
+            ({"messages": [{"role": "user", "content":
+                             "Operations published right now:\n\n" + private +
+                             "\nThe request:\n\n" + private}]},
+             "tide", "chat.person:tide", "no_exact_resource_action"),
+        ]
+        for request, agent, resource, expected in cases:
+            with self.subTest(reason=expected), \
+                    self.assertRaises(PROOF.MarkerOperationRefusal) as refused:
+                PROOF.marker_operation_from_request(request, agent, resource)
+            self.assertEqual(refused.exception.reason, expected)
+            self.assertEqual(str(refused.exception), "marker operation unavailable")
+            self.assertNotIn(private, str(refused.exception))
+
+    def test_marker_provider_retains_only_bounded_rejection_diagnostic(self):
+        private = "private provider body must not be retained"
+        provider = PROOF.HeldProvider(
+            marker_agent="tide", marker_resource="chat.person:tide"
+        )
+        request = urllib.request.Request(
+            provider.endpoint + "/chat/completions",
+            json.dumps({
+                "model": "bounded-fixture",
+                "messages": [{"role": "user", "content": private}],
+            }).encode(),
+            {"Authorization": "Bearer isolated-fixture-not-a-real-provider-key"},
+        )
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as refused:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(refused.exception.code, 409)
+            refused.exception.close()
+            with tempfile.TemporaryDirectory() as directory:
+                output = pathlib.Path(directory)
+                self.assertTrue(PROOF.retain_marker_rejection_diagnostic(provider, output))
+                retained = (output / "marker-provider-rejection.json").read_text()
+            self.assertNotIn(private, retained)
+            self.assertNotIn("chat.person:tide", retained)
+            self.assertEqual(json.loads(retained), {
+                "rejection_count": 1,
+                "reasons": {
+                    "invalid_configured_address": 0,
+                    "no_exact_resource_action": 0,
+                    "no_trusted_catalogue": 1,
+                },
+                "private_content_recorded": False,
+            })
+            self.assertEqual(provider.request_count(), 0)
+            self.assertEqual(provider.overflow_count(), 1)
+        finally:
+            provider.close()
+
     def test_marker_operation_keeps_discovered_bound_resource_opaque_and_exact(self):
         resource = "tilo-ui-bound:v1:host:current:636861742e706572736f6e3a74696465"
         expected = f"broker:9:{resource}#open-agent-conversation"
