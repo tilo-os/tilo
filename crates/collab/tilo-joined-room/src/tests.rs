@@ -1317,14 +1317,21 @@ fn legacy_int_array_owner_file_still_loads() {
         current,
         "the legacy record loads to exactly the record the current file holds"
     );
-    let durable = |owner: &NativeWorkspaceOwner| {
+    // A restored peer's durable() bytes order per-author watermarks by hash,
+    // so compare what the room holds rather than a re-encoding of it.
+    let state = |owner: &NativeWorkspaceOwner| {
         owner
             .with_current(joined.room, |view| {
-                Ok((view.peer().durable()?, view.generation(), view.continuity()))
+                Ok((
+                    view.peer().rows(),
+                    view.peer().document_heads(APP, ""),
+                    view.generation(),
+                    view.continuity(),
+                ))
             })
             .unwrap()
     };
-    assert_eq!(durable(&reopened), durable(&joined.owner));
+    assert_eq!(state(&reopened), state(&joined.owner));
     // The next publication rewrites the legacy file in the current format.
     let request = edit(&reopened, joined.room, joined.now);
     reopened.commit_document(request, joined.now).unwrap();
@@ -1332,7 +1339,13 @@ fn legacy_int_array_owner_file_still_loads() {
     let value: serde_json::Value = serde_json::from_slice(&rewritten).unwrap();
     assert!(value["rooms"][joined.room.to_string()]["peer"].is_string());
     assert!(!rewritten.contains(&b'\n'), "the owner file is compact");
-    let after = durable(&reopened);
+    let after = state(&reopened);
+    assert_ne!(after, state(&joined.owner));
     drop(reopened);
-    assert_eq!(durable(&open_file(&legacy_path).unwrap()), after);
+    let reread = open_file(&legacy_path).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&*reread.0.authority.read()).unwrap(),
+        rewritten
+    );
+    assert_eq!(state(&reread), after);
 }
