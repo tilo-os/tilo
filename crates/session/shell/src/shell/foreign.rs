@@ -2520,14 +2520,24 @@ impl ForeignFrameStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = guard.get(&id)?;
-        let (x, y, w, h) = entry.content();
+        let (width, height, content, configured_extent, min_size, max_size, geometry) = (
+            entry.width,
+            entry.height,
+            entry.content(),
+            entry.configured_extent,
+            entry.min_size,
+            entry.max_size,
+            entry.geometry,
+        );
+        drop(guard);
+        let (x, y, w, h) = content;
         Some(serde_json::json!({
-            "raw_buffer": {"w": entry.width, "h": entry.height},
+            "raw_buffer": {"w": width, "h": height},
             "content_crop": {"x": x, "y": y, "w": w, "h": h},
-            "configured_extent": entry.configured_extent.map(|(w, h)| serde_json::json!({"w": w, "h": h})),
-            "min_size": {"w": entry.min_size.0, "h": entry.min_size.1},
-            "max_size": {"w": entry.max_size.0, "h": entry.max_size.1},
-            "window_geometry": entry.geometry.map(|geometry| serde_json::json!({
+            "configured_extent": configured_extent.map(|(w, h)| serde_json::json!({"w": w, "h": h})),
+            "min_size": {"w": min_size.0, "h": min_size.1},
+            "max_size": {"w": max_size.0, "h": max_size.1},
+            "window_geometry": geometry.map(|geometry| serde_json::json!({
                 "x": geometry.x, "y": geometry.y,
                 "w": geometry.width, "h": geometry.height,
                 "viewport_destination": geometry.logical_size.map(|(w, h)| serde_json::json!({"w": w, "h": h})),
