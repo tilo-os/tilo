@@ -2,7 +2,7 @@
 
 This source path depends on #3643 at
 `d8de3ab482c82d0ff6a0c2b2b36684f4b31af94d` and integrates main
-`404343fc7d0254e73153a8aa832bc77309f4dc37` without replacing its authenticated
+`90a979d5ae74b11f9c206fcf6e3683d465bedff5` without replacing its authenticated
 terminal-audit receipt checks or verified fleet cache. The cache retains full
 Person certificate-chain checks and permanent identity-scoped revocation.
 
@@ -21,7 +21,7 @@ original branches remain recovery history. It imports the text source without
 bringing historical commits rejected by current commit policy into main's
 ancestry. No source branch is force-rewritten.
 
-The only source conflict is resolved by retaining main's authenticated current
+The governance source conflict is resolved by retaining main's authenticated current
 admission receipt scenario and all three original multi-member revocation,
 refusal and restart scenarios. Focused controls exercise verified bounded
 imports, durable restore, expired/revoked media-governor refusal, five real relay
@@ -40,6 +40,34 @@ Close an original source PR only after verifying its contribution on landed
 main and retaining these exact recovery pointers. Qualification changes only
 source and tests, never live identities, access grants, credentials or deployed
 trust.
+
+Exact-head fast quality exposed two obsolete launcher test dependencies,
+`getrandom` and `threshold-identity`. Both unused edges are removed from the
+launcher manifest and its existing lock entry, with no fresh resolution and all
+1,747 locked package versions, sources, checksums and other package entries
+preserved. CI's exact analyzer mode reproduces both failures on the old manifest
+and passes on the repaired one. Locked all-target launcher compilation, launcher
+Clippy, required shell test compilation and pinned Hakari diff/dry-run/verify
+pass; no ignored-dependency configuration is added.
+
+Advanced main also caches enrollment and certified recipients. The merged
+cache reads this account's private person directory, validates its bounded
+typed peer list, and changes scope immediately when the person changes.
+Enrollment removal retains main's 750 ms recheck bound. Verified recorded and
+in-memory root revocations are checked on every query, invalidate recipient
+sets, and exclude revoked registered home devices as well as direct peers.
+Directory trust failure refuses cached enrollment. The original read-count,
+expiry and real paired-editor restart assertions remain intact; fixtures use
+the production person-scoped enrollment format. Warm-cache controls cover
+permanent future-dated revocation, foreign roots, recipient refusal and dialing.
+Temporarily reusing a warm recipient set without rechecking revocations fails
+the production LAN assertion with exit 100. Restoring the exact source makes
+the same control pass. Main's isolated retained-proof controls and its audio
+pump's no-clone assertion also pass.
+
+The merged OS COPY contract retains both projector user units from main and
+the historical identity CLI. Its exact delta is two unit rows over the prior
+candidate and one CLI row over main, with no removed rows.
 
 The local dependent recovery branch `codex/historical-governor-succession` also
 adopts #2787's original ten-path text delta (SHA-256

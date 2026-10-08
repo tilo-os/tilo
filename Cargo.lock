@@ -7850,7 +7850,6 @@ dependencies = [
  "collab-types",
  "ed25519-dalek 3.0.0",
  "fnv",
- "getrandom 0.4.3",
  "hex",
  "landlock",
  "libc",
@@ -7863,7 +7862,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
- "threshold-identity",
  "tilo-advisory-lock",
  "tilo-app-package",
  "tilo-clock",
@@ -12970,15 +12968,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "runtime-connected"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.21",
- "tilo-connected-protocol",
- "workspace-hack",
-]
-
-[[package]]
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
@@ -16347,17 +16336,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-connected-protocol"
-version = "0.1.0"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-contact-directory"
 version = "0.1.0"
 dependencies = [
@@ -17473,7 +17451,9 @@ dependencies = [
  "getrandom 0.4.3",
  "google-cast-protocol",
  "hex",
+ "libc",
  "mdns-sd",
+ "postcard",
  "prost",
  "rand 0.10.1",
  "rand_core 0.10.0",
@@ -17484,6 +17464,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "thiserror 2.0.21",
  "tilo-callstream",
  "tilo-rt",
  "tilo-test-env",
@@ -17491,9 +17472,11 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "wire-frame",
  "workspace-hack",
  "x509-parser 0.18.1",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]
