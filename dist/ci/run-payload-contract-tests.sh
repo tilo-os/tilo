@@ -19,6 +19,7 @@ esac
 # them through the packaging boundary.
 package_job="$repo_root/dist/ci/run-package-job.sh"
 python3 "$repo_root/dist/ci/tests/test_package_source_transfer.py"
+python3 "$repo_root/dist/ci/tests/test_failed_rpm_retention.py"
 grep -Fq -- '--env SOURCE_DATE_EPOCH="$source_epoch"' "$package_job"
 grep -Fq -- '--env GITHUB_SHA="$source_revision"' "$package_job"
 test "$(grep -Fc 'source tools/ci/sccache.sh prepare-shell' "$package_job")" -eq 3
