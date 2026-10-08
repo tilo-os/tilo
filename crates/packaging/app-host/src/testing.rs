@@ -1,5 +1,6 @@
 //! Explicit connected-service fixtures, with an owned and joined RPC driver.
 
+use std::net::Shutdown;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::thread::JoinHandle;
@@ -81,6 +82,7 @@ where
         .build()
         .map_err(|error| error.to_string())?;
     tokio::task::LocalSet::new().block_on(&runtime, async move {
+        let stop_read = connection.try_clone().map_err(|error| error.to_string())?;
         let connection =
             tokio::net::UnixStream::from_std(connection).map_err(|error| error.to_string())?;
         let (read, write) = tokio::io::split(connection);
@@ -92,15 +94,17 @@ where
         ));
         let service: app_host::Client = capnp_rpc::new_client(server);
         let rpc = RpcSystem::new(network, Some(service.client));
-        let disconnect = rpc.get_disconnector();
         let mut rpc = Box::pin(rpc);
         tokio::select! {
             _ = &mut shutdown => {
-                tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                    let (disconnected, driven) = tokio::join!(disconnect, &mut rpc);
-                    disconnected.map_err(|error| error.to_string())?;
-                    driver_result(driven)
-                }).await.map_err(|_| "app-host test transport did not disconnect".to_owned())?
+                // Drive peer EOF through the message loop. An explicit Cap'n Proto
+                // disconnect can clear its connection state before a ready read uses
+                // it, or run before the server has accepted the connection at all.
+                stop_read.shutdown(Shutdown::Read).map_err(|error| error.to_string())?;
+                let result = tokio::time::timeout(std::time::Duration::from_secs(2), &mut rpc)
+                    .await
+                    .map_err(|_| "app-host test transport did not disconnect".to_owned())?;
+                driver_result(result)
             },
             result = &mut rpc => driver_result(result),
         }
@@ -112,5 +116,32 @@ fn driver_result(result: Result<(), capnp::Error>) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(error) if error.kind == capnp::ErrorKind::Disconnected => Ok(()),
         Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConnectedService;
+    use crate::app_host_capnp::app_host;
+
+    struct IdleHost;
+    impl app_host::Server for IdleHost {}
+
+    #[test]
+    fn shutdown_joins_the_driver_while_peer_stays_open() {
+        for _ in 0..16 {
+            let (service, connection) = ConnectedService::start(IdleHost).unwrap();
+            service.shutdown().unwrap();
+            drop(connection);
+        }
+    }
+
+    #[test]
+    fn shutdown_joins_the_driver_after_peer_closes() {
+        for _ in 0..16 {
+            let (service, connection) = ConnectedService::start(IdleHost).unwrap();
+            drop(connection);
+            service.shutdown().unwrap();
+        }
     }
 }
