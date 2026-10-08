@@ -1,4 +1,0 @@
-bytes = 1179648
-measured = 97698143
-run = 80023
-reason = "Mount the private feedback composer through the browser desktop host, making its review, privacy filtering and durable outbox code reachable. App SDK run 80023 measured 97698143 bytes on head 0b2d22ec merged with main 1bb637e1, 180575 above the previous limit. This receipt uses the standard 1% headroom rounded to 64 KiB and does not attribute intervening main growth solely to feedback or enable public access."
