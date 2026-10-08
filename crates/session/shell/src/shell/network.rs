@@ -739,6 +739,26 @@ pub fn peer_key_path() -> std::path::PathBuf {
     )
 }
 
+/// Where this session keeps what peer sync learns and must remember: the
+/// person's pending invitations, device fabric, workspace list and
+/// continuity. It belongs to the person's session, not to the device key's
+/// directory: on Tilo OS that directory is root-owned and only readable by
+/// the identity group, so the session that reads the key cannot replace it.
+///
+/// # Errors
+///
+/// When the session has no per-user state directory.
+pub fn peer_state_dir() -> std::io::Result<std::path::PathBuf> {
+    xdg_paths::state_dir()
+        .map(|state| state.join("tilo").join("peer-sync"))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no per-user state directory for peer sync",
+            )
+        })
+}
+
 fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
     serde_json::from_str(value).ok().or_else(|| {
         value
@@ -1062,12 +1082,12 @@ fn now_unix_nanos() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn pending_invites_path(keypair_path: &Path) -> PathBuf {
-    keypair_path.with_file_name("pending-invitations.json")
+fn pending_invites_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("pending-invitations.json")
 }
 
-fn personal_continuity_path(keypair_path: &Path) -> PathBuf {
-    keypair_path.with_file_name("personal-continuity.postcard")
+fn personal_continuity_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("personal-continuity.postcard")
 }
 
 /// The governing endpoints of rooms `tree` holds now but did not hold as
@@ -1109,8 +1129,8 @@ fn refresh_device_choices(
     }
 }
 
-fn personal_workspaces_path(keypair_path: &Path) -> PathBuf {
-    keypair_path.with_file_name("personal-workspaces.postcard")
+fn personal_workspaces_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("personal-workspaces.postcard")
 }
 
 /// How often a device restates its workspace list when nothing changed, so
@@ -1118,8 +1138,8 @@ fn personal_workspaces_path(keypair_path: &Path) -> PathBuf {
 const PERSONAL_WORKSPACES_RESTATE_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(30);
 
-fn device_fabric_path(keypair_path: &Path) -> PathBuf {
-    keypair_path.with_file_name("personal-device-fabric.postcard")
+fn device_fabric_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("personal-device-fabric.postcard")
 }
 
 fn device_fabric_backup_path(path: &Path) -> PathBuf {
@@ -1136,25 +1156,26 @@ fn load_device_fabric(path: &Path) -> crate::shell::device_fabric::DeviceFabric 
         .unwrap_or_default()
 }
 
-fn persist_device_fabric(path: &Path, fabric: &crate::shell::device_fabric::DeviceFabric) -> bool {
-    let Ok(bytes) = fabric.encode_checkpoint() else {
-        return false;
-    };
-    if let Some(parent) = path.parent()
-        && std::fs::create_dir_all(parent).is_err()
-    {
-        return false;
+fn persist_device_fabric(
+    path: &Path,
+    fabric: &crate::shell::device_fabric::DeviceFabric,
+) -> Result<(), String> {
+    let bytes = fabric
+        .encode_checkpoint()
+        .map_err(|error| format!("encode checkpoint: {error}"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
     }
     let prior = std::fs::read(path)
         .ok()
         .filter(|prior| crate::shell::device_fabric::DeviceFabric::decode_checkpoint(prior).is_ok())
         .unwrap_or_else(|| bytes.clone());
-    if tilo_files::native::atomic::write_with_mode(&device_fabric_backup_path(path), &prior, 0o600)
-        .is_err()
-    {
-        return false;
-    }
-    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600).is_ok()
+    let backup = device_fabric_backup_path(path);
+    tilo_files::native::atomic::write_with_mode(&backup, &prior, 0o600)
+        .map_err(|error| format!("write {}: {error}", backup.display()))?;
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+        .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1660,14 +1681,31 @@ impl ShellNetwork {
     ///
     /// # Errors
     ///
-    /// Returns an error if the tokio runtime fails to build, the device
-    /// keypair can't be loaded or generated at `keypair_path`, or the
-    /// Iroh endpoint fails to bind.
+    /// Returns an error if the tokio runtime fails to build, `state_dir`
+    /// can't be created, the device keypair can't be loaded or generated at
+    /// `keypair_path`, or the Iroh endpoint fails to bind.
     pub fn spawn(
         tree: WorkspaceTreeHandle,
         keypair_path: &std::path::Path,
+        state_dir: &std::path::Path,
     ) -> std::io::Result<Self> {
-        Self::spawn_with(tree, keypair_path, Reach::Internet, host_identity_for_key)
+        Self::spawn_with(
+            tree,
+            keypair_path,
+            state_dir,
+            Reach::Internet,
+            host_identity_for_key,
+        )
+    }
+
+    /// [`Self::spawn`] with this session's device key ([`peer_key_path`])
+    /// and peer-sync state ([`peer_state_dir`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::spawn`], and when the session has no state directory.
+    pub fn spawn_for_session(tree: WorkspaceTreeHandle) -> std::io::Result<Self> {
+        Self::spawn(tree, &peer_key_path(), &peer_state_dir()?)
     }
 
     /// [`Self::spawn`] reaching peers as `reach` says, authenticating to
@@ -1679,6 +1717,7 @@ impl ShellNetwork {
     fn spawn_with(
         tree: WorkspaceTreeHandle,
         keypair_path: &std::path::Path,
+        state_dir: &std::path::Path,
         reach: Reach,
         identity: impl FnOnce(&iroh::SecretKey, &std::path::Path) -> Option<HostIdentity>,
     ) -> std::io::Result<Self> {
@@ -1687,6 +1726,12 @@ impl ShellNetwork {
         let runtime = tilo_rt::daemon("tilo-net").workers(2).build()?;
         let _enter = runtime.enter();
 
+        ensure_private_dir(state_dir).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("peer-sync state {}: {error}", state_dir.display()),
+            )
+        })?;
         let keypair = load_or_create_keypair(keypair_path)?;
         let local_peer_id = keypair.public();
         // Must use the same hash function `tick`'s receive path uses,
@@ -1739,7 +1784,7 @@ impl ShellNetwork {
                 crate::shell::personal_workspaces::PersonalWorkspaces::open(
                     identity.device_cert.user_public_key,
                     identity.device_cert.device_public_key,
-                    personal_workspaces_path(keypair_path),
+                    personal_workspaces_path(state_dir),
                 )
                 .with_label(identity.device_cert.device_label.clone()),
             )
@@ -1819,8 +1864,8 @@ impl ShellNetwork {
             }
         });
 
-        let pending_invitations_path = pending_invites_path(keypair_path);
-        let personal_continuity_path = personal_continuity_path(keypair_path);
+        let pending_invitations_path = pending_invites_path(state_dir);
+        let personal_continuity_path = personal_continuity_path(state_dir);
         let app_continuations_permitted =
             crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
                 .permits(crate::shell::continuity_policy::ContinuityCapability::AppContinuations);
@@ -1833,7 +1878,7 @@ impl ShellNetwork {
                 continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
             }
         };
-        let device_fabric_path = device_fabric_path(keypair_path);
+        let device_fabric_path = device_fabric_path(state_dir);
         let device_fabric = load_device_fabric(&device_fabric_path);
         let now = now_unix_seconds();
         let pending_identity_admissions: std::collections::HashMap<_, _> =
@@ -5180,12 +5225,10 @@ impl ShellNetwork {
                 .map_err(|_| crate::shell::device_fabric::FabricError::InvalidCheckpoint)?;
             let changed = fabric.upsert(snapshot)?;
             if changed
-                && self
-                    .device_fabric_path
-                    .as_deref()
-                    .is_some_and(|path| !persist_device_fabric(path, &fabric))
+                && let Some(path) = self.device_fabric_path.as_deref()
+                && let Err(error) = persist_device_fabric(path, &fabric)
             {
-                tracing::warn!("device fabric persistence failed");
+                tracing::warn!(%error, "device fabric persistence failed");
             }
             drop(fabric);
             changed
@@ -5208,12 +5251,10 @@ impl ShellNetwork {
             return;
         };
         if fabric.remove_device(device)
-            && self
-                .device_fabric_path
-                .as_deref()
-                .is_some_and(|path| !persist_device_fabric(path, &fabric))
+            && let Some(path) = self.device_fabric_path.as_deref()
+            && let Err(error) = persist_device_fabric(path, &fabric)
         {
-            tracing::warn!("device fabric persistence failed");
+            tracing::warn!(%error, "device fabric persistence failed");
         }
     }
 
@@ -6154,9 +6195,9 @@ impl ShellNetwork {
         match fabric.upsert(snapshot) {
             Ok(true) => {
                 if let Some(path) = self.device_fabric_path.as_deref()
-                    && !persist_device_fabric(path, &fabric)
+                    && let Err(error) = persist_device_fabric(path, &fabric)
                 {
-                    tracing::warn!("device fabric merge persistence failed");
+                    tracing::warn!(%error, "device fabric merge persistence failed");
                 }
             }
             Ok(false) => {}
@@ -7193,19 +7234,24 @@ impl ShellNetwork {
         // A newly joined guest has not received the owner's governance yet,
         // so it cannot derive the owner's membership locally. The invite pins
         // that exact transport peer as authority; allow only its SyncResp to
-        // bootstrap the signed-invite room. The replica still checks that it
-        // is the pinned governance writer before accepting the candidate.
-        let pinned_inviter = pinned_authority_may_bootstrap
-            && tree.room_authority(room)
-                == crate::shell::state::RoomAuthority::Peer(origin.clone());
-        let same_person_continuation = pinned_authority_may_bootstrap
-            && tree.room_authority(room) == crate::shell::state::RoomAuthority::Unpinned
-            && self
-                .personal_continuity_user
-                .is_some_and(|local_user| identity.is_same_user(&local_user));
-        let allowed = if pinned_inviter || same_person_continuation {
-            true
-        } else {
+        // bootstrap the signed-invite room. A room pinned to a person (one
+        // they own, or one their own device offered for continuation) is
+        // bootstrapped the same way by any of that person's devices. The
+        // replica still runs the shared room admission, which requires the
+        // pinned governance writer; an unpinned room accepts no governance.
+        let authority = tree.room_authority(room);
+        let pinned_writer = pinned_authority_may_bootstrap
+            && match &authority {
+                crate::shell::state::RoomAuthority::Peer(pinned) => pinned == origin,
+                // Only a device currently authenticated as that person, so a
+                // revoked or expired device of theirs is not a pinned writer.
+                crate::shell::state::RoomAuthority::Person(person) => {
+                    tree.authenticated_persons.get(origin) == Some(person)
+                }
+                crate::shell::state::RoomAuthority::Local
+                | crate::shell::state::RoomAuthority::Unpinned => false,
+            };
+        let allowed = pinned_writer || {
             let person = collab_types::caps::Principal::person_from_key(
                 collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
             )
@@ -7818,6 +7864,19 @@ pub(crate) fn shell_network_for_test(
         peer_departures: Arc::new(PeerDepartureHistory::default()),
     };
     (net, cmd_rx)
+}
+
+/// Read-service custody fixture; transport is proved by the real native actor separately.
+#[cfg(test)]
+pub(crate) fn native_read_network_for_test(
+    tree: WorkspaceTreeHandle,
+    identity: HostIdentity,
+) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
+    let (mut network, commands) = shell_network_for_test(tree, 1);
+    network.keypair = iroh::SecretKey::from_bytes(&identity.device_signing_key.to_bytes());
+    network.local_peer_id = network.keypair.public();
+    network.host_identity = Some(identity);
+    (network, commands)
 }
 
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
@@ -9772,6 +9831,51 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn peer_sync_state_is_private_and_separate_from_the_device_key() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let key_dir = temp.path().join("device-private");
+        let key_path = key_dir.join("keypair.bin");
+        let state_dir = temp.path().join("session-state");
+        let network = ShellNetwork::spawn_with(
+            WorkspaceTree::bootstrap_demo().shared(),
+            &key_path,
+            &state_dir,
+            Reach::Loopback,
+            |_, _| None,
+        )
+        .expect("actual peer sync with separate session state");
+        let key_before = std::fs::read(&key_path).unwrap();
+        assert_eq!(
+            network.pending_invitations_path.as_deref(),
+            Some(state_dir.join("pending-invitations.json").as_path())
+        );
+        assert_eq!(
+            network.personal_continuity_path.as_deref(),
+            Some(state_dir.join("personal-continuity.postcard").as_path())
+        );
+        let fabric_path = network.device_fabric_path.as_ref().unwrap();
+        assert_eq!(
+            fabric_path,
+            &state_dir.join("personal-device-fabric.postcard")
+        );
+        persist_device_fabric(fabric_path, &network.device_fabric.lock().unwrap()).unwrap();
+        assert!(fabric_path.is_file());
+        assert_eq!(
+            std::fs::metadata(&state_dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(fabric_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read(&key_path).unwrap(), key_before);
+        assert_eq!(std::fs::read_dir(&key_dir).unwrap().count(), 1);
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -9784,7 +9888,7 @@ mod tests {
             let owner = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
             let mut expected = crate::shell::device_fabric::DeviceFabric::default();
             expected.upsert(fabric_snapshot(owner, 7)).unwrap();
-            assert!(persist_device_fabric(&path, &expected));
+            persist_device_fabric(&path, &expected).unwrap();
             std::fs::write(&path, b"damaged").unwrap();
             assert_eq!(load_device_fabric(&path), expected);
         }
@@ -11073,7 +11177,8 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let key_path = tmp.path().join("peer-key");
             let tree = WorkspaceTree::bootstrap_demo().shared();
-            let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
+            let net =
+                ShellNetwork::spawn(tree, &key_path, &tmp.path().join("peer-sync")).expect("spawn");
             net.tick();
         }
 
@@ -12098,7 +12203,8 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let key_path = tmp.path().join("peer-key");
             let tree = WorkspaceTree::bootstrap_demo().shared();
-            let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
+            let net =
+                ShellNetwork::spawn(tree, &key_path, &tmp.path().join("peer-sync")).expect("spawn");
             // `cmd_tx` capacity is the actor's bounded-channel size; just
             // assert it's nonzero so we know the channel was constructed.
             assert!(net.cmd_tx.capacity() > 0);
@@ -12341,7 +12447,12 @@ mod tests {
             rooms.len() >= 2 && rooms.iter().all(|r| !r.is_nil()),
             "the fixture governs at least two rooms: {rooms:?}"
         );
-        let net = ShellNetwork::spawn(tree.clone(), &tmp.path().join("peer-key")).expect("spawn");
+        let net = ShellNetwork::spawn(
+            tree.clone(),
+            &tmp.path().join("peer-key"),
+            &tmp.path().join("peer-sync"),
+        )
+        .expect("spawn");
         (tmp, tree, net, rooms)
     }
 

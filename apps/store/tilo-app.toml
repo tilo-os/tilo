@@ -19,7 +19,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http"]
-optional = ["clipboard", "files.save", "files.paths", "app-files", "threads", "processes"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "processes"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -56,8 +56,8 @@ splash-segments = ["bin/store[0x0:0x400000]"]
 splash-budget   = 250
 
 [providers]
-mime = ["application/vnd.flatpak.ref"]
-ext  = ["flatpakref"]
+mime = ["application/vnd.flatpak.ref", "application/vnd.tilo.package"]
+ext  = ["flatpakref", "tapp"]
 # The shell's global palette opens an uninstalled app in this trusted detail
 # route. The target is a stable package id, never an install command.
 schemes = ["tilo-store"]

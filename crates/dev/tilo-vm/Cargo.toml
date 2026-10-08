@@ -27,6 +27,7 @@ sha2.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 toml.workspace = true
 uuid.workspace = true

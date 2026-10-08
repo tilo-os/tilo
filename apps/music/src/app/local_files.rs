@@ -153,7 +153,7 @@ impl MusicApp {
                     code: "music.open_file_failed".into(),
                     message: error,
                     details: None,
-                    retryable: true,
+                    retryable: false,
                 },
             });
     }
@@ -255,6 +255,53 @@ mod tests {
     use super::*;
     #[cfg(feature = "audio")]
     use ui::widget::Widget;
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn picker_failure_settles_the_at_most_once_effect_without_retry() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = MusicApp::without_profile();
+        let mut doc = automerge::AutoCommit::new();
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        let before = doc.get_heads();
+        let invocation = tilo_actions::InvocationId::new();
+        let effect = crate::actions::MusicEffect::OpenFile;
+        assert_eq!(
+            effect.bound().contract.retry,
+            tilo_actions::RetryPolicy::AtMostOnce
+        );
+        let action = crate::actions::MusicEffect::specs()
+            .into_iter()
+            .find(|action| action.id == "open-file")
+            .unwrap();
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Failed(
+            "Fixture file access denied".into(),
+        ));
+        let payload = action.build_json(&serde_json::Map::new()).unwrap().payload;
+        assert!(matches!(
+            app.start_effect(invocation, &payload).unwrap(),
+            ui::framework::Effected::Pending
+        ));
+        app.drain_local_file_pick();
+        let Some(tilo_actions::InvocationUpdate::Failed {
+            invocation: completed,
+            error,
+        }) = app.take_effect_result(invocation)
+        else {
+            panic!("the actual picker failure must settle its pending invocation");
+        };
+        assert_eq!(completed, invocation);
+        assert_eq!(error.code, "music.open_file_failed");
+        assert_eq!(error.message, "Fixture file access denied");
+        assert!(!error.retryable);
+        assert!(app.local_file_pick.is_none());
+        assert!(app.local_file.is_none());
+        assert!(!app.audio.has_stream());
+        assert_eq!(doc.get_heads(), before);
+    }
 
     #[test]
     #[allow(
@@ -1088,6 +1135,7 @@ mod tests {
                 spotify_catalogue: false,
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
+                queue_catalogue: Vec::new(),
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();
@@ -1112,6 +1160,7 @@ mod tests {
                     ..Default::default()
                 },
                 local_file: Some(file),
+                queue_catalogue: Vec::new(),
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();

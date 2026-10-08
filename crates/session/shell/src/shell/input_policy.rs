@@ -67,7 +67,9 @@ pub fn foreign_tile_at(
         return None;
     }
     let p = KurboPoint::new(point.0, point.1);
-    find_foreign_tile(tree, host, |hit| hit.rect.contains(p))
+    find_foreign_tile(tree, host, |hit| {
+        hit.rect.contains(p) && !host.group_resize_hit(hit.group, point)
+    })
 }
 
 /// The live laid-out rect for one foreign surface in the active workspace.
@@ -1258,6 +1260,135 @@ mod tests {
         tree.desktop.active_strip.insert(ws_id, strip_id);
         (tree, strip_id, foreign_group)
     }
+    #[test]
+    fn sole_foreign_window_right_edge_belongs_to_compositor_resize() {
+        use ui::Widget;
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (1280, 800));
+        let mut placed = None;
+        fb.with_chrome(|chrome| {
+            placed =
+                insert_foreign_group(&mut chrome.tree_mut(), 991_001, Some("org.example.resize"));
+            chrome.bump();
+        });
+        let (strip, group) = placed.expect("foreign group");
+        let _ = fb.paint_settled();
+        let rect = fb
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("group")
+            .get_rect();
+        let point = (rect.x1 - 2.0, rect.center().y);
+        assert!(
+            fb.host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("group")
+                .resize_grab_hit(KurboPoint::new(point.0, point.1)),
+            "fixture grabs painted grip"
+        );
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        assert_eq!(tree.desktop.active_group_for(strip), Some(group));
+        assert_eq!(
+            tree.desktop.active_workspace().expect("workspace").strips[0]
+                .window_groups
+                .len(),
+            1
+        );
+        assert!(
+            foreign_tile_at(&tree, fb.host(), point).is_none(),
+            "the sole window's painted resize grip must reach chrome, not its client"
+        );
+        let content = fb.host().active_tile_rect(group).expect("content");
+        assert_eq!(
+            foreign_tile_at(&tree, fb.host(), (content.center().x, content.center().y))
+                .expect("client interior")
+                .surface_id,
+            991_001
+        );
+    }
+
+    #[test]
+    fn scrolled_foreign_window_grip_uses_screen_coordinates() {
+        use ui::Widget;
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (1472, 800));
+        let mut placed = None;
+        fb.with_chrome(|chrome| {
+            placed =
+                insert_foreign_group(&mut chrome.tree_mut(), 991_002, Some("org.example.resize"));
+            insert_foreign_group(
+                &mut chrome.tree_mut(),
+                991_003,
+                Some("org.example.neighbor"),
+            );
+            chrome.bump();
+        });
+        let (strip, group) = placed.expect("first group");
+        let _ = fb.paint_settled();
+        let initial = fb
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("group")
+            .get_rect();
+        let viewport = fb.host().group_row_rect_for_tests(strip).expect("viewport");
+        assert!(
+            fb.host_mut()
+                .update_active_strip_pan(initial.x0 - viewport.x0 + 80.0, true)
+        );
+        let _ = fb.paint_settled();
+        let rect = fb
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("group")
+            .get_rect();
+        let viewport = fb.host().group_row_rect_for_tests(strip).expect("viewport");
+        assert!(
+            rect.x0 < viewport.x0 && rect.x1 > viewport.x0 + 10.0,
+            "scrolled group {rect:?} in {viewport:?}"
+        );
+        let point = (rect.x1 - 2.0, rect.center().y);
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        assert!(fb.host().group_resize_hit(group, point));
+        assert!(foreign_tile_at(&tree, fb.host(), point).is_none());
+        let inside = (rect.x1 - 20.0, rect.center().y);
+        assert_eq!(
+            foreign_tile_at(&tree, fb.host(), inside)
+                .expect("client")
+                .surface_id,
+            991_002
+        );
+    }
+
+    #[test]
+    fn maximized_foreign_window_retains_client_edge_input() {
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (1280, 800));
+        let mut placed = None;
+        fb.with_chrome(|chrome| {
+            placed = insert_foreign_group(
+                &mut chrome.tree_mut(),
+                991_004,
+                Some("org.example.maximized"),
+            );
+            let mut tree = chrome.tree_mut();
+            tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
+            drop(tree);
+            chrome.bump();
+        });
+        let (_, group) = placed.expect("group");
+        let _ = fb.paint_settled();
+        let rect = fb.host().active_tile_rect(group).expect("client rect");
+        let point = (rect.x1 - 2.0, rect.center().y);
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        assert!(!fb.host().group_resize_hit(group, point));
+        assert_eq!(
+            foreign_tile_at(&tree, fb.host(), point)
+                .expect("client edge")
+                .surface_id,
+            991_004
+        );
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,

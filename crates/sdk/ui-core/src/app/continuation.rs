@@ -341,25 +341,29 @@ impl App {
         let Some(route) = self.private_continuity_route() else {
             return;
         };
-        let semantic = crate::widget::capability::capability::<dyn crate::widget::Continuable>(
-            &*self.root_widget,
-        )
-        .and_then(|continuable| {
-            continuable.continuation_metadata(&self.state.doc, &self.state.root)
-        });
-        let view = <Self as crate::view::FreezeThaw>::capture_view(self);
-        let record = self
-            .actions
-            .bound_record_sync
-            .as_ref()
-            .map(|sync| sync.binding.checkout.id.clone());
-        let metadata =
-            compose_structural_continuation_metadata(view, semantic).map(
-                |metadata| match &record {
-                    Some(record) => with_continuation_record(metadata, record),
-                    None => metadata,
-                },
-            );
+        let protected = self.accessibility.focus_trap_active
+            || self.wants_capture_protection()
+            || self.continuation.retired;
+        let metadata = if protected {
+            None
+        } else {
+            let semantic = crate::widget::capability::capability::<dyn crate::widget::Continuable>(
+                &*self.root_widget,
+            )
+            .and_then(|continuable| {
+                continuable.continuation_metadata(&self.state.doc, &self.state.root)
+            });
+            let view = <Self as crate::view::FreezeThaw>::capture_view(self);
+            let record = self
+                .actions
+                .bound_record_sync
+                .as_ref()
+                .map(|sync| sync.binding.checkout.id.clone());
+            compose_structural_continuation_metadata(view, semantic).map(|metadata| match &record {
+                Some(record) => with_continuation_record(metadata, record),
+                None => metadata,
+            })
+        };
         if self.continuation.owner_view.awaiting_claim
             && self
                 .continuation
@@ -377,26 +381,33 @@ impl App {
                 .last_stamp
                 .as_ref()
                 .map_or(1, |(counter, _)| counter.saturating_add(1));
-            self.report_handoff(
+            let sent = self.report_handoff(
                 &crate::collaboration::handoff::HandoffReport::OwnerTakeover {
                     token,
                     schema: metadata.schema_version,
                     metadata: metadata.bytes.clone(),
                 },
             );
-            self.continuation.owner_view.last_claim_at = Some(crate::time::now());
+            if sent {
+                self.continuation.owner_view.last_claim_at = Some(crate::time::now());
+            }
         }
-        if metadata == self.continuation.last_published {
+        if self.continuation.publication_initialized && metadata == self.continuation.last_published
+        {
             return;
         }
         if let Some(request) = continuation_publication(
             route.app_id,
             metadata.as_ref(),
-            self.continuation.last_published.is_some(),
+            self.continuation.last_published.is_some()
+                || (protected && !self.continuation.publication_initialized),
         ) {
-            self.collaboration.manager.send(request);
+            if !self.collaboration.manager.send(request) {
+                return;
+            }
         }
         self.continuation.last_published = metadata;
+        self.continuation.publication_initialized = true;
     }
 
     fn apply_pending_continuation_restore(&mut self) {
@@ -459,7 +470,7 @@ impl App {
         if !view.valid()
             || route.app_id != view.app
             || route.cluster_id.to_string() != view.room
-            || route.record.as_deref() != Some(format!("continuation:{}", view.instance).as_str())
+            || self.continuation.private_instance != Some(view.instance)
         {
             return;
         }
@@ -502,7 +513,9 @@ impl App {
     }
 
     fn apply_pending_owner_view(&mut self) {
-        if !self.collaboration.manager.is_connected()
+        // A body may become ready after another Hello or reconnect. Recheck
+        // the original route witness before applying any deferred position.
+        if self.private_continuity_route().is_none()
             || self.accessibility.focus_trap_active
             || self.wants_capture_protection()
             || self.continuation.retired
@@ -538,7 +551,8 @@ impl App {
         self.continuation.owner_view.pending = None;
         self.continuation.owner_view.following = false;
         self.continuation.owner_view.awaiting_claim = true;
-        self.continuation.last_published = None;
+        // Keep the prior publication until replacement or cancellation is
+        // queued. Protected focus must still be able to clear that position.
         self.continuation.owner_view.last_claim_at = None;
     }
 }

@@ -42,6 +42,29 @@ What a sandboxed app is actually presented with. It names none of this; the laun
 
 Anything outside that set is a capability the user grants at runtime, which becomes a bind on the app's next launch (`launcher::capabilities`).
 
+### Application audio output
+
+Hosted apps submit output PCM through the launcher's attested collaboration channel;
+they receive no PipeWire/PulseAudio socket, device path or microphone grant. The
+output-only `audioOutputCommand` service is independent of Chat call membership and
+capture. The broker derives the app, workspace and record from the admitted route,
+checks its live kernel process custody and admission, and fences its output when
+the process disconnects or authority ends. The compositor also fences output on
+session lock, onboarding or the sound-output privacy policy.
+
+Each output has a host-issued generation and an eight-packet queue (160 ms of
+48 kHz stereo PCM). Sequence checks make exact packet retries safe and reject
+changed or reordered retries. Pause, flush, volume and close apply only to that
+app's generation. The host pins playback to the device serial and daemon cookie
+from its existing native device observer; a foreign link, removed output or lost
+link fails closed. Rendered-frame receipts count PCM consumed by the verified host
+device callback, rather than a decoder buffer, playhead or fake sink. Music keeps
+its existing resource actions as the user, accessibility and automation surface.
+
+The governed implementation uses the Linux host's PipeWire backend. An unavailable
+service or device is a playback error. It does not relax the app sandbox or use
+capture access as an output fallback.
+
 ## Seccomp-bpf blocklist
 
 `tilo-launcher` compiles the filter for every launch with the `seccompiler` crate (`sandbox_core::seccomp`) and hands it to `bwrap --seccomp <fd>`. It is a default-allow deny-list answering `EPERM`, derived from Flatpak's profile:
@@ -93,7 +116,7 @@ Replication semantics:
 - Grants replicate to peers as part of the room document.
 - **Only the owner can grant.** Non-owners see the grant rows in the Permissions tab but the Revoke button is disabled.
 - A grant revocation writes the removal to the CRDT. After the normal durable writer accepts the new policy, the launch supervisor interrupts sandboxes retaining withdrawn app filesystem capabilities, including their open descriptors. New overlapping restrictions and expired grants use the same interruption path. The host binds this decision to the original process and durable room; another app or another room's instance is unaffected. Each launch retains its own private capability file, so another room launching the same package cannot replace its snapshot. Document opening queues its new grant through that writer. The launch worker waits for earlier publication and rechecks its snapshot before the launch gate opens; refused or superseded writes cannot authorize the child. Relaunch uses the reduced profile; revocation does not restart the app or grant background authority.
-- **Only the owner can grant over the wire either.** A room document's owner and capability list are accepted only from the peer entitled to write them, so a guest cannot project its own cache into the room and let automerge's last-writer-wins decide who administers it. See `docs/architecture/collaboration.md §4` — "Write authority on a room's governance" — for the record that decides it, why the invite's signature is what makes it checkable by the receiver, and what it does not yet cover (a relayed or delegated governance change, which needs the op signed rather than the hop authenticated).
+- **Only the owner can grant over the wire either.** A room document's owner and capability list are accepted only from the peer entitled to write them, so a guest cannot project its own cache into the room and let automerge's last-writer-wins decide who administers it. Every receiver — the native room peer and the shell — admits a room document through the one function `tilo_peer_state::room::admit_room_changes`, and a room whose governor no invite, minting or person names (`Unpinned`) refuses every governance change rather than trusting whoever answers first. See `docs/architecture/collaboration.md`, "Room admission" and "Write authority on a room's governance", for the record that decides it, why the invite's signature is what makes it checkable by the receiver, and what it does not yet cover (a relayed or delegated governance change, which needs the op signed rather than the hop authenticated).
 
 ### Inline prompt
 
@@ -241,7 +264,7 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 | Network exfil to an ungranted host | Empty netns + name-matched SOCKS5 egress gate   | `packaging/launcher/netgate.rs`    |
 | Clickjacking               | Z-order verification before remote input inject         | `network/input_firewall.rs`, over the tile order `compositor/client_input.rs` publishes |
 | Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `crates/session/shell/src/shell/state.rs::Workspace.grants` |
-| Room takeover via replication | Governance written only by the room's authority, pinned from the invite signature | `crates/session/shell/src/shell/state.rs::apply_room_changes` |
+| Room takeover via replication | Governance written only by the room's authority, pinned from the invite signature, never from a first answer; one admission for every receiver | `crates/collab/tilo-peer-state/src/room/admit.rs::admit_room_changes` |
 | Traffic snoop              | QUIC/TLS end-to-end                                     | Iroh                               |
 | Token forgery              | ed25519 signature + canonical payload + expiry          | `network/invite.rs`                |
 | Host takeover by peer      | Physical-input priority + `Super+Esc` kill switch        | `network/input_firewall.rs`, `compositor/native.rs` |
@@ -256,6 +279,51 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 - `crates/session/shell/src/network/invite.rs` — invite tokens.
 - `crates/session/shell/src/network/input_firewall.rs` — the remote-input checks, with each denial proven through `State::review_remote_input` in its `production_path` tests.
 
+### Display preview transactions from Settings
+
+The Settings worker submits typed `Inspect`, `Identify`, `Apply`, `Keep` and `Revert`
+requests through its existing AppSettings capability. This does not enlarge
+AppSettings' generic write scope. A display delegate exists only for the exact
+private SDK Settings registration and certified route; each call rechecks
+admission, certificate validity and the original registration's live connection.
+Off-thread work carries an explicit local-host origin or the original published
+invocation UUID. The broker resolves a UUID only against its retained original
+invocation on that exact worker connection, rechecks live custody and current
+caller policy, and derives the caller's certificate itself. Unknown, cancelled,
+completed or replaced-channel UUIDs never become local intent. Mutations require
+the original Admin contract and the same person/device certificate as the worker;
+a foreign workspace Admin or an Agent cannot borrow the worker's owner identity.
+The exact certified Settings binary captures the published origin before starting
+background work; physical UI intent uses its host-admitted local-person channel.
+An equal certificate on a replacement connection cannot revive that delegate.
+Public, foreign and agent channels do not acquire this private capability.
+
+The native palette and authenticated owner control socket use the existing app
+provider with a separate host-owned local-person invocation entrypoint. It reads
+the protected device certificate and selected identity, checks current claimed
+ownership and borrows the accepted room custody, retaining only a weak host
+reference. The broker captures that exact certificate, room and installed policy
+clock origin before asynchronous dispatch, and rechecks them for continuation.
+Workspace Viewer/Editor roles remain unchanged; the action contract decides
+Read/Write/Admin. Agent callers and supplied parent invocations cannot enter this
+door. Network, MCP and application transports retain their original admission.
+A host with no native-person service keeps its ordinary legacy actions without
+original certificate evidence; an installed service that refuses never falls
+back, and missing evidence cannot authorize a privileged continuation.
+
+Inspection is read-only. Mutations additionally require the session's protected
+claimed device owner, an exact match to its protected primary device certificate,
+and a current accepted person policy granting Settings Admin. An enrolled room
+borrows its native committed view; an ordinary desktop room borrows the accepted
+host room policy, actual tree and protected writer. A changed owner/capability
+vector, retired writer or stale native authority refuses the operation. UI role projection is not this backend
+proof. Lost custody or a fenced room fails closed. The host reads the active
+compositor's leased output snapshot, checks the proposed output set and supported
+configuration, and captures the observed mode, scale and positions for rollback.
+Keep and Revert name the host-created transaction ID and must still match the
+connected output set. The existing compositor transaction watcher owns preview,
+confirmation deadlines, rollback and KMS; the worker receives no DRM handles,
+host paths or new filesystem write permissions.
 ### Native app action authority
 
 Record participation and app management are separate admissions. A native

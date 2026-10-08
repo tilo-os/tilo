@@ -246,3 +246,179 @@ this script does not replace installer signature/closed-graph validation or
 infer source ancestry from a `native.*` name. No Host permission is granted, and
 no actor is relabelled. On a physical device, run it only after the owner has
 confirmed the matched cohort is active and authorized this test.
+
+
+## Store and Browser after a paired cohort update
+
+`app-cohort.py` reuses the same maintained VM transport and tracked job helper
+as `terminal-cohort.py`. It never creates a VM, changes trust, stages a file,
+closes a window, reads Notes, or changes power/session state. Running it does
+install/open the chosen test applications and changes Store filters; the
+operator must authorize that acceptance after the matched cohort is active.
+Do not run the broad `run.py` suite against the user's desktop.
+
+For the independently observable Flatpak and Browser portion:
+
+```bash
+python3 scripts/vm-acceptance/app-cohort.py \
+  --binary /absolute/path/to/qualified/tilo-vm \
+  --vm yoga --slot device --uid 1000 \
+  --cohort-receipt /absolute/path/to/actual-apps-runtime-receipt.json \
+  --flow flatpak --flow browser --out target/yoga-app-acceptance-UNIQUE
+```
+
+Use the owned acceptance VM's name, slot and UID instead to qualify the recipe
+before physical delivery. Each output directory must be new. This explicit
+partial invocation proves only those two flows. Omitting `--flow` requires
+all four flows and refuses missing package fixtures or trusted attestors
+before application actions. There is no automatic skip or trust grant.
+
+The receipt must identify the successful installed closed SDK layer and its
+actual source commit/inventory digest. The matched Shell/control CLI must
+support programmatic action discovery and numeric broker job status. Store
+must include default Flathub browsing (PR2986), catalogue inspection and the
+catalogue import union `ba5fc5c12d` then `be85891c24` (PR3170). Generic unlisted
+import additionally needs `395c9e5f48` (PR3200), matching AppHost/capability SDK,
+the canonical installer, and an **already configured** applicable trusted
+attestor. A self-signed cohort package is not that prerequisite. The source
+receipt and actual mapped ELF hashes, not a version label, establish the SDK
+association; installer/daemon verification remains authoritative.
+
+Flatpak acceptance refuses an already installed Calculator, disabled or
+foreign Flathub collisions, unavailable remotes and ambiguous bindings. It
+requires browse, search, readable details, completed install, account-level
+Flatpak readback and a mapped Calculator window. It never removes an app to
+manufacture a first-install claim. The initial account metadata and completed
+receipts are saved, so a failed post-install Open must not be replayed as a
+fresh installation.
+
+Package flows require `--package-fixtures /absolute/path/to/fixtures.json`:
+
+```json
+{
+  "catalogue": {"app": "so.tilo.calculator", "root": "EXACT_SIGNED_ROOT_HEX", "version": "EXACT_VERSION", "path": "/ALREADY_HANDED/official.tapp"},
+  "local": {"app": "so.tilo.calculator", "root": "EXACT_SIGNED_ROOT_HEX", "version": "EXACT_VERSION", "path": "/ALREADY_HANDED/attested.tapp"}
+}
+```
+
+These are placeholders, not fixtures or trust inputs. Use genuine signed
+packages of the device's native architecture/runtime. Paths must already be
+readable through the ordinary sandbox/file handoff; the runner grants no
+access. Supply different utility apps or run the routes separately, because
+each Open must map a previously unopened utility window. Notes and the Store
+and Browser acceptance workers are refused as package subjects. Review must
+match the exact expected app/root/version and independent trust route before
+Install. Completed installation is followed by Store readback, canonical
+`app list --installed --json` version readback, and normal mapped Open. The
+CLI inventory has no root field: exact root is bound by review and the normal
+Install action, not fabricated from that list. Existing cached/native entries
+are reported as update/reuse rather than first installations.
+
+Browser acceptance first invokes declared `tab.open-beside` without a URL.
+It will not navigate until an additional mapped tab/surface and a distinct
+same-room `browser.page` record appear while every previous Browser tab remains.
+This requires the framework instance-record fix `b576c07ae5` (PR3215). A queued
+Open receipt alone is insufficient. Only that new bound page receives Navigate,
+WaitPageSettled and ReadPage; success requires actual settled HTTPS Example
+Domain content, not a successful job carrying `settled: false`.
+
+`proof.json` records only completed selected flows. Per-invocation contracts,
+receipts/status, public baseline and mapped SDK hashes remain available on
+failure. Accepted, lost, ambiguous or unobservable outcomes fail without
+replaying the effect. Runner unit tests exercise these transitions and stale
+record refusal; they do not claim physical installation or presentation.
+
+### Official full/thin packages through Store's chooser
+
+After the deployment owner confirms the matched apps/runtime, Shell/control,
+launcher/install and AppHost cohort is active, `store-chooser.py` uses the normal
+owner console actions through `tilo-vm slot exec`. It opens no private app socket,
+does not stage bytes or grant publisher trust, and submits no raw path to Store.
+The owner console must admit the actual slot user; it never falls back to an
+Agent, a synthetic actor, or a different socket when refused.
+
+First acquire the public ARM package through a canonically verified official
+catalogue using the independently pinned registry owner. Verify the signed full
+archive and derive the thin archive with `tilo-app-package thin`, preserving the
+same signed root. Retain the canonical `verified-offer.json` receipt. The exact
+runtime named by that offer must be resolvable through the normal independently
+verified runtime resolver; an unrelated private SDK or a historical runtime tag
+is not compatibility evidence. Hold/pin and installer checks remain authoritative.
+
+The deployment owner stages only those public files through maintained `tilo-vm
+vm ssh` stdin into their Downloads scratch directory. This runner consumes their
+names from the chooser's declared entries, never invents entry IDs or navigates
+an undeclared path. With no other chooser active, run:
+
+```bash
+python3 scripts/vm-acceptance/store-chooser.py \
+  --tilo-vm /ABS/PATH/tilo-vm --vm yoga --slot YOUR_SLOT \
+  --cohort-receipt /ABS/PATH/successful-apps-runtime-receipt.json \
+  --fixture /ABS/PATH/verified-offer.json \
+  --initial-up 1 --directories Downloads official-tapp-acceptance \
+  --thin calculator-aarch64-thin.tapp --full calculator-aarch64-full.tapp \
+  --out target/store-chooser-acceptance
+```
+
+The normal user picker starts at the existing XDG Documents directory, falling
+back to HOME. Choose `--initial-up 1` only when Documents is directly under HOME;
+use `0` when the initial directory is HOME. These are bounded declared `up`
+actions with fresh inspected state and `can_up`, followed by declared entry IDs;
+the runner does not infer filesystem paths or escape picker scope. Each new
+Import starts from its independently supplied initial directory.
+
+Both Import jobs must stay observable while a new unique chooser request is
+inspected. Each operation rechecks the expected active workspace, unlocked
+owner console, request UUID, and listing token. Confirmation is the declared
+`confirm:true` action, followed by terminal status on the *original* Store job
+and exact root/version review readback. PortalCaller binds application and
+workspace; this is not a claim that it identifies a particular record. A
+competing same-application chooser cannot be independently attributed, so do
+not use the runner concurrently with human or automated portal requests.
+
+The default performs two reviews only. Add `--install-open` only when the owner
+has authorized the one install and Calculator Open. It installs once and replays
+`tilo-install verify`, then requires canonical `inspect` to match the reviewed
+root, publisher, version and runtime. It reports update/reuse when already
+installed (including the private cohort); it never closes an existing window.
+A same-room mapped tab must have its public `local_app_records` association.
+A reused window is accepted only with the same strict resident-SDK proof as a
+new window. Ambiguous windows or a stale resident worker fail acceptance.
+Missing capabilities, runtime incompatibility, publisher refusal, stale jobs or
+unobservable completion fail the run; they are never replaced with CLI install,
+clicks, retries, or trust changes. Review completion alone is not installation.
+
+Mapped SDK verification reads only public runtime metadata through maintained
+`tilo-vm vm ssh` maintenance transport, as root where Linux requires that access.
+This does not change the identity or authority of any semantic action: Store and
+chooser actions still execute as the actual slot owner on the owner console.
+The probe opens the exact `/proc/PID/map_files/START-END` kernel object and hashes
+that descriptor; it never substitutes `/proc/PID/root/...` or a readlink pathname.
+It checks process start-time, stable selected VMA identities and unchanged FD
+metadata. Overlay files can expose different device numbers in `maps` and
+`fstat`, so both are recorded rather than asserting a fabricated equality.
+
+Denied `map_files` access, missing subjects, changed mappings or mismatched
+verified layer hashes fail acceptance. A successful namespace pathname hash is
+insufficient proof of resident code. The unit fixtures exercise descriptor
+selection, remount differences and failure/race behavior; they do not claim a
+live kernel capability. An addressed live maintenance probe must succeed before
+hardware acceptance. Calculator Open additionally verifies its installed official
+bundle with `/usr/bin/tilo-runtime-bundle verify --require-signature`, using a
+publisher from the root-owned, non-writable OS runtime trust list, independently
+of the offer. It records the verified inner bundle root and stable SHA inventory,
+then requires every Calculator worker's exact mapped backing to match it. The
+actual `/proc/PID/exe` descriptor must also match the installed executable bytes
+verified by the normal package signature replay, so an older app using the same
+SDK cannot be credited. Missing
+canonical tools, a private-SDK worker still resident after an update, or an
+unobservable public tab association fail; Open's immediate spawn receipt cannot
+substitute for those proofs. The outer offer and inner bundle roots are distinct
+identities. Unit tests validate runner ordering/refusal, not a hardware install
+or cryptographic success on the fixture.
+
+Browser fresh-open attribution uses the new tab's public
+`local_app_records[tab].record_instance` to resolve its page binding. The tab ID
+is not its record instance. Unrelated existing pages publishing late do not
+become candidates, and missing/foreign launch associations fail without another
+Open or navigation of an existing page.

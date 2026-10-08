@@ -124,6 +124,7 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             --env TILO_DEB_REVISION="$revision" \
             --env SOURCE_DATE_EPOCH="$source_epoch" \
             --env GITHUB_SHA="$source_revision" \
+            --env TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY="${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}" \
             --env CARGO_INCREMENTAL=0 \
             --env CARGO_BUILD_JOBS="$cargo_jobs" \
             --env CARGO_PROFILE_RELEASE_LTO=thin \

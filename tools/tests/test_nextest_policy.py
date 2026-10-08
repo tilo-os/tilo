@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -23,6 +24,12 @@ def native_4k_tests() -> set[str]:
     return names
 
 
+def peer_sync_budget_tests() -> set[str]:
+    source = (SHELL.parent / "tests" / "peer_sync_test.rs").read_text(encoding="utf-8")
+    pattern = re.compile(r"^\s*async\s+fn\s+([a-zA-Z0-9_]+_budget)\s*\(", re.MULTILINE)
+    return {f"peer_sync_test::{name}" for name in pattern.findall(source)}
+
+
 def effective_overrides(config: dict, profile_name: str) -> list[dict]:
     """CI inherits default overrides. A CI override is added on top, not a second copy."""
     default = config["profile"]["default"].get("overrides", [])
@@ -32,6 +39,29 @@ def effective_overrides(config: dict, profile_name: str) -> list[dict]:
 
 
 class NextestPolicyTests(unittest.TestCase):
+    def test_cleanup_keeps_executable_shared_libraries_for_later_cargo_steps(self) -> None:
+        workflow = (WORKFLOWS / "check.yml").read_text(encoding="utf-8")
+        cleanup = workflow.split("- name: Free the test executables", 1)[1].split("- name:", 1)[0]
+        command = "\n".join(line.removeprefix("          ")
+                            for line in cleanup.split("run: |\n", 1)[1].splitlines())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            deps = root / "target/debug/deps"
+            deps.mkdir(parents=True)
+            names = {"app-test-123": 0o755, "libderive-123.so": 0o755,
+                     "libnative.so.1": 0o755, "libapp-123.rlib": 0o644}
+            for name, mode in names.items():
+                path = deps / name
+                path.write_bytes(b"fixture")
+                path.chmod(mode)
+            output = root / "outputs"
+            subprocess.run(["bash", "-c", command], cwd=root, check=True,
+                           env={"PATH": "/usr/bin:/bin", "GITHUB_OUTPUT": str(output)})
+            self.assertEqual(output.read_text(), "shared-libraries=2\n")
+            self.assertFalse((deps / "app-test-123").exists())
+            for name in ("libderive-123.so", "libnative.so.1", "libapp-123.rlib"):
+                self.assertTrue((deps / name).exists(), name)
+
     def test_ci_does_not_retry(self) -> None:
         ci = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))["profile"]["ci"]
         self.assertEqual(ci.get("retries", 0), 0)
@@ -62,6 +92,28 @@ class NextestPolicyTests(unittest.TestCase):
                 covered,
                 expected,
                 f"{profile_name} leaves native-4K tests competing with the parallel suite",
+            )
+
+    def test_every_peer_sync_latency_budget_gets_an_exclusive_cpu_budget(self) -> None:
+        config = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))
+        expected = peer_sync_budget_tests()
+        self.assertTrue(expected, "the source scan must find peer-sync latency budgets")
+
+        for profile_name in ("default", "ci"):
+            exclusive_filters = [
+                override["filter"]
+                for override in effective_overrides(config, profile_name)
+                if override.get("threads-required") == "num-cpus"
+            ]
+            covered = {
+                test_name
+                for test_name in expected
+                if any(f"test(={test_name})" in expression for expression in exclusive_filters)
+            }
+            self.assertEqual(
+                covered,
+                expected,
+                f"{profile_name} measures peer-sync latency under parallel-suite contention",
             )
 
     def test_ci_prints_slow_tests_within_a_generous_hang_bound(self) -> None:

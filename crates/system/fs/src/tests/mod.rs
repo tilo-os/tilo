@@ -14,5 +14,5 @@ pub mod config_tests;
 /// bullet list, a 2x2 table, metadata) shared by the docstore tests.
 #[cfg(test)]
 pub(crate) fn sample_docx() -> Vec<u8> {
-    include_bytes!("../../../../doc/fixtures/sample.docx").to_vec()
+    include_bytes!(concat!(env!("OUT_DIR"), "/sample.docx")).to_vec()
 }

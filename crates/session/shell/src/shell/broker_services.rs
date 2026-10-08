@@ -57,6 +57,37 @@ impl NativeOwnerCommitService {
     }
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
+    fn commit_member_effect_receipt(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        caller: tilo_user_identity::DeviceCert,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        let owner = self.owner.clone();
+        let network = self.network.clone();
+        Box::pin(async move {
+            let owner = owner.ok_or("native effect governor unavailable")?;
+            let room = super::state::RoomId::parse(&request.room).ok_or("invalid effect room")?;
+            if let Some(network) = network.as_ref() {
+                network.check_native_custody(&owner, room)?;
+                if network.governed_elsewhere(room) {
+                    return Err("member receipt requires the actual governing owner".into());
+                }
+            }
+            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                .map_err(|error| format!("effect governor custody unavailable: {error}"))?;
+            let receipt = owner.commit_member_effect_receipt(
+                &request,
+                &caller,
+                &governor,
+                &key,
+                std::time::SystemTime::now(),
+            )?;
+            if let Some(network) = network {
+                network.schedule_native_owner_publication(room);
+            }
+            Ok(receipt)
+        })
+    }
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
@@ -772,6 +803,14 @@ impl LauncherServices for NativeLauncher {
         super::launcher::launch_document_in_workspace(app, &workspace, document.as_deref())
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+    fn authenticated_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::AuthenticatedApplicationLaunch>, String> {
+        Ok(super::launcher::authenticated_window_launch(pid, app, room))
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()
@@ -1504,6 +1543,20 @@ pub fn native_services(
             as Arc<dyn tilo_action_broker::services::AppActionGrants>
     });
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
+    let display_control = membership
+        .as_ref()
+        .zip(settings_store::installed_source())
+        .map(|(tree, source)| {
+            Arc::new(super::display_control::NativeDisplayControl {
+                tree: Arc::downgrade(tree),
+                source,
+            }) as Arc<dyn tilo_action_broker::services::DisplayControlServices>
+        });
+    let local_person = membership.as_ref().map(|tree| {
+        Arc::new(super::local_person::NativeLocalPerson {
+            tree: Arc::downgrade(tree),
+        }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
+    });
     HostServices {
         #[cfg(target_os = "linux")]
         file_clipboard: membership.as_ref().map(|tree| {
@@ -1517,6 +1570,7 @@ pub fn native_services(
         resource_views,
         desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
+        local_person,
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),
@@ -1540,6 +1594,7 @@ pub fn native_services(
         launchable_catalogue: launchable_catalogue_path(),
         // The session's records, installed before any broker starts.
         settings: settings_store::installed_source(),
+        display_control,
         live_activities: Some(super::live_activities::board()),
         ..Default::default()
     }
