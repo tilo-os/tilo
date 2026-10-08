@@ -399,6 +399,36 @@ mod floating_source_focus_tests {
     }
 
     #[test]
+    fn returned_child_caret_tracks_primary_layout_in_desktop_coordinates() {
+        // The host's PrepareSurface offset is the primary desktop origin,
+        // not an offset from the primary to the child's allocation.
+        for (primary_origin, child_origin) in [
+            (Vec2::new(266.0, 127.0), Vec2::new(16.0, 188.0)),
+            (Vec2::new(-800.0, 200.0), Vec2::new(-1600.0, 100.0)),
+        ] {
+            for (x, y) in [(124, 290), (482, 695)] {
+                let primary = ImeWindowState {
+                    purpose: winit::window::ImePurpose::Normal,
+                    x,
+                    y,
+                    width: 2,
+                    height: 20,
+                };
+                let child =
+                    primary_ime_state_for_held_child(Some(primary), primary_origin, child_origin)
+                        .unwrap();
+                assert_eq!(
+                    Vec2::new(f64::from(child.x), f64::from(child.y)) + child_origin,
+                    Vec2::new(f64::from(primary.x), f64::from(primary.y)) + primary_origin,
+                    "the held protocol's caret must stay at the newly laid-out primary editor"
+                );
+                assert_eq!((child.width, child.height), (primary.width, primary.height));
+                assert_eq!(child.purpose, primary.purpose);
+            }
+        }
+    }
+
+    #[test]
     fn active_floating_preedit_keeps_primary_protocol_and_maps_detached_caret() {
         let probe = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
             FocusProbe::default(),
@@ -419,14 +449,15 @@ mod floating_source_focus_tests {
                 height: 20,
             }),
             Vec2::new(-800.0, 200.0),
+            Vec2::new(80.0, 60.0),
         )
         .unwrap();
         assert_eq!(
             (returned.x, returned.y, returned.width, returned.height),
-            (900, 300, 2, 20),
-            "the returned primary caret is expressed in the held child's coordinates"
+            (0, 640, 2, 20),
+            "the shared unsigned IME contract clamps an unrepresentable negative child-local x"
         );
-        assert!(primary_ime_state_for_held_child(None, Vec2::ZERO).is_none());
+        assert!(primary_ime_state_for_held_child(None, Vec2::ZERO, Vec2::ZERO).is_none());
 
         let preedit = WindowEvent::Ime(winit::event::Ime::Preedit("composing".into(), None));
         let commit = WindowEvent::Ime(winit::event::Ime::Commit("committed".into()));
@@ -804,7 +835,8 @@ fn pending_floating_ime_state(
 
 fn primary_ime_state_for_held_child(
     primary: Option<ImeWindowState>,
-    coordinate_offset: Vec2,
+    primary_origin: Vec2,
+    child_origin: Vec2,
 ) -> Option<ImeWindowState> {
     let primary = primary?;
     let rect = KurboRect::new(
@@ -812,7 +844,8 @@ fn primary_ime_state_for_held_child(
         f64::from(primary.y),
         f64::from(primary.x.saturating_add(primary.width)),
         f64::from(primary.y.saturating_add(primary.height)),
-    ) - coordinate_offset;
+    ) + primary_origin
+        - child_origin;
     Some(ImeWindowState::from_rect(primary.purpose, rect))
 }
 
@@ -1622,6 +1655,29 @@ impl AppHandler {
 
     fn sync_ime(&mut self, window: &Window) {
         let _entry = self.app.enter_wake_scope();
+        // Return keeps the real composer on its exact suspended child until
+        // the input method finishes. The primary redraw has moved the editor's
+        // caret, so update that still-active protocol without waiting for
+        // another keyboard/IME event on the hidden child.
+        if let Some(id) = self.floating_ime_return_continuation.as_deref()
+            // The initial Suspended message precedes primary relayout. Its
+            // gate becomes Some only after that returned frame is submitted.
+            && self
+                .floating_destination_present_frames
+                .get(id)
+                .is_none_or(Option::is_some)
+            && let Some(surface) = self
+                .floating_windows
+                .iter_mut()
+                .find(|surface| surface.id == id && surface.suspended && surface.preedit_active)
+        {
+            let next = primary_ime_state_for_held_child(
+                self.app.ime_window_state(),
+                surface.coordinate_offset,
+                surface.desktop_rect.origin().to_vec2(),
+            );
+            apply_native_ime(&surface.window, next, &mut surface.ime_state);
+        }
         let continued = self.floating_ime_continuation.as_deref().and_then(|id| {
             let offset = *self.app.floating.coordinate_offsets.get(id)?;
             primary_floating_ime_state(self.app.root_widget.as_ref(), id, offset)
@@ -4121,8 +4177,12 @@ impl AppHandler {
                 .as_deref()
                 .filter(|id| *id == surface_id)
                 .and_then(|_| {
-                    let offset = self.floating_windows.get(index)?.coordinate_offset;
-                    primary_ime_state_for_held_child(self.app.ime_window_state(), offset)
+                    let surface = self.floating_windows.get(index)?;
+                    primary_ime_state_for_held_child(
+                        self.app.ime_window_state(),
+                        surface.coordinate_offset,
+                        surface.desktop_rect.origin().to_vec2(),
+                    )
                 });
             if let Some(surface) = self.floating_windows.get_mut(index) {
                 apply_native_ime(&surface.window, next, &mut surface.ime_state);
