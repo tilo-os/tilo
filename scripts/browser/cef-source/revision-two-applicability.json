@@ -1,0 +1,15 @@
+{
+  "status": "APPLICABILITY_AND_ASSERTION_PRESERVATION_ONLY_NOT_SOURCE_QUALIFIED",
+  "patch_sha256": "40a39125d44e97d1e0373573fbe77a28ec1254d58f6bb7e2c14eb200614726fc",
+  "forward_reverse_exact_bytes": true,
+  "runtime_files": 7,
+  "new_controller_tests": 4,
+  "all_previous_test_assertion_tokens_unchanged": true,
+  "preserved_assertions": 684,
+  "new_test_source_changes": "Four added tests plus pinned formatter whitespace/include ordering; no existing assertion changes",
+  "native_fixture_sha256": "732af0aba12f30e3d23d8fa42d5ad2d18ca0e9a5ba35b9385999291d300b5ada",
+  "epoch": 1791471103.913413,
+  "split_patch_forms_exact_bytes": true,
+  "assertion_comparison": "C++tokens with comments/outer whitespace removed; complete quoted/raw literals preserved byte-for-byte",
+  "preserved_assertion_token_sha256": "9cc12ad28a8d76e27911440f89af97f5c472f4f4733c01f20ed29600b80f6d1d"
+}

@@ -1,31 +1,23 @@
 --- a/third_party/blink/renderer/core/editing/ime/input_method_controller_test.cc
 +++ b/third_party/blink/renderer/core/editing/ime/input_method_controller_test.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
- 
- #include "third_party/blink/renderer/core/editing/ime/input_method_controller.h"
-+
-+#include "third_party/blink/renderer/core/dom/events/scoped_event_queue.h"
- 
- #include <memory>
- 
-@@ -10,6 +12,7 @@
+@@ -10,6 +10,8 @@
  #include "third_party/blink/public/common/features.h"
  #include "third_party/blink/renderer/core/dom/document.h"
  #include "third_party/blink/renderer/core/dom/element.h"
 +#include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
++#include "third_party/blink/renderer/core/dom/events/scoped_event_queue.h"
  #include "third_party/blink/renderer/core/dom/node_list.h"
  #include "third_party/blink/renderer/core/dom/range.h"
  #include "third_party/blink/renderer/core/editing/editor.h"
-@@ -19,6 +22,7 @@
+@@ -18,6 +20,7 @@
+ #include "third_party/blink/renderer/core/editing/markers/document_marker_controller.h"
  #include "third_party/blink/renderer/core/editing/selection_template.h"
  #include "third_party/blink/renderer/core/editing/testing/editing_test_base.h"
- #include "third_party/blink/renderer/core/events/mouse_event.h"
 +#include "third_party/blink/renderer/core/event_type_names.h"
+ #include "third_party/blink/renderer/core/events/mouse_event.h"
  #include "third_party/blink/renderer/core/frame/local_frame.h"
  #include "third_party/blink/renderer/core/frame/local_frame_view.h"
- #include "third_party/blink/renderer/core/frame/settings.h"
-@@ -27,6 +31,7 @@
+@@ -27,6 +30,7 @@
  #include "third_party/blink/renderer/core/html/forms/html_text_area_element.h"
  #include "third_party/blink/renderer/core/layout/layout_theme.h"
  #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
@@ -33,17 +25,18 @@
  
  using ui::mojom::ImeTextSpanThickness;
  using ui::mojom::ImeTextSpanUnderlineStyle;
-@@ -53,6 +58,9 @@
+@@ -53,6 +57,10 @@
    void CreateHtmlWithCompositionInputEventListeners();
    void CreateHtmlWithCompositionEndEventListener(const SelectionType);
    int TextInputFlags(const char* html);
-+  HTMLInputElement* PrepareCompositionMutationTest(const char* event_type,
-+                                                   const char* mutation,
-+                                                   bool start_composition = true);
++  HTMLInputElement* PrepareCompositionMutationTest(
++      const char* event_type,
++      const char* mutation,
++      bool start_composition = true);
  };
  
  Element* InputMethodControllerTest::InsertHtmlElement(const char* element_code,
-@@ -1559,6 +1567,366 @@
+@@ -1559,6 +1567,423 @@
              GetDocument().title());
  }
  
@@ -168,8 +161,9 @@
 +      : controller_(&controller) {}
 +
 +  void Invoke(ExecutionContext*, Event*) override {
-+    if (invoked_)
++    if (invoked_) {
 +      return;
++    }
 +    invoked_ = true;
 +    controller_->SetCompositionFromExistingText(Vector<ImeTextSpan>(), 0, 5);
 +  }
@@ -243,8 +237,9 @@
 +
 +TEST_F(InputMethodControllerTest, CompositionMutationLegacyCancelValue) {
 +  auto* input = PrepareCompositionMutationTest(
-+      "textInput", "document.title='seen';sample.value='newer';"
-+                   "sample.setSelectionRange(0,5);");
++      "textInput",
++      "document.title='seen';sample.value='newer';"
++      "sample.setSelectionRange(0,5);");
 +  EventQueueScope scope;
 +  Controller().CancelComposition();
 +  EXPECT_EQ("seen", GetDocument().title());
@@ -265,9 +260,10 @@
 +}
 +
 +TEST_F(InputMethodControllerTest, CompositionMutationLegacyCancelFocus) {
-+  auto* input = PrepareCompositionMutationTest(
-+      "textInput", "document.title='seen';other.focus();"
-+                   "other.setSelectionRange(0,6);");
++  auto* input =
++      PrepareCompositionMutationTest("textInput",
++                                     "document.title='seen';other.focus();"
++                                     "other.setSelectionRange(0,6);");
 +  EventQueueScope scope;
 +  Controller().CancelComposition();
 +  auto* other = To<HTMLInputElement>(GetElementById("other"));
@@ -279,11 +275,13 @@
 +  EXPECT_EQ(6u, other->selectionEnd());
 +}
 +
-+TEST_F(InputMethodControllerTest, CompositionMutationLegacyCancelKeepsPageEdit) {
++TEST_F(InputMethodControllerTest,
++       CompositionMutationLegacyCancelKeepsPageEdit) {
 +  auto* input = PrepareCompositionMutationTest(
-+      "textInput", "document.title='seen';sample.setSelectionRange(0,5);"
-+                   "document.execCommand('insertText',false,'page');"
-+                   "sample.setSelectionRange(0,4);");
++      "textInput",
++      "document.title='seen';sample.setSelectionRange(0,5);"
++      "document.execCommand('insertText',false,'page');"
++      "sample.setSelectionRange(0,4);");
 +  EventQueueScope scope;
 +  Controller().CancelComposition();
 +  EXPECT_EQ("seen", GetDocument().title());
@@ -292,9 +290,57 @@
 +  EXPECT_EQ(4u, input->selectionEnd());
 +}
 +
-+TEST_F(InputMethodControllerTest, CompositionMutationTextInputRefusesCaretMove) {
++TEST_F(InputMethodControllerTest, CompositionMutationLegacyConfirmValue) {
 +  auto* input = PrepareCompositionMutationTest(
-+      "textInput", "sample.value='newer';sample.setSelectionRange(0,5);", false);
++      "textInput", "sample.value='newer';sample.setSelectionRange(0,5);");
++  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
++  EXPECT_EQ("newer", input->Value());
++  EXPECT_EQ(0u, input->selectionStart());
++  EXPECT_EQ(5u, input->selectionEnd());
++}
++
++TEST_F(InputMethodControllerTest, CompositionMutationLegacyConfirmSelection) {
++  auto* input = PrepareCompositionMutationTest(
++      "textInput", "sample.setSelectionRange(0,5);");
++  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
++  EXPECT_EQ("alpha preedit gamma", input->Value());
++  EXPECT_EQ(0u, input->selectionStart());
++  EXPECT_EQ(5u, input->selectionEnd());
++}
++
++TEST_F(InputMethodControllerTest, CompositionMutationLegacyConfirmFocus) {
++  auto* input = PrepareCompositionMutationTest(
++      "textInput", "other.focus();other.setSelectionRange(0,6);");
++  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
++  auto* other = To<HTMLInputElement>(GetElementById("other"));
++  EXPECT_EQ("alpha preedit gamma", input->Value());
++  EXPECT_EQ(other, GetDocument().FocusedElement());
++  EXPECT_EQ("second", other->Value());
++  EXPECT_EQ(0u, other->selectionStart());
++  EXPECT_EQ(6u, other->selectionEnd());
++}
++
++TEST_F(InputMethodControllerTest, CompositionMutationLegacyConfirmPrevented) {
++  auto* input =
++      PrepareCompositionMutationTest("textInput", "event.preventDefault();");
++  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
++  EXPECT_EQ("alpha preedit gamma", input->Value());
++  EXPECT_EQ(6u, input->selectionStart());
++  EXPECT_EQ(13u, input->selectionEnd());
++  // A prevented confirmation ends the old composition without inserting.
++  // Its empty cleanup retries cannot delete the retained user text.
++  EXPECT_FALSE(Controller().CommitText(g_empty_string, Vector<ImeTextSpan>(), 0));
++  Controller().SetComposition(g_empty_string, Vector<ImeTextSpan>(), 0, 0);
++  EXPECT_EQ("alpha preedit gamma", input->Value());
++  EXPECT_EQ(6u, input->selectionStart());
++  EXPECT_EQ(13u, input->selectionEnd());
++}
++
++TEST_F(InputMethodControllerTest,
++       CompositionMutationTextInputRefusesCaretMove) {
++  auto* input = PrepareCompositionMutationTest(
++      "textInput", "sample.value='newer';sample.setSelectionRange(0,5);",
++      false);
 +  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
 +  EXPECT_EQ("newer", input->Value());
 +  EXPECT_EQ(0u, input->selectionStart());
@@ -312,7 +358,8 @@
 +
 +TEST_F(InputMethodControllerTest, CompositionMutationIdleEmptyPreservesValue) {
 +  auto* input = PrepareCompositionMutationTest(
-+      "beforeinput", "sample.value='newer';sample.setSelectionRange(0,5);", false);
++      "beforeinput", "sample.value='newer';sample.setSelectionRange(0,5);",
++      false);
 +  Controller().SetComposition("", Vector<ImeTextSpan>(), 0, 0);
 +  EXPECT_EQ("newer", input->Value());
 +  EXPECT_EQ(0u, input->selectionStart());
@@ -324,8 +371,8 @@
 +}
 +
 +TEST_F(InputMethodControllerTest, CompositionMutationUndoEndsOldComposition) {
-+  auto* input = PrepareCompositionMutationTest(
-+      "compositionend", "document.title='ended';");
++  auto* input = PrepareCompositionMutationTest("compositionend",
++                                               "document.title='ended';");
 +  GetFrame().GetEditor().Undo();
 +  EXPECT_EQ("alpha beta gamma", input->Value());
 +  EXPECT_EQ("ended", GetDocument().title());
@@ -385,15 +432,18 @@
 +
 +TEST_F(InputMethodControllerTest, CompositionMutationEmptyCommitRetry) {
 +  auto* input = PrepareCompositionMutationTest(
-+      "beforeinput", "sample.value='newer';sample.setSelectionRange(0,5);", false);
++      "beforeinput", "sample.value='newer';sample.setSelectionRange(0,5);",
++      false);
 +  EXPECT_FALSE(Controller().CommitText("final", Vector<ImeTextSpan>(), 0));
 +  EXPECT_EQ("newer", input->Value());
-+  EXPECT_FALSE(Controller().CommitText(g_empty_string, Vector<ImeTextSpan>(), 0));
++  EXPECT_FALSE(
++      Controller().CommitText(g_empty_string, Vector<ImeTextSpan>(), 0));
 +  EXPECT_EQ("newer", input->Value());
 +  EXPECT_EQ(0u, input->selectionStart());
 +  EXPECT_EQ(5u, input->selectionEnd());
 +  Controller().SetEditableSelectionOffsets(PlainTextRange(5, 5));
-+  EXPECT_FALSE(Controller().CommitText(g_empty_string, Vector<ImeTextSpan>(), -5));
++  EXPECT_FALSE(
++      Controller().CommitText(g_empty_string, Vector<ImeTextSpan>(), -5));
 +  EXPECT_EQ("newer", input->Value());
 +  EXPECT_EQ(5u, input->selectionStart());
 +  EXPECT_EQ(5u, input->selectionEnd());
@@ -410,7 +460,7 @@
  TEST_F(InputMethodControllerTest, CompositionInputEventForReplace) {
    CreateHtmlWithCompositionInputEventListeners();
  
-@@ -2753,7 +3121,7 @@
+@@ -2753,7 +3178,7 @@
    ime_text_spans.push_back(ImeTextSpan(
        ImeTextSpan::Type::kMisspellingSuggestion, 0, 5, Color::kTransparent,
        ImeTextSpanThickness::kNone, ImeTextSpanUnderlineStyle::kNone,
@@ -419,7 +469,7 @@
        /* remove_on_finish_composing */ true));
  
    // Case 1: SetComposition() -> FinishComposingText() removes the suggestion
-@@ -2796,7 +3164,7 @@
+@@ -2796,7 +3221,7 @@
    ime_text_spans.push_back(ImeTextSpan(
        type, start, end, Color::kTransparent, ImeTextSpanThickness::kNone,
        ImeTextSpanUnderlineStyle::kNone, Color::kTransparent,
