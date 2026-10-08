@@ -350,41 +350,36 @@ fn toggle_airplane_mode(on: bool, actions: &dyn QsActions) -> Option<Osd> {
 
 /// Flip the touchpad preference in the session's settings. The compositor
 /// owns libinput and applies the change on its next settings poll, the
-/// same path a Settings-pane toggle takes.
+/// same path a Settings-pane toggle takes. The flip reads and writes under
+/// the settings lock, so two quick presses flip twice.
 fn toggle_touchpad() -> Option<Osd> {
-    use settings_store::hardware::TOUCHPAD_ENABLED_KEY;
-    let enabled = settings_store::load_section("input")
-        .get(TOUCHPAD_ENABLED_KEY)
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true);
-    let next = !enabled;
-    let mut values = serde_json::Map::new();
-    values.insert(TOUCHPAD_ENABLED_KEY.into(), serde_json::Value::Bool(next));
-    if let Err(error) = settings_store::update_section("input", values) {
-        tracing::warn!(%error, "touchpad toggle could not be saved");
-        return None;
+    let origin = settings_store::ChangeOrigin::local(TOUCHPAD_TOGGLE_ORIGIN);
+    match settings_store::hardware::TOUCHPAD_ENABLED.update_by(&origin, |enabled| !enabled) {
+        Ok(next) => Some(Osd::touchpad(next)),
+        Err(error) => {
+            tracing::warn!(%error, "touchpad toggle could not be saved");
+            None
+        }
     }
-    Some(Osd::touchpad(next))
 }
+
+/// The change origin the touchpad-toggle hardware key records.
+const TOUCHPAD_TOGGLE_ORIGIN: &str = "media-key.touchpad-toggle";
+/// The change origin the mouse-keys chord records: its fixed-chord id.
+const MOUSE_KEYS_ORIGIN: &str = "fixed-toggle-mouse-keys";
 
 /// Flip mouse keys in the session's settings, for the Shift+Alt+Num Lock
 /// chord. Like the touchpad key, the compositor picks the change up on its
 /// next settings poll, the path a Settings-pane toggle takes.
 pub fn toggle_mouse_keys() -> Option<Osd> {
-    const SECTION: &str = "accessibility";
-    const KEY: &str = "mouse_keys";
-    let enabled = settings_store::load_section(SECTION)
-        .get(KEY)
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let next = !enabled;
-    let mut values = serde_json::Map::new();
-    values.insert(KEY.into(), serde_json::Value::Bool(next));
-    if let Err(error) = settings_store::update_section(SECTION, values) {
-        tracing::warn!(%error, "mouse keys toggle could not be saved");
-        return None;
+    let origin = settings_store::ChangeOrigin::local(MOUSE_KEYS_ORIGIN);
+    match settings_store::hardware::MOUSE_KEYS.update_by(&origin, |enabled| !enabled) {
+        Ok(next) => Some(Osd::mouse_keys(next)),
+        Err(error) => {
+            tracing::warn!(%error, "mouse keys toggle could not be saved");
+            None
+        }
     }
-    Some(Osd::mouse_keys(next))
 }
 
 fn transport(
@@ -847,6 +842,23 @@ mod tests {
             );
             let off = toggle_mouse_keys().expect("saved");
             assert_eq!(off.caption(), "Mouse keys off");
+            let log = std::fs::read_to_string(paths.change_log()).expect("change log");
+            let entries: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
+                .collect();
+            assert_eq!(entries.len(), 2, "one entry per flip: {entries:?}");
+            for (entry, after) in entries.iter().zip([true, false]) {
+                assert_eq!(entry["section"], "accessibility");
+                assert_eq!(entry["leaf"], "mouse_keys");
+                assert_eq!(entry["after"], after);
+                assert_eq!(entry["action"], MOUSE_KEYS_ORIGIN, "the chord is named");
+                assert_eq!(
+                    entry["principal"],
+                    settings_store::ChangeOrigin::LOCAL_USER,
+                    "pressed at this device's keyboard"
+                );
+            }
         });
     }
 

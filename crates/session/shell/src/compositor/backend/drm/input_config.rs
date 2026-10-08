@@ -179,7 +179,7 @@ impl Default for AccessibilityInputSettings {
 }
 
 /// `accessibility` key the Shift+Alt+Num Lock chord flips.
-pub const MOUSE_KEYS_KEY: &str = "mouse_keys";
+pub const MOUSE_KEYS_KEY: &str = settings_store::hardware::MOUSE_KEYS.name();
 
 impl AccessibilityInputSettings {
     pub fn load() -> Self {
