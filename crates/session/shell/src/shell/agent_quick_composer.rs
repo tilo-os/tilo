@@ -643,6 +643,7 @@ fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container>
         controls.intent,
     )
     .fill()
+    .with_id("agent-quick-intent")
     .with_accessible_name(t("agent-quick-intent"));
     let editor = TextInput::from_state(controls.draft)
         .with_id("agent-quick-editor")
@@ -691,7 +692,12 @@ fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container>
                 .push(Box::new(Badge::text(t("agent-quick-kind")))),
         ))
         .push(Box::new(
-            Text::from_state(controls.status, Clone::clone).dimmed(),
+            Container::new().with_no_padding().with_child(Box::new(
+                Text::from_state(controls.status, Clone::clone)
+                    .with_id("agent-quick-status")
+                    .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
+                    .dimmed(),
+            )),
         ))
         .push(Box::new(mode))
         .push(Box::new(When::from_state(
@@ -1578,6 +1584,10 @@ impl Widget for AgentQuickComposer {
 
     fn children(&self) -> Vec<&dyn Widget> {
         self.popover.children()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.popover.accessibility()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -3129,6 +3139,95 @@ mod tests {
             has_accessible_value(&composer, "Agent"),
             "the visible collaborator kind is also published to accessibility"
         );
+    }
+
+    #[test]
+    fn unavailable_status_uses_measured_height_without_overlapping_intent_tabs() {
+        fn widget_with_id<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+            if widget.test_id() == Some(id) {
+                return Some(widget);
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| widget_with_id(child, id))
+        }
+
+        let unavailable = t("agent-quick-message-refused");
+        for (compact, viewport, anchor, theme) in [
+            (
+                false,
+                Rect::new(0.0, 0.0, 1280.0, 800.0),
+                Rect::new(420.0, 180.0, 444.0, 204.0),
+                Theme::dark(),
+            ),
+            (
+                true,
+                Rect::new(0.0, 0.0, 560.0, 560.0),
+                Rect::new(264.0, 188.0, 288.0, 212.0),
+                Theme::high_contrast().with_text_scale(2.0),
+            ),
+        ] {
+            let mut composer = AgentQuickComposer::default();
+            composer.status.set(unavailable.clone());
+            composer.popover.set_anchor(anchor);
+            composer.popover.set_viewport(viewport);
+            composer.popover.set_open(true);
+            composer.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
+            assert_eq!(
+                widget_with_id(&composer, "agent-quick-status")
+                    .and_then(Widget::accessibility)
+                    .and_then(|node| node.name.or(node.value))
+                    .as_deref(),
+                Some(unavailable.as_str()),
+                "the retained sync must expose the actual unavailable status before measurement"
+            );
+            layout_panel(&mut composer, anchor, viewport, &theme);
+            let status = widget_with_id(&composer, "agent-quick-status")
+                .expect("the visible status uses the shared Text widget");
+            let intent = widget_with_id(&composer, "agent-quick-intent")
+                .expect("the visible intent tabs use the shared ToggleGroup");
+            let status_rect = status.get_rect();
+            let intent_rect = intent.get_rect();
+            let content_rect = composer.popover.content().get_rect();
+            let status_style = theme
+                .text(ui::tokens::TextRole::Body)
+                .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph);
+            // `Text::measure` and `Text::draw` share one logical pixel of
+            // wrap slack so rounding cannot make one wrap while the other
+            // does not. Reproduce that exact public layout contract here.
+            let (_, expected_height) = ui::text_render::TextRenderer::new().measure_style(
+                &unavailable,
+                Some(logical_dimension(status_rect.width() + 1.0)),
+                &status_style,
+            );
+            assert!(
+                status_rect.height() + 0.5 >= f64::from(expected_height),
+                "status {status_rect:?} must reserve its renderer's full {expected_height}px text height"
+            );
+            assert!(
+                status_rect.x0 >= content_rect.x0 && status_rect.x1 <= content_rect.x1,
+                "status {status_rect:?} must stay inside composer content {content_rect:?}"
+            );
+            assert!(
+                status_rect.y1 <= intent_rect.y0,
+                "wrapped status {status_rect:?} must not paint under intent tabs {intent_rect:?}"
+            );
+            if compact {
+                assert!(
+                    expected_height > status_style.line_height_px() * 1.5,
+                    "compact HC200 must exercise a genuinely wrapped localized status"
+                );
+            }
+            assert_eq!(
+                status
+                    .accessibility()
+                    .and_then(|node| node.name.or(node.value))
+                    .as_deref(),
+                Some(unavailable.as_str()),
+                "wrapping must preserve the complete localized status for assistive technology"
+            );
+        }
     }
 
     #[test]

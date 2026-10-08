@@ -493,6 +493,94 @@ fn one_agent_marker_opens_the_room_bound_quick_composer_at_its_exact_anchor() {
     );
 }
 
+#[test]
+fn agent_quick_composer_captures_the_seat_and_receives_pointer_keyboard_input() {
+    use crate::shell::state::{Workspace, WorkspaceId};
+
+    fn widget_rect(widget: &dyn Widget, id: &str) -> Option<Rect> {
+        if widget.test_id() == Some(id) {
+            return Some(widget.get_rect());
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| widget_rect(child, id))
+    }
+
+    let owner = "a1".repeat(32);
+    let mut workspace = Workspace::new(WorkspaceId(89), "Composer input room");
+    workspace.set_owner(owner.clone());
+    let room = workspace.room.to_string();
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let broker = crate::shell::broker_services::test_broker_with_membership(tree.clone().shared());
+    let mut frame = crate::shell::frame::FrameBuilder::with_tree(tree, (1600, 900));
+    frame.with_chrome(|chrome| chrome.act_as(owner));
+    frame.host_mut().attach_app_action_broker(broker);
+    assert!(
+        frame
+            .host_mut()
+            .open_agent_quick_composer_from_user_navigation(
+                &room,
+                &[("scribe".into(), "Scribe".into())],
+                Rect::new(924.0, 180.0, 948.0, 204.0),
+            )
+    );
+    frame.host_mut().agent_quick_composer.set_draft("");
+    let _ = frame.paint_settled();
+
+    assert!(
+        crate::shell::input_policy::chrome_captures_input(&frame),
+        "the compositor must keep pointer and keyboard events in shell chrome while the composer is modal"
+    );
+    let editor = widget_rect(frame.host(), "agent-quick-editor")
+        .expect("the production composer exposes its shared text editor");
+    assert!(editor.area() > 0.0, "the editor must have painted geometry");
+
+    let modifiers = Modifiers::default();
+    let mut document = AutoCommit::new();
+    let mut focus = None;
+    let document_path = automerge::ROOT.clone();
+    let _ = frame.dispatch_event(
+        &cursor_moved_at(editor.center()),
+        &modifiers,
+        &mut ui::widget::Edits::lend(&mut document),
+        &document_path,
+        &mut focus,
+    );
+    assert!(frame.dispatch_event(
+        &left_button_pressed(),
+        &modifiers,
+        &mut ui::widget::Edits::lend(&mut document),
+        &document_path,
+        &mut focus,
+    ));
+    assert!(frame.dispatch_event(
+        &left_button_released(),
+        &modifiers,
+        &mut ui::widget::Edits::lend(&mut document),
+        &document_path,
+        &mut focus,
+    ));
+    assert!(frame.dispatch_event(
+        &key_press(Key::Character("x".into())),
+        &modifiers,
+        &mut ui::widget::Edits::lend(&mut document),
+        &document_path,
+        &mut focus,
+    ));
+    assert_eq!(
+        frame.host().agent_quick_composer.draft(),
+        "x",
+        "the same shell-owned editor reached by the physical pointer must receive the following physical key"
+    );
+    assert!(frame.host_mut().agent_quick_composer.dismiss());
+    assert!(
+        !crate::shell::input_policy::chrome_captures_input(&frame),
+        "closing the composer must return the seat to the underlying application"
+    );
+}
+
 fn accessible_marker_fixture(published_at: Instant) -> AccessibleAgentMarker {
     use tilo_actions::{
         ActionResource, InteractionAction, InteractionActor, InteractionActorKind,
@@ -539,6 +627,99 @@ fn accessible_marker_fixture(published_at: Instant) -> AccessibleAgentMarker {
         description: "Editing draft".into(),
         published_at,
     }
+}
+
+#[test]
+fn accessible_marker_retains_original_lifetime_and_stays_inert_while_composer_is_open() {
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new()));
+    let published_at = Instant::now();
+    let marker = accessible_marker_fixture(published_at);
+    let target = marker.action_target();
+    let mut document = AutoCommit::new();
+    host.publish_accessible_agent_markers(7, vec![marker]);
+    assert!(!host.accessible_agent_marker_request_is_inert(&target));
+    assert!(!host.accessible_agent_marker_request_is_inert("ordinary-control"));
+    assert!(host.perform_semantic_action(
+        &target,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT
+    ));
+    assert!(host.accessible_agent_marker_request_is_inert(&target));
+    let activation = host
+        .take_accessible_agent_marker_activation()
+        .expect("real marker activation");
+    assert_eq!(activation.published_at, published_at);
+    assert_eq!(host.accessible_agent_markers[0].published_at, published_at);
+    host.open_agent_quick_composer_for_shots(activation.marker);
+    assert!(host.accessible_agent_marker_request_is_inert(&target));
+    assert!(
+        host.accessibility()
+            .unwrap()
+            .children
+            .iter()
+            .all(|node| node.action_target.as_deref() != Some(target.as_str()))
+    );
+    for action in [ui::a11y::Action::Focus, ui::a11y::Action::Activate] {
+        assert!(host.perform_semantic_action(
+            &target,
+            &action,
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT
+        ));
+        assert!(host.take_accessible_agent_marker_activation().is_none());
+        assert!(host.accessible_agent_marker_focus.is_none());
+    }
+    assert!(host.agent_quick_composer.dismiss());
+    assert!(!host.accessible_agent_marker_request_is_inert(&target));
+    assert_eq!(host.accessible_agent_markers[0].published_at, published_at);
+    assert!(
+        host.accessibility()
+            .unwrap()
+            .children
+            .iter()
+            .any(|node| node.action_target.as_deref() == Some(target.as_str()))
+    );
+    assert!(host.perform_semantic_action(
+        &target,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+    ));
+    assert_eq!(
+        host.take_accessible_agent_marker_activation()
+            .unwrap()
+            .published_at,
+        published_at
+    );
+    host.open_agent_quick_composer_for_shots(activation.marker);
+    host.retire_accessible_agent_markers(7);
+    assert!(host.agent_quick_composer.dismiss());
+    assert!(host.accessible_agent_marker_request_is_inert(&target));
+    assert!(
+        host.accessibility()
+            .unwrap()
+            .children
+            .iter()
+            .all(|node| node.action_target.as_deref() != Some(target.as_str()))
+    );
+    host.publish_accessible_agent_markers(7, vec![accessible_marker_fixture(Instant::now())]);
+    let expired_target = host.accessible_agent_markers[0].action_target();
+    host.open_agent_quick_composer_for_shots(activation.marker);
+    host.accessible_agent_markers[0].published_at = Instant::now()
+        .checked_sub(ACCESSIBLE_AGENT_MARKER_AGE)
+        .unwrap();
+    assert!(host.agent_quick_composer.dismiss());
+    assert!(host.accessible_agent_marker_request_is_inert(&expired_target));
+    assert!(host.perform_semantic_action(
+        &expired_target,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT
+    ));
+    assert!(host.take_accessible_agent_marker_activation().is_none());
+    assert!(host.accessible_agent_markers.is_empty());
+    assert!(host.accessible_agent_marker_focus.is_none());
 }
 
 #[test]

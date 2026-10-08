@@ -634,6 +634,28 @@ pub fn request_shots_theme(name: String) {
     let _ = SHOTS_THEME.set(name);
 }
 
+fn marker_actor_is_member(
+    tree: &WorkspaceTree,
+    target: &ui::floating_surface::AgentConversationNavigationTarget,
+    room: &str,
+) -> bool {
+    if target.agent.is_empty()
+        || target.actor.0.strip_prefix("agent:") != Some(target.agent.as_str())
+    {
+        return false;
+    }
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return false;
+    };
+    tree.desktop.active_workspace().is_some_and(|workspace| {
+        workspace.room.to_string() == room
+            && workspace
+                .agent_members_in_room_at(&workspace.room.to_string(), now.as_secs())
+                .iter()
+                .any(|(agent, _)| agent == &target.agent)
+    })
+}
+
 impl FrameBuilder {
     /// Build a frame builder around the canonical bootstrap workspace
     /// tree at `viewport` size.
@@ -2816,13 +2838,77 @@ impl FrameBuilder {
     /// fold found anything — someone who joined but hasn't moved their
     /// pointer publishes nothing, but is in the room all the same.
     pub fn pump_peer_presence(&mut self) -> bool {
+        let retired = self.retire_invalid_agent_markers();
         let Some(relay) = self.peer_presence.as_ref() else {
-            return false;
+            return retired;
         };
         let tiles = self.host.tab_tiles();
         let moved = relay.pump(&mut self.presence, &tiles);
         let roster_changed = relay.refresh_roster(&self.presence);
-        moved || roster_changed
+        self.retire_invalid_agent_markers() || moved || roster_changed || retired
+    }
+
+    pub(crate) fn authenticated_marker_actor(
+        &self,
+        target: &ui::floating_surface::AgentConversationNavigationTarget,
+        room: &str,
+    ) -> bool {
+        let chrome = self.chrome.borrow();
+        marker_actor_is_member(&chrome.tree(), target, room)
+    }
+
+    /// Presentation name for an already validated Agent target. Kind labels
+    /// belong to the receiving surface, not to this bare identity name.
+    pub(crate) fn agent_marker_display_name(
+        &self,
+        target: &ui::floating_surface::AgentConversationNavigationTarget,
+    ) -> String {
+        self.presence
+            .names
+            .get(&target.actor)
+            .cloned()
+            .unwrap_or_else(|| target.agent.clone())
+    }
+
+    pub(crate) fn observed_marker_interaction(
+        &self,
+        target: &ui::floating_surface::AgentConversationNavigationTarget,
+        room: &str,
+        now: ui::time::Instant,
+    ) -> Option<&tilo_actions::SemanticInteraction> {
+        if self.active_workspace_room().as_deref() != Some(room) {
+            return None;
+        }
+        self.presence.current_observed_agent_interaction(
+            &target.actor,
+            target.invocation,
+            room,
+            now,
+        )
+    }
+
+    fn retire_invalid_agent_markers(&mut self) -> bool {
+        let chrome = self.chrome.borrow();
+        let tree = chrome.tree();
+        let room = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string());
+        let now = ui::time::now();
+        let presence = &self.presence;
+        let retained = self.host.retain_accessible_agent_markers(|marker| {
+            room.as_deref() == Some(marker.room.as_str())
+                && marker_actor_is_member(&tree, &marker.target, &marker.room)
+                && presence.current_observed_agent_interaction(
+                    &marker.target.actor,
+                    marker.target.invocation,
+                    &marker.room,
+                    now,
+                ) == Some(&marker.target.interaction)
+        });
+        drop(tree);
+        drop(chrome);
+        retained
     }
 
     /// Read-only view of the presence the next paint will draw.
@@ -3604,19 +3690,16 @@ impl FrameBuilder {
                 .app
                 .as_ref()
                 .is_some_and(|app| app.id == marker.app_id)
-            && self.presence.authenticated_agent_id(&marker.target.actor)
-                == Some(marker.target.agent.as_str())
-            && self.presence.current_agent_interaction(
-                &marker.target.actor,
-                marker.target.invocation,
-                now,
-            ) == Some(&marker.target.interaction);
+            && self.authenticated_marker_actor(&marker.target, &marker.room)
+            && self.observed_marker_interaction(&marker.target, &marker.room, now)
+                == Some(&marker.target.interaction);
         if !geometry_is_current || !binding_is_current {
             return false;
         }
+        let name = self.agent_marker_display_name(&marker.target);
         self.host.open_agent_quick_composer_from_user_navigation(
             &marker.room,
-            &[(marker.target.agent, marker.label)],
+            &[(marker.target.agent, name)],
             marker.marker,
         )
     }
@@ -4070,6 +4153,13 @@ impl FrameBuilder {
         let Some(&widget) = self.node_map.get(&taffy_id) else {
             return false;
         };
+
+        if semantic_target
+            .as_deref()
+            .is_some_and(|target| self.host.accessible_agent_marker_request_is_inert(target))
+        {
+            return false;
+        }
 
         // The compositor owns the single keyboard focus. Clear any retained
         // conversation/overlay focus before a synthetic owner records its
@@ -7764,22 +7854,6 @@ mod tests {
             .expect("adopted source has current desktop geometry");
 
         let actor = ui::UserId("agent:scribe".into());
-        frame.presence.apply_test_collaboration_snapshot(&[
-            Collaborator {
-                id: "person:viewer".into(),
-                name: "Viewer".into(),
-                colour: None,
-                is_agent: false,
-                is_self: true,
-            },
-            Collaborator {
-                id: actor.0.clone(),
-                name: "Scribe".into(),
-                colour: None,
-                is_agent: true,
-                is_self: false,
-            },
-        ]);
         let invocation = InvocationId::new();
         let submitted_interaction = SemanticInteraction {
             version: INTERACTION_VERSION,
@@ -7888,10 +7962,20 @@ mod tests {
         assert_eq!(interaction.actor.id, actor.0);
         assert_eq!(interaction.actor.kind, InteractionActorKind::Agent);
         assert_eq!(interaction.sequence, 1);
-        frame
-            .presence
-            .apply_interaction(interaction.clone())
-            .expect("shell receives the broker-admitted interaction");
+        assert!(crate::shell::peer_presence::fold_typed_presence(
+            vec![(
+                user_id,
+                key,
+                PresencePayload::Interaction(Box::new(interaction.clone()))
+            )],
+            &mut frame.presence,
+            &room.to_string(),
+        ));
+        assert!(
+            frame.presence.authenticated_agent_id(&actor).is_none(),
+            "shell authority comes from its workspace, not a synthetic SDK roster"
+        );
+        frame.presence.set_display_name(actor.clone(), "Scribe");
         let mut app = ui::App::new(ui::State::new(), Box::new(ui::widget::Text::new("Notes")));
         app.set_presence_broadcast_scope(Some(ui::presence::PresenceKey::Workspace {
             id: room.to_string(),
@@ -7968,6 +8052,130 @@ mod tests {
             "the app-painted marker alone owns AT focus"
         );
 
+        let target = &publication[0].targets[0];
+        let now = ui::time::now();
+        assert!(frame.authenticated_marker_actor(target, &room.to_string()));
+        assert_eq!(
+            frame.observed_marker_interaction(target, &room.to_string(), now),
+            Some(&interaction)
+        );
+        let original_tree = frame.chrome().tree().clone();
+        let other_room = {
+            let chrome = frame.chrome();
+            let mut tree = chrome.tree_mut();
+            let mut other = tree.desktop.workspaces[0].clone();
+            let empty = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(crate::shell::state::next_id()),
+                "Other",
+            );
+            other.id = empty.id;
+            other.room = empty.room;
+            other.grant_capability(collab_types::CapOverride::membership(
+                collab_types::Subject::agent("scribe"),
+                other.room.to_string(),
+                collab_types::Verb::Comment,
+            ));
+            tree.desktop.workspaces[0].strips.clear();
+            tree.desktop.active = other.id;
+            let room = other.room.to_string();
+            tree.desktop.workspaces.push(other);
+            room
+        };
+        frame.pump_apps(&mut document, &automerge::ROOT);
+        frame.relayout();
+        assert!(
+            frame
+                .unique_foreign_surface_for_app_room(APP, &other_room)
+                .is_some(),
+            "the same app source has real geometry in the other workspace"
+        );
+        assert!(
+            frame.authenticated_marker_actor(target, &other_room),
+            "the exact same agent is a member of both workspaces"
+        );
+        assert!(
+            frame
+                .observed_marker_interaction(target, &other_room, now)
+                .is_none()
+        );
+        let mut cross_room = publication.clone();
+        cross_room[0].room.clone_from(&other_room);
+        assert!(
+            !crate::compositor::native::publish_agent_quick_composer_targets(
+                &mut frame,
+                7,
+                APP,
+                &cross_room,
+            ),
+            "room-A work cannot authorize room-B publication with matching app, actor and geometry"
+        );
+        *frame.chrome().tree_mut() = original_tree;
+        frame.pump_apps(&mut document, &automerge::ROOT);
+        frame.relayout();
+        assert!(
+            crate::compositor::native::publish_agent_quick_composer_targets(
+                &mut frame,
+                7,
+                APP,
+                &publication,
+            )
+        );
+        frame.build_a11y_tree_update(focus, 1.0);
+        assert!(frame.dispatch_a11y_action(
+            marker_node,
+            &ui::a11y::Action::Focus,
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert!(
+            frame
+                .presence
+                .current_observed_agent_interaction(
+                    &target.actor,
+                    target.invocation,
+                    "another-room",
+                    now,
+                )
+                .is_none()
+        );
+        let mut forged = target.clone();
+        forged.actor = ui::UserId("agent:other".into());
+        assert!(!frame.authenticated_marker_actor(&forged, &room.to_string()));
+        forged.actor = ui::UserId("scribe".into());
+        assert!(!frame.authenticated_marker_actor(&forged, &room.to_string()));
+        let capabilities = {
+            let chrome = frame.chrome();
+            std::mem::take(&mut chrome.tree_mut().desktop.workspaces[0].capabilities)
+        };
+        assert!(!frame.authenticated_marker_actor(target, &room.to_string()));
+        assert!(
+            frame.pump_peer_presence(),
+            "withdrawal retires an already focused AT node"
+        );
+        let withdrawn = frame.build_a11y_tree_update(focus, 1.0);
+        assert!(exported_node_named(&withdrawn, marker_name).is_none());
+        assert_ne!(withdrawn.focus, marker_node);
+        assert!(!frame.dispatch_a11y_action(
+            marker_node,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        frame.chrome().tree_mut().desktop.workspaces[0].capabilities = capabilities;
+        assert!(
+            crate::compositor::native::publish_agent_quick_composer_targets(
+                &mut frame,
+                7,
+                APP,
+                &publication,
+            )
+        );
+        let restored = frame.build_a11y_tree_update(focus, 1.0);
+        let (marker_node, _) = exported_node_named(&restored, marker_name)
+            .expect("a new exact publication restores the member's real marker");
+
         assert!(frame.dispatch_a11y_action(
             marker_node,
             &ui::a11y::Action::Activate,
@@ -7975,8 +8183,30 @@ mod tests {
             &automerge::ROOT,
             &mut focus,
         ));
+        frame.pump_apps(&mut document, &automerge::ROOT);
+        frame.relayout();
         let opened = frame.build_a11y_tree_update(focus, 1.0);
         assert!(exported_node_named(&opened, "Agent quick composer").is_some());
+        assert!(
+            exported_node_named(&opened, "Scribe").is_some(),
+            "the quick composer receives the bare trusted display name"
+        );
+        assert!(
+            exported_node_named(&opened, "Scribe · Agent").is_none(),
+            "the title must not duplicate the separate kind badge"
+        );
+        assert_eq!(
+            opened
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    node.role() == ui::accesskit::Role::Label
+                        && node.value().or_else(|| node.label()) == Some("Agent")
+                })
+                .count(),
+            1,
+            "the opened quick composer exposes exactly one Agent kind badge"
+        );
         assert!(exported_node_named(&opened, marker_name).is_none());
         assert!(
             !frame.dispatch_a11y_action(
@@ -7988,6 +8218,106 @@ mod tests {
             ),
             "the retired compositor node cannot be replayed"
         );
+        assert!(
+            !frame.dispatch_a11y_action(
+                marker_node,
+                &ui::a11y::Action::Focus,
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &mut focus,
+            ),
+            "an open composer keeps the retained marker inert"
+        );
+        let (editor, _) = exported_node_named(&opened, "Message or instruction")
+            .expect("the real private draft field is exposed inside the composer");
+        assert!(frame.dispatch_a11y_action(
+            editor,
+            &ui::a11y::Action::Focus,
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert!(frame.dispatch_a11y_action(
+            editor,
+            &ui::a11y::Action::SetValue("Keep this private draft".into()),
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        let editor_focus = focus;
+        let focused_widgets = || {
+            frame
+                .node_map
+                .iter()
+                .filter_map(|(id, widget)| unsafe { (**widget).is_focused().then_some(*id) })
+                .collect::<std::collections::HashSet<_>>()
+        };
+        let before_widgets = focused_widgets();
+        assert!(
+            !before_widgets.is_empty(),
+            "the real editor owns widget focus"
+        );
+        for stale_action in [ui::a11y::Action::Focus, ui::a11y::Action::Activate] {
+            assert!(!frame.dispatch_a11y_action(
+                marker_node,
+                &stale_action,
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert_eq!(focus, editor_focus, "stale marker keeps compositor focus");
+            let after_widgets = frame
+                .node_map
+                .iter()
+                .filter_map(|(id, widget)| unsafe { (**widget).is_focused().then_some(*id) })
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(
+                after_widgets, before_widgets,
+                "stale marker keeps editor focus"
+            );
+            assert!(
+                frame
+                    .host
+                    .take_accessible_agent_marker_activation()
+                    .is_none()
+            );
+            let unchanged = frame.build_a11y_tree_update(focus, 1.0);
+            assert!(exported_node_named(&unchanged, "Agent quick composer").is_some());
+            assert_eq!(
+                exported_node_named(&unchanged, "Message or instruction")
+                    .unwrap()
+                    .1
+                    .value(),
+                Some("Keep this private draft")
+            );
+        }
+        assert!(frame.dispatch_event(
+            &key_press(Key::Named(NamedKey::Escape)),
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        frame.pump_apps(&mut document, &automerge::ROOT);
+        frame.relayout();
+        let closed = frame.build_a11y_tree_update(focus, 1.0);
+        assert!(exported_node_named(&closed, "Agent quick composer").is_none());
+        let (returned_marker, _) = exported_node_named(&closed, marker_name)
+            .expect("the same still-current marker returns without a new SDK publication");
+        assert!(frame.dispatch_a11y_action(
+            returned_marker,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        frame.pump_apps(&mut document, &automerge::ROOT);
+        frame.relayout();
+        let reopened = frame.build_a11y_tree_update(focus, 1.0);
+        let (_, editor) = exported_node_named(&reopened, "Message or instruction")
+            .expect("reopening the real composer restores its private field");
+        assert_eq!(editor.value(), Some("Keep this private draft"));
+        assert!(exported_node_named(&reopened, marker_name).is_none());
         crate::shell::foreign::store().forget(SURFACE);
         crate::shell::launcher::clear_pending_placements();
     }

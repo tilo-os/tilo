@@ -2684,11 +2684,13 @@ impl ShellOverlayHost {
     /// Capture Studio deliberately stops being modal after recording starts,
     /// so `capture_studio_open` is too broad for this boundary: the recording
     /// pill must leave applications interactive. Screenshot markup and the
-    /// power confirmation remain modal for their whole lifetime.
+    /// power confirmation and the Agent quick composer remain modal for their
+    /// whole lifetime.
     pub(crate) fn inner_surface_captures_input(&self) -> bool {
         self.layers.power_menu.is_open()
             || self.screenshot_markup.is_some()
             || self.capture_studio.modal_capture().is_some()
+            || self.agent_quick_composer.modal_capture().is_some()
     }
 
     /// Whether the pointer is over the shell-owned controls painted above a
@@ -8126,6 +8128,16 @@ impl ShellOverlayHost {
         previous != self.accessible_agent_markers.len()
     }
 
+    pub(crate) fn retain_accessible_agent_markers(
+        &mut self,
+        keep: impl FnMut(&AccessibleAgentMarker) -> bool,
+    ) -> bool {
+        let previous = self.accessible_agent_markers.len();
+        self.accessible_agent_markers.retain(keep);
+        self.clear_missing_accessible_agent_marker_focus();
+        previous != self.accessible_agent_markers.len()
+    }
+
     fn clear_missing_accessible_agent_marker_focus(&mut self) {
         if self
             .accessible_agent_marker_focus
@@ -8149,6 +8161,17 @@ impl ShellOverlayHost {
         &mut self,
     ) -> Option<AccessibleAgentMarker> {
         self.accessible_agent_marker_activation.take()
+    }
+
+    /// Reject reserved stale marker requests before a frame changes keyboard
+    /// custody. Direct semantic callers still consume them without fallback.
+    pub(crate) fn accessible_agent_marker_request_is_inert(&self, target: &str) -> bool {
+        target.starts_with(ACCESSIBLE_AGENT_MARKER_TARGET)
+            && (self.agent_quick_composer.is_open()
+                || self.accessible_agent_marker_activation.is_some()
+                || !self.accessible_agent_markers.iter().any(|marker| {
+                    marker.is_fresh(Instant::now()) && marker.action_target() == target
+                }))
     }
 
     /// Shots-only state fixture: real composer layout and paint, deliberately
@@ -20619,7 +20642,7 @@ impl Widget for ShellOverlayHost {
         root.children.extend(
             self.accessible_agent_markers
                 .iter()
-                .filter(|marker| marker.is_fresh(now))
+                .filter(|marker| !self.agent_quick_composer.is_open() && marker.is_fresh(now))
                 .map(|marker| {
                     let target = marker.action_target();
                     AccessNode::new(Role::Button)
@@ -20649,12 +20672,19 @@ impl Widget for ShellOverlayHost {
         path: &ModelPath,
     ) -> bool {
         if target.starts_with(ACCESSIBLE_AGENT_MARKER_TARGET) {
+            if self.accessible_agent_marker_request_is_inert(target) {
+                // Consume stale semantic requests without letting the generic
+                // AT adapter pointer-fallback against the popup underneath.
+                self.prune_expired_accessible_agent_markers(Instant::now());
+                return true;
+            }
             let now = Instant::now();
             self.prune_expired_accessible_agent_markers(now);
-            let Some(index) = self
+            let Some(marker) = self
                 .accessible_agent_markers
                 .iter()
-                .position(|marker| marker.is_fresh(now) && marker.action_target() == target)
+                .find(|marker| marker.is_fresh(now) && marker.action_target() == target)
+                .cloned()
             else {
                 // A stale synthetic node must never fall through to a pointer
                 // click against whatever now occupies its old bounds.
@@ -20667,8 +20697,7 @@ impl Widget for ShellOverlayHost {
                 }
                 ui::a11y::Action::Activate => {
                     self.accessible_agent_marker_focus = None;
-                    self.accessible_agent_marker_activation =
-                        Some(self.accessible_agent_markers.remove(index));
+                    self.accessible_agent_marker_activation = Some(marker);
                     true
                 }
                 _ => false,

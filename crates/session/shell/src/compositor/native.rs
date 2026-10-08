@@ -1189,10 +1189,18 @@ fn agent_marker_description(
         })
 }
 
+fn agent_marker_label(
+    frame_builder: &FrameBuilder,
+    target: &ui::floating_surface::AgentConversationNavigationTarget,
+) -> String {
+    ui::history_source::agent_display_label(&frame_builder.agent_marker_display_name(target))
+}
+
 fn marker_projection_is_current(
     frame_builder: &FrameBuilder,
     target: &ui::floating_surface::AgentConversationNavigationTarget,
     app_id: &str,
+    room: &str,
     geometry: [Rect; 3],
     now: ui::time::Instant,
 ) -> bool {
@@ -1211,14 +1219,8 @@ fn marker_projection_is_current(
         .app
         .as_ref()
         .is_some_and(|source| source.id == app_id);
-    let actor_matches = frame_builder
-        .presence()
-        .authenticated_agent_id(&target.actor)
-        == Some(target.agent.as_str());
-    let current =
-        frame_builder
-            .presence()
-            .current_agent_interaction(&target.actor, target.invocation, now);
+    let actor_matches = frame_builder.authenticated_marker_actor(target, room);
+    let current = frame_builder.observed_marker_interaction(target, room, now);
     let current_matches = current == Some(&target.interaction);
     let checks = HostChecks {
         inside,
@@ -1310,11 +1312,12 @@ pub(crate) fn publish_agent_quick_composer_targets(
                     frame_builder,
                     target,
                     app_id,
+                    &request.room,
                     [app_rect, marker, locus],
                     now,
                 )
                 .then(|| {
-                    let label = frame_builder.presence().display_name(&target.actor);
+                    let label = agent_marker_label(frame_builder, target);
                     let description = agent_marker_description(frame_builder, target);
                     crate::shell::overlay_host::AccessibleAgentMarker {
                         connection,
@@ -1600,24 +1603,19 @@ fn pump_floating_surface_service(
                         state.discard_agent_navigation_activation();
                     }
                     let now = ui::time::now();
-                    let current = bounded
-                        && request.targets.iter().all(|target| {
-                            frame_builder
-                                .presence()
-                                .authenticated_agent_id(&target.actor)
-                                == Some(target.agent.as_str())
-                                && frame_builder.presence().current_agent_interaction(
-                                    &target.actor,
-                                    target.invocation,
-                                    now,
-                                ) == Some(&target.interaction)
+                    let current = bounded && source.as_ref().is_some_and(|(_, _, room)| {
+                        request.room == *room && request.targets.iter().all(|target| {
+                            frame_builder.authenticated_marker_actor(target, room)
+                                && frame_builder.observed_marker_interaction(target, room, now)
+                                    == Some(&target.interaction)
                                 && target
                                     .interaction
                                     .action
                                     .app
                                     .as_ref()
                                     .is_some_and(|source| source.id == app_id)
-                        });
+                        })
+                    });
                     let loci_inside_source = source.as_ref().is_some_and(|(_, app_rect, _)| {
                         request.targets.iter().all(|target| {
                             let locus = app_local_to_desktop(
@@ -1646,7 +1644,7 @@ fn pump_floating_surface_service(
                             .map(|target| {
                                 (
                                     target.agent.clone(),
-                                    frame_builder.presence().display_name(&target.actor),
+                                    frame_builder.agent_marker_display_name(target),
                                 )
                             })
                             .collect::<Vec<_>>();
@@ -9406,6 +9404,12 @@ pub fn run() {
                 &frame_builder.chrome_handle(),
                 &state.mapped_xwayland_pids(),
             );
+        }
+        // A marker publication follows broker-delivered semantic presence.
+        // Fold already queued observations before comparing its full binding;
+        // publication must not race the later ordinary network-frame pump.
+        if frame_builder.pump_peer_presence() {
+            force_first_paint = true;
         }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_surface_service(

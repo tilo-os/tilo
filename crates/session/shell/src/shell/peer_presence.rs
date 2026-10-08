@@ -34,6 +34,7 @@ use crate::shell::network::ShellNetwork;
 /// what [`should_publish_cursor`] rate-limits against.
 type CursorPublishHistory = HashMap<String, (PointerAnchor, Instant)>;
 type DepartureKey = (u64, String, std::time::SystemTime);
+type RoomTypedPresence = (String, String, PresenceKey, PresencePayload);
 
 /// Where a person's pointer is, in terms every device in the room shares:
 /// logical pixels from the top-left corner of the tile showing tab `tab`.
@@ -100,7 +101,7 @@ pub struct PeerPresence {
     /// authenticated typed-presence route rather than the legacy desktop
     /// cursor queue. They are drained into the same render-only
     /// [`PresenceCtx`] projection in [`Self::pump`].
-    typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
+    typed_inbound: Arc<Mutex<Vec<RoomTypedPresence>>>,
     departures: Arc<crate::shell::network::PeerDepartureHistory>,
     seen_departures: Mutex<HashSet<DepartureKey>>,
     subscription: Arc<RoomSubscription>,
@@ -153,9 +154,10 @@ fn typed_presence_authorized(key: &PresenceKey, payload: &PresencePayload, room:
     }
 }
 
-fn fold_typed_presence(
+pub(crate) fn fold_typed_presence(
     updates: Vec<(String, PresenceKey, PresencePayload)>,
     presence: &mut PresenceCtx,
+    room: &str,
 ) -> bool {
     let changed = !updates.is_empty();
     for (user, key, payload) in updates {
@@ -164,7 +166,7 @@ fn fold_typed_presence(
             let sequence = update.sequence;
             let update = (*update)
                 .normalized_by_broker(tilo_actions::InteractionActor { id: user, kind }, sequence);
-            let _ = presence.observe_interaction(update);
+            let _ = presence.observe_interaction_in_room(update, room);
         } else if matches!(payload, PresencePayload::Left) && matches!(key, PresenceKey::Tab { .. })
         {
             // Here Tab/Left is app lifecycle, not the legacy desktop
@@ -238,8 +240,7 @@ impl PeerPresence {
         let net_for_subscription = Arc::clone(net);
 
         let sink_cursor = Arc::clone(&cursor);
-        let typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let typed_inbound: Arc<Mutex<Vec<RoomTypedPresence>>> = Arc::new(Mutex::new(Vec::new()));
         let sink_typed = Arc::clone(&typed_inbound);
         let subscription = broker.subscribe_rooms(
             rooms,
@@ -263,7 +264,12 @@ impl PeerPresence {
                     // route itself, then retained only as roster activity.
                     let authorized = typed_presence_authorized(key, payload, &route.cluster_id);
                     if authorized && let Ok(mut queue) = sink_typed.lock() {
-                        queue.push((user_id.clone(), key.clone(), payload.clone()));
+                        queue.push((
+                            route.cluster_id.clone(),
+                            user_id.clone(),
+                            key.clone(),
+                            payload.clone(),
+                        ));
                     }
                     return;
                 }
@@ -433,7 +439,12 @@ impl PeerPresence {
             .unwrap_or_default();
         // Attribution is normalized to the authenticated envelope identity
         // inside the fold; JSON supplied by an app cannot rename its actor.
-        let typed_changed = fold_typed_presence(typed, presence);
+        let typed_changed = !typed.is_empty();
+        for (room, user, key, payload) in typed {
+            if mine.contains(&room) {
+                fold_typed_presence(vec![(user, key, payload)], presence, &room);
+            }
+        }
         let departures = self.departures.snapshot();
         let active_keys = departures
             .iter()
@@ -835,6 +846,7 @@ mod tests {
                     ("ada".into(), tab.clone(), PresencePayload::Arrived),
                 ],
                 &mut presence,
+                "room-7",
             ));
             assert_eq!(
                 presence
@@ -855,6 +867,7 @@ mod tests {
             assert!(fold_typed_presence(
                 vec![("ada".into(), next_tab.clone(), PresencePayload::Arrived,)],
                 &mut presence,
+                "room-7",
             ));
             assert!(presence.here.get(&tab).is_none_or(std::vec::Vec::is_empty));
             assert_eq!(
@@ -864,6 +877,7 @@ mod tests {
             assert!(fold_typed_presence(
                 vec![("ada".into(), next_tab.clone(), PresencePayload::Left)],
                 &mut presence,
+                "room-7",
             ));
             assert!(
                 presence

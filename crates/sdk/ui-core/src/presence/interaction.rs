@@ -44,6 +44,7 @@ const CARD_MARGIN: f64 = 12.0;
 #[derive(Debug, Clone)]
 pub(super) struct InteractionPresenceEntry {
     interaction: SemanticInteraction,
+    observed_room: Option<String>,
     /// Arrival of the invocation itself. Phase restatements must not restart
     /// its approach from the edge or make an old invocation look newest.
     first_received_at: Instant,
@@ -188,6 +189,38 @@ impl PresenceCtx {
             .filter(|interaction| interaction.invocation == invocation)
     }
 
+    /// Read an exact live observation delivered through a room route. This
+    /// does not authenticate membership or authorize navigation: a host must
+    /// independently validate its authoritative current room membership.
+    pub fn current_observed_agent_interaction(
+        &self,
+        actor: &UserId,
+        invocation: InvocationId,
+        room: &str,
+        now: Instant,
+    ) -> Option<&SemanticInteraction> {
+        self.interactions
+            .values()
+            .filter(|entry| {
+                entry.visible_at(now)
+                    && entry.interaction.actor.kind == InteractionActorKind::Agent
+                    && entry.interaction.actor.id == actor.0
+                    && entry.observed_room.as_deref() == Some(room)
+            })
+            .max_by(|left, right| {
+                left.first_received_at
+                    .cmp(&right.first_received_at)
+                    .then_with(|| {
+                        left.interaction
+                            .invocation
+                            .0
+                            .cmp(&right.interaction.invocation.0)
+                    })
+            })
+            .map(|entry| &entry.interaction)
+            .filter(|interaction| interaction.invocation == invocation)
+    }
+
     /// Retire a surface's previous hit regions before drawing its next frame,
     /// including empty frames. Also call this when that surface is destroyed.
     /// Pointer/caret presence and motion continuity remain untouched.
@@ -293,6 +326,34 @@ impl PresenceCtx {
         self.apply_interaction_at(interaction, crate::time::now())
     }
 
+    /// Retain delivery scope for a host's independently authenticated room
+    /// observation. The room and typed actor alone grant no membership.
+    ///
+    /// # Errors
+    /// Returns the interaction contract's validation error for malformed work.
+    pub fn observe_interaction_in_room(
+        &mut self,
+        interaction: SemanticInteraction,
+        room: &str,
+    ) -> Result<bool, tilo_actions::InteractionViolation> {
+        let invocation = interaction.invocation;
+        if room.is_empty()
+            || self.interactions.get(&invocation).is_some_and(|entry| {
+                entry
+                    .observed_room
+                    .as_deref()
+                    .is_some_and(|prior| prior != room)
+            })
+        {
+            return Ok(false);
+        }
+        let changed = self.observe_interaction(interaction)?;
+        if changed && let Some(entry) = self.interactions.get_mut(&invocation) {
+            entry.observed_room = Some(room.to_owned());
+        }
+        Ok(changed)
+    }
+
     pub(crate) fn apply_interaction_at(
         &mut self,
         interaction: SemanticInteraction,
@@ -324,10 +385,15 @@ impl PresenceCtx {
             .interactions
             .get(&interaction.invocation)
             .map_or(now, |entry| entry.first_received_at);
+        let observed_room = self
+            .interactions
+            .get(&interaction.invocation)
+            .and_then(|entry| entry.observed_room.clone());
         self.interactions.insert(
             interaction.invocation,
             InteractionPresenceEntry {
                 interaction,
+                observed_room,
                 first_received_at,
                 received_at: now,
             },
@@ -1252,6 +1318,95 @@ mod tests {
         let mut value = interaction(id, 1, InteractionPhase::Applying);
         value.actor.id = format!("agent:{agent}");
         value
+    }
+
+    #[test]
+    fn room_observation_never_mints_membership_or_changes_delivery_scope() {
+        let mut presence = PresenceCtx::default();
+        let first = canonical_interaction(901, "quill");
+        let actor = UserId(first.actor.id.clone());
+        assert!(
+            presence
+                .observe_interaction_in_room(first.clone(), "room-a")
+                .unwrap()
+        );
+        let now = crate::time::now();
+        assert_eq!(
+            presence.current_observed_agent_interaction(&actor, first.invocation, "room-a", now,),
+            Some(&first)
+        );
+        assert!(
+            presence
+                .current_observed_agent_interaction(&actor, first.invocation, "room-b", now,)
+                .is_none()
+        );
+        assert!(presence.authenticated_agent_id(&actor).is_none());
+        assert!(
+            presence
+                .current_agent_interaction(&actor, first.invocation, now)
+                .is_none()
+        );
+        let other = canonical_interaction(902, "quill");
+        assert!(
+            presence
+                .observe_interaction_in_room(other.clone(), "room-b")
+                .unwrap()
+        );
+        assert_eq!(
+            presence.current_observed_agent_interaction(
+                &actor,
+                first.invocation,
+                "room-a",
+                crate::time::now(),
+            ),
+            Some(&first)
+        );
+        assert_eq!(
+            presence.current_observed_agent_interaction(
+                &actor,
+                other.invocation,
+                "room-b",
+                crate::time::now(),
+            ),
+            Some(&other)
+        );
+        let mut next = first.clone();
+        next.sequence = 2;
+        next.phase = InteractionPhase::Committed;
+        assert!(
+            !presence
+                .observe_interaction_in_room(next.clone(), "room-b")
+                .unwrap()
+        );
+        assert!(
+            presence
+                .observe_interaction_in_room(next.clone(), "room-a")
+                .unwrap()
+        );
+        assert_eq!(
+            presence.current_observed_agent_interaction(
+                &actor,
+                first.invocation,
+                "room-a",
+                crate::time::now(),
+            ),
+            Some(&next)
+        );
+        assert!(
+            presence
+                .current_observed_agent_interaction(
+                    &actor,
+                    first.invocation,
+                    "room-a",
+                    crate::time::now() + TERMINAL_INTERACTION_DWELL + EXPIRY_EPSILON,
+                )
+                .is_none()
+        );
+        assert!(
+            !presence
+                .observe_interaction_in_room(canonical_interaction(902, "quill"), "")
+                .unwrap()
+        );
     }
 
     #[test]
