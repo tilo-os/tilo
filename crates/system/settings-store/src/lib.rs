@@ -289,30 +289,25 @@ pub fn update_section_with(
     update_section_with_at(&file_write_path()?, name, change)
 }
 
-/// [`update_section_with`] on the settings file at `path`, under its lock. The directory
-/// is created first so that even the first write is taken under the lock.
+/// [`update_section_with`] on the settings file at `path`, under its lock. Taking the lock
+/// creates the directory, so that even the first write is taken under it.
 ///
 /// # Errors
 ///
-/// The directory cannot be created, or as [`update_document_at`].
+/// The file cannot be locked, or the document can't be serialised or written.
 pub fn update_section_with_at(
     path: &Path,
     name: &str,
     change: &mut SectionChange<'_>,
 ) -> std::io::Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    update_document_at(path, |doc| {
-        let current = match doc.get(name) {
-            Some(Value::Object(section)) => section.clone(),
-            _ => Map::new(),
-        };
-        merge_section(doc, name, change(&current));
-    })
+    let _lock = session::lock_copy(path)?;
+    let mut doc = load_at(path);
+    let current = match doc.get(name) {
+        Some(Value::Object(section)) => section.clone(),
+        _ => Map::new(),
+    };
+    merge_section(&mut doc, name, change(&current));
+    write_atomic(path, &Value::Object(doc))
 }
 
 /// The canonical file path, with the same test isolation guard as writes.

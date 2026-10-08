@@ -602,7 +602,7 @@ pub(crate) fn lock_path(path: &Path) -> PathBuf {
 }
 
 /// Lock the settings file at `path`, creating its directory if needed.
-fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
+pub(crate) fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
     let (dir, name) = tilo_files::file_at(&lock_path(path)).map_err(std::io::Error::other)?;
     tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive)
         .map_err(std::io::Error::other)
