@@ -20,7 +20,7 @@ test_renderer_textinput_commit_value_preserved (__main__.RendererMutation.test_r
 FAIL: test_renderer_textinput_commit_focus_preserved (__main__.RendererMutation.test_renderer_textinput_commit_focus_preserved)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/srv/rcargo/scratch/tilo-cef-renderer-repair/native-qualification/renderer_mutation.py", line 115, in test_renderer_textinput_commit_focus_preserved
+  File "/qualified-builder/native-qualification/renderer_mutation.py", line 115, in test_renderer_textinput_commit_focus_preserved
     self.assertTrue(self.main_world('document.activeElement===second'))
     ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 AssertionError: False is not true
@@ -29,10 +29,10 @@ AssertionError: False is not true
 FAIL: test_renderer_textinput_commit_value_preserved (__main__.RendererMutation.test_renderer_textinput_commit_value_preserved)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/srv/rcargo/scratch/tilo-cef-renderer-repair/native-qualification/renderer_mutation.py", line 107, in test_renderer_textinput_commit_value_preserved
+  File "/qualified-builder/native-qualification/renderer_mutation.py", line 107, in test_renderer_textinput_commit_value_preserved
     self.assert_replacement()
     ~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "/srv/rcargo/scratch/tilo-cef-renderer-repair/native-qualification/renderer_mutation.py", line 20, in assert_replacement
+  File "/qualified-builder/native-qualification/renderer_mutation.py", line 20, in assert_replacement
     self.assertEqual(self.main_world('[first.selectionStart,first.selectionEnd]'), [0,5])
     ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 AssertionError: Lists differ: [5, 5] != [0, 5]
@@ -54,7 +54,7 @@ Ran 16 tests in 11.903s
 FAILED (failures=2)
 
 Traceback (most recent call last):
-  File "/srv/rcargo/scratch/tilo-cef-renderer-repair/native-qualification/run-native-direct-tests.py", line 24, in <module>
+  File "/qualified-builder/native-qualification/run-native-direct-tests.py", line 24, in <module>
     assert run.returncode==0,'Native regression failed; preserve exact log and assertions: '+name
            ^^^^^^^^^^^^^^^^^
 AssertionError: Native regression failed; preserve exact log and assertions: renderer-mutation-16
