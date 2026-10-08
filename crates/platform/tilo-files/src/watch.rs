@@ -75,14 +75,17 @@ impl Inbox {
 #[must_use = "changes arrive only while the watch is kept"]
 pub struct Watch {
     inbox: Arc<Inbox>,
-    _source: Box<dyn std::any::Any + Send>,
+    /// Only kept until the watch drops. The mutex makes the watch `Sync`
+    /// whatever the backend's source is, so a task awaiting
+    /// [`Watch::next`] can move between threads.
+    _source: Mutex<Box<dyn std::any::Any + Send>>,
 }
 
 impl Watch {
     pub(crate) fn new(inbox: Arc<Inbox>, source: Box<dyn std::any::Any + Send>) -> Self {
         Self {
             inbox,
-            _source: source,
+            _source: Mutex::new(source),
         }
     }
 
@@ -227,6 +230,13 @@ mod tests {
             })
         );
         assert_eq!(inbox.pop(None), None);
+    }
+
+    #[test]
+    fn awaiting_a_change_can_cross_threads() {
+        fn send<T: Send>(_: &T) {}
+        let watch = Watch::new(Arc::new(Inbox::default()), Box::new(()));
+        send(&watch.next());
     }
 
     #[test]
