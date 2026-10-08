@@ -486,6 +486,77 @@ fn semantic_activate_address(
     visit(frame, target, &frame.resources())
 }
 
+fn assert_category_action_routes(
+    frame: &ui::headless::FrameHarness,
+    category: &str,
+    target: &str,
+    expected: vello::kurbo::Rect,
+) {
+    for action in ["open-category", "rename", "toggle-category", "delete"] {
+        let routes = frame.action_ui_routes(&tilo_actions::ActionAddress::new(
+            format!("chat.category:{category}"),
+            action,
+        ));
+        assert_eq!(routes.len(), 1, "{action} has one explicit UI route");
+        assert_eq!(routes[0].control_id, target);
+        assert_eq!(routes[0].bounds, Some(expected));
+    }
+}
+
+fn assert_category_publication_scope_and_visibility(
+    frame: &mut ui::headless::FrameHarness,
+    record: &str,
+    expected: vello::kurbo::Rect,
+) -> tilo_actions::ActionAddress {
+    let bound_rename = tilo_actions::door::survey(
+        &frame
+            .published_bound_resources_of(Some(1))
+            .expect("the mounted Chat publication is current"),
+    )
+    .into_iter()
+    .find(|descriptor| {
+        descriptor.resource_kind == "chat.category"
+            && descriptor.resource_label == "Channels"
+            && descriptor.address.action == "rename"
+    })
+    .expect("the exact mounted category rename is published")
+    .address;
+    assert_eq!(
+        frame.published_action_locus(1, "so.tilo.chat", record, &bound_rename),
+        Some(expected),
+        "the owner-translated mounted publication resolves the exact header"
+    );
+    assert!(
+        frame
+            .published_action_locus(2, "so.tilo.chat", record, &bound_rename)
+            .is_none()
+    );
+    assert!(
+        frame
+            .published_action_locus(1, "so.tilo.chat", "foreign-record", &bound_rename)
+            .is_none()
+    );
+    assert!(
+        frame
+            .published_action_locus(1, "foreign-app", record, &bound_rename)
+            .is_none()
+    );
+    frame.open_caller_search("").unwrap();
+    assert!(
+        frame
+            .published_action_locus(1, "so.tilo.chat", record, &bound_rename)
+            .is_none(),
+        "a covering system surface hides the mounted category's locus"
+    );
+    frame.key("Escape");
+    assert_eq!(
+        frame.published_action_locus(1, "so.tilo.chat", record, &bound_rename),
+        Some(expected),
+        "dismissing search restores the exact current header"
+    );
+    bound_rename
+}
+
 #[test]
 fn category_domain_actions_resolve_only_to_their_exact_visible_header() {
     let identity = LocalIdentity::demo();
@@ -516,60 +587,11 @@ fn category_domain_actions_resolve_only_to_their_exact_visible_header() {
         semantic_target_name(&inspection.root, &target).as_deref(),
         Some("Collapse Channels")
     );
-    for action in ["open-category", "rename", "toggle-category", "delete"] {
-        let routes = frame.action_ui_routes(&tilo_actions::ActionAddress::new(
-            format!("chat.category:{category}"),
-            action,
-        ));
-        assert_eq!(routes.len(), 1, "{action} has one explicit UI route");
-        assert_eq!(routes[0].control_id, target);
-        assert_eq!(routes[0].bounds, Some(expected));
-    }
-    let bound_rename = tilo_actions::door::survey(
-        &frame
-            .published_bound_resources_of(Some(1))
-            .expect("the mounted Chat publication is current"),
-    )
-    .into_iter()
-    .find(|descriptor| {
-        descriptor.resource_kind == "chat.category"
-            && descriptor.resource_label == "Channels"
-            && descriptor.address.action == "rename"
-    })
-    .expect("the exact mounted category rename is published")
-    .address;
-    assert_eq!(
-        frame.published_action_locus(1, "so.tilo.chat", checkout.id.as_str(), &bound_rename,),
-        Some(expected),
-        "the owner-translated mounted publication resolves the exact header"
-    );
-    assert!(
-        frame
-            .published_action_locus(2, "so.tilo.chat", checkout.id.as_str(), &bound_rename,)
-            .is_none()
-    );
-    assert!(
-        frame
-            .published_action_locus(1, "so.tilo.chat", "foreign-record", &bound_rename)
-            .is_none()
-    );
-    assert!(
-        frame
-            .published_action_locus(1, "foreign-app", checkout.id.as_str(), &bound_rename)
-            .is_none()
-    );
-    frame.open_caller_search("").unwrap();
-    assert!(
-        frame
-            .published_action_locus(1, "so.tilo.chat", checkout.id.as_str(), &bound_rename)
-            .is_none(),
-        "a covering system surface hides the mounted category's locus"
-    );
-    frame.key("Escape");
-    assert_eq!(
-        frame.published_action_locus(1, "so.tilo.chat", checkout.id.as_str(), &bound_rename),
-        Some(expected),
-        "dismissing search restores the exact current header"
+    assert_category_action_routes(&frame, category, &target, expected);
+    let bound_rename = assert_category_publication_scope_and_visibility(
+        &mut frame,
+        checkout.id.as_str(),
+        expected,
     );
     let semantic_activate = semantic_activate_address(&frame, &target)
         .expect("the category header retains its native semantic activation route");

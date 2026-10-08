@@ -3639,8 +3639,12 @@ def chat_input_observer_enabled(output):
 
 
 def observe_chat_task_frontier(
-        socket, output, task_id, run_epoch, phase, process, *, title="Lifecycle task"):
+        socket, output, task_id, run_epoch, phase, process, *, title="Lifecycle task",
+        expected_sequence=None):
     """Require Chat's retained frontier, not only Task Center's owner read."""
+    if expected_sequence is not None \
+            and (type(expected_sequence) is not int or expected_sequence <= 0):
+        raise RuntimeError("the expected Chat task sequence is malformed")
     sampled = False
 
     def observed():
@@ -3671,7 +3675,16 @@ def observe_chat_task_frontier(
                 return None
             require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
             sampled = True
-        return latest_chat_task_frontier(output, task_id, run_epoch, phase)
+        frontier = latest_chat_task_frontier(output, task_id, run_epoch, phase)
+        if expected_sequence is not None and (
+                frontier is None or type(frontier.get("sequence")) is not int
+                or frontier["sequence"] != expected_sequence):
+            # Same-phase history can precede the held model continuation.
+            # Sample Chat's actual retained state again; the owner's sequence
+            # is only an exact-match requirement, never substitute evidence.
+            sampled = False
+            return None
+        return frontier
 
     try:
         return wait_for("Chat's authenticated current-task frontier", observed, process)
@@ -3799,6 +3812,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     chat_frontier = observe_chat_task_frontier(
         socket, output, task_id, admission["run_epoch"], "planning", process,
         title="Agent marker proof",
+        expected_sequence=second_admission["sequence"],
     )
     if chat_frontier.get("sequence") != second_admission["sequence"]:
         raise RuntimeError("Chat retained a different marker task Planning sequence")

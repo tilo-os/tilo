@@ -1665,6 +1665,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 'ensure_chat_category_visible(socket, "Lifecycle proof", process)',
                 '"category-marker-visible-before-task-',
                 'observe_chat_task_frontier(', 'title="Agent marker proof"',
+                'expected_sequence=second_admission["sequence"]',
                 'chat_frontier.get("sequence") != second_admission["sequence"]',
                 'accessibility_control_enabled(', 'access["controls"]["steer"]',
                 'third_admission["applied_revision"] != interaction["receipt_revision"]',
@@ -2693,6 +2694,60 @@ class PresentedEditorTargetTests(unittest.TestCase):
             PROOF.atspi.AtspiClient = original_client
             PROOF.atspi.atspi_address = original_address
             PROOF.accessible_subtree = original_subtree
+
+    def test_chat_frontier_resamples_real_input_until_the_exact_held_sequence(self):
+        for sequences, expected in (([1, 3], True), ([1, 1, 1], False)):
+            with self.subTest(persistent_old=not expected), \
+                    tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+                output = pathlib.Path(directory)
+                observer = ('[app so.tilo.chat stderr] tilo-physical-input-observer '
+                            '{"app_id":"so.tilo.chat","enabled":true}\n')
+                log = output / "shell.log"
+                log.write_text(observer)
+                remaining = iter(sequences)
+
+                def control(_socket, request):
+                    if request == {"op": "key", "key": "ArrowLeft"}:
+                        sequence = next(remaining)
+                        row = {"after": {"agent_task": {
+                            "task_id": "task", "run_epoch": 7,
+                            "execution": {"run_epoch": 7, "phase": "planning",
+                                          "sequence": sequence}}}}
+                        log.write_text(observer + 'tilo-physical-input '
+                                       + json.dumps(row) + '\n')
+                    return {}
+
+                access = {"window": "/window", "bus": "owned"}
+                replacements = {
+                    "presented_primary_frame": {"frame_seq": 9},
+                    "presented_content_geometry": {},
+                    "agent_conversation_accessibility": access,
+                    "editor_accessibility_focus": True,
+                    "task_phase_accessibility": True,
+                }
+                for name, value in replacements.items():
+                    stack.enter_context(patch.object(PROOF, name, return_value=value))
+                clicked = stack.enter_context(patch.object(PROOF, "physically_click_editor"))
+                stack.enter_context(patch.object(PROOF, "require_chat_keyboard_focus_after_click"))
+                stack.enter_context(patch.object(PROOF, "require_ok"))
+                called = stack.enter_context(patch.object(PROOF, "call", side_effect=control))
+                stack.enter_context(patch.object(
+                    PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]))
+                stack.enter_context(patch.object(PROOF.time, "sleep"))
+                if expected:
+                    frontier = PROOF.observe_chat_task_frontier(
+                        "socket", output, "task", 7, "planning", None,
+                        expected_sequence=3)
+                    self.assertEqual(frontier["sequence"], 3)
+                else:
+                    with self.assertRaisesRegex(PROOF.ProofTimeout, "current-task frontier"):
+                        PROOF.observe_chat_task_frontier(
+                            "socket", output, "task", 7, "planning", None,
+                            expected_sequence=3)
+                self.assertEqual(clicked.call_count, len(sequences))
+                samples = [entry for entry in called.call_args_list
+                           if entry == call("socket", {"op": "key", "key": "ArrowLeft"})]
+                self.assertEqual(len(samples), len(sequences))
 
     def test_task_phase_retries_only_stale_objects_within_the_original_deadline(self):
         class Client(PROOF.atspi.AtspiClient):
