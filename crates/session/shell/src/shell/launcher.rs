@@ -4306,6 +4306,26 @@ pub(crate) fn has_unclaimed_launch(app_id: &str) -> bool {
         .any(|note| note.matches(app_id) && note.claimed_by.is_none())
 }
 
+/// Saved tabs with a live placement in this session. A mapped note stays
+/// valid through the existing claim grace; no deadline or placement is changed.
+pub(crate) fn pending_restore_tabs() -> std::collections::HashSet<u64> {
+    pending_restore_tabs_at(Instant::now())
+}
+
+fn pending_restore_tabs_at(now: Instant) -> std::collections::HashSet<u64> {
+    lock(&LaunchSession::current().pending)
+        .iter()
+        .filter(|note| {
+            note.retire_after.is_none_or(|deadline| now < deadline)
+                && (note.claimed_by.is_some() || now < note.present_before)
+        })
+        .filter_map(|note| match note.placement {
+            crate::shell::tab_binding::Placement::IntoTab(tab) => Some(tab),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The first surface to ask claims the note and gets the same answer on
 /// every later ask; a different surface retires it and gets `None`. `None`
 /// also covers: not launched by us, or nothing special asked.
@@ -4530,7 +4550,10 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
         let presentation_timed_out = note.claimed_by.is_none() && now >= note.present_before;
         let retired = note.retire_after.is_some_and(|deadline| now >= deadline);
         let keep = !presentation_timed_out && !retired;
-        if presentation_timed_out {
+        // A clean parent's handoff deadline can precede the presentation
+        // deadline. Report its unclaimed launch too, so the saved opening
+        // card is answered rather than losing the only expiry observer.
+        if presentation_timed_out || (retired && note.claimed_by.is_none()) {
             expired.push(note.key.clone());
         }
         if !keep {
@@ -5056,7 +5079,11 @@ mod tests {
         let now = Instant::now();
         retire_pending_placement_at(package, now);
         assert!(has_unclaimed_launch(package));
-        assert!(expire_pending_placements_at(now).is_empty());
+        assert_eq!(
+            expire_pending_placements_at(now),
+            vec![package],
+            "a windowless retired launch reports its failure as it releases the gate"
+        );
         assert!(!has_unclaimed_launch(package));
 
         // A still-running but windowless parent also cannot pin restore.
@@ -5064,6 +5091,41 @@ mod tests {
         let deadline = lock(&LaunchSession::current().pending)[0].present_before;
         assert_eq!(expire_pending_placements_at(deadline), vec![package]);
         assert!(!has_unclaimed_launch(package));
+        clear_pending_placements();
+    }
+
+    #[test]
+    fn saved_opening_status_only_tracks_live_exact_restore_destinations() {
+        clear_pending_placements();
+        let package = "dev.tilo.restore-status-lifetime";
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(91));
+        set_pending_placement(package, crate::shell::tab_binding::Placement::NewGroup);
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(92));
+        assert_eq!(
+            pending_restore_tabs(),
+            std::collections::HashSet::from([91, 92])
+        );
+        let deadline = lock(&LaunchSession::current().pending)
+            .iter()
+            .map(|note| note.present_before)
+            .max()
+            .unwrap();
+        assert!(
+            pending_restore_tabs_at(deadline).is_empty(),
+            "expired tickets cannot keep a saved card opening before the event drain"
+        );
+        assert_eq!(
+            lock(&LaunchSession::current().pending).len(),
+            3,
+            "status observation must not consume or reorder placements"
+        );
+        clear_pending_placements();
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(93));
+        retire_pending_placement_at(package, Instant::now());
+        assert!(
+            pending_restore_tabs().is_empty(),
+            "retired destination is recoverable"
+        );
         clear_pending_placements();
     }
 
@@ -5192,7 +5254,11 @@ mod tests {
 
             let now = Instant::now();
             retire_pending_placement_at(package, now);
-            assert_eq!(expire_pending_placements_at(now), Vec::<String>::new());
+            assert_eq!(expire_pending_placements_at(now), vec![package.to_string()]);
+            assert!(
+                expire_pending_placements_at(now).is_empty(),
+                "retirement reports once"
+            );
             assert_eq!(placement_for_toplevel("windowless", 702), None);
             clear_pending_placements();
         }
@@ -5221,7 +5287,10 @@ mod tests {
             let deadline = lock(&LaunchSession::current().pending)[0]
                 .retire_after
                 .expect("claim receives a bounded retirement deadline");
-            expire_pending_placements_at(deadline);
+            assert!(
+                expire_pending_placements_at(deadline).is_empty(),
+                "a mapped window must not be reported as a windowless launch"
+            );
             assert_eq!(placement_for_toplevel("claimed-once", 703), None);
             clear_pending_placements();
         }

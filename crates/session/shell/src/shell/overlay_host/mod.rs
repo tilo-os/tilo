@@ -5677,7 +5677,7 @@ impl ShellOverlayHost {
         };
         let mut posted = false;
         for package_id in timed_out {
-            if crate::shell::peer_windows::mark_timed_out_host_restore(
+            if crate::shell::peer_windows::mark_timed_out_restore(
                 &mut chrome_handle.borrow().tree_mut(),
                 &package_id,
             ) {
@@ -5855,6 +5855,13 @@ impl ShellOverlayHost {
             let Some(notice) = event.failure_notice() else {
                 continue;
             };
+            if crate::shell::peer_windows::settle_local_restore(
+                &mut chrome_handle.borrow().tree_mut(),
+                &event.package_id,
+                &notice.body,
+            ) {
+                chrome_handle.borrow_mut().bump();
+            }
             let mut st = chrome_handle.borrow_mut();
             st.push_notification_full(
                 tilo_desktop::notifications::Notification::new(notice.title, notice.body)
