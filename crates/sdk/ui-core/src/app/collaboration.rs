@@ -579,6 +579,17 @@ impl App {
     ) {
         let _entry = self.enter_wake_scope();
         let mut any = self.pump_room_index_events();
+        // A local input may have advanced an owner generation since the last
+        // publication. Refresh its normal host snapshot before servicing pull
+        // callbacks; resources-only owners deliberately have no query-time
+        // full-tree fallback. This runs independently of queued requests and
+        // keeps unchanged idle passes free of another resource survey.
+        if self.collaboration.manager.is_connected()
+            && self.try_action_directory_revision().is_ok()
+            && self.actions.action_directory_snapshot.is_none()
+        {
+            self.publish_action_surface_after_refresh();
+        }
         // Replies to broker pull-directory callbacks must run before regular
         // inbound events. This is the sole place capability requests acquire
         // widget/document authority, and it always runs on the App owner

@@ -96,6 +96,7 @@ struct HostedPumpFixture {
 struct HostedPumpTransport {
     sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
     events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
+    directory_requests: std::rc::Rc<RefCell<Vec<crate::collaboration::ActionDirectoryRequest>>>,
 }
 impl crate::collaboration::PeerTransport for HostedPumpTransport {
     fn is_connected(&self) -> bool {
@@ -110,6 +111,11 @@ impl crate::collaboration::PeerTransport for HostedPumpTransport {
     }
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
         Ok(())
+    }
+    fn take_action_directory_requests(
+        &mut self,
+    ) -> Vec<crate::collaboration::ActionDirectoryRequest> {
+        std::mem::take(&mut *self.directory_requests.borrow_mut())
     }
 }
 
@@ -140,6 +146,7 @@ impl HostedPumpFixture {
             CollaborationManager::with_peer_transport(HostedPumpTransport {
                 sent: sent.clone(),
                 events: events.clone(),
+                directory_requests: Default::default(),
             });
         app.init_layout();
         let mut fixture = Self {
@@ -189,6 +196,53 @@ impl HostedPumpFixture {
         );
         assert_eq!(self.app.action_directory_revision(), revision);
     }
+}
+
+#[test]
+fn hosted_pump_repairs_invalidated_snapshot_before_queued_directory_reply() {
+    let mut fixture = HostedPumpFixture::new(1);
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedPumpTransport {
+            sent: fixture.sent.clone(),
+            events: fixture.events.clone(),
+            directory_requests: requests.clone(),
+        });
+    fixture.pump();
+    let first = fixture
+        .app
+        .action_directory_page(directory_query("", "", 8, 8192, 8));
+    assert_eq!(first.rows.len(), 1);
+    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+    fixture.app.invalidate_widget_resource_cache();
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    requests
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query {
+            query: directory_query("", "", 8, 8192, 8),
+            reply,
+        });
+    fixture.app.pump_collab_presence();
+    let page = answer.blocking_recv().unwrap();
+    assert_eq!(
+        page.rows.len(),
+        3,
+        "queued pull sees the current host publication"
+    );
+    assert!(page.exhausted && !page.budget_exhausted);
+    assert_ne!(page.revision, first.revision);
+    let calls = fixture.calls.get();
+    let attempts = fixture.app.actions.action_surface_publication_attempts;
+    fixture.app.pump_collab_presence();
+    assert_eq!(
+        fixture.calls.get(),
+        calls,
+        "idle does not redeclare the tree"
+    );
+    assert_eq!(
+        fixture.app.actions.action_surface_publication_attempts,
+        attempts
+    );
 }
 
 #[test]
