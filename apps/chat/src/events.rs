@@ -3436,6 +3436,93 @@ mod tests {
     }
 
     #[test]
+    fn idle_agent_message_catalogue_wakes_before_its_bounded_expiry() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::session();
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        let tasks = app.direct_agent_tasks().expect("retained task context");
+        tasks.borrow_mut().set_observation_active(false);
+        assert_eq!(tasks.borrow().next_wake_deadline(), None);
+        _ = ui::widget::Collaborative::take_collab_requests(&mut app);
+        app.agent_task_actions = ui::remote_actions::RemoteActions::session();
+        assert_eq!(app.agent_task_actions.next_observation_deadline(), None);
+        type_str(&mut app, &mut doc, "Wake this idle Message");
+        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+
+        // A settled post-Stop conversation has no task-reader wake to mask the
+        // Message catalogue's own cadence. Releasing progress-view demand is
+        // the production inactive state and cannot settle this submission.
+        for tasks in app.agent_tasks.values() {
+            tasks.borrow_mut().set_observation_active(false);
+        }
+        assert!(
+            app.agent_tasks
+                .values()
+                .all(|tasks| tasks.borrow().next_wake_deadline().is_none())
+        );
+        app.agent_message_progress.borrow_mut().cancel();
+        assert_eq!(app.agent_task_actions.next_observation_deadline(), None);
+        assert_eq!(
+            app.agent_message_progress.borrow().next_wake_deadline(),
+            None
+        );
+        let pending = app.agent_submissions.get();
+        let submission = pending
+            .get(&("ws_home".into(), "scribe".into()))
+            .expect("the actual Message submission remains pending");
+        assert!(matches!(
+            submission.message.as_ref(),
+            Some(AgentMessageSubmission::Providers(_))
+        ));
+        let message = submission
+            .message
+            .as_ref()
+            .expect("the production Message retains its typed submission");
+        let before = ui::time::now();
+        let message_wake = ui::agent_message_action::next_wake_deadline(
+            &app.agent_task_actions,
+            message,
+            submission.give_up_at,
+        )
+        .expect("the pending catalogue has a bounded polling deadline");
+        let wake = ui::Widget::next_wake_deadline(&app)
+            .expect("the pending catalogue publishes a native wake");
+        let after = ui::time::now();
+        let cadence = std::time::Duration::from_millis(50);
+        for deadline in [message_wake, wake] {
+            assert!(deadline >= before + cadence);
+            assert!(deadline <= after + cadence);
+        }
+        assert!(wake < submission.give_up_at);
+        drop(pending);
+
+        let requests = ui::widget::Collaborative::take_collab_requests(&mut app);
+        let providers = requests
+            .iter()
+            .filter_map(|request| match request {
+                ui::collaboration::CollabRequest::RemoteAction {
+                    message:
+                        tilo_actions::remote::RemoteActionMessage::CatalogueRequest { query, .. },
+                } if query.max_results == 0 => Some(query),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(providers.len(), 1);
+        assert!(providers[0].canonical_route.as_ref().is_some_and(|route| {
+            route.room == "ws_home" && route.app_id == "so.tilo.chat" && route.record_id.is_empty()
+        }));
+    }
+
+    #[test]
     fn chat_writer_without_task_actions_can_message_but_not_queue_steer_or_stop() {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");

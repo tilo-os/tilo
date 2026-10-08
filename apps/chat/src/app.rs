@@ -5399,7 +5399,19 @@ impl Widget for ChatApp {
             submissions
                 .values()
                 .filter(|submission| submission.intent == AgentComposerIntent::Message)
-                .map(|submission| submission.give_up_at)
+                .map(|submission| {
+                    submission
+                        .message
+                        .as_ref()
+                        .and_then(|message| {
+                            ui::agent_message_action::next_wake_deadline(
+                                &self.agent_task_actions,
+                                message,
+                                submission.give_up_at,
+                            )
+                        })
+                        .unwrap_or(submission.give_up_at)
+                })
                 .min()
         });
         let receipts = messages.and_then(|_| self.agent_task_actions.next_observation_deadline());
