@@ -2259,6 +2259,7 @@ impl WgpuEngine {
         F: FnOnce(&mut CommandEncoder),
         G: FnOnce() -> bool,
     {
+        let command_timing = crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Commands);
         let cpu_pathtag_reuse_active = self.cpu_pathtag_reuse_active();
         let cpu_metadata_active = self.cpu_metadata_active();
         let cpu_draw_prefix_active = self.cpu_draw_prefix_active();
@@ -2742,7 +2743,10 @@ impl WgpuEngine {
         let dispatch_timestamp_readback =
             self.gpu_dispatch_timestamps.finish_recording(&mut encoder);
         post_render(&mut encoder);
+        drop(command_timing);
+        let finish_timing = crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Finish);
         let command_buffer = encoder.finish();
+        drop(finish_timing);
         if !before_submit() {
             // begin_recording assigned diagnostic identities before encoding. They do not
             // name submissions when this gate rejects the command buffer. The renderer is
@@ -2752,7 +2756,9 @@ impl WgpuEngine {
             self.gpu_dispatch_timestamps = GpuDispatchTimestampTracker::Disabled;
             return Err(Error::SubmissionAborted);
         }
+        let submit_timing = crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Submit);
         let submission = queue.submit(Some(command_buffer));
+        drop(submit_timing);
         if timestamp_readback {
             self.gpu_timestamps.map_after_submit();
         }

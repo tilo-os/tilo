@@ -400,6 +400,7 @@ suites = [
   "scripts/perf/input_latency_test.py",
   "scripts/perf/physical_notes_latency_test.py",
   "scripts/perf/physical_notes_stages_test.py",
+  "scripts/perf/compositor_submission_test.py",
   "scripts/perf/main_stages_test.py",
   "scripts/perf/native_app_capture_test.py",
   "scripts/perf/native_delivery_test.py",

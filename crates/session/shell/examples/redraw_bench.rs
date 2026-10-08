@@ -139,7 +139,7 @@ struct FinishDiagnostics<'a> {
 }
 
 impl BenchmarkPhaseTotals {
-    fn add_sample(&mut self, sample: BenchmarkPhaseTiming) {
+    fn add_sample(&mut self, sample: &BenchmarkPhaseTiming) {
         self.input_us = self.input_us.saturating_add(sample.input_us);
         self.registry_us = self.registry_us.saturating_add(sample.registry_us);
         self.layout_us = self.layout_us.saturating_add(sample.layout_us);
@@ -1984,7 +1984,7 @@ fn run() -> Result<(), String> {
                 scene_us,
                 bridge: bridge_timing,
             };
-            phase_totals.add_sample(timing);
+            phase_totals.add_sample(&timing);
             Some(timing)
         } else {
             None
@@ -3241,7 +3241,7 @@ mod tests {
         // Phase `diagnostic_phase_aggregation_keeps_every_phase_and_byte`.
         {
             let mut totals = BenchmarkPhaseTotals::default();
-            totals.add_sample(BenchmarkPhaseTiming {
+            totals.add_sample(&BenchmarkPhaseTiming {
                 input_us: 1,
                 registry_us: 2,
                 layout_us: 3,
@@ -3254,9 +3254,10 @@ mod tests {
                     readback_bytes: 9,
                     cpu_output_bytes: 10,
                     backdrop_us: 0,
+                    ..Default::default()
                 },
             });
-            totals.add_sample(BenchmarkPhaseTiming {
+            totals.add_sample(&BenchmarkPhaseTiming {
                 input_us: 10,
                 registry_us: 20,
                 layout_us: 30,
@@ -3269,6 +3270,7 @@ mod tests {
                     readback_bytes: 90,
                     cpu_output_bytes: 100,
                     backdrop_us: 0,
+                    ..Default::default()
                 },
             });
             assert_eq!(totals.input_us, 11);
@@ -3496,6 +3498,7 @@ mod tests {
                     readback_bytes: 9,
                     cpu_output_bytes: 10,
                     backdrop_us: 0,
+                    ..Default::default()
                 },
             },
             attempts: 1,

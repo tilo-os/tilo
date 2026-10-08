@@ -503,6 +503,7 @@ mod phase_window_tests {
             cpu_output_bytes: value.saturating_mul(6),
             backdrop_us: u128::from(value.saturating_mul(7)),
             work: None,
+            ..Default::default()
         }
     }
 

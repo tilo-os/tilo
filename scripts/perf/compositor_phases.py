@@ -26,7 +26,50 @@ def integer(value):
     return int(value)
 
 
+SUBMISSION_COUNTS = ('scene_count', 'command_count', 'finish_count', 'submit_count')
+SUBMISSION_COSTS = ('scene_record_us', 'command_encode_us', 'encoder_finish_us', 'queue_submit_us')
+
+
+def submission_records(lines):
+    """Optional nested CPU costs, attached only to their exact presenter serial."""
+    result = {}
+    for line in lines:
+        _, found, suffix = line.partition('FRAME-SUBMISSION ')
+        if not found:
+            continue
+        if len(result) >= MAX_RECORDS or len(suffix) > 4096:
+            raise ValueError('Submission boundary capture exceeds its bound')
+        row = {}
+        for token in suffix.split():
+            key, separator, value = token.partition('=')
+            if not separator or key in row:
+                raise ValueError('Invalid submission boundary record')
+            row[key] = value
+        serial = integer(row.get('serial'))
+        if not serial or serial in result:
+            raise ValueError('Invalid or duplicate submission serial')
+        status = row.get('status')
+        if status not in ('complete', 'incomplete', 'invalid', 'missing'):
+            raise ValueError('Invalid submission boundary status')
+        counts = [integer(row.get(key)) for key in SUBMISSION_COUNTS]
+        costs = {}
+        for count, key in zip(counts, SUBMISSION_COSTS):
+            value = row.get(key)
+            if (count == 0) != (value == 'none'):
+                raise ValueError('Missing submission boundary must not report measured zero')
+            costs[key] = None if value == 'none' else integer(value)
+        marker = row.get('sparse_marker_submit_us')
+        costs['sparse_marker_submit_us'] = None if marker == 'none' else integer(marker)
+        if status == 'complete' and (not counts[0] or len(set(counts)) != 1 or counts[0] > 256):
+            raise ValueError('Incomplete submission boundaries claim completion')
+        if status == 'missing' and any(counts):
+            raise ValueError('Missing submission boundaries claim observations')
+        result[serial] = dict(status=status, available=status == 'complete', counts=counts, costs_us=costs)
+    return result
+
+
 def summarize_compositor_phases(lines, samples, feedback):
+    submissions = submission_records(lines)
     records = []
     serials = set()
     proofs = {}
@@ -82,6 +125,11 @@ def summarize_compositor_phases(lines, samples, feedback):
                 raise ValueError('Unavailable compositor render work reports decisions')
         record = dict(serial=serial, revision=revision, phase_samples_available=phase_complete,
                       costs_us=costs, byte_counts=byte_counts, physical_outcome=proof, render_work=work)
+        record['submission_cpu'] = submissions.get(serial, dict(status='missing', available=False))
+        if record['submission_cpu']['available']:
+            nested = sum(record['submission_cpu']['costs_us'][key] for key in SUBMISSION_COSTS)
+            if not phase_complete or nested > costs['encode_submit_us']:
+                raise ValueError('Submission CPU boundaries exceed their aggregate')
         records.append(record)
         if proof is not None:
             if proof in proofs:
@@ -123,6 +171,7 @@ def summarize_compositor_phases(lines, samples, feedback):
                 limitations=[
                     'Only exact kernel timestamp and sequence equality links a compositor frame to verified app feedback.',
                     'Matched compositor costs cover the whole scene, not Notes alone; intervals may overlap client stages.',
+                    'Submission CPU boundaries are nested within encode_submit; the sparse marker is separate. Missing boundaries are unavailable.',
                     'Completion wait includes GPU waiting or readback mapping and is not GPU execution duration.',
                     'No compositor readback bytes does not prove absence of copies elsewhere.',
                     'Missing physical/phase records remain unavailable; no time-proximity matching is used.',

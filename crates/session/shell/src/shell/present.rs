@@ -235,6 +235,41 @@ impl std::fmt::Display for FrameLifecycleRecord {
     }
 }
 
+/// Nested host CPU boundaries, with the same exact frame serial as the aggregate.
+/// Missing samples are explicit; these durations are not GPU execution time.
+fn submission_cpu_record(serial: u64, timing: &FrameLifecycle) -> Option<String> {
+    let paint = timing.phases?.paint;
+    let observed = paint.submission_cpu;
+    let status = match observed {
+        Some(value) if value.complete() => "complete",
+        Some(value) if value.invalid => "invalid",
+        Some(_) => "incomplete",
+        None => "missing",
+    };
+    let value = observed.unwrap_or_default();
+    let measured = |count: u32, duration: u64| {
+        if count == 0 {
+            "none".to_owned()
+        } else {
+            duration.to_string()
+        }
+    };
+    Some(format!(
+        "FRAME-SUBMISSION serial={serial} status={status} scene_count={} command_count={} finish_count={} submit_count={} scene_record_us={} command_encode_us={} encoder_finish_us={} queue_submit_us={} sparse_marker_submit_us={}",
+        value.scene_count,
+        value.command_count,
+        value.finish_count,
+        value.submit_count,
+        measured(value.scene_count, value.scene_us),
+        measured(value.command_count, value.commands_us),
+        measured(value.finish_count, value.finish_us),
+        measured(value.submit_count, value.submit_us),
+        paint
+            .sparse_marker_submit_us
+            .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+    ))
+}
+
 fn log_frame_lifecycle(serial: u64, revision: u64, timing: &FrameLifecycle) {
     // Keep the first completed presentation observable even when
     // it is fast and the event loop then parks indefinitely.
@@ -244,6 +279,9 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: &FrameLifecycle) {
         || timing.render >= SLOW_FRAME_LIFECYCLE
         || timing.total >= SLOW_FRAME_LIFECYCLE
     {
+        if let Some(record) = submission_cpu_record(serial, timing) {
+            eprintln!("{record}");
+        }
         eprintln!(
             "{}",
             FrameLifecycleRecord {
@@ -258,6 +296,45 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: &FrameLifecycle) {
 #[cfg(test)]
 mod phase_record_tests {
     use super::*;
+
+    #[test]
+    fn submission_cpu_record_keeps_exact_serial_and_missing_boundaries() {
+        let mut timing = FrameLifecycle {
+            queue_wait: Duration::ZERO,
+            render: Duration::ZERO,
+            total: Duration::ZERO,
+            inflight_at_enqueue: 0,
+            input_age_at_enqueue: None,
+            phases: None,
+            physical: None,
+        };
+        assert!(submission_cpu_record(41, &timing).is_none());
+        timing.phases = Some(FramePhaseTiming::default());
+        let missing = submission_cpu_record(41, &timing).unwrap();
+        assert!(missing.starts_with("FRAME-SUBMISSION serial=41 status=missing "));
+        assert!(missing.contains("scene_record_us=none command_encode_us=none"));
+        timing.phases.as_mut().unwrap().paint.submission_cpu =
+            Some(vello::submission_timing::SubmissionTiming {
+                scene_count: 1,
+                scene_us: 3,
+                ..Default::default()
+            });
+        let incomplete = submission_cpu_record(41, &timing).unwrap();
+        assert!(incomplete.contains("status=incomplete"));
+        assert!(incomplete.contains("scene_record_us=3 command_encode_us=none"));
+        timing.phases.as_mut().unwrap().paint.submission_cpu =
+            Some(vello::submission_timing::SubmissionTiming {
+                scene_count: 1,
+                command_count: 1,
+                finish_count: 1,
+                submit_count: 1,
+                ..Default::default()
+            });
+        let complete = submission_cpu_record(42, &timing).unwrap();
+        assert!(complete.starts_with("FRAME-SUBMISSION serial=42 status=complete "));
+        assert!(complete.contains("encoder_finish_us=0 queue_submit_us=0"));
+        assert!(complete.ends_with("sparse_marker_submit_us=none"));
+    }
 
     #[test]
     fn same_frame_phase_export_distinguishes_readback_zero_and_missing_samples() {

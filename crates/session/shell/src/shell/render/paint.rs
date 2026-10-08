@@ -178,6 +178,10 @@ pub struct BridgePhaseTiming {
     pub work: Option<RenderWork>,
     /// CPU time used to prepare and submit Vello plus the appended texture copy.
     pub submit_us: u128,
+    /// Optional nested CPU boundaries; never add these again to `total_us`.
+    pub submission_cpu: Option<vello::submission_timing::SubmissionTiming>,
+    /// Sparse GPU-only completion marker, outside the existing submit aggregate.
+    pub sparse_marker_submit_us: Option<u128>,
     /// Blocking completion time for GPU rendering plus the texture copy, followed by map setup;
     /// this is intentionally not a copy-only duration.
     pub completed_readback_map_us: u128,
@@ -1037,6 +1041,7 @@ impl RetainedGpuTarget {
                 attempts = attempts.saturating_add(1);
                 self.check_live(policy)?;
                 let submit_started = timing.as_ref().map(|_| Instant::now());
+                let cpu_scope = vello::submission_timing::Scope::begin(timing.is_some());
                 let params = RenderParams {
                     base_color: self.base_color,
                     width,
@@ -1091,6 +1096,12 @@ impl RetainedGpuTarget {
                     }
                     Err(error) => return Err(BridgeError::Render(format!("{error:?}"))),
                 };
+                if let (Some(timing), Some(scope)) = (timing.as_deref_mut(), cpu_scope) {
+                    timing
+                        .submission_cpu
+                        .get_or_insert_default()
+                        .append(scope.finish());
+                }
                 self.last_render_attempts = self.last_render_attempts.saturating_add(1);
                 self.last_full_render_attempts = self.last_full_render_attempts.saturating_add(1);
                 if let (Some(timing), Some(started)) = (timing.as_deref_mut(), submit_started) {
@@ -1209,6 +1220,7 @@ impl RetainedGpuTarget {
                 antialiasing_method: AaConfig::Area,
             };
             self.prepare_backdrop(timing.as_deref_mut());
+            let cpu_scope = vello::submission_timing::Scope::begin(timing.is_some());
             if let Some(pass) = self.hdr_pass.as_ref() {
                 for substitution in &pass.substitutions {
                     self.renderer
@@ -1276,6 +1288,12 @@ impl RetainedGpuTarget {
                     )
                     .map(|submission| (None, Some(submission)))
             };
+            if let (Some(timing), Some(scope)) = (timing.as_deref_mut(), cpu_scope) {
+                timing
+                    .submission_cpu
+                    .get_or_insert_default()
+                    .append(scope.finish());
+            }
             let (stats, submission_index) = match submitted {
                 Ok(submitted) => submitted,
                 Err(vello::Error::SubmissionAborted) => {
@@ -1330,9 +1348,18 @@ impl RetainedGpuTarget {
                 FrameOutput::GpuOnly => {
                     // The sparse path does not report its submission; an
                     // empty submit queued behind it completes no earlier.
-                    let submission = submission_index.unwrap_or_else(|| {
-                        self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>())
-                    });
+                    let submission = if let Some(submission) = submission_index {
+                        submission
+                    } else {
+                        let started = timing.as_ref().map(|_| Instant::now());
+                        let submission =
+                            self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>());
+                        if let (Some(timing), Some(started)) = (timing.as_deref_mut(), started) {
+                            let elapsed = timing.sparse_marker_submit_us.get_or_insert(0);
+                            *elapsed = elapsed.saturating_add(started.elapsed().as_micros());
+                        }
+                        submission
+                    };
                     self.wait_submission(submission, policy)?;
                     None
                 }
@@ -8491,6 +8518,11 @@ mod tests {
             timing.completed_readback_map_us > 0,
             "actual GPU completion poll"
         );
+        assert_submission_cpu(&timing);
+        assert!(
+            timing.sparse_marker_submit_us.is_none(),
+            "dense path returns its exact submission"
+        );
         let work = timing.work.expect("actual completed rendering decisions");
         assert_eq!((work.width, work.height), (128, 96));
         assert_eq!(work.render_attempts, stats.render_attempts);
@@ -8543,6 +8575,19 @@ mod tests {
         assert!(bridge.last_phase_timing().is_none());
     }
 
+    fn assert_submission_cpu(timing: &BridgePhaseTiming) {
+        let cpu = timing
+            .submission_cpu
+            .expect("actual Vello boundaries were sampled");
+        assert!(cpu.complete(), "missing boundaries cannot be measured zero");
+        assert_eq!(cpu.submit_count, cpu.finish_count);
+        let nested = u128::from(cpu.scene_us)
+            .saturating_add(u128::from(cpu.commands_us))
+            .saturating_add(u128::from(cpu.finish_us))
+            .saturating_add(u128::from(cpu.submit_us));
+        assert!(nested <= timing.submit_us);
+    }
+
     #[cfg(target_os = "linux")]
     fn assert_sparse_phase_work(
         bridge: &mut VelloDrmBridge,
@@ -8566,6 +8611,15 @@ mod tests {
                 &[],
             )
             .unwrap();
+        let timing = bridge.last_phase_timing().unwrap();
+        let cpu = timing
+            .submission_cpu
+            .expect("sparse Vello boundaries were sampled");
+        assert!(cpu.complete());
+        assert!(
+            timing.sparse_marker_submit_us.is_some(),
+            "sparse completion marker is observed separately"
+        );
         let work = bridge.last_phase_timing().unwrap().work.unwrap();
         assert_eq!(work.sparse_attempts, sparse.sparse_attempts);
         assert_eq!(work.full_attempts, sparse.full_attempts);

@@ -20,6 +20,8 @@ phase_fields = set("serial event revision phase_timing queue_wait_us render_us t
                    "physical_sequence render_work target_width target_height render_attempts "
                    "sparse_attempts full_attempts damage_admitted".split())
 optional_numbers = {"input_age_at_enqueue_us", "physical_presented_time_ns", "physical_sequence"}
+submissions = []
+submission_fields = set("serial status scene_count command_count finish_count submit_count scene_record_us command_encode_us encoder_finish_us queue_submit_us sparse_marker_submit_us".split())
 lifecycle = []
 records = []
 diagnostics = []
@@ -30,6 +32,25 @@ diagnostic_fields = {
 }
 diagnostic_events = ({"imported", "activated", "budget-exhausted"}, {"submitted", "completed"}, {"retired"})
 for line in Path(sys.argv[1]).read_text().splitlines():
+    if "FRAME-SUBMISSION serial=" in line:
+        suffix = line.partition("FRAME-SUBMISSION ")[2]
+        if len(suffix) > 4096 or len(submissions) >= 10000:
+            raise SystemExit("Submission records exceed their bound")
+        fields = {}
+        for token in suffix.split():
+            key, separator, value = token.partition("=")
+            if not separator or key not in submission_fields:
+                continue
+            if key in fields:
+                raise SystemExit("Duplicate submission field")
+            valid = ((key == "status" and value in ("complete", "incomplete", "invalid", "missing"))
+                     or (key.endswith("_us") and value == "none")
+                     or (key != "status" and value.isascii() and value.isdecimal()))
+            if not valid:
+                raise SystemExit("Invalid submission field")
+            fields[key] = value
+        submissions.append((fields.get("serial"), "FRAME-SUBMISSION " + " ".join(key + "=" + value for key, value in fields.items())))
+        continue
     if "FRAME-LIFECYCLE serial=" in line:
         suffix = line.partition("FRAME-LIFECYCLE ")[2]
         fields = {}
@@ -176,6 +197,8 @@ for tag, row, original in diagnostics:
 # Preserve exact selected outcomes even outside the bounded background window.
 selected.extend(original for proof, original in lifecycle if proof in proofs)
 selected.extend(original for _, original in lifecycle[-128:])
+selected_serials = {line.partition("serial=")[2].split()[0] for line in selected if line.startswith("FRAME-LIFECYCLE serial=")}
+selected.extend(original for serial, original in submissions if serial in selected_serials)
 result = "\n".join(dict.fromkeys(selected))
 if len(result.encode()) > 524288:
     raise SystemExit("Notes trace cohort exceeds the bounded collection limit")

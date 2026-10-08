@@ -348,6 +348,7 @@ pub(crate) fn render_full(
     defer_bump_readback: bool,
     zero_gradient: Option<ImageProxy>,
 ) -> (ResourceProxy, Option<BufferProxy>, bool, bool, bool) {
+    let _scene_timing = crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Scene);
     render_encoding_full(
         scene.encoding(),
         resolver,
@@ -453,6 +454,7 @@ pub(crate) fn render_encoding_sparse_fine(
     defer_bump_readback: bool,
     zero_gradient: Option<ImageProxy>,
 ) -> (ResourceProxy, Option<BufferProxy>, bool, bool, bool) {
+    let _scene_timing = crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Scene);
     let mut render = Render::new();
     render.render_encoding_coarse_with_dispatch_and_opaque_prune(
         encoding,

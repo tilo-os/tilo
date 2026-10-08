@@ -112,6 +112,8 @@ mod debug;
 mod recording;
 mod render;
 mod scene;
+#[cfg(feature = "wgpu")]
+pub mod submission_timing;
 mod shaders;
 
 #[cfg(feature = "wgpu")]

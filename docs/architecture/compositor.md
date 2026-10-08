@@ -97,6 +97,22 @@ wall time, GPU completion wait, bump-counter settlement and separate KMS
 retirement wait. Direct scanout collects those bridge phases without staging
 or reading back pixels. These CPU clock intervals locate blocking work; they
 are not GPU timestamp samples or proof of successful physical presentation.
+The same opt-in gate emits a bounded `FRAME-SUBMISSION` companion with the
+identical pipe serial. It separates scene-to-recording conversion, GPU command
+encoding (including post-render commands), `CommandEncoder::finish`, and the
+actual `Queue::submit` call. These are nested host CPU wall times inside the
+existing `encode_submit_us` aggregate, not additive GPU durations. Sparse
+GPU-only completion-marker submission is separately reported because that call
+lies outside the old aggregate. No waits or submission ordering change.
+
+Observation is thread-confined to the actual bridge render call and bounded to
+256 samples per stage per frame, including bands/retries. Nested scopes or
+exhaustion are invalid; missing/incomplete stages remain unavailable rather than
+measured zero. Ordinary flag-off rendering samples no additional clocks. The
+collector keeps only companions for retained lifecycle serials, and the analyzer
+attaches them by that serial after its existing unique physical-outcome join.
+Legacy captures without companions remain readable with missing CPU boundaries.
+
 Foreign capture's exact token record splits command-encoder finishing from
 actual queue submission with `copy_encoder_finish_return_ns`; the older
 `copy_submit_ns` → `copy_submit_return_ns` bracket includes both. The original

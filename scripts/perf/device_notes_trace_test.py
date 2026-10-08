@@ -182,6 +182,20 @@ class RollingCollection(unittest.TestCase):
         self.assertNotIn('private-do-not-copy', '\n'.join(captured))
         self.assertLess(max(slot.output_sizes), 524288)
 
+    def test_submission_boundaries_keep_only_exact_selected_serials_and_safe_fields(self):
+        from compositor_submission_test import record
+        from physical_notes_stages_test import CompositorPhaseJoin
+        lifecycle = CompositorPhaseJoin().line()
+        slot, captured = LocalSlot(), {}
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "latest.log"
+            log.write_text(sample(1) + "\n" + lifecycle + "\n" + record()
+                           + " private=do-not-export\n" + record(900))
+            collect_trace(slot, str(log), "new-scratch-page", captured)
+        self.assertIn(record(), captured)
+        self.assertNotIn(record(900), captured)
+        self.assertNotIn('do-not-export', '\n'.join(captured))
+
     def test_conflicting_duplicate_input_is_preserved_and_rejected(self):
         slot = LocalSlot()
         captured = {}

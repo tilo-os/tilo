@@ -317,6 +317,18 @@ class CompositorPhaseJoin(unittest.TestCase):
         row.update(changes)
         return 'FRAME-LIFECYCLE ' + ' '.join(f'{key}={value}' for key, value in row.items())
 
+    def test_submission_boundaries_join_only_exact_serial_without_changing_costs(self):
+        from compositor_submission_test import record
+        result = self.report([self.line(), record(), record(42)])
+        frame = result['frames'][0]
+        self.assertEqual(frame['serial'], 41)
+        self.assertTrue(frame['submission_cpu']['available'])
+        self.assertEqual(frame['submission_cpu']['costs_us']['scene_record_us'], 3)
+        self.assertEqual(frame['costs_us']['encode_submit_us'], 7)
+        self.assertEqual(self.report([self.line()])['frames'][0]['submission_cpu']['status'], 'missing')
+        with self.assertRaises(ValueError):
+            self.report([self.line(), record(scene_record_us=8)])
+
     def test_exact_physical_outcome_matches_existing_costs_and_keeps_background_coverage(self):
         result = self.report([self.line(), self.line(serial=42, physical_sequence=790)])
         self.assertFalse(result['performance_certified'])
