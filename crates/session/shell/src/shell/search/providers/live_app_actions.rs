@@ -50,6 +50,15 @@ const SERVICE_DIAGNOSTIC_TARGET: &str = "tilo_native_governance";
 /// forever. Retrying after this deadline remains bounded by the bridge queue.
 const DIRECTORY_PAGE_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
+fn report_certified_job_refusal(outcome: &'static str) {
+    tracing::debug!(
+        target: SERVICE_DIAGNOSTIC_TARGET,
+        stage = "certified_job_status",
+        outcome,
+        "native certified job observation refused"
+    );
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_DIRECTORY_START_TIMEOUT: Cell<Option<Duration>> = const { Cell::new(None) };
@@ -1487,23 +1496,30 @@ impl LiveAppActionsProvider {
                     .desktop
                     .active_workspace()
                     .map(|workspace| workspace.room.to_string());
-                if current.active_local_user() != invoke_actor
-                    || current_room.as_deref() != Some(&invoke_room)
-                {
+                if current.active_local_user() != invoke_actor {
+                    report_certified_job_refusal("active_actor_changed");
+                    return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
+                }
+                if current_room.as_deref() != Some(&invoke_room) {
+                    report_certified_job_refusal("active_room_changed");
                     return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
                 }
                 drop(current);
                 let session = invoke_source
-                    .open(&invoke_room, Some(&invoke_actor))
-                    .map_err(|_| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
+                    .open_classified(&invoke_room, Some(&invoke_actor))
+                    .map_err(|(_, outcome)| {
+                        report_certified_job_refusal(outcome);
+                        ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into())
+                    })?;
                 if cancel {
                     session
                         .cancel_job(id)
                         .map_err(|_| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
                 }
-                let update = session
-                    .job_status(id)
-                    .ok_or_else(|| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
+                let update = session.job_status_classified(id).map_err(|outcome| {
+                    report_certified_job_refusal(outcome);
+                    ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into())
+                })?;
                 drop(session);
                 Ok(ActionReceipt {
                     broker_invocation_id: Some(id),
@@ -4204,6 +4220,91 @@ mod tests {
             provider.set_directory_query("other");
             assert!(provider.directory_pages.borrow().is_empty());
         }
+    }
+
+    #[test]
+    fn certified_job_status_keeps_valid_receipts_and_public_refusals_opaque() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{
+            ActionCatalog, ActionError, AllVisible, ResourceRef,
+        };
+        use crate::shell::search::{SearchRegistry, SearchResult};
+
+        struct OneResult(SearchResult);
+
+        impl SearchProvider for OneResult {
+            fn id(&self) -> &'static str {
+                PROVIDER_ID
+            }
+
+            fn name(&self) -> &'static str {
+                "certified job fixture"
+            }
+
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                std::slice::from_ref(&self.0.kind)
+            }
+
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                vec![self.0.clone()]
+            }
+        }
+
+        fn invoke(
+            row: SearchResult,
+            chrome: &crate::shell::chrome_state::Chrome,
+            doc: &mut AutoCommit,
+        ) -> Result<crate::shell::search::InvocationDisposition, ActionError> {
+            let resource = ResourceRef::new(&row.provider_id, &row.id);
+            let mut registry = SearchRegistry::new();
+            registry.register(Rc::new(OneResult(row)));
+            let catalog = ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                doc,
+                &automerge::ROOT,
+                &AllVisible,
+            );
+            catalog
+                .select(&resource)
+                .expect("the fixture result is selected by exact address")
+                .invoke_json_disposition(
+                    &mut ui::widget::Edits::lend(doc),
+                    &automerge::ROOT,
+                    chrome,
+                    &serde_json::Map::new(),
+                )
+        }
+
+        let chrome = chrome();
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let actor = chrome.borrow().active_local_user();
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        broker.record_completion_for_test(17, &actor, succeeded(17));
+        let mut doc = AutoCommit::new();
+
+        let valid = provider.certified_job_result(17, "succeeded", false, &room, &actor);
+        let disposition =
+            invoke(valid, &chrome, &mut doc).expect("the exact fixture caller retains its job");
+        let crate::shell::search::InvocationDisposition::Accepted(receipt) = disposition else {
+            panic!("an existing certified receipt resolves immediately");
+        };
+        assert_eq!(receipt.broker_invocation_id, Some(17));
+        assert_eq!(receipt.update, succeeded(17));
+
+        let missing = provider.certified_job_result(99, "accepted", false, &room, &actor);
+        let Err(error) = invoke(missing, &chrome, &mut doc) else {
+            panic!("a foreign or absent job must stay unavailable");
+        };
+        assert_eq!(error.code(), "action_failed");
+        assert_eq!(error.to_string(), super::JOB_UNAVAILABLE_MESSAGE);
     }
 
     #[test]

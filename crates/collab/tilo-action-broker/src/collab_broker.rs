@@ -521,9 +521,30 @@ impl AppActionBroker {
         presentation: &[u8],
         job: u64,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        self.certified_job_status_classified(caller, presentation, job)
+            .ok()
+    }
+
+    /// Read one retained certified job while retaining only a closed refusal
+    /// class for local diagnostics. This grants no authority and deliberately
+    /// exposes neither certificate details nor invocation ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns `broker_admission_refused` when the current signed admission no
+    /// longer validates, or `job_binding_unavailable` when the exact retained
+    /// job association is absent.
+    pub fn certified_job_status_classified(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+        job: u64,
+    ) -> Result<tilo_actions::InvocationUpdate, &'static str> {
         self.certified_local_action_host(caller, presentation)
-            .ok()?;
-        self.state.action_observe_job(caller, job)
+            .map_err(|_| "broker_admission_refused")?;
+        self.state
+            .action_observe_job(caller, job)
+            .ok_or("job_binding_unavailable")
     }
 
     #[must_use]

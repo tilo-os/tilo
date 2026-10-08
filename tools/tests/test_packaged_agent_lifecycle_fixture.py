@@ -1016,8 +1016,28 @@ class PresentedEditorTargetTests(unittest.TestCase):
                     "status_refusal": code if code in {
                         "unknown_action", "invalid_arguments", "action_failed"
                     } else "other",
+                    "status_refusal_detail": "other",
                 })
                 self.assertNotIn(private, path.read_text())
+
+    def test_status_refusal_detail_recognizes_only_exact_collapsed_production_visibility_error(self):
+        known = "invocation is unavailable or not visible; this does not establish the original action's outcome"
+        receipt = {"broker_invocation_id": 37, "update": {
+            "invocation": "00000000-0000-0000-0000-000000000021", "state": "accepted"}}
+        for message, expected in ((known, "job_unavailable_or_not_visible"),
+                                  (known + " PRIVATE-CANARY", "other"),
+                                  ("PRIVATE-CANARY", "other")):
+            error = {"code": "action_failed", "message": message}
+            with self.subTest(message=message), \
+                    patch.object(PROOF, "wait_for", side_effect=lambda _l, fn, _p: fn()), \
+                    patch.object(PROOF, "call", return_value={"err": error}), \
+                    self.assertRaises(RuntimeError) as refusal:
+                PROOF.wait_terminal("socket", {"receipt": receipt}, None)
+            self.assertIn(f"status_refusal_detail={expected}", str(refusal.exception))
+            self.assertNotIn("PRIVATE-CANARY", str(refusal.exception))
+            self.assertNotIn(known, str(refusal.exception))
+        self.assertEqual(PROOF.terminal_status_refusal_detail({
+            "code": "invalid_arguments", "message": known}), "other")
 
     def test_reply_timeout_captures_fresh_scene_without_masking_failure(self):
         timeout = PROOF.ProofTimeout("original timeout")

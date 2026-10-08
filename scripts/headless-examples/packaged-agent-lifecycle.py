@@ -3520,6 +3520,13 @@ def invoke(socket, action, args=None):
     return response["answer"]
 
 
+def terminal_status_refusal_detail(error):
+    """Preserve the broker's deliberately collapsed visibility refusal, not its text."""
+    known = "invocation is unavailable or not visible; this does not establish the original action's outcome"
+    return "job_unavailable_or_not_visible" if isinstance(error, dict) \
+        and error.get("code") == "action_failed" and error.get("message") == known else "other"
+
+
 def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
                   diagnostic_path=None):
     """Observe the original invocation; admission is not completed work."""
@@ -3533,9 +3540,10 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
     broker_identity = None
     unchanged = True
     status_refusal = None
+    status_refusal_detail = None
 
     def completed():
-        nonlocal receipt, broker_identity, unchanged, status_refusal
+        nonlocal receipt, broker_identity, unchanged, status_refusal, status_refusal_detail
         update = receipt.get("update")
         if not isinstance(update, dict) or update.get("invocation") != original:
             unchanged = False
@@ -3564,9 +3572,10 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
             status_refusal = code if code in {
                 "unknown_action", "invalid_arguments", "action_failed"
             } else "other"
+            status_refusal_detail = terminal_status_refusal_detail(error)
             raise RuntimeError(
                 "ordinary action terminal observation was refused "
-                f"(status_refusal={status_refusal})"
+                f"(status_refusal={status_refusal}, status_refusal_detail={status_refusal_detail})"
             )
         receipt = response.get("answer", {}).get("receipt")
         if not isinstance(receipt, dict):
@@ -3591,6 +3600,7 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
                 }
                 if status_refusal is not None:
                     diagnostic["status_refusal"] = status_refusal
+                    diagnostic["status_refusal_detail"] = status_refusal_detail
                 diagnostic_path.write_text(json.dumps(diagnostic, indent=2) + "\n")
             except OSError:
                 error.add_note("closed terminal diagnostic could not be written")

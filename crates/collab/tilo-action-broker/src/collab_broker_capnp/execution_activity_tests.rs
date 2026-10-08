@@ -138,6 +138,85 @@ async fn only_admitted_execution_and_validated_terminal_emit_activity() {
 }
 
 #[test]
+fn terminal_update_keeps_status_visible_during_the_pending_to_completed_handoff() {
+    let (state, caller, mut app) = fixture();
+    let mut events = state.subscribe_execution_activity();
+    let request = request();
+    assert!(matches!(
+        state
+            .action_invoke(&caller, None, None, &request)
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let delivered = app.try_recv().expect("directed invocation");
+    let job = delivered.id;
+    let _accepted = events.try_recv().expect("accepted activity");
+    let terminal = tilo_actions::InvocationUpdate::Succeeded {
+        invocation: delivered.invocation,
+        output: tilo_actions::ActionOutput::default(),
+    };
+
+    // Stall retained-completion insertion. The production terminal updater
+    // must continue holding pending custody until that insertion succeeds.
+    let completed = state
+        .completed_invocations
+        .lock()
+        .expect("completed registry");
+    let updating = Arc::clone(&state);
+    let update = terminal.clone();
+    let worker = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("terminal update runtime")
+            .block_on(updating.apply_invocation_update(7, job, update, None))
+    });
+    let activity_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let activity = loop {
+        if let Ok(activity) = events.try_recv() {
+            break activity;
+        }
+        if std::time::Instant::now() >= activity_deadline {
+            drop(completed);
+            let update = worker.join().expect("terminal update thread");
+            panic!("terminal activity was not published; updater returned {update:?}");
+        }
+        std::thread::yield_now();
+    };
+    if activity.status != ExecutionStatus::Succeeded {
+        drop(completed);
+        let update = worker.join().expect("terminal update thread");
+        panic!(
+            "terminal activity had status {:?}; updater returned {update:?}",
+            activity.status
+        );
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+    let mut pending_unlocked = false;
+    while std::time::Instant::now() < deadline {
+        if state.pending_invocations.try_lock().is_ok() {
+            pending_unlocked = true;
+            break;
+        }
+        std::thread::yield_now();
+    }
+    if pending_unlocked {
+        drop(completed);
+        let update = worker.join().expect("terminal update thread");
+        panic!("terminal status vanished before retained completion; updater returned {update:?}");
+    }
+    let observing = Arc::clone(&state);
+    let observation = std::thread::spawn(move || observing.invocation_status(job));
+    drop(completed);
+    worker
+        .join()
+        .expect("terminal update thread")
+        .expect("terminal update");
+    assert_eq!(observation.join().expect("status observer"), Some(terminal));
+}
+
+#[test]
 fn refused_actions_and_observer_disconnect_do_not_schedule_work() {
     let (state, caller, mut app) = fixture();
     let mut events = state.subscribe_execution_activity();

@@ -210,6 +210,13 @@ async fn fresh_exact_certified_caller_observes_and_cancels_its_published_job() {
                     .invocation(),
                 request.invocation
             );
+            assert_eq!(
+                facade
+                    .certified_job_status_classified(&fresh, &fresh_evidence, job)
+                    .unwrap()
+                    .invocation(),
+                request.invocation
+            );
             assert!(rig.state.action_can_cancel_job(&fresh, job));
 
             let (wrong_device, wrong_evidence) = member_device_evidence(&env, 94, false);
@@ -217,6 +224,10 @@ async fn fresh_exact_certified_caller_observes_and_cancels_its_published_job() {
                 .certified_local_action_host(&wrong_device, &wrong_evidence)
                 .unwrap();
             assert!(rig.state.action_observe_job(&wrong_device, job).is_none());
+            assert_eq!(
+                facade.certified_job_status_classified(&wrong_device, &wrong_evidence, job),
+                Err("job_binding_unavailable")
+            );
             assert!(
                 rig.state
                     .action_observe_job(
@@ -274,6 +285,10 @@ async fn fresh_exact_certified_caller_observes_and_cancels_its_published_job() {
                 facade
                     .certified_job_status(&fresh, &fresh_evidence, job)
                     .is_none()
+            );
+            assert_eq!(
+                facade.certified_job_status_classified(&fresh, &fresh_evidence, job),
+                Err("broker_admission_refused")
             );
             assert!(
                 facade

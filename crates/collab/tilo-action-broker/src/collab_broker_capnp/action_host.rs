@@ -57,6 +57,15 @@ fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
     Ok(())
 }
 
+fn report_job_binding_refusal(outcome: &'static str) {
+    tracing::debug!(
+        target: "tilo_native_governance",
+        stage = "certified_job_binding",
+        outcome,
+        "certified job binding observation refused"
+    );
+}
+
 struct LaunchDestination {
     workspace: Workspace,
     app_id: String,
@@ -2521,16 +2530,36 @@ impl CapnpBrokerState {
         caller: &Caller,
         job: u64,
     ) -> Option<tilo_actions::InvocationUpdate> {
-        check_execution(caller).ok()?;
-        caller.user_public_key()?;
-        caller.device_public_key()?;
-        let update = self.invocation_status(job)?;
-        let retained_job = self.remote_invocations.lock().ok().and_then(|ledger| {
-            ledger
-                .get_for_certified_device(caller, &update.invocation())
-                .copied()
-        });
-        (retained_job == Some(job)).then_some(update)
+        if check_execution(caller).is_err() {
+            report_job_binding_refusal("execution_ended");
+            return None;
+        }
+        if caller.user_public_key().is_none() || caller.device_public_key().is_none() {
+            report_job_binding_refusal("unkeyed_caller");
+            return None;
+        }
+        let Some(update) = self.invocation_status(job) else {
+            report_job_binding_refusal("job_absent");
+            return None;
+        };
+        let Ok(ledger) = self.remote_invocations.lock() else {
+            report_job_binding_refusal("ledger_unavailable");
+            return None;
+        };
+        let retained_job = ledger
+            .get_for_certified_device(caller, &update.invocation())
+            .copied();
+        if retained_job == Some(job) {
+            return Some(update);
+        }
+        if !ledger.contains_admitted(&update.invocation()) {
+            report_job_binding_refusal("invocation_not_retained");
+        } else if retained_job.is_none() {
+            report_job_binding_refusal("caller_binding_mismatch");
+        } else {
+            report_job_binding_refusal("job_handle_mismatch");
+        }
+        None
     }
 
     /// Whether `job` is retained as a remotely admitted invocation. Local UI

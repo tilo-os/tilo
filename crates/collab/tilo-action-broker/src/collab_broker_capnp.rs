@@ -3724,6 +3724,21 @@ impl CapnpBrokerState {
         }
     }
 
+    /// Move a persisted terminal invocation into retained completion while
+    /// the pending registry is still locked. Status readers take the pending
+    /// lock first, so they can observe either side of the transition but
+    /// never the empty interval between two independent maps.
+    fn transition_pending_to_completed(
+        &self,
+        pending: &mut HashMap<u64, PendingInvocation>,
+        id: u64,
+        update: tilo_actions::InvocationUpdate,
+    ) -> Option<PendingInvocation> {
+        let owner = pending.get(&id)?.completion_owner();
+        self.record_completion(id, owner, update);
+        pending.remove(&id)
+    }
+
     fn owner_health(&self) -> Result<(), String> {
         if self.durable_owner_required {
             self.membership
@@ -10261,17 +10276,16 @@ impl channel_handle::Server for CapnpChannelHandle {
             state
                 .persist_invocation(pending, update.clone(), false)
                 .map_err(capnp::Error::failed)?;
-            let pending = registry
-                .remove(&id)
+            let publication = registry.get_mut(&id).and_then(|pending| {
+                state.publish_pending_activity(pending, &update, managed_current)
+            });
+            let pending = state
+                .transition_pending_to_completed(&mut registry, id, update.clone())
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             drop(registry);
-            let mut pending = pending;
-            let publication =
-                state.publish_pending_activity(&mut pending, &update, managed_current);
             if let Some(publication) = publication {
                 state.publish_managed_interaction(publication);
             }
-            state.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
             }
@@ -19291,14 +19305,13 @@ impl CapnpBrokerState {
         state.invocation_generation.fetch_add(1, Ordering::Relaxed);
         if update.is_terminal() {
             let completion = terminal_invocation_completion(&update)?;
-            let pending = registry
-                .remove(&id)
+            let pending = state
+                .transition_pending_to_completed(&mut registry, id, update.clone())
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             drop(registry);
             if let Some(publication) = publication {
                 state.publish_managed_interaction(publication);
             }
-            state.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
             }

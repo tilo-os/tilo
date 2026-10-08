@@ -140,6 +140,26 @@ impl DesktopActionSession {
         }
     }
 
+    /// Revalidate one job while retaining only a closed refusal class for
+    /// local diagnostics. The public action response remains deliberately
+    /// opaque about both admission and invocation ownership.
+    pub(crate) fn job_status_classified(
+        &self,
+        job: u64,
+    ) -> Result<tilo_actions::InvocationUpdate, &'static str> {
+        match self {
+            Self::Certified(session) => session.broker.certified_job_status_classified(
+                &session.caller,
+                &session.presentation,
+                job,
+            ),
+            #[cfg(test)]
+            Self::Fixture { broker, actor, .. } => broker
+                .status_for_actor(job, actor)
+                .ok_or("job_binding_unavailable"),
+        }
+    }
+
     #[must_use]
     pub(crate) fn can_cancel_job(&self, job: u64) -> bool {
         match self {
