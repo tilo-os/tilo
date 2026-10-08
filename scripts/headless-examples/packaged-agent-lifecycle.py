@@ -1486,16 +1486,16 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     if not same_fcitx_process(fcitx_identity):
         raise RuntimeError("the compositor-owned Rime process changed before composition")
 
-    # The compositor-generated Fcitx profile uses bare Shift as Rime's Latin
-    # toggle. Commit one edit first, then reactivate Rime so its undo entry
-    # predates both presentation handoffs.
-    require_ok(call(socket, {"op": "key", "key": "Shift"}))
+    # Rime's express editor commits its raw composition on Return. Establish
+    # one real edit without toggling Fcitx's global active state: bare Shift
+    # is an AltTrigger key, whose later toggle depends on intervening focus
+    # and input-method state.
     require_ok(call(socket, {"op": "type", "text": committed_before}))
+    require_ok(call(socket, {"op": "key", "key": "Enter"}))
     wait_for(
         "the pre-detach committed edit",
         lambda: private_editor_value_matches(access, committed_before), process,
     )
-    require_ok(call(socket, {"op": "key", "key": "Shift"}))
     before_preedit = presented_primary_frame(
         call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
     )

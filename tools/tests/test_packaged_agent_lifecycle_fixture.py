@@ -1552,8 +1552,13 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
         source = inspect.getsource(PROOF.native_ime_float_return)
         readiness = source.index("chat_input_method_ready(socket)")
-        first_shift = source.index('{"op": "key", "key": "Shift"}')
-        self.assertLess(readiness, first_shift)
+        raw_baseline = source.index('{"op": "type", "text": committed_before}')
+        raw_commit = source.index('{"op": "key", "key": "Enter"}', raw_baseline)
+        first_preedit = source.index('{"op": "type", "text": "nihao"}', raw_commit)
+        self.assertLess(readiness, raw_baseline)
+        self.assertLess(raw_baseline, raw_commit)
+        self.assertLess(raw_commit, first_preedit)
+        self.assertNotIn('{"op": "key", "key": "Shift"}', source)
 
     def test_attached_preedit_refusal_records_only_closed_fixture_evidence(self):
         private = "private editor text"
