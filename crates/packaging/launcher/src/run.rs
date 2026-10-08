@@ -1584,7 +1584,7 @@ fn start_egress_gate(
             Ok((Some(bind), Some(gate)))
         }
         Err(source) => Err(RunError::EgressGate {
-            hosts: policy.hosts().to_vec(),
+            hosts: policy.describe(),
             source,
         }),
     }
@@ -2460,7 +2460,7 @@ fn spawn_and_wait(
     tracing::info!(
         target: "tilo_launcher::netgate",
         gated = net_gate.is_some(),
-        hosts = ?egress.policy().map(super::netgate::EgressPolicy::hosts),
+        hosts = ?egress.policy().map(super::netgate::EgressPolicy::describe),
         shares_host_network = egress.shares_host_network(),
         "egress resolved",
     );
