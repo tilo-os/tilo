@@ -82,6 +82,11 @@ impl AgentConversationSurface {
             .composer_main
             .share_private_store_from(&self.view.composer_main);
         self.view.focus = parent.focus;
+        // A retained child can still point its immediate-mode keyboard ring
+        // at the Return control that attached this exact editor. Re-floating
+        // retires that control state; the moved editor becomes the child
+        // surface's truthful keyboard and accessibility focus owner again.
+        self.view.keyboard_target = None;
         self.view.draft_main.clone_from(&parent.draft_main);
         self.view.scroll = parent.scroll;
         self.view_owns_editor = true;

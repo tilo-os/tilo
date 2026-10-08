@@ -4475,7 +4475,7 @@ mod tests {
     fn return_detached_editor_through_accessibility(
         app: &mut ChatApp,
         doc: &mut AutoCommit,
-        id: String,
+        id: &str,
         parent_float_target: usize,
     ) {
         let return_target = format!("agent-surface:{id}|{}", Hit::AgentWindow.semantic_id());
@@ -4483,7 +4483,7 @@ mod tests {
         assert!(
             !ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
                 app,
-                &id,
+                id,
                 &format!("agent-surface:foreign|{}", Hit::AgentWindow.semantic_id()),
                 &ui::a11y::Action::Focus,
                 &mut ui::widget::Edits::lend(doc),
@@ -4494,7 +4494,7 @@ mod tests {
         assert!(
             !ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
                 app,
-                &id,
+                id,
                 &format!("agent-surface:{id}|chat.stale-return"),
                 &ui::a11y::Action::Focus,
                 &mut ui::widget::Edits::lend(doc),
@@ -4505,7 +4505,7 @@ mod tests {
         assert!(
             ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
                 app,
-                &id,
+                id,
                 &return_target,
                 &ui::a11y::Action::Focus,
                 &mut ui::widget::Edits::lend(doc),
@@ -4527,7 +4527,7 @@ mod tests {
         );
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             app,
-            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
+            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: id.to_owned() },
         );
         assert!(
             app.keyboard_target.is_none(),
@@ -4556,6 +4556,64 @@ mod tests {
             ui::undo::UndoRequest::Redo
         ));
         assert_eq!(app.composer_main.value(), "東京");
+        assert_refloated_editor_accessibility(app, doc, id);
+    }
+
+    fn assert_refloated_editor_accessibility(app: &mut ChatApp, doc: &mut AutoCommit, id: &str) {
+        let before_selection = app.composer_main.selection();
+        render_frame(app, 1200.0, 800.0);
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(app)
+            .expect("the returned retained conversation can Float again");
+        assert_eq!(request.id, id, "re-Float keeps the exact native surface");
+        let rect = request
+            .initial_rect
+            .expect("the retained surface keeps exact source geometry");
+        adopt_agent_surface(app, id, rect);
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            app,
+            Some(id),
+            true,
+        );
+        render_detached_surfaces(app);
+
+        let composer_target = format!("agent-surface:{id}|chat.composer");
+        let composer =
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_accessibility(app, id)
+                .expect("the same native child has an accessibility tree")
+                .children
+                .into_iter()
+                .find(|node| node.action_target.as_deref() == Some(composer_target.as_str()))
+                .expect("the re-floated editor remains accessible");
+        assert!(
+            composer.state.focused,
+            "the exact editor, not the retired Return control, owns detached focus"
+        );
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "東京"
+        );
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.selection(),
+            before_selection
+        );
+        assert!(ui::undo::handle_local_undo_request(
+            app,
+            ui::undo::UndoRequest::Undo
+        ));
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "Original draft"
+        );
+        assert!(ui::undo::handle_local_undo_request(
+            app,
+            ui::undo::UndoRequest::Redo
+        ));
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "東京"
+        );
     }
 
     fn assert_detached_private_history(
@@ -4797,7 +4855,7 @@ mod tests {
         commit_detached_ime_and_undo(&mut app, &mut doc, &channel, &id);
         assert_detached_private_history(&mut app, &mut doc, &channel, &id);
         assert_invalid_ime_source_retires_composition(&mut app, &mut doc, &channel, &id);
-        return_detached_editor_through_accessibility(&mut app, &mut doc, id, parent_float_target);
+        return_detached_editor_through_accessibility(&mut app, &mut doc, &id, parent_float_target);
     }
 
     #[test]
