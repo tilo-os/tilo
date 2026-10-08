@@ -845,7 +845,8 @@ impl PersonDisplays {
     }
 
     pub fn load_at(path: &Path) -> Option<Self> {
-        let view: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let bytes = tilo_files::native::bounded::read(path, 2_097_152).ok()??;
+        let view: Self = serde_json::from_slice(&bytes).ok()?;
         (view.schema_version == SCHEMA_VERSION
             && crate::hardware::publisher_live_in(
                 path.parent()?,
