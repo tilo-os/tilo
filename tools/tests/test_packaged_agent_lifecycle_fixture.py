@@ -2371,6 +2371,10 @@ class PresentedEditorTargetTests(unittest.TestCase):
     def test_native_ime_commits_and_undoes_in_float_before_returning_a_new_preedit(self):
         source = inspect.getsource(PROOF.native_ime_float_return)
         detached_ready = source.index('"detached Tide editor during Rime preedit"')
+        detached_preedit_gate = source.index(
+            "or not chat_input_method_preedit_active(socket):", detached_ready)
+        detached_snapshot = source.index('"ime-preedit-detached-', detached_ready)
+        space = source.index('{"op": "key", "key": "Space"}', detached_ready)
         floating_commit = source.index('"Rime\'s exact detached commit and child seat"')
         refusal_capture = source.index("preserve_detached_commit_refusal", floating_commit)
         floating_select = source.index("wait_for_private_selection(", floating_commit)
@@ -2380,6 +2384,9 @@ class PresentedEditorTargetTests(unittest.TestCase):
         returned = source.index('"Rime preedit\'s returned primary frame"', second_preedit)
         returned_commit = source.index('"Rime\'s exact post-Return commit and primary seat"', returned)
         self.assertLess(detached_ready, floating_commit)
+        self.assertLess(detached_ready, detached_preedit_gate)
+        self.assertLess(detached_preedit_gate, detached_snapshot)
+        self.assertLess(detached_snapshot, space)
         self.assertLess(floating_commit, refusal_capture)
         self.assertLess(refusal_capture, floating_select)
         self.assertLess(floating_commit, floating_select)

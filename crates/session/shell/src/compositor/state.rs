@@ -488,7 +488,9 @@ impl InputMethodPreeditState {
 
 impl InputMethodPreeditState {
     pub(crate) fn is_active(self) -> bool {
-        matches!(self, Self::Active)
+        // Staged requests cannot end an already accepted composition before
+        // their Commit passes the real client, serial and active-field gates.
+        matches!(self, Self::Active | Self::Pending { previous: true, .. })
     }
 }
 

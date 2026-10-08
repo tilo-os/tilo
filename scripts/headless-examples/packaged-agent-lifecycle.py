@@ -1919,7 +1919,8 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     if detached_access["process"] != chat_process:
         raise RuntimeError("Float replaced the Chat process")
     if not private_editor_value_matches(detached_access, committed_before) \
-            or not chat_text_input_active(socket):
+            or not chat_text_input_active(socket) \
+            or not chat_input_method_preedit_active(socket):
         raise RuntimeError("Float committed or deactivated the live Rime preedit")
     if not same_fcitx_process(fcitx_identity):
         raise RuntimeError("Float replaced the compositor-owned Rime process")

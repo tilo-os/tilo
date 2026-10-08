@@ -658,6 +658,11 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
 
     // Preedit, then the composed text.
     input_method.set_preedit_string("ni".into(), 2, 2);
+    h.pump();
+    assert!(
+        !h.state.input_method_preedit_active_for_tests(),
+        "staging a new preedit cannot create authority before its valid commit"
+    );
     input_method.commit(serial);
     h.pump();
     assert_eq!(h.clients[app].peer.preedit.last(), Some(&Some("ni".into())));
@@ -668,7 +673,27 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
         "the closed seat observation follows the accepted preedit"
     );
     let serial = h.clients[im_client].peer.im_done;
+    // Requests are double-buffered. A clear can arrive in a different
+    // dispatch from its Commit, while a floating handoff is reconciled.
+    // The already accepted composition owns that interval until a valid
+    // transaction commits the clear; a stale serial cannot end it either.
+    let done_before_clear = h.clients[app].peer.text_input_done;
     input_method.set_preedit_string(String::new(), 0, 0);
+    h.pump();
+    assert!(
+        h.state.input_method_preedit_active_for_tests(),
+        "a staged clear must preserve the previously accepted composition"
+    );
+    assert_eq!(h.clients[app].peer.text_input_done, done_before_clear);
+    input_method.commit(serial.saturating_add(1));
+    h.pump();
+    assert!(
+        h.state.input_method_preedit_active_for_tests(),
+        "a stale clear transaction cannot retire accepted preedit authority"
+    );
+    input_method.set_preedit_string(String::new(), 0, 0);
+    h.pump();
+    assert!(h.state.input_method_preedit_active_for_tests());
     input_method.commit_string("你".into());
     input_method.commit(serial);
     h.pump();
