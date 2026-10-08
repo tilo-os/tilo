@@ -162,6 +162,28 @@ without changing ordinary keyboard IME, emoji insertion or terminal paste.
 Terminal support requires an explicit inner-field eligibility/privacy contract,
 with edit-mode transitions invalidating the original grant, before live
 qualification can admit it. No clipboard or key-injection fallback is permitted.
+The current terminal/ush interface exports session effects and PTY bytes, not
+an inner editable resource or an atomic replace-and-ack action. Foreground process
+identity, echo/canonical flags and process-controlled OSC prompt markers cannot
+stand in for that missing contract. A viable extension must bind the inner
+resource and its lifetime/revision to the original hosted process, declare edit
+versus command versus sensitive mode, revoke on mode/focus/process changes, and
+acknowledge actual insertion without submitting a command. The inner editor must
+own selection replacement and Undo. This is a source/protocol prerequisite,
+not a microphone permission or a new persistent trust grant.
+
+Code's source buffer is a separate action-owned editable resource. It now declares
+Normal purpose rather than Terminal, publishes a keyed stamp over its buffer
+identity/content and all selections, and refuses preparation during composition
+or pending text dispatch. Unfocused Code ignores IME text while still clearing
+disabled composition. The terminal PTY keeps its existing purpose and refusal.
+Native fixture journeys drive the production IME event path and app actions:
+Code keeps preedit out of the CRDT, commits Unicode with system Undo/Redo, and
+rejects a commit after focus loss; Notes replaces a selected paragraph, undoes
+and redoes the final once, and preserves it after reopening. Code's buffer,
+same-caret selection/content and pending-dispatch invalidation are separately
+asserted. These hosted app journeys do not establish standalone Wayland receipt
+transport, microphone capture, or terminal inner-program support.
 An accepted private warm-up acknowledgement only prepares the original field.
 When an existing input method owns the seat, activation preserves an explicit
 terminal or sensitive-field refusal and drops the preparation rather than waiting
@@ -268,14 +290,27 @@ Current main supplies the existing release route in
 the approved U²-Net model/license and signed catalogue. No new trust identity or
 account is needed for speech.
 
-The protected publication job currently enforces exactly the U²-Net release,
-an empty runtime list, and byte-for-byte agreement with checked-in signed image
-inputs. It cannot publish speech as-is. Review an extension of that existing
-job/catalogue and the matching speech manager format/engine/capability; retain
-artifact provenance, license receipts and an approved runtime base-image
-identity. Signing material stays in the protected publication job, never in
-chat or agent output. Do not dispatch publication while this work is on hold,
-add a trusted development key, or substitute an unsigned executable path.
+The source extension is implemented: `prepare_speech_catalog.py` validates and
+stages U²-Net plus the three pinned MIT Whisper objects; the existing workflow's
+`review-speech` mode compiles their candidate with the existing protected identity
+and compares its public trust input with the installed key file. The publisher
+also supports that four-model source, immutable speech package URLs and anonymous
+receipt readback. No separate speech runtime image or new key is required for
+in-process Whisper. Both workflow routes require `refs/heads/main`; the held task
+branch cannot dispatch them as a substitute for review or integration.
+
+The exact remaining sequence is: integrate the reviewed source; authorize the
+protected `review-speech` dispatch using `TILO_MODEL_CATALOG_SIGNING_KEY`; review
+its signed candidate and unchanged `keys.json`; activate the approved source and
+signed catalogue as the image inputs; authorize the existing publisher using
+`RELEASE_TOKEN` for immutable objects and exact signed-input reproduction; deliver
+the resulting image through the established release route. The service then
+requires the person's per-model/version/digest licence acceptance and explicit
+installation. Those release, acceptance and installation actions have not run.
+Signing material stays in the protected job, never in chat or agent output.
+Do not dispatch publication while this work is on hold, add a trusted development
+key, or substitute an unsigned executable path. Source/model evaluation and
+prerecorded worker qualification do not require those protected actions.
 
 The lifecycle now also admits a typed in-process `whisper_ggml` object, whose
 signed format declares `speech_recognition`. It goes through the same license,

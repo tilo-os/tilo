@@ -201,7 +201,7 @@ releases deliver that trust and catalog update.
 ## Speech candidate review and publication
 
 The protected publisher also accepts `mode=review-speech`. It prepares exactly
-U²-Net, multilingual Whisper tiny and multilingual Whisper small-q5_1 from
+U²-Net and multilingual Whisper tiny, base and small-q5_1 from
 `catalog-source-speech-candidate.json`, checks upstream receipts and complete MIT
 notices, then signs a review artifact with the existing production key. The
 resulting public key must equal the checked-in key. The uploaded artifact
@@ -220,6 +220,15 @@ U²-Net-only reproduction remains supported until speech image inputs land.
 Model installation through Settings requires license acceptance and never
 opens a microphone. Dictation's local one-session recording consent is separate
 from model publication, installation, or the chosen language.
+
+The speech preparer, publisher extension, format/capability support and pinned
+licence/weight receipts are source work; they can be reviewed without release
+credentials. The workflow extension must first land on protected main because
+both review and publication refuse task refs. The remaining protected operations
+use the existing `TILO_MODEL_CATALOG_SIGNING_KEY` and `RELEASE_TOKEN`; no new key,
+account or persistent trust grant is needed for in-process Whisper. Approval for
+source work or prerecorded qualification does not authorize either dispatch,
+image activation, licence acceptance on someone's behalf, or installation.
 
 ## Typed runtime execution
 
