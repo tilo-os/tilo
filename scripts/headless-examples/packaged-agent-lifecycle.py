@@ -183,7 +183,8 @@ def foreign_frames(response):
 
 
 def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_path=None,
-                                     composer_name="Message composer", stale_only=False):
+                                     composer_name="Message composer", stale_only=False,
+                                     include_send=False):
     """Observe the actual Chat route without reading private editor content."""
     address = atspi.atspi_address()
     peers = atspi.bus_pids(address)
@@ -245,6 +246,8 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
                                              "control": controls[0], "drag": drag_handles[0],
                                              "agent": agent_name, "detached": detached,
                                              "private_content_recorded": False})
+                    if include_send:
+                        matches[key]["send_controls"] = client.named(tree, "Send message")
             if len(matches) == 1:
                 record()
                 return next(iter(matches.values()))
@@ -1639,6 +1642,8 @@ def wait_for_semantic_float_editor_continuity(socket, output, child, expected, p
     def observe():
         sample = dict.fromkeys(("native_observation_valid", "exact_child_exists",
                                 "child_keyboard_focused", "child_presented", "child_pixels_ready",
+                                "child_frame_nonregressing", "child_capture_pending",
+                                "pending_child_pixels",
                                 "child_suspended", "child_transferring", "child_error_present",
                                 "ordinary_child_route", "same_chat_process", "accessibility_observable",
                                 "pending_accessibility_publication", "pending_focus_publication",
@@ -1648,22 +1653,38 @@ def wait_for_semantic_float_editor_continuity(socket, output, child, expected, p
         evidence["observation_count"] += 1
         try:
             response = call(socket, {"op": "foreign_frames"})
-            current = current_same_floating_presentation(response, child)
-            sample["exact_child_exists"] = current is not None
-            if current is None:
+            rows = [row for row in foreign_frames(response)
+                    if row.get("app_id") == child["app_id"]
+                    and row.get("floating_id") == child["floating_id"]]
+            sample["exact_child_exists"] = len(rows) == 1 \
+                and rows[0].get("surface_id") == native_surface_id(child)
+            if not sample["exact_child_exists"]:
                 raise RuntimeError("semantic Float lost its exact presented native child")
+            current = rows[0]
+            sample["child_frame_nonregressing"] = type(current.get("frame_seq")) is int \
+                and current["frame_seq"] >= child["frame_seq"]
+            if not sample["child_frame_nonregressing"]:
+                raise RuntimeError("semantic Float's exact child frame regressed or is malformed")
             fields = ("keyboard_focused", "presented", "pixels_ready", "suspended", "transferring")
             if any(type(current.get(name)) is not bool for name in fields):
                 raise RuntimeError("semantic Float's native ownership is malformed")
+            if "capture_pending" in current and type(current["capture_pending"]) is not bool:
+                raise RuntimeError("semantic Float's capture state is malformed")
             sample.update({"child_" + name: current[name] for name in fields})
+            sample["child_capture_pending"] = current.get("capture_pending") is True
+            sample["pending_child_pixels"] = not current["pixels_ready"] \
+                and sample["child_capture_pending"]
             sample["child_error_present"] = current.get("last_error") is not None
             sample["ordinary_child_route"] = current.get("input_route") is None \
                 and current.get("input_source_surface_id") is None
             if not current["keyboard_focused"] or not current["presented"] \
-                    or not current["pixels_ready"] or current["suspended"] \
+                    or current["suspended"] \
                     or current["transferring"] or sample["child_error_present"] \
                     or not sample["ordinary_child_route"]:
                 raise RuntimeError("semantic Float has no exact adopted ordinary child seat")
+            if current["pixels_ready"] and sample["child_capture_pending"] \
+                    or not current["pixels_ready"] and not sample["pending_child_pixels"]:
+                raise RuntimeError("semantic Float's exact child pixels are contradictory or unavailable")
             sample["native_observation_valid"] = True
             access = agent_conversation_accessibility(expected["access"]["agent"], detached=True)
             if access is None:
@@ -1682,9 +1703,10 @@ def wait_for_semantic_float_editor_continuity(socket, output, child, expected, p
                 raise RuntimeError("semantic Float changed private editor content, caret or selection")
             if type(detached.get("accessibility_focused")) is not bool:
                 raise RuntimeError("semantic Float's editor focus is unobservable")
-            sample["accepted"] = detached == expected["observation"] \
+            editor_ready = detached == expected["observation"] \
                 and detached["accessibility_focused"] is True
-            sample["pending_focus_publication"] = not sample["accepted"]
+            sample["pending_focus_publication"] = not editor_ready
+            sample["accepted"] = current["pixels_ready"] and editor_ready
             return (current, access, detached) if sample["accepted"] else None
         finally:
             if evidence["initial"] is None:
@@ -5319,6 +5341,75 @@ def owned_agent_identity(shell_pid):
     return owned[0]
 
 
+def wait_for_owned_physical_send_control(socket, output, owner, draft, primary, process):
+    """Retry only known stale AT transport while observing the exact live Send route."""
+    evidence = {"observation_count": 0, "initial": None, "last": None}
+
+    def observe():
+        sample = dict.fromkeys(("exact_primary_present", "primary_keyboard_focused",
+                                "ordinary_native_route", "descriptor_observed", "same_owner_route",
+                                "editor_contract_valid", "draft_matches", "complete_tree",
+                                "unique_send_control", "send_enabled", "unknown_object",
+                                "unknown_interface", "known_stale_transport", "other_transport_failure",
+                                "accepted"), False)
+        evidence["observation_count"] += 1
+        try:
+            current = current_same_primary_presentation(
+                call(socket, {"op": "foreign_frames"}), primary)
+            sample["exact_primary_present"] = current is not None
+            if current is None or type(current.get("keyboard_focused")) is not bool:
+                raise RuntimeError("physical Send lost its exact observable native primary")
+            sample["primary_keyboard_focused"] = current["keyboard_focused"]
+            sample["ordinary_native_route"] = current.get("input_route") is None \
+                and current.get("input_source_surface_id") is None
+            if not sample["primary_keyboard_focused"] or not sample["ordinary_native_route"]:
+                raise RuntimeError("physical Send lost its exact ordinary primary seat")
+            access = agent_conversation_accessibility(owner["agent"], stale_only=True,
+                                                      include_send=True)
+            if access is None:
+                return None
+            sample["descriptor_observed"] = True
+            sample["same_owner_route"] = all(access.get(key) == owner[key]
+                                             for key in ("process", "agent", "detached")) \
+                and access.get("detached") is False
+            if not sample["same_owner_route"]:
+                raise RuntimeError("physical Send discovered a foreign private editor route")
+            sample["editor_contract_valid"] = chat_editor_contract(access) is True
+            if not sample["editor_contract_valid"]:
+                raise RuntimeError("physical Send's fresh descriptor names another editor")
+            observed = _private_editor_observation(access, draft)
+            sample["draft_matches"] = observed.get("draft_matches") is True
+            if not sample["draft_matches"]:
+                raise RuntimeError("physical Send changed the expected private draft")
+            sample["complete_tree"] = True
+            buttons = access.get("send_controls")
+            sample["unique_send_control"] = isinstance(buttons, list) and len(buttons) == 1 \
+                and isinstance(buttons[0], str) and bool(buttons[0])
+            if not sample["unique_send_control"]:
+                raise RuntimeError("the exact direct-agent editor has no unique physical Send control")
+            sample["send_enabled"] = accessibility_control_enabled(access, buttons[0]) is True
+            if sample["send_enabled"] is not True:
+                raise RuntimeError("physical Send's exact control is disabled or unobservable")
+            sample["accepted"] = True
+            return access, buttons[0], current
+        except atspi.GateError as error:
+            sample["unknown_object"] = "org.freedesktop.DBus.Error.UnknownObject" in str(error)
+            sample["unknown_interface"] = "org.freedesktop.DBus.Error.UnknownInterface" in str(error)
+            sample["known_stale_transport"] = stale_editor_transport(error)
+            sample["other_transport_failure"] = not sample["known_stale_transport"]
+            if sample["known_stale_transport"]:
+                return None
+            raise
+        finally:
+            if evidence["initial"] is None:
+                evidence["initial"] = sample.copy()
+            evidence["last"] = sample
+            (output / "physical-send-control-observations.json").write_text(
+                json.dumps(evidence, indent=2, allow_nan=False) + "\n")
+
+    return wait_for("physical Send's exact owned enabled control", observe, process)
+
+
 def physical_send_after_stop(socket, room, record, provider, output, size, process, identity):
     """Supplement, never replace, the semantic lifecycle and physical editor journey."""
     if provider.request_count() != 3 or not provider.original_third_held() \
@@ -5344,21 +5435,15 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
     physical_chord(socket, "a", ctrl=True)
     require_ok(call(socket, {"op": "type", "text": draft}))
     wait_for("physical Send fixture draft", lambda: private_editor_value_matches(access, draft), process)
-    access = wait_for("current physical Send view", lambda: agent_conversation_accessibility("Tide"), process)
-    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
-    tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
-    buttons = client.named(tree, "Send message")
-    if len(buttons) != 1:
-        raise RuntimeError("the exact direct-agent editor has no unique physical Send control")
-    frame = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
-    if frame is None:
-        raise RuntimeError("physical Send's presentation disappeared")
+    access, send_control, frame = wait_for_owned_physical_send_control(
+        socket, output, access, draft, frame, process,
+    )
+    focus_agent_conversation_control(access, send_control, "Send message")
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"before-physical-send-{size}.png")}))
     log = output / "shell.log"
     if not log.is_file() or chat_input_observer_enabled(output) is not True:
         raise RuntimeError("physical Send's actual Chat input observer is unavailable")
     send_log_offset = log.stat().st_size
-    focus_agent_conversation_control(access, buttons[0], "Send message")
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     revision = wait_for("actual keyboard Send private draft revision", lambda:
                         physical_send_activation_revision(

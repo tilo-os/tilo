@@ -2450,7 +2450,12 @@ class PresentedEditorTargetTests(unittest.TestCase):
         for changes in ({"surface_id": 9976}, {"floating_id": "foreign"},
                         {"frame_seq": 21}, {"keyboard_focused": False},
                         {"keyboard_focused": None}, {"presented": False},
-                        {"pixels_ready": False}, {"suspended": True},
+                        {"pixels_ready": False}, {"pixels_ready": None},
+                        {"pixels_ready": False, "capture_pending": False},
+                        {"pixels_ready": False, "capture_pending": None},
+                        {"pixels_ready": False, "capture_pending": 1},
+                        {"pixels_ready": True, "capture_pending": True},
+                        {"frame_seq": True}, {"suspended": True},
                         {"transferring": True}, {"last_error": "private-error"},
                         {"input_route": "floating-preedit-source"},
                         {"input_source_surface_id": 9976}):
@@ -2466,6 +2471,61 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 accessibility.assert_not_called()
                 editor.assert_not_called()
                 sleep.assert_not_called()
+
+    def test_semantic_float_capture_pending_waits_for_ready_without_skipping_editor(self):
+        _, child, access, before, expected = self.return_editor_continuity_subjects()
+        ready = {**child, "presented": True, "pixels_ready": True, "capture_pending": False,
+                 "suspended": False, "transferring": False}
+        pending = {**ready, "pixels_ready": False, "capture_pending": True}
+        access = {**access, "detached": True}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "call", side_effect=[
+                    {"answer": {"frames": [pending]}}, {"answer": {"frames": [ready]}}]), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "private_editor_observation", return_value=before) as editor:
+            output = pathlib.Path(directory)
+            self.assertEqual(PROOF.wait_for_semantic_float_editor_continuity(
+                "socket", output, ready, expected, None), (ready, access, before))
+            self.assertEqual(editor.call_count, 2)
+            receipt = json.loads((output / "semantic-float-editor-adoption-observations.json").read_text())
+            self.assertTrue(receipt["initial"]["pending_child_pixels"])
+            self.assertTrue(receipt["initial"]["child_capture_pending"])
+            self.assertTrue(receipt["initial"]["content_matches"])
+            self.assertFalse(receipt["initial"]["accepted"])
+            self.assertTrue(receipt["last"]["accepted"])
+
+    def test_semantic_float_capture_pending_still_refuses_editor_mutation(self):
+        _, child, access, before, expected = self.return_editor_continuity_subjects()
+        pending = {**child, "presented": True, "pixels_ready": False, "capture_pending": True,
+                   "suspended": False, "transferring": False}
+        access = {**access, "detached": True}
+        for mutation in ({"draft_matches": False}, {"caret": 4}, {"selection": None}):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF.time, "sleep") as sleep, \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": [pending]}}), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                    patch.object(PROOF, "private_editor_observation", return_value={**before, **mutation}):
+                with self.assertRaisesRegex(RuntimeError, "content, caret or selection"):
+                    PROOF.wait_for_semantic_float_editor_continuity(
+                        "socket", pathlib.Path(directory), pending, expected, None)
+                sleep.assert_not_called()
+
+    def test_semantic_float_persistent_capture_pending_times_out_original_deadline(self):
+        _, child, access, before, expected = self.return_editor_continuity_subjects()
+        pending = {**child, "presented": True, "pixels_ready": False, "capture_pending": True,
+                   "suspended": False, "transferring": False}
+        access = {**access, "detached": True}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]), \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [pending]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "private_editor_observation", return_value=before) as editor:
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_semantic_float_editor_continuity(
+                    "socket", pathlib.Path(directory), pending, expected, None)
+            editor.assert_called_once()
 
     def test_semantic_return_requires_a_new_primary_frame(self):
         previous = {"frame_seq": 7}
@@ -3201,6 +3261,139 @@ class PresentedEditorTargetTests(unittest.TestCase):
         expected = {"access": {**access, "detached": True},
                     "draft": "draft-secret", "observation": before}
         return primary, child, access, before, expected
+
+    def physical_send_control_subjects(self):
+        primary, _, access, before, _ = self.return_editor_continuity_subjects()
+        primary = {**primary, "keyboard_focused": True}
+        access = {**access, "bus": "private-bus", "window": "private-window",
+                  "composer": "private-composer", "send_controls": ["private-send"]}
+        return primary, access, before
+
+    def test_physical_send_control_reobserves_known_stale_target_from_fresh_tree(self):
+        primary, access, before = self.physical_send_control_subjects()
+        fresh = {**access, "send_controls": ["fresh-private-send"]}
+        stale = PROOF.atspi.GateError("org.freedesktop.DBus.Error.UnknownObject private-send")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [primary]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility",
+                             side_effect=[access, fresh]) as discover, \
+                patch.object(PROOF, "chat_editor_contract", return_value=True), \
+                patch.object(PROOF, "_private_editor_observation", return_value=before), \
+                patch.object(PROOF, "accessibility_control_enabled",
+                             side_effect=[stale, True]) as enabled, \
+                patch.object(PROOF.time, "sleep"):
+            output = pathlib.Path(directory)
+            result = PROOF.wait_for_owned_physical_send_control(
+                "socket", output, access, "draft-secret", primary, None)
+            self.assertEqual(result, (fresh, "fresh-private-send", primary))
+            self.assertEqual(discover.call_args_list,
+                             [call("Tide", stale_only=True, include_send=True)] * 2)
+            self.assertEqual(enabled.call_args_list,
+                             [call(access, "private-send"), call(fresh, "fresh-private-send")])
+            payload = (output / "physical-send-control-observations.json").read_text()
+            receipt = json.loads(payload)
+            self.assertEqual(receipt["observation_count"], 2)
+            self.assertTrue(receipt["initial"]["known_stale_transport"])
+            self.assertFalse(receipt["initial"]["accepted"])
+            self.assertTrue(receipt["last"]["accepted"])
+            for forbidden in ("private-send", "private-bus", "private-window",
+                              "draft-secret", "9973", "9975", "UnknownObject"):
+                self.assertNotIn(forbidden, payload)
+            self.assertTrue(all(type(flag) is bool for row in
+                                (receipt["initial"], receipt["last"]) for flag in row.values()))
+
+    def test_physical_send_control_persistent_stale_transport_times_out(self):
+        primary, access, before = self.physical_send_control_subjects()
+        stale = PROOF.atspi.GateError(
+            "org.freedesktop.DBus.Error.UnknownInterface org.a11y.atspi.Text")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [primary]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "chat_editor_contract", return_value=True), \
+                patch.object(PROOF, "_private_editor_observation", side_effect=stale), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]):
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_owned_physical_send_control(
+                    "socket", pathlib.Path(directory), access, "draft-secret", primary, None)
+
+    def test_physical_send_control_nonstale_transport_fails_immediately(self):
+        primary, access, before = self.physical_send_control_subjects()
+        error = PROOF.atspi.GateError(
+            "org.freedesktop.DBus.Error.UnknownInterface org.a11y.atspi.Accessible")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [primary]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility", side_effect=error), \
+                patch.object(PROOF.time, "sleep") as sleep:
+            with self.assertRaises(PROOF.atspi.GateError):
+                PROOF.wait_for_owned_physical_send_control(
+                    "socket", pathlib.Path(directory), access, "draft-secret", primary, None)
+            sleep.assert_not_called()
+            receipt = json.loads((pathlib.Path(directory) /
+                                  "physical-send-control-observations.json").read_text())
+            self.assertTrue(receipt["last"]["other_transport_failure"])
+
+    def test_physical_send_control_foreign_owner_or_changed_draft_fails_immediately(self):
+        primary, access, before = self.physical_send_control_subjects()
+        cases = [("process", {**access, "process": 9976}, before),
+                 ("agent", {**access, "agent": "Foreign"}, before),
+                 ("route", {**access, "detached": True}, before),
+                 ("draft", access, {**before, "draft_matches": False})]
+        for label, discovered, observed in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": [primary]}}), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=discovered), \
+                    patch.object(PROOF, "chat_editor_contract", return_value=True), \
+                    patch.object(PROOF, "_private_editor_observation", return_value=observed), \
+                    patch.object(PROOF, "accessibility_control_enabled") as enabled, \
+                    patch.object(PROOF.time, "sleep") as sleep:
+                with self.assertRaises(RuntimeError):
+                    PROOF.wait_for_owned_physical_send_control(
+                        "socket", pathlib.Path(directory), access, "draft-secret", primary, None)
+                sleep.assert_not_called()
+                enabled.assert_not_called()
+
+    def test_physical_send_control_missing_native_owner_or_control_never_passes(self):
+        primary, access, before = self.physical_send_control_subjects()
+        cases = [("missing-primary", [], access, True),
+                 ("foreign-seat", [{**primary, "input_route": "foreign"}], access, True),
+                 ("unfocused", [{**primary, "keyboard_focused": False}], access, True),
+                 ("missing-send", [primary], {**access, "send_controls": []}, True),
+                 ("ambiguous-send", [primary], {**access, "send_controls": ["a", "b"]}, True),
+                 ("disabled-send", [primary], access, False)]
+        for label, rows, discovered, enabled in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": rows}}), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=discovered), \
+                    patch.object(PROOF, "chat_editor_contract", return_value=True), \
+                    patch.object(PROOF, "_private_editor_observation", return_value=before), \
+                    patch.object(PROOF, "accessibility_control_enabled", return_value=enabled), \
+                    patch.object(PROOF.time, "sleep") as sleep:
+                with self.assertRaises(RuntimeError):
+                    PROOF.wait_for_owned_physical_send_control(
+                        "socket", pathlib.Path(directory), access, "draft-secret", primary, None)
+                sleep.assert_not_called()
+
+    def test_physical_send_observer_uses_single_fresh_tree_without_repair_inputs(self):
+        source = inspect.getsource(PROOF.wait_for_owned_physical_send_control)
+        for forbidden in ("accessible_subtree", "GrabFocus", '"op": "key"',
+                          '"op": "type"', "SetText", "DoAction", "invoke("):
+            self.assertNotIn(forbidden, source)
+        self.assertIn("stale_only=True", source)
+        self.assertIn("include_send=True", source)
+        discovery = inspect.getsource(PROOF.agent_conversation_accessibility)
+        self.assertIn('matches[key]["send_controls"] = client.named(tree, "Send message")', discovery)
+        journey = inspect.getsource(PROOF.physical_send_after_stop)
+        self.assertLess(journey.index("wait_for_owned_physical_send_control("),
+                        journey.index("focus_agent_conversation_control("))
+        after_observer = journey.split("wait_for_owned_physical_send_control(", 1)[1]
+        after_arguments = after_observer.split("    )\n", 1)[1]
+        self.assertTrue(after_arguments.startswith(
+            '    focus_agent_conversation_control(access, send_control, "Send message")\n'))
+        self.assertLess(journey.index("focus_agent_conversation_control("),
+                        journey.index('"before-physical-send-'))
+        self.assertLess(journey.index("send_log_offset = log.stat().st_size"),
+                        journey.index('"op": "key", "key": "Enter"'))
 
     def test_return_editor_wait_observes_adoption_then_real_focus_publication(self):
         primary, child, access, before, expected = self.return_editor_continuity_subjects()
