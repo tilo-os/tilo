@@ -278,9 +278,8 @@ def shell_accessibility_control(label):
     return matches[0] if matches else None
 
 
-def agent_quick_composer_accessibility(agent):
+def agent_quick_composer_accessibility(agent, *, windows=None):
     """Find the one exact compositor composer without reading its draft."""
-    address = atspi.atspi_address()
     expected = {
         "message": "Message",
         "queue": "Queue",
@@ -291,15 +290,16 @@ def agent_quick_composer_accessibility(agent):
         "open_tasks": "Open Task Center",
     }
     matches = []
-    for bus, proxy_pid in atspi.bus_pids(address).items():
-        pid = atspi.app_process(proxy_pid)
-        if process_program(pid) != "shell":
-            continue
-        client = atspi.AtspiClient(address, bus)
+    for owned in owned_shell_accessibility_windows() if windows is None else windows:
+        bus = owned["bus"]
+        client = atspi.AtspiClient(owned["address"], bus)
         try:
-            children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
-            for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
-                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+            for window in [owned["window"]]:
+                children = client.call(owned["root"], "org.a11y.atspi.Accessible.GetChildren")
+                paths = list(dict.fromkeys(atspi.PATH_RE.findall(children)))
+                if len(paths) > atspi.APP_TREE_NODE_LIMIT:
+                    raise RuntimeError("the compositor composer children exceed the observation bound")
+                tree = {path: client.property(path, "Name") for path in paths}
                 for root in client.named(tree, "Agent quick composer"):
                     subtree = accessible_subtree(client, root, atspi.APP_TREE_NODE_LIMIT)
                     controls = {}
@@ -324,7 +324,7 @@ def agent_quick_composer_accessibility(agent):
                         raise RuntimeError("the Agent quick composer published duplicate task pickers")
                     if complete and len(editors) == 1 and len(agents) == 1 and len(kinds) == 1:
                         matches.append({
-                            "bus": bus, "window": window, "root": root,
+                            **owned, "bus": bus, "window": window, "root": root,
                             "composer": editors[0], "controls": controls,
                             "task": tasks[0] if tasks else None,
                             "private_content_recorded": False,
@@ -359,11 +359,10 @@ def agent_quick_composer_status(agent, labels):
     return present[0] if present else None
 
 
-def agent_marker_accessibility(agent):
-    """Find one fresh compositor marker for the exact canonical Agent."""
-    pattern = re.compile(rf"^Agent action: {re.escape(agent)}(?: · Agent)?$", re.IGNORECASE)
+def owned_shell_accessibility_windows():
+    """Prebind only actual windows on this proof's compositor AT connection."""
     address = atspi.atspi_address()
-    matches = []
+    windows = []
     for bus, proxy_pid in atspi.bus_pids(address).items():
         pid = atspi.app_process(proxy_pid)
         if process_program(pid) != "shell":
@@ -372,12 +371,37 @@ def agent_marker_accessibility(agent):
         try:
             children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
             for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
-                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
-                for path, name in tree.items():
-                    if isinstance(name, str) and pattern.fullmatch(name):
-                        matches.append({
-                            "bus": bus, "window": window, "control": path, "label": name,
-                        })
+                children = client.call(window, "org.a11y.atspi.Accessible.GetChildren")
+                paths = list(dict.fromkeys(atspi.PATH_RE.findall(children)))
+                if len(paths) > atspi.APP_TREE_NODE_LIMIT:
+                    raise RuntimeError("the compositor window children exceed the observation bound")
+                names = {path: client.property(path, "Name") for path in paths}
+                roots = client.named(names, "Tilo workspace")
+                if len(roots) > 1:
+                    raise RuntimeError("the compositor window has ambiguous workspace accessibility")
+                if roots:
+                    windows.append({"address": address, "bus": bus,
+                                    "window": window, "root": roots[0]})
+        except atspi.GateError:
+            continue
+    return windows
+
+
+def agent_marker_accessibility(agent, *, windows=None):
+    """Read live marker children directly, decoding their actual wire Names."""
+    pattern = re.compile(rf"^Agent action: {re.escape(agent)}(?: · Agent)?$", re.IGNORECASE)
+    matches = []
+    for owned in owned_shell_accessibility_windows() if windows is None else windows:
+        client = atspi.AtspiClient(owned["address"], owned["bus"])
+        try:
+            children = client.call(owned["root"], "org.a11y.atspi.Accessible.GetChildren")
+            paths = list(dict.fromkeys(atspi.PATH_RE.findall(children)))
+            if len(paths) > atspi.APP_TREE_NODE_LIMIT:
+                raise RuntimeError("the compositor marker children exceed the observation bound")
+            for path in paths:
+                name = atspi.property_text(client.property(path, "Name"))
+                if name is not None and pattern.fullmatch(name):
+                    matches.append({**owned, "control": path, "label": name})
         except atspi.GateError:
             continue
     if len(matches) > 1:
@@ -464,7 +488,7 @@ def marker_binds_presented_category(marker, category, geometry):
         "w": client_rect["w"],
         "h": client_rect["h"],
     }
-    marker_client = atspi.AtspiClient(atspi.atspi_address(), marker["bus"])
+    marker_client = atspi.AtspiClient(marker.get("address") or atspi.atspi_address(), marker["bus"])
     marker_rect = atspi.extents_reply(marker_client.call(
         marker["control"], "org.a11y.atspi.Component.GetExtents", "1",
     ))
@@ -487,7 +511,7 @@ def marker_binds_presented_category(marker, category, geometry):
 
 def activate_accessibility_control(access, label):
     """Focus and activate one exact mounted node through its public AT door."""
-    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
     focused = client.call(
         access["control"], "org.a11y.atspi.Component.GrabFocus", check=False
     )
@@ -790,6 +814,66 @@ def presented_content_geometry(frame):
     return {"placement": placement, "content": content, "origin": origin}
 
 
+def floating_numeric_geometry(frame):
+    """Export only the compositor's closed numeric geometry, never identity or text."""
+    def fields(value, names):
+        if not isinstance(value, dict):
+            raise RuntimeError("detached numeric geometry is malformed")
+        result = {name: value.get(name) for name in names}
+        if any(type(number) not in (int, float) or not math.isfinite(number)
+               for number in result.values()):
+            raise RuntimeError("detached numeric geometry is non-finite or unavailable")
+        if any(result[name] < 0 for name in ("w", "h") if name in result):
+            raise RuntimeError("detached numeric geometry has negative dimensions")
+        return result
+
+    def extent(value):
+        return fields(value, ("w", "h"))
+
+    def rect(value):
+        return fields(value, ("x", "y", "w", "h"))
+
+    if not isinstance(frame, dict) or type(frame.get("frame_seq")) is not int \
+            or frame["frame_seq"] <= 0:
+        raise RuntimeError("detached numeric geometry has no frame sequence")
+    result = {name: rect(frame.get(name))
+              for name in ("rect", "content_rect", "target_rect")}
+    result.update(fields(frame, ("device_scale",)))
+    if result["device_scale"] <= 0:
+        raise RuntimeError("detached numeric geometry has no device scale")
+    result["frame_seq"] = frame["frame_seq"]
+    if "frame_geometry" not in frame:
+        raise RuntimeError("detached numeric frame geometry is unavailable")
+    geometry = frame["frame_geometry"]
+    result["frame_geometry"] = None
+    if geometry is not None:
+        if not isinstance(geometry, dict) or any(
+                name not in geometry for name in ("configured_extent", "window_geometry")):
+            raise RuntimeError("detached numeric frame geometry is malformed")
+        result["frame_geometry"] = {
+            "raw_buffer": extent(geometry.get("raw_buffer")),
+            "content_crop": rect(geometry.get("content_crop")),
+            "min_size": extent(geometry.get("min_size")),
+            "max_size": extent(geometry.get("max_size")),
+            "configured_extent": None if geometry["configured_extent"] is None
+            else extent(geometry["configured_extent"]),
+            "window_geometry": None,
+        }
+        window = geometry["window_geometry"]
+        if window is not None:
+            if not isinstance(window, dict) or "viewport_destination" not in window:
+                raise RuntimeError("detached numeric window geometry is malformed")
+            observed_window = rect(window)
+            observed_window.update(fields(window, ("buffer_scale",)))
+            if observed_window["buffer_scale"] <= 0:
+                raise RuntimeError("detached numeric window geometry has no buffer scale")
+            observed_window["viewport_destination"] = None \
+                if window["viewport_destination"] is None \
+                else extent(window["viewport_destination"])
+            result["frame_geometry"]["window_geometry"] = observed_window
+    return result
+
+
 def physically_click_editor(socket, access, geometry):
     """Give the editor both pointer/widget focus and the compositor's Wayland seat."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
@@ -820,7 +904,7 @@ def physically_click_editor(socket, access, geometry):
 
 def component_global_target(access, path, geometry, label):
     """Translate one real client-local AccessKit extent through the compositor route."""
-    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
     rect = atspi.extents_reply(client.call(
         path, "org.a11y.atspi.Component.GetExtents", "1",
     ))
@@ -947,7 +1031,7 @@ def private_editor_observation(access, expected):
 
 def private_editor_value_matches(access, expected):
     """Observe only whether this fixture's in-memory value reached the editor."""
-    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
     reply = client.call(
         access["composer"], "org.a11y.atspi.Text.GetText", "--", "0", "-1",
         check=False,
@@ -1941,13 +2025,17 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     # Commit through the real source-seat continuation while the same editor
     # is painted in the authenticated child. The child must then receive the
     # ordinary seat before any subsequent physical selection or undo.
+    (output / "ime-detached-before-commit-geometry.json").write_text(
+        json.dumps(floating_numeric_geometry(frame), indent=2, allow_nan=False) + "\n"
+    )
     require_ok(call(socket, {"op": "key", "key": "Space"}))
 
     def floating_committed_frame():
         current = current_same_floating_presentation(
             call(socket, {"op": "foreign_frames"}), frame
         )
-        if current is None or not private_editor_value_matches(detached_access, committed_after):
+        if current is None or current["frame_seq"] <= frame["frame_seq"] \
+                or not private_editor_value_matches(detached_access, committed_after):
             return None
         if current.get("input_route") is not None \
                 or current.get("input_source_surface_id") is not None:
@@ -1967,6 +2055,9 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
         raise
     if detached_access["process"] != chat_process or not same_fcitx_process(fcitx_identity):
         raise RuntimeError("detached Rime commit replaced Chat or the compositor input method")
+    (output / "ime-detached-after-commit-geometry.json").write_text(
+        json.dumps(floating_numeric_geometry(frame), indent=2, allow_nan=False) + "\n"
+    )
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"ime-commit-detached-{size}.png"
     )}))
@@ -3452,7 +3543,30 @@ def current_agent_tasks(socket, room, agent, process):
     ))
 
 
-def exercise_agent_quick_composer(socket, agent, marker, exact_task, process):
+def reopen_marker_composer_while_live(socket, agent, marker, windows, process):
+    """Prove one private draft round trip while the real marker is actionable."""
+    draft = "Keep this marker Message draft private."
+    composer = lambda: agent_quick_composer_accessibility(agent, windows=windows)
+    access = wait_for("initial marker Message composer", composer, process)
+    if not private_editor_value_matches(access, ""):
+        raise RuntimeError("the initial marker Message draft was not empty")
+    require_ok(call(socket, {"op": "click_named", "name": "agent-quick-editor"}))
+    require_ok(call(socket, {"op": "type", "text": draft}))
+    wait_for("initial marker's physical Message draft", lambda:
+             private_editor_value_matches(access, draft), process)
+    require_ok(call(socket, {"op": "click_named", "name": "agent-quick-close"}))
+    wait_for("initial quick composer close", lambda: composer() is None, process)
+    # This is the freshly observed real node. Its public activation rejects
+    # an expired pulse; caching the address cannot extend its authority.
+    activate_shell_accessibility_control(marker, marker["label"])
+    reopened = wait_for("initial marker composer reopened", composer, process)
+    if not private_editor_value_matches(reopened, draft):
+        raise RuntimeError("Message draft was lost across the initial marker close and reopen")
+    return draft
+
+
+def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
+                                 reopened_message_draft=None):
     """Use the actual shell controls while one genuine Agent run is current."""
     fixture_drafts = {
         "message": "Keep this marker Message draft private.",
@@ -3468,6 +3582,8 @@ def exercise_agent_quick_composer(socket, agent, marker, exact_task, process):
         return current is not None and private_editor_value_matches(current, expected)
 
     access = wait_for("exact Agent quick composer controls", composer, process)
+    if reopened_message_draft != fixture_drafts["message"]:
+        raise RuntimeError("the marker's initial Message close and reopen was not proven")
     targets = require_ok(call(socket, {"op": "list_targets"})).get("targets")
     if not isinstance(targets, list):
         raise RuntimeError("the compositor did not publish quick composer targets")
@@ -3477,6 +3593,10 @@ def exercise_agent_quick_composer(socket, agent, marker, exact_task, process):
             raise RuntimeError(f"the compositor did not publish one exact {name} target")
 
     for intent in ("message", "queue", "steer"):
+        if intent == "message":
+            if not private_editor_value_matches(access, reopened_message_draft):
+                raise RuntimeError("the reopened marker Message draft changed")
+            continue
         if intent != "message":
             activate_agent_quick_composer_control(access, intent)
             access = wait_for(f"{intent} composer controls", composer, process)
@@ -3494,18 +3614,6 @@ def exercise_agent_quick_composer(socket, agent, marker, exact_task, process):
     access = wait_for("restored Message composer", composer, process)
     wait_for("exact Message draft restoration", lambda: draft_matches(fixture_drafts["message"]),
              process)
-
-    require_ok(call(socket, {"op": "click_named", "name": "agent-quick-close"}))
-    wait_for("quick composer close", lambda: agent_quick_composer_accessibility(agent) is None,
-             process)
-    current_marker = wait_for("same genuine Agent marker after close", lambda:
-                              agent_marker_accessibility(agent), process)
-    if current_marker["label"] != marker["label"]:
-        raise RuntimeError("closing the composer changed the authenticated Agent marker")
-    activate_shell_accessibility_control(current_marker, current_marker["label"])
-    access = wait_for("reopened exact Agent quick composer", composer, process)
-    wait_for("Message draft retained across close and reopen", lambda:
-             draft_matches(fixture_drafts["message"]), process)
 
     activate_agent_quick_composer_control(access, "steer")
     access = wait_for("reopened Steer composer", composer, process)
@@ -3714,6 +3822,47 @@ def start_managed_agent(socket, room, agent, process):
     return {"semantic": True, "invocation": terminal_invocation(receipt)}
 
 
+def prime_chat_frontier_access(title, process):
+    access = wait_for("held marker's mounted Chat editor", lambda:
+                     agent_conversation_accessibility("Tide"), process)
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    label = f"Planning: {title}"
+    tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+    phases = client.named(tree, label)
+    if len(phases) != 1:
+        raise RuntimeError("the first held marker Planning control is ambiguous or absent")
+    return {"access": access, "phase_control": phases[0], "phase_label": label,
+            "address": client.address}
+
+
+def sample_primed_chat_frontier(socket, output, task_id, admission, prepared, process):
+    """Sample the real retained Chat state before opening the modal composer."""
+    def observed():
+        access = prepared["access"]
+        frame = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
+        if frame is None:
+            return None
+        client = atspi.AtspiClient(prepared["address"], access["bus"])
+        try:
+            label = client.property(prepared["phase_control"], "Name")
+            if len(client.named({prepared["phase_control"]: label}, prepared["phase_label"])) != 1:
+                return None
+        except atspi.GateError as error:
+            if not re.search(
+                    r" failed: Error: GDBus\.Error:org\.freedesktop\.DBus\.Error\.UnknownObject:",
+                    str(error)):
+                raise
+            return None
+        require_chat_keyboard_focus_after_click(socket, output)
+        require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
+        frontier = latest_chat_task_frontier(output, task_id, admission["run_epoch"], "planning")
+        return frontier if frontier is not None \
+            and type(frontier.get("sequence")) is int \
+            and frontier["sequence"] == admission["sequence"] else None
+
+    return wait_for("Chat's exact second held marker frontier", observed, process)
+
+
 def managed_agent_marker_stage(socket, room, record, provider, output, process, size):
     """Invoke one least-privilege Chat action and activate its real marker."""
     agent = "tide"
@@ -3784,13 +3933,73 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     admission = provider.owner_admission(1)
     if admission is None:
         raise RuntimeError("marker provider request lacked owner task custody")
+    first_frontier = observe_chat_task_frontier(
+        socket, output, task_id, admission["run_epoch"], "planning", process,
+        title="Agent marker proof",
+        expected_sequence=admission["sequence"],
+    )
+    if first_frontier.get("sequence") != admission["sequence"]:
+        raise RuntimeError("Chat retained a different first marker task Planning sequence")
+    prepared_chat = prime_chat_frontier_access("Agent marker proof", process)
+    # Finish all full-tree and focus work before the real action starts its
+    # finite completed-marker dwell. Direct shell children remain live reads.
+    category_access = ensure_chat_category_visible(socket, "Lifecycle proof", process)
+    shell_windows = wait_for("owned compositor accessibility windows",
+                             owned_shell_accessibility_windows, process)
+    category_access = {**category_access, "address": shell_windows[0]["address"]}
     provider.release_through(1)
-
     wait_for("marker task's normal held continuation",
              provider.marker_second_held, process)
     second_admission = provider.owner_admission(2)
     if second_admission is None:
         raise RuntimeError("marker continuation lacked owner task custody")
+    chat_frontier = sample_primed_chat_frontier(
+        socket, output, task_id, second_admission, prepared_chat, process,
+    )
+    if chat_frontier.get("sequence") != second_admission["sequence"]:
+        raise RuntimeError("Chat retained a different marker task Planning sequence")
+
+    latest_marker_binding = None
+
+    def bound_marker():
+        nonlocal latest_marker_binding
+        marker = agent_marker_accessibility(agent, windows=shell_windows)
+        category = category_access
+        frame = presented_primary_frame(
+            call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
+        )
+        if marker is None or category is None or frame is None:
+            return None
+        client = atspi.AtspiClient(shell_windows[0]["address"], category["bus"])
+        try:
+            label = atspi.property_text(client.property(category["control"], "Name"))
+        except atspi.GateError:
+            return None
+        if label not in {"Collapse Agent marker proof", "Expand Agent marker proof"}:
+            return None
+        binding = marker_binds_presented_category(
+            marker, category, presented_content_geometry(frame)
+        )
+        latest_marker_binding = binding
+        return (marker, binding) if binding["category_bound"] else None
+
+    try:
+        marker, marker_binding = wait_for(
+            "actual compositor Agent marker at the renamed category", bound_marker, process
+        )
+    except RuntimeError:
+        if latest_marker_binding is not None:
+            (output / "marker-category-binding-refusal.json").write_text(
+                json.dumps(latest_marker_binding, indent=2) + "\n"
+            )
+        raise
+    activate_shell_accessibility_control(marker, marker["label"])
+    reopened_message_draft = reopen_marker_composer_while_live(
+        socket, agent, marker, shell_windows, process,
+    )
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"agent-action-marker-activated-{size}.png"
+    )}))
 
     preceding_result = provider.preceding_marker_result()
     (output / "marker-preceding-invoke-result.json").write_text(
@@ -3809,48 +4018,9 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
             and renamed.get("resource") == target["resource"] else None
 
     wait_for("same Chat category's current public label", category_renamed, process)
-    chat_frontier = observe_chat_task_frontier(
-        socket, output, task_id, admission["run_epoch"], "planning", process,
-        title="Agent marker proof",
-        expected_sequence=second_admission["sequence"],
-    )
-    if chat_frontier.get("sequence") != second_admission["sequence"]:
-        raise RuntimeError("Chat retained a different marker task Planning sequence")
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"agent-marker-second-held-{size}.png"
     )}))
-
-    latest_marker_binding = None
-
-    def bound_marker():
-        nonlocal latest_marker_binding
-        marker = agent_marker_accessibility(agent)
-        category = chat_category_accessibility("Agent marker proof")
-        frame = presented_primary_frame(
-            call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
-        )
-        if marker is None or category is None or frame is None:
-            return None
-        binding = marker_binds_presented_category(
-            marker, category, presented_content_geometry(frame)
-        )
-        latest_marker_binding = binding
-        return (marker, binding) if binding["category_bound"] else None
-
-    try:
-        marker, marker_binding = wait_for(
-            "actual compositor Agent marker at the renamed category", bound_marker, process
-        )
-    except RuntimeError:
-        if latest_marker_binding is not None:
-            (output / "marker-category-binding-refusal.json").write_text(
-                json.dumps(latest_marker_binding, indent=2) + "\n"
-            )
-        raise
-    require_ok(call(socket, {"op": "snapshot", "path": str(
-        output / f"agent-action-marker-before-{size}.png"
-    )}))
-    activate_shell_accessibility_control(marker, marker["label"])
 
     def steer_ready_composer():
         access = agent_quick_composer_accessibility(agent)
@@ -3869,7 +4039,8 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
         output / f"agent-quick-composer-after-{size}.png"
     )}))
     interaction = exercise_agent_quick_composer(
-        socket, agent, marker, exact_task, process,
+        socket, agent, exact_task, process,
+        reopened_message_draft=reopened_message_draft,
     )
 
     wait_for("post-Steer normal third model turn",

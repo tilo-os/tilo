@@ -476,6 +476,119 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "private_content_recorded": False,
         })
 
+    def test_marker_direct_children_decode_wire_names_and_refuse_ambiguity(self):
+        class Client:
+            def __init__(self, names):
+                self.names = names
+                self.walks = []
+
+            def call(self, path, interface):
+                self.walks.append((path, interface))
+                return "([" + ", ".join(f"(':1.1', '{node}')" for node in self.names) + "],)"
+
+            def property(self, path, _name):
+                return self.names[path]
+
+        windows = [{"address": "owned", "bus": ":1.1", "window": "/window", "root": "/workspace"}]
+        for names, expected in (
+                ({"/content": "(<'Other control'>,)",
+                  "/marker": "(<'Agent action: tide · Agent'>,)"}, "/marker"),
+                ({"/marker": "(<'Agent action: reed · Agent'>,)"}, None),
+                ({"/marker": "Agent action: tide · Agent"}, None)):
+            client = Client(names)
+            with self.subTest(names=names), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF, "accessible_subtree", side_effect=AssertionError("full walk")), \
+                    patch.object(PROOF, "owned_shell_accessibility_windows",
+                                 side_effect=AssertionError("rediscovery")):
+                result = PROOF.agent_marker_accessibility("tide", windows=windows)
+            self.assertEqual(result["control"] if result else None, expected)
+            self.assertEqual(client.walks, [
+                ("/workspace", "org.a11y.atspi.Accessible.GetChildren")])
+            if result:
+                self.assertEqual(result["label"], "Agent action: tide · Agent")
+        client = Client({"/one": "(<'Agent action: tide'>,)",
+                         "/two": "(<'Agent action: tide · Agent'>,)"})
+        with patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                self.assertRaisesRegex(RuntimeError, "duplicate exact Agent markers"):
+            PROOF.agent_marker_accessibility("tide", windows=windows)
+
+    def test_owned_shell_windows_prime_the_actual_workspace_under_the_window_wrapper(self):
+        class Client(PROOF.atspi.AtspiClient):
+            def __init__(self):
+                self.walks = []
+
+            def call(self, path, interface):
+                self.walks.append((path, interface))
+                if path == PROOF.atspi.ROOT_PATH:
+                    return "([(':1.1', '/window')],)"
+                if path == "/window":
+                    return "([(':1.1', '/workspace'), (':1.1', '/unrelated')],)"
+                raise AssertionError("a full workspace walk must not occur during priming")
+
+            def property(self, path, _name):
+                return "(<'Tilo workspace'>,)" if path == "/workspace" else "(<'Other'>,)"
+
+        client = Client()
+        with patch.object(PROOF.atspi, "atspi_address", return_value="owned"), \
+                patch.object(PROOF.atspi, "bus_pids", return_value={":1.1": 1, ":1.2": 2}), \
+                patch.object(PROOF.atspi, "app_process", side_effect=lambda pid: pid), \
+                patch.object(PROOF, "process_program", side_effect=lambda pid: "shell" if pid == 1 else "chat"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client) as bound:
+            windows = PROOF.owned_shell_accessibility_windows()
+        self.assertEqual(windows, [{"address": "owned", "bus": ":1.1",
+                                   "window": "/window", "root": "/workspace"}])
+        bound.assert_called_once_with("owned", ":1.1")
+        self.assertEqual(client.walks, [
+            (PROOF.atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren"),
+            ("/window", "org.a11y.atspi.Accessible.GetChildren")])
+
+    def test_early_marker_close_reopen_uses_real_input_and_checks_retained_draft(self):
+        for retained, expired in ((True, False), (False, False), (True, True)):
+            state = {"open": True, "draft": ""}
+            marker = {"bus": "owned", "control": "/marker", "label": "Agent action: tide"}
+            access = {"bus": "owned", "composer": "/editor"}
+
+            def control(_socket, request):
+                if request.get("op") == "type":
+                    state["draft"] = request["text"]
+                if request.get("name") == "agent-quick-close":
+                    state["open"] = False
+                return {}
+
+            def activate(actual, label):
+                self.assertEqual(actual, marker)
+                self.assertEqual(label, marker["label"])
+                self.assertFalse(state["open"])
+                if expired:
+                    raise RuntimeError("the real marker activation expired")
+                state["open"] = True
+                if not retained:
+                    state["draft"] = ""
+
+            with self.subTest(retained=retained, expired=expired), \
+                    patch.object(PROOF, "agent_quick_composer_accessibility", side_effect=
+                                 lambda *_args, **_kwargs: access if state["open"] else None), \
+                    patch.object(PROOF, "private_editor_value_matches", side_effect=
+                                 lambda _access, value: state["draft"] == value), \
+                    patch.object(PROOF, "call", side_effect=control) as called, \
+                    patch.object(PROOF, "require_ok"), \
+                    patch.object(PROOF, "activate_shell_accessibility_control", side_effect=activate):
+                if expired:
+                    with self.assertRaisesRegex(RuntimeError, "activation expired"):
+                        PROOF.reopen_marker_composer_while_live("socket", "tide", marker, [], None)
+                elif retained:
+                    result = PROOF.reopen_marker_composer_while_live(
+                        "socket", "tide", marker, [], None)
+                    self.assertEqual(result, "Keep this marker Message draft private.")
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "draft was lost"):
+                        PROOF.reopen_marker_composer_while_live("socket", "tide", marker, [], None)
+                self.assertIn(call("socket", {"op": "type", "text":
+                    "Keep this marker Message draft private."}), called.call_args_list)
+                self.assertIn(call("socket", {"op": "click_named", "name":
+                    "agent-quick-close"}), called.call_args_list)
+
     def test_ime_drag_refusal_exports_only_closed_public_geometry(self):
         frame = {
             "app_id": "so.tilo.chat", "floating_id": None,
@@ -1659,13 +1772,13 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 "provider.release_marker_terminal", 'interaction["receipt_revision"]',
                 'preceding_result != {', '"result": "succeeded"',
                 'offered_chat_category_action', '"category_renamed": True',
-                'chat_category_accessibility("Agent marker proof")',
+                '"Collapse Agent marker proof", "Expand Agent marker proof"',
                 'marker_binds_presented_category', '"marker_category_bound"',
                 '"marker-category-binding-refusal.json"',
                 'ensure_chat_category_visible(socket, "Lifecycle proof", process)',
                 '"category-marker-visible-before-task-',
                 'observe_chat_task_frontier(', 'title="Agent marker proof"',
-                'expected_sequence=second_admission["sequence"]',
+                'sample_primed_chat_frontier(',
                 'chat_frontier.get("sequence") != second_admission["sequence"]',
                 'accessibility_control_enabled(', 'access["controls"]["steer"]',
                 'third_admission["applied_revision"] != interaction["receipt_revision"]',
@@ -2558,6 +2671,61 @@ class PresentedEditorTargetTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             PROOF.presented_content_geometry({**expected, "keyboard_focused": None})
 
+    def test_floating_numeric_geometry_exports_only_closed_finite_measurements(self):
+        rect = {"x": -10, "y": 20, "w": 512, "h": 360}
+        extent = {"w": 512, "h": 360}
+        geometry = {
+            "raw_buffer": extent, "content_crop": rect,
+            "configured_extent": extent, "min_size": {"w": 0, "h": 0},
+            "max_size": {"w": 0, "h": 0},
+            "window_geometry": {**rect, "viewport_destination": extent, "buffer_scale": 1},
+        }
+        expected = {"rect": rect, "content_rect": rect, "target_rect": rect,
+                    "frame_seq": 17, "device_scale": 1.25, "frame_geometry": geometry}
+        untrusted = json.loads(json.dumps(expected))
+        untrusted.update({"surface_id": 987, "app_id": "private", "text": "private"})
+        untrusted["rect"]["opaque_id"] = 123
+        untrusted["frame_geometry"]["window_geometry"]["private_text"] = "private"
+        observed = PROOF.floating_numeric_geometry(untrusted)
+        self.assertEqual(observed, expected)
+        self.assertNotIn("private", json.dumps(observed, allow_nan=False))
+        self.assertNotIn("opaque_id", json.dumps(observed))
+        for nullable in (
+                {**expected, "frame_geometry": None},
+                {**expected, "frame_geometry": {**geometry, "configured_extent": None,
+                                                "window_geometry": None}},
+                {**expected, "frame_geometry": {**geometry, "window_geometry": {
+                    **geometry["window_geometry"], "viewport_destination": None}}}):
+            self.assertEqual(PROOF.floating_numeric_geometry(nullable), nullable)
+        invalid = [
+            {**expected, "frame_seq": True}, {**expected, "device_scale": 0},
+            {**expected, "device_scale": float("inf")},
+            {**expected, "target_rect": {**rect, "w": -1}},
+            {**expected, "rect": {**rect, "x": True}},
+            {**expected, "frame_geometry": {**geometry, "raw_buffer": {"w": float("nan"), "h": 4}}},
+            {**expected, "frame_geometry": {**geometry, "window_geometry": {
+                **geometry["window_geometry"], "buffer_scale": False}}},
+            {key: value for key, value in expected.items() if key != "frame_geometry"},
+        ]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                PROOF.floating_numeric_geometry(value)
+
+    def test_detached_geometry_receipts_bracket_real_space_and_precede_selection(self):
+        source = inspect.getsource(PROOF.native_ime_float_return)
+        before = source.index('"ime-detached-before-commit-geometry.json"')
+        space = source.index('{"op": "key", "key": "Space"}', before)
+        fresh = source.index('current["frame_seq"] <= frame["frame_seq"]', space)
+        committed = source.index('"Rime\'s exact detached commit and child seat"', fresh)
+        after = source.index('"ime-detached-after-commit-geometry.json"', committed)
+        selection = source.index("with hold_physical_modifiers(socket, shift=True)", after)
+        self.assertLess(before, space)
+        self.assertLess(space, fresh)
+        self.assertLess(fresh, committed)
+        self.assertLess(committed, after)
+        self.assertLess(after, selection)
+        self.assertEqual(source.count("json.dumps(floating_numeric_geometry(frame),"), 2)
+
     def test_editor_window_extent_is_translated_through_exact_presented_frame(self):
         sent = []
 
@@ -2748,6 +2916,56 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 samples = [entry for entry in called.call_args_list
                            if entry == call("socket", {"op": "key", "key": "ArrowLeft"})]
                 self.assertEqual(len(samples), len(sequences))
+
+    def test_primed_second_frontier_checks_real_sequence_without_dismissing_navigation(self):
+        class Client(PROOF.atspi.AtspiClient):
+            def __init__(self):
+                self.observed = []
+
+            def property(self, path, name):
+                self.observed.append((path, name))
+                return "(<'Planning: Agent marker proof'>,)"
+
+        for sequences, success in (([1, 3], True), ([1, 1, 1], False)):
+            with self.subTest(success=success), tempfile.TemporaryDirectory() as directory, \
+                    ExitStack() as stack:
+                output = pathlib.Path(directory)
+                remaining = iter(sequences)
+                client = Client()
+                prepared = {"access": {"bus": "owned"}, "address": "owned",
+                            "phase_control": "/phase", "phase_label": "Planning: Agent marker proof"}
+
+                def control(_socket, request):
+                    if request == {"op": "key", "key": "ArrowLeft"}:
+                        row = {"after": {"agent_task": {
+                            "task_id": "task", "run_epoch": 7,
+                            "execution": {"run_epoch": 7, "phase": "planning",
+                                          "sequence": next(remaining)}}}}
+                        (output / "shell.log").write_text(
+                            'tilo-physical-input ' + json.dumps(row) + '\n')
+                    return {}
+
+                stack.enter_context(patch.object(PROOF, "call", side_effect=control))
+                stack.enter_context(patch.object(PROOF, "presented_primary_frame", return_value={}))
+                stack.enter_context(patch.object(PROOF.atspi, "AtspiClient", return_value=client))
+                stack.enter_context(patch.object(PROOF, "accessible_subtree",
+                                                side_effect=AssertionError("full tree during pulse")))
+                stack.enter_context(patch.object(PROOF, "physically_click_editor",
+                                                side_effect=AssertionError("dismiss navigation")))
+                focused = stack.enter_context(patch.object(PROOF, "require_chat_keyboard_focus_after_click"))
+                stack.enter_context(patch.object(PROOF, "require_ok"))
+                stack.enter_context(patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]))
+                stack.enter_context(patch.object(PROOF.time, "sleep"))
+                if success:
+                    result = PROOF.sample_primed_chat_frontier(
+                        "socket", output, "task", {"run_epoch": 7, "sequence": 3}, prepared, None)
+                    self.assertEqual(result["sequence"], 3)
+                else:
+                    with self.assertRaisesRegex(PROOF.ProofTimeout, "second held marker frontier"):
+                        PROOF.sample_primed_chat_frontier(
+                            "socket", output, "task", {"run_epoch": 7, "sequence": 3}, prepared, None)
+                self.assertEqual(focused.call_count, len(sequences))
+                self.assertEqual(client.observed, [("/phase", "Name")] * len(sequences))
 
     def test_task_phase_retries_only_stale_objects_within_the_original_deadline(self):
         class Client(PROOF.atspi.AtspiClient):
@@ -3004,15 +3222,29 @@ class MarkerPrecedingInvokeResultTests(unittest.TestCase):
                 self.assertEqual(row["result"], "invalid")
                 self.assertNotIn("PRIVATE", json.dumps(row))
 
-    def test_diagnostic_is_captured_before_existing_marker_wait(self):
+    def test_live_marker_is_activated_before_costly_frontier_and_diagnostics(self):
         source = inspect.getsource(PROOF.managed_agent_marker_stage)
+        first = source.index('expected_sequence=admission["sequence"]')
+        release = source.index('provider.release_through(1)')
+        prime = source.index('prime_chat_frontier_access(')
+        second = source.index('sample_primed_chat_frontier(')
+        marker = source.index('"actual compositor Agent marker at the renamed category"')
+        activate = source.index('activate_shell_accessibility_control(marker, marker["label"])')
+        reopen = source.index('reopen_marker_composer_while_live(')
         held = source.index('provider.marker_second_held')
         result = source.index('marker-preceding-invoke-result.json')
         snapshot = source.index('agent-marker-second-held-')
-        marker = source.index('"actual compositor Agent marker at the renamed category"')
+        self.assertLess(first, release)
+        self.assertLess(prime, release)
+        self.assertLess(release, held)
+        self.assertLess(held, second)
+        self.assertLess(second, marker)
+        self.assertLess(release, marker)
+        self.assertLess(marker, activate)
+        self.assertLess(activate, reopen)
+        self.assertLess(reopen, result)
         self.assertLess(held, result)
         self.assertLess(result, snapshot)
-        self.assertLess(snapshot, marker)
 
 
 class OwnedRimeSchemaTests(unittest.TestCase):
