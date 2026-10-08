@@ -854,11 +854,23 @@ pub enum VmCommand {
 #[derive(Debug, Subcommand)]
 pub enum DeviceActionCommand {
     /// List the device's declared actions and typed arguments.
-    List { query: Option<String> },
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions list\n  tilo-vm vm actions list enroll"
+    )]
+    List {
+        /// Filter declared actions by this query (default: list all actions).
+        query: Option<String>,
+    },
     /// Invoke a declared action; private arguments come only from stdin.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions invoke device-unlock enroll --args-stdin < private-args.json\n\nRead the action's declared JSON arguments with vm actions list. Private\narguments are read from stdin and never placed in the command line."
+    )]
     Invoke {
+        /// The provider returned by vm actions list.
         provider: String,
+        /// The declared action ID returned by vm actions list.
         id: String,
+        /// Read the action's JSON arguments from stdin, including private fields.
         #[arg(long, required = true)]
         args_stdin: bool,
     },
