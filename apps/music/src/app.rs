@@ -1583,6 +1583,15 @@ impl MusicApp {
         }
     }
 
+    fn observed_duration_ms(&self) -> Option<u64> {
+        self.audio.duration_ms().or_else(|| {
+            self.local_file
+                .as_ref()
+                .filter(|file| self.pb.current.as_deref() == Some(&file.track.id))
+                .and_then(|file| file.observed_duration_ms)
+        })
+    }
+
     fn current_duration_ms(&self) -> u64 {
         if self
             .pb
@@ -1598,7 +1607,7 @@ impl MusicApp {
             .as_ref()
             .is_some_and(|file| self.pb.current.as_deref() == Some(&file.track.id))
         {
-            return self.audio.duration_ms().unwrap_or(0);
+            return self.observed_duration_ms().unwrap_or(0);
         }
         self.pb
             .current
@@ -1936,6 +1945,7 @@ impl MusicApp {
             }
             #[cfg(feature = "audio")]
             self.settle_resource_stream_after_rendered_frames(self.audio.frames_rendered());
+            self.observe_local_duration();
             if self.audio.reached_eos() {
                 // The staged stream ended. For a fully-streamed track this is a
                 // normal end-of-song; for a SABR-truncated free URL it fires
