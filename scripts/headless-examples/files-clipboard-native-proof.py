@@ -130,7 +130,19 @@ def capture(socket, output, name):
     pixels.assert_nonblank_png(path)
 
 
+def require_fixture_binaries(binaries):
+    required = ("shell", "tilo-launcher", "tilo-app", "tilo-app-package",
+                "tilo-runtime-bundle", "tilo-install",
+                "examples/packaged_native_governor", "examples/packaged_native_bootstrap")
+    missing = [name for name in required
+               if not (binaries / name).is_file() or not os.access(binaries / name, os.X_OK)]
+    if missing:
+        raise RuntimeError("build required signed fixture binaries before package preparation: "
+                           + ", ".join(missing))
+
+
 def proof(binaries, output, trash_restore=False, theme=None):
+    require_fixture_binaries(binaries)
     env, profile = scratch_session_env()
     if theme is not None:
         env["TILO_SHOTS_THEME"] = theme
