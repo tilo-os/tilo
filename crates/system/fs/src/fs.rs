@@ -33,7 +33,9 @@ use fuser::{
     ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen,
     ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
-use libc::{EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
+use libc::{
+    EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EROFS,
+};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::future::Future;
@@ -276,6 +278,58 @@ const fn is_permanent_commit_failure(errno: i32) -> bool {
 
 fn commit_errno(error: &io::Error) -> i32 {
     error.raw_os_error().unwrap_or(EIO)
+}
+
+/// The most bytes one file may stage in memory between a write and the
+/// commit that follows. `write` and `setattr(size)` take their sizes from the
+/// request, and the staging buffer is a `Vec` zero-filled to that size, so
+/// without a ceiling one `truncate -s 4T f` from any writer takes the whole
+/// daemon — and every open handle on the machine — down. `EFBIG` is what a
+/// file system answers a size it will not hold.
+const MAX_STAGED_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// The most bytes every staged buffer may hold together; past it a write
+/// that would grow a buffer answers `ENOSPC` until something commits.
+const MAX_STAGED_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Refuses a staged size the daemon will not hold in memory.
+fn check_staged_size(len: u64) -> Result<(), i32> {
+    if len > MAX_STAGED_FILE_BYTES {
+        Err(EFBIG)
+    } else {
+        Ok(())
+    }
+}
+
+/// Refuses growth that would take every staged buffer past the total.
+fn check_staged_growth(staged: u64, growth: u64) -> Result<(), i32> {
+    if staged.saturating_add(growth) > MAX_STAGED_TOTAL_BYTES {
+        Err(ENOSPC)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod staging_limit_tests {
+    use super::{
+        EFBIG, ENOSPC, MAX_STAGED_FILE_BYTES, MAX_STAGED_TOTAL_BYTES, check_staged_growth,
+        check_staged_size,
+    };
+
+    #[test]
+    fn staged_sizes_are_bounded_per_file_and_in_total() {
+        assert_eq!(check_staged_size(0), Ok(()));
+        assert_eq!(check_staged_size(MAX_STAGED_FILE_BYTES), Ok(()));
+        assert_eq!(check_staged_size(MAX_STAGED_FILE_BYTES + 1), Err(EFBIG));
+        assert_eq!(
+            check_staged_size(4 << 40),
+            Err(EFBIG),
+            "`truncate -s 4T` is refused"
+        );
+        assert_eq!(check_staged_growth(0, MAX_STAGED_TOTAL_BYTES), Ok(()));
+        assert_eq!(check_staged_growth(MAX_STAGED_TOTAL_BYTES, 1), Err(ENOSPC));
+        assert_eq!(check_staged_growth(u64::MAX, 1), Err(ENOSPC));
+    }
 }
 
 /// Name of the sibling that preserves bytes which could not be committed to
@@ -901,8 +955,10 @@ impl QuickFS {
         // `offset` crosses the FUSE boundary as an untrusted request value.
         let start = usize::try_from(offset).map_err(|_| EINVAL)?;
         let end = start.checked_add(data.len()).ok_or(EINVAL)?;
+        check_staged_size(end as u64)?;
         {
             let mut bufs = self.buffers();
+            let staged: u64 = bufs.values().map(|b| b.len() as u64).sum();
             let created = !bufs.contains_key(&ino);
             // or_insert keeps any buffer a racing op already created.
             let (buf, seeded_from) = match seed {
@@ -910,6 +966,7 @@ impl QuickFS {
                 None => (bufs.entry(ino).or_default(), None),
             };
             if end > buf.len() {
+                check_staged_growth(staged, (end - buf.len()) as u64)?;
                 buf.resize(end, 0);
             }
             buf.get_mut(start..end).ok_or(EINVAL)?.copy_from_slice(data);
@@ -5781,6 +5838,10 @@ impl Filesystem for QuickFS {
                 return;
             };
             // `new_size` crosses the FUSE boundary as an untrusted request value.
+            if let Err(e) = check_staged_size(new_size) {
+                reply.error(to_errno(e));
+                return;
+            }
             data.resize(usize::try_from(new_size).unwrap_or(usize::MAX), 0);
             let open = self.buffers().contains_key(&ino.0);
             // Documents always stage in the buffer (imported as a whole on

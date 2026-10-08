@@ -9,6 +9,10 @@ StandardInput=socket
 StandardOutput=socket
 StandardError=journal
 ExecStart=/usr/libexec/tilo-system-extension-dispatch
+# A request is one line. A connection that sends nothing must not hold one
+# of the socket's sixteen instances forever: sixteen idle connections would
+# otherwise wedge extension staging until reboot.
+TimeoutStartSec=30s
 
 # The peer can select only a literal activation class. It cannot supply an
 # artifact, a model manager override path, a command, or a reboot request.

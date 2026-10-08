@@ -2445,6 +2445,18 @@ impl ProtocolHandler for RelayProtocol {
     }
 }
 
+/// The most bytes a `Hello` or `HelloAck2` frame may declare. Both are read
+/// before the peer has proven anything, so the length prefix is the peer's
+/// word: at the session limit (`MAX_FRAME_BYTES`, 64 MiB, zero-filled on
+/// receipt) a few hundred idle connections would pin the host's memory.
+const MAX_HANDSHAKE_FRAME_BYTES: usize = 64 * 1024;
+/// How long an unauthenticated connection may take to finish the handshake.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+/// Connections allowed between `accept` and a verified `HelloAck2` at once.
+const MAX_PENDING_HANDSHAKES: usize = 256;
+static PENDING_HANDSHAKES: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(MAX_PENDING_HANDSHAKES);
+
 async fn handle_conn(
     ctx: RelayProtocol,
     connection: iroh::endpoint::Connection,
@@ -2452,10 +2464,21 @@ async fn handle_conn(
     mut recv: RecvStream,
 ) -> Result<(), RelayError> {
     ctx.metrics.inc_conns_accepted();
+    // Nothing below is trusted until `HelloAck2` verifies, so everything
+    // before that point is bounded: a permit, a deadline and a small frame.
+    let Ok(pending) = PENDING_HANDSHAKES.try_acquire() else {
+        return Err(RelayError::Iroh(
+            "too many connections awaiting authentication".into(),
+        ));
+    };
     // 1. Read the client Hello.
-    let hello_bytes = read_frame(&mut recv, MAX_FRAME_BYTES)
-        .await
-        .map_err(|e| RelayError::Iroh(format!("read hello: {e}")))?;
+    let hello_bytes = n0_future::time::timeout(
+        HANDSHAKE_DEADLINE,
+        read_frame(&mut recv, MAX_HANDSHAKE_FRAME_BYTES),
+    )
+    .await
+    .map_err(|_| RelayError::Iroh("hello timed out".into()))?
+    .map_err(|e| RelayError::Iroh(format!("read hello: {e}")))?;
     let hello: Hello = postcard::from_bytes(&hello_bytes)
         .map_err(|e| RelayError::Iroh(format!("decode hello: {e}")))?;
     let now_ns = unix_now_ns();
@@ -2496,15 +2519,22 @@ async fn handle_conn(
         .await
         .map_err(|e| RelayError::Iroh(format!("write ack: {e}")))?;
     // 3. Read HelloAck2.
-    let client_ack2_bytes = read_frame(&mut recv, MAX_FRAME_BYTES)
-        .await
-        .map_err(|e| RelayError::Iroh(format!("read ack2: {e}")))?;
+    let client_ack2_bytes = n0_future::time::timeout(
+        HANDSHAKE_DEADLINE,
+        read_frame(&mut recv, MAX_HANDSHAKE_FRAME_BYTES),
+    )
+    .await
+    .map_err(|_| RelayError::Iroh("ack2 timed out".into()))?
+    .map_err(|e| RelayError::Iroh(format!("read ack2: {e}")))?;
     let ack2: HelloAck2 = postcard::from_bytes(&client_ack2_bytes)
         .map_err(|e| RelayError::Iroh(format!("decode ack2: {e}")))?;
     if let Err(e) = auth::verify_hello_ack2(&ack2, &client_peer.device_public_key, &server_nonce) {
         ctx.metrics.inc_auth_rejected();
         return Err(RelayError::Iroh(format!("auth ack2 reject: {e}")));
     }
+    // Authenticated: the connection no longer counts against the
+    // pre-authentication budget.
+    drop(pending);
 
     ctx.metrics.inc_conns_authed();
 
@@ -2954,6 +2984,35 @@ fn parse_iroh_node_id(hex_id: &str) -> Option<PublicKey> {
 mod tests {
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert};
+
+    #[test]
+    fn a_full_hello_fits_the_unauthenticated_frame_bound() {
+        // The bound exists to refuse a declared length nobody honest sends;
+        // a certificate with an outsized label must still fit under it.
+        let (root_sk, user) = UserIdentity::generate("Alice", 1);
+        let (_device_sk, device) = DeviceIdentity::generate(&"label ".repeat(200), 100);
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: device.public_key,
+            device_label: device.label,
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 200,
+            expires_at_ns: None,
+            signature: [0u8; 64],
+        };
+        sign_device_cert(&mut cert, &root_sk).unwrap();
+        let hello = Hello {
+            cert,
+            client_nonce: [1; 32],
+        };
+        let bytes = postcard::to_allocvec(&hello).unwrap();
+        assert!(
+            bytes.len() < MAX_HANDSHAKE_FRAME_BYTES,
+            "a {}-byte hello must fit under the {MAX_HANDSHAKE_FRAME_BYTES}-byte handshake bound",
+            bytes.len(),
+        );
+        assert!(MAX_HANDSHAKE_FRAME_BYTES < MAX_FRAME_BYTES);
+    }
 
     fn test_handshake_trust(
         live_policy: Arc<std::sync::RwLock<TrustPolicy>>,
