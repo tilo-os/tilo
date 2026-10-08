@@ -56,6 +56,32 @@ impl BrokerActionHost {
         }
     }
 
+    /// Legacy source fixtures delegate into the production broker's native
+    /// authority checks. Live palette/control use maintained action sessions.
+    #[cfg(test)]
+    pub(crate) fn invoke_local_person_job(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
+        if self.own_peer.is_some() || self.launch.is_some() {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        let state = std::sync::Arc::clone(self.broker.state());
+        let origin = caller.clone();
+        let invocation = request.invocation;
+        state
+            .clone()
+            .action_invoke_local_person(caller, request)
+            .map(move |result| {
+                let receipt = result?;
+                let job = state
+                    .remote_job(&origin, &invocation)
+                    .ok_or(ActionHostError::UnknownInvocation)?;
+                Ok((job, receipt))
+            })
+    }
+
     /// [`ActionHost::invoke`], also naming the broker job once admitted —
     /// for an in-process caller, such as the palette, that lists jobs.
     #[must_use]
