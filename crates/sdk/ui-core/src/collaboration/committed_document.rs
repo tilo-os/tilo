@@ -975,24 +975,27 @@ pub(super) async fn install(
                 }
                 Ok(Ok(reply @ Reply::Chunk { .. })) => {
                     set_read_ready(&inbound, &ready, false);
-                    match read_capture(&channel, reply).await {
-                        Ok((read, next)) => {
-                            current = Some(read);
-                            revision = Some(next);
-                            continue;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, route = %key, "committed document capture failed");
-                            revision = None;
-                        }
+                    if let Ok((read, next)) = read_capture(&channel, reply).await {
+                        current = Some(read);
+                        revision = Some(next);
+                        continue;
                     }
+                    #[cfg(any(test, feature = "test-support"))]
+                    tracing::warn!("committed document capture failed");
+                    revision = None;
                 }
                 Ok(Ok(Reply::Unavailable)) => {
                     set_read_ready(&inbound, &ready, false);
                     revision = None;
                 }
-                other => {
-                    tracing::warn!(result = ?other, route = %key, "committed document polling stopped");
+                _ => {
+                    #[cfg(any(test, feature = "test-support"))]
+                    tracing::warn!(
+                        timed_out = result.is_err(),
+                        rpc_failed = matches!(&result, Ok(Err(_))),
+                        unexpected_reply = matches!(&result, Ok(Ok(_))),
+                        "committed document polling stopped"
+                    );
                     set_read_ready(&inbound, &ready, false);
                     break;
                 }
