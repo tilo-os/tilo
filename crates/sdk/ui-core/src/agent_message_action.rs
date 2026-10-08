@@ -41,6 +41,7 @@ fn providers_failed(failure: ProvidersFailure<'_>) -> AgentMessagePoll {
 }
 
 fn observe_providers_poll(result: &str, class: Option<&str>, remote_class: Option<&str>) {
+    #[cfg(test)]
     let row = serde_json::json!({
         "phase": "providers", "result": result,
         "refusal_class": class, "remote_class": remote_class,
@@ -51,9 +52,14 @@ fn observe_providers_poll(result: &str, class: Option<&str>, remote_class: Optio
             rows.push(row.clone());
         }
     });
-    if crate::host::environment().diagnostics.presentation_profile {
-        crate::native_scenario::log::emit_json("tilo-agent-message-discovery", row);
-    }
+    tracing::debug!(
+        target: "tilo_agent_delivery",
+        phase = "providers",
+        result,
+        refusal_class = class.unwrap_or("none"),
+        remote_class = remote_class.unwrap_or("none"),
+        "native-message-discovery"
+    );
 }
 
 #[cfg(test)]
