@@ -217,13 +217,7 @@ pub(super) async fn run(
     )
     .await;
     inspect_while_ui_caller_is_blocked(&context, &authority);
-    eprintln!(
-        "owner merge phases before edit: {:?}",
-        mounted
-            .iter()
-            .map(|app| app.code.app.controlled_document_merge_phase_for_test())
-            .collect::<Vec<_>>()
-    );
+    report_owner_phases("before edit", &mounted);
     let edited = format!("{BODY}// edited through a mounted resource action\n");
     mounted[0].invoke("replace-text", Some(&edited));
     drive(
@@ -236,13 +230,7 @@ pub(super) async fn run(
         2,
     )
     .await;
-    eprintln!(
-        "owner merge phases after first edit: {:?}",
-        mounted
-            .iter()
-            .map(|app| app.code.app.controlled_document_merge_phase_for_test())
-            .collect::<Vec<_>>()
-    );
+    report_owner_phases("after first edit", &mounted);
     // A second fresh edit proves the receiving root remains connected after
     // its first remote merge; no app remount or record-graph copy occurs.
     let edited_again = format!("{edited}// second mounted device edits\n");
@@ -279,6 +267,16 @@ pub(super) async fn run(
             "private admission stays on the original document route, without a continuation-label shortcut"
         );
     }
+}
+
+fn report_owner_phases(stage: &str, mounted: &[Mounted]) {
+    eprintln!(
+        "owner merge phases {stage}: {:?}",
+        mounted
+            .iter()
+            .map(|app| app.code.app.controlled_document_merge_phase_for_test())
+            .collect::<Vec<_>>()
+    );
 }
 
 async fn enroll_second(
