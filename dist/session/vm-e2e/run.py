@@ -418,7 +418,7 @@ def run_test(args) -> int:
                        survived_s=round(survived, 1))
             if st.get("compositor_pid") != pid:
                 return 1
-        return 0
+        return 0 if all(check["status"] == "pass" for check in report.checks) else 1
     except (Fail, subprocess.SubprocessError, OSError) as error:
         report.add("H00", "The test ran to completion", False, str(error))
         return 1
