@@ -568,6 +568,7 @@ where
             };
             match frame {
                 EnvelopeV2::State(env) => {
+                    trace_native_publication("server_received", &env, None);
                     let prefix_len =
                         eligible_checkpoint_prefix(&env, backlog.iter().map(|(frame, _)| frame));
                     let mut prefix = vec![env];
@@ -896,7 +897,11 @@ fn private_may_overtake<'a>(
 
 // Hash the same signed message bytes as the native publication cursor. This
 // target is opt-in: ordinary relay operation does not decode or hash for tracing.
-fn trace_native_publication(phase: &str, envelope: &Envelope, recipient: Option<&[u8; 32]>) {
+pub(crate) fn trace_native_publication(
+    phase: &str,
+    envelope: &Envelope,
+    recipient: Option<&[u8; 32]>,
+) {
     if !tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
         return;
     }
@@ -3735,6 +3740,17 @@ async fn publish_checkpoint_commit(
     metrics: &crate::metrics::Metrics,
     mut commit: StateCommit,
 ) -> Result<(), crate::store::StoreError> {
+    trace_native_publication(
+        if commit.activation_error.is_some() {
+            "prefix_activation_error"
+        } else if commit.publish {
+            "prefix_durable"
+        } else {
+            "prefix_suppressed"
+        },
+        &commit.envelope,
+        None,
+    );
     if !commit.publish {
         return Ok(());
     }
@@ -3962,6 +3978,9 @@ async fn enqueue_checkpoint_prefix(
     metrics: Arc<crate::metrics::Metrics>,
     inbound_budget: Vec<Option<Arc<tokio::sync::OwnedSemaphorePermit>>>,
 ) -> Result<(), PeerError> {
+    for envelope in &envelopes {
+        trace_native_publication("prefix_received", envelope, None);
+    }
     let diagnostics = crate::persistence::diagnostics();
     let admitted_at = diagnostics.then(std::time::Instant::now);
     let message_units = u32::try_from(envelopes.len())
@@ -4028,6 +4047,20 @@ async fn enqueue_checkpoint_prefix(
                 }
                 let projection_elapsed_ms =
                     projection_started.map_or(0, |started| started.elapsed().as_millis());
+                if tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+                    for (index, input) in batch.inputs.iter().enumerate() {
+                        use crate::store::shell_selection::IncomingDisposition;
+                        let disposition = batch.projected.as_ref().and_then(|outcome| outcome.dispositions.get(index));
+                        let phase = match disposition {
+                            Some(IncomingDisposition::Covered) => "prefix_covered",
+                            Some(IncomingDisposition::Staged) => "prefix_staged",
+                            Some(IncomingDisposition::SelectedLive) => "prefix_selected_live",
+                            Some(IncomingDisposition::Original) => "prefix_original",
+                            None => "prefix_unclassified",
+                        };
+                        trace_native_publication(phase, &input.envelope, None);
+                    }
+                }
                 if diagnostics {
                     use crate::store::shell_selection::{
                         BatchProjectionReason, IncomingDisposition, Publication,
