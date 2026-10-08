@@ -1044,7 +1044,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 provider.close()
 
     def test_marker_provider_invokes_one_discovered_exact_chat_action(self):
-        provider = PROOF.HeldProvider(marker_agent="tide")
+        provider = PROOF.HeldProvider(marker_agent="tide", marker_resource="chat.person:tide")
         provider.require_owner_admission(
             lambda: {"phase": "planning", "sequence": 1, "run_epoch": 7}
         )
@@ -1083,7 +1083,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 provider.close()
 
     def test_marker_provider_finishes_third_turn_without_releasing_superseded_second(self):
-        provider = PROOF.HeldProvider(marker_agent="tide")
+        provider = PROOF.HeldProvider(marker_agent="tide", marker_resource="chat.person:tide")
         provider.require_owner_admission(
             lambda: {"phase": "planning", "sequence": 1, "run_epoch": 7}
         )
@@ -1150,7 +1150,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                             "In so.tilo.chat: Tide (chat.agent) — resource chat.person:tide\n"
                             "  " + expected + " — Open conversation\n"
                             "  " + expected + " — Open conversation\n" +
-                            "\nThe request:\n\nOpen it."}]}, "tide"
+                            "\nThe request:\n\nOpen it."}]}, "tide", "chat.person:tide"
         ), expected)
         for request in (
                 {"messages": [{"role": "user", "content":
@@ -1170,9 +1170,21 @@ class PresentedEditorTargetTests(unittest.TestCase):
                                 "  broker:9:somewhere#else — label " + expected + "\n"
                                 "The request:\n\n" + expected}]}):
             with self.subTest(request=request), self.assertRaises(RuntimeError):
-                PROOF.marker_operation_from_request(request, "tide")
+                PROOF.marker_operation_from_request(request, "tide", "chat.person:tide")
         with self.assertRaises(RuntimeError):
-            PROOF.marker_operation_from_request({"messages": []}, "Tide with spaces")
+            PROOF.marker_operation_from_request({"messages": []}, "Tide with spaces", "chat.person:tide")
+
+    def test_marker_operation_keeps_discovered_bound_resource_opaque_and_exact(self):
+        resource = "tilo-ui-bound:v1:host:current:636861742e706572736f6e3a74696465"
+        expected = f"broker:9:{resource}#open-agent-conversation"
+        request = {"messages": [{"role": "user", "content":
+            "Operations published right now:\n\n"
+            f"In so.tilo.chat: Tide (chat.agent) — resource {resource}\n"
+            f"  {expected} — Open conversation\nThe request:\n\nOpen it."}]}
+        self.assertEqual(PROOF.marker_operation_from_request(request, "tide", resource), expected)
+        for stale in [None, "chat.person:tide", resource.replace("current", "retired")]:
+            with self.subTest(resource=stale), self.assertRaises(RuntimeError):
+                PROOF.marker_operation_from_request(request, "tide", stale)
 
     def test_marker_stage_uses_real_governance_and_accessibility_doors(self):
         rows = [{

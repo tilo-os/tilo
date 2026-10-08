@@ -1745,10 +1745,12 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
     return True
 
 
-def marker_operation_from_request(request, agent):
+def marker_operation_from_request(request, agent, resource):
     """Select one operation from the Agent's trusted live-catalogue prefix."""
     if not isinstance(agent, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", agent):
         raise RuntimeError("marker proof requires one canonical Agent id")
+    if not isinstance(resource, str) or not re.fullmatch(r"[a-zA-Z0-9._:-]{1,4096}", resource):
+        raise RuntimeError("marker proof requires the discovered current resource")
     messages = request.get("messages") if isinstance(request, dict) else None
     if not isinstance(messages, list):
         raise RuntimeError("the model request has no bounded message list")
@@ -1772,7 +1774,7 @@ def marker_operation_from_request(request, agent):
     if catalogue is None:
         raise RuntimeError("the model request has no trusted live catalogue")
     pattern = re.compile(
-        rf"^  (broker:\d+:chat\.person:{re.escape(agent)}#open-agent-conversation) — ",
+        rf"^  (broker:\d+:{re.escape(resource)}#open-agent-conversation) — ",
     )
     matches = {
         match.group(1)
@@ -1791,7 +1793,7 @@ class HeldProvider:
     logged. Only a count/event is evidence; no credentials enter state-dump.
     The fixture cannot initiate a request or invoke any desktop action.
     """
-    def __init__(self, marker_agent=None):
+    def __init__(self, marker_agent=None, marker_resource=None):
         self.received = threading.Event()
         self.requests = 0
         self.refused_requests = 0
@@ -1801,6 +1803,7 @@ class HeldProvider:
         self.owner_admissions = {}
         self.owner_admission_probe = None
         self.marker_agent = marker_agent
+        self.marker_resource = marker_resource
         self.marker_operations = {}
         self.closed = False
         self.request_lock = threading.Condition()
@@ -1835,7 +1838,7 @@ class HeldProvider:
                 if owner.marker_agent is not None:
                     try:
                         marker_operation = marker_operation_from_request(
-                            request, owner.marker_agent
+                            request, owner.marker_agent, owner.marker_resource
                         )
                     except RuntimeError:
                         with owner.request_lock:
@@ -2882,9 +2885,14 @@ def start_managed_agent(socket, room, agent, process):
     return {"semantic": True, "invocation": terminal_invocation(receipt)}
 
 
-def managed_agent_marker_stage(socket, room, provider, output, process, size):
+def managed_agent_marker_stage(socket, room, record, provider, output, process, size):
     """Invoke one least-privilege Chat action and activate its real marker."""
     agent = "tide"
+    target = wait_for("current semantic Agent marker target", lambda: offered_agent_action(
+        socket, room, record, agent, "open-agent-conversation"), process)
+    # Preserve the discovered opaque address verbatim. Never reconstruct or
+    # decode a mounted component's transport alias from its semantic Person id.
+    provider.marker_resource = target["resource"]
     grant = grant_exact_marker_action(socket, room, agent, process, output)
     queue = wait_for("owner-published Queue task action", lambda: offered_desktop_action(
         socket, room, "tasks", "desktop:tasks", "queue"), process)
@@ -4816,7 +4824,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                 return proven
             if marker_only:
                 marker_evidence = managed_agent_marker_stage(
-                    socket, enrollment["room"], provider, output, shell, size
+                    socket, enrollment["room"], category[0]["record"], provider, output, shell, size
                 )
                 proven = bool(
                     marker_evidence.get("provider_request_count") == 1
