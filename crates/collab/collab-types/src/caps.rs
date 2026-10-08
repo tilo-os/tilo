@@ -12,6 +12,9 @@
 
 use serde::{Deserialize, Serialize};
 pub mod action_authority;
+pub mod net;
+
+pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, host_covers};
 
 use crate::channel::ArtifactId;
 use crate::crypto::Ed25519PublicKey;
@@ -275,8 +278,10 @@ pub enum Scope {
     /// A hardware/system device class the portal brokers: `"camera"`,
     /// `"microphone"`, `"screencast"`. Filesystem- and op-inert.
     Device(String),
-    /// An outbound network host. `"*"` matches every host; a leading dot
+    /// An outbound network host, stored as written and read through
+    /// [`NetHostPattern`]: `"*"` matches every host; a leading dot (or `*.`)
     /// matches the domain and subdomains; anything else is an exact hostname.
+    /// An IP literal is not a host and matches nothing.
     NetHost(String),
     /// One action an app exports, `(app, action)` — the finest scope: exactly
     /// one verb-bearing operation on one app's surface.
@@ -389,24 +394,6 @@ pub fn path_covers(prefix: &str, path: &str) -> bool {
     with_sep.push_str(prefix);
     with_sep.push('/');
     path.starts_with(&with_sep)
-}
-
-/// Does the host pattern `pattern` cover `host`?
-///
-/// `"*"` covers every host; a leading `.` covers the domain and
-/// subdomains. Anything else is an exact, case-insensitive match.
-/// Deliberately not a glob — `*.evil.com` style patterns invite mistakes
-/// on this security boundary.
-pub fn host_covers(pattern: &str, host: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    let pattern = pattern.to_ascii_lowercase();
-    let host = host.to_ascii_lowercase();
-    if let Some(domain) = pattern.strip_prefix('.') {
-        return host == domain || host.ends_with(&pattern);
-    }
-    pattern == host
 }
 
 /// A resource a subject might act on. Resources nest — see

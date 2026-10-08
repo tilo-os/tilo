@@ -2378,6 +2378,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tracing",
  "uuid",
  "web-time",
  "wire-frame",
@@ -16739,6 +16740,7 @@ dependencies = [
 name = "tilo-egress"
 version = "0.1.0"
 dependencies = [
+ "collab-types",
  "libc",
  "tempfile",
  "thiserror 2.0.21",

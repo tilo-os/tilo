@@ -595,13 +595,22 @@ inputs = [
   "tools/with-test-environment.sh",
   "scripts/headless-examples/startup-frame-timeline.py",
   "scripts/headless-examples/_control.py",
+  # The NetHost grant vectors apps must answer like environments do.
+  "crates/collab/collab-types/tests/net_host_vectors.txt",
 ]
 readers = [
   "crates/packaging/launcher/src/manifest.rs",
+  "crates/packaging/launcher/src/netgate.rs",
   "crates/packaging/launcher/src/seccomp.rs",
   "crates/packaging/launcher/src/services.rs",
   "crates/packaging/launcher/examples/startup_frame_timeline.rs",
 ]
+
+[[cargo]]
+package = "tilo-egress"
+# The NetHost grant vectors environments must answer like apps do.
+inputs = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
+readers = ["crates/runtime/egress/src/policy.rs"]
 
 [[cargo]]
 package = "tilo-vm"
