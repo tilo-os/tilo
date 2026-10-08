@@ -215,6 +215,12 @@ impl NativeAudio {
     pub fn eos(&self) -> bool {
         self.status.lock().is_ok_and(|state| state.eos)
     }
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.status
+            .lock()
+            .ok()
+            .and_then(|state| (state.duration > 0).then_some(state.duration))
+    }
     pub fn frames(&self) -> u64 {
         if self.status.lock().is_ok_and(|state| {
             state
@@ -386,8 +392,7 @@ async fn run(
         session.shutdown();
         return Ok(());
     }
-    let track =
-        SpotifyUri::from_uri(&uri).map_err(|_| "Invalid Spotify track identity".to_string())?;
+    let track = playback_metadata(&session, &uri).await?;
     let Some(sink) = authorized_sink(&session, shared, &output).await? else {
         return Ok(());
     };
@@ -456,7 +461,7 @@ async fn run(
                     }
                     shared.update(|state| { state.eos = true; state.playing = false; }); break;
                 },
-                Some(PlayerEvent::Unavailable { .. }) => { shared.update(|state| state.error = Some("Spotify cannot play this track in your account or region".into())); break; },
+                Some(PlayerEvent::Unavailable { .. }) => { shared.update(|state| state.error = Some("Spotify could not load this track; check playback authorization and availability".into())); break; },
                 None => { shared.update(|state| state.error = Some("Spotify playback worker stopped".into())); break; },
                 _ => {},
             },
@@ -548,12 +553,39 @@ impl Drop for SessionShutdown {
     }
 }
 
+async fn playback_metadata(session: &Session, uri: &str) -> Result<SpotifyUri, String> {
+    let track =
+        SpotifyUri::from_uri(uri).map_err(|_| "Invalid Spotify track identity".to_string())?;
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        session.spclient().get_track_metadata(&track),
+    )
+    .await
+    .map_err(|_| "Spotify playback metadata request timed out".to_string())?
+    .map_err(|error| {
+        format!(
+            "Spotify playback metadata request failed ({:?}); check playback authorization",
+            error.kind
+        )
+    })?;
+    Ok(track)
+}
+
 async fn connect_session(
     connection: (SessionConfig, Credentials),
     account: &str,
 ) -> Result<Session, String> {
     let (config, credentials) = connection;
     let session = Session::new(config, None); // No disk credential or audio cache.
+    session.login5().set_external_token_provider(Arc::new(|| {
+        Box::pin(async {
+            tokio::task::spawn_blocking(custody_streaming_bearer)
+                .await
+                .map_err(|_| {
+                    librespot::core::Error::unavailable("Spotify credential worker stopped")
+                })?
+        })
+    }));
     let result = tokio::time::timeout(Duration::from_secs(20), session.connect(credentials, false))
         .await
         .map_err(|_| "Spotify streaming connection timed out".to_string())
@@ -567,6 +599,30 @@ async fn connect_session(
         return Err("Catalogue and playback are signed in to different Spotify accounts".into());
     }
     Ok(session)
+}
+
+fn custody_streaming_bearer() -> Result<librespot::core::token::Token, librespot::core::Error> {
+    let (token, expires) = account_custody::Custodian::live()
+        .oauth_access_token_with_expiry(
+            &accounts::AccountId::from(STREAMING_ACCOUNT.to_string()),
+            STREAMING_USE,
+            false,
+        )
+        .map_err(|_| {
+            librespot::core::Error::unauthenticated("Spotify playback authorization is unavailable")
+        })?;
+    let lifetime = expires
+        .and_then(|expiry| expiry.checked_sub(tilo_clock::unix_now()))
+        .ok_or_else(|| {
+            librespot::core::Error::unauthenticated("Spotify did not provide a valid bearer expiry")
+        })?;
+    Ok(librespot::core::token::Token {
+        access_token: token.as_str().to_owned(),
+        expires_in: Duration::from_secs(lifetime),
+        token_type: "Bearer".into(),
+        scopes: Vec::new(),
+        timestamp: tilo_clock::SystemTime::now(),
+    })
 }
 
 async fn drain_output(pipeline: &gst::Pipeline, cancel: &AtomicBool) -> Result<(), String> {
@@ -981,5 +1037,63 @@ mod tests {
             "bounded commands must report refusal rather than fabricate success"
         );
         assert!(native.error().unwrap().contains("command queue"));
+    }
+    #[test]
+    fn external_oauth_bearer_never_uses_stored_credential_login5() {
+        use librespot::core::{Error, error::ErrorKind, token::Token};
+        use std::time::SystemTime;
+        tilo_rt::block_on(async {
+            let session = Session::new(
+                SessionConfig {
+                    client_id: "fixture-own-oauth-client".into(),
+                    ..Default::default()
+                },
+                None,
+            );
+            session
+                .login5()
+                .set_external_token_provider(std::sync::Arc::new(|| {
+                    Box::pin(async {
+                        Ok(Token {
+                            access_token: "fixture-approved-bearer".into(),
+                            expires_in: Duration::from_secs(60),
+                            token_type: "Bearer".into(),
+                            scopes: vec!["streaming".into()],
+                            timestamp: SystemTime::now(),
+                        })
+                    })
+                }));
+            let token = session.login5().auth_token().await.unwrap();
+            assert_eq!(token.access_token, "fixture-approved-bearer");
+            assert_eq!(session.client_id(), "fixture-own-oauth-client");
+            // This disconnected session has no AP stored credentials. A fallback
+            // to login5 would fail, and must never hide provider refusal/expiry.
+            session
+                .login5()
+                .set_external_token_provider(std::sync::Arc::new(|| {
+                    Box::pin(async { Err(Error::invalid_argument("fixture-provider-refusal")) })
+                }));
+            let error = session.login5().auth_token().await.unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidArgument);
+            assert!(error.to_string().contains("fixture-provider-refusal"));
+            session
+                .login5()
+                .set_external_token_provider(std::sync::Arc::new(|| {
+                    Box::pin(async {
+                        Ok(Token {
+                            access_token: "fixture-expired-bearer".into(),
+                            expires_in: Duration::ZERO,
+                            token_type: "Bearer".into(),
+                            scopes: Vec::new(),
+                            timestamp: SystemTime::now(),
+                        })
+                    })
+                }));
+            assert_eq!(
+                session.login5().auth_token().await.unwrap_err().kind,
+                ErrorKind::Unauthenticated
+            );
+        })
+        .unwrap();
     }
 }
