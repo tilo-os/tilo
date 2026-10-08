@@ -4416,6 +4416,78 @@ mod tests {
         );
     }
 
+    fn assert_invalid_ime_source_retires_composition(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        channel: &str,
+        id: &str,
+    ) {
+        feed_root_mods(
+            app,
+            doc,
+            &WindowEvent::Ime(winit::event::Ime::Preedit("京".into(), Some((0, 3)))),
+            Modifiers::default(),
+        );
+        assert!(
+            app.agent_surfaces[channel]
+                .view
+                .composer_main
+                .is_composing()
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_ime_source_changed(
+            app,
+            Some("unknown-surface"),
+        );
+        assert!(
+            !app.agent_surfaces[channel]
+                .view
+                .composer_main
+                .is_composing(),
+            "an unbound continuation cannot preserve the editor's preedit"
+        );
+
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_ime_source_changed(app, Some(id));
+        feed_root_mods(
+            app,
+            doc,
+            &WindowEvent::Ime(winit::event::Ime::Preedit("京".into(), Some((0, 3)))),
+            Modifiers::default(),
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_ime_source_changed(app, None);
+        assert!(
+            !app.agent_surfaces[channel]
+                .view
+                .composer_main
+                .is_composing(),
+            "ending the authenticated source route restores ordinary blur semantics"
+        );
+    }
+
+    fn return_detached_editor_through_accessibility(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        id: String,
+    ) {
+        let return_target = format!("agent-surface:{id}|{}", Hit::AgentWindow.semantic_id());
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+                app,
+                &id,
+                &return_target,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+            ),
+            "the detached accessibility tree returns through the same retained control"
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
+        );
+        assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
+        assert_eq!(app.composer_main.value(), "東京");
+    }
+
     #[test]
     fn detached_agent_editor_routes_keyboard_selection_undo_ime_and_accessible_return() {
         let mut doc = AutoCommit::new();
@@ -4438,6 +4510,7 @@ mod tests {
             &WindowEvent::Ime(winit::event::Ime::Preedit("東".into(), Some((0, 3)))),
             Modifiers::default(),
         );
+        assert!(app.composer_main.is_composing());
         app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
         let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
             .expect("Float publishes the shared-host request");
@@ -4461,15 +4534,26 @@ mod tests {
                 rect: ui::floating_surface::protocol_rect_array(compact),
             },
         );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_ime_source_changed(
+            &mut app,
+            Some(&id),
+        );
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
             &mut app,
             Some(&id),
-            true,
+            false,
         );
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, Some(&id));
         render_detached_surfaces(&mut app);
 
         let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        assert!(
+            app.agent_surfaces[&channel]
+                .view
+                .composer_main
+                .is_composing(),
+            "the source-held native route keeps the same editor's real preedit while the child is unfocused"
+        );
         assert_eq!(
             app.agent_surfaces[&channel].view.composer_main.selection(),
             (0, "Original draft".len())
@@ -4485,6 +4569,11 @@ mod tests {
             &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
             Modifiers::default(),
         );
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "東京",
+            "the primary source commits once into the retained detached editor"
+        );
         feed_root_mods(&mut app, &mut doc, &key_char("!"), Modifiers::default());
         feed_root_mods(&mut app, &mut doc, &key_char("z"), mods(true, false));
         assert_eq!(
@@ -4493,27 +4582,11 @@ mod tests {
         );
         assert!(
             ui::widget::FloatingSurfaceWidgetExt::floating_surface_ime(&app, &id).is_some(),
-            "the focused native child exports the shared editor's actual IME caret"
+            "the source-held detached editor exports its actual IME caret"
         );
 
-        let return_target = format!("agent-surface:{id}|{}", Hit::AgentWindow.semantic_id());
-        assert!(
-            ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
-                &mut app,
-                &id,
-                &return_target,
-                &ui::a11y::Action::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ),
-            "the detached accessibility tree returns through the same retained control"
-        );
-        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
-            &mut app,
-            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
-        );
-        assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
-        assert_eq!(app.composer_main.value(), "東京");
+        assert_invalid_ime_source_retires_composition(&mut app, &mut doc, &channel, &id);
+        return_detached_editor_through_accessibility(&mut app, &mut doc, id);
     }
 
     #[test]

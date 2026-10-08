@@ -2019,6 +2019,12 @@ impl FloatingSurfaceProvider for WindowGroup {
         }
     }
 
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(host, id);
+        }
+    }
+
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         for (_, host) in &mut self.hosts {
             FloatingSurfaceProvider::on_floating_surface_event_source(host, id);

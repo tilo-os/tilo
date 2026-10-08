@@ -440,6 +440,16 @@ mod component_adapter {
             }
         }
 
+        fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.on_floating_surface_ime_source_changed(id);
+            }
+        }
+
         fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {

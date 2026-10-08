@@ -2864,6 +2864,12 @@ impl FloatingSurfaceProvider for GroupRow {
         }
     }
 
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(group, id);
+        }
+    }
+
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         for group in &mut self.groups {
             FloatingSurfaceProvider::on_floating_surface_event_source(group, id);

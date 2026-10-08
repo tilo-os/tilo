@@ -546,6 +546,11 @@ impl<S: RichTextSource + 'static> Composer<S> {
         Widget::is_focused(self.host.widget())
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_composing(&self) -> bool {
+        self.host.widget().editor().is_composing()
+    }
+
     /// Measure the canonical paragraphs before reserving the composer band.
     pub fn measure(
         &mut self,

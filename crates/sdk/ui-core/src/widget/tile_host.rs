@@ -1386,6 +1386,12 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        if let TileContent::App(widget) = &mut self.content {
+            widget.on_floating_surface_ime_source_changed(id);
+        }
+    }
+
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         if let TileContent::App(widget) = &mut self.content {
             widget.on_floating_surface_event_source(id);

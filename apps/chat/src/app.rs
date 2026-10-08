@@ -753,6 +753,10 @@ pub struct ChatApp {
         HashMap<Id, crate::agent_conversation_surface::AgentConversationSurface>,
     pub(crate) agent_surface_requests: VecDeque<ui::floating_surface::FloatingSurfaceRequest>,
     pub(crate) focused_agent_surface: Option<String>,
+    /// Secondary editor whose exact platform handoff still uses the primary
+    /// window as its text-input source. This is distinct from native child
+    /// focus: the child is intentionally unfocused while a preedit is live.
+    pub(crate) ime_source_agent_surface: Option<String>,
     pub(crate) input_agent_surface: Option<String>,
     pub(crate) agent_conversation_drag: Option<AgentConversationDrag>,
     /// Exact retained Agent route represented by the primary window when no
@@ -1073,6 +1077,7 @@ impl ChatApp {
             agent_surfaces: HashMap::new(),
             agent_surface_requests: VecDeque::new(),
             focused_agent_surface: None,
+            ime_source_agent_surface: None,
             input_agent_surface: None,
             agent_conversation_drag: None,
             detached_agent_placeholder: None,
@@ -3071,6 +3076,9 @@ impl ChatApp {
         if self.focused_agent_surface.as_deref() == Some(id) {
             self.focused_agent_surface = None;
         }
+        if self.ime_source_agent_surface.as_deref() == Some(id) {
+            self.ime_source_agent_surface = None;
+        }
         if self.input_agent_surface.as_deref() == Some(id) {
             self.input_agent_surface = None;
         }
@@ -5054,9 +5062,28 @@ impl FloatingSurfaceProvider for ChatApp {
             self.focused_agent_surface = None;
         }
         for surface in self.agent_surfaces.values_mut() {
-            surface
-                .view
-                .set_focus(focused && id == Some(surface.id.as_str()));
+            let surface_id = Some(surface.id.as_str());
+            surface.view.set_focus(
+                self.focused_agent_surface.as_deref() == surface_id
+                    || self.ime_source_agent_surface.as_deref() == surface_id,
+            );
+        }
+    }
+
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        self.ime_source_agent_surface = id
+            .filter(|id| {
+                self.agent_surfaces
+                    .values()
+                    .any(|surface| surface.id == *id)
+            })
+            .map(str::to_owned);
+        for surface in self.agent_surfaces.values_mut() {
+            let surface_id = Some(surface.id.as_str());
+            surface.view.set_focus(
+                self.focused_agent_surface.as_deref() == surface_id
+                    || self.ime_source_agent_surface.as_deref() == surface_id,
+            );
         }
     }
 

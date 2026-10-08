@@ -592,6 +592,13 @@ pub trait FloatingSurfaceProvider {
     /// Route native keyboard focus to the exact presentation instance.
     fn on_floating_surface_focus_changed(&mut self, _id: Option<&str>, _focused: bool) {}
 
+    /// Keep the exact secondary presentation's editor logically focused while
+    /// the platform deliberately retains text-input focus on its source.
+    ///
+    /// This is a host-authenticated input route, not a claim made by the app.
+    /// The host clears it when the continuation ends or no longer validates.
+    fn on_floating_surface_ime_source_changed(&mut self, _id: Option<&str>) {}
+
     /// Identify the native surface delivering the current input event. The
     /// host resets this immediately after dispatch; it grants no authority.
     fn on_floating_surface_event_source(&mut self, _id: Option<&str>) {}
@@ -2147,6 +2154,7 @@ pub trait Widget {
 /// contract contains only capability accessors.
 pub trait FloatingSurfaceWidgetExt {
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool);
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>);
     fn on_floating_surface_event_source(&mut self, id: Option<&str>);
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode>;
     fn perform_floating_surface_accessibility_action(
@@ -2198,6 +2206,12 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
         if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.on_floating_surface_focus_changed(id, focused);
+        }
+    }
+
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_ime_source_changed(id);
         }
     }
 

@@ -222,6 +222,10 @@ mod floating_source_focus_tests {
                 .borrow_mut()
                 .push((id.map(str::to_owned), focused));
         }
+        fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+            let route = id.map_or_else(|| "ime:none".into(), |id| format!("ime:{id}"));
+            self.events.borrow_mut().push((Some(route), true));
+        }
     }
 
     impl Widget for FocusProbe {
@@ -391,12 +395,16 @@ mod floating_source_focus_tests {
         forward_native_surface_focus(&mut root, Some("agent-a"), &WindowEvent::Focused(true));
         forward_native_surface_focus(&mut root, Some("agent-b"), &WindowEvent::Focused(true));
         forward_native_surface_focus(&mut root, Some("agent-a"), &WindowEvent::Focused(false));
+        root.on_floating_surface_ime_source_changed(Some("agent-a"));
+        root.on_floating_surface_ime_source_changed(None);
         assert_eq!(
             *events.borrow(),
             vec![
                 (Some("agent-a".into()), true),
                 (Some("agent-b".into()), true),
                 (Some("agent-a".into()), false),
+                (Some("ime:agent-a".into()), true),
+                (Some("ime:none".into()), true),
             ]
         );
     }
@@ -1488,6 +1496,17 @@ impl AppHandler {
             .unwrap_or(false)
     }
 
+    fn set_floating_ime_continuation(&mut self, next: Option<String>) {
+        if self.floating_ime_continuation == next {
+            return;
+        }
+        self.floating_ime_continuation = next;
+        let id = self.floating_ime_continuation.clone();
+        self.app
+            .root_widget
+            .on_floating_surface_ime_source_changed(id.as_deref());
+    }
+
     fn sync_ime(&mut self, window: &Window) {
         let _entry = self.app.enter_wake_scope();
         let continued = self.floating_ime_continuation.as_deref().and_then(|id| {
@@ -1497,7 +1516,7 @@ impl AppHandler {
         if self.floating_ime_continuation.is_some() && continued.is_none() {
             // The exact editor or host-provided coordinate binding retired.
             // Never route subsequent source events by a stale surface id.
-            self.floating_ime_continuation = None;
+            self.set_floating_ime_continuation(None);
         }
         let next = if continued.is_some() {
             continued
@@ -1721,7 +1740,7 @@ impl AppHandler {
                         ) {
                             Ok(()) => {
                                 if continue_ime {
-                                    self.floating_ime_continuation = Some(id);
+                                    self.set_floating_ime_continuation(Some(id));
                                 }
                                 changed = true;
                             }
@@ -1749,7 +1768,7 @@ impl AppHandler {
                 crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Closed { id } => {
                     if self.floating_ime_continuation.as_deref() == Some(id.as_str()) {
-                        self.floating_ime_continuation = None;
+                        self.set_floating_ime_continuation(None);
                     }
                     if self.floating_ime_return_continuation.as_deref() == Some(id.as_str()) {
                         self.floating_ime_return_continuation = None;
@@ -1760,7 +1779,7 @@ impl AppHandler {
                 }
                 crate::floating_surface::FloatingSurfaceHostMessage::Suspended { id } => {
                     if self.floating_ime_continuation.as_deref() == Some(id.as_str()) {
-                        self.floating_ime_continuation = None;
+                        self.set_floating_ime_continuation(None);
                     }
                     if self
                         .floating_windows
@@ -3421,7 +3440,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         };
         if std::mem::take(&mut self.primary_preedit_clear_pending) {
             self.primary_preedit_active = false;
-            self.floating_ime_continuation = None;
+            self.set_floating_ime_continuation(None);
         }
         let mut cleared_return = false;
         for surface in &mut self.floating_windows {
@@ -4051,7 +4070,7 @@ impl AppHandler {
             // only across the exact Float handoff. A real unrelated focus
             // loss retires the local routing proxy immediately; a later IME
             // event must not reach the detached editor by stale surface id.
-            self.floating_ime_continuation = None;
+            self.set_floating_ime_continuation(None);
             self.primary_preedit_active = false;
             self.primary_preedit_clear_pending = false;
         }
@@ -4081,7 +4100,7 @@ impl AppHandler {
                 }
             }
             if matches!(update, PrimaryPreeditUpdate::Finished) {
-                self.floating_ime_continuation = None;
+                self.set_floating_ime_continuation(None);
             }
         }
         if let Some(id) = routed_surface
