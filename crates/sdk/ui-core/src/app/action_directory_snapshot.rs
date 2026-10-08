@@ -11,6 +11,7 @@ mod effective;
 pub(super) struct DirectoryWitness {
     pub key: ResourceCacheKey,
     pub registry_generation: u64,
+    pub document_generation: u64,
     pub root_domain: crate::widget::ActionDirectoryInvocationDomain,
     pub provider_domains: Vec<crate::widget::ActionDirectoryInvocationDomain>,
     pub permissions: crate::permissions::DirectoryPermissionWitness,
@@ -37,7 +38,8 @@ impl DirectoryWitness {
     }
 
     fn same_non_scheduling_fields(&self, other: &Self) -> bool {
-        self.permissions == other.permissions
+        self.document_generation == other.document_generation
+            && self.permissions == other.permissions
             && self.permission_generation == other.permission_generation
             && self.route == other.route
             && self.owners.len() == other.owners.len()

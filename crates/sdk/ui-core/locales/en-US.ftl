@@ -595,3 +595,5 @@ music-recommendations-enabled = Enabled
 music-recommendations-disabled = Disabled
 music-recommendations-enable = Enable input
 music-recommendations-disable = Disable input
+
+action-delivery-owner-retired = This action could not start in its original document. Try again from the current document.

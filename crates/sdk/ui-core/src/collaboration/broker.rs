@@ -42,6 +42,8 @@ pub(crate) mod native_initial;
 #[path = "native_media.rs"]
 mod native_media;
 pub use committed_document::CommittedDocument;
+#[path = "owner_delivery.rs"]
+mod owner_delivery;
 
 use crate::time::{Duration, Instant};
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -234,6 +236,7 @@ pub(super) struct BrokerTransport {
     inbound_rx: tokio_mpsc::Receiver<QueuedCollabEvent>,
     // Native read turns remain held through the owner's event batch.
     document_turns: Vec<tokio::sync::OwnedSemaphorePermit>,
+    invocation_deliveries: std::collections::BTreeMap<u64, owner_delivery::DeliveryCustody>,
     state: BridgeState,
     /// The receiver stays on the application's owner thread.  RPC servers
     /// own only the cloneable sender, so a Cap'n Proto callback cannot touch
@@ -350,6 +353,7 @@ impl CollabTransport for BrokerTransport {
     }
 
     fn drain(&mut self, out: &mut Vec<CollabEvent>) {
+        self.invocation_deliveries.clear();
         self.document_turns.clear();
         self.state.begin_poll();
         if !self.wifi_bridge_registered
@@ -359,7 +363,12 @@ impl CollabTransport for BrokerTransport {
         }
         while let Ok(mut evt) = self.inbound_rx.try_recv() {
             match evt._turn.take() {
-                Some(EventTurn::Document(turns)) => self.document_turns.extend(turns),
+                Some(EventTurn::Document(turns, delivery)) => {
+                    self.document_turns.extend(turns);
+                    if let CollabEvent::Invocation { id, .. } = &evt.event {
+                        self.invocation_deliveries.insert(*id, delivery);
+                    }
+                }
                 Some(EventTurn::Snapshot(turn)) => drop(turn),
                 None => {}
             }
@@ -367,13 +376,21 @@ impl CollabTransport for BrokerTransport {
         }
     }
 
-    fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
-        self.state
-            .document_reads
-            .set_document_owner_routes(routes.iter().map(RouteSpec::channel_id).collect());
+    fn set_document_owner_scope(
+        &mut self,
+        scope: Option<crate::collaboration::DocumentOwnerScope>,
+    ) -> Option<crate::collaboration::DocumentOwnerRetirementReceipt> {
+        self.state.document_reads.set_document_owner_scope(scope)
+    }
+    fn claim_invocation_delivery(&mut self, id: u64) -> bool {
+        self.invocation_deliveries.get(&id).map_or_else(
+            || !self.state.document_reads.has_native_custody(),
+            |delivery| delivery.0.claim(),
+        )
     }
 
     fn finish_event_batch(&mut self) {
+        self.invocation_deliveries.clear();
         self.document_turns.clear();
     }
 
@@ -1388,6 +1405,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
 #[derive(Clone)]
 struct BridgeState {
     document_reads: committed_document::Reads,
+    pending_native_receipts: Arc<owner_delivery::PendingReceipts>,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
     /// The broker refused or failed an action-surface publication; the owner
@@ -1515,7 +1533,10 @@ struct QueuedSdkCommand {
 
 enum EventTurn {
     Snapshot(tokio::sync::OwnedSemaphorePermit),
-    Document(Vec<tokio::sync::OwnedSemaphorePermit>),
+    Document(
+        Vec<tokio::sync::OwnedSemaphorePermit>,
+        owner_delivery::DeliveryCustody,
+    ),
 }
 
 struct QueuedCollabEvent {
@@ -1537,6 +1558,7 @@ impl BridgeState {
         };
         Self {
             document_reads: committed_document::Reads::default(),
+            pending_native_receipts: Arc::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
             action_surface_failed: Arc::new(AtomicBool::new(false)),
@@ -2685,6 +2707,23 @@ impl CollaborationManager {
         tests::native_history_invocation_fixture(history)
     }
 
+    #[cfg(all(test, unix))]
+    pub(crate) fn pending_native_receipts_for_test(&self) -> usize {
+        let super::Backend::Transport(transport) = &self.backend else {
+            return 0;
+        };
+        transport
+            .as_any()
+            .and_then(|transport| transport.downcast_ref::<BrokerTransport>())
+            .map_or(0, |transport| {
+                transport
+                    .state
+                    .pending_native_receipts
+                    .count
+                    .load(Ordering::Acquire)
+            })
+    }
+
     /// Wire/SDK ordering fixture only; not a native authority proof.
     #[cfg(all(test, unix))]
     pub(crate) fn native_initial_fixture_for_test(
@@ -3164,6 +3203,7 @@ impl CollaborationManager {
             media: Some(media_tx),
             inbound_rx,
             document_turns: Vec::new(),
+            invocation_deliveries: std::collections::BTreeMap::new(),
             state,
             action_directory_rx,
             action_directory_tx,
@@ -3369,6 +3409,16 @@ fn run_shovel(
         report_init(&state, &init_tx, InitStatus::Ready);
 
         drive_shovel(client, identity, outbound_rx, media_rx, inbound_tx).await;
+        // The App may be gone, but this original LocalSet still owns its
+        // observed, undispatched jobs and their original host RPC handles.
+        state.document_reads.set_document_owner_scope(None);
+        if !state
+            .pending_native_receipts
+            .drained(crate::time::now() + Duration::from_secs(3))
+            .await
+        {
+            state.fail_closed("worker retirement receipts; outcome unknown");
+        }
     });
     // However the shovel ended, the owner must look again: an unanswered
     // primary-route barrier now reads as a stopped worker.
@@ -4044,6 +4094,8 @@ async fn spawn_context_stream(
 struct NativeInvocationTurn {
     permits: Vec<tokio::sync::OwnedSemaphorePermit>,
     deadline: Instant,
+    owner: Arc<owner_delivery::Generation>,
+    channel_generation: Arc<AtomicBool>,
 }
 
 // Use the existing three-second native publication hydration bound. The
@@ -4055,8 +4107,16 @@ async fn native_invocation_delivery_turn(
     let Some(generation) = state.document_reads.delivery_generation(key) else {
         return Ok(None);
     };
+    let owner = state.document_reads.document_owner_scope()?;
+    let owners = owner.scope.routes();
+    if !owners.iter().any(|route| route == key) {
+        return Err("original invocation route has no live App document owner".into());
+    }
     let deadline = crate::time::now() + Duration::from_secs(3);
     loop {
+        if !owner.current() {
+            return Err("original App document owner generation retired".into());
+        }
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
             return Err("original invocation document custody was retired".into());
         }
@@ -4064,14 +4124,15 @@ async fn native_invocation_delivery_turn(
             return Err("original invocation capture did not become current".into());
         }
         let mut turns = Vec::new();
-        let owners = state.document_reads.document_owner_routes(key)?;
-        for owner in &owners {
-            let semaphore = state.document_reads.delivery_turn(owner)?;
+        for route in &owners {
+            let semaphore = state.document_reads.delivery_turn(route)?;
             let remaining = deadline.saturating_duration_since(crate::time::now());
-            let turn = tokio::time::timeout(remaining, semaphore.acquire_owned())
-                .await
-                .map_err(|_| "original invocation capture did not become current")?
-                .map_err(|_| "original invocation delivery turn closed")?;
+            let turn = tokio::select! {
+                () = owner.retired() => return Err("original App document owner generation retired".into()),
+                turn = tokio::time::timeout(remaining, semaphore.acquire_owned()) => turn
+                    .map_err(|_| "original invocation capture did not become current")?
+                    .map_err(|_| "original invocation delivery turn closed")?,
+            };
             turns.push(turn);
         }
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
@@ -4080,7 +4141,7 @@ async fn native_invocation_delivery_turn(
         if crate::time::now() >= deadline {
             return Err("original invocation capture did not become current".into());
         }
-        if state.document_reads.document_owner_routes(key)? == owners
+        if owner.current()
             && owners
                 .iter()
                 .all(|owner| state.document_reads.publishable(owner))
@@ -4088,6 +4149,8 @@ async fn native_invocation_delivery_turn(
             return Ok(Some(NativeInvocationTurn {
                 permits: turns,
                 deadline,
+                owner,
+                channel_generation: generation,
             }));
         }
         drop(turns);
@@ -4106,25 +4169,62 @@ async fn native_invocation_delivery_turn(
 )]
 async fn recheck_native_invocation(
     channel: &runtime_collab::ChannelHandle,
-    invocation: &runtime_collab::Invocation,
+    id: u64,
+    invocation: tilo_actions::InvocationId,
 ) -> Result<bool, String> {
     if !channel
-        .invocation_cancellation(invocation.id)
+        .invocation_cancellation(id)
         .await
         .map_err(|error| error.to_string())?
     {
         return Ok(true);
     }
     let update = tilo_actions::InvocationUpdate::Cancelled {
-        invocation: tilo_actions::InvocationId(Uuid::from_bytes(invocation.invocation_uuid)),
+        invocation,
         message: None,
     };
     let wire = serde_json::to_string(&update).map_err(|error| error.to_string())?;
     channel
-        .update_invocation(invocation.id, &wire)
+        .update_invocation(id, &wire)
         .await
         .map_err(|error| error.to_string())?;
     Ok(false)
+}
+
+// Only an invocation never handed to a dispatch owner can use this receipt.
+// The original host door still checks current custody and the exact pending job.
+#[allow(
+    clippy::future_not_send,
+    reason = "the original Rc-backed Cap'n Proto channel remains on the shovel LocalSet"
+)]
+async fn retire_undispatched_invocation(
+    channel: &runtime_collab::ChannelHandle,
+    id: u64,
+    invocation: tilo_actions::InvocationId,
+) -> Result<(), String> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        if !recheck_native_invocation(channel, id, invocation).await? {
+            return Ok(());
+        }
+        let update = tilo_actions::InvocationUpdate::Failed {
+            invocation,
+            error: tilo_actions::ActionFailure {
+                code: "action_delivery_owner_retired".into(),
+                message: crate::i18n::I18nManager::lookup_plain("action-delivery-owner-retired"),
+                details: Some(
+                    serde_json::json!({ "phase": "before_dispatch", "outcome": "not_started" }),
+                ),
+                retryable: false,
+            },
+        };
+        let wire = serde_json::to_string(&update).map_err(|error| error.to_string())?;
+        channel
+            .update_invocation(id, &wire)
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "original retirement receipt timed out".to_string())?
 }
 
 /// Bridge `channel`'s action stream into [`CollabEvent::ActionArrived`] on
@@ -4165,49 +4265,112 @@ async fn spawn_invocation_stream(
         let key = spec.channel_id();
         tokio::task::spawn_local(async move {
             while let Ok(invocation) = stream.read().await {
+                let _pending_receipt = tx
+                    .state
+                    .document_reads
+                    .delivery_generation(&key)
+                    .map(|_| tx.state.pending_native_receipts.begin());
+                let invocation_id =
+                    tilo_actions::InvocationId(Uuid::from_bytes(invocation.invocation_uuid));
                 let turn = match native_invocation_delivery_turn(&key, &tx.state).await {
                     Ok(turn) => turn,
                     Err(error) => {
-                        tx.state
-                            .fail_closed("native invocation capture; outcome unknown");
-                        tracing::warn!(%error, "accepted invocation retains unknown outcome");
-                        break;
+                        tracing::warn!(%error, "native invocation was not dispatched");
+                        if let Err(receipt_error) = retire_undispatched_invocation(
+                            &cancellation_channel,
+                            invocation.id,
+                            invocation_id,
+                        )
+                        .await
+                        {
+                            tx.state
+                                .fail_closed("native invocation retirement; outcome unknown");
+                            tracing::warn!(%receipt_error, "original retirement receipt unavailable");
+                            break;
+                        }
+                        continue;
                     }
                 };
                 if let Some(turn) = &turn {
                     match tokio::time::timeout_at(
                         tokio::time::Instant::from_std(turn.deadline),
-                        recheck_native_invocation(&cancellation_channel, &invocation),
+                        recheck_native_invocation(
+                            &cancellation_channel,
+                            invocation.id,
+                            invocation_id,
+                        ),
                     )
                     .await
                     {
                         Ok(Ok(true)) if crate::time::now() < turn.deadline => {}
                         Ok(Ok(false)) => continue,
                         result => {
-                            tx.state
-                                .fail_closed("native invocation authority; outcome unknown");
-                            tracing::warn!(?result, "accepted invocation authority unavailable");
-                            break;
+                            tracing::warn!(
+                                ?result,
+                                "accepted invocation could not acquire dispatch authority"
+                            );
+                            if let Err(error) = retire_undispatched_invocation(
+                                &cancellation_channel,
+                                invocation.id,
+                                invocation_id,
+                            )
+                            .await
+                            {
+                                tx.state
+                                    .fail_closed("native invocation authority; outcome unknown");
+                                tracing::warn!(%error, "original retirement receipt unavailable");
+                                break;
+                            }
+                            continue;
                         }
                     }
                 }
+                let delivery = turn.as_ref().map(|turn| {
+                    owner_delivery::InvocationDelivery::new(
+                        turn.owner.clone(),
+                        tx.state.document_reads.clone(),
+                        key.clone(),
+                        turn.channel_generation.clone(),
+                    )
+                });
+                let delivery_deadline = turn.as_ref().map(|turn| turn.deadline);
                 let id = invocation.id;
                 let context = parse_invocation_context(id, &invocation.context_json);
                 if !tx.send_durable_turn(
                     CollabEvent::Invocation {
                         id,
-                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
-                            invocation.invocation_uuid,
-                        )),
+                        invocation: invocation_id,
                         resource: invocation.resource,
                         action: invocation.action,
                         argument: invocation.argument,
                         actor: invocation.actor,
                         context: context.map(Box::new),
                     },
-                    turn.map(|turn| EventTurn::Document(turn.permits)),
+                    turn.zip(delivery.clone()).map(|(turn, delivery)| {
+                        EventTurn::Document(turn.permits, owner_delivery::DeliveryCustody(delivery))
+                    }),
                 ) {
+                    if let Err(error) =
+                        retire_undispatched_invocation(&cancellation_channel, id, invocation_id)
+                            .await
+                    {
+                        tracing::warn!(%error, "original undelivered retirement receipt unavailable");
+                    }
                     break;
+                }
+                if let (Some(delivery), Some(deadline)) = (delivery, delivery_deadline)
+                    && !delivery.wait_for_claim(deadline).await
+                {
+                    if let Err(error) =
+                        retire_undispatched_invocation(&cancellation_channel, id, invocation_id)
+                            .await
+                    {
+                        tx.state
+                            .fail_closed("native invocation retirement; outcome unknown");
+                        tracing::warn!(%error, "original retirement receipt unavailable");
+                        break;
+                    }
+                    continue;
                 }
                 let cancellation_tx = tx.clone();
                 let channel = cancellation_channel.clone();
@@ -8828,6 +8991,7 @@ mod tests {
             media: None,
             inbound_rx,
             document_turns: Vec::new(),
+            invocation_deliveries: std::collections::BTreeMap::new(),
             state,
             action_directory_rx,
             action_directory_tx,
@@ -9351,15 +9515,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_invocation_delivery_turn_rejects_unowned_route_beside_live_app() {
+        let state = BridgeState::new();
+        let retained = state.document_reads.close_for_test("retained-unowned");
+        let current = state.document_reads.close_for_test("actual-app");
+        retained.store(true, Ordering::Release);
+        current.store(true, Ordering::Release);
+        state.document_reads.set_document_owner_scope(Some(
+            crate::collaboration::DocumentOwnerScope::for_keys(vec!["actual-app".into()]),
+        ));
+        let result = native_invocation_delivery_turn("retained-unowned", &state).await;
+        assert_eq!(
+            result.unwrap_err(),
+            "original invocation route has no live App document owner"
+        );
+        assert!(state.document_reads.publishable("retained-unowned"));
+        assert!(state.document_reads.publishable("actual-app"));
+        assert!(
+            state.is_healthy(),
+            "refused delivery must preserve the live owner's state"
+        );
+    }
+
+    #[tokio::test]
     async fn native_invocation_delivery_turn_waits_for_every_live_owner() {
         let state = BridgeState::new();
         let primary = state.document_reads.close_for_test("original-route");
         let owner = state.document_reads.close_for_test("live-owner");
         state.document_reads.close_for_test("unowned-retained");
         primary.store(true, Ordering::Release);
-        state
-            .document_reads
-            .set_document_owner_routes(vec!["original-route".into(), "live-owner".into()]);
+        state.document_reads.set_document_owner_scope(Some(
+            crate::collaboration::DocumentOwnerScope::for_keys(vec![
+                "original-route".into(),
+                "live-owner".into(),
+            ]),
+        ));
         let held = state
             .document_reads
             .delivery_turn("live-owner")
@@ -9385,6 +9575,9 @@ mod tests {
     async fn native_invocation_delivery_turn_rejects_original_generation_retirement() {
         let state = BridgeState::new();
         let original = state.document_reads.close_for_test("original-route");
+        state.document_reads.set_document_owner_scope(Some(
+            crate::collaboration::DocumentOwnerScope::for_keys(vec!["original-route".into()]),
+        ));
         let held = state
             .document_reads
             .delivery_turn("original-route")
@@ -9412,6 +9605,9 @@ mod tests {
     async fn native_invocation_delivery_turn_timeout_preserves_unapplied_original_custody() {
         let state = BridgeState::new();
         let original = state.document_reads.close_for_test("original-route");
+        state.document_reads.set_document_owner_scope(Some(
+            crate::collaboration::DocumentOwnerScope::for_keys(vec!["original-route".into()]),
+        ));
         let result = native_invocation_delivery_turn("original-route", &state).await;
         assert_eq!(
             result.unwrap_err(),

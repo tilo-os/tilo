@@ -838,6 +838,7 @@ impl App {
                 .map(|provider| provider.action_directory_invocation_domain())
                 .collect();
             let witness = action_directory_snapshot::DirectoryWitness {
+                document_generation: self.autosave_generation,
                 registry_generation: self.actions.action_registry_generation,
                 root_domain: crate::resources::action_directory_invocation_domain(
                     self.root_widget.as_ref(),
@@ -1743,6 +1744,11 @@ impl App {
                 "Original document history is unavailable; action outcome unknown. Reconnect and reconcile before retrying.".into(),
             );
             self.collaboration.manager.stop_after_publication_failure();
+            return;
+        }
+        // The transport still owns an unclaimed native delivery. It retires
+        // that exact job if this owner generation changed before dispatch.
+        if !self.collaboration.manager.claim_invocation_delivery(id) {
             return;
         }
         let address = tilo_actions::ActionAddress::new(resource, action);

@@ -19,6 +19,9 @@
 
 mod peer;
 pub use peer::PeerTransport;
+mod document_owners;
+pub use document_owners::{DocumentOwnerRetirementReceipt, DocumentOwnerScope};
+
 use uuid::Uuid;
 
 mod transport;
@@ -1767,10 +1770,20 @@ impl CollaborationManager {
         self.primary_route.accepted = None;
     }
 
-    pub(crate) fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+    pub(crate) fn set_document_owner_scope(
+        &mut self,
+        scope: Option<DocumentOwnerScope>,
+    ) -> Option<DocumentOwnerRetirementReceipt> {
         if let Backend::Transport(transport) = &mut self.backend {
-            transport.set_document_owner_routes(routes);
+            return transport.set_document_owner_scope(scope);
         }
+        None
+    }
+    pub(crate) fn claim_invocation_delivery(&mut self, id: u64) -> bool {
+        if let Backend::Transport(transport) = &mut self.backend {
+            return transport.claim_invocation_delivery(id);
+        }
+        true
     }
 
     pub(crate) fn finish_event_batch(&mut self) {

@@ -985,6 +985,7 @@ impl App {
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.collaboration.manager.set_document_owner_scope(None);
         self.retire_semantic_root();
         self.control_domain.close();
         self.actions.bound_record_sync = None;
@@ -2567,6 +2568,7 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        self.collaboration.manager.set_document_owner_scope(None);
         self.retire_semantic_root();
         self.control_domain.close();
         self.bindings.clear();

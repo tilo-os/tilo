@@ -11,7 +11,7 @@ pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, CommittedDocument>>>,
     Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     Arc<std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>>,
-    Arc<std::sync::Mutex<Option<Vec<String>>>>,
+    Arc<std::sync::Mutex<Option<Arc<super::owner_delivery::Generation>>>>,
 );
 #[derive(Clone)]
 enum Gate {
@@ -34,18 +34,32 @@ impl Reads {
             .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
             .clone())
     }
-    pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>) {
-        keys.sort();
-        keys.dedup();
-        if let Ok(mut owners) = self.4.lock() {
-            *owners = Some(keys);
+    pub(super) fn set_document_owner_scope(
+        &self,
+        mut scope: Option<crate::collaboration::DocumentOwnerScope>,
+    ) -> Option<crate::collaboration::DocumentOwnerRetirementReceipt> {
+        if let Some(scope) = &mut scope {
+            scope.normalize();
         }
+        let Ok(mut owners) = self.4.lock() else {
+            return None;
+        };
+        if owners.as_ref().map(|owner| &owner.scope) == scope.as_ref() {
+            return None;
+        }
+        let receipt = owners.take().map(|owner| owner.retire());
+        *owners = scope.map(super::owner_delivery::Generation::new);
+        receipt
     }
-    pub(super) fn document_owner_routes(&self, original: &str) -> Result<Vec<String>, String> {
+    pub(super) fn document_owner_scope(
+        &self,
+    ) -> Result<Arc<super::owner_delivery::Generation>, String> {
         self.4
             .lock()
-            .map_err(|_| "document owner routes poisoned".into())
-            .map(|owners| owners.clone().unwrap_or_else(|| vec![original.into()]))
+            .map_err(|_| "document owner scope poisoned")?
+            .clone()
+            .filter(|owner| owner.scope.primary.is_some() || !owner.scope.records.is_empty())
+            .ok_or_else(|| "no live App document owner generation".into())
     }
     #[cfg(test)]
     pub(super) fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {
@@ -73,6 +87,11 @@ impl Reads {
                 Gate::Legacy => true,
                 Gate::Required(ready, _) => ready.load(Ordering::Acquire),
             })
+    }
+    pub(super) fn has_native_custody(&self) -> bool {
+        self.0
+            .lock()
+            .is_ok_and(|rows| rows.values().any(|gate| matches!(gate, Gate::Required(..))))
     }
     pub(super) fn required(&self, key: &str) -> bool {
         self.0

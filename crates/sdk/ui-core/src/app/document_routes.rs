@@ -230,19 +230,33 @@ impl App {
             self.autosave_generation,
             &self.state.doc,
         );
-        let routes = self
-            .document_routes
-            .witness
-            .iter()
-            .map(|witness| witness.route.clone())
-            .chain(
-                self.document_routes
-                    .owners
-                    .iter()
-                    .map(|owner| owner.route.clone()),
-            )
-            .collect();
-        self.collaboration.manager.set_document_owner_routes(routes);
+        let scope = crate::collaboration::DocumentOwnerScope {
+            primary: self.document_routes.witness.as_ref().map(|witness| {
+                (
+                    witness.route.channel_id(),
+                    witness.epoch,
+                    self.autosave_generation,
+                )
+            }),
+            records: self
+                .document_routes
+                .owners
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.route.channel_id(),
+                        entry
+                            .owners
+                            .iter()
+                            .filter_map(|owner| owner.lifetime_id())
+                            .collect(),
+                    )
+                })
+                .collect(),
+        };
+        self.collaboration
+            .manager
+            .set_document_owner_scope((!self.control_domain.closed()).then_some(scope));
         // The exact live owner map exists before any join can deliver callbacks.
         for route in joins {
             self.collaboration.manager.join_route(route);

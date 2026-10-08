@@ -201,7 +201,17 @@ pub trait CollabTransport: Send {
     }
 
     /// Scope delivery capture waits to the App’s reconciled live document owners.
-    fn set_document_owner_routes(&mut self, _routes: Vec<RouteSpec>) {}
+    fn set_document_owner_scope(
+        &mut self,
+        _scope: Option<super::DocumentOwnerScope>,
+    ) -> Option<super::DocumentOwnerRetirementReceipt> {
+        None
+    }
+
+    /// Claim a native delivery for the same live owner generation, before dispatch.
+    fn claim_invocation_delivery(&mut self, _id: u64) -> bool {
+        true
+    }
 
     /// Release native capture turns after the owner applies its drained batch.
     fn finish_event_batch(&mut self) {}

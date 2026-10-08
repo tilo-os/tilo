@@ -96,7 +96,22 @@ fn initial_history_app() -> (App, std::rc::Rc<std::cell::Cell<usize>>) {
 }
 #[test]
 fn initial_history_action_publication_waits_for_actual_owner_application() {
-    let (mut app, calls) = initial_history_app();
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let fixture = CollaborationManager::native_history_invocation_fixture_for_test(history.save());
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(
+            calls.clone(),
+            std::rc::Rc::new(std::cell::Cell::new(false)),
+        )),
+    );
+    app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    app.collaboration.manager = fixture.manager;
     assert!(app.collaboration.manager.is_connected());
     assert!(!app.collaboration.manager.document_route_ready(None));
     assert!(!app.published_action_history_ready());
@@ -135,20 +150,20 @@ fn initial_history_action_publication_waits_for_actual_owner_application() {
         app.published_action_directory_resolution(&page.revision, "initial-probe", "inspect"),
         runtime_collab::ActionDirectoryResolution::Found(_)
     ));
-    app.invoke_published_action(
-        77,
-        tilo_actions::InvocationId::new(),
-        "initial-probe".into(),
-        "inspect".into(),
-        None,
-        "fixture-user",
-        None,
-    );
+    (fixture.invoke)(77, uuid::Uuid::from_u128(77));
+    while calls.get() == 0 {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
     assert_eq!(
         calls.get(),
         1,
         "the actual public handler runs only after owner application"
     );
+    assert_eq!((fixture.received)(), 1);
+    drop(app);
+    fixture.thread.join().unwrap();
 }
 #[test]
 fn initial_history_accepted_delivery_cannot_run_before_original_owner_application() {
@@ -759,5 +774,324 @@ fn initial_history_job2_does_not_wait_for_unowned_retained_native_route() {
             .document_route_ready(Some(&unowned))
     );
     drop(app);
+    fixture.thread.join().unwrap();
+}
+
+#[derive(Clone, Copy)]
+enum OwnerRetirementCase {
+    DuringCapture,
+    AfterQueue,
+    Replacement,
+    RefusedReceipt,
+}
+
+fn run_native_owner_retirement(case: OwnerRetirementCase) {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let fixture = CollaborationManager::native_history_invocation_fixture_for_test(history.save());
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(
+            calls.clone(),
+            std::rc::Rc::new(std::cell::Cell::new(false)),
+        )),
+    );
+    app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    app.collaboration.manager = fixture.manager;
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.published_action_history_ready() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    let original_actor = app.state.doc.get_actor().clone();
+    let mut release = None;
+    if !matches!(case, OwnerRetirementCase::AfterQueue) {
+        history
+            .put(ROOT, "subsequent-history", "retained before dispatch")
+            .unwrap();
+        history.commit();
+        let (sender, gate) = tokio::sync::oneshot::channel();
+        release = Some(sender);
+        (fixture.refresh)(history.save(), gate);
+        while app
+            .state
+            .doc
+            .get(ROOT, "subsequent-history")
+            .unwrap()
+            .is_none()
+        {
+            app.pump_collab_presence();
+            assert!(crate::time::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(!app.published_action_history_ready());
+    }
+    let invocation = uuid::Uuid::from_u128(21);
+    (fixture.invoke)(21, invocation);
+    // Receipt observation must not pump App dispatch: this test takes
+    // custody of the real queued event before any handler sees it.
+    while (fixture.received)() == 0 {
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    let queued = if matches!(case, OwnerRetirementCase::AfterQueue) {
+        Some(loop {
+            let events = app.collaboration.manager.poll();
+            if let Some(event) = events.into_iter().find(|event| {
+                matches!(
+                    event,
+                    crate::collaboration::CollabEvent::Invocation { id: 21, .. }
+                )
+            }) {
+                break event;
+            }
+            assert!(crate::time::now() < deadline);
+            std::thread::yield_now();
+        })
+    } else {
+        None
+    };
+    assert_eq!(calls.get(), 0, "the original job is still undispatched");
+    if matches!(case, OwnerRetirementCase::RefusedReceipt) {
+        (fixture.execution)(Err("original pending job authority retired".into()));
+    }
+    if matches!(case, OwnerRetirementCase::Replacement) {
+        app.advance_autosave_generation();
+        app.refresh_document_routes();
+    } else {
+        app.close_components();
+    }
+    if matches!(case, OwnerRetirementCase::RefusedReceipt) {
+        while app.collaboration.manager.is_connected() {
+            app.pump_collab_presence();
+            assert!(crate::time::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(
+            (fixture.updates)().is_empty(),
+            "refused authority must not fabricate a terminal receipt"
+        );
+    } else {
+        while (fixture.updates)().is_empty() {
+            app.pump_collab_presence();
+            assert!(crate::time::now() < deadline);
+            std::thread::yield_now();
+        }
+        let updates = (fixture.updates)();
+        assert_eq!(updates.len(), 1);
+        assert!(
+            matches!(&updates[0], (21, tilo_actions::InvocationUpdate::Failed { invocation: actual, error })
+            if actual.0 == invocation && error.code == "action_delivery_owner_retired"
+            && error.details.as_ref().is_some_and(|details| details["phase"] == "before_dispatch" && details["outcome"] == "not_started"))
+        );
+        assert!(app.collaboration.manager.is_connected());
+    }
+    if let Some(crate::collaboration::CollabEvent::Invocation {
+        id,
+        invocation,
+        resource,
+        action,
+        argument,
+        actor,
+        context,
+    }) = queued
+    {
+        app.invoke_published_action(
+            id,
+            invocation,
+            resource,
+            action,
+            argument.as_deref(),
+            &actor,
+            context.as_deref(),
+        );
+    }
+    assert_eq!(
+        calls.get(),
+        0,
+        "the retired or replacement owner must run no handler for this accepted job"
+    );
+    assert_eq!(app.state.doc.get_actor(), &original_actor);
+    assert!(
+        app.state
+            .doc
+            .get(ROOT, "original-owner-history")
+            .unwrap()
+            .is_some()
+    );
+    if let Some(release) = release {
+        let _ = release.send(());
+    }
+    drop(app);
+    fixture.thread.join().unwrap();
+}
+#[test]
+fn initial_history_owner_loss_while_capture_waits_has_original_failed_terminal() {
+    run_native_owner_retirement(OwnerRetirementCase::DuringCapture);
+}
+#[test]
+fn initial_history_delayed_queued_delivery_cannot_adopt_replacement_owner() {
+    run_native_owner_retirement(OwnerRetirementCase::AfterQueue);
+}
+#[test]
+fn initial_history_same_route_document_generation_replacement_retires_old_job() {
+    run_native_owner_retirement(OwnerRetirementCase::Replacement);
+}
+#[test]
+fn initial_history_refused_owner_retirement_receipt_preserves_unknown_outcome() {
+    run_native_owner_retirement(OwnerRetirementCase::RefusedReceipt);
+}
+
+#[test]
+fn initial_history_registered_native_route_without_app_owner_gets_failed_terminal() {
+    let mut history = automerge::AutoCommit::new();
+    history.put(ROOT, "durable-history", "retained").unwrap();
+    history.commit();
+    let fixture = CollaborationManager::native_history_invocation_fixture_for_test(history.save());
+    let mut manager = fixture.manager;
+    assert!(manager.primary_route().is_some());
+    let invocation = uuid::Uuid::from_u128(22);
+    (fixture.invoke)(22, invocation);
+    let deadline = tilo_test_env::hang_deadline();
+    while (fixture.updates)().is_empty() {
+        let events = manager.poll();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, crate::collaboration::CollabEvent::Invocation { .. }))
+        );
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    let updates = (fixture.updates)();
+    assert_eq!(updates.len(), 1);
+    assert!(
+        matches!(&updates[0], (22, tilo_actions::InvocationUpdate::Failed { invocation: actual, error })
+        if actual.0 == invocation && error.code == "action_delivery_owner_retired")
+    );
+    assert!(!manager.document_route_ready(None));
+    assert!(manager.is_connected());
+    drop(manager);
+    fixture.thread.join().unwrap();
+}
+
+#[test]
+fn initial_history_advertised_action_becomes_stale_on_document_generation_change() {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(
+            calls.clone(),
+            std::rc::Rc::new(std::cell::Cell::new(false)),
+        )),
+    );
+    app.collaboration.manager = CollaborationManager::with_peer_transport(NoCommittedReadPeer {
+        requests: std::rc::Rc::new(std::cell::RefCell::new(vec![])),
+        directories: std::rc::Rc::new(std::cell::Cell::new(0)),
+    });
+    app.publish_action_surface();
+    let advertised = app.published_action_directory_page(initial_history_query());
+    assert!(!advertised.rows.is_empty());
+    assert!(matches!(
+        app.published_action_directory_resolution(&advertised.revision, "initial-probe", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found(_)
+    ));
+    let old_generation = app.autosave_generation;
+    app.advance_autosave_generation();
+    assert_ne!(app.autosave_generation, old_generation);
+    // Same visible resource and route; the document owner incarnation changed.
+    assert_eq!(
+        app.published_action_directory_resolution(&advertised.revision, "initial-probe", "inspect"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    );
+    app.publish_action_surface();
+    let current = app.published_action_directory_page(initial_history_query());
+    assert_ne!(current.revision, advertised.revision);
+    assert!(matches!(
+        app.published_action_directory_resolution(&current.revision, "initial-probe", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found(_)
+    ));
+    assert_eq!(
+        calls.get(),
+        0,
+        "advertisement and resolution never run a handler"
+    );
+}
+
+#[test]
+fn initial_history_app_drop_acknowledges_original_undispatched_job() {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let fixture = CollaborationManager::native_history_invocation_fixture_for_test(history.save());
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(
+            calls.clone(),
+            std::rc::Rc::new(std::cell::Cell::new(false)),
+        )),
+    );
+    app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    app.collaboration.manager = fixture.manager;
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.published_action_history_ready() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    history
+        .put(ROOT, "subsequent-history", "retained before destruction")
+        .unwrap();
+    history.commit();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    (fixture.refresh)(history.save(), gate);
+    while app
+        .state
+        .doc
+        .get(ROOT, "subsequent-history")
+        .unwrap()
+        .is_none()
+    {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    (fixture.invoke)(30, uuid::Uuid::from_u128(30));
+    while (fixture.received)() == 0 {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    while app.collaboration.manager.pending_native_receipts_for_test() == 0 {
+        assert!(
+            crate::time::now() < deadline,
+            "the SDK must observe the original job before its App is destroyed"
+        );
+        std::thread::yield_now();
+    }
+    drop(app);
+    while (fixture.updates)().is_empty() {
+        assert!(
+            crate::time::now() < deadline,
+            "destroying the App must not destroy the original pending terminal receipt"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(calls.get(), 0);
+    let updates = (fixture.updates)();
+    assert_eq!(updates.len(), 1);
+    assert!(
+        matches!(&updates[0], (30, tilo_actions::InvocationUpdate::Failed { invocation, error })
+        if invocation.0 == uuid::Uuid::from_u128(30) && error.code == "action_delivery_owner_retired")
+    );
+    let _ = release.send(());
     fixture.thread.join().unwrap();
 }
