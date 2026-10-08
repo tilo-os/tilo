@@ -491,3 +491,4 @@ search-apps-group-media = Medien
 search-apps-group-system-tools = Systemwerkzeuge
 search-apps-group-more-apps = Weitere Apps
 search-apps-group-developer-tools = Entwicklerwerkzeuge
+approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
