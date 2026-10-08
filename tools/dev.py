@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -72,6 +73,26 @@ def save(path: Path, receipt: dict) -> None:
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def task_worktree(name: str, base: str, root: Path = ROOT) -> dict:
+    """Create a committed task snapshot beside the shared Git directory."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", name):
+        raise ValueError("task name must contain 1–63 lowercase letters, digits or hyphens")
+    def git(*args: str) -> str:
+        return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+    common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir"))
+    commit = git("rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}")
+    destination = common.parent / ".worktrees" / name
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(f"task worktree already exists: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    branch = f"codex/{name}"
+    subprocess.run(["git", "-C", str(root), "worktree", "add", "-b", branch,
+                    str(destination), commit], check=True, stdout=subprocess.DEVNULL)
+    return {"path": str(destination), "branch": branch, "commit": commit,
+            "shared_git_dir": str(common), "target_dir": str(destination / "target"),
+            "source": "committed snapshot; existing edits remain in their original worktree"}
 
 
 def run_plan(selection: dict, out: Path, *, root: Path = ROOT, keep_going: bool = False) -> int:
@@ -149,15 +170,21 @@ def main() -> int:
     check.add_argument("--out", type=Path, help="new receipt directory (default: target/dev-runs/<unique-id>)")
     check.add_argument("--keep-going", action="store_true", help="run independent remaining checks after failure")
     check.add_argument("--step", action="append", help="run only this named contract (repeatable; use --plan to list steps)")
+    worktree = commands.add_parser("worktree", help="create a separate task worktree beside the shared Git directory")
+    worktree.add_argument("name", help="lowercase task name; creates branch codex/<name>")
+    worktree.add_argument("--base", default="HEAD", help="committed source revision (default: HEAD); does not copy uncommitted edits")
     args = parser.parse_args()
     try:
+        if args.command == "worktree":
+            print(json.dumps(task_worktree(args.name, args.base), indent=2))
+            return 0
         selection = plan(args.suite, steps=args.step)
         if args.plan:
             print(json.dumps(selection, indent=2))
             return 0
         out = args.out or ROOT / "target/dev-runs" / uuid.uuid4().hex
         return run_plan(selection, out.resolve(), keep_going=args.keep_going)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"dev check: {error}", file=sys.stderr)
         return 2
 

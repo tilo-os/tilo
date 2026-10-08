@@ -75,6 +75,22 @@ before use. The guest mounts this local tree read-only; its confinement stays
 the same. Other image readers can use `materialized_tree` without relocating
 the system tree.
 
+### Developer image probe
+
+`cargo run --locked -p ush --example resolve-signed-images -- RUNTIME_PACKAGE TOOL_PACKAGE`
+uses the same `StoreImages` provider as the supervisor. It checks the tool's exact
+runtime binding, admits both signed packages and prints their verified read-only
+roots as JSON. It does not mount an environment or execute a tool. Run it in the
+intended owner's profile: publisher and fleet trust are checked again, including
+on cached images. Host paths in the returned JSON are local observations, not
+collaborative resource identifiers.
+
+`tilo-install image add --publisher KEY` trusts that key for that admission only;
+it does not change subsequent image-reader trust. A device or relay normally
+uses its enrolled publisher. A developer probe may use the existing
+`TILO_USH_TRUSTED_PUBLISHER` setting scoped to its own private profile. This does
+not persist a publisher policy or bypass signature, revocation or runtime checks.
+
 ## The environment record
 
 An environment is a synced record (`#[resource(kind = "environment")]`,

@@ -16,7 +16,7 @@ struct Fixture {
     now: SystemTime,
 }
 /// The state tree the owner publishes into.
-pub(super) fn tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
+pub(crate) fn tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
     let store: Arc<dyn std::any::Any + Send + Sync> = tilo_joined_room::testing::store(owner);
     store
         .downcast::<TreeStore>()
@@ -897,14 +897,10 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     let observed_acl = directory.path().join("published-acl.json");
     let observed_state = directory.path().join("published-state.json");
     let publisher = directory.path().join("publisher.sh");
-    std::fs::write(&publisher, "#!/bin/sh\ncp \"$5\" \"$TILO_NATIVE_OWNER_ACL_OBSERVED\"\ncp \"$TILO_NATIVE_OWNER_STATE\" \"$TILO_NATIVE_OWNER_STATE_OBSERVED\"\n").unwrap();
+    std::fs::write(&publisher, "#!/bin/sh\ncp \"$3\" \"$TILO_NATIVE_OWNER_ACL_OBSERVED\"\ncp \"$TILO_NATIVE_OWNER_STATE\" \"$TILO_NATIVE_OWNER_STATE_OBSERVED\"\n").unwrap();
     std::fs::set_permissions(&publisher, std::fs::Permissions::from_mode(0o700)).unwrap();
     let values = [
         ("TILO_FS_AUTHORITY_PUBLISHER", publisher),
-        (
-            "TILO_FS_AUTHORITY_CACHE_DIR",
-            directory.path().join("cache"),
-        ),
         ("TILO_NATIVE_OWNER_ACL_OBSERVED", observed_acl.clone()),
         ("TILO_NATIVE_OWNER_STATE", path.clone()),
         ("TILO_NATIVE_OWNER_STATE_OBSERVED", observed_state.clone()),

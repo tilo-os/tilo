@@ -24,21 +24,81 @@ const MAX_PERSISTED_CONTENT_PEERS: usize = 32;
 /// daemon owns that node's UDP socket.
 pub const LOCAL_AUTHORITY_SOCKET: &str = "workspace-authority.sock";
 
+const LOCAL_AUTHORITY_SOCKET_PREFIX: &str = "workspace-authority-";
+const LOCAL_SOCKET_SUFFIX: &str = ".sock";
+
+/// `/run/tilo`, created root:tilo-identity by tmpfiles, unless
+/// `TILO_AUTHORITY_SOCKET_DIR` names another.
+fn local_socket_dir() -> PathBuf {
+    std::env::var_os("TILO_AUTHORITY_SOCKET_DIR")
+        .map_or_else(|| PathBuf::from("/run/tilo"), PathBuf::from)
+}
+
 /// The stable local control path for a workspace. `/run/tilo` is created
 /// root:tilo-identity by the service unit, so no root-owned cache directory is
 /// exposed to the desktop publisher.
 pub fn local_authority_socket_path(workspace: uuid::Uuid) -> PathBuf {
-    std::env::var_os("TILO_AUTHORITY_SOCKET_DIR")
-        .map_or_else(|| PathBuf::from("/run/tilo"), PathBuf::from)
-        .join(format!("workspace-authority-{workspace}.sock"))
+    local_socket_dir().join(format!(
+        "{LOCAL_AUTHORITY_SOCKET_PREFIX}{workspace}{LOCAL_SOCKET_SUFFIX}"
+    ))
+}
+
+/// The workspace authority the filesystem daemon serves on this machine, and
+/// its socket. The workspace comes from the socket's name, so the desktop
+/// publisher learns it without reading the daemon's root-only cache.
+///
+/// # Errors
+///
+/// When the socket directory cannot be read, or not exactly one authority
+/// socket answers.
+#[cfg(unix)]
+pub async fn find_local_authority() -> anyhow::Result<(uuid::Uuid, PathBuf)> {
+    find_local_authority_in(&local_socket_dir()).await
+}
+
+#[cfg(unix)]
+async fn find_local_authority_in(dir: &Path) -> anyhow::Result<(uuid::Uuid, PathBuf)> {
+    use anyhow::Context as _;
+
+    let mut live = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("list {}", dir.display()))? {
+        let entry = entry?;
+        let Some(workspace) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix(LOCAL_AUTHORITY_SOCKET_PREFIX))
+            .and_then(|name| name.strip_suffix(LOCAL_SOCKET_SUFFIX))
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        else {
+            continue;
+        };
+        // A daemon that served another workspace before a rebind leaves its
+        // socket behind; only one that still answers is the authority.
+        let path = entry.path();
+        if tokio::net::UnixStream::connect(&path).await.is_ok() {
+            live.push((workspace, path));
+        }
+    }
+    match live.len() {
+        1 => Ok(live.remove(0)),
+        0 => anyhow::bail!(
+            "no filesystem daemon serves a workspace authority in {} yet",
+            dir.display()
+        ),
+        _ => anyhow::bail!(
+            "{} workspace authorities answer in {}; expected one",
+            live.len(),
+            dir.display()
+        ),
+    }
 }
 
 /// Stable, workspace-scoped handoff for a direct endpoint returned by the
 /// authenticated relay discovery ALPN.
 pub fn local_content_socket_path(workspace: uuid::Uuid) -> PathBuf {
-    std::env::var_os("TILO_AUTHORITY_SOCKET_DIR")
-        .map_or_else(|| PathBuf::from("/run/tilo"), PathBuf::from)
-        .join(format!("workspace-content-{workspace}.sock"))
+    local_socket_dir().join(format!(
+        "workspace-content-{workspace}{LOCAL_SOCKET_SUFFIX}"
+    ))
 }
 
 /// Durable direct Files endpoints discovered through the authenticated relay.
@@ -887,6 +947,66 @@ mod tests {
     use crate::Access;
     use collab_types::{Effect, Scope, Subject, Verb};
     use std::sync::Arc;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_publisher_finds_the_answering_authority_by_its_socket_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let workspace = uuid::Uuid::new_v4();
+        let authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("authority.bin"),
+                workspace,
+                governor.verifying_key().to_bytes(),
+                [1; 32],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let sockets = temp.path().join("run");
+        std::fs::create_dir(&sockets).unwrap();
+        assert!(
+            find_local_authority_in(&sockets).await.is_err(),
+            "no daemon is serving yet"
+        );
+        // What a daemon serving another workspace before a rebind leaves.
+        let stale = sockets.join(format!(
+            "{LOCAL_AUTHORITY_SOCKET_PREFIX}{}{LOCAL_SOCKET_SUFFIX}",
+            uuid::Uuid::new_v4()
+        ));
+        drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
+        std::fs::write(sockets.join("workspace-content-x.sock"), b"").unwrap();
+        let live = sockets.join(format!(
+            "{LOCAL_AUTHORITY_SOCKET_PREFIX}{workspace}{LOCAL_SOCKET_SUFFIX}"
+        ));
+        let task = serve_local_authority(&live, authority).unwrap();
+        assert_eq!(
+            find_local_authority_in(&sockets).await.unwrap(),
+            (workspace, live)
+        );
+        let other_workspace = uuid::Uuid::new_v4();
+        let other_authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("other-authority.bin"),
+                other_workspace,
+                governor.verifying_key().to_bytes(),
+                [1; 32],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let other_socket = sockets.join(format!(
+            "{LOCAL_AUTHORITY_SOCKET_PREFIX}{other_workspace}{LOCAL_SOCKET_SUFFIX}"
+        ));
+        let other_task = serve_local_authority(&other_socket, other_authority).unwrap();
+        assert!(
+            find_local_authority_in(&sockets).await.is_err(),
+            "multiple live workspace authorities must not be guessed"
+        );
+        other_task.abort();
+        task.abort();
+    }
 
     #[cfg(unix)]
     #[tokio::test]

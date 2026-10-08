@@ -22,7 +22,11 @@ use crate::web_policy::{accept_attribute, openable_uri};
 #[wasm_bindgen(module = "/web/dialogs.mjs")]
 extern "C" {
     #[wasm_bindgen(js_name = pickFiles, catch)]
-    fn pick_files(accept: &str, multiple: bool) -> Result<Promise, JsValue>;
+    fn pick_files(
+        accept: &str,
+        multiple: bool,
+        max_contents_bytes: Option<f64>,
+    ) -> Result<Promise, JsValue>;
     #[wasm_bindgen(js_name = saveFile, catch)]
     fn save_file(name: &str, bytes: &[u8]) -> Result<(), JsValue>;
     #[wasm_bindgen(js_name = openUri, catch)]
@@ -100,7 +104,8 @@ impl crate::FilePicker for PageFiles {
                 .iter()
                 .flat_map(|f| f.mimetypes().iter().map(String::as_str)),
         );
-        let promise = match pick_files(&accept, request.is_multiple()) {
+        let limit = request.contents_byte_limit().map(|limit| limit as f64);
+        let promise = match pick_files(&accept, request.is_multiple(), limit) {
             Ok(promise) => promise,
             Err(error) => return answered(ContentsOutcome::Failed(text(&error))),
         };

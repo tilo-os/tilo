@@ -202,6 +202,12 @@ pub fn run_with_full_options(opts: HostedOptions) {
     {
         host.attach_app_action_broker(action_broker);
     }
+    if let Some(review) = collab_broker
+        .as_ref()
+        .and_then(crate::shell::collab_broker::BrokerHandle::task_review)
+    {
+        host.attach_task_review(review);
+    }
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
     tilo_startup_metrics::mark("hosted-app-new-start");
     let mut app = App::from_scoped_parts(wake_scope, state, root);
@@ -345,7 +351,7 @@ fn spawn_peer_sync(
     if !enable_peer_sync {
         return None;
     }
-    match ShellNetwork::spawn(tree_handle, &peer_key_path()) {
+    match ShellNetwork::spawn_for_session(tree_handle) {
         Ok(handle) => {
             let _ = handle.join_default_workspace();
             tracing::info!("peer-sync: actor spawned, default workspace joined");

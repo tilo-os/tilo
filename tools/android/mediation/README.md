@@ -96,7 +96,8 @@ never mutating the base. Feed this runtime into `qualify_apk.py`; do not overwri
 an accepted payload or change its receipt after preparation.
 
 The fixture compiles against the existing official SDK Android 35 `android.jar`.
-Use SDK build-tools 36.1.0 `aapt2 compile --dir res`, then `aapt2 link --manifest
+Stage the byte-exact MIT icon with `python3 prepare-res.py NEW_RESOURCE_DIR`.
+Use SDK build-tools 36.1.0 `aapt2 compile --dir NEW_RESOURCE_DIR`, then `aapt2 link --manifest
 AndroidManifest.xml -I android.jar`, add the fixture DEX, sign with an ephemeral
 **test-only** key, and verify the actual APK with SDK `apksigner`. Keep the key out
 of the repository. A fresh build/key changes APK and signer pins: record the actual
@@ -222,6 +223,18 @@ Unicode-name assertion remains mandatory. The cold exact-record namespace has no
 sibling file; its denial does not replace the ordinary journey's existing-sibling
 isolation test. Keep both journeys. All mounts, grants and processes are owned
 fixtures and cleaned up; generated JSON/PNGs remain outside committed source.
+
+For foreground interruption against a received file, use the unchanged signed
+foreground fixture with `run_foreground_journey.py --cold-hydration --fixture-grants`.
+This also requires the production filesystem binaries and an existing FUSE-capable
+test environment. It accepts only the compatible foreground work journey, not a
+denial, baseline-incompatibility or sticky-recovery expectation. Backend absence
+and projected state precede the actual worker read; local state must follow that
+read before the harness reads source content. Accepted fixture-grant withdrawal
+must interrupt the sandbox retaining open descriptors, stop writes, remove the
+ongoing notice and deny former metadata/read/write access on relaunch. The exact
+source bytes and private visit sequence remain mandatory. This qualifies app
+grant withdrawal, not withdrawal of the independent exact-record share.
 
 ## Acceptance checklist
 

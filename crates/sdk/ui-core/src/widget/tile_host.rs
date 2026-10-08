@@ -1360,6 +1360,23 @@ impl Continuable for TileHost {
             _ => false,
         }
     }
+
+    fn restore_live_continuation_metadata(
+        &mut self,
+        metadata: &crate::collaboration::ContinuationMetadata,
+        state: &AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => {
+                crate::widget::capability::capability_mut::<dyn Continuable>(&mut **app)
+                    .is_some_and(|continuable| {
+                        continuable.restore_live_continuation_metadata(metadata, state, path)
+                    })
+            }
+            _ => false,
+        }
+    }
 }
 
 impl FloatingSurfaceProvider for TileHost {

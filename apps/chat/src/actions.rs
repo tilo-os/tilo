@@ -73,6 +73,8 @@ pub const CHAT_ACTION_TYPE: &str = "chat.action";
 /// rather than an error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ChatAction {
+    /// Reviewed feedback, filed through the same attributed Chat document.
+    Feedback(crate::feedback::FeedbackAction),
     /// Post a message into `channel`. The `id` and `ts` are minted once at
     /// authoring time and carried here, so replay is byte-identical. A chat
     /// message is discrete (not a co-edited flowing document), so a whole-message
@@ -283,6 +285,10 @@ pub const MAX_AGENT_AUTHOR_NAME_BYTES: usize = 80;
 pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
     let mut context = tilo_actions::ActionContext::for_action("so.tilo.chat", "Chat", action);
     let (label, channel, resource_id, kind) = match action {
+        ChatAction::Feedback(feedback) => {
+            let (id, channel) = feedback.locus();
+            ("File feedback", channel, id, "chat.feedback")
+        }
         ChatAction::SendMessage { channel, id, .. } => {
             ("Send message", channel, id, "chat.message")
         }
@@ -436,6 +442,9 @@ fn apply_seed_workspace(
 
 impl Action for ChatAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        if let Self::Feedback(action) = self {
+            return crate::feedback::apply(action, doc);
+        }
         if let ChatAction::EnsureUser {
             name,
             initials,
@@ -1083,6 +1092,7 @@ fn publish_channel(
                 .with_primary(true),
         );
         channel = channel.with_action(share_resource_spec(&ch.id));
+        channel = channel.with_action(crate::feedback::submit_spec(&ch.id));
         channel = channel.with_action(ActionSpec::prompted(
             "post",
             "Post message",
@@ -1480,7 +1490,7 @@ fn publish_person(user: &crate::model::User) -> Resource {
     Resource::new(
         format!("chat.person:{}", user.id),
         "chat.person",
-        user.name.clone(),
+        crate::identity::shared_name_label(&user.id, &user.name),
     )
     .with_action(
         ChatEffect::OpenPerson {
@@ -1949,6 +1959,29 @@ mod tests {
         }))
         .expect_err("route is a constrained public argument");
         assert!(error.to_string().contains("route"), "{error}");
+    }
+
+    #[test]
+    fn saved_relative_person_names_have_distinct_public_resource_labels() {
+        let person = crate::model::User {
+            id: "peer@2154".into(),
+            name: "You".into(),
+            initials: "Y".into(),
+            color_idx: 0,
+            status: crate::model::Presence::Online,
+            is_agent: false,
+        };
+        let published = publish_person(&person);
+        assert_eq!(published.id.as_str(), "chat.person:peer@2154");
+        assert_ne!(published.label, "You");
+        assert!(published.label.contains("2154"));
+        assert_eq!(person.name, "You");
+        assert!(
+            published
+                .actions
+                .iter()
+                .any(|action| action.id == "open-person")
+        );
     }
 
     fn seeded() -> AutoCommit {

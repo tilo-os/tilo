@@ -39,6 +39,21 @@ const NARROW_SCENARIOS: &[&str] = &[
 ];
 
 #[test]
+fn semantic_markdown_import_reports_original_success_notification() {
+    ui::clock::freeze_for_capture();
+    check(Some("import_success"), (1280, 720)).unwrap();
+    let mut app = TestApp::<NotesShell>::capture_at(Some("import_success"), (1280, 720)).unwrap();
+    // A capture retains its original notification even when frame preparation
+    // exceeds the live toast lifetime. Draw the real app after that delay.
+    std::thread::sleep(ui::widget::toast::DEFAULT_TTL + ui::time::Duration::from_millis(100));
+    app.harness().relayout();
+    assert!(observed(app.harness(), |node| {
+        node.name.as_deref() == Some("Notifications")
+            && node.value.as_deref() == Some("Imported Project brief")
+    }));
+}
+
+#[test]
 fn every_scenario_reaches_its_state() {
     // Match --shots before starting capture workers: transient notifications
     // belong to the captured scene and must not expire while it is prepared.
@@ -128,12 +143,13 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "did not reach its state: {:?}",
+            "did not reach its state: {:?}; accessibility: {:?}",
             blocks
                 .iter()
                 .zip(&rects)
                 .map(|(block, rect)| (&block.kind, block.text(), block.indent(), rect))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            driver.a11y_nodes()
         ))
     }
 }

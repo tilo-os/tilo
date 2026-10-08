@@ -1,6 +1,7 @@
 //! Bounded retained-notification bytes, using the native desktop's format.
-//! Hosts provide storage; restart restores provenance and age while sender
-//! actions and remote routes remain scoped to the session that owned them.
+//! Hosts provide storage; restart restores provenance and age while
+//! sender actions and remote routes remain scoped to their original session.
+//! Host-scheduled occurrence targets are durable and retain their exact room.
 use super::{MAX_HISTORY, Notification, NotificationSeverity};
 use serde::{Deserialize, Serialize};
 use ui::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -41,7 +42,7 @@ impl From<PersistedSeverity> for NotificationSeverity {
 /// The durable shape of one retained notification. Process-scoped routes
 /// (the D-Bus id, a mirrored notification's restart-scoped id) and action
 /// keys are deliberately absent: after a restart nothing they address still
-/// exists.
+/// exists. A host-scheduled target names a durable occurrence instead.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct PersistedNotification {
     title: String,
@@ -52,6 +53,9 @@ struct PersistedNotification {
     source_workspace: Option<u64>,
     show_preview: bool,
     posted_unix_ms: u64,
+    #[serde(default)]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    scheduled_target: Option<super::ScheduledNotificationTarget>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -102,6 +106,11 @@ pub fn encode_history(
                     app_id: notification.app_id.as_deref().map(bounded),
                     source_workspace: notification.source_workspace,
                     show_preview: notification.show_preview,
+                    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                    scheduled_target: notification
+                        .scheduled_target
+                        .clone()
+                        .filter(super::ScheduledNotificationTarget::valid),
                     posted_unix_ms: wall_now_ms
                         .saturating_sub(u64::try_from(age.as_millis()).unwrap_or(u64::MAX)),
                 }
@@ -135,6 +144,12 @@ pub fn decode_history(
             notification.app_name = entry.app_name.as_deref().map(bounded);
             notification.app_id = entry.app_id.as_deref().map(bounded);
             notification.source_workspace = entry.source_workspace;
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            {
+                notification.scheduled_target = entry
+                    .scheduled_target
+                    .filter(super::ScheduledNotificationTarget::valid);
+            }
             notification.show_preview = entry.show_preview;
             notification.show_on_lock_screen = false;
             notification

@@ -41,8 +41,13 @@ fn setup() -> (tempfile::TempDir, String) {
     }
     let src = root.path().join("state/src/wt-1");
     std::fs::create_dir_all(src.join("os/scripts")).unwrap();
+    std::fs::create_dir_all(src.join("os/usr/libexec")).unwrap();
     std::fs::write(src.join("Cargo.toml"), "[workspace]\n").unwrap();
-    for file in ["os/components.toml", "os/scripts/install-components.py"] {
+    for file in [
+        "os/components.toml",
+        "os/scripts/install-components.py",
+        "os/usr/libexec/tilo-session",
+    ] {
         std::fs::copy(repo().join(file), src.join(file)).unwrap();
     }
     // No sccache from the developer's PATH: the stand-in cargo ignores it.
@@ -169,6 +174,11 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
         assert!(phases.contains_key("build") && phases.contains_key("import"));
         let layer = root.path().join("state/layers").join(&hash);
         assert!(layer.join("usr/bin/shell").is_file());
+        assert_eq!(
+            std::fs::read(layer.join("usr/libexec/tilo-session")).unwrap(),
+            std::fs::read(repo().join("os/usr/libexec/tilo-session")).unwrap(),
+            "the imported shell layer carries this source checkout's startup wrapper"
+        );
 
         let record: serde_json::Value = serde_json::from_slice(
             &std::fs::read(root.path().join("state/src/wt-1.json")).unwrap(),

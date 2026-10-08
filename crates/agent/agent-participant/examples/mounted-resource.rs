@@ -1,4 +1,4 @@
-//! An explicit acceptance run, requiring a compiled desktop bundle and Chromium.
+//! An explicit acceptance run, requiring a compiled web bundle and Chromium.
 //! All identities, storage and governed rooms belong to this temporary fixture.
 #[cfg(not(test))]
 #[expect(

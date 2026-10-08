@@ -145,11 +145,28 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+fn alarm_action_contract() -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        permission: tilo_actions::PermissionRequirement::Write,
+        retry: tilo_actions::RetryPolicy::Idempotent,
+        tags: vec!["desktop".into(), "notification".into(), "alarm".into()],
+        ..tilo_actions::ActionContract::default()
+    }
+}
+
+fn is_alarm_action(id: &str) -> bool {
+    crate::shell::notification::alarm_action_address(id).is_some()
+        || crate::shell::notification::is_snoozed_alarm_action(id)
+}
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
     };
 
+    if is_alarm_action(id) {
+        return alarm_action_contract();
+    }
     let mut contract = ActionContract::default();
     match id {
         "shortcut-help.toggle" | "overview.toggle" => {
@@ -171,6 +188,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "room.activity.acknowledge"
+        | "room.activity.tasks"
         | "tab.menu"
         | "tab.drag.cancel"
         | "history.compare"
@@ -230,13 +249,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
         }
-        id if id.starts_with("navigation.axis.") => {
-            contract = ActionContract::view();
-            contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
-        }
-        // Each is one step: repeating it steps again.
-        id if WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
+        // Navigation and focus each advance one step when repeated.
+        id if id.starts_with("navigation.axis.") || WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
             contract = ActionContract::view();
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
@@ -270,6 +284,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "room.activity.acknowledge"
+        | "room.activity.tasks"
         | "tab.menu"
         | "tab.drag.cancel"
         | "history.compare"
@@ -2409,11 +2425,13 @@ fn decline_bluetooth_pairing() -> Result<(), ActionError> {
 /// Stage a whole-desktop layout through the same confirm-or-restore
 /// transaction as Super+P, and open the display sheet so whoever is at the
 /// machine sees Keep/Revert and the countdown.
-fn stage_display_layout(st: &mut ChromeState, mode: DisplayLayoutMode) -> Result<(), ActionError> {
-    settings_store::display_mode::stage_layout(mode)
-        .map_err(|error| ActionError::Refused(error.to_string()))?;
-    st.overlays.projection = true;
-    Ok(())
+fn stage_display_layout(
+    _st: &mut ChromeState,
+    _mode: DisplayLayoutMode,
+) -> Result<(), ActionError> {
+    Err(ActionError::Refused(
+        "display layouts require lifecycle dispatch".into(),
+    ))
 }
 
 /// Keep or revert the display change that is waiting for confirmation.
@@ -2759,6 +2777,98 @@ impl SearchProvider for ActionsProvider {
                         },
                     ) as Rc<crate::shell::search::BeginInvokeFn>;
                     (on_open, Some(begin))
+                } else if let Some(mode) = action
+                    .id
+                    .strip_prefix("display.layout.")
+                    .and_then(DisplayLayoutMode::from_id)
+                {
+                    let action_id = action.id;
+                    let on_open = Rc::new(
+                        |_doc: &mut ui::widget::Edits<'_>,
+                         _root: &automerge::ObjId,
+                         _chrome: &Chrome,
+                         _args: &ActionArgs| {
+                            Err(ActionError::Refused(
+                                "display layouts require lifecycle dispatch".into(),
+                            ))
+                        },
+                    ) as Rc<crate::shell::search::OpenFn>;
+                    let begin = Rc::new(
+                        move |_doc: &mut ui::widget::Edits<'_>,
+                              _root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              _args: &ActionArgs| {
+                            if !current_shell_action_authorized(&chrome.borrow(), action_id) {
+                                return Err(ActionError::Refused("current workspace authority no longer permits this display layout".into()));
+                            }
+                            let pending = crate::shell::display_persistence::stage_layout(mode)
+                                .map_err(|error| ActionError::Refused(error.to_string()))?;
+                            {
+                                let mut state = chrome.borrow_mut();
+                                state.overlays.projection = true;
+                                state.bump();
+                            }
+                            let chrome = chrome.clone();
+                            let ticket: crate::shell::search::PendingInvocation =
+                                Rc::new(move || {
+                                    pending
+                                        .poll()
+                                        .map(|done| {
+                                            done.map(|_| {
+                                                chrome.borrow_mut().bump();
+                                                crate::shell::search::ActionReceipt::completed()
+                                            })
+                                        })
+                                        .map_err(|error| ActionError::Refused(error.to_string()))
+                                });
+                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>;
+                    (on_open, Some(begin))
+                } else if matches!(action.id, DISPLAY_KEEP_ID | DISPLAY_REVERT_ID) {
+                    use crate::shell::display_persistence::{Answer, answer};
+                    let action_id = action.id;
+                    let on_open = Rc::new(
+                        |_doc: &mut ui::widget::Edits<'_>,
+                         _root: &automerge::ObjId,
+                         _chrome: &Chrome,
+                         _args: &ActionArgs| {
+                            Err(ActionError::Refused(
+                                "display answers require lifecycle dispatch".into(),
+                            ))
+                        },
+                    ) as Rc<crate::shell::search::OpenFn>;
+                    let begin = Rc::new(
+                        move |_doc: &mut ui::widget::Edits<'_>,
+                              _root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              _args: &ActionArgs| {
+                            if !current_shell_action_authorized(&chrome.borrow(), action_id) {
+                                return Err(ActionError::Refused("current workspace authority no longer permits this display answer".into()));
+                            }
+                            let pending = answer(if action_id == DISPLAY_KEEP_ID {
+                                Answer::Keep
+                            } else {
+                                Answer::Revert
+                            })
+                            .map_err(|error| ActionError::Refused(error.to_string()))?;
+                            let chrome = chrome.clone();
+                            let ticket: crate::shell::search::PendingInvocation =
+                                Rc::new(move || {
+                                    pending
+                                        .poll()
+                                        .map(|done| {
+                                            done.map(|()| {
+                                                chrome.borrow_mut().bump();
+                                                crate::shell::search::ActionReceipt::completed()
+                                            })
+                                        })
+                                        .map_err(|error| ActionError::Refused(error.to_string()))
+                                });
+                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>;
+                    (on_open, Some(begin))
                 } else {
                     let action_id = action.id;
                     let on_open = Rc::new(
@@ -2834,6 +2944,18 @@ impl SearchProvider for ActionsProvider {
             });
         }
         for (id, label_key, subtitle_key, keywords_key) in [
+            (
+                tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE,
+                "search-action-activity-acknowledge",
+                "search-action-activity-acknowledge-subtitle",
+                "search-action-activity-acknowledge-keywords",
+            ),
+            (
+                tilo_desktop::activity::ACTIVITY_TASKS,
+                "search-action-activity-tasks",
+                "search-action-catch-up-tasks-subtitle",
+                "search-action-activity-tasks-keywords",
+            ),
             (
                 tilo_desktop::activity::HISTORY_COMPARE,
                 "search-action-history-compare",
@@ -3329,6 +3451,14 @@ impl SearchProvider for ActionsProvider {
                 }
             }
         }
+        for row in crate::shell::notification::alarm_action_rows(ctx.chrome) {
+            candidates.record(
+                &row.title.to_lowercase(),
+                &row.subtitle.clone().unwrap_or_default().to_lowercase(),
+                &row.id,
+            );
+            out.push(row);
+        }
         crate::shell::search::rank_rows(&self.ranker, ctx.needle, out, &candidates.0)
     }
 }
@@ -3494,6 +3624,277 @@ mod tests {
             &ActionArgs::none(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn published_display_keep_waits_for_durability_without_blocking_dispatch() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+        settings_store::install_source(Some(session.host_view().unwrap()));
+        let mut transaction =
+            DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default()).unwrap();
+        transaction.state = DisplayTransactionState::AwaitingConfirmation;
+        transaction.save().unwrap();
+        let chrome = chrome_with_room();
+        let results = action_results(&ActionsProvider::new(), &chrome);
+        let action = results
+            .iter()
+            .find(|row| row.id == DISPLAY_KEEP_ID)
+            .expect("published Keep action");
+        let lock_path = paths.copy.with_file_name("settings.json.lock");
+        let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+        let lock =
+            tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+        let (sent, received) = mpsc::channel();
+        let release = std::thread::spawn(move || {
+            let responsive = received.recv_timeout(Duration::from_millis(500)).is_ok();
+            drop(lock);
+            responsive
+        });
+        let mut doc = AutoCommit::new();
+        let mut edits = ui::widget::Edits::lend(&mut doc);
+        let disposition = if let Some(begin) = &action.on_begin_invoke {
+            begin(&mut edits, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap()
+        } else {
+            (action.on_open)(&mut edits, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            crate::shell::search::InvocationDisposition::Accepted(
+                crate::shell::search::ActionReceipt::completed(),
+            )
+        };
+        if let crate::shell::search::InvocationDisposition::Pending(ticket) = &disposition {
+            assert!(
+                ticket().unwrap().is_none(),
+                "held storage cannot already complete the job"
+            );
+        }
+        let _ = sent.send(());
+        let responsive = release.join().unwrap();
+        settings_store::install_source(None);
+        assert!(
+            responsive,
+            "published Keep dispatch blocked on the real storage lock"
+        );
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("a storage command must retain its published job until durable completion");
+        };
+        crate::shell::durable_writer::global().flush();
+        assert!(ticket().unwrap().is_some());
+        let reopened = settings_store::SessionSettings::open(paths).unwrap();
+        assert_eq!(reopened.load()["display_transaction"]["id"], transaction.id);
+        assert_eq!(
+            reopened.load()["display_transaction"]["state"],
+            "confirm_requested"
+        );
+    }
+
+    fn begin_display_answer(chrome: &Chrome, id: &str) -> crate::shell::search::PendingInvocation {
+        let results = action_results(&ActionsProvider::new(), chrome);
+        let row = results
+            .iter()
+            .find(|row| row.id == id)
+            .expect("published answer");
+        let mut doc = AutoCommit::new();
+        let disposition = row.on_begin_invoke.as_ref().expect("answer lifecycle")(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap();
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("storage must retain a real job");
+        };
+        ticket
+    }
+
+    #[test]
+    fn published_display_answers_refuse_a_replacement_adopted_under_the_copy_lock() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let paths = settings_store::SessionPaths::configured().unwrap();
+            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+            settings_store::install_source(Some(session.host_view().unwrap()));
+            let mut transaction =
+                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
+                    .unwrap();
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.save().unwrap();
+            let lock_path = paths.copy.with_file_name("settings.json.lock");
+            let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
+            let lock =
+                tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
+            let ticket = begin_display_answer(&chrome_with_room(), id);
+            assert!(ticket().unwrap().is_none());
+            let mut replacement = transaction.clone();
+            replacement.id += 100;
+            replacement.state = DisplayTransactionState::Requested;
+            let copy = serde_json::json!({"display_transaction": replacement});
+            // The external writer owns the same canonical lock. Its copy is
+            // adopted by SessionSettings before the conditional comparison.
+            tilo_files::native::atomic::write_creating_parent(
+                &paths.copy,
+                &serde_json::to_vec(&copy).unwrap(),
+            )
+            .unwrap();
+            drop(lock);
+            crate::shell::durable_writer::global().flush();
+            assert!(
+                matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("replaced"))
+            );
+            let reopened = settings_store::SessionSettings::open(paths).unwrap();
+            assert_eq!(
+                reopened.load()["display_transaction"],
+                copy["display_transaction"]
+            );
+            settings_store::install_source(None);
+        }
+    }
+
+    #[test]
+    fn published_display_answers_report_real_record_failure_and_preserve_old_intent() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let paths = settings_store::SessionPaths::configured().unwrap();
+            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+            settings_store::install_source(Some(session.host_view().unwrap()));
+            let mut transaction =
+                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
+                    .unwrap();
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.save().unwrap();
+            std::fs::remove_file(&paths.device).unwrap();
+            std::fs::create_dir(&paths.device).unwrap();
+            let ticket = begin_display_answer(&chrome_with_room(), id);
+            crate::shell::durable_writer::global().flush();
+            assert!(matches!(ticket(), Err(ActionError::Refused(_))));
+            assert_eq!(
+                session.load()["display_transaction"],
+                serde_json::to_value(&transaction).unwrap()
+            );
+            std::fs::remove_dir(&paths.device).unwrap();
+            transaction.save().unwrap();
+            let reopened = settings_store::SessionSettings::open(paths).unwrap();
+            assert_eq!(
+                reopened.load()["display_transaction"],
+                serde_json::to_value(&transaction).unwrap()
+            );
+            settings_store::install_source(None);
+        }
+    }
+
+    #[test]
+    fn published_display_answer_requires_an_atomic_storage_receipt_even_if_state_matches() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
+        use std::sync::mpsc;
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let transaction = DisplayTransaction {
+            id: 77,
+            state: DisplayTransactionState::AwaitingConfirmation,
+            ..DisplayTransaction::default()
+        };
+        let document = serde_json::json!({"display_transaction": transaction})
+            .as_object()
+            .unwrap()
+            .clone();
+        let source = Arc::new(settings_store::HostDocument::new(document, |_| Ok(())));
+        settings_store::install_source(Some(source.clone()));
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        crate::shell::durable_writer::global()
+            .submit_ordered(move || {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+            })
+            .unwrap();
+        started.recv().unwrap();
+        let ticket = begin_display_answer(&chrome_with_room(), DISPLAY_KEEP_ID);
+        assert!(ticket().unwrap().is_none());
+        // Another legitimate writer reaches the desired state. This cannot
+        // turn an unsupported atomic operation into our storage receipt.
+        source
+            .update_section(
+                "display_transaction",
+                serde_json::json!({"state":"confirm_requested"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+        release.send(()).unwrap();
+        crate::shell::durable_writer::global().flush();
+        assert!(
+            matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("conditional settings persistence is unavailable"))
+        );
+        assert_eq!(
+            source.load()["display_transaction"]["state"],
+            "confirm_requested"
+        );
+        settings_store::install_source(None);
+    }
+
+    #[test]
+    fn published_display_answers_accept_real_durable_record_with_copy_repair_pending() {
+        use settings_store::SettingsSource as _;
+        use settings_store::hardware::{
+            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+        };
+        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let paths = settings_store::SessionPaths::configured().unwrap();
+            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
+            settings_store::install_source(Some(session.host_view().unwrap()));
+            let mut transaction =
+                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
+                    .unwrap();
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.save().unwrap();
+            std::fs::remove_file(&paths.copy).unwrap();
+            std::fs::create_dir(&paths.copy).unwrap();
+            let ticket = begin_display_answer(&chrome_with_room(), id);
+            crate::shell::durable_writer::global().flush();
+            assert!(ticket().unwrap().is_some());
+            let state = if id == DISPLAY_KEEP_ID {
+                "confirm_requested"
+            } else {
+                "revert_requested"
+            };
+            assert_eq!(session.load()["display_transaction"]["state"], state);
+            let record: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&paths.device).unwrap()).unwrap();
+            assert_eq!(record["display_transaction"]["id"], transaction.id);
+            assert_eq!(record["display_transaction"]["state"], state);
+            let accepted_revision = session.revision();
+            std::fs::remove_dir(&paths.copy).unwrap();
+            session.refresh();
+            assert_eq!(
+                session.revision(),
+                accepted_revision,
+                "copy repair must not republish unchanged committed state"
+            );
+            let repaired: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&paths.copy).unwrap()).unwrap();
+            assert_eq!(
+                repaired["display_transaction"],
+                record["display_transaction"]
+            );
+            settings_store::install_source(None);
+        }
     }
 
     #[test]
@@ -3971,6 +4372,8 @@ mod tests {
             "room.activity.open",
             "room.activity.explore",
             "room.activity.replay",
+            "room.activity.acknowledge",
+            "room.activity.tasks",
         ] {
             assert!(
                 out.iter().any(|action| action.id == id

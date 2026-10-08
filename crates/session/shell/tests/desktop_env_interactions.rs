@@ -1069,9 +1069,39 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let app = group
             .active_host_rect_for_tests()
             .expect("maximized group's active app");
+        cursor(
+            &mut host,
+            &layout2,
+            Point::new(maximized.x1 - 8.0, maximized.y0 + 8.0),
+        );
+        host.draw(
+            &mut vello::Scene::new(),
+            ui::kurbo::Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &Theme::dark(),
+            &ui::PresenceCtx::default(),
+        );
+        let restore = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("painted maximized group")
+            .restore_rect();
+        assert!(
+            restore.area() > 0.0,
+            "the system Restore control must paint"
+        );
+        assert!(
+            restore.y0 >= maximized.y0,
+            "system chrome must stay inside the maximized group",
+        );
+        assert!(
+            restore.y1 <= app.y0,
+            "system chrome must stay above the client header",
+        );
+        let client_top = (restore.y1 + ui::widget::tabs::TAB_PILL_INSET_Y).ceil();
         assert_eq!(
-            app, maximized,
-            "the hidden tab strip must reserve no space inside the maximized group",
+            app,
+            ui::kurbo::Rect::new(maximized.x0, client_top, maximized.x1, maximized.y1),
+            "the client fills exactly the group below painted system chrome; the hidden tab strip reserves no additional space",
         );
         let _ = &layout2;
     }

@@ -470,28 +470,48 @@ cmd_entries() {
   [ -d "$esp" ] && [ ! -L "$esp" ] || die "ESP is not a real directory: $esp"
   exec 6<"$esp"
   flock -x 6
-  local cur; cur="$(current_entry)"
+  # bootc reuses the primary entry's filename for a different deployment and
+  # first writes the replacement under entries.staged. EFI's selected filename
+  # therefore cannot identify the running composefs after staging/finalization.
+  local root_source booted_digest="" cur=""
+  root_source="$(findmnt -n -o SOURCE /)" || die "cannot identify the running root"
+  case "$root_source" in
+    composefs:*)
+      booted_digest="${root_source#composefs:}"
+      [[ "$booted_digest" =~ ^[[:xdigit:]]{128}$ ]] || die "invalid running composefs identity"
+      ;;
+    *) cur="$(current_entry)"; [ -n "$cur" ] || die "cannot identify the booted entry" ;;
+  esac
 
-  local f name id changed=0
+  local f name id changed=0 directory uki_rel cmd digest proven=0
   esp_plan_reset
-  for f in "$esp"/loader/entries/*.conf; do
+  for f in "$esp"/loader/entries/*.conf "$esp"/loader/entries.staged/*.conf; do
     [ -e "$f" ] || continue
     name="${f##*/}"
     id="$(entry_id_of "$f")"
     # Only bootc's own entries. The repair entry must never expire, and an entry
     # some other tool put there is not ours to count down.
     case "$id" in bootc*) ;; *) continue ;; esac
+    if [ -n "$booted_digest" ]; then
+      uki_rel="$(sed -n 's/^uki *//p' "$f" | head -1)"
+      [[ "$uki_rel" =~ ^/?EFI/Linux/bootc/[A-Za-z0-9][A-Za-z0-9._+-]*\.efi$ ]] || die "not a managed UKI entry: $f"
+      cmd="$($UKI_CMDLINE show "$esp/${uki_rel#/}")" || die "cannot read entry identity: $f"
+      digest="$(printf '%s\n' "$cmd" | tr ' \t' '\n\n' | sed -n 's/^composefs=//p')"
+      [[ "$digest" =~ ^[[:xdigit:]]{128}$ ]] || die "invalid entry composefs identity: $f"
+      if [ "$digest" = "$booted_digest" ]; then proven=1; continue; fi
+    elif [ "$id" = "$cur" ]; then
+      proven=1; continue
+    fi
     case "$name" in *+*) continue ;; esac
-    # The entry this boot came from is already proven as far as anything here can
-    # tell. Counting it down would spend tries on a working system.
-    [ "$id" = "$cur" ] && continue
-    esp_plan_op rename src "loader/entries/$name" dst "loader/entries/${name%.conf}+${BOOT_TRIES}.conf"
+    directory="${f%/*}"; directory="${directory#"$esp"/}"
+    esp_plan_op rename src "$directory/$name" dst "$directory/${name%.conf}+${BOOT_TRIES}.conf"
     log "boot counter: $id gets $BOOT_TRIES tries"; changed=1
   done
+  [ "$proven" = 1 ] || die "no retained entry matches the running deployment"
   if [ "$changed" = 0 ]; then
     log "boot counters: nothing to add"
   else
-    esp_plan_commit || warn "could not apply the boot counters"
+    esp_plan_commit || die "could not apply the boot counters"
   fi
 
   # cmd_repair_entry takes the same ESP lock and may hand it to the sealed-key

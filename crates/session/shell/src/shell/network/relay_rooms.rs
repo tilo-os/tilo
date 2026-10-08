@@ -119,7 +119,7 @@ impl ShellNetwork {
             .host_identity
             .as_ref()
             .ok_or("native identity unavailable")?;
-        let (relay, certificate) = owner.with_current(room, |view| {
+        let (relay, certificate, governor_lane) = owner.with_current(room, |view| {
             let (certificate, _) = identity.current_native_material(view.workspace())?;
             if view.device() != &certificate {
                 return Err("effect caller differs from admitted native custody".into());
@@ -130,8 +130,18 @@ impl ShellNetwork {
             if hint.room != room.to_string() || &hint.governing_authority != view.governor() {
                 return Err("effect host differs from current admitted governor".into());
             }
-            Ok((hint.endpoint_addr, certificate))
+            Ok((
+                hint.endpoint_addr,
+                certificate,
+                !view.governor().capabilities.can_act_as_host
+                    || &hint.host_device_certificate != view.governor(),
+            ))
         })?;
+        if governor_lane {
+            return self
+                .record_effect_at_governor(room, invocation, redacted)
+                .await;
+        }
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
         self.cmd_tx
             .try_send(NetCmd::RoomAdmin {

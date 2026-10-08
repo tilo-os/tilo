@@ -555,7 +555,9 @@ pub struct ShellOverlayHost {
     /// The window in the current room's preview row the keyboard is on:
     /// Left and Right walk it, Enter goes there. `None` while the keyboard
     /// is on the room list.
-    overview_window_selection: Option<usize>,
+    overview_window_selection: Option<crate::shell::state::TabId>,
+    /// One interrupted activation is consumed after its target disappears.
+    overview_window_interrupted: bool,
     /// A press on the overview until it is let go: a click or tap on a
     /// window preview goes to that window, a drag carries it to another
     /// room.
@@ -658,6 +660,8 @@ pub struct ShellOverlayHost {
     /// Workspace-settings transition, geometry, painting chrome, and typed
     /// hit targets. Policy outcomes are applied by this host.
     workspace_settings_overlay: WorkspaceSettingsOverlay,
+    /// A rename submit owns its held Enter repeats and release after the draft closes.
+    workspace_rename_submit_held: bool,
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
     palette_transition: ui::Transition,
@@ -1862,6 +1866,16 @@ impl ShellOverlayHost {
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
     }
 
+    pub(crate) fn attach_task_review(
+        &mut self,
+        review: crate::shell::task_review::NativeTaskReview,
+    ) {
+        self.room_activity.attach_task_review(review.clone());
+        self.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::task_review::TaskReviewProvider::new(review),
+        ));
+    }
+
     /// Registers every built-in search provider and hands back the shared
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
@@ -2122,6 +2136,7 @@ impl ShellOverlayHost {
             overview_scroll_y: 0.0,
             overview_selection: None,
             overview_window_selection: None,
+            overview_window_interrupted: false,
             overview_press: None,
             overview_panel_cache: None,
             overview_panel_cache_fills: 0,
@@ -2158,6 +2173,7 @@ impl ShellOverlayHost {
             strip_rail_hover: None,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
+            workspace_rename_submit_held: false,
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
@@ -4384,6 +4400,53 @@ impl ShellOverlayHost {
         self.host_shell_allows.push(pending);
     }
 
+    /// Settings may request topology through the same admitted app-host channel.
+    /// Same identity and topology observations never mint an input lease.
+    /// # Errors
+    /// Rejects non-Settings callers, locked or non-owner sessions, and unavailable peers.
+    pub fn request_device_display_move(
+        &self,
+        app_id: &str,
+        request: settings_store::device_displays::DeviceDisplayMove,
+    ) -> Result<(), String> {
+        let admitted = app_id == "so.tilo.settings"
+            && self.chrome.as_ref().is_some_and(|chrome| {
+                let state = chrome.borrow();
+                !state.session_locked() && is_active_workspace_owner(&state)
+            });
+        if !admitted {
+            return Err(t("device-fabric-error-layout-changed"));
+        }
+        let bridge = self
+            .device_fabric_bridge
+            .as_ref()
+            .ok_or_else(|| t("device-fabric-error-no-identity"))?;
+        bridge(DeviceFabricUiAction::MoveDisplay(request)).map(|_| ())
+    }
+
+    fn active_tab_app_id(
+        chrome: &crate::shell::chrome_state::Chrome,
+        source_tab: crate::shell::state::TabId,
+    ) -> Option<String> {
+        let state = chrome.borrow();
+        state
+            .tree()
+            .desktop
+            .active_workspace()
+            .and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .any(|tab| tab.id == source_tab)
+                            .then(|| state.tab_app_id(strip.id, group.id, source_tab))
+                            .flatten()
+                    })
+                })
+            })
+    }
+
     fn drain_app_host_intents(&mut self) {
         self.host_shell_allows.retain_mut(|pending| !pending.poll());
         let mut intents = Vec::new();
@@ -4408,6 +4471,16 @@ impl ShellOverlayHost {
         };
         for (source_tab, intent) in intents {
             match intent {
+                ui::widget::AppHostIntent::MoveDeviceDisplay { request, reply } => {
+                    let Some(reply) = reply.upgrade() else {
+                        continue;
+                    };
+                    let app_id = Self::active_tab_app_id(&chrome, source_tab);
+                    reply.borrow_mut().result = Some(self.request_device_display_move(
+                        app_id.as_deref().unwrap_or_default(),
+                        request,
+                    ));
+                }
                 ui::widget::AppHostIntent::ShowWorkspaceActivity {
                     resource_id,
                     version_id,
@@ -4934,6 +5007,12 @@ impl ShellOverlayHost {
                 {
                     return false;
                 }
+                // A foreign client's close request can be refused. Keep its
+                // live tab visible until the compositor sees destruction.
+                if Self::tab_still_present(&chrome, tab_id) {
+                    g.cancel_tab_close(tab_id);
+                    return true;
+                }
                 // The durable tree/document mutation must succeed before the
                 // widget begins its close animation. A visual-only close is
                 // precisely what allowed the next resync to restore a window.
@@ -4946,6 +5025,19 @@ impl ShellOverlayHost {
             }
         }
         false
+    }
+
+    fn tab_still_present(chrome: &Chrome, tab_id: u64) -> bool {
+        chrome
+            .borrow()
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .any(|tab| tab.id == tab_id)
     }
 
     /// Drain close buttons from the rendered rows into the same lifecycle
@@ -4971,7 +5063,29 @@ impl ShellOverlayHost {
                 );
             }
         }
-        Self::dispatch_desktop_intents(&chrome, intents) > 0
+        let changed = Self::dispatch_desktop_intents(&chrome, intents) > 0;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: the pointers belong to this exclusively borrowed host.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                let retained: Vec<_> = chrome
+                    .borrow()
+                    .tree()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .filter(|model| model.id == group.id)
+                    .flat_map(|model| model.tabs.iter())
+                    .map(|tab| tab.id)
+                    .collect();
+                for tab in retained {
+                    group.cancel_tab_close(tab);
+                }
+            }
+        }
+        changed
     }
 
     fn harvest_pending_width_changes(&self) {
@@ -5812,6 +5926,14 @@ impl ShellOverlayHost {
         let Some(chrome_handle) = self.chrome.clone() else {
             return;
         };
+
+        // A retired native/portal request cannot leave a stale grant sheet.
+        chrome_handle.borrow_mut().pending_grants.retain(|pending| {
+            pending
+                .reply
+                .as_ref()
+                .is_none_or(|reply| !reply.is_closed())
+        });
 
         // The widget and semantic actions answer the same exact pending request.
         let choice = self
@@ -7163,6 +7285,22 @@ impl ShellOverlayHost {
         None
     }
 
+    /// The shared window grip overlays client content. Resolve it in laid-out
+    /// screen coordinates, after strip panning, before forwarding client input.
+    pub fn group_resize_hit(&self, group_id: u64, point: (f64, f64)) -> bool {
+        self.group_resize_rect(group_id)
+            .is_some_and(|rect| rect.contains(Point::new(point.0, point.1)))
+    }
+
+    /// Visible grip geometry shared by local routing and remote admission.
+    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+        self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.group_resize_rect(group_id)
+        })
+    }
+
     /// Every tile laid out on this device, with the tab it shows, in
     /// screen space: what peer pointers are anchored to and placed over
     /// (see [`crate::shell::peer_presence::PointerAnchor`]).
@@ -7676,12 +7814,22 @@ impl ShellOverlayHost {
     /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
     /// cache; the first open pays for the files provider's deferred home walk
     /// and content index open (kept off the `OverlayHost` constructor on purpose).
+    fn selected_search_identity(&self) -> Option<(String, String)> {
+        self.palette
+            .selected_id()
+            .and_then(|id| id.strip_prefix("result:"))
+            .and_then(|id| id.parse::<usize>().ok())
+            .and_then(|index| self.search_results.get(index))
+            .map(|result| (result.provider_id.clone(), result.id.clone()))
+    }
+
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let current_query = self.palette.query().to_string();
+        let preserve_selection = current_query == self.last_search_query;
         let (scope, active_provider) = {
             let st = chrome.borrow();
             let scope = st.search_scope;
@@ -7710,6 +7858,14 @@ impl ShellOverlayHost {
             self.last_search_revision = revision;
             self.search_registry
                 .query_grouped(&args, PALETTE_ROW_BUDGET)
+        };
+
+        // Provider revisions may insert/re-rank rows without a query edit.
+        // Keep the chosen resource, never its old callback or row index.
+        let previous_selection = if preserve_selection {
+            self.selected_search_identity()
+        } else {
+            None
         };
 
         // Kind travels as the row's section and glyph, not a `[Files]`
@@ -7763,7 +7919,23 @@ impl ShellOverlayHost {
 
         // Peer-sync rows are ordinary `ActionsProvider` results, ranked
         // against everything else rather than appended below every hit.
+        let selected_id = previous_selection
+            .and_then(|(provider, id)| {
+                results
+                    .iter()
+                    .position(|result| result.provider_id == provider && result.id == id)
+            })
+            .map(|index| format!("result:{index}"));
         self.palette.set_entries(entries);
+        if let Some(id) = selected_id
+            && let Some(cursor) = self
+                .palette
+                .visible_entries()
+                .iter()
+                .position(|entry| entry.id == id)
+        {
+            self.palette.set_cursor(cursor);
+        }
         self.search_results = results;
         // New entry count needs a new palette node height on the next
         // rebuild, or the palette stays pinned at its first-paint size.
@@ -8430,6 +8602,11 @@ impl ShellOverlayHost {
                     return;
                 }
                 let args = crate::shell::search::action_api::ActionArgs::none();
+                let previous_notice = chrome
+                    .borrow()
+                    .notifications()
+                    .last()
+                    .map(|notice| notice.id);
                 let outcome = if let Some(begin) = &result.on_begin_invoke {
                     begin(doc, root, &chrome, &args).map(|disposition| match disposition {
                         crate::shell::search::InvocationDisposition::Accepted(_) => (),
@@ -8446,10 +8623,31 @@ impl ShellOverlayHost {
                 let entered_resource_scope =
                     outcome.is_ok() && result.id.starts_with("directory-resource\u{1f}");
                 if let Err(err) = outcome {
-                    chrome.borrow_mut().push_warning_notification(
-                        t_args("host-action-cannot-run", &[("title", result.title.into())]),
-                        err.to_string(),
-                    );
+                    let reported_detail = chrome
+                        .borrow()
+                        .notifications()
+                        .last()
+                        .filter(|notice| {
+                            Some(notice.id) != previous_notice
+                                && matches!(
+                                    notice.severity,
+                                    tilo_desktop::notifications::NotificationSeverity::Warning
+                                        | tilo_desktop::notifications::NotificationSeverity::Error
+                                )
+                        })
+                        .map(|notice| notice.body.clone());
+                    let detail = reported_detail.unwrap_or_else(|| {
+                        let detail = err.to_string();
+                        chrome.borrow_mut().push_warning_notification(
+                            t_args("host-action-cannot-run", &[("title", result.title.into())]),
+                            detail.clone(),
+                        );
+                        detail
+                    });
+                    self.palette
+                        .set_selected_status(t("host-action-failed-status"), detail);
+                    self.palette_layout_dirty = true;
+                    return;
                 }
                 if entered_resource_scope {
                     let label = chrome.borrow().search_resource_scope.as_ref().map_or_else(
@@ -8601,6 +8799,15 @@ impl ShellOverlayHost {
             // the pointer is captured from a `Box<GroupRow>` owned through the
             // content tree, and the host outlives it.
             .map_or(0.0, |ptr| unsafe { (&*ptr).canvas_shift() })
+    }
+
+    /// [`GroupRow::canvas_pad`] of `strip`'s row, in layout pixels.
+    pub fn strip_canvas_pad(&self, strip: StripId) -> f64 {
+        self.group_row_ptrs.get(&strip).map_or(0.0, |&ptr| {
+            // SAFETY: same contract as every other `group_row_ptrs` accessor.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.canvas_pad()
+        })
     }
 
     /// Where on screen `strip` pans when it is drawn in canvas coordinates:
@@ -8860,6 +9067,7 @@ impl ShellOverlayHost {
             None
         };
         self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
         self.overview_press = None;
     }
 
@@ -10250,6 +10458,7 @@ impl ShellOverlayHost {
                 .briefs
                 .first()
                 .map(|brief| crate::shell::chrome_state::ActivityFocus {
+                    task_id: None,
                     author: brief.authors.first().map(|author| author.name.clone()),
                     group_id: brief.group_id.clone(),
                     entry_id: None,
@@ -10595,6 +10804,7 @@ impl ShellOverlayHost {
             _ => return false,
         }
         self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
         self.scroll_overview_selection_into_view();
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
@@ -10691,6 +10901,7 @@ impl ShellOverlayHost {
         };
         let closed = crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), tab).is_ok();
         self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
         closed
     }
 
@@ -10715,6 +10926,7 @@ impl ShellOverlayHost {
             Ok(_) => {
                 drop(state);
                 self.overview_window_selection = None;
+                self.overview_window_interrupted = false;
                 true
             }
             Err(err) => {
@@ -11942,7 +12154,14 @@ impl ShellOverlayHost {
         // Workspace naming is a text-field modal.  It must arbitrate before
         // every shell chord: otherwise Super+W/K/T can close a tab or open a
         // palette while the field is visibly active.
+        let rename_submit = matches!(logical_key, Key::Named(NamedKey::Enter))
+            && !self.palette_visible
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().editing_workspace_name.is_some());
         if self.handle_workspace_rename_key(logical_key, modifiers, handled) {
+            self.workspace_rename_submit_held |= rename_submit;
             return true;
         }
         if self.status_editing {
@@ -12668,6 +12887,19 @@ impl ShellOverlayHost {
         self.focus_window_on_strip(strip, group, tab)
     }
 
+    fn reconcile_overview_window_selection(&mut self) {
+        if let Some(tab) = self.overview_window_selection
+            && !self
+                .overview_row_windows()
+                .iter()
+                .any(|window| window.address.tab == tab)
+        {
+            self.overview_window_selection = None;
+            self.overview_window_interrupted = true;
+            self.overview_selection = self.overview_here_index();
+        }
+    }
+
     /// Left and Right walk the current room's preview row, a ring like
     /// the room list; Enter on a selected window goes there. Returns
     /// whether the key was taken.
@@ -12676,11 +12908,12 @@ impl ShellOverlayHost {
         let count = windows.len();
         if count == 0 {
             self.overview_window_selection = None;
+            self.overview_window_interrupted = false;
             return false;
         }
         let current = self
             .overview_window_selection
-            .filter(|index| *index < count);
+            .and_then(|tab| windows.iter().position(|window| window.address.tab == tab));
         match logical_key {
             Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 let Some(window) = current.and_then(|index| windows.get(index)) else {
@@ -12711,7 +12944,15 @@ impl ShellOverlayHost {
     /// Put the keyboard on window `index` of the preview row; the row is
     /// part of the current room's block, so the room is selected with it.
     fn select_overview_window(&mut self, index: usize) {
-        self.overview_window_selection = Some(index);
+        let Some(tab) = self
+            .overview_row_windows()
+            .get(index)
+            .map(|window| window.address.tab)
+        else {
+            return;
+        };
+        self.overview_window_selection = Some(tab);
+        self.overview_window_interrupted = false;
         self.overview_selection = self.overview_here_index();
         self.scroll_overview_selection_into_view();
         if let Some(chrome) = self.chrome.as_ref() {
@@ -12746,6 +12987,13 @@ impl ShellOverlayHost {
         ) {
             return false;
         }
+        self.reconcile_overview_window_selection();
+        if std::mem::take(&mut self.overview_window_interrupted)
+            && matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space))
+        {
+            *handled = true;
+            return true;
+        }
         if self.handle_overview_window_keys(logical_key) {
             *handled = true;
             return true;
@@ -12757,6 +13005,7 @@ impl ShellOverlayHost {
             return false;
         }
         self.overview_window_selection = None;
+        self.overview_window_interrupted = false;
         let count = self.overview_cards().len();
         if count == 0 {
             return false;
@@ -13213,6 +13462,31 @@ impl ShellOverlayHost {
             st.dismiss_notification(id);
             *handled = true;
             return true;
+        }
+        false
+    }
+
+    /// Finish the key sequence the rename field started, even after commit
+    /// removes the draft. A fresh press belongs to normal contextual routing.
+    fn consume_workspace_rename_submit_edge(&mut self, event: &WindowEvent) -> bool {
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.workspace_rename_submit_held = false;
+        }
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if !matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
+            return false;
+        }
+        if self.workspace_rename_submit_held && (key.repeat || key.state == ElementState::Released)
+        {
+            if key.state == ElementState::Released {
+                self.workspace_rename_submit_held = false;
+            }
+            return true;
+        }
+        if key.state == ElementState::Pressed {
+            self.workspace_rename_submit_held = false;
         }
         false
     }
@@ -16147,18 +16421,22 @@ impl ShellOverlayHost {
             *ctx.handled = true;
             return true;
         }
-        // Keyboard Enter: fire the cursor-selected action.
+        // One activation per press. A held Enter must not repeat a failed
+        // invocation while its recovery context stays open.
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
                     logical_key: Key::Named(NamedKey::Enter),
                     state: ElementState::Pressed,
+                    repeat,
                     ..
                 },
             ..
         } = event
         {
-            self.activate_selected_result(state, ctx.path);
+            if !repeat {
+                self.activate_selected_result(state, ctx.path);
+            }
             *ctx.handled = true;
             return true;
         }
@@ -16891,6 +17169,15 @@ impl Widget for ShellOverlayHost {
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let (doc, path) = ui::doc::document_ref(doc, path);
+        if let Some(chrome) = &self.chrome
+            && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
+        {
+            let mut apps = apps.borrow_mut();
+            if let Some(prompts) = &self.portal_prompts {
+                apps.bind_messaging_network_prompts(prompts.clone());
+            }
+            apps.pump_messaging_records();
+        }
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
             // secrets) are raised by the system on behalf of the person in
@@ -16907,6 +17194,7 @@ impl Widget for ShellOverlayHost {
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
+        let display_storage_dirty = self.projection_overlay.poll_storage();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -17060,6 +17348,7 @@ impl Widget for ShellOverlayHost {
         content_dirty
             || quick_settings_dirty
             || radio_dirty
+            || display_storage_dirty
             || pairing_dirty
             || close_dirty
             || palette_dirty
@@ -17593,6 +17882,10 @@ impl Widget for ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
+        if self.consume_workspace_rename_submit_edge(event) {
+            *ctx.handled = true;
+            return;
+        }
         // Print Screen has an explicit arbitration policy. It must run before
         // OOBE, portal and consent gates so Capture Studio can temporarily
         // own input above those preserved workflows instead of being consumed
@@ -18298,8 +18591,13 @@ impl Widget for ShellOverlayHost {
                             .iter()
                             .enumerate()
                             .map(|(index, window)| {
-                                let selected = self.overview_window_selection == Some(index);
+                                let selected =
+                                    self.overview_window_selection == Some(window.address.tab);
                                 AccessNode::new(Role::ListItem)
+                                    .with_semantic_key(format!(
+                                        "overview-window:{}",
+                                        window.address.tab
+                                    ))
                                     .with_name(window.title.clone())
                                     .with_position(index.saturating_add(1), total)
                                     .with_bounds(self.overview_window_tile_rect(index))
@@ -19910,7 +20208,7 @@ fn palette_surface_theme(theme: &Theme) -> Theme {
 struct OverviewPanelCacheKey {
     scroll_bits: u64,
     selection: Option<usize>,
-    window_selection: Option<usize>,
+    window_selection: Option<crate::shell::state::TabId>,
     press: Option<(u64, u8, u64, u64)>,
     panel: (u64, u64, u64, u64),
     chrome_revision: u64,
@@ -20388,6 +20686,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         overview_open: bool,
     ) {
+        self.reconcile_overview_window_selection();
         let target = if overview_open { 1.0 } else { 0.0 };
         let t = self.tick_overview_transition(target, theme.reduce_motion);
         // The overview is a panel over the desk, not a place you travel
@@ -20914,6 +21213,7 @@ impl ShellOverlayHost {
                 f64::from(theme.tokens.radii.control),
                 &sheet_shadow,
             );
+            self.room_activity.set_review_clip(self.rect);
             self.room_activity
                 .draw(scene, transform, text_renderer, theme, presence);
         }
@@ -22709,7 +23009,7 @@ impl ShellOverlayHost {
             );
             let is_carried = carried == Some(window.address.tab);
             let state = ui::chrome::SelectionState::new(
-                self.overview_window_selection == Some(index),
+                self.overview_window_selection == Some(window.address.tab),
                 self.last_cursor.is_some_and(|c| bounds.contains(c)),
                 pressed == Some(window.address.tab),
             );

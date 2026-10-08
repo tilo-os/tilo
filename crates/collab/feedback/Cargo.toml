@@ -1,0 +1,22 @@
+[package]
+name = "tilo-feedback"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Reviewed feedback submissions and a durably acknowledged local outbox."
+
+[dependencies]
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+image = { workspace = true, features = ["png"] }
+durable-store = { path = "../../system/durable-store" }
+tilo-feedback-review = { path = "../feedback-review" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

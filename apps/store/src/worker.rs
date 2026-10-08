@@ -1051,7 +1051,8 @@ fn search(query: &str, state: &mut State, snapshots: &Snapshots) -> bool {
         for mut item in flatpak {
             crate::sources::apply_flatpak_origin(&mut item, &state.installed_origins);
             if !items.iter().any(|existing| existing.id == item.id)
-                && !native_names.contains(&item.name.trim().to_ascii_lowercase())
+                && (item.installed.is_installed()
+                    || !native_names.contains(&item.name.trim().to_ascii_lowercase()))
             {
                 items.push(item);
             }
@@ -1346,7 +1347,7 @@ mod tests {
     use super::*;
     use crate::{InstalledState, StoreItemVersion, StoreTrust};
 
-    fn item(id: &str, name: &str) -> StoreItem {
+    pub(super) fn item(id: &str, name: &str) -> StoreItem {
         StoreItem {
             id: id.into(),
             name: name.into(),
@@ -1375,7 +1376,7 @@ mod tests {
         }
     }
 
-    fn state_with_items(items: Vec<StoreItem>, directory: StoreDirectory) -> State {
+    pub(super) fn state_with_items(items: Vec<StoreItem>, directory: StoreDirectory) -> State {
         State {
             operation_notice: None,
             refresh_requested: false,
