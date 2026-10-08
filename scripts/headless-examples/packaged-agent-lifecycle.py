@@ -1407,6 +1407,112 @@ def returned_ime_observation(first, current, same_process, text_input_active, sa
     }
 
 
+def detached_preedit_guard_observation(response, primary, child, baseline_matches,
+                                      text_input_active, preedit_active):
+    """Closed classifications of the actual Float guard and captured exact seat."""
+    current_child = current_same_floating_presentation(response, child)
+    current_primary = current_same_primary_presentation(response, primary)
+    if any(type(value) is not bool for value in (
+            baseline_matches, text_input_active, preedit_active)):
+        raise RuntimeError("Float preedit guard activity is unobservable")
+    child_exact = current_child is not None
+    source_exact = current_primary is not None
+    child_seat = child_exact and current_child.get("keyboard_focused") is True
+    source_seat = source_exact and current_primary.get("keyboard_focused") is True
+    source_matches = child_exact \
+        and type(current_child.get("input_source_surface_id")) is int \
+        and current_child["input_source_surface_id"] == native_surface_id(primary)
+    expected_route = child_exact and current_child.get("input_route") == "floating-preedit-source"
+    destination_ready = child_exact and current_child.get("suspended") is False \
+        and current_child.get("transferring") is False
+    return {
+        "baseline_value_matches": baseline_matches,
+        "chat_text_input_active": text_input_active,
+        "input_method_preedit_active": preedit_active,
+        "exact_child_present": child_exact,
+        "exact_source_present": source_exact,
+        "child_keyboard_focused": child_seat,
+        "source_keyboard_focused": source_seat,
+        "route_matches_expected": expected_route,
+        "source_matches_exact": source_matches,
+        "child_destination_ready": destination_ready,
+        "source_preedit_proxy_valid": destination_ready and expected_route
+        and source_matches and source_seat,
+        "direct_child_seat_valid": destination_ready and child_seat
+        and current_child.get("input_route") is None
+        and current_child.get("input_source_surface_id") is None,
+    }
+
+
+def capture_return_input_observations(socket, output, primary, child, same_chat, fcitx_identity):
+    """Four diagnostic samples; identities stay in memory and never grant input."""
+    samples = []
+    path = output / "ime-returned-input-observations.json"
+
+    def persist():
+        path.write_text(json.dumps(samples, indent=2, allow_nan=False) + "\n")
+
+    persist()
+    for index in range(4):
+        if index:
+            time.sleep(0.05)
+        sample = dict.fromkeys((
+            "observation_valid", "exact_primary_present", "primary_keyboard_focused",
+            "exact_child_exists", "child_keyboard_focused", "child_presented",
+            "child_suspended", "child_transferring", "route_matches_expected",
+            "source_matches_exact_child", "input_method_preedit_active",
+            "chat_text_input_active", "same_chat_process", "same_input_method_process",
+        ), False)
+        samples.append(sample)
+        try:
+            response = call(socket, {"op": "foreign_frames"})
+            rows = foreign_frames(response)
+            primaries = [row for row in rows if row.get("app_id") == primary["app_id"]
+                         and row.get("surface_id") == native_surface_id(primary)
+                         and row.get("floating_id") is None]
+            children = [row for row in rows if row.get("app_id") == child["app_id"]
+                        and row.get("surface_id") == native_surface_id(child)
+                        and row.get("floating_id") == child["floating_id"]]
+            if len(primaries) != 1 or len(children) != 1:
+                raise RuntimeError("Return diagnostic subjects are unobservable")
+            current_primary, current_child = primaries[0], children[0]
+            for row, fields in ((current_primary, ("presented", "keyboard_focused")),
+                                (current_child, ("presented", "keyboard_focused",
+                                                 "suspended", "transferring"))):
+                if any(type(row.get(field)) is not bool for field in fields):
+                    raise RuntimeError("Return diagnostic fields are unobservable")
+            if type(same_chat) is not bool:
+                raise RuntimeError("Return diagnostic process continuity is unobservable")
+            sample.update({
+                "exact_primary_present": current_primary["presented"],
+                "primary_keyboard_focused": current_primary["keyboard_focused"],
+                "exact_child_exists": True,
+                "child_keyboard_focused": current_child["keyboard_focused"],
+                "child_presented": current_child["presented"],
+                "child_suspended": current_child["suspended"],
+                "child_transferring": current_child["transferring"],
+                "route_matches_expected": current_primary.get("input_route") == "floating-preedit-child",
+                "source_matches_exact_child": type(current_primary.get("input_source_surface_id")) is int
+                and current_primary["input_source_surface_id"] == native_surface_id(child),
+                "input_method_preedit_active": chat_input_method_preedit_active(socket),
+                "chat_text_input_active": chat_text_input_active(socket),
+                "same_chat_process": same_chat,
+                "same_input_method_process": same_fcitx_process(fcitx_identity),
+            })
+            if any(type(value) is not bool for value in sample.values()):
+                raise RuntimeError("Return diagnostic activity is unobservable")
+            sample["observation_valid"] = True
+        except Exception:
+            # Persist only the closed snapshot, never arbitrary exception text.
+            sample.update({key: value if type(value) is bool else False
+                           for key, value in sample.items()})
+            sample["observation_valid"] = False
+            persist()
+            raise RuntimeError("Return input diagnostic observation failed") from None
+        persist()
+    return response
+
+
 def native_float_return(socket, room, record, output, size, process):
     """Exercise the actual seat, IME and native surface handoff end to end."""
     draft = "Keep this private Tide draft"
@@ -2035,11 +2141,18 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     # AT discovery is asynchronous. Keep the first frame above as evidence,
     # but verify the seat now, on that same native window, not its cached
     # pre-adoption observation. This still refuses an unfocused destination.
-    frame, detached_input = detached_ime_input_route(
-        call(socket, {"op": "foreign_frames"}), frame, preedit_primary
-    )
+    detached_response = call(socket, {"op": "foreign_frames"})
+    frame, detached_input = detached_ime_input_route(detached_response, frame, preedit_primary)
     if detached_access["process"] != chat_process:
         raise RuntimeError("Float replaced the Chat process")
+    detached_guard = detached_preedit_guard_observation(
+        detached_response, preedit_primary, frame,
+        private_editor_value_matches(detached_access, committed_before),
+        chat_text_input_active(socket), chat_input_method_preedit_active(socket),
+    )
+    (output / "ime-detached-preedit-guard.json").write_text(
+        json.dumps(detached_guard, indent=2) + "\n"
+    )
     if not private_editor_value_matches(detached_access, committed_before) \
             or not chat_text_input_active(socket) \
             or not chat_input_method_preedit_active(socket):
@@ -2176,9 +2289,11 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     )
     # AT readiness can follow the first source presentation. Observe the seat
     # now without accepting another primary native source or regressing paint.
-    returned, returned_input = returned_ime_input_route(
-        call(socket, {"op": "foreign_frames"}), returned_first, frame
+    returned_response = capture_return_input_observations(
+        socket, output, returned_first, frame,
+        returned_access["process"] == chat_process, fcitx_identity,
     )
+    returned, returned_input = returned_ime_input_route(returned_response, returned_first, frame)
     returned_observation = returned_ime_observation(
         returned_first, returned, returned_access["process"] == chat_process,
         chat_text_input_active(socket), same_fcitx_process(fcitx_identity),

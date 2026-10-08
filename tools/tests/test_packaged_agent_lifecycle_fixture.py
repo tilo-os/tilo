@@ -2432,6 +2432,85 @@ class PresentedEditorTargetTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             PROOF.returned_ime_input_route(response([contradictory, child]), primary, child)
 
+    def test_float_preedit_guard_classifies_value_activity_and_exact_seat_without_content(self):
+        primary = {"app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 10,
+                   "presented": True, "keyboard_focused": True}
+        child = {"app_id": "so.tilo.chat", "surface_id": 11, "floating_id": "private",
+                 "frame_seq": 20, "presented": True, "pixels_ready": True,
+                 "last_error": None, "keyboard_focused": False, "suspended": False,
+                 "transferring": False, "input_route": "floating-preedit-source",
+                 "input_source_surface_id": 7, "private_text": "secret"}
+        response = lambda row: {"answer": {"frames": [primary, row]}}
+        observed = PROOF.detached_preedit_guard_observation(
+            response(child), primary, child, True, True, False)
+        self.assertTrue(observed["baseline_value_matches"])
+        self.assertTrue(observed["chat_text_input_active"])
+        self.assertFalse(observed["input_method_preedit_active"])
+        self.assertTrue(observed["source_preedit_proxy_valid"])
+        self.assertFalse(observed["direct_child_seat_valid"])
+        self.assertTrue(all(type(value) is bool for value in observed.values()))
+        self.assertNotIn("secret", json.dumps(observed))
+        self.assertNotIn("surface_id", json.dumps(observed))
+        focused = {**child, "keyboard_focused": True, "input_route": None,
+                   "input_source_surface_id": None}
+        direct = PROOF.detached_preedit_guard_observation(
+            response(focused), primary, child, False, True, True)
+        self.assertFalse(direct["baseline_value_matches"])
+        self.assertTrue(direct["direct_child_seat_valid"])
+        self.assertFalse(direct["source_preedit_proxy_valid"])
+        foreign = PROOF.detached_preedit_guard_observation(
+            response({**child, "input_source_surface_id": 8}), primary, child, True, True, True)
+        self.assertFalse(foreign["source_matches_exact"])
+        self.assertFalse(foreign["source_preedit_proxy_valid"])
+        with self.assertRaises(RuntimeError):
+            PROOF.detached_preedit_guard_observation(response(child), primary, child, "secret", True, True)
+        source = inspect.getsource(PROOF.native_ime_float_return)
+        receipt = source.index('"ime-detached-preedit-guard.json"')
+        refusal = source.index('"Float committed or deactivated the live Rime preedit"')
+        self.assertLess(receipt, refusal)
+
+    def test_return_input_samples_are_bounded_closed_and_do_not_accept_a_route(self):
+        primary = {"app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 5,
+                   "presented": True, "keyboard_focused": False, "private": "secret"}
+        child = {"app_id": "so.tilo.chat", "surface_id": 11, "floating_id": "private",
+                 "frame_seq": 6, "presented": False, "keyboard_focused": True,
+                 "suspended": True, "transferring": False}
+        response = {"answer": {"frames": [primary, child]}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", return_value=response) as calls, \
+                patch.object(PROOF.time, "sleep") as sleep, \
+                patch.object(PROOF, "chat_text_input_active", return_value=True), \
+                patch.object(PROOF, "chat_input_method_preedit_active", return_value=False), \
+                patch.object(PROOF, "same_fcitx_process", return_value=True):
+            output = pathlib.Path(directory)
+            self.assertIs(PROOF.capture_return_input_observations(
+                "socket", output, primary, child, True, object()), response)
+            self.assertEqual(calls.call_count, 4)
+            self.assertEqual(sleep.call_args_list, [call(0.05)] * 3)
+            samples = json.loads((output / "ime-returned-input-observations.json").read_text())
+            self.assertEqual(len(samples), 4)
+            self.assertTrue(all(type(value) is bool for sample in samples for value in sample.values()))
+            self.assertTrue(all(sample["observation_valid"] for sample in samples))
+            self.assertFalse(any(sample["route_matches_expected"] for sample in samples))
+            self.assertNotIn("secret", json.dumps(samples))
+            self.assertNotIn("surface_id", json.dumps(samples))
+            with self.assertRaises(RuntimeError):
+                PROOF.returned_ime_input_route(response, primary, child)
+            calls.return_value = {"answer": {"frames": [primary]}}
+            with self.assertRaisesRegex(RuntimeError, "diagnostic observation failed"):
+                PROOF.capture_return_input_observations("socket", output, primary, child, True, object())
+            failed = json.loads((output / "ime-returned-input-observations.json").read_text())
+            self.assertEqual(len(failed), 1)
+            self.assertFalse(failed[0]["observation_valid"])
+            calls.return_value = response
+            with patch.object(PROOF, "chat_text_input_active", return_value="secret"):
+                with self.assertRaisesRegex(RuntimeError, "diagnostic observation failed"):
+                    PROOF.capture_return_input_observations("socket", output, primary, child, True, object())
+            malformed = (output / "ime-returned-input-observations.json").read_text()
+            self.assertNotIn("secret", malformed)
+            self.assertTrue(all(type(value) is bool for sample in json.loads(malformed)
+                                for value in sample.values()))
+
     def test_return_diagnostics_are_only_closed_counts_and_actual_bools(self):
         private = "private-editor-and-native-identity"
         first = {"frame_seq": 10, "keyboard_focused": False, "surface_id": 7,
