@@ -2230,8 +2230,6 @@ speaker-calibration-cancelled = Calibration was cancelled
 
 # Wireless display projection
 projection-service-unavailable-detail = Projection service is unavailable ({ $error }). Check the Tilo projector service.
-projection-service-exited = Projection service exited with { $status }
-projection-service-invalid-discovery = Projection service returned invalid discovery data: { $error }
 projection-mode-unsupported = { $device } does not support { $mode } mode
 projection-service-unavailable = Projection service is unavailable
 projection-service-stopped = Projection service stopped
