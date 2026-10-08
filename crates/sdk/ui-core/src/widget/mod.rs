@@ -114,6 +114,7 @@ pub fn semantic_action_bindings(
         matches!(
             role,
             Role::Button
+                | Role::Tab
                 | Role::ToggleButton
                 | Role::Checkbox
                 | Role::RadioButton
