@@ -495,6 +495,7 @@ pub struct ShellOverlayHost {
     /// query field. Keeping the inert result (not a pre-bound callback) lets
     /// Enter perform the same strict `ActionArgs::bind_json` as scripts.
     pending_palette_action: Option<crate::shell::search::SearchResult>,
+    resource_selection_handle: Option<String>,
     /// Atomic remote-directory admissions are not assumed accepted when the
     /// user presses Enter. Their tickets are polled at frame refresh without
     /// ever blocking the compositor on a broker RPC.
@@ -1912,6 +1913,12 @@ impl ShellOverlayHost {
             ),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::resource_selections::ResourceSelectionsProvider {
+                queue: crate::shell::portal_dialog::PortalDialogQueue::global(),
+                ranker: ui::search::ListIndex::default(),
+            },
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::permission_prompts::PermissionPromptsProvider::default(
             ),
         ));
@@ -2115,6 +2122,7 @@ impl ShellOverlayHost {
             app_launcher: inputs.app_launcher,
             search_results: Vec::new(),
             pending_palette_action: None,
+            resource_selection_handle: None,
             pending_action_admissions: Vec::new(),
             pending_launchpad_app: None,
             pending_launchpad_actions: Vec::new(),
@@ -7823,6 +7831,86 @@ impl ShellOverlayHost {
             .map(|result| (result.provider_id.clone(), result.id.clone()))
     }
 
+    fn sync_resource_selection_palette(&mut self) -> bool {
+        let queue = self.portal_dialogs.queue().clone();
+        let room = self.chrome.as_ref().and_then(|chrome| {
+            chrome
+                .borrow()
+                .tree()
+                .active_workspace()
+                .map(|workspace| workspace.room.to_string())
+        });
+        if let Some(handle) = &self.resource_selection_handle {
+            if !self.palette_visible
+                || room
+                    .as_deref()
+                    .and_then(|room| queue.resource_selection(room))
+                    .is_none_or(|view| view.handle != *handle)
+            {
+                queue.cancel(handle);
+                self.resource_selection_handle = None;
+                self.palette_visible = false;
+                self.palette.close();
+                self.search_results.clear();
+                return true;
+            }
+            return false;
+        }
+        if self.palette_visible {
+            return false;
+        }
+        let Some(view) = room
+            .as_deref()
+            .and_then(|room| queue.resource_selection(room))
+        else {
+            return false;
+        };
+        self.resource_selection_handle = Some(view.handle);
+        self.palette_visible = true;
+        self.pending_palette_action = None;
+        self.active_kind_filter.clear();
+        self.palette.set_focus(true);
+        self.palette.set_query("");
+        self.palette
+            .set_query_placeholder(t("resource-selection-title"));
+        self.last_search_query = "\0resource-selection-enter\0".into();
+        self.palette_layout_dirty = true;
+        true
+    }
+
+    fn current_palette_search_scope(
+        &self,
+        chrome: &Chrome,
+    ) -> (crate::shell::chrome_state::SearchScope, Option<String>) {
+        let state = chrome.borrow();
+        if self.resource_selection_handle.is_some() {
+            (
+                crate::shell::chrome_state::SearchScope::All,
+                Some(crate::shell::search::providers::resource_selections::PROVIDER_ID.to_string()),
+            )
+        } else {
+            (
+                state.search_scope,
+                active_tab_provider_id(&state, &self.search_registry),
+            )
+        }
+    }
+
+    fn query_palette_groups(
+        &self,
+        args: &crate::shell::search::QueryArgs<'_>,
+    ) -> Vec<crate::shell::search::KindGroup> {
+        if self.resource_selection_handle.is_some() {
+            self.search_registry.query_grouped_from(
+                crate::shell::search::providers::resource_selections::PROVIDER_ID,
+                args,
+                PALETTE_ROW_BUDGET,
+            )
+        } else {
+            self.search_registry.query_grouped(args, PALETTE_ROW_BUDGET)
+        }
+    }
+
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {
@@ -7830,12 +7918,7 @@ impl ShellOverlayHost {
         };
         let current_query = self.palette.query().to_string();
         let preserve_selection = current_query == self.last_search_query;
-        let (scope, active_provider) = {
-            let st = chrome.borrow();
-            let scope = st.search_scope;
-            let active_provider = active_tab_provider_id(&st, &self.search_registry);
-            (scope, active_provider)
-        };
+        let (scope, active_provider) = self.current_palette_search_scope(&chrome);
         let groups = {
             let st = chrome.borrow();
             let args = crate::shell::search::QueryArgs {
@@ -7856,8 +7939,7 @@ impl ShellOverlayHost {
             }
             self.last_search_query.clone_from(&current_query);
             self.last_search_revision = revision;
-            self.search_registry
-                .query_grouped(&args, PALETTE_ROW_BUDGET)
+            self.query_palette_groups(&args)
         };
 
         // Provider revisions may insert/re-rank rows without a query edit.
@@ -17228,6 +17310,10 @@ impl Widget for ShellOverlayHost {
                 .is_some_and(|onboarding| onboarding.update(doc, path));
             return onboarding_dirty || dialog_dirty;
         }
+        let selection_dirty = self.sync_resource_selection_palette();
+        if selection_dirty && self.palette_visible {
+            self.refresh_search_results(doc, path);
+        }
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
@@ -17383,6 +17469,7 @@ impl Widget for ShellOverlayHost {
             chrome.borrow().tree_mut().commit_room_change();
         }
         content_dirty
+            || selection_dirty
             || quick_settings_dirty
             || radio_dirty
             || display_storage_dirty
@@ -26380,6 +26467,10 @@ mod wifi_password_tests;
 )]
 #[path = "palette_dispatch_tests.rs"]
 mod palette_dispatch_tests;
+
+#[cfg(test)]
+#[path = "resource_selection_tests.rs"]
+mod resource_selection_tests;
 
 #[cfg(test)]
 #[path = "two_workspace_host_tests.rs"]

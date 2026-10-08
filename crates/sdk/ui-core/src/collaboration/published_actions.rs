@@ -13,7 +13,7 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::RemoteActionFrame;
 use tilo_actions::remote::{CatalogueQuery, InvokeRequest, RemoteActionMessage};
 #[cfg(feature = "broker-transport")]
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 #[cfg(feature = "broker-transport")]
 const MAX_ROUTES: usize = 16;
@@ -70,6 +70,16 @@ impl PublishedActions {
         }
         request.on_behalf_of = Some(self.parent);
         self.request(RemoteActionMessage::Invoke(request))
+    }
+    /// Ask the existing platform palette to select an existing resource.
+    pub fn select_resource(
+        &self,
+        filter: tilo_actions::remote::ResourceSelectionFilter,
+    ) -> Result<PublishedActionFuture, String> {
+        self.request(RemoteActionMessage::SelectResource {
+            correlation: 1,
+            filter,
+        })
     }
     pub fn observe(&self, invocation: InvocationId) -> Result<PublishedActionFuture, String> {
         self.request(RemoteActionMessage::Observe { invocation })
@@ -157,13 +167,35 @@ impl PublishedActions {
             .and_then(Weak::upgrade)
             .ok_or("no acknowledged published action route")?;
         let (reply, receive) = oneshot::channel();
-        endpoint
-            .0
+        let admission = endpoint
+            .admissions
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "published action outstanding admission bound reached")?;
+        let selection = if matches!(expected, Expected::Selection(_)) {
+            Some(
+                endpoint
+                    .selection
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| "an attended selection is already pending")?,
+            )
+        } else {
+            None
+        };
+        let sender = if selection.is_some() {
+            &endpoint.select
+        } else {
+            &endpoint.ordinary
+        };
+        sender
             .try_send(Job {
                 bytes: frame.encode().map_err(|error| error.to_string())?,
                 expected,
                 scope: self.scope.clone(),
                 reply,
+                _admission: admission,
+                _selection: selection,
             })
             .map_err(|_| "published action bounded lane unavailable or full")?;
         let scope = self.scope.clone();
@@ -192,18 +224,28 @@ struct Job {
     expected: Expected,
     scope: ResourceEffectScope,
     reply: oneshot::Sender<PublishedActionAnswer>,
+    _admission: OwnedSemaphorePermit,
+    _selection: Option<OwnedSemaphorePermit>,
 }
 #[cfg(feature = "broker-transport")]
-struct Endpoint(mpsc::Sender<Job>);
+struct Endpoint {
+    ordinary: mpsc::Sender<Job>,
+    select: mpsc::Sender<Job>,
+    // The previous worker could retain one RPC plus MAX_PENDING queued calls.
+    admissions: Arc<Semaphore>,
+    selection: Arc<Semaphore>,
+}
 #[cfg(feature = "broker-transport")]
 pub(super) struct Registration {
     _endpoint: Arc<Endpoint>,
     worker: tokio::task::JoinHandle<()>,
+    selection_worker: tokio::task::JoinHandle<()>,
 }
 #[cfg(feature = "broker-transport")]
 impl Drop for Registration {
     fn drop(&mut self) {
         self.worker.abort();
+        self.selection_worker.abort();
     }
 }
 #[cfg(feature = "broker-transport")]
@@ -231,6 +273,7 @@ fn admit(route: String, endpoint: &Arc<Endpoint>) -> Result<(), String> {
 #[derive(Clone, Copy)]
 enum Expected {
     Catalogue(u64),
+    Selection(u64),
     Invoke(InvocationId),
     Observe(InvocationId),
     Cancel(InvocationId),
@@ -241,6 +284,9 @@ impl Expected {
         match request {
             RemoteActionMessage::CatalogueRequest { correlation, .. } => {
                 Ok(Self::Catalogue(*correlation))
+            }
+            RemoteActionMessage::SelectResource { correlation, .. } => {
+                Ok(Self::Selection(*correlation))
             }
             RemoteActionMessage::Invoke(request) => Ok(Self::Invoke(request.invocation)),
             RemoteActionMessage::Observe { invocation } => Ok(Self::Observe(*invocation)),
@@ -264,6 +310,12 @@ fn matches(expected: Expected, response: &RemoteActionMessage) -> bool {
         (
             Expected::Catalogue(left),
             RemoteActionMessage::CatalogueResponse {
+                correlation: right, ..
+            },
+        )
+        | (
+            Expected::Selection(left),
+            RemoteActionMessage::ResourceSelectionResponse {
                 correlation: right, ..
             },
         ) => left == *right,
@@ -291,10 +343,32 @@ pub(super) fn register(
     route: String,
     channel: runtime_collab::ChannelHandle,
 ) -> Result<Registration, String> {
-    let (send, mut receive) = mpsc::channel::<Job>(MAX_PENDING);
-    let endpoint = Arc::new(Endpoint(send));
+    let (ordinary, receive) = mpsc::channel::<Job>(MAX_PENDING);
+    let (select, selections) = mpsc::channel::<Job>(1);
+    let endpoint = Arc::new(Endpoint {
+        ordinary,
+        select,
+        admissions: Arc::new(Semaphore::new(MAX_PENDING.saturating_add(1))),
+        selection: Arc::new(Semaphore::new(1)),
+    });
     admit(route, &endpoint)?;
-    let worker = tokio::task::spawn_local(async move {
+    let worker = serve_lane(channel.clone(), receive);
+    let selection_worker = serve_lane(channel, selections);
+    Ok(Registration {
+        _endpoint: endpoint,
+        worker,
+        selection_worker,
+    })
+}
+
+/// Separate wait lifetimes share the same native capability and exact matcher.
+/// Only the selection lane is new; ordinary long RPCs retain their old ordering.
+#[cfg(feature = "broker-transport")]
+fn serve_lane(
+    channel: runtime_collab::ChannelHandle,
+    mut receive: mpsc::Receiver<Job>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::task::spawn_local(async move {
         while let Some(mut job) = receive.recv().await {
             if job.reply.is_closed() {
                 continue;
@@ -317,10 +391,6 @@ pub(super) fn register(
                 );
             let _ = job.reply.send(answer);
         }
-    });
-    Ok(Registration {
-        _endpoint: endpoint,
-        worker,
     })
 }
 

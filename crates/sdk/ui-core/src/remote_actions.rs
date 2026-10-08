@@ -549,7 +549,12 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             });
             None
         }
-        RemoteActionMessage::CatalogueRequest { .. }
+        RemoteActionMessage::SelectResource { .. }
+        | RemoteActionMessage::ResourceSelectionResponse { .. }
+        | RemoteActionMessage::ResourceSelectionPrompt { .. }
+        | RemoteActionMessage::ResourceSelectionPromptCancel { .. }
+        | RemoteActionMessage::ResourceSelectionPromptResponse { .. }
+        | RemoteActionMessage::CatalogueRequest { .. }
         | RemoteActionMessage::Invoke(_)
         | RemoteActionMessage::Observe { .. }
         | RemoteActionMessage::Cancel { .. }

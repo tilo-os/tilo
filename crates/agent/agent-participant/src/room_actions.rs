@@ -330,6 +330,11 @@ impl RoomActions {
             reason: "the host's room actions are not running".into(),
         };
         Some(match message {
+            message @ (RemoteActionMessage::SelectResource { .. }
+            | RemoteActionMessage::ResourceSelectionPrompt { .. }) => {
+                return tilo_actions::remote::refuse(&message, ActionHostError::NotPermitted)
+                    .map(Pending::ready);
+            }
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
                 let respond = move |result| RemoteActionMessage::CatalogueResponse {
                     correlation,
@@ -410,7 +415,10 @@ impl RoomActions {
                     result: self.cancel(caller, &invocation),
                 })
             }
-            RemoteActionMessage::CatalogueResponse { .. }
+            RemoteActionMessage::ResourceSelectionResponse { .. }
+            | RemoteActionMessage::ResourceSelectionPromptResponse { .. }
+            | RemoteActionMessage::ResourceSelectionPromptCancel { .. }
+            | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
@@ -466,13 +474,21 @@ impl HostActions {
     ) -> Option<Pending<RemoteActionMessage>> {
         use tilo_relay_protocol::agents::AGENTS_PROVIDER;
         let supervisor = match &message {
+            RemoteActionMessage::SelectResource { .. }
+            | RemoteActionMessage::ResourceSelectionPrompt { .. } => {
+                return tilo_actions::remote::refuse(&message, ActionHostError::NotPermitted)
+                    .map(Pending::ready);
+            }
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 query.provider.as_deref() == Some(AGENTS_PROVIDER)
             }
             RemoteActionMessage::Invoke(request) => request.target.provider == AGENTS_PROVIDER,
             RemoteActionMessage::Observe { invocation }
             | RemoteActionMessage::Cancel { invocation } => !self.rooms.owns(caller, invocation),
-            RemoteActionMessage::CatalogueResponse { .. }
+            RemoteActionMessage::ResourceSelectionResponse { .. }
+            | RemoteActionMessage::ResourceSelectionPromptResponse { .. }
+            | RemoteActionMessage::ResourceSelectionPromptCancel { .. }
+            | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }

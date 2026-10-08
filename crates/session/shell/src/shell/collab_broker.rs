@@ -1036,6 +1036,9 @@ pub(crate) fn answer_remote_actions(
     requests: Vec<crate::shell::remote_action_link::InboundRemoteAction>,
 ) {
     for request in requests {
+        if super::resource_selection::answer_remote_prompt(net, &request) {
+            continue;
+        }
         // A record is read from where this device keeps it, by the device
         // itself; no action host is asked.
         if let tilo_actions::remote::RemoteActionMessage::RecordRequest { correlation, query } =

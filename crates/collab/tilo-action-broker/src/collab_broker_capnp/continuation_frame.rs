@@ -20,7 +20,10 @@ impl CheckedContinuation {
         clippy::future_not_send,
         reason = "directory capabilities run on the broker LocalSet"
     )]
-    async fn check_publication(&self, channel: &CapnpChannelHandle) -> Result<(), String> {
+    pub(super) async fn check_publication(
+        &self,
+        channel: &CapnpChannelHandle,
+    ) -> Result<(), String> {
         self.check(&channel.state)?;
         self.original
             .check_continuation_publication(channel, &self.caller)
@@ -131,6 +134,19 @@ pub(super) fn serve(
     continuation: Option<CheckedContinuation>,
     mut results: channel_handle::RemoteActionResults,
 ) -> Promise<(), capnp::Error> {
+    if let RemoteActionMessage::SelectResource {
+        correlation,
+        filter,
+    } = &request.message
+    {
+        return super::resource_selection::serve(
+            channel,
+            *correlation,
+            filter.clone(),
+            continuation,
+            results,
+        );
+    }
     let route = channel.route();
     let person = current.caller(&route.cluster_id);
     // An edit an effect submits while running for someone is theirs.

@@ -426,8 +426,13 @@ impl CapnpBrokerState {
             }
             // Records are read device to device by the shell; an application
             // does not reach another device's records through this door.
-            RemoteActionMessage::RecordRequest { .. } => None,
-            RemoteActionMessage::CatalogueResponse { .. }
+            RemoteActionMessage::RecordRequest { .. }
+            | RemoteActionMessage::SelectResource { .. }
+            | RemoteActionMessage::ResourceSelectionPrompt { .. }
+            | RemoteActionMessage::ResourceSelectionPromptCancel { .. } => None,
+            RemoteActionMessage::ResourceSelectionResponse { .. }
+            | RemoteActionMessage::ResourceSelectionPromptResponse { .. }
+            | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }

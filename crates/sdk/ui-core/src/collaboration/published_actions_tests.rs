@@ -48,6 +48,16 @@ impl channel_handle::Server for Channel {
                         result: Ok(Default::default()),
                     }
                 }
+                RemoteActionMessage::SelectResource { correlation, .. } => {
+                    RemoteActionMessage::ResourceSelectionResponse {
+                        correlation: if mode == 1 {
+                            correlation + 1
+                        } else {
+                            correlation
+                        },
+                        result: Ok(None),
+                    }
+                }
                 RemoteActionMessage::Invoke(request) => {
                     RemoteActionMessage::Receipt(InvocationReceipt {
                         invocation: if mode == 1 || mode == 7 {
@@ -299,6 +309,240 @@ async fn published_action_client_queued_cancel_and_dropped_waiter_release_existi
                 },
                 "route retirement cannot relabel an admitted unknown as failure or retry"
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn published_resource_selection_retains_custody_and_refuses_foreign_reply_without_replay() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let fixture = crate::invocation_scope::tests::fixture(1850);
+            let time = Arc::new(AtomicU64::new(0));
+            let scope = crate::invocation_scope::tests::scope(&fixture, 1850, "caller", 100, &time);
+            let client = scope.published_actions().unwrap();
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let mode = Rc::new(Cell::new(0));
+            let raw = capnp_rpc::new_client(Channel {
+                calls: calls.clone(),
+                mode: mode.clone(),
+                release: Rc::new(tokio::sync::Notify::new()),
+            });
+            let broker = runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(Broker(raw)));
+            let channel = broker.join_channel("fixture", &[]).await.unwrap();
+            let registration = register(scope.route().channel_id(), channel).unwrap();
+            let filter = tilo_actions::remote::ResourceSelectionFilter {
+                app_id: "so.tilo.code-editor".into(),
+                resource_kind: "code_editor.file".into(),
+                action: "read-text-snapshot".into(),
+            };
+            assert!(matches!(
+                client.select_resource(filter.clone()).unwrap().await,
+                PublishedActionAnswer::Answer(RemoteActionMessage::ResourceSelectionResponse {
+                    result: Ok(None),
+                    ..
+                })
+            ));
+            assert_eq!(calls.borrow()[0].on_behalf_of, Some(scope.invocation()));
+            mode.set(1);
+            assert_eq!(
+                client.select_resource(filter.clone()).unwrap().await,
+                PublishedActionAnswer::Unknown { invocation: None }
+            );
+            mode.set(2);
+            assert_eq!(
+                client.select_resource(filter.clone()).unwrap().await,
+                PublishedActionAnswer::Unknown { invocation: None }
+            );
+            assert_eq!(calls.borrow().len(), 3);
+            scope.cancel();
+            assert!(client.select_resource(filter).is_err());
+            assert_eq!(calls.borrow().len(), 3);
+            drop(registration);
+        })
+        .await;
+}
+
+struct SelectionDrop(Rc<Cell<usize>>);
+impl Drop for SelectionDrop {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_add(1));
+    }
+}
+struct ConcurrentChannel {
+    calls: Rc<RefCell<Vec<RemoteActionFrame>>>,
+    release: Rc<tokio::sync::Notify>,
+    dropped: Rc<Cell<usize>>,
+    mode: Rc<Cell<u8>>,
+}
+#[expect(
+    clippy::future_not_send,
+    reason = "native Cap'n Proto fixture runs on the LocalSet"
+)]
+impl channel_handle::Server for ConcurrentChannel {
+    fn remote_action(
+        self: Rc<Self>,
+        params: channel_handle::RemoteActionParams,
+        mut results: channel_handle::RemoteActionResults,
+    ) -> impl Future<Output = Result<(), capnp::Error>> + 'static {
+        let frame =
+            RemoteActionFrame::decode_continuation(params.get().unwrap().get_frame().unwrap())
+                .unwrap();
+        self.calls.borrow_mut().push(frame.clone());
+        Promise::from_future(async move {
+            let answer = match frame.message {
+                RemoteActionMessage::SelectResource { correlation, .. } => {
+                    let _drop = SelectionDrop(self.dropped.clone());
+                    self.release.notified().await;
+                    match self.mode.get() {
+                        1 => RemoteActionMessage::CatalogueResponse {
+                            correlation,
+                            result: Ok(Default::default()),
+                        },
+                        2 => RemoteActionMessage::ResourceSelectionResponse {
+                            correlation: correlation.saturating_add(1),
+                            result: Ok(None),
+                        },
+                        3 => return Err(capnp::Error::failed("selection disconnected".into())),
+                        _ => RemoteActionMessage::ResourceSelectionResponse {
+                            correlation,
+                            result: Ok(None),
+                        },
+                    }
+                }
+                RemoteActionMessage::Observe { invocation } => RemoteActionMessage::Update {
+                    invocation,
+                    state: None,
+                },
+                RemoteActionMessage::Cancel { invocation } => RemoteActionMessage::CancelResponse {
+                    invocation: if self.mode.get() == 5 {
+                        InvocationId::new()
+                    } else {
+                        invocation
+                    },
+                    result: Ok(()),
+                },
+                RemoteActionMessage::CatalogueRequest { correlation, .. } => {
+                    RemoteActionMessage::CatalogueResponse {
+                        correlation,
+                        result: Ok(Default::default()),
+                    }
+                }
+                _ => panic!("unexpected concurrent fixture request"),
+            };
+            results
+                .get()
+                .set_frame(&RemoteActionFrame::new(answer).encode().unwrap());
+            Ok(())
+        })
+    }
+}
+fn selection_filter() -> tilo_actions::remote::ResourceSelectionFilter {
+    tilo_actions::remote::ResourceSelectionFilter {
+        app_id: "so.tilo.code-editor".into(),
+        resource_kind: "code_editor.file".into(),
+        action: "read-text-snapshot".into(),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn published_selection_held_prompt_reserves_original_observe_cancel_and_total_admission_bound()
+ {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
+        let fixture = crate::invocation_scope::tests::fixture(1860);
+        let time = Arc::new(AtomicU64::new(0));
+        let scope = crate::invocation_scope::tests::scope(&fixture, 1860, "caller", 100, &time);
+        let client = scope.published_actions().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let release = Rc::new(tokio::sync::Notify::new());
+        let dropped = Rc::new(Cell::new(0));
+        let mode = Rc::new(Cell::new(0));
+        let broker = runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(Broker(capnp_rpc::new_client(ConcurrentChannel { calls: calls.clone(), release: release.clone(), dropped: dropped.clone(), mode: mode.clone() }))));
+        let channel = broker.join_channel("fixture", &[]).await.unwrap();
+        let registration = register(scope.route().channel_id(), channel).unwrap();
+        let held = client.select_resource(selection_filter()).unwrap();
+        observed(&calls, 1).await;
+        assert!(client.select_resource(selection_filter()).is_err(), "only one chooser can be admitted; no queued second chooser");
+        let child = InvocationId::new();
+        let observation = client.observe(child).unwrap();
+        let cancellation = client.cancel(child).unwrap();
+        assert!(client.query(Default::default()).is_err(), "choice plus two ordinary calls exhausts original three-admission bound");
+        let (observation, cancellation) = tokio::time::timeout(std::time::Duration::from_secs(1), async { tokio::join!(observation, cancellation) }).await.expect("held selection must not block original Observe or Cancel");
+        assert!(matches!(observation, PublishedActionAnswer::Answer(RemoteActionMessage::Update { invocation, .. }) if invocation == child));
+        assert!(matches!(cancellation, PublishedActionAnswer::Answer(RemoteActionMessage::CancelResponse { invocation, result: Ok(()) }) if invocation == child));
+        assert_eq!(dropped.get(), 0, "chooser remains held while ordinary calls complete");
+        assert_eq!(calls.borrow().len(), 3);
+        assert!(calls.borrow().iter().all(|frame| frame.on_behalf_of == Some(scope.invocation())));
+        mode.set(5);
+        assert_eq!(client.cancel(child).unwrap().await, PublishedActionAnswer::Unknown { invocation: None }, "foreign ordinary reply cannot borrow selection correlation");
+        mode.set(0);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), held).await.is_err(), "bounded caller timeout must drop its chooser awaiter");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async { while dropped.get() == 0 { tokio::task::yield_now().await; } }).await.expect("dropping chooser awaiter must drop actual Cap'n Proto request/server future");
+        let fresh = crate::invocation_scope::tests::scope(&fixture, 1861, "caller", 100, &time);
+        let next = fresh.published_actions().unwrap().select_resource(selection_filter()).unwrap();
+        observed(&calls, 5).await;
+        assert_eq!(calls.borrow().last().unwrap().on_behalf_of, Some(fresh.invocation()));
+        drop(registration);
+        assert_eq!(next.await, PublishedActionAnswer::Unknown { invocation: None });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async { while dropped.get() < 2 { tokio::task::yield_now().await; } }).await.expect("registration retirement must drop actual held selection RPC");
+        assert_eq!(calls.borrow().len(), 5, "neither dropped awaiter nor route retirement replays selection");
+    })).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn published_selection_held_reply_checks_kind_correlation_disconnect_and_original_retirement()
+{
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for mode_value in [1, 2, 3, 4] {
+                let fixture = crate::invocation_scope::tests::fixture(1870 + u64::from(mode_value));
+                let time = Arc::new(AtomicU64::new(0));
+                let scope = crate::invocation_scope::tests::scope(
+                    &fixture,
+                    1870 + u64::from(mode_value),
+                    "caller",
+                    100,
+                    &time,
+                );
+                let client = scope.published_actions().unwrap();
+                let calls = Rc::new(RefCell::new(Vec::new()));
+                let release = Rc::new(tokio::sync::Notify::new());
+                let dropped = Rc::new(Cell::new(0));
+                let broker = runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(Broker(
+                    capnp_rpc::new_client(ConcurrentChannel {
+                        calls: calls.clone(),
+                        release: release.clone(),
+                        dropped: dropped.clone(),
+                        mode: Rc::new(Cell::new(mode_value)),
+                    }),
+                )));
+                let channel = broker.join_channel("fixture", &[]).await.unwrap();
+                let registration = register(scope.route().channel_id(), channel).unwrap();
+                let held = client.select_resource(selection_filter()).unwrap();
+                observed(&calls, 1).await;
+                assert!(matches!(
+                    client.query(Default::default()).unwrap().await,
+                    PublishedActionAnswer::Answer(RemoteActionMessage::CatalogueResponse {
+                        result: Ok(_),
+                        ..
+                    })
+                ));
+                if mode_value == 4 {
+                    scope.cancel();
+                }
+                release.notify_one();
+                assert_eq!(
+                    held.await,
+                    PublishedActionAnswer::Unknown { invocation: None }
+                );
+                assert_eq!(dropped.get(), 1);
+                assert_eq!(
+                    calls.borrow().len(),
+                    2,
+                    "invalid reply, disconnect and retired original are never replayed"
+                );
+                drop(registration);
+            }
         })
         .await;
 }

@@ -12,6 +12,7 @@ pub mod live_app_actions;
 pub mod now_playing;
 pub mod permission_prompts;
 pub mod records;
+pub(crate) mod resource_selections;
 pub mod session_actions;
 pub mod shortcuts;
 pub(crate) mod task_review;
