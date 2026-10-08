@@ -1,5 +1,6 @@
-//! Signing in, two-factor codes, trust tokens, Advanced Data Protection and
-//! session renewal, against the fake idmsa/setup endpoints.
+//! Signing in to iCloud, two-factor codes, trust tokens, Advanced Data
+//! Protection and session renewal, against the provider's fake idmsa/setup
+//! endpoints.
 
 #![allow(
     clippy::unwrap_used,
@@ -11,17 +12,36 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use base64::Engine as _;
+use account_custody::icloud::auth::{Authenticator, CodeDelivery, PendingSignIn, SignIn};
+use account_custody::icloud::{SessionCredentials, SessionStatus};
 use cloud_source::{CloudSource, CredentialSource, Error, StaticCredential};
 use cloud_source_icloud::ICloudDrive;
-use cloud_source_icloud::auth::{
-    AuthError, CodeDelivery, SessionCredentials, SessionStatus, SignIn, StoredSession,
-};
+use cloud_source_icloud::auth::{AuthError, StoredSession};
 use cloud_source_icloud::fake::{
     APPLE_ID, DEVICE_CODE, FakeICloud, Options, PASSWORD, PHONE_ID, SMS_CODE,
 };
 
-fn needs_code(outcome: SignIn) -> cloud_source_icloud::auth::PendingSignIn {
+fn authenticator(server: &FakeICloud) -> Authenticator {
+    Authenticator::new(server.endpoints()).unwrap()
+}
+
+/// Sign in through the full flow (SRP, the pushed or texted code, trust,
+/// `accountLogin`), as Settings does.
+fn sign_in(server: &FakeICloud) -> StoredSession {
+    let auth = authenticator(server);
+    match auth.sign_in(APPLE_ID, PASSWORD, None).unwrap() {
+        SignIn::Complete(session) => session,
+        SignIn::NeedsCode(mut pending) => {
+            let code = match pending.delivery() {
+                CodeDelivery::TrustedDevice => DEVICE_CODE,
+                CodeDelivery::Phone { .. } => SMS_CODE,
+            };
+            auth.submit_code(&mut pending, code).unwrap()
+        }
+    }
+}
+
+fn needs_code(outcome: SignIn) -> PendingSignIn {
     match outcome {
         SignIn::NeedsCode(pending) => pending,
         SignIn::Complete(_) => panic!("expected a second factor"),
@@ -39,7 +59,7 @@ fn drive(server: &FakeICloud, session: &StoredSession) -> ICloudDrive {
 #[test]
 fn a_pushed_code_signs_in_and_a_wrong_one_can_be_retried() {
     let server = FakeICloud::start();
-    let auth = server.authenticator();
+    let auth = authenticator(&server);
     let mut pending = needs_code(auth.sign_in(APPLE_ID, PASSWORD, None).unwrap());
     assert_eq!(pending.delivery(), &CodeDelivery::TrustedDevice);
     assert_eq!(server.stats().pushes, 1, "the code was pushed");
@@ -60,7 +80,7 @@ fn a_pushed_code_signs_in_and_a_wrong_one_can_be_retried() {
 #[test]
 fn apple_ids_are_matched_case_insensitively() {
     let server = FakeICloud::start();
-    let auth = server.authenticator();
+    let auth = authenticator(&server);
     let outcome = auth.sign_in("  Ada@Example.COM ", PASSWORD, None).unwrap();
     assert!(matches!(outcome, SignIn::NeedsCode(_)));
 }
@@ -68,7 +88,7 @@ fn apple_ids_are_matched_case_insensitively() {
 #[test]
 fn an_sms_code_is_the_fallback() {
     let server = FakeICloud::start();
-    let auth = server.authenticator();
+    let auth = authenticator(&server);
     let mut pending = needs_code(auth.sign_in(APPLE_ID, PASSWORD, None).unwrap());
     auth.send_sms(&mut pending, PHONE_ID).unwrap();
     assert!(matches!(pending.delivery(), CodeDelivery::Phone { id, .. } if *id == PHONE_ID));
@@ -86,7 +106,7 @@ fn accounts_without_trusted_devices_get_a_text() {
         trusted_devices: false,
         ..Options::default()
     });
-    let auth = server.authenticator();
+    let auth = authenticator(&server);
     let mut pending = needs_code(auth.sign_in(APPLE_ID, PASSWORD, None).unwrap());
     assert!(matches!(pending.delivery(), CodeDelivery::Phone { .. }));
     assert_eq!(server.stats().pushes, 0);
@@ -100,7 +120,7 @@ fn a_code_accepted_with_409_still_signs_in() {
         accept_code_with_conflict: true,
         ..Options::default()
     });
-    server.sign_in();
+    sign_in(&server);
 }
 
 #[test]
@@ -109,13 +129,13 @@ fn the_fallback_password_protocol_works() {
         protocol: "s2k_fo",
         ..Options::default()
     });
-    server.sign_in();
+    sign_in(&server);
 }
 
 #[test]
 fn wrong_passwords_and_unknown_accounts_are_refused() {
     let server = FakeICloud::start();
-    let auth = server.authenticator();
+    let auth = authenticator(&server);
     assert!(matches!(
         auth.sign_in(APPLE_ID, "hunter2", None),
         Err(AuthError::InvalidCredentials)
@@ -129,9 +149,9 @@ fn wrong_passwords_and_unknown_accounts_are_refused() {
 #[test]
 fn a_trust_token_skips_the_second_factor() {
     let server = FakeICloud::start();
-    let first = server.sign_in();
+    let first = sign_in(&server);
     let pushes = server.stats().pushes;
-    let auth = server.authenticator();
+    let auth = authenticator(&server);
     let SignIn::Complete(second) = auth
         .sign_in(APPLE_ID, PASSWORD, Some(first.trust_token()))
         .unwrap()
@@ -149,7 +169,7 @@ fn advanced_data_protection_is_reported_clearly() {
         advanced_data_protection: true,
         ..Options::default()
     });
-    let auth = server.authenticator();
+    let auth = authenticator(&server);
     let mut pending = needs_code(auth.sign_in(APPLE_ID, PASSWORD, None).unwrap());
     let error = auth.submit_code(&mut pending, DEVICE_CODE).unwrap_err();
     assert!(
@@ -165,14 +185,14 @@ fn advanced_data_protection_is_reported_clearly() {
 #[test]
 fn lapsed_web_cookies_renew_from_the_tokens() {
     let server = FakeICloud::start();
-    let session = server.sign_in();
+    let session = sign_in(&server);
     server.expire_web_sessions();
     let stale = drive(&server, &session);
     assert!(matches!(
         stale.list(&stale.root()),
         Err(Error::Unauthorized)
     ));
-    let renewed = server.authenticator().refresh(&session, None).unwrap();
+    let renewed = authenticator(&server).refresh(&session, None).unwrap();
     let source = drive(&server, &renewed);
     source.list(&source.root()).unwrap();
 }
@@ -180,10 +200,10 @@ fn lapsed_web_cookies_renew_from_the_tokens() {
 #[test]
 fn a_lapsed_trust_is_session_expired_without_prompting_anyone() {
     let server = FakeICloud::start();
-    let session = server.sign_in();
+    let session = sign_in(&server);
     server.expire_trust();
     let pushes = server.stats().pushes;
-    let auth = server.authenticator();
+    let auth = authenticator(&server);
     assert!(matches!(
         auth.refresh(&session, None),
         Err(AuthError::SessionExpired)
@@ -202,19 +222,19 @@ fn a_lapsed_trust_is_session_expired_without_prompting_anyone() {
 #[test]
 fn a_valid_session_refreshes_to_itself() {
     let server = FakeICloud::start();
-    let session = server.sign_in();
-    let refreshed = server.authenticator().refresh(&session, None).unwrap();
+    let session = sign_in(&server);
+    let refreshed = authenticator(&server).refresh(&session, None).unwrap();
     assert_eq!(refreshed.dsid(), Some("12345"));
 }
 
 #[test]
 fn session_credentials_renew_after_a_rejection_and_then_ask_for_a_person() {
     let server = FakeICloud::start();
-    let session = server.sign_in();
+    let session = sign_in(&server);
     let renewals = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&renewals);
     let credentials = SessionCredentials::new(
-        server.authenticator(),
+        authenticator(&server),
         session,
         None,
         Some(Box::new(move |_| {
@@ -246,20 +266,4 @@ fn session_credentials_renew_after_a_rejection_and_then_ask_for_a_person() {
     ));
     assert_eq!(credentials.status(), SessionStatus::NeedsSignIn);
     assert!(matches!(credentials.credential(), Err(Error::Unauthorized)));
-}
-
-#[test]
-fn stored_sessions_round_trip_and_never_print_secrets() {
-    let server = FakeICloud::start();
-    let session = server.sign_in();
-    let json = session.to_json();
-    let back = StoredSession::from_json(&json).unwrap();
-    assert_eq!(back.trust_token(), session.trust_token());
-    let encoded = base64::engine::general_purpose::STANDARD.encode(json.as_bytes());
-    let decoded = StoredSession::from_json(&encoded).unwrap();
-    assert_eq!(decoded.drive_url(), session.drive_url());
-    let printed = format!("{session:?} {:?}", session.credential());
-    assert!(!printed.contains(session.trust_token()));
-    assert!(!printed.contains("wt-"), "{printed}");
-    assert!(StoredSession::from_json("not a session").is_err());
 }

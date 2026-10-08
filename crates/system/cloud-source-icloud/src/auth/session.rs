@@ -1,22 +1,23 @@
-//! The persisted result of a sign-in, and a [`CredentialSource`] that keeps
-//! it alive.
+//! The persisted result of a sign-in.
 
 use std::fmt;
-use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use cloud_source::{Credential, CredentialSource};
+use cloud_source::Credential;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use super::{AccountInfo, AuthError, Authenticator};
+use super::{AccountInfo, AuthError};
 use crate::http::{Cookies, secret};
 
 /// An iCloud web session: the cookies `accountLogin` set, plus the idmsa
-/// session and trust tokens that renew it. Settings stores it (it is all
-/// secret apart from the URLs and IDs); [`StoredSession::credential`] is
-/// what a Drive source borrows per request.
+/// session and trust tokens that renew it. Custody seals it in the vault
+/// (it is all secret apart from the URLs and IDs);
+/// [`StoredSession::credential`] is what a Drive source borrows per request.
+///
+/// The serialized form ([`StoredSession::to_json`]) is what the vault holds:
+/// keep it compatible.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StoredSession {
     pub(crate) apple_id: String,
@@ -53,6 +54,49 @@ impl fmt::Debug for StoredSession {
 }
 
 impl StoredSession {
+    /// The session `setup.icloud.com/accountLogin` opened from idmsa's
+    /// session and trust tokens: the cookies it set and what it said about
+    /// the account (`info`).
+    ///
+    /// # Errors
+    /// [`AuthError::AdvancedDataProtection`] or
+    /// [`AuthError::DriveUnavailable`] when the web API cannot read the
+    /// account's Drive.
+    pub fn from_login(
+        apple_id: &str,
+        account_country: &str,
+        session_token: Zeroizing<String>,
+        trust_token: Zeroizing<String>,
+        cookies: Cookies,
+        info: &AccountInfo,
+    ) -> Result<Self, AuthError> {
+        let mut session = Self {
+            apple_id: apple_id.to_owned(),
+            dsid: None,
+            account_country: account_country.to_owned(),
+            session_token,
+            trust_token,
+            cookies,
+            drive_url: String::new(),
+            docs_url: String::new(),
+            needs_second_factor: false,
+        };
+        session.apply(info)?;
+        Ok(session)
+    }
+
+    /// This session after `validate` accepted it: with the cookies it
+    /// rotated and what it said about the account (`info`).
+    ///
+    /// # Errors
+    /// As [`StoredSession::from_login`].
+    pub fn revalidated(&self, cookies: &Cookies, info: &AccountInfo) -> Result<Self, AuthError> {
+        let mut renewed = self.clone();
+        renewed.cookies.merge(cookies);
+        renewed.apply(info)?;
+        Ok(renewed)
+    }
+
     pub fn apple_id(&self) -> &str {
         &self.apple_id
     }
@@ -69,14 +113,35 @@ impl StoredSession {
         &self.docs_url
     }
 
+    /// The idmsa account country `accountLogin` is told.
+    pub fn account_country(&self) -> &str {
+        &self.account_country
+    }
+
+    /// `accountLogin` accepted the session but still wants a second factor.
+    pub fn needs_second_factor(&self) -> bool {
+        self.needs_second_factor
+    }
+
     pub fn has_trust_token(&self) -> bool {
         !self.trust_token.is_empty()
     }
 
-    /// The trust token, to pass to [`Authenticator::sign_in`] when the person
-    /// signs in again so Apple can skip the second factor. Secret.
+    /// The trust token, to pass to a new sign-in so Apple can skip the
+    /// second factor. Secret.
     pub fn trust_token(&self) -> &str {
         &self.trust_token
+    }
+
+    /// The idmsa session token `accountLogin` renews the cookies from.
+    /// Secret.
+    pub fn session_token(&self) -> &str {
+        &self.session_token
+    }
+
+    /// The iCloud web cookies. Secret.
+    pub fn cookies(&self) -> &Cookies {
+        &self.cookies
     }
 
     /// The per-request credential: the iCloud web cookies.
@@ -108,7 +173,7 @@ impl StoredSession {
     }
 
     /// Take what an `accountLogin`/`validate` answer says about the account.
-    pub(crate) fn apply(&mut self, info: &AccountInfo) -> Result<(), AuthError> {
+    fn apply(&mut self, info: &AccountInfo) -> Result<(), AuthError> {
         if let Some(dsid) = &info.ds_info.dsid {
             self.dsid = Some(dsid.clone());
         }
@@ -120,149 +185,5 @@ impl StoredSession {
         self.drive_url = drive;
         self.docs_url = docs;
         Ok(())
-    }
-}
-
-/// What [`SessionCredentials`] knows about its session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionStatus {
-    /// The last credential handed out has not been rejected.
-    Active,
-    /// Renewal failed with [`AuthError::SessionExpired`]: a person has to
-    /// sign in again with a verification code.
-    NeedsSignIn,
-    /// The account turned on Advanced Data Protection.
-    AdvancedDataProtection,
-}
-
-type Renewed = Box<dyn Fn(&StoredSession) + Send + Sync>;
-
-struct State {
-    session: StoredSession,
-    stale: bool,
-    status: SessionStatus,
-}
-
-struct Inner {
-    auth: Authenticator,
-    password: Option<Zeroizing<String>>,
-    state: Mutex<State>,
-    renewed: Option<Renewed>,
-}
-
-/// A [`CredentialSource`] over a [`StoredSession`] that renews it with
-/// [`Authenticator::refresh`] after the server rejects it, and remembers when
-/// only a person can help ([`SessionStatus::NeedsSignIn`]). Cheap to clone.
-#[derive(Clone)]
-pub struct SessionCredentials {
-    inner: Arc<Inner>,
-}
-
-impl fmt::Debug for SessionCredentials {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SessionCredentials")
-            .field("status", &self.status())
-            .finish_non_exhaustive()
-    }
-}
-
-impl SessionCredentials {
-    /// `password`, when Settings keeps it, lets a renewal re-run SRP with the
-    /// trust token after the web cookies and session token have lapsed.
-    /// `renewed` is called with every renewed session so it can be stored.
-    pub fn new(
-        auth: Authenticator,
-        session: StoredSession,
-        password: Option<Zeroizing<String>>,
-        renewed: Option<Renewed>,
-    ) -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                auth,
-                password,
-                state: Mutex::new(State {
-                    session,
-                    stale: false,
-                    status: SessionStatus::Active,
-                }),
-                renewed,
-            }),
-        }
-    }
-
-    pub fn status(&self) -> SessionStatus {
-        self.inner
-            .state
-            .lock()
-            .map_or(SessionStatus::NeedsSignIn, |state| state.status)
-    }
-
-    /// The current session (for storage).
-    pub fn session(&self) -> Option<StoredSession> {
-        self.inner
-            .state
-            .lock()
-            .ok()
-            .map(|state| state.session.clone())
-    }
-
-    /// Check the session with Apple now, renewing it if needed.
-    pub fn verify(&self) -> Result<(), AuthError> {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .map_err(|_| AuthError::Protocol("poisoned"))?;
-        self.renew(&mut state)
-    }
-
-    fn renew(&self, state: &mut State) -> Result<(), AuthError> {
-        let password = self.inner.password.as_ref().map(|p| p.as_str());
-        match self.inner.auth.refresh(&state.session, password) {
-            Ok(session) => {
-                state.session = session;
-                state.stale = false;
-                state.status = SessionStatus::Active;
-                if let Some(renewed) = &self.inner.renewed {
-                    renewed(&state.session);
-                }
-                Ok(())
-            }
-            Err(error) => {
-                match error {
-                    AuthError::SessionExpired => state.status = SessionStatus::NeedsSignIn,
-                    AuthError::AdvancedDataProtection => {
-                        state.status = SessionStatus::AdvancedDataProtection;
-                    }
-                    _ => {}
-                }
-                Err(error)
-            }
-        }
-    }
-}
-
-impl CredentialSource for SessionCredentials {
-    fn credential(&self) -> cloud_source::Result<Credential> {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .map_err(|_| cloud_source::Error::Unauthorized)?;
-        match state.status {
-            SessionStatus::NeedsSignIn => return Err(cloud_source::Error::Unauthorized),
-            SessionStatus::AdvancedDataProtection => return Err(cloud_source::Error::Forbidden),
-            SessionStatus::Active => {}
-        }
-        if state.stale {
-            self.renew(&mut state)?;
-        }
-        Ok(state.session.credential())
-    }
-
-    fn rejected(&self) {
-        if let Ok(mut state) = self.inner.state.lock() {
-            state.stale = true;
-        }
     }
 }
