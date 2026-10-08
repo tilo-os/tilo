@@ -476,6 +476,49 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "private_content_recorded": False,
         })
 
+    def test_prime_chat_frontier_restarts_only_stale_same_owned_tree_under_original_deadline(self):
+        access = {"process": 123, "agent": "Tide", "detached": False,
+                  "bus": "chat", "window": "/current"}
+        stale = PROOF.atspi.GateError(
+            "gdbus failed: Error: GDBus.Error:org.freedesktop.DBus.Error.UnknownObject: PRIVATE-CANARY")
+        tree = {"/phase": "(<'Planning: Agent marker proof'>,)"}
+        client = PROOF.atspi.AtspiClient("owned", "chat")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "process_program", return_value="chat"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="owned"), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "accessible_subtree", side_effect=[stale, tree]):
+            output = pathlib.Path(directory)
+            prepared = PROOF.prime_chat_frontier_access("Agent marker proof", None, output=output)
+            self.assertEqual(prepared["phase_control"], "/phase")
+            receipt = json.loads((output / "marker-chat-prime-observation.json").read_text())
+            self.assertEqual(receipt["probe_count"], 2)
+            self.assertTrue(receipt["first"]["unknown_object"])
+            self.assertTrue(receipt["last"]["unique_planning_control"])
+            self.assertNotIn("PRIVATE-CANARY", json.dumps(receipt))
+            self.assertNotIn("/phase", json.dumps(receipt))
+            with patch.object(PROOF, "accessible_subtree", side_effect=stale), \
+                    patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
+                with self.assertRaises(PROOF.ProofTimeout):
+                    PROOF.prime_chat_frontier_access("Agent marker proof", None, output=output)
+            with patch.object(PROOF, "accessible_subtree", side_effect=[stale, tree]), \
+                    patch.object(PROOF, "agent_conversation_accessibility",
+                                 side_effect=[access, {**access, "process": 456}]):
+                with self.assertRaisesRegex(RuntimeError, "foreign Chat route"):
+                    PROOF.prime_chat_frontier_access("Agent marker proof", None)
+            with patch.object(PROOF, "accessible_subtree", return_value={}):
+                with self.assertRaisesRegex(RuntimeError, "ambiguous or absent"):
+                    PROOF.prime_chat_frontier_access("Agent marker proof", None)
+            denied = PROOF.atspi.GateError("org.freedesktop.DBus.Error.AccessDenied PRIVATE-CANARY")
+            with patch.object(PROOF, "accessible_subtree", side_effect=denied):
+                with self.assertRaises(PROOF.atspi.GateError):
+                    PROOF.prime_chat_frontier_access("Agent marker proof", None, output=output)
+            receipt = json.loads((output / "marker-chat-prime-observation.json").read_text())
+            self.assertTrue(receipt["last"]["other_transport_failure"])
+            self.assertNotIn("PRIVATE-CANARY", json.dumps(receipt))
+
     def test_quick_composer_targets_use_actual_unwrapped_wire_and_real_control_geometry(self):
         names = ("agent-quick-editor", "agent-quick-send", "agent-quick-close")
         rows = [{"name": name, "rect": [10.0, 20.0, 100.0, 30.0]} for name in names]

@@ -4351,17 +4351,56 @@ def start_managed_agent(socket, room, agent, process):
     return {"semantic": True, "invocation": terminal_invocation(receipt)}
 
 
-def prime_chat_frontier_access(title, process):
-    access = wait_for("held marker's mounted Chat editor", lambda:
-                     agent_conversation_accessibility("Tide"), process)
-    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+def prime_chat_frontier_access(title, process, *, output=None):
     label = f"Planning: {title}"
-    tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
-    phases = client.named(tree, label)
-    if len(phases) != 1:
-        raise RuntimeError("the first held marker Planning control is ambiguous or absent")
-    return {"access": access, "phase_control": phases[0], "phase_label": label,
-            "address": client.address}
+    owner = None
+    evidence = {"probe_count": 0, "first": None, "last": None}
+
+    def observe():
+        nonlocal owner
+        observed = dict.fromkeys(("route_observed", "same_owner_route", "complete_tree",
+                                  "unique_planning_control", "unknown_object",
+                                  "unknown_interface", "other_transport_failure"), False)
+        evidence["probe_count"] += 1
+        try:
+            if owner is not None and process_program(owner[0]) != "chat":
+                raise RuntimeError("held marker priming lost its exact Chat process")
+            access = agent_conversation_accessibility("Tide", stale_only=True)
+            if access is None:
+                return None
+            observed["route_observed"] = True
+            identity = (access["process"], access["agent"], access["detached"])
+            if owner is None:
+                owner = identity
+            elif identity != owner:
+                raise RuntimeError("held marker priming discovered a foreign Chat route")
+            observed["same_owner_route"] = True
+            client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+            tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+            observed["complete_tree"] = True
+            phases = client.named(tree, label)
+            observed["unique_planning_control"] = len(phases) == 1
+            if len(phases) != 1:
+                raise RuntimeError("the first held marker Planning control is ambiguous or absent")
+            return {"access": access, "phase_control": phases[0], "phase_label": label,
+                    "address": client.address}
+        except atspi.GateError as error:
+            observed["unknown_object"] = "org.freedesktop.DBus.Error.UnknownObject" in str(error)
+            observed["unknown_interface"] = "org.freedesktop.DBus.Error.UnknownInterface" in str(error)
+            observed["other_transport_failure"] = not (
+                observed["unknown_object"] or observed["unknown_interface"])
+            if observed["unknown_object"]:
+                return None
+            raise
+        finally:
+            if evidence["first"] is None:
+                evidence["first"] = observed.copy()
+            evidence["last"] = observed
+            if output is not None:
+                (output / "marker-chat-prime-observation.json").write_text(
+                    json.dumps(evidence, indent=2) + "\n")
+
+    return wait_for("held marker's exact mounted Chat Planning tree", observe, process)
 
 
 def sample_primed_chat_frontier(socket, output, task_id, admission, prepared, process):
@@ -4469,7 +4508,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     )
     if first_frontier.get("sequence") != admission["sequence"]:
         raise RuntimeError("Chat retained a different first marker task Planning sequence")
-    prepared_chat = prime_chat_frontier_access("Agent marker proof", process)
+    prepared_chat = prime_chat_frontier_access("Agent marker proof", process, output=output)
     # Finish all full-tree and focus work before the real action starts its
     # finite completed-marker dwell. Direct shell children remain live reads.
     category_access = ensure_chat_category_visible(socket, "Lifecycle proof", process)
