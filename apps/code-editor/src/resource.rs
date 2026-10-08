@@ -35,6 +35,10 @@ use crate::app::CodeApp;
 use crate::doc::{CollaborativeFile, EditorDoc};
 use crate::effects::CodeEditorEffect;
 
+#[path = "buffer_demand_cache.rs"]
+mod buffer_demand_cache;
+use buffer_demand_cache::BufferDemandCache;
+
 /// Stable id prefix for the published project root.
 pub const PROJECT_KIND: &str = "code_editor.project";
 
@@ -53,6 +57,8 @@ pub struct ProjectState {
     pub opened_buffers: HashSet<String>,
     /// The embedded terminal's session, once the project has one.
     pub terminal: Option<SessionState>,
+    /// Private bounded projections; only `buffers` exposes demanded text.
+    buffer_cache: BufferDemandCache,
 }
 
 /// The project's embedded terminal, published as the terminal session it is.
@@ -88,19 +94,13 @@ impl Resource for CodeEditor {
             buffers: HashMap::new(),
             opened_buffers,
             terminal: EditorDoc::terminal_panel(doc).map(|panel| Terminal::read_under(doc, &panel)),
+            buffer_cache: BufferDemandCache::default(),
         })
     }
 
     /// The text of the demanded files (their ids are the demand's keys).
     fn load(state: &mut ProjectState, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
-        state.buffers.retain(|id, _| demand.keys.contains(id));
-        for id in &demand.keys {
-            if !state.buffers.contains_key(id)
-                && let Some(text) = EditorDoc::read_buffer_key(doc, id)
-            {
-                state.buffers.insert(id.clone(), text);
-            }
-        }
+        state.load_buffers(doc, demand);
         Ok(())
     }
 
