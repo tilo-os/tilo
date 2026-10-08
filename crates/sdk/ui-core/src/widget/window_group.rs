@@ -281,6 +281,18 @@ pub struct WindowGroup {
 /// is kept as slim as its `scale.xs` label allows. Recorded rather than
 /// rounded — the row's geometry is what the maximize tests pin.
 const MAXIMIZED_CHIP_H: f64 = 22.0;
+
+fn maximized_chip_height(theme: &Theme) -> f64 {
+    let caption = theme.text(TextRole::Caption);
+    MAXIMIZED_CHIP_H
+        .max(f64::from(caption.size * caption.line_height) + f64::from(theme.tokens.spacing.s1))
+}
+
+fn maximized_chrome_height(theme: &Theme) -> f64 {
+    // Taffy rounds physical layout edges; reserve up to the next pixel so
+    // a fractional scaled chip never reaches into the client header.
+    (maximized_chip_height(theme) + 2.0 * crate::widget::tabs::TAB_PILL_INSET_Y).ceil()
+}
 /// Narrowest the `[app title]` chip is drawn, so a one-letter title still
 /// reads as a chip rather than a dot.
 const MAXIMIZED_TITLE_CHIP_MIN_W: f64 = 80.0;
@@ -623,7 +635,10 @@ impl WindowGroup {
     pub fn should_show_maximized_chrome(&self, cursor_y: Option<f64>) -> bool {
         !self.external_navigation
             && self.maximized
-            && cursor_y.is_some_and(|y| y <= MAXIMIZED_CHROME_REVEAL_Y)
+            && cursor_y.is_some_and(|y| {
+                y <= MAXIMIZED_CHROME_REVEAL_Y
+                    .max(self.restore_rect.y1 + crate::widget::tabs::TAB_PILL_INSET_Y)
+            })
     }
 
     pub fn strip_usable_px(&self) -> f64 {
@@ -1112,14 +1127,19 @@ impl WindowGroup {
     /// gestures cannot race; this matters especially for a one-group strip,
     /// where this grip is the only resize affordance.
     pub fn resize_grab_hit(&self, p: Point) -> bool {
-        !self.maximized
-            && Rect::new(
+        self.resize_grab_rect().is_some_and(|rect| rect.contains(p))
+    }
+
+    /// Painted trailing-edge grip, shared with compositor input admission.
+    pub fn resize_grab_rect(&self) -> Option<Rect> {
+        (!self.maximized).then(|| {
+            Rect::new(
                 self.rect.x1 - RESIZE_HANDLE_PX,
                 self.rect.y0,
                 self.rect.x1,
                 self.rect.y1,
             )
-            .contains(p)
+        })
     }
 
     pub fn drop_index_for(&self, release_point: Point) -> usize {
@@ -1246,6 +1266,15 @@ impl WindowGroup {
                 .or_insert_with(crate::time::now);
         }
         true
+    }
+
+    /// Retain the native client while its host awaits actual close admission.
+    /// The live host and tab metadata survive the provisional close animation.
+    pub fn cancel_tab_close(&mut self, tab_id: u64) -> bool {
+        let restored = self.bar.cancel_close(tab_id);
+        self.closing_hosts.remove(&tab_id);
+        self.pending_close_commit.retain(|id| *id != tab_id);
+        restored
     }
 
     pub fn drag_in_flight(&self) -> bool {
@@ -1739,7 +1768,7 @@ impl WindowGroup {
         let pad = crate::widget::tabs::TAB_PILL_INSET_Y;
         let layout = ChromePillLayout {
             pad,
-            pill_h: MAXIMIZED_CHIP_H,
+            pill_h: maximized_chip_height(theme),
             y0: self.rect.y0 + pad,
         };
         self.draw_maximized_title_chip(scene, transform, tr, theme, layout);
@@ -2323,8 +2352,14 @@ impl Widget for WindowGroup {
             style.size.width = Dimension::auto();
             style.flex_grow = 1.0e6;
             style.flex_basis = Dimension::length(0.0);
-            // Fullscreen: the tab strip neither paints (see `draw`) nor
-            // reserves height; the floating pill draws over the content.
+            // Maximized windows retain a compact system-control lane. A
+            // client header must stay below the revealed Restore/Close and
+            // app label, including when captions grow with the text scale.
+            // External navigation (including a fullscreen host) owns its
+            // own chrome and keeps the complete client area.
+            if !self.external_navigation {
+                style.padding.top = length(px_f32(maximized_chrome_height(theme)));
+            }
             if let Some(bar_node) = bar_node {
                 let mut bar_style = taffy.style(bar_node).cloned().unwrap_or_default();
                 bar_style.display = taffy::Display::None;
@@ -2892,6 +2927,33 @@ mod tests {
             at(&idle, x, y),
             "the grip shows while resizing"
         );
+    }
+
+    #[test]
+    fn deferred_close_retains_host_pill_order_and_focus() {
+        let mut group = make_group();
+        assert!(group.request_close_tab(1));
+        assert!(group.has_closing_host(1));
+        assert!(group.cancel_tab_close(1));
+        group.sweep_expired_closing_hosts();
+        assert_eq!(
+            group
+                .bar
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(group.active_tab_id(), 1);
+        assert!(group.has_host(1));
+        assert!(!group.has_closing_host(1));
+        assert!(!group.bar.is_closing(1));
+        assert!(
+            !group.cancel_tab_close(1),
+            "restoring twice must not duplicate the pill"
+        );
+        assert_eq!(group.tab_count(), 2);
     }
 
     fn make_group() -> WindowGroup {
@@ -3904,7 +3966,7 @@ mod tests {
             );
         }
 
-        // Case `maximized_group_gives_all_its_height_to_the_app`.
+        // Case `maximized_group_keeps_client_header_below_system_controls`.
         {
             use std::collections::HashMap;
             use taffy::Style;
@@ -3943,13 +4005,40 @@ mod tests {
              group={group_h} tile={tile_h}",
             );
 
-            g.maximized = true;
-            let (group_h, tile_h) = measure(&mut g, &theme);
-            assert_eq!(
-                tile_h, group_h,
-                "maximized: the app must get the group's full height (no reserved \
-             tab-strip band)",
-            );
+            for theme in [
+                Theme::light(),
+                Theme::dark(),
+                Theme::high_contrast().with_text_scale(2.0),
+            ] {
+                g.maximized = true;
+                let (group_h, tile_h) = measure(&mut g, &theme);
+                assert!(
+                    (group_h - tile_h - maximized_chrome_height(&theme)).abs() < 0.0001,
+                    "the client gets exactly the remaining height below system chrome: group={group_h}, client={tile_h}, chrome={}",
+                    maximized_chrome_height(&theme)
+                );
+                g.last_cursor = Point::new(g.rect.x0, g.rect.y0);
+                g.draw_maximized_chrome(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &theme,
+                );
+                let client = g.active_host().unwrap().get_rect();
+                assert!(
+                    g.restore_rect.y1 <= client.y0,
+                    "Restore must not cover the client header"
+                );
+                assert!(
+                    g.close_rect.y1 <= client.y0,
+                    "Close must not cover the client header"
+                );
+                assert!(
+                    g.should_show_maximized_chrome(Some(g.restore_rect.center().y)),
+                    "the revealed scaled Restore control must stay reachable"
+                );
+                assert!(tile_h > 0.0);
+            }
         }
 
         // Case `maximized_restore_rebuilds_the_tiled_layout`.

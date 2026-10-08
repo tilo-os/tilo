@@ -171,6 +171,33 @@ impl NativeWorkspaceOwner {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<OwnerCommitReceipt, String> {
+        self.commit_effect_receipt_for(request, governor, key, now, None)
+    }
+
+    /// Commit the authenticated member's audit with the same immutable ledger
+    /// and durable barrier as a local broker audit.
+    ///
+    /// # Errors
+    /// Refuses stale admission, impersonation, quota exhaustion or absent governor custody.
+    pub fn commit_member_effect_receipt(
+        &self,
+        request: &OwnerCommitRequest,
+        caller: &DeviceCert,
+        governor: &DeviceCert,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<OwnerCommitReceipt, String> {
+        self.commit_effect_receipt_for(request, governor, key, now, Some(caller))
+    }
+
+    fn commit_effect_receipt_for(
+        &self,
+        request: &OwnerCommitRequest,
+        governor: &DeviceCert,
+        key: &SigningKey,
+        now: SystemTime,
+        caller: Option<&DeviceCert>,
+    ) -> Result<OwnerCommitReceipt, String> {
         let effect = decode(request)?;
         let binding = request.binding()?;
         let room = RoomId::parse(&request.room).ok_or("invalid effect room")?;
@@ -184,7 +211,18 @@ impl NativeWorkspaceOwner {
         }
         let id = effect.invocation.0.to_string();
         let mut checked = candidate.peer.clone();
-        let is_new = checked.apply_workspace_effect_receipt(&effect, key, now)?;
+        let is_new = if let Some(caller) = caller {
+            let CommitOperation::EffectReceipt {
+                invocation,
+                redacted,
+            } = &request.operation
+            else {
+                return Err("member request is not an effect receipt".into());
+            };
+            checked.apply_member_effect_receipt(caller, *invocation, redacted, key, now)?
+        } else {
+            checked.apply_workspace_effect_receipt(&effect, key, now)?
+        };
         // A received signed root without its exact retained owner history is not
         // an empty index. No creator authority is inferred from an unknown UUID.
         if candidate.peer.workspace_effect_history_root()? != candidate.record.effect_history_root {

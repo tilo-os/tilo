@@ -29,6 +29,7 @@ fn draw_frame_content(
     scale_factor: f32,
     t_draw_start: Option<crate::time::Instant>,
 ) -> (Affine, KurboRect, u128, bool) {
+    app.restore_physical_configuration();
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
     app.refresh_control_action_availability();
     if let Some(p) = app.profiler.as_mut() {

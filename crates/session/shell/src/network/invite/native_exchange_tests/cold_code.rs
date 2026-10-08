@@ -8,12 +8,13 @@ use tilo_joined_room::{ApplicationInitialization, ApplicationRecord, DocumentRea
 
 pub(super) const APP: &str = "so.tilo.code-editor";
 pub(super) const RECORD: &str = "tab:000000000000002a";
-const FILE: &str = "fe55ab4e-e645-4499-aa86-0c4141907080";
-const BODY: &str = "fn native_continuation() {\n    // shared text, locally rendered\n}\n";
+pub(super) const FILE: &str = "fe55ab4e-e645-4499-aa86-0c4141907080";
+pub(super) const BODY: &str =
+    "fn native_continuation() {\n    // shared text, locally rendered\n}\n";
 
 #[tokio::test]
 async fn native_cold_code_body_is_admitted_before_local_rendering() {
-    Box::pin(super::actual_exchange(false, true)).await;
+    Box::pin(super::actual_exchange(false, true, None)).await;
 }
 
 pub(super) fn governor(directory: &Path) -> TestGovernor {
@@ -189,6 +190,33 @@ pub(super) fn assert_native_body(
 }
 
 fn mount_cold_component(owner: &NativeWorkspaceOwner, identity: &HostIdentity, profile: &Path) {
+    let tree = crate::shell::native_workspace_owner::test_tree_of(owner);
+    let (network, commands) =
+        crate::shell::network::native_read_network_for_test(tree, identity.clone());
+    let mut mounted = mount_with_network(owner, identity, profile, &Arc::new(network));
+    open_semantic_resource(&mut mounted.app);
+    drop(mounted);
+    drop(commands);
+}
+
+pub(super) struct MountedCode {
+    pub app: ui::App,
+    _broker: crate::shell::collab_broker::BrokerHandle,
+    _runtime: tempfile::TempDir,
+}
+
+impl Drop for MountedCode {
+    fn drop(&mut self) {
+        self.app.close_components();
+    }
+}
+
+pub(super) fn mount_with_network(
+    owner: &NativeWorkspaceOwner,
+    identity: &HostIdentity,
+    profile: &Path,
+    network: &Arc<crate::shell::network::ShellNetwork>,
+) -> MountedCode {
     use std::{
         cell::{Cell, RefCell},
         os::unix::fs::PermissionsExt as _,
@@ -199,8 +227,6 @@ fn mount_cold_component(owner: &NativeWorkspaceOwner, identity: &HostIdentity, p
         tree.read()
             .commits_native_documents(RoomId::parse(tilo_joined_room::testing::ROOM).unwrap())
     );
-    let (network, commands) =
-        crate::shell::network::native_read_network_for_test(tree.clone(), identity.clone());
     let runtime = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir_in(profile.parent().unwrap())
@@ -210,7 +236,7 @@ fn mount_cold_component(owner: &NativeWorkspaceOwner, identity: &HostIdentity, p
         socket.clone(),
         tree,
         vec![identity.device_cert.device_public_key],
-        &Arc::new(network),
+        network,
     )
     .unwrap();
     let refusal = connect_manager(&socket, identity, false)
@@ -231,13 +257,15 @@ fn mount_cold_component(owner: &NativeWorkspaceOwner, identity: &HostIdentity, p
         text_renderer: ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
     };
     let factories = Cell::new(0_usize);
-    let before = capture(owner, &identity.device_cert).revision;
-    let mut app = ui::App::from_prepared_component_with_collaboration(
+    let admitted = capture(owner, &identity.device_cert);
+    let before = admitted.revision;
+    let expected_body = body(&AutoCommit::load(&admitted.bytes).unwrap());
+    let app = ui::App::from_prepared_component_with_collaboration(
         manager,
         || {
             let mut host = ui::application::ApplicationHost::new(
                 profile.into(),
-                "cold-native-device".into(),
+                hex::encode(identity.device_cert.device_public_key),
                 tilo_joined_room::testing::ROOM,
                 ui::permissions::UserId(ui::permissions::LOCAL_USER.into()),
                 Rc::new(RefCell::new(
@@ -263,7 +291,7 @@ fn mount_cold_component(owner: &NativeWorkspaceOwner, identity: &HostIdentity, p
                     let text = document.get(&buffers, FILE).unwrap().unwrap().1;
                     assert_eq!(
                         document.text(&text).unwrap(),
-                        BODY,
+                        expected_body,
                         "native body must precede the original factory"
                     );
                 })
@@ -278,19 +306,19 @@ fn mount_cold_component(owner: &NativeWorkspaceOwner, identity: &HostIdentity, p
         app.controlled_native_input_snapshot_for_test().is_some(),
         "original Code root must be mounted"
     );
-    open_semantic_resource(&mut app);
     assert_eq!(
         capture(owner, &identity.device_cert).revision,
         before,
         "mounting cannot initialize or rewrite the admitted record"
     );
-    app.close_components();
-    drop(app);
-    drop(broker);
-    drop(commands);
+    MountedCode {
+        app,
+        _broker: broker,
+        _runtime: runtime,
+    }
 }
 
-struct LocalSurface;
+pub(super) struct LocalSurface;
 
 impl ui::app::AppSurface for LocalSurface {
     fn scale_factor(&self) -> f64 {
@@ -368,7 +396,11 @@ fn connect_manager(
     );
     let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
     if launcher_custody {
-        crate::shell::launcher::register_in_process_launch(APP, tilo_joined_room::testing::ROOM);
+        crate::shell::launcher::register_in_process_window(
+            APP,
+            tilo_joined_room::testing::ROOM,
+            Some(42),
+        );
         launcher::services::write_collab_handoff(&mut stream, APP, tilo_joined_room::testing::ROOM)
             .unwrap();
     }
@@ -377,7 +409,7 @@ fn connect_manager(
         APP,
         uuid::Uuid::parse_str(tilo_joined_room::testing::ROOM).unwrap(),
         Some(RECORD.into()),
-        Some("cold-code-native".into()),
+        Some(hex::encode(identity.device_cert.device_public_key)),
         certified,
     )
 }
@@ -488,7 +520,7 @@ fn offline_edit(
     message
 }
 
-fn body(document: &AutoCommit) -> String {
+pub(super) fn body(document: &AutoCommit) -> String {
     let buffers = document.get(automerge::ROOT, "buffers").unwrap().unwrap().1;
     let text = document.get(&buffers, FILE).unwrap().unwrap().1;
     document.text(&text).unwrap()

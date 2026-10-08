@@ -55,6 +55,7 @@ suites = ["os/tests/flight_recorder_test.py"]
 name = "os"
 inputs = ["os/"]
 suites = [
+  "os/dev/test-assemble-app-runtime.py",
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
   "os/kernel/tests/test-cc-wrapper.sh",
@@ -323,8 +324,8 @@ suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
 name = "imager-packaging"
-inputs = ["apps/imager/packaging/"]
-suites = ["apps/imager/packaging/test_build_desktop_catalog.py"]
+inputs = ["apps/imager/packaging/", "apps/imager/desktop-catalog.json", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/host-session-e2e.yml"]
+suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py"]
 
 [[group]]
 name = "ntfs-helper"
@@ -375,6 +376,9 @@ suites = [
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
   "scripts/vm-acceptance/test_terminal_cohort.py",
+  "scripts/vm-acceptance/test_app_cohort.py",
+  "scripts/vm-acceptance/test_store_chooser.py",
+  "scripts/vm-acceptance/test_runtime_backing.py",
 ]
 
 [[group]]
@@ -497,6 +501,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-profile.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-revocation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-transport.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice.test.mjs",
 ]
@@ -540,9 +545,13 @@ inputs = [
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/dev/ui-examples/examples/common/gallery_scene.rs",
   "crates/browser/paint-stream/tests/fixtures/",
+  "crates/browser/tilo-browser-runtime/src/background_work.rs",
+  "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
   "tools/test-assets.py",
 ]
 readers = [
+  "crates/sdk/ui-core/src/headless.rs",
+  "crates/sdk/ui-core/build.rs",
   "crates/sdk/ui-core/src/app/close_admission.rs",
   "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
@@ -868,8 +877,8 @@ readers = ["crates/hosting/tilo-relay-protocol/src/config.rs"]
 package = "tilo-browser-peer"
 # The actual microphone fixture serves the production web modules and pinned
 # MoQ bundle to two isolated Chromium profiles.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"]
-readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs"]
+inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
+readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs", "crates/browser/tilo-browser-peer/tests/headless_audio_lifetime.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
 [[cargo-exempt]]
@@ -1388,6 +1397,7 @@ inputs = [
   "tools/apps/browser_runtime_release.py",
   "tools/apps/signal_runtime_fixture.py",
   "tools/apps/signal_provider_release.py",
+  "tools/apps/signal_zero_runtime.py",
   "os/dev/cache-github-assets.sh",
   "tools/apps/pack-signal-provider.sh",
   "os/scripts/prepare-signal-provider.py",
@@ -1445,3 +1455,7 @@ readers = ["apps/video-editor/build.rs"]
 package = "video-player"
 inputs = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 readers = ["apps/video-player/build.rs"]
+
+[[covered]]
+suite = "tools/android/mediation/prepare-res.py"
+by = "tools/tests/test_android_fixture_resources.py"

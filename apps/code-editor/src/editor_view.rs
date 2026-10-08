@@ -42,9 +42,11 @@ use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, W
 use winit::keyboard::{Key, NamedKey};
 
 use crate::bottom_panel::Severity;
-use crate::highlight::{IncrementalHighlights, Span};
+use crate::highlight::{BackgroundHighlights, IncrementalHighlights, Span};
 use crate::lsp::{CompletionItem, LspDiagnostic, severity_from_lsp};
 use crate::model::Language;
+use crate::row_viewport::RowViewportIndex;
+use std::sync::Arc;
 
 /// A pre-mutation request emitted by the editor surface.  Keeping the complete
 /// before/after snapshots here lets the app derive the compact action payload
@@ -199,10 +201,25 @@ fn snap_col(row: &str, col: usize) -> usize {
     row.get(..snapped).map_or(0, |head| head.chars().count())
 }
 
-/// The column (characters) display byte `byte` of `shown` is drawn at.
-fn display_col(shown: &str, byte: usize) -> usize {
-    shown.get(..byte).map_or(0, |head| head.chars().count())
+/// Recently shown render projections, never the authoritative buffer storage.
+/// Three active/recent panes at most, with at most 48 MiB of cached source in
+/// the two inactive panes; each pane still follows the CRDT on admission.
+struct BufferProjection {
+    object: ObjId,
+    language: Language,
+    heads: Option<Vec<automerge::ChangeHash>>,
+    text: String,
+    lines: Arc<Vec<String>>,
+    row_windows: HashMap<usize, RowViewportIndex>,
+    spans: Vec<Vec<Span>>,
+    highlights: IncrementalHighlights,
+    background: Option<BackgroundHighlights>,
+    carets: Vec<Caret>,
+    scroll: (f64, f64),
 }
+
+const EAGER_HIGHLIGHT_BYTES: usize = 256 * 1024;
+const INACTIVE_SOURCE_BYTES: usize = 48 * 1024 * 1024;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -211,12 +228,18 @@ fn display_col(shown: &str, byte: usize) -> usize {
 pub struct EditorView {
     rect: Rect,
     /// The buffer's lines (cache of the CRDT Text split on '\n').
-    lines: Vec<String>,
+    lines: Arc<Vec<String>>,
+    row_windows: HashMap<usize, RowViewportIndex>,
+    projections: std::collections::VecDeque<BufferProjection>,
+    background_highlights: Option<BackgroundHighlights>,
+    highlight_wake: ui::WakeHandle,
     /// Highlight spans per line, recomputed when the buffer changes.
     spans: Vec<Vec<Span>>,
     highlight_cache: IncrementalHighlights,
     /// The Automerge Text object this view edits. `None` until bound.
     text_obj: Option<ObjId>,
+    /// Stable committed content witness; pending edits always bypass it.
+    text_heads: Option<Vec<automerge::ChangeHash>>,
     /// Active language → grammar for highlighting.
     language: Language,
     /// Carets. Always at least one. Index 0 is primary.
@@ -322,10 +345,15 @@ impl EditorView {
         };
         EditorView {
             rect: Rect::ZERO,
-            lines: vec![String::new()],
+            lines: Arc::new(vec![String::new()]),
+            row_windows: HashMap::new(),
+            projections: std::collections::VecDeque::new(),
+            background_highlights: None,
+            highlight_wake: ui::WakeHandle::detached(),
             spans: vec![Vec::new()],
             highlight_cache: IncrementalHighlights::default(),
             text_obj: None,
+            text_heads: None,
             language: Language::PlainText,
             carets: vec![Caret::at(0, 0)],
             scroll_y: 0.0,
@@ -480,35 +508,115 @@ impl EditorView {
         self.selected_text()
     }
 
-    /// Bind this view to a buffer's Text object and language. Resets carets to
-    /// the top. The line/highlight caches refresh on the next `sync`.
+    /// Bind the authoritative Text while restoring this peer's recent render
+    /// projection and viewport. `sync` validates its committed witness before
+    /// reusing content; pending transactions always bypass that witness.
     pub fn bind(&mut self, text_obj: ObjId, language: Language) {
-        self.text_obj = Some(text_obj);
+        self.save_projection();
         self.language = language;
         self.indent_width = language.indent_width();
-        self.carets = vec![Caret::at(0, 0)];
         self.composition.clear_preedit();
-        self.scroll_y = 0.0;
-        self.scroll_x = 0.0;
-        self.cached_text.clear(); // force rebuild on next sync
+        if let Some(index) = self
+            .projections
+            .iter()
+            .position(|entry| entry.object == text_obj && entry.language == language)
+            && let Some(entry) = self.projections.remove(index)
+        {
+            self.text_heads = entry.heads;
+            self.cached_text = entry.text;
+            self.lines = entry.lines;
+            self.row_windows = entry.row_windows;
+            self.spans = entry.spans;
+            self.highlight_cache = entry.highlights;
+            self.background_highlights = entry.background;
+            self.carets = entry.carets;
+            (self.scroll_x, self.scroll_y) = entry.scroll;
+        } else {
+            self.clear_projection();
+        }
+        self.text_obj = Some(text_obj);
         self.dirty = true;
     }
 
-    /// Unbind (no buffer open). Shows an empty state.
-    pub fn unbind(&mut self) {
-        self.text_obj = None;
-        self.lines = vec![String::new()];
-        self.spans = vec![Vec::new()];
+    fn save_projection(&mut self) {
+        let Some(object) = self.text_obj.take() else {
+            return;
+        };
+        self.projections.retain(|entry| entry.object != object);
+        self.projections.push_back(BufferProjection {
+            object,
+            language: self.language,
+            heads: self.text_heads.take(),
+            text: std::mem::take(&mut self.cached_text),
+            lines: std::mem::replace(&mut self.lines, Arc::new(vec![String::new()])),
+            row_windows: std::mem::take(&mut self.row_windows),
+            spans: std::mem::take(&mut self.spans),
+            highlights: std::mem::take(&mut self.highlight_cache),
+            background: self.background_highlights.take(),
+            carets: self.carets.clone(),
+            scroll: (self.scroll_x, self.scroll_y),
+        });
+        while self.projections.len() > 2
+            || self
+                .projections
+                .iter()
+                .map(|entry| entry.text.len())
+                .sum::<usize>()
+                > INACTIVE_SOURCE_BYTES
+        {
+            self.projections.pop_front();
+        }
+    }
+
+    fn clear_projection(&mut self) {
+        self.text_heads = None;
+        self.lines = Arc::new(vec![String::new()]);
+        self.row_windows.clear();
+        self.spans.clear();
         self.highlight_cache = IncrementalHighlights::default();
-        self.carets = vec![Caret::at(0, 0)];
-        self.composition.clear_preedit();
+        self.background_highlights = None;
         self.cached_text.clear();
+        self.carets = vec![Caret::at(0, 0)];
+        self.scroll_y = 0.0;
+        self.scroll_x = 0.0;
+    }
+
+    pub(crate) fn set_highlight_waker(&mut self, wake: ui::WakeHandle) {
+        self.highlight_wake = wake;
+    }
+
+    fn collect_highlights(&mut self) -> bool {
+        let before = self.spans.len();
+        if let Some(job) = self.background_highlights.as_mut()
+            && !job.collect(&mut self.spans)
+        {
+            self.background_highlights = None;
+        }
+        let changed = self.spans.len() != before;
+        self.dirty |= changed;
+        changed
+    }
+
+    /// Unbind while retaining bounded recent projections for reopening.
+    pub fn unbind(&mut self) {
+        self.save_projection();
+        self.clear_projection();
+        self.composition.clear_preedit();
         self.dirty = true;
     }
 
     /// Read-only native diagnostic offsets: horizontal pixels, vertical lines.
     pub(crate) fn native_scroll_offsets(&self) -> (f64, f64) {
         (self.scroll_x, self.scroll_y)
+    }
+
+    /// Opt-in native performance observation, outside normal frame work.
+    pub(crate) fn native_projection_stats(&self) -> (usize, usize, usize) {
+        (
+            self.spans.len(),
+            self.projections.len(),
+            self.projections.iter().map(|entry| entry.text.len()).sum(),
+        )
     }
 
     pub fn is_bound(&self) -> bool {
@@ -564,8 +672,26 @@ impl EditorView {
         };
         // split('\n') on "a\n" yields ["a", ""]; that trailing empty line is
         // the editable line after the final newline, which is what we want.
-        self.highlight_cache
-            .update(self.language, &self.lines, &lines, &mut self.spans);
+        let lines = Arc::new(lines);
+        if text.len() > EAGER_HIGHLIGHT_BYTES {
+            self.spans.clear();
+            self.highlight_cache = IncrementalHighlights::default();
+            self.background_highlights = BackgroundHighlights::start(
+                self.language,
+                Arc::clone(&lines),
+                self.highlight_wake.clone(),
+            );
+        } else {
+            self.background_highlights = None;
+            self.highlight_cache
+                .update(self.language, &self.lines, &lines, &mut self.spans);
+        }
+        self.row_windows = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.len() > 4096)
+            .map(|(index, line)| (index, RowViewportIndex::new(line)))
+            .collect();
         self.lines = lines;
         self.clamp_carets();
         self.dirty = true;
@@ -1055,7 +1181,11 @@ impl EditorView {
         let primary = self.primary();
         let row = self.lines.get(primary.line)?;
         let mut core = self.composition.clone();
-        core.set_caret(byte_of(row, 0, primary.col));
+        let byte = self.row_windows.get(&primary.line).map_or_else(
+            || byte_of(row, 0, primary.col),
+            |index| index.window(row, primary.col..primary.col).0.start,
+        );
+        core.set_caret(byte);
         Some((primary.line, core))
     }
 
@@ -1065,7 +1195,19 @@ impl EditorView {
         match self.composition_on_line() {
             Some((line, core)) => {
                 let row = self.lines.get(line).map_or("", String::as_str);
-                display_col(&core.display_text(row), core.display_caret(row))
+                let start = core
+                    .preedit_display_range(row)
+                    .map_or(0, |range| range.start);
+                let column = self.row_windows.get(&line).map_or_else(
+                    || row.get(..start).map_or(0, |prefix| prefix.chars().count()),
+                    |index| index.column(row, start),
+                );
+                let within = core.display_caret(row).saturating_sub(start);
+                column.saturating_add(
+                    core.preedit()
+                        .get(..within)
+                        .map_or(0, |prefix| prefix.chars().count()),
+                )
             }
             None => self.primary().col,
         }
@@ -1712,6 +1854,30 @@ impl EditorView {
         }
     }
 
+    /// Map the visible display columns back to committed text around IME.
+    fn visible_row_window(
+        &self,
+        index: &RowViewportIndex,
+        line: &str,
+        (base_x, gutter_w): (f64, f64),
+        (caret_column, preedit_columns): (Option<usize>, usize),
+    ) -> std::ops::Range<usize> {
+        let first_column = ((self.rect.x0 + gutter_w - base_x) / self.cell_w)
+            .floor()
+            .max(0.0) as usize;
+        let last_column = ((self.rect.x1 - base_x) / self.cell_w).ceil().max(0.0) as usize;
+        let to_source_column = |column: usize| match caret_column {
+            Some(caret) if column > caret => column.saturating_sub(preedit_columns).max(caret),
+            _ => column,
+        };
+        let (window, _) = index.window(
+            line,
+            to_source_column(first_column.saturating_sub(4))
+                ..to_source_column(last_column.saturating_add(4)),
+        );
+        window
+    }
+
     /// Draw one row's highlighted code, span by span. On the composing row
     /// the preedit is spliced in at the caret through the shared core's
     /// display mapping: text after the caret is drawn shifted past it.
@@ -1733,19 +1899,30 @@ impl EditorView {
         let empty: Vec<Span> = Vec::new();
         let spans = self.spans.get(line_idx).unwrap_or(&empty);
         let base_x = rows.code_x0 - self.scroll_x;
-        let shown = composing.map_or(std::borrow::Cow::Borrowed(line), |core| {
-            core.display_text(line)
-        });
+        let plain_index = RowViewportIndex::default();
+        let index = self.row_windows.get(&line_idx).unwrap_or(&plain_index);
         let preedit = composing.and_then(|core| core.preedit_display_range(line));
+        let preedit_columns = composing.map_or(0, |core| core.preedit().chars().count());
+        let caret_column = preedit
+            .as_ref()
+            .map(|range| index.column(line, range.start));
+        let column_at = |byte| index.column(line, byte);
+        let window = self.visible_row_window(
+            index,
+            line,
+            (base_x, rows.gutter_w),
+            (caret_column, preedit_columns),
+        );
         // The display column committed byte `byte` starts at; a run
         // starting at the caret begins after the composition.
         let col_at = |byte: usize| {
-            let shown_byte = match (composing, &preedit) {
-                (Some(_), Some(range)) if byte == range.start => range.end,
-                (Some(core), _) => core.to_display(line, byte),
-                (None, _) => byte,
-            };
-            display_col(&shown, shown_byte)
+            column_at(byte).saturating_add(
+                if preedit.as_ref().is_some_and(|range| byte >= range.start) {
+                    preedit_columns
+                } else {
+                    0
+                },
+            )
         };
         // A line the highlighter produced no spans for draws plain, so no
         // characters are ever dropped; a span the composition falls
@@ -1753,6 +1930,7 @@ impl EditorView {
         let plain = [(0..line.len(), None)];
         let highlighted = spans
             .iter()
+            .skip(spans.partition_point(|span| span.range.end <= window.start))
             .map(|span| (span.range.clone(), Some(span.kind)));
         let caret = preedit.as_ref().map(|range| range.start);
         let runs = if spans.is_empty() {
@@ -1769,6 +1947,13 @@ impl EditorView {
             }
         });
         for (range, kind) in runs {
+            if range.end <= window.start {
+                continue;
+            }
+            if range.start >= window.end {
+                break;
+            }
+            let range = range.start.max(window.start)..range.end.min(window.end);
             let seg = line.get(range.clone()).unwrap_or("");
             if seg.is_empty() {
                 continue;
@@ -1795,8 +1980,8 @@ impl EditorView {
         }
         if let (Some(core), Some(range)) = (composing, &preedit) {
             // The composition, underlined until the input method commits it.
-            let x0 = base_x + display_col(&shown, range.start) as f64 * self.cell_w;
-            let x1 = base_x + display_col(&shown, range.end) as f64 * self.cell_w;
+            let x0 = base_x + column_at(range.start) as f64 * self.cell_w;
+            let x1 = x0 + preedit_columns as f64 * self.cell_w;
             text_renderer.draw_style(
                 scene,
                 core.preedit(),
@@ -2450,9 +2635,16 @@ impl EditorView {
 
 impl Widget for EditorView {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        use automerge::transaction::Transactable;
+        self.collect_highlights();
         let (state, _) = ui::doc::document_ref(state, path);
-        // Pull remote/undo edits: if the buffer text differs from our cache,
-        // rebuild. Cheap string compare on the hot path.
+        // Scroll and caret frames must not materialize the entire CRDT Text.
+        // A pending transaction has no stable content witness: always read it,
+        // including two different edits with the same pending-operation count.
+        let heads = (state.pending_ops() == 0).then(|| state.committed_heads());
+        if heads.is_some() && self.text_heads == heads {
+            return;
+        }
         if let Some(t) = self.text_obj.clone() {
             use automerge::ReadDoc;
             let text = state.text(&t).unwrap_or_default();
@@ -2460,6 +2652,11 @@ impl Widget for EditorView {
                 self.rebuild(&text);
             }
         }
+        self.text_heads = heads;
+    }
+
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        self.collect_highlights()
     }
 
     fn build_layout(
@@ -2508,6 +2705,7 @@ impl Widget for EditorView {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.collect_highlights();
         let code_size = theme.text(TextRole::Code).size;
         if (self.code_size - code_size).abs() > f32::EPSILON {
             self.code_size = code_size;
@@ -2669,8 +2867,13 @@ impl Widget for EditorView {
         true
     }
 
+    fn wants_tab_input(&self) -> bool {
+        self.is_bound()
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.is_bound().then_some(winit::window::ImePurpose::Normal)
+        self.is_bound()
+            .then_some(winit::window::ImePurpose::Terminal)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -2802,6 +3005,89 @@ mod tests {
     }
 
     #[test]
+    fn committed_text_cache_tracks_pending_remote_and_rebound_content() {
+        use automerge::transaction::Transactable;
+        let (mut view, mut doc) = bound_editor("base");
+        doc.commit();
+        view.sync(&doc, &automerge::ROOT);
+        let mut left = doc.clone();
+        let mut right = doc.clone();
+        let text = view.text_obj.clone().unwrap();
+        left.splice_text(&text, 0, 4, "left").unwrap();
+        right.splice_text(&text, 0, 4, "else").unwrap();
+        assert_eq!(left.pending_ops(), right.pending_ops());
+        view.sync(&left, &automerge::ROOT);
+        assert_eq!(view.text_for_test(), "left");
+        view.sync(&right, &automerge::ROOT);
+        assert_eq!(view.text_for_test(), "else");
+        right.commit();
+        view.sync(&right, &automerge::ROOT);
+        assert_eq!(view.text_for_test(), "else");
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            view.text_for_test(),
+            "base",
+            "restoring earlier heads refreshes text"
+        );
+        let other = doc
+            .put_object(automerge::ROOT, "other", automerge::ObjType::Text)
+            .unwrap();
+        doc.splice_text(&other, 0, 0, "another buffer").unwrap();
+        doc.commit();
+        view.bind(other, Language::PlainText);
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(view.text_for_test(), "another buffer");
+    }
+
+    #[test]
+    fn exceptionally_long_rows_shape_only_the_visible_source_and_preserve_ime() {
+        use automerge::ReadDoc;
+        let source = "a".repeat(300_000);
+        let (mut view, mut doc) = bound_editor(&source);
+        view.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut renderer = TextRenderer::new();
+        let theme = Theme::dark();
+        view.measure_cell_width(&mut renderer, &theme);
+        for column in [0, 200_000] {
+            view.scroll_x = f64::from(column) * view.cell_w;
+            let mut scene = Scene::new();
+            view.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut renderer,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            assert!(
+                scene.encoding().resources.glyphs.len() < 100,
+                "offscreen characters must not be shaped"
+            );
+            assert!(!scene.encoding().resources.glyphs.is_empty());
+        }
+        view.carets = vec![Caret::at(0, 200_000)];
+        ime(&mut view, &mut doc, Ime::Preedit("e\u{301}👩‍👩‍👧‍👦".into(), None));
+        assert_eq!(
+            view.primary_display_col(),
+            200_009,
+            "composition uses scalar columns without copying the full row"
+        );
+        let mut scene = Scene::new();
+        view.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        assert!(scene.encoding().resources.glyphs.len() < 100);
+        assert_eq!(
+            doc.text(view.text_obj.as_ref().unwrap()).unwrap(),
+            source,
+            "viewport and preedit never truncate authoritative text"
+        );
+    }
+
+    #[test]
     fn native_text_continuation_scales_horizontal_columns_for_the_receiving_view() {
         let (mut source, doc) = bound_editor(&"x".repeat(1000));
         source.force_geometry(Rect::new(0.0, 0.0, 320.0, 240.0), 8.0);
@@ -2823,6 +3109,82 @@ mod tests {
             Some(position),
             "portable view coordinates survive different measured cell widths"
         );
+    }
+
+    #[test]
+    fn recent_buffer_projections_restore_viewports_and_follow_changed_source_heads() {
+        use automerge::ReadDoc;
+        use automerge::transaction::Transactable;
+        use std::fmt::Write as _;
+        let mut source = String::new();
+        for line in 0..120 {
+            writeln!(source, "let value_{line} = {line};").unwrap();
+        }
+        let (mut view, mut doc) = bound_editor(&source);
+        let first = view.text_obj.clone().unwrap();
+        let second = doc
+            .put_object(automerge::ROOT, "second", automerge::ObjType::Text)
+            .unwrap();
+        doc.splice_text(&second, 0, 0, &source).unwrap();
+        doc.commit();
+        view.sync(&doc, &automerge::ROOT);
+        view.carets = vec![Caret::at(80, 3)];
+        view.scroll_y = 60.0;
+        view.scroll_x = 10.0;
+        let cached_lines = Arc::clone(&view.lines);
+        let cached_spans = view.spans.as_ptr();
+        view.bind(second.clone(), Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        view.carets = vec![Caret::at(90, 4)];
+        view.scroll_y = 70.0;
+        view.bind(first.clone(), Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        assert!(
+            Arc::ptr_eq(&view.lines, &cached_lines),
+            "returning retains the line projection"
+        );
+        assert_eq!(
+            view.spans.as_ptr(),
+            cached_spans,
+            "returning does not rerun tokenization"
+        );
+        assert_eq!(view.primary_caret(), (80, 3));
+        assert_eq!(view.native_scroll_offsets(), (10.0, 60.0));
+        view.bind(second, Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(view.primary_caret(), (90, 4));
+        assert_eq!(view.native_scroll_offsets().1.to_bits(), 70.0_f64.to_bits());
+        doc.splice_text(&first, 0, 0, "remote\n").unwrap();
+        doc.commit();
+        view.bind(first.clone(), Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            view.cached_text,
+            doc.text(&first).unwrap(),
+            "cached inactive buffers follow remote edits"
+        );
+        assert!(!Arc::ptr_eq(&view.lines, &cached_lines));
+        for number in 0..3 {
+            let object = doc
+                .put_object(
+                    automerge::ROOT,
+                    format!("other{number}"),
+                    automerge::ObjType::Text,
+                )
+                .unwrap();
+            doc.splice_text(&object, 0, 0, "new buffer").unwrap();
+            doc.commit();
+            view.bind(object, Language::Rust);
+            view.sync(&doc, &automerge::ROOT);
+        }
+        view.bind(first, Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            view.primary_caret(),
+            (0, 0),
+            "oldest projection was evicted"
+        );
+        assert_eq!(view.native_scroll_offsets(), (0.0, 0.0));
     }
 
     #[test]

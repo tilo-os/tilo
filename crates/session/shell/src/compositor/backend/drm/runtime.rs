@@ -309,6 +309,11 @@ pub struct DrmDispatchState {
     /// source list owns the session; installer-seeded XKB environment remains
     /// only the default before a preference exists.
     pub keyboard: Option<KeyboardXkb>,
+    keyboard_device: Option<String>,
+    keyboard_config: settings_store::hardware::RichInputConfig,
+    keyboard_cache: BTreeMap<String, KeyboardXkb>,
+    keyboard_identities: BTreeMap<String, String>,
+    keyboard_key_owners: BTreeMap<u32, BTreeSet<String>>,
     /// Serialises KMS access between the render thread and session ownership
     /// changes. A pause command is queued first, but the render thread may
     /// already be inside a page flip when the libseat callback returns; the
@@ -1157,6 +1162,13 @@ impl DrmDispatchState {
             pointer_constraint: crate::compositor::backend::PointerConstraintRegion::Free,
             tablets: TabletRuntime::load(),
             keyboard,
+            keyboard_device: None,
+            keyboard_config: settings_store::hardware::RichInputConfig::from_section(
+                &settings_store::load_section("input"),
+            ),
+            keyboard_cache: BTreeMap::new(),
+            keyboard_identities: BTreeMap::new(),
+            keyboard_key_owners: BTreeMap::new(),
             present_gate: Some(Arc::new(Mutex::new(()))),
             fullscreen_output: None,
             signal_status: BTreeMap::new(),
@@ -2006,6 +2018,7 @@ impl DrmDispatchState {
         self.handle_direct_touch_cancel();
         self.key_repeat.cancel();
         self.slow_pending.clear();
+        self.keyboard_key_owners.clear();
         self.bounce_keys.reset();
         self.release_mouse_keys();
         self.sticky_latched = ModifiersState::empty();
@@ -2065,7 +2078,19 @@ impl DrmDispatchState {
         let snapshot = settings_store::hardware::InputHardwareSnapshot {
             publisher_pid,
             publisher_start_ticks,
-            devices: self.devices.iter().map(input_device_snapshot).collect(),
+            devices: self
+                .devices
+                .iter()
+                .map(|device| {
+                    let key = self
+                        .keyboard_identities
+                        .get(device.sysname())
+                        .cloned()
+                        .unwrap_or_else(|| libinput_device_key(device));
+                    input_device_snapshot(device, key)
+                })
+                .collect(),
+            active_keyboard: self.keyboard_device.clone(),
         };
         if let Err(error) = snapshot.save() {
             tracing::debug!(%error, "DRM input: could not publish device snapshot");
@@ -2161,11 +2186,108 @@ impl DrmDispatchState {
         }
     }
 
-    /// Translate one libinput keyboard event through xkb and enqueue the
-    /// resulting events: a `ModifiersChanged` when the Ctrl/Shift/Alt/
-    /// Super mask flips, followed by the `KeyboardInput` itself. No-op when the xkb keymap failed to load.
-    ///
-    /// `keycode` is smithay's [`KeyboardKeyEvent::key_code`], already including the +8 evdev→xkb offset, so it feeds straight into xkb state.
+    /// Switch a physical assignment before translating its first key. Replaced maps
+    /// retire held state; cached maps are reset rather than carrying old modifiers.
+    fn apply_keyboard_assignment(&mut self, scope: &str) -> bool {
+        let settings = KeyboardSettings::from_config(&settings_store::keyboard_sources::effective(
+            &self.keyboard_config,
+            scope,
+        ));
+        if let Some(keyboard) = self
+            .keyboard
+            .as_mut()
+            .filter(|keyboard| keyboard.compiles_to_same_keymap(&settings))
+        {
+            keyboard.set_active_layout(settings.active_index);
+            self.push(BackendEvent::KeyboardConfiguration {
+                scope: scope.into(),
+                settings: Box::new(settings),
+            });
+            return true;
+        }
+        let candidate = self
+            .keyboard_cache
+            .remove(scope)
+            .filter(|keyboard| keyboard.compiles_to_same_keymap(&settings))
+            .or_else(|| KeyboardXkb::from_settings(&settings));
+        let Some(mut candidate) = candidate else {
+            tracing::warn!(
+                scope,
+                "keyboard assignment could not compile; retaining working input"
+            );
+            return self.keyboard.is_some();
+        };
+        candidate.reset_state();
+        candidate.set_active_layout(settings.active_index);
+        if let Some(mut previous) = self.keyboard.replace(candidate) {
+            previous.reset_state();
+            if let Some(previous_scope) = &self.keyboard_device {
+                self.keyboard_cache.insert(previous_scope.clone(), previous);
+            }
+        }
+        self.keyboard_key_owners.clear();
+        self.key_repeat.cancel();
+        self.slow_pending.clear();
+        self.physical_modifiers = ModifiersState::empty();
+        self.sticky_latched = ModifiersState::empty();
+        self.push(BackendEvent::ModifiersChanged(Modifiers::default()));
+        self.push(BackendEvent::InputStateReset);
+        self.push(BackendEvent::KeyboardConfiguration {
+            scope: scope.into(),
+            settings: Box::new(settings),
+        });
+        true
+    }
+
+    fn handle_keyboard_device_key(
+        &mut self,
+        scope: &str,
+        keycode: xkb::Keycode,
+        pressed: bool,
+        time: Option<u64>,
+    ) {
+        if pressed {
+            if self.keyboard_device.as_deref() != Some(scope) {
+                if !self.apply_keyboard_assignment(scope) {
+                    return;
+                }
+                self.keyboard_device = Some(scope.to_owned());
+                self.publish_input_snapshot();
+            }
+            let owners = self.keyboard_key_owners.entry(keycode.raw()).or_default();
+            if !owners.insert(scope.to_owned()) || owners.len() > 1 {
+                return;
+            }
+        } else {
+            let Some(owners) = self.keyboard_key_owners.get_mut(&keycode.raw()) else {
+                return;
+            };
+            if !owners.remove(scope) || !owners.is_empty() {
+                return;
+            }
+            self.keyboard_key_owners.remove(&keycode.raw());
+        }
+        self.handle_keyboard_key(keycode, pressed, time);
+    }
+
+    fn retire_keyboard_device(&mut self, scope: &str) {
+        let mut released = Vec::new();
+        self.keyboard_key_owners.retain(|keycode, owners| {
+            owners.remove(scope);
+            if owners.is_empty() {
+                released.push(*keycode);
+                false
+            } else {
+                true
+            }
+        });
+        for keycode in released {
+            self.handle_keyboard_key(xkb::Keycode::new(keycode), false, None);
+        }
+    }
+
+    /// Emit modifier changes followed by the translated keyboard input.
+    /// `keycode` already includes the evdev-to-XKB offset.
     fn handle_keyboard_key(
         &mut self,
         keycode: xkb::Keycode,
@@ -2688,7 +2810,18 @@ impl DrmDispatchState {
                     self.note_input_used(ui::InputModality::Keyboard);
                 }
                 // libinput time_usec is the original kernel monotonic event time.
-                self.handle_keyboard_key(event.key_code(), pressed, event.time().checked_mul(1000));
+                let device = event.device();
+                let scope = self
+                    .keyboard_identities
+                    .get(device.sysname())
+                    .cloned()
+                    .unwrap_or_else(|| libinput_device_key(&device));
+                self.handle_keyboard_device_key(
+                    &scope,
+                    event.key_code(),
+                    pressed,
+                    event.time().checked_mul(1000),
+                );
             }
             InputEvent::GestureSwipeBegin { .. }
             | InputEvent::GestureSwipeUpdate { .. }
@@ -3040,6 +3173,10 @@ impl DrmDispatchState {
         match event {
             InputEvent::DeviceAdded { mut device } => {
                 self.configure_device(&mut device);
+                if device.keyboard_has_key(30).unwrap_or(false) {
+                    self.keyboard_identities
+                        .insert(device.sysname().to_owned(), libinput_device_key(&device));
+                }
                 self.remember_touch_output_binding(&device);
                 self.push(BackendEvent::InputDeviceAdded {
                     id: device.id(),
@@ -3084,6 +3221,18 @@ impl DrmDispatchState {
                 }
                 self.touch_output_bindings.remove(&device.id());
                 self.push(BackendEvent::InputDeviceRemoved { id: device.id() });
+                let removed_scope = self.keyboard_identities.remove(device.sysname());
+                if let Some(scope) = &removed_scope {
+                    self.keyboard_cache.remove(scope);
+                    self.retire_keyboard_device(scope);
+                }
+                if self.keyboard_device.as_ref() == removed_scope.as_ref()
+                    && removed_scope.is_some()
+                {
+                    self.keyboard_device = None;
+                    self.keyboard_cache.clear();
+                    self.apply_keyboard_assignment(settings_store::keyboard_sources::ALL);
+                }
                 self.devices.retain(|d| *d != device);
                 self.publish_input_snapshot();
             }
@@ -3994,21 +4143,39 @@ impl DrmRuntime {
         self.dispatch.handle_direct_touch_cancel();
     }
 
-    /// Re-read the persisted input settings and push them at every
-    /// libinput device again.
-    ///
-    /// Devices appearing later pick up new settings from their
-    /// `DeviceAdded`; already-attached ones are re-configured here from the dispatch state's handles, so a pointer-speed change is felt on the touchpad the user is holding, not the next one plugged in.
     /// Switch the physical keyboard to input source `index` at once.
     pub fn set_keyboard_source(&mut self, index: usize) {
+        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::from_section(
+            &settings_store::load_section("input"),
+        );
+        self.dispatch.keyboard_cache.clear();
+        let scope = self
+            .dispatch
+            .keyboard_device
+            .clone()
+            .unwrap_or_else(|| settings_store::keyboard_sources::ALL.into());
+        self.dispatch.apply_keyboard_assignment(&scope);
         if let Some(keyboard) = self.dispatch.keyboard.as_mut() {
             keyboard.set_active_layout(index);
         }
     }
 
+    /// Re-read input settings and configure every currently attached device.
+    /// New devices receive these settings when they appear.
     pub fn reload_input_settings(&mut self) {
         let input = InputSettings::load();
-        let keyboard_settings = KeyboardSettings::load();
+        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::from_section(
+            &settings_store::load_section("input"),
+        );
+        self.dispatch.keyboard_cache.clear();
+        let scope = self
+            .dispatch
+            .keyboard_device
+            .as_deref()
+            .unwrap_or(settings_store::keyboard_sources::ALL);
+        let keyboard_settings = KeyboardSettings::from_config(
+            &settings_store::keyboard_sources::effective(&self.dispatch.keyboard_config, scope),
+        );
         let previous_cursor_size = self.dispatch.accessibility.effective_cursor_size();
         let accessibility = AccessibilityInputSettings::load();
         self.dispatch.input = input;
@@ -4025,6 +4192,7 @@ impl DrmRuntime {
             keyboard.set_active_layout(keyboard_settings.active_index);
         } else if let Some(keyboard) = KeyboardXkb::from_settings(&keyboard_settings) {
             self.dispatch.keyboard = Some(keyboard);
+            self.dispatch.keyboard_key_owners.clear();
             self.dispatch.slow_pending.clear();
             self.dispatch.physical_modifiers = ModifiersState::empty();
             self.dispatch.sticky_latched = ModifiersState::empty();
@@ -4402,11 +4570,20 @@ impl input_config::ConfigurableDevice for smithay::reexports::input::Device {
 
 /// The identity input settings are keyed by, for a libinput device.
 fn libinput_device_key(device: &smithay::reexports::input::Device) -> String {
-    settings_store::hardware::input_device_key(
+    let base = settings_store::hardware::input_device_key(
         device.id_vendor(),
         device.id_product(),
         device.name(),
-    )
+    );
+    if !device.keyboard_has_key(30).unwrap_or(false) {
+        return base;
+    }
+    let root = Path::new("/sys/class/input")
+        .join(device.sysname())
+        .join("device");
+    let serial = std::fs::read_to_string(root.join("uniq")).unwrap_or_default();
+    let physical = std::fs::read_to_string(root.join("phys")).unwrap_or_default();
+    settings_store::keyboard_sources::device_key(&base, &serial, &physical)
 }
 
 /// libinput reports evdev keycodes; xkb numbers the same keys eight higher.
@@ -4417,10 +4594,11 @@ fn evdev_to_xkb(code: u32) -> xkb::Keycode {
 /// One attached device as Settings sees it.
 fn input_device_snapshot(
     device: &smithay::reexports::input::Device,
+    key: String,
 ) -> settings_store::hardware::InputDeviceSnapshot {
     let caps = device_caps(device);
     let mut snapshot = settings_store::hardware::InputDeviceSnapshot {
-        key: libinput_device_key(device),
+        key,
         name: device.name().to_string(),
         kind: caps.kind(),
         ..Default::default()
@@ -4541,7 +4719,8 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         supports_edge_scroll: device
             .config_scroll_methods()
             .contains(&smithay::reexports::input::ScrollMethod::Edge),
-        is_keyboard: device.has_capability(smithay::reexports::input::DeviceCapability::Keyboard),
+        is_keyboard: device.has_capability(smithay::reexports::input::DeviceCapability::Keyboard)
+            && device.keyboard_has_key(30).unwrap_or(false),
         is_touch: device.has_capability(smithay::reexports::input::DeviceCapability::Touch),
         is_tablet_tool: device
             .has_capability(smithay::reexports::input::DeviceCapability::TabletTool),
@@ -4813,7 +4992,7 @@ pub struct KeyboardXkb {
     /// The layouts, variants and options this keymap was compiled from, so
     /// a settings reload that only moves the active source switches groups
     /// instead of recompiling and dropping held modifiers.
-    compiled: (String, String, Option<String>),
+    compiled: (String, String, String, Option<String>),
 }
 
 /// What translating one key event yields: an optional `KeyboardInput` (absent for keys with no logical mapping, e.g. bare modifiers) and an optional `ModifiersChanged` (present only when the mask flips).
@@ -4841,8 +5020,8 @@ impl KeyboardXkb {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap = xkb::Keymap::new_from_names(
             &context,
-            "", // rules -> XKB_DEFAULT_RULES (normally evdev)
-            "", // model -> XKB_DEFAULT_MODEL
+            "",              // rules -> XKB_DEFAULT_RULES (normally evdev)
+            &settings.model, // explicit physical model
             &settings.layouts,
             &settings.variants,
             settings.options.clone(),
@@ -4860,8 +5039,9 @@ impl KeyboardXkb {
         })
     }
 
-    fn keymap_names(settings: &KeyboardSettings) -> (String, String, Option<String>) {
+    fn keymap_names(settings: &KeyboardSettings) -> (String, String, String, Option<String>) {
         (
+            settings.model.clone(),
             settings.layouts.clone(),
             settings.variants.clone(),
             settings.options.clone(),
@@ -5772,6 +5952,7 @@ mod tests {
         // Phase `xkb_uses_the_persisted_active_group_without_reordering_sources`.
         fn xkb_uses_the_persisted_active_group_without_reordering_sources() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["us".into(), "de".into()],
                 layouts: "us,de".into(),
                 variants: ",".into(),
@@ -5797,6 +5978,7 @@ mod tests {
         // pre-translated character fixture.
         fn german_xkb_shift_and_punctuation_keep_physical_positions() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["de".into()],
                 layouts: "de".into(),
                 variants: String::new(),
@@ -5864,6 +6046,7 @@ mod tests {
         // Phase `switching_the_active_source_keeps_held_modifiers`.
         fn switching_the_active_source_keeps_held_modifiers() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["us".into(), "de".into()],
                 layouts: "us,de".into(),
                 variants: ",".into(),
@@ -5900,6 +6083,7 @@ mod tests {
         // Phase `xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes`.
         fn xkb_german_nodeadkeys_preserves_shifted_symbols_and_physical_codes() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["de:nodeadkeys".into()],
                 layouts: "de".into(),
                 variants: "nodeadkeys".into(),
@@ -5945,6 +6129,7 @@ mod tests {
         // Phase `german_altgr_produces_text_without_becoming_a_shell_alt_chord`.
         fn german_altgr_produces_text_without_becoming_a_shell_alt_chord() {
             let settings = KeyboardSettings {
+                model: "pc105".into(),
                 source_ids: vec!["de:nodeadkeys".into()],
                 layouts: "de".into(),
                 variants: "nodeadkeys".into(),
@@ -7129,6 +7314,90 @@ mod tests {
         );
         state.accessibility = accessibility;
         state
+    }
+
+    #[test]
+    fn keyboard_assignments_switch_before_first_key_and_retire_old_modifiers() {
+        use settings_store::keyboard_sources::KeyboardProfile;
+        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
+        state.keyboard_config.keyboard_assignments.insert(
+            "german".into(),
+            KeyboardProfile {
+                sources: vec!["de".into()],
+                active: "de".into(),
+                options: BTreeMap::default(),
+            },
+        );
+        state.handle_keyboard_device_key("default", xkb::Keycode::new(50), true, None);
+        state.events.clear();
+        state.handle_keyboard_device_key("german", xkb::Keycode::new(29), true, None);
+        let reset = state
+            .events
+            .iter()
+            .position(|event| matches!(event, BackendEvent::InputStateReset))
+            .unwrap();
+        let configuration = state.events.iter().position(|event| matches!(event, BackendEvent::KeyboardConfiguration { scope, .. } if scope == "german")).unwrap();
+        let typed = state
+            .events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    BackendEvent::Input(WindowEvent::KeyboardInput { .. })
+                )
+            })
+            .unwrap();
+        assert!(reset < configuration && configuration < typed);
+        let BackendEvent::Input(WindowEvent::KeyboardInput { event, .. }) = &state.events[typed]
+        else {
+            unreachable!()
+        };
+        assert_eq!(event.logical_key, Key::Character("z".into()));
+        state.events.clear();
+        state.handle_keyboard_device_key("default", xkb::Keycode::new(50), false, None);
+        assert_eq!(
+            typed_keys(&state),
+            0,
+            "a retired modifier release cannot alter the new map"
+        );
+        state.handle_keyboard_device_key("german", xkb::Keycode::new(29), false, None);
+        assert_eq!(typed_keys(&state), 1);
+    }
+
+    #[test]
+    fn keyboard_assignments_share_keys_until_both_devices_release() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
+        let key = xkb::Keycode::new(38);
+        state.handle_keyboard_device_key("first", key, true, None);
+        state.handle_keyboard_device_key("second", key, true, None);
+        assert_eq!(typed_keys(&state), 1);
+        state.handle_keyboard_device_key("first", key, false, None);
+        assert_eq!(typed_keys(&state), 1);
+        state.handle_keyboard_device_key("second", key, false, None);
+        assert_eq!(typed_keys(&state), 2);
+        assert!(state.keyboard_key_owners.is_empty());
+    }
+
+    #[test]
+    fn keyboard_assignments_unplug_releases_only_the_vanished_devices_keys() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
+        let key = xkb::Keycode::new(38);
+        let shift = xkb::Keycode::new(50);
+        state.handle_keyboard_device_key("first", shift, true, None);
+        state.handle_keyboard_device_key("first", key, true, None);
+        state.handle_keyboard_device_key("second", key, true, None);
+        state.events.clear();
+        state.retire_keyboard_device("first");
+        assert_eq!(typed_keys(&state), 1, "unplugging releases the owned Shift");
+        assert_eq!(state.keyboard_key_owners[&key.raw()].len(), 1);
+        assert!(!state.keyboard_key_owners.contains_key(&shift.raw()));
+        state.retire_keyboard_device("second");
+        assert_eq!(
+            typed_keys(&state),
+            2,
+            "the shared key releases with its last owner"
+        );
+        assert!(state.keyboard_key_owners.is_empty());
     }
 
     fn typed_keys(state: &DrmDispatchState) -> usize {

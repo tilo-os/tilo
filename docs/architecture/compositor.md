@@ -80,6 +80,14 @@ intervals — rather than growing a queue the display can never drain.
 Resize and DPMS travel the same channel as frames, so a blank cannot
 overtake a frame already queued.
 
+Clip-only workspace and overview transitions require a separate presenter
+capability. Multi-output DRM GPU readback can retain and replay those frames;
+single-output direct/XRGB, CPU, nested and headless paths receive complete scenes.
+The native loop refreshes this capability from the current output topology before
+each paint, without disabling ordinary retained damage. If an old empty held frame
+is still queued when a display is unplugged, the single-output presenter keeps its
+shown pixels until the next complete frame instead of rasterising the empty scene.
+
 With `TILO_PROFILE_GPU_STAGES=1`, the existing `FRAME-LIFECYCLE` retirement
 record includes the exact pipe serial and scene revision, CPU encode/submission
 wall time, GPU completion wait, bump-counter settlement and separate KMS
@@ -333,3 +341,15 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 - `crates/session/shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
 - `crates/session/shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
 - `crates/session/shell/tests/{compositor_test.rs, interaction_test.rs, drm_backend_boot.rs, control_socket_test.rs}` — the integration coverage.
+
+### Client close admission
+
+Closing a native client tab sends its ordinary `xdg_toplevel.close` request.
+The tab stays in the authoritative tree and remains visible while the client
+saves or presents its declared close decision. Only actual surface destruction
+removes and persists the tab; a successful close-request receipt does not mean
+that the application has exited. Chrome cancels a provisional pill/host fade
+when the tree still owns the tab, preserving position, metadata and focus.
+Undo history is published only after the captured tabs have actually gone.
+The existing separately supervised unconfined host-launch teardown retains its
+own scoped lifecycle; native close admission does not add a process kill rule.

@@ -1916,6 +1916,13 @@ fn owned_navigation_real_transport_ignores_bootstrap_and_keeps_redirect_owner() 
             .iter()
             .any(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
     );
+    // The helper's input recorder and event emitter run independently.
+    // Observe the real command before permitting its canned terminal events.
+    wait_for_command(
+        &profile,
+        "owned navigation recorded on helper wire",
+        |command| command["op"] == "scoped_navigation" && command["request_id"] == 1,
+    );
     std::fs::write(profile.join("emit"), "").unwrap();
     let mut events = Vec::new();
     tilo_test_env::wait_until("owned navigation outcome", || {
@@ -2022,7 +2029,10 @@ fn owned_navigation_admission_queue_loss_and_renderer_death_are_observable() {
     engine.shared.fail("fixture helper disconnected".into());
     assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 9, error: Some(error), .. } if error == "fixture helper disconnected")));
     assert!(engine.navigate_owned(10, NavigationCommand::Back).is_err());
-    let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
+    // Closing the queue also drops the helper's stdin; keep the helper alive
+    // past EOF so the reader's disconnect cannot win the race and turn the
+    // refusal into "Chromium is unavailable".
+    let (dir, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
     let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
     engine.tx.close();
     assert!(

@@ -379,7 +379,7 @@ impl Checker<'_> {
                         },
                     );
                 }
-                Some((Ty::of_param(param), param.schema.clone()))
+                Some((Ty::of_param(param), param.schema.as_deref().cloned()))
             }
         }
     }

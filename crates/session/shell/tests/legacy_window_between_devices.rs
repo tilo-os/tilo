@@ -232,6 +232,7 @@ async fn a_legacy_window_streams_between_two_devices() {
     let mut before_keyframe = 0_u32;
     let mut first_picture = None;
     let mut first_decoded_ts = None;
+    let mut previous_received_ts = None;
     let mut early: Vec<(Vec<u8>, u64, Instant)> = Vec::new();
     let mut pending: Vec<(Vec<u8>, u64, Instant)> = Vec::new();
     let receive_until = Instant::now() + DAMAGE_INTERVAL * FRAMES + Duration::from_secs(2);
@@ -286,7 +287,10 @@ async fn a_legacy_window_streams_between_two_devices() {
         };
         for (encoded, ts, arrived) in std::mem::take(&mut pending) {
             let captured = origin + Duration::from_nanos(ts);
+            let previous_ts = previous_received_ts.replace(ts);
+            let decode_started = Instant::now();
             let outcome = view.push_encoded_with_latency(&encoded, None);
+            let decode_elapsed = decode_started.elapsed();
             // The first frame is the keyframe the host forced for this
             // viewer; one that fails to decode means the viewer had to
             // wait for the next keyframe.
@@ -296,7 +300,18 @@ async fn a_legacy_window_streams_between_two_devices() {
             }
             assert!(
                 matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest),
-                "the viewer decodes every frame once it has a keyframe"
+                "the viewer decodes every frame once it has a keyframe: \
+                 outcome={outcome:?} encoder={encoder} codec={codec} \
+                 decoded={} before_keyframe={before_keyframe} \
+                 capture_ts_ns={ts} previous_capture_ts_ns={previous_ts:?} \
+                 capture_gap_ns={:?} keyframe={} encoded_bytes={} \
+                 decode_ms={:.2} queued_ms={:.2}",
+                latencies.len(),
+                previous_ts.and_then(|previous| ts.checked_sub(previous)),
+                media::realtime::is_keyframe(view.codec(), &encoded),
+                encoded.len(),
+                millis(decode_elapsed),
+                millis(decode_started.duration_since(arrived)),
             );
             view.mark_drawn();
             first_picture.get_or_insert_with(|| start_sent.elapsed());

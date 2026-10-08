@@ -172,6 +172,16 @@ impl Widget for Stack {
         }
     }
 
+    fn visit_retained_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        for child in self.children_mut() {
+            request.visit(child)?;
+        }
+        Ok(())
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.children
             .iter_mut()

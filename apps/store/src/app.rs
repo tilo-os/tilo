@@ -349,6 +349,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
 
 fn review_label(item: &StoreItem) -> String {
     match item.trust {
+        crate::StoreTrust::TrustedAttestor => ui::i18n!("store-package-local-trust"),
         crate::StoreTrust::PublisherSigned => {
             "Signature verified, no independent review".to_string()
         }
@@ -390,6 +391,8 @@ pub struct StoreApp {
     dispatcher: Option<Dispatcher<Store>>,
     /// The serialized package and catalogue worker of a live window.
     worker: Option<StoreWorker>,
+    pub(crate) package_content: Option<ui::framework::content::ContentStore>,
+    pub(crate) imported_review: Option<(String, String, String)>,
     launch_requests: Vec<ui::collaboration::CollabRequest>,
     pending_launches: HashMap<u64, std::sync::mpsc::Sender<Result<String, String>>>,
     next_launch_request: Option<u64>,
@@ -439,6 +442,10 @@ pub struct StoreApp {
     /// Marked dirty when a chip / category selection flips so the
     /// host re-runs `build_layout`.
     structure_dirty: bool,
+    /// Survives the host consuming `structure_dirty` before its layout pass.
+    composition_dirty: bool,
+    /// Composition captures page measures and eager localized labels.
+    composition_context: Option<(Theme, String, ui::i18n::PseudoLocale)>,
     /// The rect the toplevel container resolves into during
     /// `apply_layout` — needed for `get_rect`.
     rect: Rect,
@@ -485,6 +492,8 @@ impl StoreApp {
         Self {
             dispatcher: None,
             worker: None,
+            package_content: None,
+            imported_review: None,
             launch_requests: Vec::new(),
             pending_launches: HashMap::new(),
             next_launch_request: Some(1),
@@ -506,6 +515,8 @@ impl StoreApp {
             focused_detail: None,
             technical_details_open: false,
             structure_dirty: true,
+            composition_dirty: true,
+            composition_context: None,
             rect: Rect::ZERO,
             root: None,
             can_go_back: Rc::new(Cell::new(false)),
@@ -771,6 +782,14 @@ impl StoreApp {
         let (detail, open_reference) = match update {
             crate::worker::DetailUpdate::Requested { item, .. } => (item, false),
             crate::worker::DetailUpdate::OpenedReference(item) => (Some(item), true),
+            crate::worker::DetailUpdate::ImportedPackage {
+                item,
+                root,
+                version,
+            } => {
+                self.imported_review = Some((item.id.clone(), root, version));
+                (Some(item), true)
+            }
         };
         let Some(detail) = detail else {
             return;
@@ -1025,11 +1044,19 @@ impl Widget for StoreApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let locale = ui::i18n::I18nManager::current_locale();
+        let pseudo = ui::i18n::I18nManager::pseudo_locale();
+        let recompose = self.structure_dirty
+            || self.composition_dirty
+            || self.root.is_none()
+            || self.composition_context.as_ref().is_none_or(
+                |(previous_theme, previous_locale, previous_pseudo)| {
+                    previous_theme != theme
+                        || previous_locale != &locale
+                        || *previous_pseudo != pseudo
+                },
+            );
         self.structure_dirty = false;
-        let page = self.compose(theme);
-        self.can_go_back
-            .set(self.safety_open || self.remotes_open || self.focused_detail.is_some());
-        let title = self.page_title();
         let mut root = self.root.take().unwrap_or_else(|| {
             let can = Rc::clone(&self.can_go_back);
             let requested = Rc::clone(&self.back_requested);
@@ -1039,16 +1066,23 @@ impl Widget for StoreApp {
                     .on_back(move || can.get(), move || requested.set(true)),
             )
         });
-        // The catalogue's actions share the header row with History; a page
-        // opened from it carries its own title and actions in its body.
-        let catalogue = !self.safety_open && !self.remotes_open && self.focused_detail.is_none();
-        let actions = if catalogue {
-            Self::catalogue_actions()
-        } else {
-            Vec::new()
-        };
-        root.set_content_header(title, actions);
-        root.set_content(page);
+        if recompose {
+            // A resize only reflows retained controls. Replacing them here
+            // discards input state and their text/layout caches.
+            self.can_go_back
+                .set(self.safety_open || self.remotes_open || self.focused_detail.is_some());
+            let catalogue =
+                !self.safety_open && !self.remotes_open && self.focused_detail.is_none();
+            let actions = if catalogue {
+                Self::catalogue_actions()
+            } else {
+                Vec::new()
+            };
+            root.set_content_header(self.page_title(), actions);
+            root.set_content(self.compose(theme));
+            self.composition_context = Some((theme.clone(), locale, pseudo));
+            self.composition_dirty = false;
+        }
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);
         // A column, so the page's scroller can absorb the window's height.
@@ -1200,6 +1234,7 @@ impl Widget for StoreApp {
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
+        self.composition_dirty |= own;
         let child = self.root.as_mut().is_some_and(|r| r.take_structure_dirty());
         own || child
     }
@@ -1245,6 +1280,8 @@ pub enum Finish {
     Submitted { app_id: String },
     /// The registry confirmed the app's case: record its status.
     Case { app_id: String },
+    /// The reviewed local file was installed.
+    ImportedPackage,
     /// Nothing beside the status line.
     Status,
 }
@@ -1276,7 +1313,8 @@ impl StoreApp {
             .as_deref()
             .is_none_or(|query| query == self.query());
         let current_detail = snap.detail.as_ref().is_none_or(|update| match update {
-            crate::worker::DetailUpdate::OpenedReference(_) => true,
+            crate::worker::DetailUpdate::OpenedReference(_)
+            | crate::worker::DetailUpdate::ImportedPackage { .. } => true,
             crate::worker::DetailUpdate::Requested { id, .. } => {
                 self.focused_detail.as_deref() == Some(id.as_str())
             }
@@ -1395,6 +1433,7 @@ impl StoreApp {
             "error": self.operation_error.as_deref().map(resource_detail_excerpt),
             "remote_count": self.remotes.len(), "remotes_truncated": remotes.len() < self.remotes.len(),
             "remotes": remotes,
+            "imported_package": self.imported_review.as_ref().map(|(app,root,version)| serde_json::json!({"app":app,"root":root,"version":version})),
         }))
     }
 
@@ -1407,6 +1446,40 @@ impl StoreApp {
     ) -> EffectAnswer {
         if let StoreEffect::InspectCatalogue { app } = &effect {
             return self.inspect_catalogue(app.as_deref()).map(Effected::value);
+        }
+        if matches!(
+            &effect,
+            StoreEffect::ImportPackage {
+                path: None,
+                content: None,
+                reported_size: None,
+            }
+        ) {
+            return Ok(cx.choose_file(
+                ui::portal::PickRequest::open(
+                    &ui::i18n!("store-package-choose"),
+                    &ui::i18n!("store-package-review"),
+                )
+                .filter(
+                    ui::portal::FileFilter::new(&ui::i18n!("store-package-file-type"))
+                        .glob("*.tapp"),
+                ),
+                |app, chosen, cx| {
+                    let Some(chosen) = chosen else {
+                        return Ok(Effected::done());
+                    };
+                    app.imported_review = None;
+                    app.start_job(
+                        Job {
+                            request: Request::ImportPackage(crate::package_import::Input::Bytes(
+                                chosen.bytes,
+                            )),
+                            finish: Finish::Status,
+                        },
+                        cx,
+                    )
+                },
+            ));
         }
         match self.admit(effect)? {
             Admitted::Done => Ok(Effected::done()),
@@ -1510,6 +1583,54 @@ impl StoreApp {
                 );
                 self.focus_detail(&app);
                 self.pending_detail = Some(app);
+            }
+            StoreEffect::ImportPackage {
+                path,
+                content,
+                reported_size,
+            } => {
+                if reported_size
+                    .is_some_and(|size| size > crate::package_import::MAX_IMPORT_BYTES as u64)
+                {
+                    let error = ui::i18n!("store-package-size-refused");
+                    self.set_operation_error(Some(error.clone()));
+                    return Err(error);
+                }
+                self.reserve_job()?;
+                let input = match (path, content) {
+                    (Some(path), None) if path.len() <= 4096 => {
+                        crate::package_import::Input::Path(path.into())
+                    }
+                    (None, Some(hash)) if ui::framework::content::valid_hash(&hash) => {
+                        crate::package_import::Input::Content(
+                            self.package_content
+                                .clone()
+                                .ok_or_else(|| ui::i18n!("store-package-unavailable"))?,
+                            hash,
+                        )
+                    }
+                    _ => return Err(ui::i18n!("store-package-source-required")),
+                };
+                self.imported_review = None;
+                self.status_line = ui::i18n!("store-package-reviewing");
+                self.structure_dirty = true;
+                return Ok(Job::admitted(Request::ImportPackage(input), Finish::Status));
+            }
+            StoreEffect::InstallImportedPackage { app, root } => {
+                self.reserve_job()?;
+                if self
+                    .imported_review
+                    .as_ref()
+                    .is_none_or(|(id, expected, _)| id != &app || expected != &root)
+                {
+                    return Err(ui::i18n!("store-package-review-required"));
+                }
+                self.status_line = ui::i18n!("store-package-installing");
+                self.structure_dirty = true;
+                return Ok(Job::admitted(
+                    Request::InstallImported { app, root },
+                    Finish::ImportedPackage,
+                ));
             }
             StoreEffect::OpenReference { path, contents } => {
                 if path.is_none() && contents.is_none() {
@@ -1783,6 +1904,9 @@ impl StoreApp {
         }
         self.structure_dirty = true;
         let finished = outcome?;
+        if *finish == Finish::ImportedPackage {
+            self.imported_review = None;
+        }
         if let Some(case) = &finished.case {
             match finish {
                 Finish::Submitted { app_id } => {
@@ -1801,7 +1925,7 @@ impl StoreApp {
                     moderation_status_label(case.status),
                     cx,
                 )?,
-                Finish::Package | Finish::Status => {}
+                Finish::Package | Finish::Status | Finish::ImportedPackage => {}
             }
         }
         self.set_status_line(finished.status);
@@ -1942,22 +2066,33 @@ impl StoreApp {
 
     /// The effects that cannot run on this device now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
-        if self.flatpak_available {
-            return Vec::new();
+        let mut statuses = Vec::new();
+        if self.imported_review.is_none() {
+            statuses.push(EffectStatus::unavailable(
+                StoreEffect::INSTALL_IMPORTED_PACKAGE,
+                "package_review_required",
+                ui::i18n!("store-package-review-required"),
+            ));
         }
-        let reason = flatpak_unavailable_reason(self.flatpak_error.as_deref());
-        [
-            StoreEffect::FLATPAK_INSTALL,
-            StoreEffect::FLATPAK_UPDATE,
-            StoreEffect::FLATPAK_OPEN,
-            StoreEffect::FLATPAK_REMOVE,
-            StoreEffect::FLATPAK_SETUP,
-            StoreEffect::ENABLE_REMOTE,
-            StoreEffect::DISABLE_REMOTE,
-        ]
-        .into_iter()
-        .map(|effect| EffectStatus::unavailable(effect, "flatpak_host_unavailable", reason))
-        .collect()
+        if !self.flatpak_available {
+            let reason = flatpak_unavailable_reason(self.flatpak_error.as_deref());
+            statuses.extend(
+                [
+                    StoreEffect::FLATPAK_INSTALL,
+                    StoreEffect::FLATPAK_UPDATE,
+                    StoreEffect::FLATPAK_OPEN,
+                    StoreEffect::FLATPAK_REMOVE,
+                    StoreEffect::FLATPAK_SETUP,
+                    StoreEffect::ENABLE_REMOTE,
+                    StoreEffect::DISABLE_REMOTE,
+                ]
+                .into_iter()
+                .map(|effect| {
+                    EffectStatus::unavailable(effect, "flatpak_host_unavailable", reason)
+                }),
+            );
+        }
+        statuses
     }
 
     /// The live rows the Store publishes: a bounded page of the catalogue
@@ -2596,6 +2731,147 @@ mod tests {
         let visible = app.harness().inspection_json().unwrap();
         assert!(visible.contains("No apps available"));
         assert!(!visible.contains("No apps found"));
+    }
+
+    #[test]
+    fn resizing_remotes_preserves_the_active_input_selection() {
+        fn input(widget: &mut dyn Widget) -> Option<&mut dyn Widget> {
+            if widget.test_id() == Some("store.remote.name") {
+                return Some(widget);
+            }
+            for child in widget.children_mut() {
+                if let Some(found) = input(child) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.stage_scene(Some("remotes"));
+            store.remote_name_state.set("fedora-origin".to_owned());
+        })
+        .unwrap();
+        app.harness().resize((1472, 920)).unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            let input = input(store).expect("the real remote-name input is mounted");
+            ui::undo::set_state(input, "3:b:0");
+            assert_eq!(ui::undo::get_state(input).as_deref(), Some("3:b:0"));
+        })
+        .unwrap();
+        app.harness().resize((520, 820)).unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            assert_eq!(
+                ui::undo::get_state(input(store).expect("remote name stays mounted")).as_deref(),
+                Some("3:b:0"),
+                "ordinary reflow must retain the person's selection in the live input"
+            );
+        })
+        .unwrap();
+        app.effect(&StoreEffect::ShowCatalogue).unwrap();
+        app.harness().resize((1472, 920)).unwrap();
+        app.with_surface(|store: &mut StoreApp| {
+            assert!(
+                input(store).is_none(),
+                "actual navigation must replace the retained remote form"
+            );
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn retained_store_repaints_each_theme_and_reflows_larger_text() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.stage_scene(Some("remotes"));
+        })
+        .unwrap();
+        app.harness().resize((520, 820)).unwrap();
+        app.harness().set_theme(Theme::light());
+        let mut previous = app.harness().scene().encoding().draw_data.clone();
+        assert!(!previous.is_empty(), "the actual Store must paint");
+        let input_height = app.harness().targets()["store.remote.name"].height();
+        for theme in [Theme::dark(), Theme::high_contrast(), Theme::light()] {
+            app.harness().set_theme(theme);
+            let current = app.harness().scene().encoding().draw_data.clone();
+            assert_ne!(current, previous, "the Store must paint the new theme");
+            previous = current;
+        }
+        let mut scaled = Theme::light();
+        scaled.text_scale = 1.5;
+        app.harness().set_theme(scaled);
+        assert!(
+            app.harness().targets()["store.remote.name"].height() > input_height,
+            "the retained form must accommodate the larger text"
+        );
+        assert!(
+            app.harness()
+                .controls()
+                .iter()
+                .any(|control| control.name.as_deref() == Some("Add remote") && !control.disabled),
+            "the normal owner can still use the scaled form"
+        );
+    }
+
+    #[test]
+    fn readable_store_failure_and_build_metadata_have_reviewable_layouts() {
+        let output =
+            std::env::var_os("TILO_STORE_PRESENTATION_REVIEW_DIR").map(std::path::PathBuf::from);
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            let mut items = crate::fixture::fixture_catalog();
+            let native = items
+                .iter_mut()
+                .find(|item| matches!(item.source, StoreSource::Tilo { .. }))
+                .unwrap();
+            native.versions[0].version =
+                "0.1.79285+g4b07574f432de8ca4fc7f108e07c0237b75b4b05".into();
+            store.set_items(items);
+            let remote = crate::flathub_client::Remote {
+                name: "fedora".into(),
+                url: "https://example.invalid/fedora".into(),
+                title: "Fedora Flatpaks".into(),
+                disabled: false,
+                user_managed: false,
+            };
+            store.set_worker_busy(false);
+            store.set_operation_error(Some(crate::flathub_client::remote_error(
+                &remote,
+                "Failed: remote exception: remote exception: command timed out after 8000 ms",
+            )));
+        })
+        .unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("high-contrast", Theme::high_contrast().with_text_scale(1.5)),
+        ] {
+            for width in [480, 1280] {
+                app.harness().resize((width, 900)).unwrap();
+                app.harness().set_theme(theme.clone());
+                let targets = app.harness().targets();
+                let retry = targets
+                    .get("store.error.refresh")
+                    .expect("the real source retry control must be observable");
+                assert!(retry.x0 >= 0.0 && retry.x1 <= f64::from(width));
+                assert!(retry.y0 >= 0.0 && retry.y1 <= 900.0);
+                assert!(
+                    app.harness()
+                        .controls()
+                        .iter()
+                        .any(|control| control.name.as_deref() == Some("Refresh apps")
+                            && !control.disabled)
+                );
+                if let Some(directory) = &output {
+                    std::fs::create_dir_all(directory).unwrap();
+                    app.harness()
+                        .render_png(&directory.join(format!("{name}-{width}-source-preview.png")));
+                }
+            }
+        }
     }
 
     #[test]
@@ -4357,12 +4633,29 @@ mod tests {
 
             app.set_worker_busy(false);
             app.set_operation_error(Some("signature mismatch".into()));
-            let error = app
+            let mut notice = app
                 .operation_notice()
-                .and_then(|notice| notice.accessibility())
                 .expect("failure has a semantic notice");
-            assert_eq!(error.name.as_deref(), Some("The last operation failed"));
+            let error = notice
+                .accessibility()
+                .expect("failure has a semantic notice");
+            assert_eq!(
+                error.name.as_deref(),
+                Some(ui::i18n!("store-operation-failed").as_str())
+            );
             assert_eq!(error.live, Some(Politeness::Assertive));
+            assert_eq!(error.description.as_deref(), Some("signature mismatch"));
+            let mut state = AutoCommit::new();
+            let retry = control_mut(notice.as_mut(), "store.error.refresh")
+                .expect("failure offers the real catalogue refresh control");
+            assert!(retry.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut state),
+                &automerge::ROOT,
+            ));
+            let invoked = ui::widget::controls::take_control_invocation(notice.as_mut())
+                .expect("refresh uses the resource action door");
+            assert_eq!(invoked.address.action, StoreEffect::Refresh.id());
         }
 
         // Case `root_accessibility_is_a_named_window_not_an_empty_generic`.

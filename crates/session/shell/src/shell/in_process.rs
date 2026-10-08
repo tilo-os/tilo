@@ -21,11 +21,14 @@ use ui::launch::LaunchError;
 use ui::permissions::{Actor, PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
+#[cfg(test)]
+mod feedback_tests;
 pub mod messaging;
 
 /// The apps the shell mounts in-process, with the store their records and
 /// views live in, as one person on one device.
 pub struct InProcessApps {
+    feedback: Option<tilo_desktop::feedback::PrivateFeedback>,
     store: Rc<dyn durable_store::DurableStore>,
     owners: RecordOwners,
     views: HashMap<String, Rc<InstanceViewStore>>,
@@ -70,6 +73,7 @@ impl InProcessApps {
     /// `device_id`.
     pub fn new(store: Rc<dyn durable_store::DurableStore>, device_id: &str, author: &str) -> Self {
         Self {
+            feedback: None,
             owners: RecordOwners::with_store(Rc::clone(&store)),
             store,
             views: HashMap::new(),
@@ -264,8 +268,30 @@ impl InProcessApps {
         component: &AppComponent,
         room: &str,
     ) -> Option<ui::collaboration::CollaborationManager> {
+        if component.app_id() == tilo_desktop::feedback::PACKAGE {
+            return None;
+        }
         let broker = self.broker.as_ref()?;
         component.collaborate_through(broker(component.app_id(), room))
+    }
+
+    /// Acknowledge startup writes through the fixture's real canonical owner.
+    #[cfg(test)]
+    pub(crate) fn flush_fixture_records(
+        &mut self,
+        app_id: &str,
+        room: &str,
+    ) -> Result<usize, String> {
+        let records = self
+            .owners
+            .open(app_id, room)
+            .map_err(|error| error.to_string())?;
+        let count = records.open_records().len();
+        if count == 0 {
+            return Err("fixture must observe mounted records before flushing".into());
+        }
+        records.try_flush()?;
+        Ok(count)
     }
 
     /// The apps of a session whose state lives in `profile_root`: their
@@ -368,6 +394,12 @@ impl InProcessApps {
         record: RecordId,
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
+        if definition.app_id == tilo_desktop::feedback::PACKAGE {
+            return match &self.feedback {
+                Some(feedback) => feedback.prepare(&self.device_id, &self.author.0, tab),
+                None => tilo_desktop::feedback::unconfigured(&self.device_id, &self.author.0, tab),
+            };
+        }
         if definition.app_id == "so.tilo.messages" {
             if self.first_accounts.is_none()
                 && self.native_broker_socket.is_some()
@@ -447,6 +479,42 @@ impl InProcessApps {
         }
         lend(&mut context);
         definition.instantiate(context, target, RestoreInput::None)
+    }
+}
+
+impl InProcessApps {
+    /// Bind a trusted host's already-admitted feedback adapter to this profile.
+    /// This is host configuration, never an action or a URL-supplied destination.
+    ///
+    /// # Errors
+    /// Refuses replacement of existing custody or an invalid/recovering outbox.
+    pub fn install_feedback(
+        &mut self,
+        destination: tilo_desktop::feedback::Destination,
+        host: Box<dyn tilo_desktop::feedback::FeedbackHost>,
+    ) -> Result<(), LaunchError> {
+        if self.feedback.is_some() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        self.feedback = Some(
+            tilo_desktop::feedback::PrivateFeedback::new(Rc::clone(&self.store), destination, host)
+                .map_err(|error| LaunchError::Operation(error.to_string()))?,
+        );
+        Ok(())
+    }
+
+    /// Storage/transport wakes service the approved outbox, including while
+    /// its private window is closed. Failures remain in the private status UI.
+    pub(crate) fn pump_feedback(&self) {
+        if let Some(feedback) = &self.feedback {
+            let _ = feedback.pump();
+        }
+    }
+
+    pub(crate) fn feedback_deadline(&self) -> Option<ui::time::Instant> {
+        self.feedback
+            .as_ref()
+            .and_then(tilo_desktop::feedback::PrivateFeedback::next_wake_deadline)
     }
 }
 

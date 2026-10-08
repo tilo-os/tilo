@@ -187,6 +187,13 @@ mod tests {
     #[test]
     fn settings_links_decode_to_what_they_show() {
         assert_eq!(
+            parse_settings_uri("settings://updates"),
+            Ok(NavigationEffect::OpenPane {
+                pane: "updates".into()
+            }
+            .into())
+        );
+        assert_eq!(
             parse_settings_uri("settings://models/u2net-subject"),
             Ok(AgentModelsEffect::ShowLocalModel {
                 model: "u2net-subject".into()

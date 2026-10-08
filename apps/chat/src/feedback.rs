@@ -557,6 +557,30 @@ mod tests {
             )
             .is_some()
         );
+        let report_id = format!("chat.feedback:{}", submission.id);
+        let entries = <crate::resource::Chat as ui::tilo_resource::Resource>::search(&state);
+        let matching: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.anchor.as_deref() == Some(report_id.as_str()))
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "a retried report has one typed search result"
+        );
+        assert_eq!(matching[0].title, submission.feedback.text);
+        assert_eq!(
+            matching[0].action,
+            Some(tilo_actions::ActionAddress::new(
+                &report_id,
+                "reveal-message"
+            ))
+        );
+        let published =
+            <crate::resource::Chat as ui::tilo_resource::Resource>::child(&state, &report_id)
+                .unwrap();
+        assert!(published.actions.iter().any(|spec| spec.id == "triage"
+            && spec.contract.permission == tilo_actions::PermissionRequirement::Write));
     }
 
     #[test]

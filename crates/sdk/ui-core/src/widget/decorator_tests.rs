@@ -262,6 +262,7 @@ struct Recorder {
     log: Log,
     dirty: bool,
     rect: Rect,
+    physical: Option<super::super::PhysicalInput>,
 }
 
 impl Recorder {
@@ -270,6 +271,7 @@ impl Recorder {
             log: Rc::clone(log),
             dirty: false,
             rect: Rect::new(1.0, 2.0, 3.0, 4.0),
+            physical: None,
         }
     }
 
@@ -281,6 +283,10 @@ impl Recorder {
 use vello::kurbo::{Point, Rect};
 
 impl Widget for Recorder {
+    fn observe_physical_input(&mut self, input: super::super::PhysicalInput) {
+        self.physical = Some(input);
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources
@@ -399,4 +405,28 @@ fn start(widget: &mut dyn Widget, doc: &mut AutoCommit) -> Option<ResourceOperat
         &automerge::ROOT,
     )
     .expect("admission succeeds")
+}
+
+#[test]
+fn decorators_preserve_content_free_physical_feedback() {
+    use crate::widget::PhysicalInput;
+    let mut decorated = Named {
+        inner: Recorder::new(&Log::default()),
+    };
+    let key = winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
+    Widget::observe_physical_input(
+        &mut decorated,
+        PhysicalInput::Key {
+            key,
+            state: winit::event::ElementState::Pressed,
+        },
+    );
+    assert!(matches!(decorated.inner.physical, Some(PhysicalInput::Key {
+        key: observed, state: winit::event::ElementState::Pressed,
+    }) if observed == key));
+    Widget::observe_physical_input(&mut decorated, PhysicalInput::Focused(false));
+    assert!(matches!(
+        decorated.inner.physical,
+        Some(PhysicalInput::Focused(false))
+    ));
 }
