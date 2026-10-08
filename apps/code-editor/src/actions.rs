@@ -500,10 +500,11 @@ fn apply_create_file(
 }
 
 fn apply_replace_text(doc: &mut Doc, id: &str, text: &str) -> Result<(), ActionError> {
-    if text.len() > 8 * 1024 * 1024 {
-        return Err(ActionError::Refused(
-            "replacement text must be at most 8 MiB".to_string(),
-        ));
+    if text.len() > crate::disk::MAX_TEXT_BYTES as usize {
+        return Err(ActionError::Refused(format!(
+            "replacement text must be at most {} bytes",
+            crate::disk::MAX_TEXT_BYTES
+        )));
     }
     current_entry(doc, id, EntryKind::File)?;
     let base = EditorDoc::read_buffer_key(doc, id)
@@ -747,7 +748,7 @@ fn validate_create(
     seed: &str,
 ) -> Result<(), ActionError> {
     if uuid::Uuid::parse_str(id).is_err()
-        || seed.len() > 8 * 1024 * 1024
+        || seed.len() > crate::disk::MAX_TEXT_BYTES as usize
         || !matches!(kind, "file" | "folder")
         || !valid_path(path)
         || path.rsplit('/').next() != Some(name)
