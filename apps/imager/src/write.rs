@@ -3106,13 +3106,30 @@ mod tests {
         let staged = tempfile::tempdir().unwrap();
         std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
         let device = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(device.path(), b"not-a-disk-image").unwrap();
-        let result = apply_handoff_stage_to_device(device.path(), staged.path(), 16, 16);
-        if let Err(error) = result {
+        let before = b"not-a-disk-image";
+        std::fs::write(device.path(), before).unwrap();
+        let mountpoint = tempfile::tempdir().unwrap();
+        let observed = std::cell::Cell::new(None);
+        let result = block_devices::installed_root::with_written_root_observed(
+            device.path(),
+            mountpoint.path(),
+            |mnt| apply_handoff_stage_onto_mounted_root(mnt, staged.path()),
+            |attached| observed.set(Some(attached)),
+        );
+        // A message-based check mistakes a failed post-attachment partition
+        // probe for rejection before losetup. Observe the real bounded attempt.
+        let attached = observed
+            .get()
+            .expect("a regular file must reach the loop attachment attempt");
+        if attached {
+            let error = result.expect_err("an attached file without partitions must fail closed");
+            assert!(error.to_string().contains("installed root"), "{error}");
+        } else {
             assert!(
-                !error.to_string().contains("could not inspect"),
-                "a regular file was rejected before losetup: {error}"
+                matches!(result, Ok(false)),
+                "a failed loop attachment cannot report a copied root: {result:?}"
             );
         }
+        assert_eq!(std::fs::read(device.path()).unwrap(), before);
     }
 }
