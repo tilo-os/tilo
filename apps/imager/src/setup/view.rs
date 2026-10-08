@@ -548,10 +548,10 @@ impl SetupApp {
                 usb: page == SetupPage::Experience
                     && !self.desktop_flow.has_pending_operation()
                     && self.usb.is_some()
-                    && (matches!(
+                    && matches!(
                         self.capabilities.platform.host,
                         HostOs::Linux | HostOs::Windows
-                    ) || cfg!(target_os = "macos")),
+                    ),
             },
             review: super::actions::ReviewProjection {
                 ready: page == SetupPage::Review,
