@@ -170,7 +170,7 @@ def main():
     parser.add_argument('--continuous-audio', action='store_true',
                         help='deliver public PCM every20ms while inference runs; native phase review only')
     parser.add_argument('--worker-cadence', action='store_true')
-    parser.add_argument('--native-right-context', type=int, choices=(0, 1), default=1)
+    parser.add_argument('--native-right-context', type=int, choices=(0, 1, 3), default=1)
     parser.add_argument('--first-draft-ms', type=int, choices=(500, 1000, 2000))
     parser.add_argument('--draft-interval-ms', type=int, choices=(250, 500, 1000), default=1000)
     parser.add_argument('--cpus', type=int, choices=(1, 2), default=2)

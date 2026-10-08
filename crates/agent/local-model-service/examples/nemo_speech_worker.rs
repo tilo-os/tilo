@@ -10,7 +10,6 @@ compile_error!(
 mod linux {
     use std::ffi::{CString, c_void};
     use std::fs::{File, OpenOptions};
-    use std::io::Read as _;
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     use std::path::PathBuf;
@@ -20,11 +19,15 @@ mod linux {
     use local_model_service::speech::{
         DraftPolicy, MAX_TEXT_BYTES, SpeechConfig, SpeechError, SpeechReply, worker,
     };
-    use sha2::{Digest as _, Sha256};
     use zeroize::Zeroizing;
 
     const MODEL_BYTES: u64 = 742_090_464;
-    const MODEL_SHA: &str = "3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1";
+    // Measured only after the fixed raw SHA256
+    // 3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1
+    // passed on this same immutable file. This is a private review identity,
+    // never a catalogue receipt or permission to select another model.
+    const MODEL_VERITY_SHA: &str =
+        "76850de5f80310fa2e909a33ba93958c97b0437984c44ec0b90f7170b0dbdf73";
     const MODEL_REVISION: &str = "ea30d66debe3740a08b573244286791d423d6b3e";
 
     #[derive(Parser)]
@@ -38,8 +41,16 @@ mod linux {
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
         review_sessions: u8,
         /// Pinned model trained contexts; default preserves existing geometry.
-        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=1))]
+        #[arg(long, default_value_t = 1, value_parser = parse_right_context)]
         review_right_context: u8,
+    }
+    fn parse_right_context(value: &str) -> Result<u8, String> {
+        match value {
+            "0" => Ok(0),
+            "1" => Ok(1),
+            "3" => Ok(3),
+            _ => Err("review requires a trained context: 0, 1 or 3".into()),
+        }
     }
     #[repr(C)]
     struct NativeConfig {
@@ -71,7 +82,7 @@ mod linux {
     struct ImmutableReviewModel(File);
     impl ImmutableReviewModel {
         fn open(path: &std::path::Path) -> Result<Self, SpeechError> {
-            let mut file = OpenOptions::new()
+            let file = OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
                 .open(path)
@@ -101,27 +112,12 @@ mod linux {
             {
                 return Err(SpeechError::ModelReceipt);
             }
-            // Raw signed-object digest is distinct from the verity Merkle
-            // digest. Hash the same immutable descriptor after the witness.
-            let mut hash = Sha256::new();
-            let mut buffer = Zeroizing::new(vec![0_u8; 32 * 1024]);
-            let mut observed = 0_u64;
-            loop {
-                let read = file
-                    .read(&mut buffer)
-                    .map_err(|_| SpeechError::ModelReceipt)?;
-                if read == 0 {
-                    break;
-                }
-                observed = observed
-                    .checked_add(u64::try_from(read).map_err(|_| SpeechError::ModelReceipt)?)
-                    .ok_or(SpeechError::ModelReceipt)?;
-                if observed > MODEL_BYTES {
-                    return Err(SpeechError::ModelReceipt);
-                }
-                hash.update(buffer.get(..read).ok_or(SpeechError::ModelReceipt)?);
-            }
-            if observed != MODEL_BYTES || hex::encode(hash.finalize()) != MODEL_SHA {
+            // Authenticate the exact expected digest, not just the presence
+            // of verity. The kernel verifies pages on every read/mmap; this
+            // descriptor remains the native reader's immutable anchor.
+            // Rehashing the complete object on each session is unnecessary.
+            if hex::encode(verity.get(4..36).ok_or(SpeechError::ModelReceipt)?) != MODEL_VERITY_SHA
+            {
                 return Err(SpeechError::ModelReceipt);
             }
             Ok(Self(file))
