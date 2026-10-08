@@ -364,6 +364,28 @@ recognition bias without broadening that contract. Holdout32, physical microphon
 older-device/ARM and full editable-field acceptance remain untested here.
 
 Separately owned renderer source repair has before/after evidence, but its full
-production runtime qualification and published consumer remain blocked by the
-SDK disk admission check. That source proof does not establish safe installed
+production runtime qualification and published consumer remain outstanding.
+The guarded SDK build resumed after earlier disk checkpoints. That source proof does not establish safe installed
 cancellation; its guard and delivery hold remain in place.
+
+## Preview delivery under a compositor stall
+
+Recognition previews are replaceable render state. The actor previously placed
+them in the same eight-event queue as readiness, capture transitions and the
+final result. An occupied compositor could fill that queue with previews, abort
+recognition with a protocol error and discard an otherwise valid session.
+
+The actor now retains only the latest unconsumed preview in one bounded,
+zeroizing slot. Lifecycle events stay ordered in their separate bounded queue
+and take priority when the compositor polls. Final results and failures retire
+the pending preview before delivery, so an old preview cannot replay after a
+final or cancellation. The compositor uses a nonblocking lock attempt; it never
+waits for the recognition actor. Audio backpressure, deadlines, microphone consent,
+original-field ownership and dictionary revocation checks retain their guards.
+
+[The before/after ledger](dictation-preview-delivery.json) records the unchanged
+production-publisher regression failing with Protocol before the fix, then passing
+with all six focused runtime tests. Two headless Wayland journeys also pass one
+corrected UTF-8/history commit and cancellation when field identity changes at
+identical geometry. These are hardware-free protocol and actor checks; they do
+not establish physical microphone or full installed browser acceptance.

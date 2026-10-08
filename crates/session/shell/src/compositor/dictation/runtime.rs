@@ -3,9 +3,9 @@
 use std::collections::VecDeque;
 use std::os::fd::AsRawFd as _;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -62,7 +62,7 @@ enum Control {
 /// successor must wait for the old actor's actual microphone/worker teardown.
 pub struct Runtime {
     commands: SyncSender<Control>,
-    events: Receiver<RuntimeEvent>,
+    events: EventReceiver,
     cancel: Arc<AtomicBool>,
     owner: Option<JoinHandle<()>>,
 }
@@ -119,7 +119,7 @@ impl Runtime {
         bounded_command::own_process_tree(&mut command);
         let language = language.to_owned();
         let (commands, receiver) = sync_channel(2);
-        let (sender, events) = sync_channel(8);
+        let (sender, events) = event_channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let canceled = Arc::clone(&cancel);
         let owner = std::thread::Builder::new()
@@ -149,7 +149,7 @@ impl Runtime {
                     )
                 })();
                 if let Err(error) = result {
-                    let _ = sender.try_send(RuntimeEvent::Stopped(error));
+                    let _ = event(&sender, RuntimeEvent::Stopped(error));
                 }
             })
             .map_err(|_| RuntimeError::Worker(SpeechError::WorkerStopped))?;
@@ -181,7 +181,7 @@ impl Runtime {
         self.cancel.store(true, Ordering::Release);
     }
     pub fn poll(&self) -> Option<RuntimeEvent> {
-        self.events.try_recv().ok()
+        self.events.poll()
     }
     pub fn is_stopped(&mut self) -> bool {
         if self.owner.as_ref().is_some_and(JoinHandle::is_finished)
@@ -379,14 +379,75 @@ fn nonblocking(fd: std::os::fd::RawFd) -> Result<(), RuntimeError> {
     }
     Ok(())
 }
-fn event(sender: &SyncSender<RuntimeEvent>, event: RuntimeEvent) -> Result<(), RuntimeError> {
-    sender.try_send(event).map_err(|_| RuntimeError::Protocol)
+// Previews are replaceable render state, not an event history. Keep one
+// zeroizing slot so an occupied compositor cannot backpressure recognition.
+// Lifecycle events remain ordered in a separate bounded channel.
+struct EventSender {
+    lifecycle: SyncSender<RuntimeEvent>,
+    preview: Arc<Mutex<Option<Zeroizing<String>>>>,
+}
+struct EventReceiver {
+    lifecycle: Receiver<RuntimeEvent>,
+    preview: Arc<Mutex<Option<Zeroizing<String>>>>,
+}
+impl EventReceiver {
+    fn poll(&self) -> Option<RuntimeEvent> {
+        if let Ok(event) = self.lifecycle.try_recv() {
+            return Some(event);
+        }
+        // Never wait on the compositor thread. The actor holds this lock only
+        // while replacing or retiring one bounded preview.
+        let mut slot = self.preview.try_lock().ok()?;
+        slot.take()
+            .map(|mut text| RuntimeEvent::Draft(std::mem::take(&mut *text)))
+    }
+}
+fn event_channel() -> (EventSender, EventReceiver) {
+    let (sender, receiver) = sync_channel(8);
+    let preview = Arc::new(Mutex::new(None));
+    (
+        EventSender {
+            lifecycle: sender,
+            preview: Arc::clone(&preview),
+        },
+        EventReceiver {
+            lifecycle: receiver,
+            preview,
+        },
+    )
+}
+fn event(sender: &EventSender, event: RuntimeEvent) -> Result<(), RuntimeError> {
+    match event {
+        RuntimeEvent::Draft(text) => {
+            let mut preview = sender.preview.lock().map_err(|_| RuntimeError::Protocol)?;
+            *preview = Some(Zeroizing::new(text));
+            drop(preview);
+            Ok(())
+        }
+        terminal @ (RuntimeEvent::Done(_) | RuntimeEvent::Stopped(_)) => {
+            // A final or failure supersedes every pending preview. Replacement,
+            // cancellation and drop all wipe the retired private text.
+            sender
+                .preview
+                .lock()
+                .map_err(|_| RuntimeError::Protocol)?
+                .take();
+            sender
+                .lifecycle
+                .try_send(terminal)
+                .map_err(|_| RuntimeError::Protocol)
+        }
+        lifecycle => sender
+            .lifecycle
+            .try_send(lifecycle)
+            .map_err(|_| RuntimeError::Protocol),
+    }
 }
 fn run(
     command: &mut Command,
     config: &mut Zeroizing<Vec<u8>>,
     controls: &Receiver<Control>,
-    events: &SyncSender<RuntimeEvent>,
+    events: &EventSender,
     cancel: &AtomicBool,
     vocabulary: &mut Option<vocabulary::VocabularyLease>,
 ) -> Result<(), RuntimeError> {
@@ -427,7 +488,7 @@ struct ActorIo<'a> {
     input: &'a mut std::process::ChildStdout,
     output: &'a mut std::process::ChildStdin,
     controls: &'a Receiver<Control>,
-    events: &'a SyncSender<RuntimeEvent>,
+    events: &'a EventSender,
     cancel: &'a AtomicBool,
     vocabulary: &'a mut Option<vocabulary::VocabularyLease>,
 }
@@ -664,6 +725,52 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
             assert!(Instant::now() < deadline, "actor must report a result");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn stalled_compositor_keeps_latest_preview_and_terminal_result() {
+        let (sender, events) = event_channel();
+        let (commands, _controls) = sync_channel(2);
+        let runtime = Runtime {
+            commands,
+            events,
+            cancel: Arc::new(AtomicBool::new(false)),
+            owner: None,
+        };
+        event(&sender, RuntimeEvent::Ready).unwrap();
+        event(&sender, RuntimeEvent::Listening).unwrap();
+        // The production publisher keeps decoding while the compositor is
+        // busy. A preview is replaceable; lifecycle and final events are not.
+        for index in 0..64 {
+            event(&sender, RuntimeEvent::Draft(format!("preview {index}"))).unwrap();
+        }
+        assert!(matches!(runtime.poll(), Some(RuntimeEvent::Ready)));
+        assert!(matches!(runtime.poll(), Some(RuntimeEvent::Listening)));
+        assert!(matches!(runtime.poll(), Some(RuntimeEvent::Draft(text)) if text == "preview 63"));
+        assert!(runtime.poll().is_none(), "old previews must not replay");
+        for index in 0..64 {
+            event(&sender, RuntimeEvent::Draft(format!("pending {index}"))).unwrap();
+        }
+        event(&sender, RuntimeEvent::Finishing).unwrap();
+        event(&sender, RuntimeEvent::Done("final 👋".into())).unwrap();
+        assert!(matches!(runtime.poll(), Some(RuntimeEvent::Finishing)));
+        assert!(matches!(runtime.poll(), Some(RuntimeEvent::Done(text)) if text == "final 👋"));
+        assert!(runtime.poll().is_none(), "no preview may follow the final");
+
+        event(
+            &sender,
+            RuntimeEvent::Draft("private canceled preview".into()),
+        )
+        .unwrap();
+        event(&sender, RuntimeEvent::Stopped(RuntimeError::Canceled)).unwrap();
+        assert!(matches!(
+            runtime.poll(),
+            Some(RuntimeEvent::Stopped(RuntimeError::Canceled))
+        ));
+        assert!(
+            runtime.poll().is_none(),
+            "cancellation retires the pending preview"
+        );
     }
 
     #[test]
