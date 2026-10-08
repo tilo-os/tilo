@@ -106,6 +106,7 @@ name = "account-custody"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "base64",
  "cloud-source",
  "cloud-source-dropbox",
  "cloud-source-gdrive",
@@ -117,12 +118,14 @@ dependencies = [
  "tempfile",
  "test-http",
  "tilo-clock",
+ "tilo-crypto",
  "tilo-net",
  "tilo-oauth",
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "url",
+ "uuid",
  "workspace-hack",
  "zeroize",
 ]
@@ -2221,17 +2224,14 @@ dependencies = [
  "chrono",
  "cloud-source",
  "cloud-source-icloud",
- "getrandom 0.4.3",
- "hex",
  "mime_guess",
- "num-bigint 0.5.1",
- "pbkdf2 0.13.0",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "test-http",
  "thiserror 2.0.21",
+ "tilo-crypto",
  "tilo-net",
  "unicode-normalization",
  "url",
@@ -12991,6 +12991,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnp-rpc",
+ "collab-types",
  "libc",
  "postcard",
  "runtime-portal",
@@ -13000,15 +13001,6 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "tokio-util",
- "workspace-hack",
-]
-
-[[package]]
-name = "runtime-connected"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.21",
- "tilo-connected-protocol",
  "workspace-hack",
 ]
 
@@ -14247,6 +14239,7 @@ dependencies = [
  "bounded-command",
  "browser",
  "bytes",
+ "chat",
  "capnp",
  "capnp-rpc",
  "channel-crypto",
@@ -16403,17 +16396,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-connected-protocol"
-version = "0.1.0"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-contact-directory"
 version = "0.1.0"
 dependencies = [
@@ -16477,6 +16459,7 @@ dependencies = [
  "base64",
  "cms",
  "const-oid 0.9.6",
+ "crypto-bigint 0.7.5",
  "der 0.7.10",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
@@ -16484,6 +16467,7 @@ dependencies = [
  "libc",
  "object",
  "p256 0.14.0",
+ "pbkdf2 0.13.0",
  "rcgen",
  "ring",
  "rsa 0.10.0-rc.18",
@@ -16558,6 +16542,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-actions",
+ "tilo-app",
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-copy-lint",
@@ -17525,7 +17510,9 @@ dependencies = [
  "getrandom 0.4.3",
  "google-cast-protocol",
  "hex",
+ "libc",
  "mdns-sd",
+ "postcard",
  "prost",
  "rand 0.10.1",
  "rand_core 0.10.0",
@@ -17536,6 +17523,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "thiserror 2.0.21",
  "tilo-callstream",
  "tilo-rt",
  "tilo-test-env",
@@ -17543,9 +17531,11 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "wire-frame",
  "workspace-hack",
  "x509-parser 0.18.1",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]
@@ -21978,7 +21968,6 @@ dependencies = [
  "nix 0.31.3",
  "nom 7.1.3",
  "num-bigint 0.4.6",
- "num-bigint 0.5.1",
  "num-integer",
  "num-traits",
  "object",

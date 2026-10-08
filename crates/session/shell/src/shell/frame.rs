@@ -2734,6 +2734,12 @@ impl FrameBuilder {
         self.windows.in_workspace(id.as_deref())
     }
 
+    /// The OS palette before the window's workspace tint is applied.
+    #[must_use]
+    pub fn configured_app_theme(&self) -> &Theme {
+        &self.configured_theme
+    }
+
     /// Enable the session-wide configured theme and live settings watcher.
     /// Offscreen builders stay deterministic unless the shots override asks
     /// for a specific palette.
@@ -4883,7 +4889,9 @@ mod tests {
                 let chrome = fb.chrome();
                 let mut tree = chrome.tree_mut();
                 let active = tree.desktop.active;
-                tree.set_room(active, room)
+                // Joined through the peer's invite, which pins it (hub 1)
+                // as the room's governor.
+                tree.set_room(active, room) && tree.pin_room_authority(room, PeerOrigin::hub(1))
             };
             assert!(joined, "this session joins the peer's room");
 

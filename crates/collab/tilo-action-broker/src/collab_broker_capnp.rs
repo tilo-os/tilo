@@ -38,6 +38,8 @@ mod published_invocation;
 mod resolved_invocation;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
+#[path = "workspace_tasks.rs"]
+mod workspace_tasks;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
@@ -1279,6 +1281,7 @@ struct TaskRunEnvelope {
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
+    execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     action_context: tilo_actions::ActionContext,
 }
 
@@ -2889,8 +2892,9 @@ pub struct CapnpBrokerState {
     /// Steps of interactive shortcut runs waiting for their person.
     step_prompts: crate::automation::StepPrompts,
     /// Bumped whenever a pending or completed invocation changes, so hosts
-    /// can refresh retained invocation projections exactly when needed.
-    invocation_generation: AtomicU64,
+    /// can refresh retained invocation projections exactly when needed and
+    /// a waiter on a running invocation wakes when it may have moved.
+    invocation_generation: tokio::sync::watch::Sender<u64>,
     execution_activity: ActivityBus,
     /// Admission serialization covers policy, one-use confirmation, the durable
     /// barrier and the single application delivery. Never held across awaits.
@@ -3364,7 +3368,7 @@ impl CapnpBrokerState {
     ) {
         if let Ok(mut completed) = self.completed_invocations.lock() {
             completed.insert(id, (actor, update));
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
             while completed.len() > Self::MAX_RETAINED_INVOCATIONS {
                 let Some(oldest) = completed.keys().min().copied() else {
                     break;
@@ -3659,7 +3663,7 @@ impl CapnpBrokerState {
                 app_action_consent: RwLock::new(None),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 step_prompts: crate::automation::StepPrompts::default(),
-                invocation_generation: AtomicU64::new(0),
+                invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
@@ -5188,7 +5192,7 @@ impl CapnpBrokerState {
                 cancellation_fence: Arc::new(AtomicBool::new(false)),
             },
         );
-        self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        self.invocation_changed();
         if sender
             .send(InvocationEnvelope {
                 id,
@@ -5203,7 +5207,7 @@ impl CapnpBrokerState {
         {
             let removed = registry.remove(&id);
             drop(registry);
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
             if let Some(pending) = removed {
                 let _ = self.persist_invocation(
                     &pending,
@@ -5237,7 +5241,20 @@ impl CapnpBrokerState {
     /// Changes whenever a pending or completed invocation changes.
     #[must_use]
     pub fn invocations_generation(&self) -> u64 {
-        self.invocation_generation.load(Ordering::Relaxed)
+        *self.invocation_generation.borrow()
+    }
+
+    /// Record that a pending or completed invocation changed, waking every
+    /// [`Self::invocation_changes`] waiter.
+    fn invocation_changed(&self) {
+        self.invocation_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    /// A receiver that sees every later invocation change; what it has seen
+    /// so far counts as seen.
+    pub(crate) fn invocation_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.invocation_generation.subscribe()
     }
 
     /// Read one current receipt without surveying or disclosing another
@@ -5394,7 +5411,7 @@ impl CapnpBrokerState {
                 job.activity.as_ref(),
                 ExecutionStatus::CancellationRequested,
             );
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
         }
         drop(pending);
         self.cancellation_requests
@@ -5425,6 +5442,34 @@ impl CapnpBrokerState {
                 subscriber.cluster_id == cluster_id && subscriber.agent_id == agent_id
             })
         })
+    }
+
+    fn admitted_task_execution_budget(
+        &self,
+        cluster_id: &str,
+        task: &tilo_desktop_model::WorkspaceTask,
+    ) -> Result<Option<collab_types::task_budget::TaskExecutionBudget>, String> {
+        if let Some(owner) = self
+            .services
+            .workspace_memberships
+            .as_ref()
+            .filter(|owner| owner.requires_room(cluster_id))
+        {
+            let native = owner.task_snapshot(cluster_id)?;
+            if !native.tasks.iter().any(|current| current == task) {
+                return Err("the native task changed before budget admission".into());
+            }
+            let control = native
+                .controls
+                .get(&task.id)
+                .ok_or("native task control is absent")?;
+            if let Some(budget) = control.execution_budget {
+                budget.validate()?;
+            }
+            Ok(control.execution_budget)
+        } else {
+            Ok(None)
+        }
     }
 
     /// Mint and deliver one live-only task run. No durable/offline queue is
@@ -5469,6 +5514,7 @@ impl CapnpBrokerState {
         if task.status.is_finished() {
             return Err("a finished task cannot be launched".into());
         }
+        let execution_budget = self.admitted_task_execution_budget(cluster_id, &task)?;
         let (peer_id, tx) = self
             .task_subscribers
             .lock()
@@ -5498,6 +5544,7 @@ impl CapnpBrokerState {
                     return Err("a manual task cannot be dispatched to an agent".into());
                 }
             },
+            execution_budget,
             action_context: context.clone(),
         })
         .map_err(|_| "the assigned agent task stream closed".to_string())?;
@@ -10809,6 +10856,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 run_id: run.run_id,
                 lease: run.lease,
                 planning: run.planning,
+                execution_budget: run.execution_budget,
                 action_context: serde_json::to_value(run.action_context)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
             };
@@ -14512,6 +14560,17 @@ pub mod tests {
                 room == self.0
             }
 
+            fn task_snapshot(
+                &self,
+                _: &str,
+            ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String>
+            {
+                Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
+                    tasks: Vec::new(),
+                    controls: std::collections::BTreeMap::default(),
+                })
+            }
+
             fn execute(
                 &self,
                 _: tilo_peer_state::owner_commit::OwnerCommitRequest,
@@ -17563,7 +17622,7 @@ impl CapnpBrokerState {
         pending.last_sequence = next_sequence;
         pending.update = update.clone();
         state.publish_pending_activity(pending, &update);
-        state.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        state.invocation_changed();
         if update.is_terminal() {
             let completion = match &update {
                 tilo_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
@@ -17587,8 +17646,10 @@ impl CapnpBrokerState {
             let pending = registry
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            drop(registry);
+            // Retire it before releasing the registry: a waiter woken by the
+            // change above must find it pending or completed, never neither.
             state.record_completion(id, pending.completion_owner(), update.clone());
+            drop(registry);
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
             }

@@ -1970,6 +1970,8 @@ COPY \
     os/usr/lib/systemd/user/tilo-model-gateway.service \
     os/usr/lib/systemd/user/tilo-model-gateway.socket \
     os/usr/lib/systemd/user/tilo-app-host.socket \
+    os/usr/lib/systemd/user/tilo-projector.service \
+    os/usr/lib/systemd/user/tilo-projector.socket \
     /usr/lib/systemd/user/
 COPY \
     os/usr/lib/systemd/system/tilo-relay.service \
@@ -2499,6 +2501,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-system-extension-boot-pack-stage.path && \
     systemctl --global enable tilo-models.socket && \
     systemctl --global enable tilo-model-gateway.socket && \
+    systemctl --global enable tilo-projector.socket && \
     systemctl --global enable tilo-app-host.socket && \
     systemctl --global enable tilo-ush.socket && \
     systemctl --global enable tilo-fs-recipient.socket && \

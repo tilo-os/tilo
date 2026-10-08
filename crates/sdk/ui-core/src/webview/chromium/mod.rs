@@ -445,6 +445,14 @@ fn deliver_frame(routes: &Routes, tab: u32, frame: super::Frame) {
             return;
         }
         if let Ok(mut slot) = shared.frames.lock() {
+            if let Some(previous) = slot.as_ref()
+                && previous.width == frame.width
+                && previous.height == frame.height
+                && previous.rgba == frame.rgba
+            {
+                super::frame_trace::unchanged(tab, frame.trace_id, previous.trace_id);
+                return;
+            }
             *slot = Some(frame);
         }
         shared.wake();
