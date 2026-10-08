@@ -696,8 +696,9 @@ impl QuickFS {
     pub fn read_path_range(&self, rel: &Path, offset: u64, len: u64) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
-        let (attr, hash) = self.ns().attr_and_hash(ino).ok_or(ENOENT)?;
-        if attr.kind == FileType::Directory {
+        // One namespace lock for the inode's kind, content and document-ness.
+        let view = self.inode_view(ino, false).ok_or(ENOENT)?;
+        if view.attr.kind == FileType::Directory {
             return Err(EISDIR);
         }
         if let Some(stage) = self.stage(ino) {
@@ -705,7 +706,7 @@ impl QuickFS {
                 .read_stage_blocking(&stage, offset, len)
                 .map_err(|e| to_errno(&e));
         }
-        if self.is_document(ino) {
+        if view.document {
             let whole = self.read_full_blocking(ino).map_err(|e| to_errno(&e))?;
             let start = usize::try_from(offset)
                 .unwrap_or(usize::MAX)
@@ -715,7 +716,7 @@ impl QuickFS {
                 .min(whole.len());
             return Ok(whole.get(start..end).unwrap_or_default().to_vec());
         }
-        let Some(hash) = hash else {
+        let Some(hash) = view.hash else {
             return Ok(Vec::new());
         };
         let hydrator = self.hydrator.clone();
