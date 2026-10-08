@@ -157,8 +157,10 @@ jobs:
 
   # Shell, image-configuration, and workflow policy cannot be selected through
   # Cargo's dependency graph. Run these checks beside selection so they do not
-  # delay the affected-package matrix. Pull requests containing only audited
-  # prose or self-tested quality helpers may omit this independent suite.
+  # delay selection. Native pull-request work waits for this boundary to pass;
+  # pushes retain every selected native result even when this boundary fails.
+  # Pull requests containing only audited prose or self-tested quality helpers
+  # may omit this independent suite.
   security:
     if: needs.select.outputs.security_required == 'true'
     needs: [select]
@@ -230,6 +232,11 @@ jobs:
           bash tools/ci/measure.sh "path-selected suites" -- \
             python3 tools/ci/suites.py run --jobs 2 $SUITES
 
+  # Admit native PR work only after the required security boundary passes.
+  # A failed boundary already fails the aggregate; do not spend native slots
+  # on that invalid PR. Explicit cancellation and builder/selector predicates
+  # allow main diagnostics after a failed boundary without running a bad plan.
+  # No new admission job or runner reservation is introduced.
   # Tests and the Clippy gate run as parallel jobs rather than one after
   # another on one runner. Test jobs are sharded by recorded test time, Clippy
   # by structural cost (tools/ci/affected_packages.py). Clippy type-checks
@@ -238,8 +245,8 @@ jobs:
   # instead. The jobs share compiler outputs through sccache; each keeps its
   # own target tree. The `checks` aggregate below requires all of them.
   test:
-    if: needs.select.outputs.rust_required == 'true'
-    needs: [builder, select]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
+    needs: [builder, select, security]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
@@ -480,8 +487,8 @@ jobs:
           if-no-files-found: warn
 
   check:
-    if: needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true'
-    needs: [builder, select]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' }}
+    needs: [builder, select, security]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
@@ -551,12 +558,15 @@ jobs:
           if-no-files-found: warn
 
   clippy:
-    if: needs.select.outputs.rust_required == 'true'
-    needs: [builder, select]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
+    needs: [builder, select, security]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: '8'
+    outputs:
+      cargo-download-cache-hit: ${{ steps.rust-build.outputs.cargo-cache-hit }}
+      cargo-download-cache-key: ${{ steps.rust-build.outputs.cargo-cache-key }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -628,7 +638,7 @@ jobs:
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ${{ steps.rust-build.outputs.cargo-cache-paths }}
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          key: ${{ steps.rust-build.outputs.cargo-cache-key }}
 
   # Apps with an Android host example (docs/android.md), linted for both
   # Android ABIs whenever they are selected, which includes every change to
@@ -636,8 +646,8 @@ jobs:
   # platform and build tools, and the host code paths it would add run only on
   # a device. The NDK's host tools are x86_64-only.
   android:
-    if: needs.select.outputs.android_required == 'true'
-    needs: [builder, select]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.android_required == 'true' }}
+    needs: [builder, select, security]
     runs-on: runner
     timeout-minutes: 90
     env:
@@ -690,8 +700,8 @@ jobs:
   # web-capable examples, built for the web. The browser bundle build and its
   # tests run elsewhere.
   wasm:
-    if: needs.select.outputs.wasm_required == 'true'
-    needs: [builder, select]
+    if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.wasm_required == 'true' }}
+    needs: [builder, select, security]
     runs-on: runner
     timeout-minutes: 90
     env:
