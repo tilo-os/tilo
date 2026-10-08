@@ -14,6 +14,33 @@
 // reaches diagnostics, and no closure or Rust userdata crosses a C callback.
 static void discard_log(enum ggml_log_level, const char *, void *) {}
 
+// The pinned GGML header identifies the reviewed small architecture. This
+// chooses its allocation strategy only: the complete native loader still
+// parses the receipt-checked immutable input. Tiny/base retain their measured
+// non-flash path; no model, artifact-size or address-space admission changes.
+static bool small_model_flash(const uint8_t * header, size_t length) noexcept {
+    if (!header || length < 40) return false;
+    auto word = [header](size_t offset) -> uint32_t {
+        return uint32_t(header[offset]) | (uint32_t(header[offset + 1]) << 8)
+            | (uint32_t(header[offset + 2]) << 16) | (uint32_t(header[offset + 3]) << 24);
+    };
+    return word(0) == 0x67676d6c && word(12) == 768 && word(20) == 12
+        && word(28) == 768 && word(36) == 12;
+}
+
+static bool small_model_flash_fd(int fd) noexcept {
+    std::array<uint8_t, 40> header{};
+    size_t offset = 0;
+    while (offset < header.size()) {
+        const auto count = ::pread(fd, header.data() + offset, header.size() - offset,
+                                   static_cast<off_t>(offset));
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return false;
+        offset += static_cast<size_t>(count);
+    }
+    return small_model_flash(header.data(), header.size());
+}
+
 struct PrivateTokens {
     std::array<whisper_token, 64> tokens{};
     int count = 0;
@@ -47,7 +74,7 @@ extern "C" void * tilo_speech_load(uint8_t * bytes, size_t length) noexcept try 
     whisper_log_set(discard_log, nullptr);
     auto params = whisper_context_default_params();
     params.use_gpu = false;
-    params.flash_attn = false;
+    params.flash_attn = small_model_flash(bytes, length);
     // Copy the weights first. The verified input buffer is released by Rust
     // before decoder arenas are allocated, avoiding an unnecessary peak.
     auto * model = whisper_init_from_buffer_with_params_no_state(bytes, length, params);
@@ -98,7 +125,7 @@ extern "C" void * tilo_speech_load_fd(int fd, size_t length) noexcept try {
     whisper_log_set(discard_log, nullptr);
     auto params = whisper_context_default_params();
     params.use_gpu = false;
-    params.flash_attn = false;
+    params.flash_attn = small_model_flash_fd(fd);
     auto * model = whisper_init_with_params_no_state(&loader, params);
     if (!model) return nullptr;
     auto * context = new (std::nothrow) SpeechContext{model, nullptr, 2};
