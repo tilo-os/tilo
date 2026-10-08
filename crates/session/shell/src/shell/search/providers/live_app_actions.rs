@@ -3912,7 +3912,7 @@ mod tests {
                 crate::shell::state::ResourceRef::Action {
                     app: hierarchy.application.clone(),
                     resource: hierarchy.resource.clone(),
-                    action: hierarchy.operation.clone(),
+                    action: hierarchy.operation,
                 },
                 crate::shell::state::Verb::Admin,
             )),
