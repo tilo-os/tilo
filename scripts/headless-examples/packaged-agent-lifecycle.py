@@ -1481,7 +1481,8 @@ def wait_for_floating_keyboard_seat(socket, previous, output, process):
     return wait_for("keyboard Return's exact ordinary detached seat", observe, process)
 
 
-def wait_for_return_editor_continuity(socket, output, primary, child, expected, process):
+def wait_for_return_editor_continuity(socket, output, primary, child, expected, process,
+                                      keyboard=False):
     """Observe real Return adoption/focus publication without repairing editor state."""
     evidence = {"observation_count": 0, "initial": None, "last": None}
 
@@ -1560,7 +1561,9 @@ def wait_for_return_editor_continuity(socket, output, primary, child, expected, 
             if evidence["initial"] is None:
                 evidence["initial"] = sample.copy()
             evidence["last"] = sample
-            (output / "return-editor-adoption-observations.json").write_text(
+            receipt = "keyboard-return-editor-adoption-observations.json" if keyboard \
+                else "return-editor-adoption-observations.json"
+            (output / receipt).write_text(
                 json.dumps(evidence, indent=2, allow_nan=False) + "\n")
 
     return wait_for("Return's exact native seat and retained editor focus", observe, process)
@@ -2065,15 +2068,31 @@ def native_float_return(socket, room, record, output, size, process):
     keyboard_detached = private_editor_observation(keyboard_access, draft)
     focus_agent_conversation_control(keyboard_access, keyboard_access["control"], "Return")
     keyboard_frame = wait_for_floating_keyboard_seat(socket, keyboard_frame, output, process)
+    keyboard_before_return = current_same_primary_presentation(
+        call(socket, {"op": "foreign_frames"}), primary)
+    if keyboard_before_return is None:
+        raise RuntimeError("keyboard Return lost Chat's exact native primary surface")
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     wait_for("keyboard-activated detached Chat withdrawal", lambda: not floating_surface_presenting(
         call(socket, {"op": "foreign_frames"}), "so.tilo.chat",
         keyboard_frame["floating_id"]), process)
-    keyboard_return = wait_for(
-        "keyboard-activated returned Tide editor",
-        lambda: agent_conversation_accessibility("Tide"), process,
+
+    def keyboard_returned_primary():
+        current = current_same_primary_presentation(
+            call(socket, {"op": "foreign_frames"}), keyboard_before_return)
+        return current if current is not None \
+            and current["frame_seq"] > keyboard_before_return["frame_seq"] else None
+
+    keyboard_primary = wait_for(
+        "keyboard Return's exact primary repaint", keyboard_returned_primary, process,
     )
-    keyboard_attached = private_editor_observation(keyboard_return, draft)
+    keyboard_primary, keyboard_return, keyboard_attached = wait_for_return_editor_continuity(
+        socket, output, keyboard_primary, keyboard_frame,
+        {"access": keyboard_access, "draft": draft, "observation": keyboard_detached},
+        process, keyboard=True,
+    )
+    (output / "keyboard-return-editor-continuity.json").write_text(
+        json.dumps(closed_editor_continuity(keyboard_detached, keyboard_attached), indent=2) + "\n")
     if keyboard_attached != keyboard_detached:
         raise RuntimeError("keyboard Float/Return changed private editor state")
     semantic = native_semantic_float_return(

@@ -3119,6 +3119,44 @@ class PresentedEditorTargetTests(unittest.TestCase):
                             "socket", pathlib.Path(directory), primary, child, expected, None)
                     sleep.assert_not_called()
 
+    def test_keyboard_return_uses_same_strict_continuity_after_exact_primary_repaint(self):
+        primary, child, access, before, expected = self.return_editor_continuity_subjects()
+        ready = {**primary, "keyboard_focused": True}
+        retired = {**child, "keyboard_focused": False, "transferring": False}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "private_editor_observation", side_effect=[
+                    {**before, "accessibility_focused": False}, before.copy()]), \
+                patch.object(PROOF, "call", side_effect=[
+                    {"answer": {"frames": [primary, child]}},
+                    {"answer": {"frames": [ready, retired]}}]):
+            output = pathlib.Path(directory)
+            self.assertEqual(PROOF.wait_for_return_editor_continuity(
+                "socket", output, primary, child, expected, None, keyboard=True),
+                (ready, access, before))
+            receipt = json.loads((output / "keyboard-return-editor-adoption-observations.json").read_text())
+            self.assertTrue(receipt["initial"]["pending_adoption"])
+            self.assertTrue(receipt["last"]["accepted"])
+            self.assertFalse((output / "return-editor-adoption-observations.json").exists())
+            self.assertNotIn("draft-secret", json.dumps(receipt))
+        source = inspect.getsource(PROOF.native_float_return)
+        baseline = source.index("keyboard_before_return = current_same_primary_presentation(")
+        enter = source.index('{"op": "key", "key": "Enter"}', baseline)
+        repaint = source.index("keyboard_primary = wait_for(", enter)
+        continuity = source.index("wait_for_return_editor_continuity(", repaint)
+        strict = source.index("if keyboard_attached != keyboard_detached:", continuity)
+        next_phase = source.index("native_semantic_float_return(", strict)
+        self.assertLess(baseline, enter)
+        self.assertLess(enter, repaint)
+        self.assertLess(repaint, continuity)
+        self.assertLess(continuity, strict)
+        between = source[continuity:next_phase]
+        self.assertNotIn("physically_click_editor(", between)
+        self.assertNotIn("focus_agent_conversation_control(", between)
+        self.assertNotIn('"op": "key"', between)
+        self.assertIn("keyboard=True", between)
+
     def test_return_editor_wait_never_accepts_unpublished_focus_or_masks_later_mutation(self):
         primary, child, access, before, expected = self.return_editor_continuity_subjects()
         ready = {**primary, "keyboard_focused": True}
