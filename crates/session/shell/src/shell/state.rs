@@ -2107,8 +2107,7 @@ impl WorkspaceTree {
         let held = self
             .room_docs
             .get(&room)
-            .map(projection::workspace_shortcuts_of)
-            .unwrap_or_default();
+            .map_or_else(Vec::new, projection::workspace_shortcuts_of);
         let forged = projection::workspace_shortcuts_of(candidate)
             .into_iter()
             .find(|shortcut| {

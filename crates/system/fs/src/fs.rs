@@ -320,9 +320,13 @@ mod staging_limit_tests {
     fn staged_sizes_are_bounded_per_file_and_in_total() {
         assert_eq!(check_staged_size(0), Ok(()));
         assert_eq!(check_staged_size(MAX_STAGED_FILE_BYTES), Ok(()));
-        assert_eq!(check_staged_size(MAX_STAGED_FILE_BYTES + 1), Err(EFBIG));
         assert_eq!(
-            check_staged_size(4 << 40),
+            check_staged_size(MAX_STAGED_FILE_BYTES.saturating_add(1)),
+            Err(EFBIG)
+        );
+        let four_tebibytes = MAX_STAGED_FILE_BYTES.saturating_mul(1024);
+        assert_eq!(
+            check_staged_size(four_tebibytes),
             Err(EFBIG),
             "`truncate -s 4T` is refused"
         );
@@ -966,7 +970,7 @@ impl QuickFS {
                 None => (bufs.entry(ino).or_default(), None),
             };
             if end > buf.len() {
-                check_staged_growth(staged, (end - buf.len()) as u64)?;
+                check_staged_growth(staged, end.saturating_sub(buf.len()) as u64)?;
                 buf.resize(end, 0);
             }
             buf.get_mut(start..end).ok_or(EINVAL)?.copy_from_slice(data);

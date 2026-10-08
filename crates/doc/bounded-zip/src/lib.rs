@@ -363,7 +363,7 @@ impl<R: Read + Seek> BoundedArchive<R> {
     pub fn extract_to(&mut self, dir: &Path) -> Result<usize, ZipError> {
         let cap = self.limits.max_part_bytes;
         let max_total = self.limits.max_total_bytes;
-        let mut written = 0;
+        let mut written: usize = 0;
         for index in 0..self.archive.len() {
             let file = self
                 .archive
@@ -388,7 +388,7 @@ impl<R: Read + Seek> BoundedArchive<R> {
                 std::fs::create_dir_all(parent).map_err(io_error)?;
             }
             std::fs::write(&target, bytes).map_err(io_error)?;
-            written += 1;
+            written = written.saturating_add(1);
         }
         Ok(written)
     }

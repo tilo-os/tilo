@@ -226,7 +226,10 @@ impl OciImages {
                 let mut out = std::fs::File::create(&staging)?;
                 // The header's size is not trusted either: inflate at most
                 // one byte past the ceiling, and that byte means over.
-                let written = std::io::copy(&mut (&mut entry).take(max_tapp_bytes + 1), &mut out)?;
+                let written = std::io::copy(
+                    &mut (&mut entry).take(max_tapp_bytes.saturating_add(1)),
+                    &mut out,
+                )?;
                 out.sync_all()?;
                 written
             };
@@ -631,7 +634,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let images = OciImages::new(Vec::new(), dir.path().join("cache"));
-            let ceiling = tapp.len() as u64 - 1;
+            let ceiling = u64::try_from(tapp.len()).expect("fits").saturating_sub(1);
             assert_eq!(
                 images
                     .unpack_layer_bounded(
@@ -656,11 +659,9 @@ mod tests {
         {
             let cached = dir.path().join("big.tapp");
             std::fs::write(&cached, &tapp).unwrap();
-            assert!(read_if_present_within(&cached, tapp.len() as u64 - 1).is_err());
-            assert_eq!(
-                read_if_present_within(&cached, tapp.len() as u64).unwrap(),
-                Some(tapp)
-            );
+            let len = u64::try_from(tapp.len()).expect("fits");
+            assert!(read_if_present_within(&cached, len.saturating_sub(1)).is_err());
+            assert_eq!(read_if_present_within(&cached, len).unwrap(), Some(tapp));
             assert_eq!(
                 read_if_present_within(&dir.path().join("missing.tapp"), 1).unwrap(),
                 None
