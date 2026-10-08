@@ -19,6 +19,7 @@ binary_crates=()
 binaries=()
 build_targets=()
 selected_crates=()
+app_profiles=()
 for manifest in "$REPO"/apps/*/tilo-app.toml; do
     dir="$(dirname "$manifest")"
     package="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$dir/Cargo.toml" | head -1)"
@@ -35,6 +36,12 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         esac
     fi
     packages+=("-p" "$package")
+    # Package overrides reach both the executable and app-owned libraries.
+    # They are visible to Cargo and compiler caches before the wrapper runs;
+    # matching only the binary crate name misses differently named libraries.
+    app_profiles+=(--config "profile.$PROFILE.package.\"$package\".opt-level=\"z\""
+                   --config "profile.$PROFILE.package.\"$package\".codegen-units=1"
+                   --config "profile.$PROFILE.package.\"$package\".strip=\"symbols\"")
     features+=("$package/thin")
     binary_crates+=("${binary//-/_}")
     if [ "$BUILD_PACKAGES" = "  " ] || [[ "$BUILD_PACKAGES" == *" $package "* ]]; then
@@ -79,7 +86,7 @@ read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
 "${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
     --config "build.rustc-workspace-wrapper=\"$REPO/tools/ci/rustc-thin-app-wrapper.sh\"" \
     --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
-    -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
+    "${app_profiles[@]}" -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
 
 # A Rust dylib mismatch is not reliably rejected by the ELF linker: symbol
 # names include crate hashes, so an app built against a second feature-unified
