@@ -118,8 +118,6 @@ pub const CODECS_UNDO: &str = "Undo";
 pub const CODECS_DESCRIPTION: &str = "Downloaded to this computer from the formats' publishers once \
 it is online. You can turn it off in Settings.";
 
-/// The Media step's Install button and its quiet companions.
-
 /// Default hostname seeded into the CRDT (and the installed system).
 const DEFAULT_HOSTNAME: &str = "tilo";
 /// Default time zone seeded into the CRDT.
@@ -2897,19 +2895,8 @@ impl InstallerApp {
     /// the install begins.
     fn compose_media_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
-        let centred = |widget: Box<dyn Widget>| -> Box<dyn Widget> {
-            Box::new(
-                Row::new()
-                    .with_padding(0.0, 0.0)
-                    .no_wrap()
-                    .push(Box::new(Spacer::new()))
-                    .push(widget)
-                    .push(Box::new(Spacer::new())),
-            )
-        };
-
         children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
-        children.push(centred(Box::new(
+        children.push(centered_media_control(Box::new(
             ui::widget::IconWidget::new(ui::icons::Icon::Film)
                 .sized(ui::widget::IconSize::Large)
                 .accent(),
@@ -2927,7 +2914,7 @@ impl InstallerApp {
         ));
         children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s4)));
         if self.codecs {
-            children.push(centred(Box::new(
+            children.push(centered_media_control(Box::new(
                 Row::new()
                     .with_padding(0.0, 0.0)
                     .no_wrap()
@@ -2943,7 +2930,7 @@ impl InstallerApp {
                             .with_id("codecs_chosen"),
                     )),
             )));
-            children.push(centred(Box::new(
+            children.push(centered_media_control(Box::new(
                 ActionButton::new(
                     &crate::i18n::t("installer-media-undo"),
                     self.control(
@@ -2964,7 +2951,7 @@ impl InstallerApp {
                 false,
             ));
         } else {
-            children.push(centred(Box::new(
+            children.push(centered_media_control(Box::new(
                 ActionButton::new(
                     &crate::i18n::t("installer-media-install"),
                     self.control(
@@ -2978,7 +2965,7 @@ impl InstallerApp {
                 .with_width(theme.tokens.spacing.s16 * 4.0 + theme.tokens.spacing.s12)
                 .with_test_id("codecs_install"),
             )));
-            children.push(centred(Box::new(
+            children.push(centered_media_control(Box::new(
                 ActionButton::new(&crate::i18n::t("installer-media-skip"), self.next_control())
                     .quiet()
                     .with_width(theme.tokens.spacing.s16 * 2.0 + theme.tokens.spacing.s8)
@@ -3443,6 +3430,17 @@ fn take_secret(buffer: &Arc<Mutex<String>>) -> Zeroizing<String> {
 
 fn local_text(state: &ui::LocalState<String>) -> String {
     state.with(Clone::clone)
+}
+
+fn centered_media_control(widget: Box<dyn Widget>) -> Box<dyn Widget> {
+    Box::new(
+        Row::new()
+            .with_padding(0.0, 0.0)
+            .no_wrap()
+            .push(Box::new(Spacer::new()))
+            .push(widget)
+            .push(Box::new(Spacer::new())),
+    )
 }
 
 /// One `label: value` review line (label dim, value primary).
