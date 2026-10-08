@@ -787,12 +787,9 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn signals_update_players_and_an_idle_player_costs_no_calls() {
-        let bus = PrivateBus::start();
-        let connection = bus.connect().await;
-        let calls = record_calls(&bus, connection.unique_name().unwrap().as_str()).await;
-        let player = zbus::connection::Builder::address(bus.address.as_str())
+    /// The probe player on `bus`, playing "Song" at 12 s.
+    async fn serve_playing_probe(bus: &PrivateBus) -> zbus::Connection {
+        zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
             .name(PROBE)
             .unwrap()
@@ -815,7 +812,32 @@ mod tests {
             .unwrap()
             .build()
             .await
+            .unwrap()
+    }
+
+    /// Pause the probe player and announce it the way MPRIS players do: one
+    /// `PropertiesChanged`, no `Position`.
+    async fn pause_and_signal(player: &zbus::Connection) {
+        let player_iface = player
+            .object_server()
+            .interface::<_, FakePlayer>(MPRIS_PATH)
+            .await
             .unwrap();
+        player_iface.get_mut().await.status = "Paused".into();
+        player_iface
+            .get()
+            .await
+            .playback_status_changed(player_iface.signal_emitter())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn signals_update_players_and_an_idle_player_costs_no_calls() {
+        let bus = PrivateBus::start();
+        let connection = bus.connect().await;
+        let calls = record_calls(&bus, connection.unique_name().unwrap().as_str()).await;
+        let player = serve_playing_probe(&bus).await;
 
         let state: &'static Mutex<ObserverState> = Box::leak(Box::default());
         state.lock().unwrap().seed.send_replace(Seed::Pending);
@@ -861,18 +883,7 @@ mod tests {
         );
 
         // A signal, not a poll, moves the card.
-        let player_iface = player
-            .object_server()
-            .interface::<_, FakePlayer>(MPRIS_PATH)
-            .await
-            .unwrap();
-        player_iface.get_mut().await.status = "Paused".into();
-        player_iface
-            .get()
-            .await
-            .playback_status_changed(player_iface.signal_emitter())
-            .await
-            .unwrap();
+        pause_and_signal(&player).await;
         eventually("the paused status reaching the card", || {
             state
                 .lock()
