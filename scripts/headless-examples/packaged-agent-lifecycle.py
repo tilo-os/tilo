@@ -280,7 +280,7 @@ def shell_accessibility_control(label):
     return matches[0] if matches else None
 
 
-def agent_quick_composer_accessibility(agent, *, windows=None):
+def agent_quick_composer_accessibility(agent, *, windows=None, observation=None):
     """Find the one exact compositor composer without reading its draft."""
     expected = {
         "message": "Message",
@@ -291,27 +291,40 @@ def agent_quick_composer_accessibility(agent, *, windows=None):
         "open_conversation": "Open conversation",
         "open_tasks": "Open Task Center",
     }
+    observed = {
+        "owned_root_count": 0, "readable_root_count": 0, "read_failure_count": 0,
+        "direct_child_count": 0, "composer_root_count": 0, "editor_count": 0,
+        "agent_count": 0, "kind_count": 0, "task_count": 0, "match_count": 0,
+        "controls": dict.fromkeys(expected, 0),
+    }
+    if observation is not None:
+        observation.update(observed)
     matches = []
     for owned in owned_shell_accessibility_windows() if windows is None else windows:
+        observed["owned_root_count"] += 1
         bus = owned["bus"]
         client = atspi.AtspiClient(owned["address"], bus)
         try:
             for window in [owned["window"]]:
                 children = client.call(owned["root"], "org.a11y.atspi.Accessible.GetChildren")
+                observed["readable_root_count"] += 1
                 paths = list(dict.fromkeys(atspi.PATH_RE.findall(children)))
+                observed["direct_child_count"] += len(paths)
                 if len(paths) > atspi.APP_TREE_NODE_LIMIT:
                     raise RuntimeError("the compositor composer children exceed the observation bound")
                 tree = {path: client.property(path, "Name") for path in paths}
                 for root in client.named(tree, "Agent quick composer"):
+                    observed["composer_root_count"] += 1
                     subtree = accessible_subtree(client, root, atspi.APP_TREE_NODE_LIMIT)
                     controls = {}
                     complete = True
                     for key, label in expected.items():
                         nodes = client.named(subtree, label)
+                        observed["controls"][key] += len(nodes)
                         if len(nodes) != 1:
                             complete = False
-                            break
-                        controls[key] = nodes[0]
+                        else:
+                            controls[key] = nodes[0]
                     editors = [
                         path for path in client.named(subtree, "Message or instruction")
                         if "org.a11y.atspi.EditableText" in client.interfaces(path)
@@ -322,6 +335,10 @@ def agent_quick_composer_accessibility(agent, *, windows=None):
                     )
                     kinds = client.named(subtree, "Agent")
                     tasks = client.named(subtree, "Task")
+                    observed["editor_count"] += len(editors)
+                    observed["agent_count"] += len(agents)
+                    observed["kind_count"] += len(kinds)
+                    observed["task_count"] += len(tasks)
                     if len(tasks) > 1:
                         raise RuntimeError("the Agent quick composer published duplicate task pickers")
                     if complete and len(editors) == 1 and len(agents) == 1 and len(kinds) == 1:
@@ -332,7 +349,12 @@ def agent_quick_composer_accessibility(agent, *, windows=None):
                             "private_content_recorded": False,
                         })
         except atspi.GateError:
+            observed["read_failure_count"] += 1
             continue
+        finally:
+            observed["match_count"] = len(matches)
+            if observation is not None:
+                observation.update(observed)
     if len(matches) > 1:
         raise RuntimeError("the compositor published duplicate exact Agent quick composers")
     return matches[0] if matches else None
@@ -805,7 +827,11 @@ def owned_editor_read(access, read, deadline=None):
                     raise RuntimeError("refreshed private editor belongs to a foreign Chat route")
                 try:
                     if not chat_editor_contract(fresh):
-                        raise RuntimeError("refreshed private editor lacks its original semantic contract")
+                        # The full walk observed this exact owned editor, but
+                        # its object can retire before the separate contract
+                        # query. Discard it without changing the cached access.
+                        time.sleep(0.1)
+                        continue
                 except atspi.GateError as error:
                     if not stale_editor_transport(error):
                         raise
@@ -3934,10 +3960,23 @@ def current_agent_tasks(socket, room, agent, process):
     ))
 
 
-def reopen_marker_composer_while_live(socket, agent, marker, windows, process):
+def reopen_marker_composer_while_live(socket, agent, marker, windows, process, *, output=None):
     """Prove one private draft round trip while the real marker is actionable."""
     draft = "Keep this marker Message draft private."
-    composer = lambda: agent_quick_composer_accessibility(agent, windows=windows)
+    observations = {"probe_count": 0, "initial": None, "last": None}
+
+    def composer():
+        observed = {}
+        try:
+            return agent_quick_composer_accessibility(agent, windows=windows, observation=observed)
+        finally:
+            observations["probe_count"] += 1
+            if observations["initial"] is None:
+                observations["initial"] = json.loads(json.dumps(observed))
+            observations["last"] = observed
+            if output is not None:
+                (output / "agent-quick-composer-observation.json").write_text(
+                    json.dumps(observations, indent=2) + "\n")
     access = wait_for("initial marker Message composer", composer, process)
     if not private_editor_value_matches(access, ""):
         raise RuntimeError("the initial marker Message draft was not empty")
@@ -4411,12 +4450,12 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
             )
         raise
     activate_shell_accessibility_control(marker, marker["label"])
-    reopened_message_draft = reopen_marker_composer_while_live(
-        socket, agent, marker, shell_windows, process,
-    )
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"agent-action-marker-activated-{size}.png"
     )}))
+    reopened_message_draft = reopen_marker_composer_while_live(
+        socket, agent, marker, shell_windows, process, output=output,
+    )
 
     preceding_result = provider.preceding_marker_result()
     (output / "marker-preceding-invoke-result.json").write_text(

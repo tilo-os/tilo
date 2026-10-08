@@ -476,6 +476,48 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "private_content_recorded": False,
         })
 
+    def test_quick_composer_observation_counts_actual_wire_controls_without_private_names(self):
+        wire_named = PROOF.atspi.AtspiClient.named
+        tree = {f"/node/{index}": f"(<'{label}'>,)" for index, label in enumerate((
+            "Message", "Queue", "Steer", "Send", "Close", "Open conversation",
+            "Open Task Center", "Message or instruction", "tide", "Agent", "PRIVATE-CANARY"))}
+        class Client:
+            def __init__(self, *_args):
+                pass
+            named = staticmethod(wire_named)
+            def call(self, *_args):
+                return "([(':1.1', '/quick')],)"
+            def property(self, *_args):
+                return "(<'Agent quick composer'>,)"
+            def interfaces(self, *_args):
+                return "(['org.a11y.atspi.Text', 'org.a11y.atspi.EditableText'],)"
+        windows = [{"address": "owned", "bus": ":1.1", "window": "/window", "root": "/workspace"}]
+        with patch.object(PROOF.atspi, "AtspiClient", Client), \
+                patch.object(PROOF, "accessible_subtree", return_value=tree):
+            observed = {}
+            self.assertIsNotNone(PROOF.agent_quick_composer_accessibility(
+                "tide", windows=windows, observation=observed))
+            self.assertEqual(observed["composer_root_count"], 1)
+            self.assertEqual(observed["editor_count"], 1)
+            self.assertEqual(observed["agent_count"], 1)
+            self.assertEqual(observed["kind_count"], 1)
+            self.assertEqual(observed["task_count"], 0)
+            self.assertTrue(all(count == 1 for count in observed["controls"].values()))
+            self.assertNotIn("PRIVATE-CANARY", json.dumps(observed))
+            self.assertNotIn("/node", json.dumps(observed))
+            missing = {path: name for path, name in tree.items() if "'Queue'" not in name}
+            with patch.object(PROOF, "accessible_subtree", return_value=missing):
+                self.assertIsNone(PROOF.agent_quick_composer_accessibility(
+                    "tide", windows=windows, observation=observed))
+            self.assertEqual(observed["controls"]["queue"], 0)
+            self.assertEqual(observed["controls"]["open_tasks"], 1)
+            self.assertEqual(observed["match_count"], 0)
+        stage = inspect.getsource(PROOF.managed_agent_marker_stage)
+        activate = stage.index('activate_shell_accessibility_control(marker, marker["label"])')
+        snapshot = stage.index('agent-action-marker-activated-', activate)
+        wait = stage.index("reopen_marker_composer_while_live(", activate)
+        self.assertLess(snapshot, wait)
+
     def test_marker_direct_children_decode_wire_names_and_refuse_ambiguity(self):
         class Client:
             def __init__(self, names):
@@ -2664,6 +2706,24 @@ class PresentedEditorTargetTests(unittest.TestCase):
             self.assertFalse(PROOF.private_editor_value_matches(access, "PRIVATE-CANARY"))
             resolve.assert_not_called()
             self.assertEqual(payload_paths, ["message-editor", "message-editor"])
+            # A full discovery may itself retire before the contract query.
+            # Discard that candidate without reading it or changing ownership.
+            with patch.object(PROOF, "agent_conversation_accessibility",
+                              side_effect=[cached.copy(), fresh.copy()]) as rediscover, \
+                    patch.object(PROOF.time, "sleep"):
+                access = cached.copy()
+                self.assertTrue(PROOF.private_editor_value_matches(access, "nihao"))
+                self.assertEqual(rediscover.call_count, 2)
+                self.assertEqual(access, fresh)
+                self.assertNotIn("recycled-heading", payload_paths)
+            with patch.object(PROOF, "agent_conversation_accessibility", return_value=cached.copy()), \
+                    patch.object(PROOF.time, "sleep"), \
+                    patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]):
+                access = cached.copy()
+                with self.assertRaises(PROOF.ProofTimeout):
+                    PROOF.private_editor_value_matches(access, "nihao")
+                self.assertEqual(access, cached)
+                self.assertNotIn("recycled-heading", payload_paths)
 
     def test_keyboard_return_wait_requires_exact_ordinary_child_seat_before_enter(self):
         child = {"app_id": "so.tilo.chat", "surface_id": 11, "floating_id": "private",
