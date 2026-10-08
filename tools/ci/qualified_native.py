@@ -40,6 +40,8 @@ def placement(root: Path, names: set[str], arch: str) -> dict:
         return {}
     try:
         receipt = json.loads((root / "tools/ci/qualified-native.json").read_text())
+        if receipt.get("enabled") is not True:
+            return {}
         proof = receipt["qualification"]
         if (proof["cpu_quota"] != 2 or proof["memory_limit_bytes"] != 5 * 1024**3
                 or proof["tests_passed"] != 82 or proof["tests_skipped"] != 0
