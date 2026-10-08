@@ -232,6 +232,20 @@ pub struct SceneDamage<'a> {
     pub regions: Option<&'a [vello::FineDamageRect]>,
 }
 
+impl<'a> SceneDamage<'a> {
+    /// The same frame with `regions` in place of its own, when there are any.
+    fn with_regions<'b>(self, regions: Option<&'b [vello::FineDamageRect]>) -> SceneDamage<'b>
+    where
+        'a: 'b,
+    {
+        SceneDamage {
+            revision: self.revision,
+            previous_revision: self.previous_revision,
+            regions: regions.or(self.regions),
+        }
+    }
+}
+
 /// Mapped readback layout needed by the direct XRGB swizzle.
 #[derive(Clone, Copy)]
 struct MappedXrgbSource<'a> {
@@ -823,6 +837,18 @@ impl RetainedGpuTarget {
         self.retained_target_valid = false;
         self.last_successful_revision = None;
         self.owed_damage.clear();
+    }
+
+    /// `regions` together with the damage owed by frames skipped since the last render,
+    /// which this takes; `None` when nothing is owed or the frame renders in full anyway.
+    fn take_owed_damage(
+        &mut self,
+        regions: Option<&[vello::FineDamageRect]>,
+    ) -> Option<Vec<vello::FineDamageRect>> {
+        let owed = std::mem::take(&mut self.owed_damage);
+        regions
+            .filter(|_| !owed.is_empty())
+            .map(|regions| [regions, owed.as_slice()].concat())
     }
 
     fn check_health(&self) -> Result<(), BridgeError> {
@@ -2563,15 +2589,8 @@ impl VelloDrmBridge {
         }
         // Frames this output skipped while its flip was pending left their damage owed: the
         // retained pixels already claim those revisions, so this render repairs it too.
-        let owed = std::mem::take(&mut self.target.owed_damage);
-        let repaired = damage
-            .regions
-            .filter(|_| !owed.is_empty())
-            .map(|regions| [regions, owed.as_slice()].concat());
-        let damage = SceneDamage {
-            regions: repaired.as_deref().or(damage.regions),
-            ..damage
-        };
+        let repaired = self.target.take_owed_damage(damage.regions);
+        let damage = damage.with_regions(repaired.as_deref());
         let hdr = output.format != wgpu::TextureFormat::Bgra8Unorm;
         let composite = hdr && !hdr_layers.is_empty();
         if composite {
