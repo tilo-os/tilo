@@ -714,13 +714,8 @@ impl Session {
             turn: 0,
             failures: HashSet::new(),
         };
-        self.task_deadline = run.execution_budget.map(|budget| {
-            ui::time::now()
-                .checked_add(Duration::from_millis(u64::from(budget.total_ms)))
-                .unwrap_or_else(ui::time::now)
-        });
         let result = self.run_task_loop_with(run, &mut state);
-        self.task_deadline = None;
+        self.task_turn_deadline = None;
         let end = result?;
         let reply = match &end {
             LoopEnd::Finished(finish, _) => finish.reply.clone().unwrap_or_default(),
@@ -813,7 +808,10 @@ impl Session {
         );
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &user_turn);
         for turn in 0..MAX_LOOP_TURNS {
-            let left = total_budget.saturating_sub(began.elapsed());
+            let left = self.task_deadline.map_or_else(
+                || total_budget.saturating_sub(began.elapsed()),
+                |deadline| deadline.saturating_duration_since(ui::time::now()),
+            );
             if left.is_zero() {
                 return Ok(LoopEnd::Failed(
                     "The task ran out of time before it finished".into(),
@@ -823,7 +821,9 @@ impl Session {
             // owner policy; the gateway still enforces its selected-model ceiling.
             let timeout = left.min(turn_budget);
             state.turn = turn;
-            if let Some(end) = self.run_turn(run, &mut conversation, state, turn, timeout)? {
+            let result = self.run_turn(run, &mut conversation, state, turn, timeout);
+            self.task_turn_deadline = None;
+            if let Some(end) = result? {
                 return Ok(end);
             }
         }
@@ -887,6 +887,13 @@ impl Session {
         // The model starts first: the cancellation check and the live update
         // are round trips to the host, and they run while it thinks.
         let turn_began = ui::time::now();
+        self.task_turn_deadline = run
+            .execution_budget
+            .and_then(|_| turn_began.checked_add(timeout))
+            .map(|deadline| {
+                self.task_deadline
+                    .map_or(deadline, |task| deadline.min(task))
+            });
         let rx = self.chooser.start_turn(body, timeout, turn);
         self.turn = Some(ActiveTurn::new(rx, crate::live::PlanStream::new(targets)));
         if self.live.is_active() {
@@ -1164,10 +1171,10 @@ impl Session {
                         ..InvokeReport::default()
                     })));
                 }
-                let streamed = state
-                    .streaming
-                    .as_ref()
-                    .is_some_and(|streaming| streaming.index == call.index && streaming.chunks > 0);
+                let streamed = state.streaming.as_ref().is_some_and(|streaming| {
+                    streaming.index == call.index
+                        && (streaming.chunks > 0 || streaming.failed.is_some())
+                });
                 let (report, cancelled) = if streamed {
                     self.finish_streaming(run, state, &call.input)?
                 } else {
@@ -1946,6 +1953,7 @@ mod tests {
         turns: Mutex<VecDeque<Vec<TurnEvent>>>,
         bodies: Mutex<Vec<Value>>,
         timeouts: Mutex<Vec<Duration>>,
+        started: Mutex<Vec<std::time::Instant>>,
         /// Delivered one event per `pace`, like a provider writing tokens.
         pace: Option<Duration>,
         /// Events delivered so far, across turns.
@@ -1956,6 +1964,7 @@ mod tests {
 
     impl TurnTransport for Scripted {
         fn start(&self, request: TurnRequest) -> Receiver<TurnEvent> {
+            self.0.started.lock().unwrap().push(ui::time::now());
             self.0.timeouts.lock().unwrap().push(request.timeout);
             self.0.bodies.lock().unwrap().push(request.body);
             let (tx, rx) = std::sync::mpsc::channel();
@@ -2091,6 +2100,7 @@ mod tests {
         /// Cancel after this many successful status surveys (zero disables).
         cancel_after_checks: usize,
         cancellation_checks: usize,
+        step_reply_delay: Duration,
     }
 
     impl World {
@@ -2357,6 +2367,7 @@ mod tests {
         world: Rc<RefCell<World>>,
         sent: Rc<RefCell<Vec<CollabRequest>>>,
         events: Vec<CollabEvent>,
+        delayed: Vec<(std::time::Instant, CollabEvent)>,
     }
 
     impl ui::collaboration::PeerTransport for Broker {
@@ -2364,6 +2375,13 @@ mod tests {
             true
         }
         fn poll(&mut self) -> Vec<CollabEvent> {
+            let now = ui::time::now();
+            let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.delayed)
+                .into_iter()
+                .partition(|(at, _)| *at <= now);
+            self.delayed = waiting;
+            self.events
+                .extend(ready.into_iter().map(|(_, event)| event));
             std::mem::take(&mut self.events)
         }
         fn send(&mut self, request: CollabRequest) -> Result<(), String> {
@@ -2392,12 +2410,14 @@ mod tests {
                             },
                         }
                     };
-                    self.events.push(CollabEvent::TaskActionInvocationResult {
+                    let result = CollabEvent::TaskActionInvocationResult {
                         request_id: *request_id,
                         result: Ok((0, update)),
                         continuation: Some(serde_json::to_vec(&continuation).unwrap()),
                         retry_step: false,
-                    });
+                    };
+                    let delay = self.world.borrow().step_reply_delay;
+                    self.delayed.push((ui::time::now() + delay, result));
                     // Republished after the result, as a real host does: the
                     // loop must wait for it after a view step.
                     if republish {
@@ -2423,7 +2443,10 @@ mod tests {
                         result: Ok(()),
                     });
                 }
-                CollabRequest::Presence { .. } => {}
+                CollabRequest::Presence { .. }
+                | CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Cancel { .. },
+                } => {}
                 other => panic!("unexpected request {other:?}"),
             }
             self.sent.borrow_mut().push(request);
@@ -2470,6 +2493,7 @@ mod tests {
             turns: Mutex::new(turns.into()),
             bodies: Mutex::new(Vec::new()),
             timeouts: Mutex::new(Vec::new()),
+            started: Mutex::new(Vec::new()),
             pace,
             emitted,
         });
@@ -2477,6 +2501,7 @@ mod tests {
             world: world.clone(),
             sent: sent.clone(),
             events: Vec::new(),
+            delayed: Vec::new(),
         });
         let mut run = runtime_collab::TaskRunEnvelope {
             version: 1,
@@ -2546,6 +2571,7 @@ mod tests {
             enrolled_active: Some(acceptance),
             enrolled_sequence: 0,
             task_deadline: None,
+            task_turn_deadline: None,
             asked_at: ui::time::now(),
             last_route: None,
             broker_surfaces: surfaces,
@@ -2942,6 +2968,148 @@ mod tests {
             Duration::from_secs(20)
         );
         assert!(bounded.session.task_deadline.is_none());
+    }
+
+    #[test]
+    fn explicit_turn_budget_bounds_durable_step_wait_after_planning() {
+        let mut f = execution_fixture(
+            "write hi",
+            World {
+                step_reply_delay: Duration::from_millis(700),
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[
+                        invoke("append-paragraph", &serde_json::json!({"text":"hi"})),
+                        finish("Written.", true),
+                    ],
+                    64,
+                ),
+                turn(&[finish("The step outcome remains unknown.", false)], 64),
+            ],
+            None,
+            Some(collab_types::task_budget::TaskExecutionBudget {
+                turn_ms: 200,
+                total_ms: 2_000,
+            }),
+        );
+        let began = ui::time::now();
+        f.session.run_task(&f.run).unwrap();
+        assert!(began.elapsed() < Duration::from_millis(600));
+        let bodies = f.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "a late step must not become a success");
+        assert!(
+            bodies[1]["messages"]
+                .to_string()
+                .contains("outcome is still unknown")
+        );
+        drop(bodies);
+        assert_eq!(f.world.borrow().steps.len(), 1);
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "The step outcome remains unknown.".into()
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_step_wait_consumes_planning_time_in_the_same_owner_turn() {
+        let mut f = execution_fixture(
+            "write hi",
+            World {
+                step_reply_delay: Duration::from_millis(700),
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[
+                        invoke("append-paragraph", &serde_json::json!({"text":"hi"})),
+                        finish("Written.", true),
+                    ],
+                    64,
+                ),
+                turn(&[finish("The step outcome remains unknown.", false)], 64),
+            ],
+            Some(Duration::from_millis(40)),
+            Some(collab_types::task_budget::TaskExecutionBudget {
+                turn_ms: 200,
+                total_ms: 2_000,
+            }),
+        );
+        f.session.run_task(&f.run).unwrap();
+        let started = f.script.started.lock().unwrap();
+        assert_eq!(started.len(), 2);
+        assert!(
+            started[1].duration_since(started[0]) < Duration::from_millis(250),
+            "step wait must not restart the 200ms allowance after streamed planning"
+        );
+        drop(started);
+        let world = f.world.borrow();
+        assert_eq!(world.steps.len(), 1);
+        assert!(
+            world.steps_at[0] >= 2,
+            "planning events preceded the actual step"
+        );
+        drop(world);
+        let sent = f.sent.borrow();
+        let invocations: std::collections::HashSet<_> = sent
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::InvokeTaskAction { invocation, .. } => Some(*invocation),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            invocations.len(),
+            1,
+            "an unknown first chunk cannot mint another step"
+        );
+        drop(sent);
+        let bodies = f.script.bodies.lock().unwrap();
+        let history = bodies[1]["messages"].to_string();
+        drop(bodies);
+        assert!(history.contains("outcome is still unknown"), "{history}");
+    }
+
+    #[test]
+    fn explicit_total_budget_cancels_an_unsettled_durable_step_without_claiming_completion() {
+        let mut f = execution_fixture(
+            "write hi",
+            World {
+                step_reply_delay: Duration::from_millis(700),
+                ..World::default()
+            },
+            vec![turn(
+                &[
+                    invoke("append-paragraph", &serde_json::json!({"text":"hi"})),
+                    finish("Written.", true),
+                ],
+                64,
+            )],
+            None,
+            Some(collab_types::task_budget::TaskExecutionBudget {
+                turn_ms: 100,
+                total_ms: 100,
+            }),
+        );
+        f.session.run_task(&f.run).unwrap();
+        let sent = f.sent.borrow();
+        assert!(sent.iter().any(|request| matches!(
+            request,
+            CollabRequest::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Cancel { .. }
+            }
+        )));
+        assert!(
+            matches!(terminal(&sent), runtime_collab::TaskRunUpdate::Failed { message }
+            if message.contains("task time budget"))
+        );
+        drop(sent);
+        assert_eq!(f.world.borrow().steps.len(), 1);
+        assert!(f.session.task_deadline.is_none());
+        assert!(f.session.task_turn_deadline.is_none());
     }
 
     #[test]
