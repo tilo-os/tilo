@@ -1165,7 +1165,7 @@ where
         match next_v2_outbound_event(states, actions, &mut schedule).await {
             ClientEvent::State(Some(env)) => {
                 #[cfg(not(target_arch = "wasm32"))]
-                crate::peer::trace_native_publication("client_write_started", &env, None);
+                crate::trace_native_publication("client_write_started", &env, None);
                 if scope.is_some_and(|scope| !state_in_scope(scope, &env)) {
                     return false;
                 }
@@ -1190,7 +1190,7 @@ where
                     return false;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                crate::peer::trace_native_publication("client_written", &env, None);
+                crate::trace_native_publication("client_written", &env, None);
             }
             ClientEvent::State(None) => return true,
             ClientEvent::Action(Some(action)) => {

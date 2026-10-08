@@ -61,3 +61,37 @@ pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayC
 pub(crate) fn correlated_diagnostics() -> bool {
     std::env::var_os("TILO_RELAY_CORRELATED_DIAGNOSTICS").is_some()
 }
+
+/// Trace one hop of a native publication under the `tilo_relay::native_publication`
+/// target. Hashes the same signed message bytes as the native publication
+/// cursor; the target is opt-in, so ordinary operation does not decode or hash.
+pub fn trace_native_publication(
+    phase: &str,
+    envelope: &transport::Envelope,
+    recipient: Option<&[u8; 32]>,
+) {
+    if !tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+        return;
+    }
+    let transport::Envelope::Delta {
+        workspace_id,
+        author_device_public_key,
+        delta,
+        ..
+    } = envelope
+    else {
+        return;
+    };
+    let Some(payload) = crate::coedit::CoeditPayload::decode(delta) else {
+        return;
+    };
+    let (kind, body) = match payload {
+        crate::coedit::CoeditPayload::Checkpoint { body, .. } => ("checkpoint", body),
+        crate::coedit::CoeditPayload::RetainedDelta { body, .. } => ("delta", body),
+    };
+    tracing::debug!(target: "tilo_relay::native_publication",
+        phase, id = %blake3::hash(&body), kind, workspace_id,
+        author = %hex::encode(&author_device_public_key[..4]),
+        recipient = ?recipient.map(|key| hex::encode(&key[..4])),
+        "native relay publication hop");
+}

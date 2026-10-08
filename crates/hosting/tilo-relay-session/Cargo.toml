@@ -43,6 +43,7 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 getrandom.workspace = true
 blake3.workspace = true
+hex.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
