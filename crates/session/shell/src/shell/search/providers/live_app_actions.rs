@@ -1413,6 +1413,107 @@ impl LiveAppActionsProvider {
         }
     }
 
+    fn certified_job_result(
+        &self,
+        id: u64,
+        state: &'static str,
+        cancel: bool,
+        room: &str,
+        actor: &str,
+    ) -> SearchResult {
+        let source = self.action_sessions.clone();
+        let room = room.to_string();
+        let actor = actor.to_string();
+        let invoke_source = self.action_sessions.clone();
+        let invoke_room = room.clone();
+        let invoke_actor = actor.clone();
+        let operation_kind = if cancel {
+            tilo_actions::OperationKind::Effect
+        } else {
+            tilo_actions::OperationKind::View
+        };
+        SearchResult {
+            kind: if cancel {
+                ResourceKind::Action
+            } else {
+                ResourceKind::Custom("action-job".into())
+            },
+            operation_kind,
+            provider_id: PROVIDER_ID.into(),
+            id: if cancel {
+                job_cancel_id(id)
+            } else {
+                job_status_id(id)
+            },
+            title: if cancel {
+                t_args("search-app-job-cancel", &[("id", id.to_string().into())])
+            } else {
+                t_args("search-app-job", &[("id", id.to_string().into())])
+            },
+            subtitle: Some(if cancel {
+                t("search-app-job-cancel-detail")
+            } else {
+                job_state_label(state)
+            }),
+            badge: None,
+            score: if cancel { 5 } else { -10 },
+            params: Vec::new(),
+            contract: None,
+            on_open: std::rc::Rc::new(move |_, _, chrome, _| {
+                if !cancel {
+                    return Ok(());
+                }
+                let current = chrome.borrow();
+                let current_room = current
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .map(|workspace| workspace.room.to_string());
+                if current.active_local_user() != actor || current_room.as_deref() != Some(&room) {
+                    return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
+                }
+                drop(current);
+                let session = source
+                    .open(&room, Some(&actor))
+                    .map_err(|_| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
+                session
+                    .cancel_job(id)
+                    .map_err(|_| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))
+            }),
+            on_invoke: Some(std::rc::Rc::new(move |_, _, chrome, _| {
+                let current = chrome.borrow();
+                let current_room = current
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .map(|workspace| workspace.room.to_string());
+                if current.active_local_user() != invoke_actor
+                    || current_room.as_deref() != Some(&invoke_room)
+                {
+                    return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
+                }
+                drop(current);
+                let session = invoke_source
+                    .open(&invoke_room, Some(&invoke_actor))
+                    .map_err(|_| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
+                if cancel {
+                    session
+                        .cancel_job(id)
+                        .map_err(|_| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
+                }
+                let update = session
+                    .job_status(id)
+                    .ok_or_else(|| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
+                drop(session);
+                Ok(ActionReceipt {
+                    broker_invocation_id: Some(id),
+                    update,
+                })
+            })),
+            on_begin_invoke: None,
+        }
+    }
+
     /// Exact receipt reads use the actor-owned broker key, not the four-row
     /// palette preview or the currently browsed application resource parent.
     fn job_control_page(
@@ -1428,17 +1529,38 @@ impl LiveAppActionsProvider {
         }
         let (id, cancel) = target;
         let actor = ctx.chrome.active_local_user();
+        let room = ctx
+            .chrome
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string());
         let mut page = SearchPage::exhausted(revision, Vec::new());
         if !ctx.wanted.is_empty() && !ctx.wanted.contains(&ResourceKind::Action) {
             return page;
         }
-        let Some(update) = self.broker.status_for_actor(id, &actor) else {
-            return page;
+        let certified = room.as_deref().and_then(|room| {
+            let session = self.action_sessions.open(room, Some(&actor)).ok()?;
+            let update = session.job_status(id)?;
+            (!cancel || session.can_cancel_job(id)).then_some((room, update))
+        });
+        let row = if let Some((room, update)) = certified {
+            self.certified_job_result(id, job_state(&update), cancel, room, &actor)
+        } else {
+            // A remote invocation may execute under an internal Local owner
+            // (workspace services do). Never let that implementation detail
+            // downgrade its exact certificate/device binding to actor text.
+            if self.broker.job_is_remotely_admitted(id) {
+                return page;
+            }
+            let Some(update) = self.broker.status_for_actor(id, &actor) else {
+                return page;
+            };
+            if cancel && !self.broker.can_cancel(id, &actor) {
+                return page;
+            }
+            self.job_result(id, job_state(&update), cancel, &actor)
         };
-        if cancel && !self.broker.can_cancel(id, &actor) {
-            return page;
-        }
-        let row = self.job_result(id, job_state(&update), cancel, &actor);
         let bytes = row
             .title
             .len()

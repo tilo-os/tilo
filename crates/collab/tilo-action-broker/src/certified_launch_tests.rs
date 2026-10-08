@@ -179,6 +179,113 @@ async fn certified_launch_aliases_preserve_actual_worker_origin_and_original_req
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn fresh_exact_certified_caller_observes_and_cancels_its_published_job() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let provider = certified_launch_target(&rig, &env, false, false).await;
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade
+                .certified_local_action_host(&caller, &evidence)
+                .unwrap();
+            let mut request = local_host_request(false);
+            request.target.provider = provider;
+            local_host_answer(host.invoke(&caller, request.clone()))
+                .await
+                .unwrap();
+            let job = rig.state.remote_job(&caller, &request.invocation).unwrap();
+
+            let (fresh, fresh_evidence) = local_host_evidence(&env);
+            assert_ne!(fresh.execution_id(), caller.execution_id());
+            facade
+                .certified_local_action_host(&fresh, &fresh_evidence)
+                .unwrap();
+            assert_eq!(
+                rig.state
+                    .action_observe_job(&fresh, job)
+                    .unwrap()
+                    .invocation(),
+                request.invocation
+            );
+            assert!(rig.state.action_can_cancel_job(&fresh, job));
+
+            let (wrong_device, wrong_evidence) = member_device_evidence(&env, 94, false);
+            facade
+                .certified_local_action_host(&wrong_device, &wrong_evidence)
+                .unwrap();
+            assert!(rig.state.action_observe_job(&wrong_device, job).is_none());
+            assert!(
+                rig.state
+                    .action_observe_job(
+                        &fresh.clone().in_room(uuid::Uuid::new_v4().to_string()),
+                        job,
+                    )
+                    .is_none()
+            );
+            assert!(
+                rig.state
+                    .action_observe_job(
+                        &tilo_actions::remote::Caller::authenticated([7; 32], [8; 32])
+                            .in_room(&env.route.cluster_id)
+                            .in_new_execution(),
+                        job,
+                    )
+                    .is_none()
+            );
+            caller.retire_execution();
+            assert!(rig.state.action_observe_job(&caller, job).is_none());
+
+            rig.state.action_cancel_job(&fresh, job).unwrap();
+            assert!(
+                rig.state
+                    .cancellation_requests
+                    .lock()
+                    .unwrap()
+                    .contains(&job)
+            );
+            assert!(rig.state.action_cancel_job(&wrong_device, job).is_err());
+            let local_actor = match fresh.principal() {
+                tilo_actions::remote::CallerPrincipal::Person(actor) => actor.clone(),
+                _ => unreachable!("the certified test caller is a Person"),
+            };
+            let update = rig.state.invocation_status(job).unwrap();
+            facade.record_completion_for_test(job, &local_actor, update);
+            assert!(
+                facade.status_for_actor(job, &local_actor).is_some(),
+                "the internal Local owner would satisfy the legacy actor lookup"
+            );
+            assert!(facade.job_is_remotely_admitted(job));
+            assert!(rig.state.action_observe_job(&wrong_device, job).is_none());
+            env.authority
+                .additional_certificates
+                .lock()
+                .unwrap()
+                .clear();
+            assert!(
+                facade
+                    .certified_local_action_host(&fresh, &fresh_evidence)
+                    .is_err(),
+                "revoked device authority cannot reopen the job-control session"
+            );
+            assert!(
+                facade
+                    .certified_job_status(&fresh, &fresh_evidence, job)
+                    .is_none()
+            );
+            assert!(
+                facade
+                    .certified_job_cancel(&fresh, &fresh_evidence, job)
+                    .is_err()
+            );
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn certified_launch_wait_refuses_retirement_certificate_expiry_and_origin_loss_before_delivery()
  {
     tokio::task::LocalSet::new()

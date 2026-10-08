@@ -2416,6 +2416,64 @@ impl CapnpBrokerState {
             .map(|update| InvocationState::new(*id, update))
     }
 
+    /// Observe a numeric job only when it is still bound to this exact
+    /// certified caller and its retained invocation UUID.
+    pub(crate) fn action_observe_job(
+        &self,
+        caller: &Caller,
+        job: u64,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        check_execution(caller).ok()?;
+        caller.user_public_key()?;
+        caller.device_public_key()?;
+        let update = self.invocation_status(job)?;
+        let retained_job = self.remote_invocations.lock().ok().and_then(|ledger| {
+            ledger
+                .get_for_certified_device(caller, &update.invocation())
+                .copied()
+        });
+        (retained_job == Some(job)).then_some(update)
+    }
+
+    /// Whether `job` is retained as a remotely admitted invocation. Local UI
+    /// projections use this only to suppress their weaker actor-name fallback.
+    #[must_use]
+    pub(crate) fn action_job_is_remote(&self, job: u64) -> bool {
+        let Some(update) = self.invocation_status(job) else {
+            return false;
+        };
+        self.remote_invocations
+            .lock()
+            .ok()
+            .is_some_and(|ledger| ledger.contains_admitted(&update.invocation()))
+    }
+
+    #[must_use]
+    pub(crate) fn action_can_cancel_job(&self, caller: &Caller, job: u64) -> bool {
+        if self.action_observe_job(caller, job).is_none() {
+            return false;
+        }
+        self.can_cancel_admitted_job(job)
+    }
+
+    /// Cancel `job` only when its immutable invocation remains associated with
+    /// this exact certified Person/device and room.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionHostError::UnknownInvocation`] for a foreign/stale job,
+    /// or [`ActionHostError::NotCancellable`] when its contract forbids it.
+    pub(crate) fn action_cancel_job(
+        &self,
+        caller: &Caller,
+        job: u64,
+    ) -> Result<(), ActionHostError> {
+        self.action_observe_job(caller, job)
+            .ok_or(ActionHostError::UnknownInvocation)?;
+        self.request_cancellation_for_admitted_job(job)
+            .map_err(|reason| ActionHostError::NotCancellable { reason })
+    }
+
     /// Ask an invocation `caller` admitted to stop.
     ///
     /// # Errors
@@ -2430,7 +2488,7 @@ impl CapnpBrokerState {
         let job = self
             .remote_job(caller, id)
             .ok_or(ActionHostError::UnknownInvocation)?;
-        self.request_cancellation(job, &BrokerActor::for_caller(caller).id)
+        self.request_cancellation_for_admitted_job(job)
             .map_err(|reason| ActionHostError::NotCancellable { reason })
     }
 }

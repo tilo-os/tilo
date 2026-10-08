@@ -512,6 +512,49 @@ impl AppActionBroker {
         self.state.certified_local_action_host(caller, presentation)
     }
 
+    /// Read one retained job only after freshly revalidating its exact signed
+    /// Person/device/room admission and immutable invocation association.
+    #[must_use]
+    pub fn certified_job_status(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+        job: u64,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.certified_local_action_host(caller, presentation)
+            .ok()?;
+        self.state.action_observe_job(caller, job)
+    }
+
+    #[must_use]
+    pub fn certified_job_can_cancel(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+        job: u64,
+    ) -> bool {
+        self.certified_local_action_host(caller, presentation)
+            .is_ok()
+            && self.state.action_can_cancel_job(caller, job)
+    }
+
+    /// Cancel one retained job after the same fresh exact admission check.
+    ///
+    /// # Errors
+    ///
+    /// Refuses stale/foreign admission, an unrelated job, or an invocation
+    /// whose action did not declare cooperative cancellation.
+    pub fn certified_job_cancel(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+        job: u64,
+    ) -> Result<(), tilo_actions::remote::ActionHostError> {
+        self.certified_local_action_host(caller, presentation)
+            .map_err(|_| tilo_actions::remote::ActionHostError::NotPermitted)?;
+        self.state.action_cancel_job(caller, job)
+    }
+
     /// Reuse the checked signed person-room admission for native owner checks.
     /// # Errors
     /// Refuses non-person, foreign, stale or unadmitted execution; grants none.
@@ -747,6 +790,15 @@ impl AppActionBroker {
             .while_live(|state| Ok(state.invocation_status_for_actor(id, actor)))
             .ok()
             .flatten()
+    }
+
+    /// Whether `id` belongs to a retained remote invocation. This is an
+    /// internal projection fence: callers learn no remote identity or handle.
+    #[must_use]
+    pub fn job_is_remotely_admitted(&self, id: u64) -> bool {
+        self.state
+            .while_live(|state| Ok(state.action_job_is_remote(id)))
+            .unwrap_or(false)
     }
 
     pub fn statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {

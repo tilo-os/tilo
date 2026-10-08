@@ -5705,6 +5705,77 @@ impl CapnpBrokerState {
             })
     }
 
+    fn request_cancellation_for_owner(
+        &self,
+        id: u64,
+        owner: &InvocationOwner,
+    ) -> Result<(), String> {
+        let matches_owner = self
+            .pending_invocations
+            .lock()
+            .map_err(|_| "the invocation registry is unavailable".to_string())?
+            .get(&id)
+            .is_some_and(|job| &job.owner == owner);
+        if !matches_owner {
+            return Err("only the invocation owner may cancel it".into());
+        }
+        self.request_cancellation_for_admitted_job(id)
+    }
+
+    fn request_cancellation_for_admitted_job(&self, id: u64) -> Result<(), String> {
+        self.expire_stale_invocations();
+        let mut pending = self
+            .pending_invocations
+            .lock()
+            .map_err(|_| "the invocation registry is unavailable".to_string())?;
+        let job = pending
+            .get(&id)
+            .ok_or_else(|| "the invocation is not running".to_string())?;
+        if !job.cancellable {
+            return Err("the action did not declare cooperative cancellation".into());
+        }
+        let job = pending
+            .get_mut(&id)
+            .ok_or_else(|| "the invocation is not running".to_string())?;
+        self.persist_cancellation(job)?;
+        if job.cancellation_requested_at.is_none() {
+            job.cancellation_requested_at = Some(std::time::Instant::now());
+            self.execution_activity.publish_status(
+                job.activity.as_ref(),
+                ExecutionStatus::CancellationRequested,
+            );
+            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        }
+        drop(pending);
+        self.cancellation_requests
+            .lock()
+            .map_err(|_| "the cancellation registry is unavailable".to_string())?
+            .insert(id);
+        Ok(())
+    }
+
+    fn can_cancel_for_owner(&self, id: u64, owner: &InvocationOwner) -> bool {
+        self.expire_stale_invocations();
+        self.pending_invocations
+            .lock()
+            .ok()
+            .and_then(|pending| {
+                pending
+                    .get(&id)
+                    .map(|job| job.cancellable && &job.owner == owner)
+            })
+            .unwrap_or(false)
+    }
+
+    fn can_cancel_admitted_job(&self, id: u64) -> bool {
+        self.expire_stale_invocations();
+        self.pending_invocations
+            .lock()
+            .ok()
+            .and_then(|pending| pending.get(&id).map(|job| job.cancellable))
+            .unwrap_or(false)
+    }
+
     pub fn invocation_statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.expire_stale_invocations();
         let mut jobs = self
@@ -5736,51 +5807,21 @@ impl CapnpBrokerState {
     ///
     /// Returns an error when the invocation is unknown, foreign, or non-cancellable.
     pub fn request_cancellation(&self, id: u64, actor: &str) -> Result<(), String> {
-        self.expire_stale_invocations();
-        let mut pending = self
-            .pending_invocations
-            .lock()
-            .map_err(|_| "the invocation registry is unavailable".to_string())?;
-        let job = pending
-            .get(&id)
-            .ok_or_else(|| "the invocation is not running".to_string())?;
-        if !matches!(&job.owner, InvocationOwner::Local { actor: owner } if owner == actor) {
-            return Err("only the invocation owner may cancel it".into());
-        }
-        if !job.cancellable {
-            return Err("the action did not declare cooperative cancellation".into());
-        }
-        let job = pending
-            .get_mut(&id)
-            .ok_or_else(|| "the invocation is not running".to_string())?;
-        self.persist_cancellation(job)?;
-        if job.cancellation_requested_at.is_none() {
-            job.cancellation_requested_at = Some(std::time::Instant::now());
-            self.execution_activity.publish_status(
-                job.activity.as_ref(),
-                ExecutionStatus::CancellationRequested,
-            );
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
-        }
-        drop(pending);
-        self.cancellation_requests
-            .lock()
-            .map_err(|_| "the cancellation registry is unavailable".to_string())?
-            .insert(id);
-        Ok(())
+        self.request_cancellation_for_owner(
+            id,
+            &InvocationOwner::Local {
+                actor: actor.to_string(),
+            },
+        )
     }
 
     pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
-        self.expire_stale_invocations();
-        self.pending_invocations
-            .lock()
-            .ok()
-            .and_then(|pending| {
-                pending
-                    .get(&id)
-                    .map(|job| job.cancellable && matches!(&job.owner, InvocationOwner::Local { actor: owner } if owner == actor))
-            })
-            .unwrap_or(false)
+        self.can_cancel_for_owner(
+            id,
+            &InvocationOwner::Local {
+                actor: actor.to_string(),
+            },
+        )
     }
 
     /// Whether this room currently has a subscribed, admitted agent that can

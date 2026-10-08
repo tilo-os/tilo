@@ -19,6 +19,7 @@ pub(crate) struct CertifiedActionSession {
     broker: AppActionBroker,
     caller: Caller,
     host: Arc<dyn ActionHost + Send + Sync>,
+    presentation: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -32,8 +33,10 @@ pub(crate) enum DesktopActionSession {
     Certified(CertifiedActionSession),
     #[cfg(test)]
     Fixture {
+        broker: AppActionBroker,
         host: super::remote_actions::BrokerActionHost,
         caller: Caller,
+        actor: String,
     },
 }
 
@@ -80,8 +83,10 @@ impl ActionSessionSource {
                 )
             })?;
             return Ok(DesktopActionSession::Fixture {
+                broker: self.broker.clone(),
                 host: host.clone(),
                 caller: Caller::local_person(person).in_room(room),
+                actor: person.to_string(),
             });
         }
         CertifiedActionSession::open_classified(self.broker.clone(), room, expected_person)
@@ -97,7 +102,7 @@ impl DesktopActionSession {
         match self {
             Self::Certified(session) => session.query(query),
             #[cfg(test)]
-            Self::Fixture { host, caller } => host.query(caller, query),
+            Self::Fixture { host, caller, .. } => host.query(caller, query),
         }
     }
 
@@ -108,7 +113,7 @@ impl DesktopActionSession {
         match self {
             Self::Certified(session) => session.invoke_job(request),
             #[cfg(test)]
-            Self::Fixture { host, caller } => host.invoke_job(caller, request),
+            Self::Fixture { host, caller, .. } => host.invoke_job(caller, request),
         }
     }
 
@@ -119,7 +124,46 @@ impl DesktopActionSession {
         match self {
             Self::Certified(session) => session.observe(invocation),
             #[cfg(test)]
-            Self::Fixture { host, caller } => host.observe(caller, invocation),
+            Self::Fixture { host, caller, .. } => host.observe(caller, invocation),
+        }
+    }
+
+    pub(crate) fn job_status(&self, job: u64) -> Option<tilo_actions::InvocationUpdate> {
+        match self {
+            Self::Certified(session) => {
+                session
+                    .broker
+                    .certified_job_status(&session.caller, &session.presentation, job)
+            }
+            #[cfg(test)]
+            Self::Fixture { broker, actor, .. } => broker.status_for_actor(job, actor),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn can_cancel_job(&self, job: u64) -> bool {
+        match self {
+            Self::Certified(session) => {
+                session
+                    .broker
+                    .certified_job_can_cancel(&session.caller, &session.presentation, job)
+            }
+            #[cfg(test)]
+            Self::Fixture { broker, actor, .. } => broker.can_cancel(job, actor),
+        }
+    }
+
+    pub(crate) fn cancel_job(&self, job: u64) -> Result<(), ActionHostError> {
+        match self {
+            Self::Certified(session) => {
+                session
+                    .broker
+                    .certified_job_cancel(&session.caller, &session.presentation, job)
+            }
+            #[cfg(test)]
+            Self::Fixture { broker, actor, .. } => broker
+                .cancel(job, actor)
+                .map_err(|reason| ActionHostError::NotCancellable { reason }),
         }
     }
 }
@@ -191,6 +235,7 @@ impl CertifiedActionSession {
             broker,
             caller,
             host,
+            presentation,
         })
     }
 

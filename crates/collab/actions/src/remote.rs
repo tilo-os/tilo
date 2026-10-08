@@ -1223,6 +1223,41 @@ impl<T> InvocationLedger<T> {
             .and_then(|entry| entry.handle.as_ref())
     }
 
+    /// The handle admitted by this exact certified Person/device in this
+    /// room, across a fresh host-issued execution scope.
+    ///
+    /// Status and cancellation controls are separate action requests, so
+    /// they cannot retain the original request's execution lease. The
+    /// certificate keys, room, principal, and foreign-device classification
+    /// remain exact; a display identity or payload string is never accepted.
+    #[must_use]
+    pub fn get_for_certified_device(&self, caller: &Caller, id: &InvocationId) -> Option<&T> {
+        let root = caller.user_public_key()?;
+        let device = caller.device_public_key()?;
+        let workspace = caller.room()?;
+        self.entries
+            .get(id)
+            .filter(|entry| {
+                entry.caller.user_public_key() == Some(root)
+                    && entry.caller.device_public_key() == Some(device)
+                    && entry.caller.room() == Some(workspace)
+                    && entry.caller.principal == caller.principal
+                    && entry.caller.foreign == caller.foreign
+            })
+            .and_then(|entry| entry.handle.as_ref())
+    }
+
+    /// Whether an admitted remote invocation still owns `id`, independent of
+    /// which caller is asking. This reveals no handle or caller identity and
+    /// lets an in-process projection fail closed instead of falling back to a
+    /// weaker local-actor lookup for a remotely admitted invocation.
+    #[must_use]
+    pub fn contains_admitted(&self, id: &InvocationId) -> bool {
+        self.entries
+            .get(id)
+            .is_some_and(|entry| entry.handle.is_some())
+    }
+
     /// Mutable access to the handle for an invocation `caller` admitted.
     pub fn get_mut(&mut self, caller: &Caller, id: &InvocationId) -> Option<&mut T> {
         self.entries
@@ -1266,6 +1301,61 @@ mod tests {
 
     fn mallory() -> Caller {
         Caller::authenticated([9; 32], [8; 32])
+    }
+
+    #[test]
+    fn certified_job_lookup_crosses_only_a_fresh_exact_execution() {
+        let invocation = InvocationId::new();
+        let request = InvokeRequest {
+            invocation,
+            target: RemoteActionTarget {
+                provider: "7".into(),
+                address: ActionAddress::new("note:1", "archive"),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+        };
+        let original = alice().in_room("room-a").in_new_execution();
+        let mut ledger = InvocationLedger::default();
+        ledger.admit(&original, &request, || Ok(41_u64)).unwrap();
+
+        let fresh = alice().in_room("room-a").in_new_execution();
+        assert_ne!(fresh.execution_id(), original.execution_id());
+        assert_eq!(
+            ledger.get_for_certified_device(&fresh, &invocation),
+            Some(&41)
+        );
+        assert!(ledger.contains_admitted(&invocation));
+        assert!(!ledger.contains_admitted(&InvocationId::new()));
+        for denied in [
+            mallory().in_room("room-a").in_new_execution(),
+            Caller::authenticated([1; 32], [3; 32])
+                .in_room("room-a")
+                .in_new_execution(),
+            Caller::delegated_agent("scribe", [1; 32], [2; 32])
+                .in_room("room-a")
+                .in_new_execution(),
+            alice().in_room("room-b").in_new_execution(),
+            alice()
+                .in_room("room-a")
+                .from_foreign_device(true)
+                .in_new_execution(),
+        ] {
+            assert_eq!(ledger.get_for_certified_device(&denied, &invocation), None);
+        }
+        assert_eq!(
+            ledger.get_for_certified_device(
+                &Caller::local_person("same-display-person")
+                    .in_room("room-a")
+                    .in_new_execution(),
+                &invocation,
+            ),
+            None,
+            "a display identity is not certified job authority"
+        );
     }
 
     #[test]
