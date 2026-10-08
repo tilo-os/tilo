@@ -75,7 +75,10 @@ fn sweep_many() {
 
     // Each package owns one PAYLOAD_KIB blob; everything else is shared.
     let own = u64::try_from(PAYLOAD_KIB * 1024).expect("payload size fits");
-    let cap = usage.total_bytes - own * EVICTED + own / 2;
+    let cap = usage
+        .total_bytes
+        .saturating_sub(own.saturating_mul(EVICTED))
+        .saturating_add(own.checked_div(2).expect("non-zero divisor"));
     let started = std::time::Instant::now();
     let removed = store.sweep(cap).expect("sweep the store");
     let swept = started.elapsed();
