@@ -158,13 +158,28 @@ fn prepare_slot_session(
     layers: &LayerStore,
     apply: &mut dyn Apply,
     record: &SlotRecord,
+    system: Option<&[PathBuf]>,
 ) -> Result<(), DaemonError> {
     let session = record
         .session()
         .ok_or_else(|| DaemonError::InvalidParams("slot has no session".into()))?;
     let generation = slots.generation(&record.name, record.current)?;
-    let paths = system_layers(slots, layers, record, layer_paths(layers, &generation)?)?;
-    let dropin = apply.session_layer_dropin(&record.name, generation.number, &paths)?;
+    let own = layer_paths(layers, &generation)?;
+    let paths = if let Some(system) = system {
+        let mut paths = system.to_vec();
+        for layer in own {
+            if !paths.contains(&layer) {
+                paths.push(layer);
+            }
+        }
+        paths
+    } else {
+        system_layers(slots, layers, record, own)?
+    };
+    let mut dropin = apply.session_layer_dropin(&record.name, generation.number, &paths)?;
+    if session.stand_in {
+        dropin.push_str(&apply.slot_identity_environment(&session.user)?);
+    }
     let uid = apply::session_uid(apply, &session)?;
     for unit in apply::layered_units(&session, uid) {
         apply.write_dropin(&unit, apply::LAYERS_DROPIN, &dropin)?;
@@ -220,7 +235,7 @@ pub fn restore_slots(
                 continue;
             }
         };
-        if let Err(error) = prepare_slot_session(slots, layers, apply, &record)
+        if let Err(error) = prepare_slot_session(slots, layers, apply, &record, None)
             .and_then(|()| apply.start_unit(&session.unit))
         {
             issues.push(Issue {
@@ -1196,7 +1211,7 @@ impl Daemon {
         self.slots.save(&record)?;
         self.slots.clear_pending(name)?;
         if record.kind == SlotKind::Vm {
-            actions.extend(self.restart_all_sessions(&restarts.user_units)?);
+            actions.extend(self.restart_all_sessions(&restarts.user_units, &layers)?);
             let sessions = self.sessions()?;
             self.verify_parity(sessions)?;
         } else {
@@ -1402,7 +1417,7 @@ impl Daemon {
         let mut warnings = Vec::new();
         match policy {
             Policy::VmRefresh => {
-                actions.extend(self.restart_all_sessions(&restarts.user_units)?);
+                actions.extend(self.restart_all_sessions(&restarts.user_units, &layers)?);
                 let sessions = self.sessions()?;
                 self.verify_parity(sessions)?;
                 self.slots.set_current(record, to.number)?;
@@ -1456,7 +1471,11 @@ impl Daemon {
 
     /// Slot sessions snapshot `/usr` when they start, so a refreshed VM
     /// `/usr` reaches them only through a restart.
-    fn restart_all_sessions(&mut self, user_units: &[String]) -> Result<Vec<Action>, DaemonError> {
+    fn restart_all_sessions(
+        &mut self,
+        user_units: &[String],
+        system: &[PathBuf],
+    ) -> Result<Vec<Action>, DaemonError> {
         let mut actions = Vec::new();
         for session in self.sessions()? {
             if session.login.is_some() && !session.logged_out() {
@@ -1476,7 +1495,13 @@ impl Daemon {
                     .ok_or_else(|| {
                         DaemonError::InvalidParams("stand-in session has no slot".into())
                     })?;
-                prepare_slot_session(&self.slots, &self.layers, self.apply.as_mut(), &record)?;
+                prepare_slot_session(
+                    &self.slots,
+                    &self.layers,
+                    self.apply.as_mut(),
+                    &record,
+                    Some(system),
+                )?;
             }
             let uid = apply::session_uid(self.apply.as_mut(), &session)?;
             actions.extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
@@ -2186,6 +2211,53 @@ mod tests {
     }
 
     #[test]
+    fn candidate_slot_view_preserves_identity_before_generation_commit() {
+        let root = tempfile::tempdir().unwrap();
+        let slots = SlotStore::new(root.path());
+        let layers = LayerStore::new(root.path());
+        let mut apply = RecordingApply::default();
+        let (mut proof, _) = slots
+            .create("proof", SlotKind::Headless, Owner::default(), &[])
+            .unwrap();
+        let own_hash = "03".repeat(32);
+        let own = layers.path(&own_hash);
+        fs::create_dir_all(own.join("usr")).unwrap();
+        let (_, generation) = slots
+            .prepare_swap(
+                &proof,
+                "shell",
+                &own_hash,
+                ComponentInfo::new(Scope::Session, vec![]),
+            )
+            .unwrap()
+            .unwrap();
+        slots.set_current(&mut proof, generation.number).unwrap();
+        let candidate = layers.path(&"04".repeat(32));
+        fs::create_dir_all(candidate.join("usr")).unwrap();
+        let before = slots.load(VM_SLOT).unwrap().current;
+        prepare_slot_session(
+            &slots,
+            &layers,
+            &mut apply,
+            &proof,
+            Some(std::slice::from_ref(&candidate)),
+        )
+        .unwrap();
+        assert_eq!(
+            apply.prepared_session_layers,
+            [("proof".into(), vec![candidate, own])]
+        );
+        assert_eq!(
+            slots.load(VM_SLOT).unwrap().current,
+            before,
+            "candidate view preparation must not commit a generation before readiness"
+        );
+        for unit in ["user@60001.service", "tilo-vm-session@proof.service"] {
+            assert!(apply.dropins[&(unit.into(), apply::LAYERS_DROPIN.into())].contains("Environment=\"TILO_IDENTITY_ROOT=/home/tds-proof/.local/share/tilo/test-identity\"\n"));
+        }
+    }
+
+    #[test]
     fn restored_slot_views_preserve_global_layers_and_refuse_missing_layers() {
         let root = tempfile::tempdir().unwrap();
         let slots = SlotStore::new(root.path());
@@ -2225,6 +2297,11 @@ mod tests {
             apply.prepared_session_layers,
             [("proof".into(), expected.clone())]
         );
+        for unit in ["user@60001.service", "tilo-vm-session@proof.service"] {
+            assert!(apply.dropins[&(unit.into(), apply::LAYERS_DROPIN.into())].contains(
+                "Environment=\"TILO_IDENTITY_ROOT=/home/tds-proof/.local/share/tilo/test-identity\"\n"
+            ));
+        }
         let reload = apply
             .calls
             .iter()

@@ -257,6 +257,25 @@ packages and uploads its received binary
 and this worktree's mandatory startup companion. The slot restarts through its
 normal PAM unit; no OS image rebuild, account reset or lock override is needed.
 
+### Updating the guest daemon
+
+`tilo-vm swap vmd --slot vm --builder host --profile dev` imports the
+replacement through the existing authenticated route, then opens its RPC
+from that immutable imported layer before applying the normal generation
+transition. An already-running RPC process would keep executing its old
+mount-composition code even after its binary on disk was replaced. The
+handoff preserves its state root and configured RPC flags, checks the root
+and architecture in the new handshake, and records `daemon-handoff` and
+`applying_daemon_layer` in the receipt. A failed handoff applies no generation.
+
+This needs the existing SSH route; a peer-only connection reports a clear
+error before activation. No registered daemon command or access policy is
+changed. The update still restarts affected sessions through their normal
+units: checkpoint shared work and agree on a maintenance window first.
+Stand-in views include the candidate VM layers and their private identity
+environment before restarting; readiness still precedes committing the new
+generation, and failure uses the existing recovery path.
+
 ### Repeating a host-built component swap
 
 After assembly, `--builder host` computes the same content identity as the
