@@ -13,6 +13,7 @@ fn profile(actions: &[&str]) -> PermissionProfile {
                 PermissionProfileRule::grant(
                     Scope::Action {
                         app: "so.tilo.chat".into(),
+                        resource: "chat.person:tide".into(),
                         action: (*action).into(),
                     },
                     Verb::Read,
@@ -125,6 +126,7 @@ fn profile_save_assign_is_durable_and_exact_uuid_retry_never_reexecutes() {
                         && cap.scope
                             == Scope::Action {
                                 app: "so.tilo.chat".into(),
+                                resource: "chat.person:tide".into(),
                                 action: "open-agent-conversation".into()
                             })
             );
@@ -164,6 +166,7 @@ fn shortened_profile_reassignment_removes_only_same_subject_assignment() {
     assert!(selected("tide").iter().all(|cap| cap.scope
         != Scope::Action {
             app: "so.tilo.chat".into(),
+            resource: "chat.person:tide".into(),
             action: "message".into()
         }));
     assert!(

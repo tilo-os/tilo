@@ -244,6 +244,7 @@ pub(crate) fn revalidate_operation(
             &actor,
             &ResourceRef::Action {
                 app: operation.app.clone(),
+                resource: operation.resource.clone(),
                 action: operation.action.clone(),
             },
             verb,

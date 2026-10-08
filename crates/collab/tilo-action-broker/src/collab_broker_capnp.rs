@@ -17118,6 +17118,7 @@ pub mod tests {
                 Subject::agent("scribe"),
                 Scope::Action {
                     app: "so.tilo.files".into(),
+                    resource: "files.entry:owner".into(),
                     action: "open".into(),
                 },
                 Verb::Write,
@@ -17179,6 +17180,7 @@ pub mod tests {
                 Subject::agent("scribe"),
                 Scope::Action {
                     app: "so.tilo.files".into(),
+                    resource: "files.entry:owner".into(),
                     action: "open".into(),
                 },
                 Verb::Write,

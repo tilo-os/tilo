@@ -164,7 +164,7 @@ fn certified_owner_queries_and_invokes_native_workspace_governance() {
                 "name": "Certified owner profile",
                 "description": "Production certified workspace service proof",
                 "rules": [{
-                    "scope": {"Action": {"app": "so.tilo.chat", "action": "open-agent-conversation"}},
+                    "scope": {"Action": {"app": "so.tilo.chat", "resource": "chat.person:tide", "action": "open-agent-conversation"}},
                     "effect": "Grant",
                     "verb": "Write"
                 }]
@@ -219,7 +219,7 @@ fn certified_native_profile_assignment_advances_local_policy_revision() {
         "profile.save",
         &serde_json::json!({
             "name": "Exact Agent view", "rules": [{
-                "scope": {"Action": {"app": "so.tilo.chat", "action": "open-agent-conversation"}},
+                "scope": {"Action": {"app": "so.tilo.chat", "resource": "chat.person:tide", "action": "open-agent-conversation"}},
                 "effect": "Grant", "verb": "Write"
             }]
         }),
@@ -304,7 +304,7 @@ fn native_person_profile_commands_retain_original_and_survive_owner_publication(
             "profile.save",
             serde_json::json!({
                 "name": "Native Person exact view", "rules": [{
-                    "scope": {"Action": {"app": "so.tilo.chat", "action": "open-agent-conversation"}},
+                    "scope": {"Action": {"app": "so.tilo.chat", "resource": "chat.person:tide", "action": "open-agent-conversation"}},
                     "effect": "Grant", "verb": "Read"
                 }]
             }),
@@ -451,6 +451,7 @@ fn profile_action_decision(
         &workspace.actor_for_agent(agent),
         &ResourceRef::Action {
             app: "so.tilo.chat".into(),
+            resource: "chat.person:tide".into(),
             action: action.into(),
         },
         Verb::Read,

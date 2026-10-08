@@ -34,21 +34,44 @@ impl StatePeer {
             WorkspacePermissionProfileCommand::Save { .. } => "profile.save",
             WorkspacePermissionProfileCommand::Assign { .. } => "profile.assign",
         };
+        let room = tilo_desktop_model::RoomId::parse(&self.core.room)
+            .ok_or("invalid permission profile room")?;
+        let profile = match command {
+            WorkspacePermissionProfileCommand::Assign { profile_name, .. } => {
+                let doc = self
+                    .admitted_room()
+                    .ok_or("permission profile room absent")?;
+                tilo_desktop_model::projection::workspace_permission_profiles_of(doc)
+                    .into_iter()
+                    .find(|profile| profile.name.eq_ignore_ascii_case(profile_name.trim()))
+            }
+            WorkspacePermissionProfileCommand::Save { .. } => None,
+        };
         let seconds = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|_| "permission profile clock unavailable")?
             .as_secs();
         let actor = Actor::person(Some(role), person.clone()).in_room(self.core.room.clone());
-        if decide_capability(
-            &actor,
-            &ResourceRef::Action {
-                app: tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID.into(),
-                action: action.into(),
-            },
-            Verb::Admin,
-            &caps,
-            Some(seconds),
-        ) != CapDecision::Allow
+        let allowed = |resource| {
+            decide_capability(
+                &actor,
+                &ResourceRef::Action {
+                    app: tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                    resource,
+                    action: action.into(),
+                },
+                Verb::Admin,
+                &caps,
+                Some(seconds),
+            ) == CapDecision::Allow
+        };
+        if !allowed(tilo_desktop_model::governance_resource_id(&room))
+            && !profile.as_ref().is_some_and(|profile| {
+                allowed(tilo_desktop_model::permission_profile_resource_id(
+                    &room,
+                    &profile.name,
+                ))
+            })
         {
             return Err("permission profile action is currently restricted".into());
         }
@@ -57,17 +80,10 @@ impl StatePeer {
                 self.save_governed_profile(profile, key, now)
             }
             WorkspacePermissionProfileCommand::Assign {
-                profile_name,
-                subject,
-                expiry,
+                subject, expiry, ..
             } => {
-                let doc = self
-                    .admitted_room()
-                    .ok_or("permission profile room absent")?;
-                let profile = tilo_desktop_model::projection::workspace_permission_profiles_of(doc)
-                    .into_iter()
-                    .find(|profile| profile.name.eq_ignore_ascii_case(profile_name.trim()))
-                    .ok_or("permission profile is not present in signed room policy")?;
+                let profile =
+                    profile.ok_or("permission profile is not present in signed room policy")?;
                 let assigned = profile
                     .assign_to(subject, &Principal::Person(person), *expiry)
                     .map_err(|_| "invalid permission profile assignment")?;

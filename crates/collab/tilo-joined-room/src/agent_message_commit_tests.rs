@@ -607,6 +607,7 @@ fn operation_restricted_after_source_mint_is_refused_in_actual_owner_turn() {
             Subject::Principal(Principal::Person(person)),
             Scope::Action {
                 app: proof.data.operation.app.clone(),
+                resource: proof.data.operation.resource.clone(),
                 action: proof.data.operation.action.clone(),
             },
             Effect::Restrict,
