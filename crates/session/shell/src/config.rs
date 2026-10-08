@@ -68,8 +68,8 @@ impl Default for FlatpakShareConfig {
 /// Preferred video encoder, as a preference for the media stack's element
 /// selection (see `collab::encoder::EncoderChoice::policy`).
 ///
-/// `"vaapi"` / `"nvenc"` prefer that hardware family, falling back to
-/// software.
+/// `"vaapi"` / `"nvenc"` / `"v4l2"` prefer that hardware family, falling back
+/// to software.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EncoderChoice {
@@ -81,6 +81,9 @@ pub enum EncoderChoice {
     Vaapi,
     /// Prefer NVENC; other hardware only after software.
     Nvenc,
+    /// Prefer the kernel's V4L2 codec blocks (ARM boards); other hardware only
+    /// after software.
+    V4l2,
 }
 
 pub fn load_config() -> DesktopConfig {

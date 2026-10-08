@@ -8832,6 +8832,15 @@ impl ShellOverlayHost {
             .map_or(0.0, |ptr| unsafe { (&*ptr).canvas_shift() })
     }
 
+    /// [`GroupRow::canvas_pad`] of `strip`'s row, in layout pixels.
+    pub fn strip_canvas_pad(&self, strip: StripId) -> f64 {
+        self.group_row_ptrs.get(&strip).map_or(0.0, |&ptr| {
+            // SAFETY: same contract as every other `group_row_ptrs` accessor.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.canvas_pad()
+        })
+    }
+
     /// Where on screen `strip` pans when it is drawn in canvas coordinates:
     /// its row with the shadows drawn past it, as tall as the docked wheel
     /// when the wheel rides this strip.

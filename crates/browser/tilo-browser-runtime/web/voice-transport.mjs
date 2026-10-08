@@ -13,7 +13,7 @@
  * datagrams, groups of five objects. Both forms are received.
  */
 import {createMediaQueue} from './voice-buffers.mjs';
-import {MOQ_PROTOCOL, openCarrier} from './moq-carrier.mjs';
+import {MOQ_PROTOCOL, MediaAdmissionError, openCarrier} from './moq-carrier.mjs';
 import {decodeVoiceBundle, encodeVoiceBundle, encodeVoiceObject} from './voice-profile.mjs';
 
 export const VOICE_PATH = '/moq/voice';
@@ -101,8 +101,10 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
       });
     } catch (error) {
       opened.close();
+      if (opened.admissionRevoked) throw new MediaAdmissionError();
       throw error;
     }
+    if (opened.admissionRevoked) {connection.close(); opened.close(); throw new MediaAdmissionError();}
     if (signal?.aborted) { connection.close(); opened.close(); throw signal.reason; }
     if (connection.version !== MOQ_PROTOCOL || connection.transport !== 'webtransport') {
       connection.close();
@@ -330,6 +332,7 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
       stats: () => ({...stats}),
       close,
       closed: closedPromise,
+      authorityLost: opened.authorityLost,
     };
   }
   return {connect};
