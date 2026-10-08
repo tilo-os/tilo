@@ -638,9 +638,25 @@ fn retained_damage_policy_bounds_changes_and_keeps_semantic_inventory() {
         );
     }
 
+    fn damage_policy_rejects_desktop_extras_outside_topbar_bounds() {
+        let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
+        frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
+        let mut candidate = sections(rect_scene(), Scene::new());
+        assert!(
+            frame.damage_from_sections(&candidate, false).is_some(),
+            "unchanged desktop extras preserve the bounded Quick Settings baseline"
+        );
+        candidate.desktop_extras = rect_scene();
+        assert!(
+            frame.damage_from_sections(&candidate, false).is_none(),
+            "desktop extras cannot borrow the top bar's bounded damage authority"
+        );
+    }
+
     explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions();
     damage_policy_allows_only_a_bounded_quick_settings_change();
     damage_policy_rejects_an_opaque_section_change_after_a_proven_baseline();
+    damage_policy_rejects_desktop_extras_outside_topbar_bounds();
 }
 
 fn rect_scene() -> Scene {
@@ -667,6 +683,7 @@ fn sections(
         topbar: Scene::new(),
         workspace,
         workspace_overlays: Scene::new(),
+        desktop_extras: Scene::new(),
         topbar_bounds: None,
         quick_settings,
         above_quick_settings: Scene::new(),
@@ -685,6 +702,7 @@ fn previous_sections(
         topbar: Scene::new(),
         workspace,
         workspace_overlays: Scene::new(),
+        desktop_extras: Scene::new(),
         strips: None,
         topbar_bounds: None,
         quick_settings,

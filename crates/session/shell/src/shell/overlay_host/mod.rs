@@ -919,6 +919,9 @@ pub struct ShellSceneSections {
     /// drawn in canvas coordinates ([`ui::retained_present::unbake_scroll`]);
     /// in `workspace` otherwise. Drawn right after `workspace`.
     pub workspace_overlays: Scene,
+    /// Screen-space desktop extras, after the top bar and before Quick Settings.
+    /// Opaque to bounded damage: changes require a dense frame.
+    pub desktop_extras: Scene,
     pub topbar_bounds: Option<Rect>,
     pub quick_settings: Scene,
     pub above_quick_settings: Scene,
@@ -934,8 +937,9 @@ mod backdrop_layer {
     pub const WORKSPACE: u32 = 1;
     pub const WORKSPACE_OVERLAYS: u32 = 2;
     pub const TOPBAR: u32 = 3;
-    pub const QUICK_SETTINGS: u32 = 4;
-    pub const ABOVE_QUICK_SETTINGS: u32 = 5;
+    pub const DESKTOP_EXTRAS: u32 = 4;
+    pub const QUICK_SETTINGS: u32 = 5;
+    pub const ABOVE_QUICK_SETTINGS: u32 = 6;
 }
 
 impl ShellSceneSections {
@@ -947,6 +951,7 @@ impl ShellSceneSections {
         ui::backdrop::layer_scene(&self.workspace, backdrop_layer::WORKSPACE);
         ui::backdrop::layer_scene(&self.workspace_overlays, backdrop_layer::WORKSPACE_OVERLAYS);
         ui::backdrop::layer_scene(&self.topbar, backdrop_layer::TOPBAR);
+        ui::backdrop::layer_scene(&self.desktop_extras, backdrop_layer::DESKTOP_EXTRAS);
         ui::backdrop::layer_scene(&self.quick_settings, backdrop_layer::QUICK_SETTINGS);
         ui::backdrop::layer_scene(
             &self.above_quick_settings,
@@ -962,6 +967,7 @@ impl ShellSceneSections {
             &self.workspace,
             &self.workspace_overlays,
             &self.topbar,
+            &self.desktop_extras,
             &self.quick_settings,
             &self.above_quick_settings,
         ];
@@ -1642,6 +1648,7 @@ impl ShellOverlayHost {
             topbar: Scene::new(),
             workspace: Scene::new(),
             workspace_overlays: Scene::new(),
+            desktop_extras: Scene::new(),
             topbar_bounds: None,
             quick_settings: Scene::new(),
             above_quick_settings: Scene::new(),
@@ -1653,6 +1660,7 @@ impl ShellOverlayHost {
             topbar,
             workspace,
             workspace_overlays,
+            desktop_extras,
             quick_settings,
             above_quick_settings,
             ..
@@ -1693,7 +1701,8 @@ impl ShellOverlayHost {
                 presence,
             );
         } else {
-            self.draw_desktop_extras(workspace, transform, text_renderer, theme, presence);
+            // Match the independent dense producer: desktop extras follow OS top-bar chrome.
+            self.draw_desktop_extras(desktop_extras, transform, text_renderer, theme, presence);
         }
         let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
         for row in rows {
