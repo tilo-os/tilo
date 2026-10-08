@@ -1074,24 +1074,35 @@ mod tests {
         a_machine_with_no_audio_daemon_shows_no_readout();
     }
 
-    /// An audio control that must never be reached.
-    struct Untouchable;
+    /// An audio control that counts every write it is asked for.
+    #[derive(Default)]
+    struct Untouchable {
+        writes: Cell<usize>,
+    }
+
+    impl Untouchable {
+        fn refuse(&self) -> Result<(), String> {
+            self.writes.set(self.writes.get().saturating_add(1));
+            Err("no write without a known starting level".into())
+        }
+    }
 
     impl AudioControl for Untouchable {
         fn set_volume(&self, _: f32) -> Result<(), String> {
-            panic!("no write without a known starting level")
+            self.refuse()
         }
         fn set_mute(&self, _: bool) -> Result<(), String> {
-            panic!("no write without a known starting level")
+            self.refuse()
         }
         fn toggle_mute(&self) -> Result<(), String> {
-            panic!("no write without a known starting level")
+            self.refuse()
         }
     }
 
     #[test]
     fn volume_key_without_snapshot_does_not_query_daemon() {
         let rec = Recorder::default();
+        let audio = Untouchable::default();
         let unread = StatusBridge::new();
         let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
         for key in [
@@ -1104,7 +1115,7 @@ mod tests {
                     key,
                     &Context {
                         actions: &rec,
-                        audio: &Untouchable,
+                        audio: &audio,
                         status,
                         transport_osd: &transport_osd,
                         airplane_mode: false,
@@ -1118,6 +1129,7 @@ mod tests {
             }
         }
         assert!(rec.calls.borrow().is_empty());
+        assert_eq!(audio.writes.get(), 0, "no write is even attempted");
         assert_eq!(
             unread.snapshot().volume,
             None,
