@@ -1302,7 +1302,7 @@ impl CapnpBrokerState {
                 continue;
             }
             tokio::select! {
-                changed = changes.changed() => if changed.is_err() {
+                seen = changes.changed() => if seen.is_err() {
                     return Err(ActionHostError::Unavailable {
                         reason: "the broker stopped".into(),
                     });
