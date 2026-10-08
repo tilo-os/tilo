@@ -70,7 +70,7 @@ impl AgentConversationSurface {
         // ordinal. Do this at the ownership transfer, not on every later
         // surface reconciliation: a repeated sync may legitimately find a
         // freshly focused Send or intent control in the attached view.
-        parent.keyboard_target = None;
+        parent.clear_keyboard_target();
         std::mem::swap(&mut parent.composer_main, &mut self.view.composer_main);
         parent.focus = self.view.focus;
         parent.draft_main.clone_from(&self.view.draft_main);
@@ -92,7 +92,7 @@ impl AgentConversationSurface {
         // at the Return control that attached this exact editor. Re-floating
         // retires that control state; the moved editor becomes the child
         // surface's truthful keyboard and accessibility focus owner again.
-        self.view.keyboard_target = None;
+        self.view.clear_keyboard_target();
         self.view.draft_main.clone_from(&parent.draft_main);
         self.view.scroll = parent.scroll;
         self.view_owns_editor = true;

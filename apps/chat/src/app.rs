@@ -923,6 +923,10 @@ pub struct ChatApp {
     /// Ordinal in `keyboard_targets()`. Derived from the current hit inventory
     /// so Tab and assistive focus traverse the same controls a pointer can use.
     pub(crate) keyboard_target: Option<usize>,
+    /// Stable semantic identity for `keyboard_target`. Dynamic Agent controls
+    /// can enter or leave the ring between focus and a later physical Enter;
+    /// the ordinal is only a frame-local cache of this identity.
+    pub(crate) keyboard_target_semantic: Option<String>,
     pub(crate) last_mouse: Point,
     /// One shared tooltip controller for Chat's immediate-mode controls. This
     /// gives icon-only buttons and elided header text the same dwell behaviour
@@ -1157,6 +1161,7 @@ impl ChatApp {
             video,
             hits: Vec::new(),
             keyboard_target: None,
+            keyboard_target_semantic: None,
             last_mouse: Point::ZERO,
             call_hovered: None,
             tooltips: TooltipHost::new(),
@@ -2743,6 +2748,72 @@ impl ChatApp {
         views
     }
 
+    pub(crate) fn clear_keyboard_target(&mut self) {
+        self.keyboard_target = None;
+        self.keyboard_target_semantic = None;
+    }
+
+    pub(crate) fn resolved_keyboard_target(&self) -> Option<usize> {
+        let targets = self.semantic_hits();
+        match self.keyboard_target_semantic.as_deref() {
+            Some(semantic) => targets
+                .iter()
+                .position(|(_, hit, ..)| hit.semantic_id() == semantic),
+            None => self.keyboard_target.filter(|index| *index < targets.len()),
+        }
+    }
+
+    pub(crate) fn reconcile_keyboard_target(&mut self) -> Option<usize> {
+        let resolved = self.resolved_keyboard_target();
+        self.keyboard_target = resolved;
+        if resolved.is_none() {
+            self.keyboard_target_semantic = None;
+        }
+        resolved
+    }
+
+    pub(crate) fn keyboard_owns_input(&self, input: &Hit) -> bool {
+        if self.keyboard_target_semantic.is_none() && self.keyboard_target.is_none() {
+            return true;
+        }
+        self.resolved_keyboard_target()
+            .and_then(|index| {
+                self.semantic_hits()
+                    .get(index)
+                    .map(|(_, hit, ..)| hit.semantic_id())
+            })
+            .is_some_and(|semantic| semantic == input.semantic_id())
+    }
+
+    fn keyboard_control_snapshot(&self) -> &'static str {
+        let Some((_, hit, ..)) = self
+            .resolved_keyboard_target()
+            .and_then(|index| self.semantic_hits().get(index).cloned())
+        else {
+            return "none";
+        };
+        match hit {
+            Hit::Send => "send",
+            Hit::AgentWindow if self.agent_window_is_return() => "return",
+            Hit::AgentWindow => "float",
+            Hit::FocusMain | Hit::FocusThread => "editor",
+            _ => "other",
+        }
+    }
+
+    fn agent_message_submission_phase(message: &AgentMessageSubmission) -> &'static str {
+        match message {
+            AgentMessageSubmission::Providers(_) => "providers",
+            AgentMessageSubmission::LaunchRows(_) => "launch_rows",
+            AgentMessageSubmission::LaunchConfirm { .. } => "launch_confirm",
+            AgentMessageSubmission::LaunchInvoke { .. } => "launch_invoke",
+            AgentMessageSubmission::AwaitPublisher { .. } => "await_publisher",
+            AgentMessageSubmission::Rows(_) => "rows",
+            AgentMessageSubmission::Confirm { .. } => "confirm",
+            AgentMessageSubmission::Invoke { .. } => "invoke",
+        }
+    }
+
     pub(crate) fn poll_agent_message_submission(
         &self,
         workspace: &str,
@@ -3435,8 +3506,13 @@ impl ChatApp {
     /// from `reload` and after any focus change.
     pub(crate) fn set_composer_focus(&mut self) {
         let editing = self.editing.is_some() || self.rename.is_some() || !self.host_focused;
-        let main = matches!(self.focus, Focus::Main) && !editing;
-        let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
+        let main = matches!(self.focus, Focus::Main)
+            && !editing
+            && self.keyboard_owns_input(&Hit::FocusMain);
+        let thread = matches!(self.focus, Focus::Thread)
+            && self.thread_open.is_some()
+            && !editing
+            && self.keyboard_owns_input(&Hit::FocusThread);
         self.composer_main.set_focus(main);
         self.composer_thread.set_focus(thread);
         self.edit_input
@@ -5473,12 +5549,22 @@ impl Widget for ChatApp {
                     "execution": execution,
                 })
             });
+        let now = ui::time::now();
+        let pending_messages = self.agent_submissions.get();
+        let pending_message_count = pending_messages
+            .values()
+            .filter(|submission| submission.intent == AgentComposerIntent::Message)
+            .count();
         let message_submission = self.direct_agent.as_ref().and_then(|agent| {
             let key = (self.active_ws.clone(), agent.clone());
-            let pending = self.agent_submissions.get();
-            let submission = pending.get(&key)?;
+            let submission = pending_messages.get(&key)?;
             (submission.intent == AgentComposerIntent::Message).then(|| {
                 serde_json::json!({
+                    "phase": submission.message.as_ref().map_or("uninitialized", Self::agent_message_submission_phase),
+                    "pending_count": pending_message_count,
+                    "poll_scheduled": submission.next_poll_at.is_some(),
+                    "poll_due": submission.next_poll_at.is_some_and(|deadline| deadline <= now),
+                    "resolve_expired": submission.give_up_at <= now,
                     "draft_revision": submission.draft_revision,
                     "current_revision": self
                         .composer_main
@@ -5492,6 +5578,8 @@ impl Widget for ChatApp {
         });
         Some(serde_json::json!({
             "app": "so.tilo.chat",
+            "keyboard_control": self.keyboard_control_snapshot(),
+            "composer_focused": self.composer_main.is_focused(),
             "agent_task": current,
             "agent_task_presentation": Self::agent_task_snapshot(self),
             "agent_message_progress": self.agent_message_progress_snapshot(),
@@ -5885,8 +5973,18 @@ impl Widget for ChatApp {
         // Immediate-mode keyboard focus needs a visible counterpart. The ring
         // is painted last so it remains legible on rail, sidebar and popovers.
         let semantic = Self::deduplicate_semantic_hits(self.semantic_hits_from(&hits));
+        let focused_index = match self.keyboard_target_semantic.as_deref() {
+            Some(target) => semantic
+                .iter()
+                .position(|(_, hit, ..)| hit.semantic_id() == target),
+            None => self.keyboard_target.filter(|index| *index < semantic.len()),
+        };
+        self.keyboard_target = focused_index;
+        if focused_index.is_none() {
+            self.keyboard_target_semantic = None;
+        }
         if self.host_focused
-            && let Some(index) = self.keyboard_target
+            && let Some(index) = focused_index
         {
             if let Some((rect, ..)) = semantic.get(index) {
                 ui::widget::paint_focus_ring(
@@ -5897,7 +5995,7 @@ impl Widget for ChatApp {
                     theme,
                 );
             } else {
-                self.keyboard_target = None;
+                self.clear_keyboard_target();
             }
         }
 
@@ -6058,7 +6156,7 @@ impl Widget for ChatApp {
                 let semantic_id = hit.semantic_id();
                 let input = self.text_field_access(&hit);
                 let focused = self.host_focused
-                    && self.keyboard_target.map_or_else(
+                    && self.resolved_keyboard_target().map_or_else(
                         || input.as_ref().is_some_and(|(focused, _, _)| *focused),
                         |target| target == index,
                     );
@@ -6166,7 +6264,11 @@ impl Widget for ChatApp {
         }
         self.left_flap.set_resize_focused(false);
         self.right_flap.set_resize_focused(false);
+        let Some((_, hit, ..)) = self.semantic_hits().get(*index).cloned() else {
+            return false;
+        };
         self.keyboard_target = Some(*index);
+        self.keyboard_target_semantic = Some(hit.semantic_id());
         true
     }
 
@@ -6206,7 +6308,7 @@ impl Widget for ChatApp {
             // `keyboard_target` is the immediate-mode Tab ring. A semantic
             // editor action moves focus into the actual TextInput instead, so
             // let that editor be the single focused accessibility child.
-            self.keyboard_target = None;
+            self.clear_keyboard_target();
 
             match action {
                 Action::Focus | Action::Activate => {
@@ -6403,7 +6505,7 @@ impl ChatApp {
         let handled = self.left_flap.perform_resize_action(target, action)
             || self.right_flap.perform_resize_action(target, action);
         if handled {
-            self.keyboard_target = None;
+            self.clear_keyboard_target();
             self.reconcile_flaps();
             self.canonical_dirty = true;
         }

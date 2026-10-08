@@ -415,7 +415,7 @@ impl ChatApp {
         handled: &mut bool,
     ) -> bool {
         let mut focus_requested = false;
-        self.keyboard_target = None;
+        self.clear_keyboard_target();
         match self.hit_at(self.last_mouse) {
             Some(Hit::CallDragHandle) => {
                 let huddle = self.call_video_rect();
@@ -1187,7 +1187,7 @@ impl ChatApp {
         self.emoji_scroll = 0.0;
         // Space and Enter now type into the query rather than re-activating
         // the control that opened the picker.
-        self.keyboard_target = None;
+        self.clear_keyboard_target();
     }
 
     fn on_hit_emoji_choice(&mut self, e: &str, doc: &mut ui::widget::Edits<'_>) {
@@ -1475,17 +1475,17 @@ impl ChatApp {
     fn move_keyboard_target(&mut self, backwards: bool) {
         let targets = self.semantic_hits();
         if targets.is_empty() {
-            self.keyboard_target = None;
+            self.clear_keyboard_target();
             return;
         }
-        let next = match self.keyboard_target {
+        let next = match self.resolved_keyboard_target() {
             Some(current) if backwards => current.checked_sub(1).unwrap_or(targets.len() - 1),
             Some(current) => (current + 1) % targets.len(),
             None if backwards => targets.len() - 1,
             None => 0,
         };
         let Some((_, hit, ..)) = targets.get(next) else {
-            self.keyboard_target = None;
+            self.clear_keyboard_target();
             return;
         };
         self.focus_keyboard_target(next, hit);
@@ -1498,6 +1498,7 @@ impl ChatApp {
         self.left_flap.set_resize_focused(false);
         self.right_flap.set_resize_focused(false);
         self.keyboard_target = Some(index);
+        self.keyboard_target_semantic = Some(hit.semantic_id());
         match hit {
             Hit::FocusMain => {
                 self.focus = Focus::Main;
@@ -1519,11 +1520,11 @@ impl ChatApp {
     fn activate_keyboard_target(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
         let targets = self.semantic_hits();
         let Some((_, hit, ..)) = self
-            .keyboard_target
+            .reconcile_keyboard_target()
             .and_then(|index| targets.get(index))
             .cloned()
         else {
-            self.keyboard_target = None;
+            self.clear_keyboard_target();
             return false;
         };
         self.on_hit(hit, doc);
@@ -4215,12 +4216,12 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         render_frame(&mut app, 800.0, 600.0);
-        app.keyboard_target = Some(
-            app.semantic_hits()
-                .iter()
-                .position(|(_, hit, ..)| matches!(hit, Hit::AgentDragHandle))
-                .expect("the grip is in the keyboard ring"),
-        );
+        let grip_index = app
+            .semantic_hits()
+            .iter()
+            .position(|(_, hit, ..)| matches!(hit, Hit::AgentDragHandle))
+            .expect("the grip is in the keyboard ring");
+        app.focus_keyboard_target(grip_index, &Hit::AgentDragHandle);
         feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
         assert!(
             app.direct_agent.is_none(),
@@ -4660,6 +4661,7 @@ mod tests {
     ) {
         let return_target = format!("agent-surface:{id}|{}", Hit::AgentWindow.semantic_id());
         app.keyboard_target = Some(parent_float_target);
+        app.keyboard_target_semantic = Some(Hit::AgentWindow.semantic_id());
         assert!(
             !ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
                 app,
@@ -4752,18 +4754,42 @@ mod tests {
             &mut ui::widget::Edits::lend(doc),
             &automerge::ROOT,
         ));
-        let send_target = app.keyboard_target.expect("Send owns the keyboard ring");
+        assert!(app.keyboard_target.is_some(), "Send owns the keyboard ring");
+        let send_semantic = app.keyboard_target_semantic.clone();
+        app.keyboard_target = app
+            .semantic_hits()
+            .iter()
+            .position(|(_, hit, ..)| matches!(hit, Hit::ComposerEmoji(_)));
+        render_frame(app, 1200.0, 800.0);
+        assert_eq!(app.keyboard_target_semantic, send_semantic);
+        assert_eq!(
+            app.resolved_keyboard_target(),
+            app.semantic_hits()
+                .iter()
+                .position(|(_, hit, ..)| matches!(hit, Hit::Send)),
+            "a rebuilt dynamic ring resolves the focused semantic Send identity, not its stale ordinal"
+        );
         let accepted = app.agent_submission_acceptances.get();
 
         app.open_agent_conversation("ws_home", "scribe")
             .expect("the same active owner route remains valid");
         app.poll_agent_tasks();
-        _ = ui::Widget::native_input_snapshot(app, doc, &automerge::ROOT);
+        let snapshot = ui::Widget::native_input_snapshot(app, doc, &automerge::ROOT)
+            .expect("closed native input snapshot");
         assert_eq!(
             app.keyboard_target,
-            Some(send_target),
+            app.resolved_keyboard_target(),
             "reconciling an already attached editor cannot retire fresh Send focus"
         );
+        assert_eq!(snapshot["keyboard_control"], "send");
+        assert_eq!(snapshot["composer_focused"], false);
+        assert_eq!(
+            snapshot["agent_message_submission"],
+            serde_json::Value::Null
+        );
+        let encoded = serde_json::to_string(&snapshot).expect("serialize closed snapshot");
+        assert!(!encoded.contains("東京"));
+        assert!(!encoded.contains("Original draft"));
 
         feed_root_mods(app, doc, &key_named(NamedKey::Enter), Modifiers::default());
         assert_eq!(app.agent_submission_acceptances.get(), accepted + 1);
@@ -4773,6 +4799,15 @@ mod tests {
                 .contains_key(&("ws_home".into(), "scribe".into())),
             "physical Enter submits through the still-focused production Send control"
         );
+        let pending = ui::Widget::native_input_snapshot(app, doc, &automerge::ROOT)
+            .expect("closed pending Message snapshot");
+        assert_eq!(pending["keyboard_control"], "send");
+        assert_eq!(pending["agent_message_submission"]["phase"], "providers");
+        assert_eq!(pending["agent_message_submission"]["pending_count"], 1);
+        assert_eq!(pending["agent_message_submission"]["poll_scheduled"], true);
+        let encoded = serde_json::to_string(&pending).expect("serialize pending snapshot");
+        assert!(!encoded.contains("東京"));
+        assert!(!encoded.contains("Original draft"));
     }
 
     fn assert_refloated_editor_accessibility(app: &mut ChatApp, doc: &mut AutoCommit, id: &str) {
