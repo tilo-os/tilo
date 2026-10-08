@@ -96,7 +96,8 @@ impl Widget for AppNoticeCard {
         available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        self.card.measure(known, available, text_renderer)
+        // This is widget layout measurement, not TextRenderer pixel typography.
+        Widget::measure(&mut self.card, known, available, text_renderer)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
