@@ -1528,8 +1528,16 @@ impl DeviceFabricRuntime {
             &tentative_stamp,
             policy,
         );
+        let hardware = policy
+            .permits(ContinuityCapability::DisplayInput)
+            .then(settings_store::hardware::DisplayHardwareSnapshot::load)
+            .flatten();
+        let rich_outputs = hardware.as_ref().and_then(native_display_outputs);
         if let Some(display) = candidate.display.as_mut() {
-            display.outputs = native_display_connectors();
+            display.outputs = hardware
+                .as_ref()
+                .map(native_display_connectors)
+                .unwrap_or_default();
         }
         candidate.presence.wake_routes = crate::shell::device_wake::local_routes(
             previous
@@ -1540,7 +1548,15 @@ impl DeviceFabricRuntime {
         // Connectors are populated after build_local_snapshot; preserve their
         // exact layout stamp only once the complete observation is available.
         preserve_unchanged_stamps(&mut candidate, previous.as_ref());
-        let fingerprint = local_snapshot_fingerprint(&candidate);
+        if let (Some(display), Some(outputs)) = (&mut candidate.display, &rich_outputs) {
+            refresh_display_observation_revision(
+                display,
+                &network.device_fabric(),
+                outputs,
+                &tentative_stamp,
+            );
+        }
+        let fingerprint = local_observation_fingerprint(&candidate, rich_outputs.as_deref());
         publish_device_displays(network, policy);
         let heartbeat_due = self
             .last_publish
@@ -1561,6 +1577,17 @@ impl DeviceFabricRuntime {
                 self.local_fingerprint = fingerprint;
                 self.last_publish = Some(now);
             }
+        }
+        if let Some(outputs) = rich_outputs
+            && let Some(stamp) = network
+                .device_fabric()
+                .snapshots()
+                .get(&device)
+                .and_then(|snapshot| snapshot.display.as_ref())
+                .map(|display| display.stamp.clone())
+            && let Err(error) = network.publish_local_display_outputs(&stamp, outputs)
+        {
+            tracing::debug!(%error, "could not publish rich display observations");
         }
         self.merge_remote_state(network, selection, &device, policy);
         crate::shell::device_unlock_runtime::refresh(network);
@@ -6439,11 +6466,10 @@ pub fn take_spatial_input_releases() -> Vec<crate::shell::personal_continuity::D
     )
 }
 
-fn native_display_connectors() -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {
+fn native_display_connectors(
+    snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
+) -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {
     use crate::shell::device_fabric::DisplayConnectorPlacement;
-    let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() else {
-        return Vec::new();
-    };
     snapshot
         .layout
         .iter()
@@ -6471,6 +6497,62 @@ fn native_display_connectors() -> Vec<crate::shell::device_fabric::DisplayConnec
             })
         })
         .take(32)
+        .collect()
+}
+
+fn native_display_outputs(
+    snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
+) -> Option<Vec<crate::shell::device_fabric::DisplayOutputObservation>> {
+    use crate::shell::device_fabric::DisplayOutputObservation;
+    use settings_store::person_displays::{DeviceOutput, MAX_DEVICE_OUTPUTS};
+    if snapshot.outputs.len() > MAX_DEVICE_OUTPUTS {
+        return None;
+    }
+    let identities = settings_store::hardware::DisplaySet::of(
+        snapshot
+            .outputs
+            .iter()
+            .map(|output| (&output.descriptor).into()),
+    );
+    snapshot
+        .outputs
+        .iter()
+        .map(|output| {
+            if !output.scale.is_finite() || !(0.5..=4.0).contains(&output.scale) {
+                return None;
+            }
+            let connector = &output.descriptor.connector;
+            let placement = snapshot
+                .layout
+                .iter()
+                .find(|placement| &placement.connector == connector);
+            let name = output
+                .descriptor
+                .monitor
+                .as_ref()
+                .map(settings_store::hardware::MonitorIdentity::display_name)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| output.descriptor.label().to_owned());
+            let facts = DeviceOutput {
+                id: identities.members.get(connector)?.clone(),
+                name,
+                builtin: output.builtin,
+                x: placement.map_or(0, |placement| placement.x),
+                y: placement.map_or(0, |placement| placement.y),
+                width: placement.map_or(0, |placement| placement.width),
+                height: placement.map_or(0, |placement| placement.height),
+                mode_width: output.current_mode.width,
+                mode_height: output.current_mode.height,
+                refresh_mhz: output.current_mode.refresh_mhz,
+                scale_milli: format!("{:.0}", output.scale * 1000.0).parse().ok()?,
+                connected: true,
+                enabled: placement.is_some(),
+            };
+            facts.valid().then(|| DisplayOutputObservation {
+                connector: connector.clone(),
+                output: facts,
+            })
+        })
         .collect()
 }
 
@@ -6533,6 +6615,23 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
     };
     if let Err(error) = snapshot.save() {
         tracing::debug!(%error, "could not publish device display observations");
+    }
+    let view = settings_store::person_displays::PersonDisplays {
+        schema_version: settings_store::person_displays::SCHEMA_VERSION,
+        publisher_pid,
+        publisher_start_ticks,
+        local_device: local
+            .as_ref()
+            .map_or_else(String::new, |device| device.as_str().to_owned()),
+        devices: local
+            .as_ref()
+            .filter(|_| policy.permits(ContinuityCapability::DisplayInput))
+            .map_or_else(Vec::new, |local| {
+                network.device_fabric().person_devices(local)
+            }),
+    };
+    if let Err(error) = view.save() {
+        tracing::debug!(%error, "could not publish person display observations");
     }
 }
 
@@ -6642,6 +6741,27 @@ fn policy_capabilities(
         app_continuation: policy.permits(ContinuityCapability::AppContinuations),
         audio_group: policy.permits(ContinuityCapability::Media) && local.audio_output,
     }
+}
+
+fn refresh_display_observation_revision(
+    display: &mut DisplayPlacement,
+    fabric: &DeviceFabric,
+    outputs: &[crate::shell::device_fabric::DisplayOutputObservation],
+    stamp: &FabricStamp,
+) {
+    if fabric.display_outputs(&display.device) != Some(outputs) {
+        // Mode or identity changes matter even when logical geometry is unchanged.
+        display.stamp = stamp.clone();
+    }
+}
+
+fn local_observation_fingerprint(
+    snapshot: &DeviceFabricSnapshot,
+    outputs: Option<&[crate::shell::device_fabric::DisplayOutputObservation]>,
+) -> Option<[u8; 32]> {
+    postcard::to_allocvec(&(local_snapshot_fingerprint(snapshot), outputs))
+        .ok()
+        .map(|bytes| *blake3::hash(&bytes).as_bytes())
 }
 
 fn local_snapshot_fingerprint(snapshot: &DeviceFabricSnapshot) -> Option<[u8; 32]> {
@@ -7331,6 +7451,141 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    #[test]
+    fn rich_display_native_observation_preserves_identity_mode_scale_and_inactive_outputs() {
+        use settings_store::hardware::{
+            DisplayHardwareSnapshot, DisplayOutputSnapshot, LiveOutputPlacement, MonitorIdentity,
+            OutputDescriptor, OutputMode,
+        };
+        let panel = DisplayOutputSnapshot {
+            descriptor: OutputDescriptor {
+                connector: "eDP-1".into(),
+                connector_label: String::new(),
+                modes: Vec::new(),
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: Some(MonitorIdentity {
+                    make: "PanelCo".into(),
+                    model: "Panel".into(),
+                    serial: "123".into(),
+                    physical_size_mm: None,
+                }),
+            },
+            current_mode: OutputMode {
+                width: 2560,
+                height: 1600,
+                refresh_mhz: 59_940,
+            },
+            scale: 2.0,
+            builtin: true,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profile_labels: BTreeMap::new(),
+        };
+        let mut inactive = panel.clone();
+        inactive.descriptor.connector = "DP-2".into();
+        inactive.descriptor.monitor = None;
+        inactive.builtin = false;
+        let mut hardware = DisplayHardwareSnapshot {
+            outputs: vec![panel, inactive],
+            layout: vec![LiveOutputPlacement {
+                connector: "eDP-1".into(),
+                x: 40,
+                y: 20,
+                width: 1280,
+                height: 800,
+            }],
+            ..Default::default()
+        };
+        let outputs = native_display_outputs(&hardware).unwrap();
+        assert_eq!(outputs.len(), 2);
+        let panel = &outputs[0].output;
+        assert!(panel.builtin && panel.connected && panel.enabled);
+        assert_eq!(
+            (panel.x, panel.y, panel.width, panel.height),
+            (40, 20, 1280, 800)
+        );
+        assert_eq!(
+            (panel.mode_width, panel.mode_height, panel.refresh_mhz),
+            (2560, 1600, 59_940)
+        );
+        assert_eq!(panel.scale_milli, 2000);
+        assert_eq!(panel.name, "PanelCo Panel");
+        assert!(!outputs[1].output.enabled);
+        assert_eq!(outputs[1].output.width, 0);
+        hardware.outputs[0].descriptor.connector = "eDP-9".into();
+        assert_eq!(
+            native_display_outputs(&hardware).unwrap()[0].output.id,
+            panel.id
+        );
+        hardware.outputs[0].scale = f64::NAN;
+        assert!(native_display_outputs(&hardware).is_none());
+    }
+
+    #[test]
+    fn rich_display_mode_change_gets_a_new_revision_without_geometry_change() {
+        let owner = DeviceId::new("local-mode-test").unwrap();
+        let previous = drag_snapshot(owner.clone(), 0);
+        let old_revision = previous.display.as_ref().unwrap().stamp.clone();
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(previous.clone()).unwrap();
+        let mut outputs = vec![crate::shell::device_fabric::DisplayOutputObservation {
+            connector: "eDP-1".into(),
+            output: settings_store::person_displays::DeviceOutput {
+                id: "monitor:panel".into(),
+                name: "Panel".into(),
+                builtin: true,
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 720,
+                mode_width: 1600,
+                mode_height: 900,
+                refresh_mhz: 60_000,
+                scale_milli: 1250,
+                connected: true,
+                enabled: true,
+            },
+        }];
+        fabric
+            .observe_display_outputs(&owner, &old_revision, outputs.clone())
+            .unwrap();
+        let fingerprint = local_observation_fingerprint(&previous, Some(&outputs));
+        let next_revision = FabricStamp {
+            counter: old_revision.counter + 1,
+            device: owner,
+        };
+        let mut candidate = previous.clone();
+        candidate.display.as_mut().unwrap().stamp = next_revision.clone();
+        preserve_unchanged_stamps(&mut candidate, Some(&previous));
+        refresh_display_observation_revision(
+            candidate.display.as_mut().unwrap(),
+            &fabric,
+            &outputs,
+            &next_revision,
+        );
+        assert_eq!(candidate.display.as_ref().unwrap().stamp, old_revision);
+        outputs[0].output.refresh_mhz = 59_940;
+        refresh_display_observation_revision(
+            candidate.display.as_mut().unwrap(),
+            &fabric,
+            &outputs,
+            &next_revision,
+        );
+        assert_eq!(candidate.display.as_ref().unwrap().stamp, next_revision);
+        assert_eq!(
+            candidate.display.as_ref().unwrap().rect,
+            previous.display.unwrap().rect
+        );
+        assert_ne!(
+            local_observation_fingerprint(&candidate, Some(&outputs)),
+            fingerprint
+        );
+    }
 
     fn roaming_test_policy(wifi_settings: bool, display_input: bool) -> ContinuityPolicySnapshot {
         ContinuityPolicySnapshot::from_document(
