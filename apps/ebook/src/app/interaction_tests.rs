@@ -4546,7 +4546,7 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
                 .find(|a| a.id == "delete-comment")
                 .expect("delete-comment spec");
             match &spec.input {
-                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+                tilo_actions::ActionInput::Immediate(enc) => enc.as_ref().clone(),
                 tilo_actions::ActionInput::Prompted { .. }
                 | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("delete-comment is immediate")
