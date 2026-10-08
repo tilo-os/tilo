@@ -3035,6 +3035,73 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 response({**current, **changed}), first
             ))
 
+    def test_return_control_uses_current_exact_child_geometry_and_fresh_accessibility(self):
+        previous = {
+            "app_id": "so.tilo.chat", "floating_id": "float-a",
+            "surface_id": 7, "frame_seq": 1,
+        }
+        current = {
+            **previous, "frame_seq": 9, "presented": True, "pixels_ready": True,
+            "last_error": None,
+            "rect": {"x": 700.0, "y": 100.0, "w": 600.0, "h": 500.0},
+            "content_rect": {"x": 720.0, "y": 110.0, "w": 560.0, "h": 470.0},
+            "content_origin": {"x": 710.0, "y": 100.0},
+            "keyboard_focused": True,
+        }
+        response = {"answer": {"frames": [current]}}
+        access = {"bus": "chat", "control": "/return"}
+        target = {
+            "client_rect": {"x": 40, "y": 20, "w": 30, "h": 10},
+            "global_center": {"x": 765.0, "y": 125.0},
+        }
+        with patch.object(PROOF, "call", return_value=response), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "private_editor_observation", return_value={"selection": [1, 2]}), \
+                patch.object(PROOF, "component_global_target", return_value=target) as component:
+            observed = PROOF.current_detached_control_target(
+                "socket", previous, "Tide", "private", {"selection": [1, 2]}
+            )
+        self.assertEqual(observed, (current, access, target))
+        component.assert_called_once_with(
+            access, "/return", PROOF.presented_content_geometry(current),
+            "Return conversation control",
+        )
+
+        for changed in ({"surface_id": 8}, {"floating_id": "float-b"}):
+            with self.subTest(changed=changed), \
+                    patch.object(PROOF, "call", return_value={
+                        "answer": {"frames": [{**current, **changed}]}
+                    }), \
+                    patch.object(PROOF, "agent_conversation_accessibility") as accessibility:
+                self.assertIsNone(PROOF.current_detached_control_target(
+                    "socket", previous, "Tide", "private", {"selection": [1, 2]}
+                ))
+                accessibility.assert_not_called()
+
+        moved = {
+            **current,
+            "frame_seq": current["frame_seq"] + 1,
+            "rect": {**current["rect"], "x": current["rect"]["x"] + 24.0},
+            "content_rect": {
+                **current["content_rect"],
+                "x": current["content_rect"]["x"] + 24.0,
+            },
+            "content_origin": {
+                **current["content_origin"],
+                "x": current["content_origin"]["x"] + 24.0,
+            },
+        }
+        with patch.object(PROOF, "call", side_effect=[
+                    response, {"answer": {"frames": [moved]}},
+                ]), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "private_editor_observation", return_value={"selection": [1, 2]}), \
+                patch.object(PROOF, "component_global_target") as component:
+            self.assertIsNone(PROOF.current_detached_control_target(
+                "socket", previous, "Tide", "private", {"selection": [1, 2]}
+            ))
+            component.assert_not_called()
+
     def test_presented_content_geometry_accepts_only_authoritative_finite_fields(self):
         expected = {
             "rect": {"x": 700.0, "y": 100.0, "w": 600.0, "h": 500.0},

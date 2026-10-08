@@ -1392,6 +1392,36 @@ def current_same_floating_presentation(response, previous):
     return current
 
 
+def current_detached_control_target(socket, previous, agent_name, draft, expected_editor):
+    """Bind one fresh AT control extent to its exact current native child."""
+    current = current_same_floating_presentation(
+        call(socket, {"op": "foreign_frames"}), previous
+    )
+    if current is None:
+        return None
+    access = agent_conversation_accessibility(agent_name, detached=True)
+    if access is None:
+        return None
+    if private_editor_observation(access, draft) != expected_editor:
+        raise RuntimeError("refreshing Return changed private editor state")
+    first_geometry = presented_content_geometry(current)
+    confirmed = current_same_floating_presentation(
+        call(socket, {"op": "foreign_frames"}), current
+    )
+    if confirmed is None:
+        return None
+    confirmed_geometry = presented_content_geometry(confirmed)
+    if confirmed_geometry != first_geometry:
+        return None
+    target = component_global_target(
+        access,
+        access["control"],
+        confirmed_geometry,
+        "Return conversation control",
+    )
+    return confirmed, access, target
+
+
 def wait_for_floating_keyboard_seat(socket, previous, output, process):
     """Require the actual same ordinary child seat before a physical Return key."""
     evidence = {"observation_count": 0, "initial": None, "last": None}
@@ -1872,12 +1902,19 @@ def native_float_return(socket, room, record, output, size, process):
     before_return = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
     if before_return is None:
         raise RuntimeError("Chat's primary presentation disappeared before Return")
-    return_x, return_y = component_global_center(
-        access, access["control"], float_geometry, "Return conversation control"
+    current_frame, access, return_target = wait_for(
+        "current detached Tide Return control",
+        lambda: current_detached_control_target(
+            socket, frame, "Tide", draft, before_return_editor
+        ),
+        process,
     )
+    return_x = return_target["global_center"]["x"]
+    return_y = return_target["global_center"]["y"]
     require_ok(call(socket, {"op": "click_at", "x": return_x, "y": return_y}))
     wait_for("the detached Chat window to stop presenting", lambda: not floating_surface_presenting(
-        call(socket, {"op": "foreign_frames"}), "so.tilo.chat", frame["floating_id"]), process)
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat",
+        current_frame["floating_id"]), process)
 
     def repainted_primary():
         primary = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
