@@ -370,6 +370,7 @@ suites = [
 name = "vm-acceptance"
 inputs = ["scripts/vm-acceptance/"]
 suites = [
+  "scripts/vm-acceptance/test_action_discovery.py",
   "scripts/vm-acceptance/test_apps.py",
   "scripts/vm-acceptance/test_app_startup.py",
   "scripts/vm-acceptance/test_ci_select.py",

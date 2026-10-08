@@ -349,8 +349,7 @@ not a latency measurement.
 The same fixture can be qualified against the real native Chromium helper:
 
 ```bash
-RCARGO_CONFIG=/absolute/path/to/rcargo/config.toml rcargo --no-fallback \
-  --on-builder run --locked -p browser --example native_navigation_completion \
+"${CARGO:-cargo}" run --locked -p browser --example native_navigation_completion \
   -- --https-acceptance
 ```
 

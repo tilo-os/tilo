@@ -93,3 +93,7 @@ class DiscoverySafety(unittest.TestCase):
                               dict(value["actions"][0], provider="files")]
         value["count"] = 3
         self.assertEqual(discover(lambda arguments: value, APP), value["actions"][:1])
+
+
+if __name__ == "__main__":
+    unittest.main()
