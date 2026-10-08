@@ -285,14 +285,11 @@ impl TasksView {
     pub(crate) fn draw(
         &mut self,
         ctx: &mut PaintCtx<'_>,
-        area: Rect,
         source: &TasksSource<'_>,
         pointer: Point,
         presence: &PresenceCtx,
     ) -> Vec<(Rect, TasksAction)> {
         let theme = ctx.theme;
-        let colors = &theme.tokens.colors;
-        ctx.fill_rect(area, colors.surfaces.base);
         let rows = source.rows();
         let mut hits = Vec::new();
 

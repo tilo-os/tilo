@@ -1913,7 +1913,7 @@ impl CalendarApp {
     fn draw_tasks(
         &mut self,
         ctx: &mut PaintCtx<'_>,
-        area: Rect,
+        _area: Rect,
         presence: &PresenceCtx,
     ) -> Vec<(Rect, Action)> {
         let source = TasksSource {
@@ -1922,7 +1922,7 @@ impl CalendarApp {
             today: self.today,
         };
         self.tasks
-            .draw(ctx, area, &source, self.last_mouse, presence)
+            .draw(ctx, &source, self.last_mouse, presence)
             .into_iter()
             .map(|(rect, action)| {
                 (
