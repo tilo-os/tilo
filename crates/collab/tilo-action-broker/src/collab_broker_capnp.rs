@@ -6150,11 +6150,44 @@ impl CapnpBrokerState {
         Ok(())
     }
 
+    fn current_task_action_offer(
+        &self,
+        run: &PendingTaskRun,
+        target_peer: u64,
+        resource: &str,
+        action: &str,
+        actor: &BrokerActor,
+    ) -> Result<(PublishedSurface, PublishedAction), String> {
+        let offered = self
+            .surfaces
+            .lock()
+            .ok()
+            .and_then(|surfaces| surfaces.get(&target_peer).cloned())
+            .and_then(|surface| surface.action_projection(resource, action))
+            .filter(|(surface, _)| surface.route.cluster_id == run.cluster_id)
+            .ok_or_else(|| "the application no longer publishes that action".to_string())?;
+        if let tilo_actions::Availability::Unavailable { reason, .. } =
+            &offered.1.contract.availability
+        {
+            return Err(format!("the application action is unavailable: {reason}"));
+        }
+        self.authorize_invocation_permission(
+            &offered.0.route.cluster_id,
+            &offered.0.app_id,
+            &offered.1.action,
+            offered.1.contract.permission,
+            actor,
+            self.policy_now_ns()? / 1_000_000_000,
+        )?;
+        Ok(offered)
+    }
+
     fn start_task_action(
         &self,
         admission: ManagedInteractionAdmission,
         target: runtime_collab::TaskAction<'_>,
-    ) -> Result<InvocationJob, String> {
+        requested: tilo_actions::InvocationId,
+    ) -> Result<u64, String> {
         let runtime_collab::TaskAction {
             peer_id: target_peer,
             resource,
@@ -6176,21 +6209,71 @@ impl CapnpBrokerState {
             return Err("the task was cancelled; no further action may start".into());
         }
         self.validate_owner_task_action_frontier(&run)?;
-        self.start_invocation_confirmed_for(
-            target_peer,
-            resource,
-            action,
-            InvocationInputs {
-                requested: None,
-                caller: None,
-                execution: None,
-                managed_interaction: Some(admission),
-                argument,
-                actor: &BrokerActor::agent(format!("agent:{}", run.agent_id)),
-                confirmation_token: None,
-                context: Some(run.action_context),
+        let actor = BrokerActor::agent(format!("agent:{}", run.agent_id));
+        let offered =
+            self.current_task_action_offer(&run, target_peer, resource, action, &actor)?;
+        let caller = admission.admitted.caller(&run.cluster_id);
+        let run_id = admission.run_id;
+        let ledger_context = run.action_context.clone().with_group(
+            format!(
+                "{}:{}:{}",
+                run.task_id,
+                run_id,
+                hex::encode(argument_digest(Some(&run.lease)))
+            ),
+            "Agent task run",
+            "agent-run",
+        );
+        let request = tilo_actions::remote::InvokeRequest {
+            invocation: requested,
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: target_peer.to_string(),
+                address: tilo_actions::ActionAddress::new(resource, action),
             },
-        )
+            argument: argument.map_or(tilo_actions::remote::InvokeArgument::None, |value| {
+                tilo_actions::remote::InvokeArgument::Text(value.to_string())
+            }),
+            // The private ledger fingerprint binds the UUID to this exact
+            // owner run and lease. It is never the public action context.
+            context: Some(ledger_context),
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+        };
+        let mut completion = None;
+        let mut ledger = self
+            .remote_invocations
+            .lock()
+            .map_err(|_| "the invocation ledger is unavailable".to_string())?;
+        let (job, _) = ledger
+            .admit(&caller, &request, || {
+                let job = self
+                    .start_invocation_from_offered(
+                        target_peer,
+                        offered,
+                        InvocationInputs {
+                            requested: Some(requested),
+                            caller: None,
+                            execution: None,
+                            managed_interaction: Some(admission),
+                            argument,
+                            actor: &actor,
+                            confirmation_token: None,
+                            context: Some(run.action_context),
+                        },
+                        None,
+                    )
+                    .map_err(
+                        |reason| tilo_actions::remote::ActionHostError::Unavailable { reason },
+                    )?;
+                completion = Some(job.completion);
+                Ok(job.id)
+            })
+            .map_err(|error| error.to_string())?;
+        let job = *job;
+        drop(ledger);
+        drop(completion);
+        Ok(job)
     }
 
     fn disconnect_device_media(&self, peer_id: u64) {
@@ -9965,6 +10048,16 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "durable task steps are not served by this host".into(),
                 ));
             }
+            let requested = request
+                .get_invocation()?
+                .to_str()
+                .ok()
+                .and_then(|value| uuid::Uuid::parse_str(value).ok())
+                .filter(|value| !value.is_nil())
+                .map(tilo_actions::InvocationId)
+                .ok_or_else(|| {
+                    capnp::Error::failed("task action invocation identity is invalid".into())
+                })?;
             let job = state
                 .start_task_action(
                     ManagedInteractionAdmission {
@@ -9976,17 +10069,17 @@ impl channel_handle::Server for CapnpChannelHandle {
                         lease,
                     },
                     target,
+                    requested,
                 )
                 .map_err(capnp::Error::failed)?;
-            let update = state.invocation_status(job.id).ok_or_else(|| {
+            let update = state.invocation_status(job).ok_or_else(|| {
                 capnp::Error::failed("accepted task action has no broker state".into())
             })?;
-            results.get().set_id(job.id);
+            results.get().set_id(job);
             results.get().set_update_json(
                 &serde_json::to_string(&update)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
             );
-            drop(job.completion);
             Ok(())
         })
     }
