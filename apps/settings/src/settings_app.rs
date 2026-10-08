@@ -626,6 +626,11 @@ impl SettingsApp {
         &self.speakers
     }
 
+    #[cfg(test)]
+    pub(crate) fn agent_models_mut(&mut self) -> &mut panes::agent_models::AgentModelsArea {
+        &mut self.agent_models
+    }
+
     pub(crate) fn agent_models(&self) -> &panes::agent_models::AgentModelsArea {
         &self.agent_models
     }

@@ -180,7 +180,7 @@ pub enum AgentModelsEffect {
         provider: String,
     },
     /// Remove a provider and its stored API key.
-    #[effect(row, destructive, label = "Remove provider")]
+    #[effect(job, row, destructive, label = "Remove provider")]
     RemoveProvider {
         #[param("The provider's id")]
         provider: String,
@@ -331,6 +331,7 @@ pub(crate) fn answer(
         }
         AgentModelsEffect::SaveProviderKey { provider, key } => {
             let buffer = model.key_buffer(&provider);
+            let keys = model.key_control.clone();
             drop(model);
             Ok(cx.thread(
                 move |_| {
@@ -346,9 +347,8 @@ pub(crate) fn answer(
                             &[("error", "the key is empty".into())],
                         ));
                     }
-                    tilo_model_gateway::set_api_key(&provider, value).map_err(|error| {
-                        t_args("agent-key-save-err", &[("error", error.to_string().into())])
-                    })
+                    keys.store(&provider, value)
+                        .map_err(|error| t_args("agent-key-save-err", &[("error", error.into())]))
                 },
                 |app: &mut SettingsApp, outcome: Result<(), String>, _| {
                     let model = app.agent_models().model();
@@ -360,15 +360,12 @@ pub(crate) fn answer(
             ))
         }
         AgentModelsEffect::RemoveProviderKey { provider } => {
+            let keys = model.key_control.clone();
             drop(model);
             Ok(cx.thread(
                 move |_| {
-                    tilo_model_gateway::remove_api_key(&provider).map_err(|error| {
-                        t_args(
-                            "agent-key-remove-err",
-                            &[("error", error.to_string().into())],
-                        )
-                    })
+                    keys.remove(&provider)
+                        .map_err(|error| t_args("agent-key-remove-err", &[("error", error.into())]))
                 },
                 |app: &mut SettingsApp, outcome: Result<(), String>, _| {
                     let model = app.agent_models().model();
@@ -376,6 +373,31 @@ pub(crate) fn answer(
                     model.read_keys();
                     model.provider_notice(outcome.as_ref().map(|()| t("agent-key-removed")));
                     outcome.map(|()| Effected::done())
+                },
+            ))
+        }
+        AgentModelsEffect::RemoveProvider { provider } => {
+            if !model
+                .providers
+                .get()
+                .config
+                .profiles
+                .iter()
+                .any(|profile| profile.id == provider)
+            {
+                return Err(t("agent-provider-gone"));
+            }
+            let keys = model.key_control.clone();
+            drop(model);
+            Ok(cx.thread(
+                move |_| keys.remove(&provider).map(|()| provider),
+                |app: &mut SettingsApp, outcome: Result<String, String>, _| {
+                    let mut model = app.agent_models().model().borrow_mut();
+                    let result = outcome.and_then(|provider| {
+                        model.change_providers(AgentModelsEffect::RemoveProvider { provider })
+                    });
+                    model.provider_notice(result.as_ref().map(|()| t("agent-provider-saved")));
+                    result.map(|()| Effected::done())
                 },
             ))
         }
@@ -440,6 +462,8 @@ impl ManagerWork {
 pub struct AgentModelsArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<AgentModelsModel>>,
+    control: Arc<dyn LocalModelControl>,
+    device: bool,
 }
 
 fn request_limit_rows(profile: &ProviderProfile) -> Vec<LiveRow> {
@@ -484,6 +508,12 @@ impl AgentModelsArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            device: cx.reaches_devices(),
+            control: if cx.reaches_devices() {
+                Arc::new(ModelManagerCli)
+            } else {
+                Arc::new(SampleManager)
+            },
         }
     }
 
@@ -491,21 +521,18 @@ impl AgentModelsArea {
     /// screenshot.
     pub fn model(&self) -> &Shared<AgentModelsModel> {
         self.model.get_or_init(|| {
-            let control: Arc<dyn LocalModelControl> = if self.cx.reaches_devices() {
-                Arc::new(ModelManagerCli)
-            } else {
-                Arc::new(SampleManager)
-            };
-            Rc::new(std::cell::RefCell::new(AgentModelsModel::new(
+            Rc::new(std::cell::RefCell::new(AgentModelsModel::with_read(
                 self.cx.clone(),
-                control,
+                self.control.clone(),
+                self.device,
             )))
         })
     }
 
     /// One row per installed model, per provider, and the recommendation.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
-        let model = self.model().borrow();
+        let mut model = self.model().borrow_mut();
+        model.poll_read();
         let offer = |effect: AgentModelsEffect| SettingsEffect::from(effect).bound();
         let mut rows: Vec<LiveRow> = model
             .snapshot
@@ -606,6 +633,7 @@ pub struct AgentModelsModel {
     /// The in-process model a link asked to show; its card comes first.
     revealed: Option<String>,
     notice: Option<String>,
+    read_error: Option<String>,
     last_poll: Instant,
     /// API keys are deliberately process-local masked-input buffers. They
     /// never enter the settings, and are erased as soon as the gateway
@@ -616,21 +644,94 @@ pub struct AgentModelsModel {
     /// Whether this device's vault holds each hosted provider's key, or why
     /// that could not be told.
     keys: HashMap<String, Result<bool, String>>,
+    read_mode: ModelReadMode,
+    reading: Option<std::sync::mpsc::Receiver<ModelRead>>,
+    refresh_requested: FollowupRead,
+    key_control: Arc<dyn ProviderKeyControl>,
     changed: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModelReadMode {
+    Inline,
+    Background,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FollowupRead {
+    NotRequested,
+    Requested,
+}
+
+trait ProviderKeyControl: Send + Sync {
+    fn configured(&self, profile: &str) -> Result<bool, String>;
+    fn store(&self, profile: &str, key: String) -> Result<(), String>;
+    fn remove(&self, profile: &str) -> Result<(), String>;
+}
+struct ServiceProviderKeys;
+impl ProviderKeyControl for ServiceProviderKeys {
+    fn configured(&self, profile: &str) -> Result<bool, String> {
+        tilo_model_gateway::secret_configured(profile).map_err(|error| error.to_string())
+    }
+    fn store(&self, profile: &str, key: String) -> Result<(), String> {
+        tilo_model_gateway::set_api_key(profile, key).map_err(|error| error.to_string())
+    }
+    fn remove(&self, profile: &str) -> Result<(), String> {
+        tilo_model_gateway::remove_api_key(profile).map_err(|error| error.to_string())
+    }
+}
+// The launcher capability is one ordered stream: a whole request/reply belongs
+// to one worker, including when passive status and an admitted mutation overlap.
+static PROVIDER_KEYS_RPC: Mutex<()> = Mutex::new(());
+struct SerialProviderKeys {
+    control: Arc<dyn ProviderKeyControl>,
+}
+impl ProviderKeyControl for SerialProviderKeys {
+    fn configured(&self, profile: &str) -> Result<bool, String> {
+        let _guard = PROVIDER_KEYS_RPC
+            .lock()
+            .map_err(|error| error.to_string())?;
+        self.control.configured(profile)
+    }
+    fn store(&self, profile: &str, key: String) -> Result<(), String> {
+        let _guard = PROVIDER_KEYS_RPC
+            .lock()
+            .map_err(|error| error.to_string())?;
+        self.control.store(profile, key)
+    }
+    fn remove(&self, profile: &str) -> Result<(), String> {
+        let _guard = PROVIDER_KEYS_RPC
+            .lock()
+            .map_err(|error| error.to_string())?;
+        self.control.remove(profile)
+    }
+}
+
+struct ModelRead {
+    snapshot: Result<LocalModelSnapshot, String>,
+    keys: HashMap<String, Result<bool, String>>,
+}
+
 impl AgentModelsModel {
+    #[cfg(test)]
     fn new(cx: PaneCx, control: Arc<dyn LocalModelControl>) -> Self {
-        let (snapshot, manager_available, notice) = match control.snapshot() {
-            Ok(snapshot) => (snapshot, true, None),
-            Err(error) => (
-                fallback_snapshot(),
-                false,
-                Some(t_args(
-                    "agent-notice-service-down",
-                    &[("error", error.into())],
-                )),
-            ),
+        Self::with_read(cx, control, false)
+    }
+
+    fn with_read(cx: PaneCx, control: Arc<dyn LocalModelControl>, background_read: bool) -> Self {
+        let (snapshot, manager_available, notice) = if background_read {
+            (fallback_snapshot(), false, None)
+        } else {
+            match control.snapshot() {
+                Ok(snapshot) => (snapshot, true, None),
+                Err(error) => (
+                    fallback_snapshot(),
+                    false,
+                    Some(t_args(
+                        "agent-notice-service-down",
+                        &[("error", error.into())],
+                    )),
+                ),
+            }
         };
         let mut model = Self {
             providers: cx.follow::<AgentProviders>(),
@@ -643,21 +744,40 @@ impl AgentModelsModel {
             reviewing_local: LocalState::new(None),
             revealed: None,
             notice,
+            read_error: None,
             last_poll: ui::time::now(),
             provider_key_buffers: Mutex::new(HashMap::new()),
             provider_field_buffers: Mutex::new(HashMap::new()),
             limit_field_buffers: Mutex::new(HashMap::new()),
             keys: HashMap::new(),
+            read_mode: if background_read {
+                ModelReadMode::Background
+            } else {
+                ModelReadMode::Inline
+            },
+            reading: None,
+            refresh_requested: FollowupRead::NotRequested,
+            key_control: Arc::new(SerialProviderKeys {
+                control: Arc::new(ServiceProviderKeys),
+            }),
             changed: false,
         };
-        model.sync_local_profile();
-        model.read_keys();
+        if background_read {
+            model.start_read();
+        } else {
+            model.sync_local_profile();
+            model.read_keys();
+        }
         model
     }
 
     /// Ask the gateway whether this device's vault holds each hosted
     /// provider's key.
     fn read_keys(&mut self) {
+        if self.read_mode == ModelReadMode::Background {
+            self.start_read();
+            return;
+        }
         self.keys = self
             .providers
             .get()
@@ -665,13 +785,7 @@ impl AgentModelsModel {
             .profiles
             .iter()
             .filter(|profile| profile.location == EndpointLocation::Hosted)
-            .map(|profile| {
-                (
-                    profile.id.clone(),
-                    tilo_model_gateway::secret_configured(&profile.id)
-                        .map_err(|error| error.to_string()),
-                )
-            })
+            .map(|profile| (profile.id.clone(), self.key_control.configured(&profile.id)))
             .collect();
         self.changed = true;
     }
@@ -684,6 +798,10 @@ impl AgentModelsModel {
     }
 
     fn refresh(&mut self) {
+        if self.read_mode == ModelReadMode::Background {
+            self.start_read();
+            return;
+        }
         match self.control.snapshot() {
             Ok(snapshot) => {
                 self.snapshot = snapshot;
@@ -694,6 +812,93 @@ impl AgentModelsModel {
             Err(error) => {
                 self.manager_available = false;
                 self.notice = Some(t_args(
+                    "agent-notice-refresh-err",
+                    &[("error", error.into())],
+                ));
+            }
+        }
+        self.last_poll = ui::time::now();
+        self.changed = true;
+    }
+
+    fn start_read(&mut self) {
+        self.changed = true;
+        if self.reading.is_some() {
+            self.refresh_requested = FollowupRead::Requested;
+            return;
+        }
+        let control = self.control.clone();
+        let key_control = self.key_control.clone();
+        let profiles: Vec<_> = self
+            .providers
+            .get()
+            .config
+            .profiles
+            .iter()
+            .filter(|profile| profile.location == EndpointLocation::Hosted)
+            .map(|profile| profile.id.clone())
+            .collect();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let wake = ui::WakeHandle::new();
+        match std::thread::Builder::new()
+            .name("settings-model-read".into())
+            .spawn(move || {
+                let snapshot = control.snapshot();
+                let keys = profiles
+                    .into_iter()
+                    .map(|id| {
+                        let status = key_control.configured(&id);
+                        (id, status)
+                    })
+                    .collect();
+                if sender.send(ModelRead { snapshot, keys }).is_ok() {
+                    wake.wake();
+                }
+            }) {
+            Ok(_) => self.reading = Some(receiver),
+            Err(error) => {
+                self.manager_available = false;
+                self.read_error = Some(error.to_string());
+            }
+        }
+    }
+
+    fn poll_read(&mut self) {
+        if self.read_mode == ModelReadMode::Inline {
+            return;
+        }
+        if self.providers.refresh() {
+            self.start_read();
+        }
+        let Some(receiver) = &self.reading else {
+            return;
+        };
+        let read = match receiver.try_recv() {
+            Ok(read) => read,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => ModelRead {
+                snapshot: Err(t("agent-read-disconnected")),
+                keys: HashMap::new(),
+            },
+        };
+        self.reading = None;
+        if std::mem::replace(&mut self.refresh_requested, FollowupRead::NotRequested)
+            == FollowupRead::Requested
+        {
+            self.start_read();
+            return;
+        }
+        self.keys = read.keys;
+        match read.snapshot {
+            Ok(snapshot) => {
+                self.snapshot = snapshot;
+                self.manager_available = true;
+                self.read_error = None;
+                self.sync_local_profile();
+            }
+            Err(error) => {
+                self.manager_available = false;
+                self.read_error = Some(t_args(
                     "agent-notice-refresh-err",
                     &[("error", error.into())],
                 ));
@@ -899,12 +1104,6 @@ impl AgentModelsModel {
                 if config.remove(&provider).is_none() {
                     return Err(t("agent-provider-gone"));
                 }
-                tilo_model_gateway::remove_api_key(&provider).map_err(|error| {
-                    t_args(
-                        "agent-key-remove-err",
-                        &[("error", error.to_string().into())],
-                    )
-                })?;
             }
             _ => return Err("not a provider effect".into()),
         }
@@ -919,6 +1118,7 @@ impl AgentModelsModel {
                 )
             })?;
         self.providers.refresh();
+        self.read_keys();
         self.changed = true;
         Ok(())
     }
@@ -1548,13 +1748,21 @@ impl AgentModelsModel {
                     )))
                     .push(Box::new(Spacer::new())),
             ));
-            body.push(if configured {
-                caption(&t("agent-key-stored"))
-            } else if self.needs_key(profile) {
-                semantic_status_pill(&t("agent-key-needed"), StatusTone::Warning)
-            } else {
-                caption(&t("agent-key-none"))
-            });
+            body.push(
+                if self.read_mode == ModelReadMode::Background && self.reading.is_some() {
+                    caption(&t("agent-key-reading-status"))
+                } else if self.read_mode == ModelReadMode::Background
+                    && !matches!(self.keys.get(&profile_id), Some(Ok(_)))
+                {
+                    caption(&t("agent-key-status-unknown"))
+                } else if configured {
+                    caption(&t("agent-key-stored"))
+                } else if self.needs_key(profile) {
+                    semantic_status_pill(&t("agent-key-needed"), StatusTone::Warning)
+                } else {
+                    caption(&t("agent-key-none"))
+                },
+            );
             if profile.default_model.is_some() {
                 body.push(Box::new(self.cx.bind_invocation(
                     Button::new(
@@ -1715,6 +1923,18 @@ impl AgentModelsModel {
                 value_row(&downloads, &downloads_v),
             ]),
         )];
+        if self.reading.is_some() && !self.manager_available {
+            cards.push(card(
+                &t("agent-service-title"),
+                caption(&t("agent-reading-status")),
+            ));
+            cards.push(self.hosted_profiles());
+            cards.push(self.request_limits_card());
+            return crate::widgets::cards(cards);
+        }
+        if let Some(error) = &self.read_error {
+            cards.push(card(&t("agent-service-title"), caption(error)));
+        }
         if !self.manager_available {
             cards.push(card(
                 &t("agent-service-down-title"),
@@ -2329,10 +2549,11 @@ impl PaneModel for AgentModelsModel {
     }
 
     fn poll(&mut self) -> bool {
-        if self.providers.refresh() {
+        self.poll_read();
+        if self.read_mode == ModelReadMode::Inline && self.providers.refresh() {
             self.read_keys();
         }
-        if self.is_busy() && self.last_poll.elapsed() >= POLL_INTERVAL {
+        if self.reading.is_none() && self.is_busy() && self.last_poll.elapsed() >= POLL_INTERVAL {
             self.refresh();
         }
         std::mem::take(&mut self.changed)
@@ -2343,7 +2564,7 @@ impl PaneModel for AgentModelsModel {
     }
 
     fn busy(&self) -> bool {
-        self.is_busy()
+        self.is_busy() || self.reading.is_some()
     }
 }
 
@@ -2538,6 +2759,8 @@ mod tests {
             let model = model_over(mock(with_subject(None)));
             let area = AgentModelsArea {
                 cx: model.cx.clone(),
+                control: model.control.clone(),
+                device: false,
                 model: std::cell::OnceCell::from(Rc::new(std::cell::RefCell::new(model))),
             };
             let published = area
@@ -3003,4 +3226,13 @@ mod tests {
             .is_err()
         );
     }
+}
+
+#[cfg(test)]
+include!("agent_models_startup_tests.rs");
+
+#[cfg(all(test, unix))]
+mod key_gateway_tests {
+    use super::*;
+    include!("agent_model_gateway_tests.rs");
 }
