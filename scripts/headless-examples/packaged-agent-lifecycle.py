@@ -183,7 +183,7 @@ def foreign_frames(response):
 
 
 def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_path=None,
-                                     composer_name="Message composer"):
+                                     composer_name="Message composer", stale_only=False):
     """Observe the actual Chat route without reading private editor content."""
     address = atspi.atspi_address()
     peers = atspi.bus_pids(address)
@@ -248,7 +248,9 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
             if len(matches) == 1:
                 record()
                 return next(iter(matches.values()))
-        except atspi.GateError:
+        except atspi.GateError as error:
+            if stale_only and not stale_editor_transport(error):
+                raise
             # A stale object during a real tree replacement is not success;
             # the bounded caller retries the complete observation.
             continue
@@ -760,7 +762,57 @@ def capture_owned_chat_accessibility_transport(shell, path):
     return evidence
 
 
+def stale_editor_transport(error):
+    text = str(error)
+    return "org.freedesktop.DBus.Error.UnknownObject" in text or (
+        "org.freedesktop.DBus.Error.UnknownInterface" in text
+        and "org.a11y.atspi.Text" in text)
+
+
+def owned_editor_read(access, read, deadline=None):
+    """Retry only retired Text objects, revalidating the exact Chat route/owner."""
+    deadline = time.monotonic() + 30 if deadline is None else deadline
+    while True:
+        try:
+            return read()
+        except atspi.GateError as error:
+            if not stale_editor_transport(error):
+                raise
+            if type(access.get("process")) is not int or not access.get("agent") \
+                    or type(access.get("detached")) is not bool:
+                raise RuntimeError("stale private editor has no exact owned Chat route") from None
+        while time.monotonic() < deadline:
+            if process_program(access["process"]) != "chat":
+                raise RuntimeError("stale private editor lost its original Chat process")
+            fresh = agent_conversation_accessibility(
+                access["agent"], detached=access["detached"], stale_only=True)
+            if fresh is not None:
+                if any(fresh.get(key) != access[key] for key in ("process", "agent", "detached")):
+                    raise RuntimeError("refreshed private editor belongs to a foreign Chat route")
+                client = atspi.AtspiClient(fresh.get("address") or atspi.atspi_address(), fresh["bus"])
+                try:
+                    name = atspi.property_text(client.property(fresh["composer"], "Name"))
+                    interfaces = client.interfaces(fresh["composer"])
+                    if name != "Message composer" or not all(interface in interfaces for interface in (
+                            "org.a11y.atspi.Text", "org.a11y.atspi.EditableText")):
+                        raise RuntimeError("refreshed private editor lacks its original semantic contract")
+                except atspi.GateError as error:
+                    if not stale_editor_transport(error):
+                        raise
+                else:
+                    access.clear()
+                    access.update(fresh)
+                    break
+            time.sleep(0.1)
+        else:
+            raise ProofTimeout("timed out refreshing the exact owned private editor")
+
+
 def editor_accessibility_focus(access):
+    return owned_editor_read(access, lambda: _editor_accessibility_focus(access))
+
+
+def _editor_accessibility_focus(access):
     """Observe the editor's AccessKit focus; this does not focus the Wayland seat."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
     reply = client.call(access["composer"], "org.a11y.atspi.Accessible.GetState")
@@ -1037,7 +1089,11 @@ def require_chat_keyboard_focus_after_click(socket, output, *, detached=False):
     return True
 
 
-def private_editor_observation(access, expected):
+def private_editor_observation(access, expected, *, deadline=None):
+    return owned_editor_read(access, lambda: _private_editor_observation(access, expected), deadline)
+
+
+def _private_editor_observation(access, expected):
     """Compare a test-owned draft locally; export neither its value nor hash."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
     path = access["composer"]
@@ -1067,17 +1123,16 @@ def private_editor_observation(access, expected):
         if not 0 <= selection[0] <= selection[1] <= len(value):
             raise RuntimeError("the actual private editor selection endpoints are invalid")
     return {"draft_matches": True, "caret": caret_offset, "selection": selection,
-            "accessibility_focused": editor_accessibility_focus(access)}
+            "accessibility_focused": _editor_accessibility_focus(access)}
 
 
 def private_editor_value_matches(access, expected):
     """Observe only whether this fixture's in-memory value reached the editor."""
-    client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
-    reply = client.call(
-        access["composer"], "org.a11y.atspi.Text.GetText", "--", "0", "-1",
-        check=False,
-    )
-    return atspi.text_reply(reply) == expected
+    def read():
+        client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
+        reply = client.call(access["composer"], "org.a11y.atspi.Text.GetText", "--", "0", "-1")
+        return atspi.text_reply(reply) == expected
+    return owned_editor_read(access, read)
 
 
 def closed_return_editor_observation(access, before, after, same_chat):
@@ -1116,10 +1171,11 @@ def closed_return_editor_observation(access, before, after, same_chat):
 def wait_for_private_selection(socket, access, expected, selection, process, output):
     """Observe dispatched physical keys; never replay them or change the assertion."""
     last = None
+    deadline = time.monotonic() + 30
 
     def selected():
         nonlocal last
-        last = private_editor_observation(access, expected)
+        last = private_editor_observation(access, expected, deadline=deadline)
         return last if last["selection"] == selection else None
 
     try:

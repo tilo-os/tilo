@@ -2570,6 +2570,69 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertLess(diagnostic, assertion)
         self.assertIn('"ime-returned-first-frame-', source)
 
+    def test_owned_editor_refreshes_only_retired_text_and_retains_real_selection_assertions(self):
+        original = {"bus": "chat-bus", "process": 123, "agent": "Tide", "detached": True,
+                    "composer": "recycled-button"}
+        fresh = {**original, "composer": "current-editor"}
+        class Client:
+            def __init__(self, *_args):
+                pass
+            def property(self, *_args):
+                return "(<'Message composer'>,)"
+            def interfaces(self, *_args):
+                return ["org.a11y.atspi.Text", "org.a11y.atspi.EditableText"]
+            def call(self, path, method, *_args, **_kwargs):
+                if path == "recycled-button":
+                    raise PROOF.atspi.GateError(
+                        "org.freedesktop.DBus.Error.UnknownInterface: org.a11y.atspi.Text PRIVATE-CANARY")
+                if method.endswith("GetText"):
+                    return "('nihao你好',)"
+                if method.endswith("Properties.Get"):
+                    return "(<int32 7>,)"
+                if method.endswith("GetNSelections"):
+                    return "(int32 1,)"
+                if method.endswith("GetSelection"):
+                    return "(int32 5, int32 7)"
+                if method.endswith("GetState"):
+                    return f"([uint32 {PROOF.atspi.FOCUSED_STATE_BIT}, uint32 0],)"
+                raise AssertionError(method)
+        with patch.object(PROOF.atspi, "atspi_address", return_value="private-address"), \
+                patch.object(PROOF.atspi, "AtspiClient", Client), \
+                patch.object(PROOF, "process_program", return_value="chat"), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=fresh.copy()) as resolve:
+            access = original.copy()
+            observed = PROOF.private_editor_observation(access, "nihao你好")
+            self.assertEqual(observed["selection"], [5, 7])
+            self.assertEqual(observed["caret"], 7)
+            self.assertTrue(observed["draft_matches"])
+            self.assertTrue(observed["accessibility_focused"])
+            self.assertEqual(access, fresh)
+            resolve.assert_called_once_with("Tide", detached=True, stale_only=True)
+            resolve.reset_mock()
+            with self.assertRaisesRegex(RuntimeError, "expected test draft"):
+                PROOF.private_editor_observation(fresh.copy(), "PRIVATE-CANARY")
+            resolve.assert_not_called()
+            for change in ({"process": 456}, {"detached": False}, {"agent": "Other"}):
+                with self.subTest(change=change), patch.object(PROOF, "agent_conversation_accessibility",
+                                                               return_value={**fresh, **change}):
+                    access = original.copy()
+                    with self.assertRaisesRegex(RuntimeError, "foreign Chat route"):
+                        PROOF.private_editor_observation(access, "nihao你好")
+                    self.assertEqual(access, original)
+            with patch.object(PROOF, "process_program", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "lost its original Chat process"):
+                    PROOF.private_editor_observation(original.copy(), "nihao你好")
+            with patch.object(PROOF, "agent_conversation_accessibility", return_value=None), \
+                    patch.object(PROOF.time, "sleep"), \
+                    patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 31]):
+                with self.assertRaises(PROOF.ProofTimeout):
+                    PROOF.private_editor_observation(original.copy(), "nihao你好")
+        for message in ("org.freedesktop.DBus.Error.AccessDenied",
+                        "org.freedesktop.DBus.Error.UnknownInterface: org.a11y.atspi.Action"):
+            self.assertFalse(PROOF.stale_editor_transport(PROOF.atspi.GateError(message)))
+        self.assertTrue(PROOF.stale_editor_transport(PROOF.atspi.GateError(
+            "org.freedesktop.DBus.Error.UnknownObject")))
+
     def test_keyboard_return_wait_requires_exact_ordinary_child_seat_before_enter(self):
         child = {"app_id": "so.tilo.chat", "surface_id": 11, "floating_id": "private",
                  "frame_seq": 22, "presented": True, "pixels_ready": True,
