@@ -35,6 +35,7 @@
 
 pub mod actions;
 pub mod app;
+mod i18n;
 mod kept;
 mod preferences;
 pub mod resource;

@@ -570,6 +570,46 @@ pub struct ToastCardHit {
     pub primary_action_rect: Rect,
 }
 
+/// Minimum height for a compact card with one elided line per text field.
+/// Uses the same normalized text, roles, padding and shared action controls as
+/// `paint_card`. A host choosing a fixed-width banner must reserve this height
+/// before stacking cards; enlarging type must not paint text over its actions.
+pub fn minimum_card_height(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    card: &ToastCard<'_>,
+) -> f64 {
+    let (_, pad_y) = card_pad(theme);
+    let text_height: f64 = [
+        (card.caption, theme.text(TextRole::Caption)),
+        (card.title, theme.text(TextRole::Label).strong()),
+        (card.body, theme.text(TextRole::Caption)),
+    ]
+    .into_iter()
+    .map(|(text, style)| {
+        let line = single_line_text(text);
+        if line.is_empty() {
+            0.0
+        } else {
+            f64::from(text_renderer.measure_style(&line, None, &style).1)
+        }
+    })
+    .sum();
+    let control_height = ButtonFace::height(crate::widget::ControlSize::Small, theme);
+    let mut height = text_height
+        .max(f64::from(theme.tokens.metrics.icon_md))
+        .max(if card.closable || card.single_action() {
+            control_height
+        } else {
+            0.0
+        })
+        + 2.0 * pad_y;
+    if !card.secondary_action.is_empty() && !card.primary_action.is_empty() {
+        height += control_height + pad_y + f64::from(theme.tokens.spacing.s1);
+    }
+    height.ceil()
+}
+
 /// Paint a toast / notification card into `rect` and return the geometry a
 /// caller needs to route clicks. The card is width/height-agnostic (it lays
 /// out relative to `rect`), so a 48px single-line in-app toast and a 64px

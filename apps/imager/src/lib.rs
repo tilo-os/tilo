@@ -108,6 +108,7 @@
 pub mod actions;
 pub mod app;
 pub mod customize;
+pub mod customize_image;
 pub mod doc;
 pub mod handoff;
 mod helpers;

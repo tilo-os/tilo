@@ -554,6 +554,7 @@ dependencies = [
  "package-store",
  "runtime-portal",
  "sd-notify",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -1233,6 +1234,7 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "serde_json",
+ "tempfile",
  "workspace-hack",
  "zbus",
 ]
@@ -5418,7 +5420,9 @@ dependencies = [
  "chrono",
  "console-control",
  "greetd-client",
+ "rustix 1.1.4",
  "serde_json",
+ "settings-store",
  "taffy",
  "tempfile",
  "tilo-automerge-fork",
@@ -5430,6 +5434,8 @@ dependencies = [
  "tilo-winit",
  "tracing",
  "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "workspace-hack",
  "zeroize",
 ]
@@ -7020,6 +7026,7 @@ dependencies = [
  "runtime-bundle",
  "semver",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-app-package",
@@ -10580,6 +10587,8 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-input-context",
+ "tilo-keyboard-map",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -12963,6 +12972,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
@@ -14029,6 +14039,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-files",
  "tilo-fs",
+ "tilo-keyboard-map",
  "tilo-media",
  "tilo-model-gateway",
  "tilo-net",
@@ -14059,6 +14070,7 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-paths",
+ "tilo-rt",
  "tilo-test-env",
  "unicode-normalization",
  "workspace-hack",
@@ -14234,6 +14246,7 @@ dependencies = [
  "bounded-command",
  "browser",
  "bytes",
+ "chat",
  "capnp",
  "capnp-rpc",
  "channel-crypto",
@@ -14254,6 +14267,7 @@ dependencies = [
  "gbm",
  "getrandom 0.4.3",
  "greetd-client",
+ "greeter",
  "gstreamer-app",
  "hex",
  "image",
@@ -14975,9 +14989,11 @@ version = "0.1.2"
 dependencies = [
  "app-cli",
  "app-host",
+ "base64",
  "blake3",
  "capnp",
  "ed25519-dalek 3.0.0",
+ "flate2",
  "getrandom 0.4.3",
  "hex",
  "lru 0.18.3",
@@ -14994,6 +15010,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-desktop-entry",
@@ -15814,6 +15831,7 @@ dependencies = [
  "runtime-portal",
  "serde",
  "serde_json",
+ "settings",
  "settings-store",
  "tempfile",
  "tilo-actions",
@@ -16539,6 +16557,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-actions",
+ "tilo-app",
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-copy-lint",
@@ -16636,6 +16655,7 @@ dependencies = [
  "tilo-user-identity",
  "tokio",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -16985,6 +17005,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-input-context"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+ "wayland-server",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-installed-apps"
 version = "0.1.0"
 dependencies = [
@@ -17032,6 +17066,17 @@ dependencies = [
  "tracing",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-keyboard-map"
+version = "0.1.0"
+dependencies = [
+ "tilo-app",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
+ "xkbcommon",
 ]
 
 [[package]]
@@ -18309,6 +18354,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-app-package",
  "tilo-files",
  "tilo-vm-protocol",
  "tilo-xdg-paths",
@@ -18322,10 +18368,13 @@ name = "tilo-vm-protocol"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "toml 1.0.6+spec-1.1.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -18335,8 +18384,12 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "console-control",
  "hex",
+ "launcher",
  "libc",
+ "package-store",
+ "runtime-bundle",
  "serde",
  "serde_json",
  "settings-store",
@@ -18344,14 +18397,20 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-advisory-lock",
+ "tilo-app-package",
  "tilo-clock",
  "tilo-files",
+ "tilo-identity-host",
  "tilo-test-env",
+ "tilo-user-identity",
  "tilo-vm",
  "tilo-vm-protocol",
+ "toml 1.0.6+spec-1.1.0",
  "uuid",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -22029,11 +22088,9 @@ dependencies = [
  "wasmi_core",
  "wasmi_ir",
  "wasmparser 0.239.0",
- "wayland-backend",
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
- "wayland-sys",
  "web-time",
  "winnow 0.7.14",
  "writeable",

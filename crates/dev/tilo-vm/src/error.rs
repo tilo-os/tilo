@@ -92,6 +92,8 @@ pub enum CliError {
         registry: String,
         known: Vec<String>,
     },
+    #[error("--target {target} conflicts with target {name}; name one development target")]
+    TargetConflict { target: String, name: String },
     #[error("{path}: {detail}")]
     Config { path: String, detail: String },
     #[error("not inside a git worktree, so there is no default slot")]
@@ -336,6 +338,9 @@ impl CliError {
                 known.first().map_or("", String::as_str),
                 known.join(", ")
             ),
+            Self::TargetConflict { target, name } => format!(
+                "use --target {target} without a positional target, or omit --target and use {name}"
+            ),
             Self::Config { path, .. } => format!("fix or remove {path}; tilo-vm doctor re-checks it"),
             Self::NotInWorktree => "name the slot explicitly, e.g. tilo-vm swap --slot my-slot shell".into(),
             Self::SlotName { .. } => {
@@ -559,6 +564,7 @@ impl CliError {
         let topic = match self {
             Self::NoVm { .. } => "quickstart",
             Self::UnknownVm { .. }
+            | Self::TargetConflict { .. }
             | Self::Config { .. }
             | Self::ArchMismatch { .. }
             | Self::NoDiskPublished { .. }
@@ -657,7 +663,8 @@ mod tests {
     /// does not compile until it is added here and given a hint.
     #[expect(clippy::too_many_lines, reason = "one sample per variant")]
     fn samples() -> Vec<CliError> {
-        let all = vec![
+        let all =
+            vec![
             CliError::NoVm {
                 registry: "/home/u/.config/tilo-vm/vms.toml".into(),
             },
@@ -671,6 +678,7 @@ mod tests {
                 registry: "r".into(),
                 known: vec!["dev".into()],
             },
+            CliError::TargetConflict { target: "review".into(), name: "other".into() },
             CliError::Config {
                 path: "p".into(),
                 detail: "d".into(),
@@ -1016,6 +1024,7 @@ mod tests {
                 | CliError::ImageRefused { .. }
                 | CliError::BaseOlder { .. }
                 | CliError::UnknownVm { .. }
+                | CliError::TargetConflict { .. }
                 | CliError::Config { .. }
                 | CliError::NotInWorktree
                 | CliError::SlotName { .. }

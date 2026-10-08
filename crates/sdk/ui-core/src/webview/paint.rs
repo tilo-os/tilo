@@ -1067,8 +1067,7 @@ mod tests {
         include_str!("../../../../browser/paint-stream/tests/fixtures/layers.top.json");
     const SCROLLED: &str =
         include_str!("../../../../browser/paint-stream/tests/fixtures/layers.scrolled.json");
-    const TOP_PNG: &[u8] =
-        include_bytes!("../../../../browser/paint-stream/tests/fixtures/layers.top.png");
+    const TOP_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/layers.top.png"));
 
     fn paint_engine(snapshot: &str) -> (Arc<TestEngine>, Arc<PaintEngine>) {
         let test = TestEngine::new();

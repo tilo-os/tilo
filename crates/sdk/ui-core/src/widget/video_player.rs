@@ -1030,8 +1030,8 @@ impl VideoPlayer {
 
     /// Keep the embedding observation channel bounded under normal playback.
     /// Position/buffering/duration events have already been reflected into the
-    /// widget's state by the caller, while the two terminal cases require an
-    /// app-level outcome.
+    /// widget's state by the caller, while the terminal cases (and the missing
+    /// decoder that explains an error) require an app-level outcome.
     fn record_terminal_media_events(
         &mut self,
         events: impl IntoIterator<Item = media::MediaEvent>,
@@ -1039,7 +1039,9 @@ impl VideoPlayer {
         self.media_events.extend(events.into_iter().filter(|event| {
             matches!(
                 event,
-                media::MediaEvent::Ended | media::MediaEvent::Error(_)
+                media::MediaEvent::Ended
+                    | media::MediaEvent::Error(_)
+                    | media::MediaEvent::MissingDecoder { .. }
             )
         }));
     }
@@ -3560,11 +3562,14 @@ mod tests {
             let mut vp = VideoPlayer::new();
             vp.record_terminal_media_events([
                 media::MediaEvent::Ended,
+                media::MediaEvent::MissingDecoder {
+                    codec: "HEVC".into(),
+                },
                 media::MediaEvent::Error("decoder stopped".into()),
             ]);
             let events = vp.take_media_events();
             assert!(
-                matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::Error(message)] if message == "decoder stopped")
+                matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::MissingDecoder { codec }, media::MediaEvent::Error(message)] if codec == "HEVC" && message == "decoder stopped")
             );
             assert!(
                 vp.take_media_events().is_empty(),
