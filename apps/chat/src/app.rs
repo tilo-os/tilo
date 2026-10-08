@@ -3237,16 +3237,7 @@ impl ChatApp {
         );
         let route_is_active = self.active_channel == channel;
         if attached && route_is_active {
-            // The parent can retain the Float control's immediate-mode
-            // keyboard ordinal while the exact editor lives in its native
-            // child. Returning that editor retires the control surface, so
-            // let the editor become the single truthful keyboard and
-            // accessibility focus owner again. Do this only after the host
-            // has attached the retained surface to its active owner route;
-            // stale or foreign lifecycle messages must not disturb focus.
-            self.keyboard_target = None;
             surface.move_editor_to_parent(self);
-            self.set_composer_focus();
         }
         if !surface.is_closed() || !route_is_active {
             self.agent_surfaces.insert(channel.to_owned(), surface);

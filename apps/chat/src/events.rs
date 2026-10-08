@@ -4736,7 +4736,43 @@ mod tests {
             ui::undo::UndoRequest::Redo
         ));
         assert_eq!(app.composer_main.value(), "東京");
+        assert_attached_send_focus_survives_surface_reconciliation(app, doc);
         assert_refloated_editor_accessibility(app, doc, id);
+    }
+
+    fn assert_attached_send_focus_survives_surface_reconciliation(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+    ) {
+        render_frame(app, 1200.0, 800.0);
+        assert!(ui::Widget::perform_semantic_action(
+            app,
+            &Hit::Send.semantic_id(),
+            &ui::a11y::Action::Focus,
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+        ));
+        let send_target = app.keyboard_target.expect("Send owns the keyboard ring");
+        let accepted = app.agent_submission_acceptances.get();
+
+        app.open_agent_conversation("ws_home", "scribe")
+            .expect("the same active owner route remains valid");
+        app.poll_agent_tasks();
+        _ = ui::Widget::native_input_snapshot(app, doc, &automerge::ROOT);
+        assert_eq!(
+            app.keyboard_target,
+            Some(send_target),
+            "reconciling an already attached editor cannot retire fresh Send focus"
+        );
+
+        feed_root_mods(app, doc, &key_named(NamedKey::Enter), Modifiers::default());
+        assert_eq!(app.agent_submission_acceptances.get(), accepted + 1);
+        assert!(
+            app.agent_submissions
+                .get()
+                .contains_key(&("ws_home".into(), "scribe".into())),
+            "physical Enter submits through the still-focused production Send control"
+        );
     }
 
     fn assert_refloated_editor_accessibility(app: &mut ChatApp, doc: &mut AutoCommit, id: &str) {

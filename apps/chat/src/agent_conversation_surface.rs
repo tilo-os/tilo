@@ -66,11 +66,17 @@ impl AgentConversationSurface {
         if !self.view_owns_editor {
             return;
         }
+        // Returning this exact editor retires the parent's old Float-control
+        // ordinal. Do this at the ownership transfer, not on every later
+        // surface reconciliation: a repeated sync may legitimately find a
+        // freshly focused Send or intent control in the attached view.
+        parent.keyboard_target = None;
         std::mem::swap(&mut parent.composer_main, &mut self.view.composer_main);
         parent.focus = self.view.focus;
         parent.draft_main.clone_from(&self.view.draft_main);
         parent.scroll = self.view.scroll;
         self.view_owns_editor = false;
+        parent.set_composer_focus();
     }
 
     pub(crate) fn move_editor_to_view(&mut self, parent: &mut ChatApp) {
