@@ -587,6 +587,11 @@ impl SettingsApp {
     }
 
     /// This device's battery, power profile and charge cap.
+    #[cfg(test)]
+    pub(crate) fn power_mut(&mut self) -> &mut panes::power::PowerArea {
+        &mut self.power
+    }
+
     pub(crate) fn power(&self) -> &panes::power::PowerArea {
         &self.power
     }

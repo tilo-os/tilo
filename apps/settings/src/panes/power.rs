@@ -14,8 +14,9 @@
 //!   critical-battery actions are the device's `power` settings, which the
 //!   compositor's idle layer reads.
 
-use std::cell::OnceCell;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, PowerProfile};
@@ -410,10 +411,7 @@ impl PowerState {
                 if let Some(error) = capability_error {
                     details.push(format!("capabilities: {error}"));
                 }
-                Some(t_args(
-                    "power-profile-service-unavailable",
-                    &[("details", ArgValue::from(details.join("; ")))],
-                ))
+                Some(details.join("; "))
             }
         };
         Self {
@@ -438,9 +436,17 @@ struct Notices {
 
 /// What the power area keeps for the window: the hardware, what it last
 /// reported, and what the last changes said.
+struct PendingPowerRead {
+    revision: u64,
+    receiver: std::sync::mpsc::Receiver<PowerState>,
+}
+
+#[derive(Clone)]
 pub struct PowerArea {
     control: Arc<dyn PowerControl>,
-    state: OnceCell<LocalState<PowerState>>,
+    state: LocalState<Option<PowerState>>,
+    reading: Rc<RefCell<Option<PendingPowerRead>>>,
+    read_error: LocalState<Option<String>>,
     /// Bumped by every change the hardware took, so the pane reads it again.
     applied: LocalState<u64>,
     notices: LocalState<Notices>,
@@ -457,15 +463,93 @@ impl PowerArea {
         };
         Self {
             control,
-            state: OnceCell::new(),
+            state: LocalState::new(None),
+            reading: Rc::default(),
+            read_error: LocalState::new(None),
             applied: LocalState::new(0),
             notices: LocalState::new(Notices::default()),
         }
     }
 
-    fn state(&self) -> &LocalState<PowerState> {
-        self.state
-            .get_or_init(|| LocalState::new(PowerState::read(self.control.as_ref())))
+    fn ensure_read(&self) {
+        self.poll_read();
+        if self.state.get().is_some()
+            || self.reading.borrow().is_some()
+            || self.read_error.get().is_some()
+        {
+            return;
+        }
+        let revision = self.applied.get();
+        let control = Arc::clone(&self.control);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let wake = ui::WakeHandle::new();
+        match ui::background::Background::current().spawn("power_snapshot", move || {
+            let snapshot = PowerState::read(control.as_ref());
+            if sender.send(snapshot).is_ok() {
+                wake.wake();
+            }
+        }) {
+            Ok(()) => *self.reading.borrow_mut() = Some(PendingPowerRead { revision, receiver }),
+            Err(error) => {
+                self.read_error.set(Some(error.to_string()));
+                self.applied
+                    .update(|revision| *revision = revision.wrapping_add(1));
+            }
+        }
+    }
+
+    fn poll_read(&self) {
+        let ready =
+            self.reading
+                .borrow()
+                .as_ref()
+                .and_then(|pending| match pending.receiver.try_recv() {
+                    Ok(snapshot) => Some((pending.revision, Ok(snapshot))),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some((pending.revision, Err(t("power-read-disconnected"))))
+                    }
+                });
+        if let Some((revision, snapshot)) = ready {
+            self.reading.borrow_mut().take();
+            if revision != self.applied.get() {
+                return;
+            }
+            match snapshot {
+                Ok(snapshot) => self.state.set(Some(snapshot)),
+                Err(error) => self.read_error.set(Some(error)),
+            }
+            self.applied
+                .update(|revision| *revision = revision.wrapping_add(1));
+        }
+    }
+
+    fn adopt(&self, snapshot: PowerState) {
+        self.reading.borrow_mut().take();
+        self.state.set(Some(snapshot));
+        self.read_error.set(None);
+        self.applied
+            .update(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    pub(crate) fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        self.poll_read();
+        if self.reading.borrow().is_none() {
+            return Vec::new();
+        }
+        [
+            PowerEffect::SET_POWER_PROFILE.id,
+            PowerEffect::SET_CHARGE_LIMIT.id,
+        ]
+        .into_iter()
+        .map(|id| {
+            ui::framework::EffectStatus::unavailable(
+                ActionRef::<crate::effects::SettingsEffect, ()>::new(id, &[]),
+                "pending_power_read",
+                t("power-reading"),
+            )
+        })
+        .collect()
     }
 }
 
@@ -531,10 +615,6 @@ pub enum PowerEffect {
 
 /// Answer `effect`: hardware changes run off the UI thread; the idle and
 /// button preferences are the device's `power` settings.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per power effect, each a short hardware or preference change"
-)]
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PowerEffect,
@@ -581,86 +661,142 @@ pub(crate) fn answer(
         }
         PowerEffect::SetPowerProfile { profile } => {
             let profile = profile_from_label(&profile).ok_or_else(|| not(&profile))?;
-            let area = app.power();
-            if !area
-                .state()
-                .with(|state| state.available_profiles.contains(&profile))
+            hardware_job(app, HardwareChange::Profile(profile), cx)
+        }
+        PowerEffect::SetChargeLimit { percent } => {
+            hardware_job(app, HardwareChange::Charge(percent), cx)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HardwareChange {
+    Profile(PowerProfile),
+    Charge(u32),
+}
+
+struct PowerJobRead {
+    snapshot: PowerState,
+    result: Result<ConfirmedChange, String>,
+}
+
+enum ConfirmedChange {
+    Profile(PowerProfile),
+    Charge {
+        percent: u32,
+        cap: ChargeCapCapability,
+    },
+}
+
+fn prepare_change(
+    control: &dyn PowerControl,
+    cached: Option<PowerState>,
+    change: HardwareChange,
+) -> PowerJobRead {
+    let snapshot = cached.unwrap_or_else(|| PowerState::read(control));
+    let result = match change {
+        HardwareChange::Profile(profile) => {
+            if snapshot.available_profiles.contains(&profile) {
+                control
+                    .set_profile(profile)
+                    .map(|()| ConfirmedChange::Profile(profile))
+            } else {
+                Err(format!(
+                    "{} is not supported by this device",
+                    profile_label(profile)
+                ))
+            }
+        }
+        HardwareChange::Charge(percent) => {
+            if snapshot
+                .charge_cap
+                .as_ref()
+                .is_some_and(|cap| cap.choices.contains(&percent))
             {
+                control
+                    .set_charge_limit(percent)
+                    .map(|cap| ConfirmedChange::Charge { percent, cap })
+            } else {
+                Err(format!("this battery offers no {percent}% charge cap"))
+            }
+        }
+    };
+    PowerJobRead { snapshot, result }
+}
+
+fn hardware_job(
+    app: &SettingsApp,
+    change: HardwareChange,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let area = app.power();
+    area.poll_read();
+    if area.reading.borrow().is_some() {
+        return Err(t("power-reading"));
+    }
+    let cached = area.state.get();
+    if let Some(snapshot) = &cached {
+        match change {
+            HardwareChange::Profile(profile) if !snapshot.available_profiles.contains(&profile) => {
                 return Err(format!(
                     "{} is not supported by this device",
                     profile_label(profile)
                 ));
             }
-            let control = Arc::clone(&area.control);
-            Ok(cx.thread(
-                move |_| control.set_profile(profile).map(|()| profile),
-                |app: &mut SettingsApp, outcome: Result<PowerProfile, String>, _| {
-                    let area = app.power();
-                    let mut notices = area.notices.get();
-                    let answer = match outcome {
-                        Ok(profile) => {
-                            area.state().update(|state| {
-                                state.profile = profile;
-                                state.profile_unread = false;
-                            });
-                            area.applied
-                                .update(|applied| *applied = applied.wrapping_add(1));
-                            notices.profile =
-                                Some(format!("{} is now active.", profile_label(profile)));
-                            Ok(Effected::done())
-                        }
-                        Err(error) => {
-                            let error = format!("Could not change the power profile: {error}");
-                            notices.profile = Some(error.clone());
-                            Err(error)
-                        }
-                    };
-                    area.notices.set(notices);
-                    answer
-                },
-            ))
-        }
-        PowerEffect::SetChargeLimit { percent } => {
-            let area = app.power();
-            let offered = area.state().with(|state| {
-                state
+            HardwareChange::Charge(percent)
+                if !snapshot
                     .charge_cap
                     .as_ref()
-                    .is_some_and(|cap| cap.choices.contains(&percent))
-            });
-            if !offered {
+                    .is_some_and(|cap| cap.choices.contains(&percent)) =>
+            {
                 return Err(format!("this battery offers no {percent}% charge cap"));
             }
-            let control = Arc::clone(&area.control);
-            Ok(cx.thread(
-                move |_| control.set_charge_limit(percent).map(|cap| (percent, cap)),
-                |app: &mut SettingsApp, outcome: Result<(u32, ChargeCapCapability), String>, _| {
-                    let area = app.power();
-                    let mut notices = area.notices.get();
-                    let answer = match outcome {
-                        Ok((percent, cap)) => {
-                            area.state().update(|state| {
-                                state.battery.charge_limit = Some(percent);
-                                state.charge_cap = Some(cap);
-                            });
-                            area.applied
-                                .update(|applied| *applied = applied.wrapping_add(1));
-                            notices.charge =
-                                Some(format!("Hardware confirmed a {percent}% charge cap."));
-                            Ok(Effected::done())
-                        }
-                        Err(error) => {
-                            let error = format!("Charge cap was not applied: {error}");
-                            notices.charge = Some(error.clone());
-                            Err(error)
-                        }
-                    };
-                    area.notices.set(notices);
-                    answer
-                },
-            ))
+            _ => {}
         }
     }
+    let control = Arc::clone(&area.control);
+    Ok(cx.thread(
+        move |_| prepare_change(control.as_ref(), cached, change),
+        move |app: &mut SettingsApp, read: PowerJobRead, _| {
+            let area = app.power();
+            // A concurrent job may already have changed another hardware field.
+            // Merge only this operation's acknowledged field into that snapshot.
+            let mut snapshot = area.state.get().unwrap_or(read.snapshot);
+            let mut notices = area.notices.get();
+            let answer = match read.result {
+                Ok(ConfirmedChange::Profile(profile)) => {
+                    snapshot.profile = profile;
+                    snapshot.profile_unread = false;
+                    notices.profile = Some(format!("{} is now active.", profile_label(profile)));
+                    Ok(Effected::done())
+                }
+                Ok(ConfirmedChange::Charge { percent, cap }) => {
+                    snapshot.battery.charge_limit = Some(percent);
+                    snapshot.charge_cap = Some(cap);
+                    notices.charge = Some(format!("Hardware confirmed a {percent}% charge cap."));
+                    Ok(Effected::done())
+                }
+                Err(error) => {
+                    let message = match change {
+                        HardwareChange::Profile(_) => {
+                            format!("Could not change the power profile: {error}")
+                        }
+                        HardwareChange::Charge(_) => {
+                            format!("Could not change the charge cap: {error}")
+                        }
+                    };
+                    match change {
+                        HardwareChange::Profile(_) => notices.profile = Some(message.clone()),
+                        HardwareChange::Charge(_) => notices.charge = Some(message.clone()),
+                    }
+                    Err(message)
+                }
+            };
+            area.adopt(snapshot);
+            area.notices.set(notices);
+            answer
+        },
+    ))
 }
 
 /// Power pane widget.
@@ -668,12 +804,14 @@ pub struct PowerPane {
     cx: PaneCx,
     prefs: Followed<PowerPrefs>,
     /// What the hardware reports, kept current by the area.
-    hardware: LocalState<PowerState>,
-    state: PowerState,
-    applied: LocalState<u64>,
+    area: PowerArea,
+    state: Option<PowerState>,
+    read_error: Option<String>,
     applied_seen: u64,
     notices_state: LocalState<Notices>,
     notices: Notices,
+    composition_dirty: bool,
+    catalog_revision: u64,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -682,28 +820,33 @@ pub struct PowerPane {
 impl PowerPane {
     /// The pane over `area`'s hardware and `cx`'s power settings.
     pub fn new(cx: PaneCx, area: &PowerArea) -> Self {
-        let hardware = area.state().clone();
+        area.ensure_read();
         Self {
             prefs: cx.follow::<PowerPrefs>(),
             cx,
-            state: hardware.get(),
-            hardware,
+            state: area.state.get(),
+            read_error: area.read_error.get(),
+            area: area.clone(),
             applied_seen: area.applied.get(),
-            applied: area.applied.clone(),
             notices: area.notices.get(),
             notices_state: area.notices.clone(),
+            composition_dirty: true,
+            catalog_revision: ui::i18n::I18nManager::revision(),
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
         }
     }
 
-    pub fn battery(&self) -> &BatteryInfo {
-        &self.state.battery
+    pub fn battery(&self) -> Option<&BatteryInfo> {
+        self.state.as_ref().map(|state| &state.battery)
     }
 
-    pub fn profile(&self) -> PowerProfile {
-        self.state.profile
+    pub fn profile(&self) -> Option<PowerProfile> {
+        self.state
+            .as_ref()
+            .filter(|state| !state.profile_unread)
+            .map(|state| state.profile)
     }
 
     pub fn prefs(&self) -> &PowerPrefs {
@@ -727,20 +870,28 @@ impl PowerPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut cards = vec![
-            self.battery_card(),
-            self.profile_card(),
-            self.idle_card(),
-            self.actions_card(),
-        ];
-        if let Some(device_card) = self.devices_card() {
-            cards.insert(1, device_card);
-        }
+        let mut cards = if let Some(state) = &self.state {
+            let mut cards = vec![self.battery_card(state), self.profile_card(state)];
+            if let Some(devices) = Self::devices_card(state) {
+                cards.insert(1, devices);
+            }
+            cards
+        } else {
+            let notice = self.read_error.as_ref().map_or_else(
+                || t("power-reading"),
+                |error| t_args("power-read-error", &[("error", error.as_str().into())]),
+            );
+            vec![card(
+                &t("power-profile-title"),
+                rows(vec![caption(&notice)]),
+            )]
+        };
+        cards.extend([self.idle_card(), self.actions_card()]);
         crate::widgets::cards(cards)
     }
 
-    fn battery_card(&self) -> El {
-        if !self.state.battery.present {
+    fn battery_card(&self, state: &PowerState) -> El {
+        if !state.battery.present {
             return card(
                 &t("power-source-title"),
                 rows(vec![
@@ -749,24 +900,23 @@ impl PowerPane {
                 ]),
             );
         }
-        let charge = format!("{}%", self.state.battery.capacity);
-        let status = battery_status_shown(&self.state.battery);
+        let charge = format!("{}%", state.battery.capacity);
+        let status = battery_status_shown(&state.battery);
         let mut battery_rows: Vec<El> = vec![
-            Box::new(ProgressBar::new(self.state.battery.capacity as f32 / 100.0)),
+            Box::new(ProgressBar::new(state.battery.capacity as f32 / 100.0)),
             value_row(&t("power-charge"), &charge),
             value_row(&t("power-status"), &status),
         ];
-        if let Some(cycles) = self.state.battery.cycle_count {
+        if let Some(cycles) = state.battery.cycle_count {
             battery_rows.push(value_row(&t("power-cycles"), &cycles.to_string()));
         }
-        if let Some(health) = self.state.battery.health_percent() {
+        if let Some(health) = state.battery.health_percent() {
             battery_rows.push(value_row(&t("power-health"), &format!("{health}%")));
-            battery_rows.push(caption(&health_explanation_shown(&self.state.battery)));
+            battery_rows.push(caption(&health_explanation_shown(&state.battery)));
         } else {
             battery_rows.push(value_row(&t("power-health"), &t("power-health-unknown")));
         }
-        let trend: Vec<f32> = self
-            .state
+        let trend: Vec<f32> = state
             .history
             .points
             .iter()
@@ -780,7 +930,7 @@ impl PowerPane {
             ));
             battery_rows.push(caption(&t("power-history-caption")));
         }
-        if let Some(capability) = &self.state.charge_cap {
+        if let Some(capability) = &state.charge_cap {
             let choices: Vec<String> = capability
                 .choices
                 .iter()
@@ -824,17 +974,16 @@ impl PowerPane {
         card(&t("power-battery-title"), rows(battery_rows))
     }
 
-    fn profile_card(&self) -> El {
-        let profile_opts: Vec<String> = self
-            .state
+    fn profile_card(&self, state: &PowerState) -> El {
+        let profile_opts: Vec<String> = state
             .available_profiles
             .iter()
             .map(|profile| profile_label(*profile))
             .collect();
-        let current = if self.state.profile_unread {
+        let current = if state.profile_unread {
             t("power-profile-unread")
         } else {
-            profile_label(self.state.profile)
+            profile_label(state.profile)
         };
         let mut profile_rows = if profile_opts.is_empty() {
             vec![value_row(
@@ -861,11 +1010,15 @@ impl PowerPane {
         profile_rows.push(caption(&t("power-profile-caption")));
         if let Some(notice) = &self.notices.profile {
             profile_rows.push(caption(notice));
-        } else if let Some(unavailable) = &self.state.profiles_unavailable {
-            profile_rows.push(if self.state.profile_unread {
-                error_caption(unavailable)
+        } else if let Some(unavailable) = &state.profiles_unavailable {
+            let unavailable = t_args(
+                "power-profile-service-unavailable",
+                &[("details", unavailable.as_str().into())],
+            );
+            profile_rows.push(if state.profile_unread {
+                error_caption(&unavailable)
             } else {
-                caption(unavailable)
+                caption(&unavailable)
             });
         }
         card(&t("power-profile-title"), rows(profile_rows))
@@ -1025,12 +1178,12 @@ impl PowerPane {
         )
     }
 
-    fn devices_card(&self) -> Option<El> {
-        if self.state.devices.len() <= 1 {
+    fn devices_card(state: &PowerState) -> Option<El> {
+        if state.devices.len() <= 1 {
             return None;
         }
         let mut entries = Vec::new();
-        for d in &self.state.devices {
+        for d in &state.devices {
             let kind = t(match d.kind {
                 os_actions::PowerSupplyKind::Battery => "power-device-battery",
                 os_actions::PowerSupplyKind::Ups => "power-device-ups",
@@ -1061,17 +1214,22 @@ impl Widget for PowerPane {
     fn sync(&mut self, shared: &AppModel, root: &ModelPath) {
         // The controls are built from the values: a change rebuilds them.
         if self.prefs.refresh() {
+            self.composition_dirty = true;
             self.structure_dirty = true;
         }
-        let applied = self.applied.get();
+        self.area.poll_read();
+        let applied = self.area.applied.get();
         if applied != self.applied_seen {
             self.applied_seen = applied;
-            self.state = self.hardware.get();
+            self.state = self.area.state.get();
+            self.read_error = self.area.read_error.get();
+            self.composition_dirty = true;
             self.structure_dirty = true;
         }
         let notices = self.notices_state.get();
         if notices != self.notices {
             self.notices = notices;
+            self.composition_dirty = true;
             self.structure_dirty = true;
         }
         if let Some(c) = &mut self.composed {
@@ -1085,7 +1243,15 @@ impl Widget for PowerPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
+        if self.composition_dirty || self.catalog_revision != ui::i18n::I18nManager::revision() {
+            self.composed = None;
+        }
+        let mut composed = self
+            .composed
+            .take()
+            .unwrap_or_else(|| self.build_composition());
+        self.composition_dirty = false;
+        self.catalog_revision = ui::i18n::I18nManager::revision();
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
         let style = taffy::Style {
@@ -1160,6 +1326,19 @@ impl Widget for PowerPane {
             .collect()
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        self.area.reading.borrow().is_some()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let child = self
+            .composed
+            .as_mut()
+            .is_some_and(|child| child.take_structure_dirty());
+        own || child
+    }
+
     fn name(&self) -> &'static str {
         "PowerPane"
     }
@@ -1175,6 +1354,293 @@ mod tests {
     use crate::effects::SettingsEffect;
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
+
+    struct HeldPower {
+        sample: SamplePower,
+        entry: std::sync::mpsc::Sender<std::thread::ThreadId>,
+        released: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        profile_reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl PowerControl for HeldPower {
+        fn battery(&self) -> BatteryInfo {
+            self.sample.battery()
+        }
+        fn devices(&self) -> Vec<os_actions::PowerDevice> {
+            self.sample.devices()
+        }
+        fn history(&self) -> os_actions::BatteryHistory {
+            self.sample.history()
+        }
+        fn profiles(
+            &self,
+        ) -> (
+            Result<PowerProfile, String>,
+            Result<Vec<PowerProfile>, String>,
+        ) {
+            self.profile_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let gate = self.released.lock().unwrap().take();
+            if let Some(released) = gate {
+                self.entry.send(std::thread::current().id()).unwrap();
+                if released
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .is_err()
+                {
+                    return (
+                        Err("held power service timed out".into()),
+                        Err("held power service timed out".into()),
+                    );
+                }
+            }
+            self.sample.profiles()
+        }
+        fn set_profile(&self, profile: PowerProfile) -> Result<(), String> {
+            self.sample.set_profile(profile)
+        }
+        fn charge_cap(&self) -> Option<ChargeCapCapability> {
+            self.sample.charge_cap()
+        }
+        fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
+            self.sample.set_charge_limit(percent)
+        }
+    }
+
+    fn held_power() -> (
+        Arc<HeldPower>,
+        std::thread::JoinHandle<std::thread::ThreadId>,
+    ) {
+        let (entry, entered) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let control = Arc::new(HeldPower {
+            sample: SamplePower::default(),
+            entry,
+            released: Mutex::new(Some(released)),
+            profile_reads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let reader_task = std::thread::spawn(move || {
+            let reader = entered
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            release.send(()).unwrap();
+            reader
+        });
+        (control, reader_task)
+    }
+
+    #[test]
+    fn opening_power_does_not_wait_for_the_actual_profile_read() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let (control, releaser) = held_power();
+        let mut area = PowerArea::new(&cx);
+        area.control = control;
+        let started = std::time::Instant::now();
+        let pane = PowerPane::new(cx, &area);
+        let elapsed = started.elapsed();
+        assert!(
+            pane.battery().is_none(),
+            "no battery facts exist before the actual read"
+        );
+        assert!(
+            pane.profile().is_none(),
+            "no active power profile can be guessed"
+        );
+        assert!(pane.has_pending_visual_work());
+        assert!(
+            !pane.needs_animation_frame(),
+            "waiting for a service is not an animation"
+        );
+        assert!(pane.next_wake_deadline().is_none());
+        let reader = releaser.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "opening the production Power pane waited for its service: {elapsed:?}, reader={reader:?}"
+        );
+        assert_ne!(reader, std::thread::current().id());
+    }
+
+    #[test]
+    fn first_published_power_job_prepares_its_capability_off_the_ui_thread() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let (control, releaser) = held_power();
+        app.surface::<SettingsApp, _>(|app| app.power_mut().control = control)
+            .unwrap();
+        let started = std::time::Instant::now();
+        let invocation = app
+            .start_effect(&SettingsEffect::from(PowerEffect::SetPowerProfile {
+                profile: "Performance".into(),
+            }))
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert!(
+            !app.harness()
+                .job_updates(invocation)
+                .iter()
+                .any(tilo_actions::InvocationUpdate::is_terminal),
+            "the held backend has not acknowledged the real job"
+        );
+        let reader = releaser.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "the actual published job blocked its mounted UI during preparation: {elapsed:?}, reader={reader:?}"
+        );
+        assert_ne!(reader, std::thread::current().id());
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| {
+                    h.job_updates(invocation)
+                        .iter()
+                        .any(tilo_actions::InvocationUpdate::is_terminal)
+                })
+        );
+        assert!(matches!(app.harness().job_updates(invocation).last(),
+            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: id, .. }) if *id == invocation));
+    }
+
+    #[test]
+    fn actual_power_read_wakes_and_adopts_once_without_animation_or_layout_reads() {
+        let mut scope = ui::WakeScope::new();
+        let (woke, wakes) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        let _scope = scope.enter();
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let (control, releaser) = held_power();
+        let mut area = PowerArea::new(&cx);
+        area.control = control.clone();
+        let pane = PowerPane::new(cx, &area);
+        assert!(pane.battery().is_none());
+        assert!(pane.profile().is_none());
+        assert_eq!(area.statuses().len(), 2);
+        assert_ne!(releaser.join().unwrap(), std::thread::current().id());
+        wakes
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        let mut harness = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            pane,
+            (1200, 1000),
+            Theme::dark(),
+        );
+        assert!(harness.wait_until(ui::time::Duration::from_secs(3), |h| {
+            !h.root::<PowerPane>().has_pending_visual_work()
+        }));
+        assert_eq!(
+            harness.root::<PowerPane>().battery(),
+            Some(&sample_battery())
+        );
+        assert_eq!(
+            harness.root::<PowerPane>().profile(),
+            Some(PowerProfile::Balanced)
+        );
+        assert!(area.statuses().is_empty());
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            harness.relayout_themed((1160, 1000), theme).unwrap();
+            assert_eq!(
+                harness.root::<PowerPane>().battery(),
+                Some(&sample_battery())
+            );
+        }
+        assert_eq!(
+            control
+                .profile_reads
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the mounted adoption and retained layout cannot reread the external service"
+        );
+    }
+
+    struct UnreadableProfiles {
+        sample: SamplePower,
+        changed: std::sync::atomic::AtomicUsize,
+    }
+
+    impl PowerControl for UnreadableProfiles {
+        fn battery(&self) -> BatteryInfo {
+            self.sample.battery()
+        }
+        fn devices(&self) -> Vec<os_actions::PowerDevice> {
+            self.sample.devices()
+        }
+        fn history(&self) -> os_actions::BatteryHistory {
+            self.sample.history()
+        }
+        fn profiles(
+            &self,
+        ) -> (
+            Result<PowerProfile, String>,
+            Result<Vec<PowerProfile>, String>,
+        ) {
+            (
+                Err("profile service unavailable".into()),
+                Err("profile service unavailable".into()),
+            )
+        }
+        fn set_profile(&self, profile: PowerProfile) -> Result<(), String> {
+            self.changed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.sample.set_profile(profile)
+        }
+        fn charge_cap(&self) -> Option<ChargeCapCapability> {
+            self.sample.charge_cap()
+        }
+        fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
+            self.sample.set_charge_limit(percent)
+        }
+    }
+
+    #[test]
+    fn unreadable_power_capability_fails_the_actual_job_without_guessing_a_profile() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let control = Arc::new(UnreadableProfiles {
+            sample: SamplePower::default(),
+            changed: std::sync::atomic::AtomicUsize::new(0),
+        });
+        app.surface::<SettingsApp, _>(|app| app.power_mut().control = control.clone())
+            .unwrap();
+        let invocation = app
+            .start_effect(&SettingsEffect::from(PowerEffect::SetPowerProfile {
+                profile: "Performance".into(),
+            }))
+            .unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |h| {
+                    h.job_updates(invocation)
+                        .iter()
+                        .any(tilo_actions::InvocationUpdate::is_terminal)
+                })
+        );
+        assert!(matches!(app.harness().job_updates(invocation).last(),
+            Some(tilo_actions::InvocationUpdate::Failed { invocation: id, .. }) if *id == invocation));
+        assert_eq!(control.changed.load(std::sync::atomic::Ordering::SeqCst), 0);
+        app.effect(&SettingsEffect::from(
+            crate::effects::NavigationEffect::OpenPane {
+                pane: "power".into(),
+            },
+        ))
+        .unwrap();
+        assert!(!app.harness().targets().contains_key("power.profile"));
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains("profile service unavailable")
+        );
+        app.surface::<SettingsApp, _>(|app| {
+            let snapshot = app.power().state.get().unwrap();
+            assert!(snapshot.profile_unread);
+            assert!(snapshot.available_profiles.is_empty());
+            assert_eq!(snapshot.battery, sample_battery());
+        })
+        .unwrap();
+    }
 
     fn sample_battery() -> BatteryInfo {
         BatteryInfo {
@@ -1248,12 +1714,20 @@ mod tests {
         {
             let profile = tempfile::tempdir().unwrap();
             let cx = PaneCx::in_file(profile.path().join("settings.json"));
-            let mut pane = PowerPane::new(cx.clone(), &PowerArea::new(&cx));
-            assert_eq!(pane.battery(), &sample_battery());
-            let theme = Theme::dark();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+            let pane = PowerPane::new(cx.clone(), &PowerArea::new(&cx));
+            let mut harness = ui::headless::FrameHarness::for_root(
+                ui::State::new(),
+                pane,
+                (1200, 700),
+                Theme::dark(),
+            );
+            assert!(harness.wait_until(ui::time::Duration::from_secs(3), |h| {
+                !h.root::<PowerPane>().has_pending_visual_work()
+            }));
+            assert_eq!(
+                harness.root::<PowerPane>().battery(),
+                Some(&sample_battery())
+            );
         }
     }
 
