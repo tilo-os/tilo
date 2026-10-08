@@ -17,6 +17,8 @@ impl tilo_actions::Action for Noop {
         Ok(())
     }
 }
+// Packaging scans source files directly, so keep this fixture explicitly test-only.
+#[cfg(test)]
 impl Resource for Document {
     const KIND: &'static str = "test.retained-document";
     const LABEL: &'static str = "Document";
