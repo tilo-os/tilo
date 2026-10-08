@@ -44,7 +44,14 @@ const TASK_STEP_REPLY_WAIT: Duration = if cfg!(test) {
 const TASK_STEP_RETRY_PAUSE: Duration = Duration::from_millis(200);
 /// The broker's refusal before any child is bound when its host has no step
 /// ledger. Only this refusal may fall back to the legacy invocation path.
-const TASK_STEPS_UNAVAILABLE: &str = "enrolled task steps unavailable";
+fn task_steps_unavailable(error: &str) -> bool {
+    let reason = error.strip_prefix("capnp error: Failed: ").unwrap_or(error);
+    let reason = reason.strip_prefix("remote exception: ").unwrap_or(reason);
+    matches!(
+        reason,
+        "enrolled task steps unavailable" | "durable task steps are not served by this host"
+    )
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TaskAction {
@@ -1495,7 +1502,7 @@ impl Session {
                 }
                 Some(TaskReply {
                     result: Err(error), ..
-                }) if error.contains(TASK_STEPS_UNAVAILABLE) => {
+                }) if task_steps_unavailable(&error) => {
                     // Refused before any child was bound; nothing ran.
                     *stepped = false;
                     return Ok(self
@@ -4223,6 +4230,57 @@ mod tests {
                 1,
                 "a refusal is not retried"
             );
+        }
+
+        #[test]
+        fn native_host_without_steps_negotiates_once_and_rejects_changed_refusals() {
+            let first = action("produce", false);
+            for error in [
+                "capnp error: Failed: remote exception: durable task steps are not served by this host",
+                "capnp error: Failed: durable task steps are not served by this host",
+            ] {
+                let (mut session, run, sent) = fixture(
+                    vec![
+                        Reply::Refused(error),
+                        Reply::Legacy(succeeded("tilo.content:legacy")),
+                        Reply::Legacy(succeeded("tilo.content:next")),
+                    ],
+                    vec![],
+                );
+                let mut stepped = true;
+                session
+                    .invoke_task_step(&run, 0, &first, &first.arguments, &mut stepped)
+                    .unwrap()
+                    .unwrap();
+                assert!(!stepped);
+                session
+                    .run_task_step(&run, 1, 1, &first, &first.arguments, &mut stepped)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    step_requests(&sent.borrow())
+                        .iter()
+                        .map(|request| request.1)
+                        .collect::<Vec<_>>(),
+                    vec![Some(0), None, None]
+                );
+            }
+            for error in [
+                "capnp error: Failed: remote exception: durable task steps are not served by this host changed",
+                "untrusted durable task steps are not served by this host",
+                "capnp error: Failed: remote exception: enrolled task steps unavailable changed",
+            ] {
+                let (mut session, run, sent) = fixture(vec![Reply::Refused(error)], vec![]);
+                let mut stepped = true;
+                assert!(matches!(
+                    session
+                        .invoke_task_step(&run, 0, &first, &first.arguments, &mut stepped)
+                        .unwrap(),
+                    Err(TaskActionStop::Failed(_))
+                ));
+                assert!(stepped);
+                assert_eq!(step_requests(&sent.borrow()).len(), 1);
+            }
         }
 
         #[test]
