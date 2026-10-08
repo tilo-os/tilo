@@ -2898,6 +2898,10 @@ class HeldProvider:
     def __init__(self, marker_agent=None, marker_resource=None):
         self.received = threading.Event()
         self.requests = 0
+        self.admission_attempts = 0
+        self.admitted_attempts = 0
+        self.refused_admissions = 0
+        self.failed_admission_probes = 0
         self.refused_requests = 0
         self.allowed = 0
         self.exact_releases = set()
@@ -2966,7 +2970,19 @@ class HeldProvider:
                         self.send_error(409)
                         return
                 probe = owner.owner_admission_probe
-                admission = probe() if probe is not None else None
+                with owner.request_lock:
+                    owner.admission_attempts = min(owner.admission_attempts + 1, 64)
+                try:
+                    admission = probe() if probe is not None else None
+                except Exception:
+                    with owner.request_lock:
+                        owner.failed_admission_probes = min(owner.failed_admission_probes + 1, 64)
+                    raise
+                with owner.request_lock:
+                    if admission is None:
+                        owner.refused_admissions = min(owner.refused_admissions + 1, 64)
+                    else:
+                        owner.admitted_attempts = min(owner.admitted_attempts + 1, 64)
                 with owner.request_lock:
                     limit = 3 if owner.marker_agent is not None else 4
                     if owner.requests >= limit:
@@ -3044,6 +3060,20 @@ class HeldProvider:
     def request_count(self):
         with self.request_lock:
             return self.requests
+
+    def admission_diagnostic(self):
+        """Finite pre-probe and outcome counts, never model bodies or owner IDs."""
+        with self.request_lock:
+            settled = self.admitted_attempts + self.refused_admissions + self.failed_admission_probes
+            return {
+                "admission_attempt_count": self.admission_attempts,
+                "admitted_count": self.admitted_attempts,
+                "refused_count": self.refused_admissions,
+                "probe_failure_count": self.failed_admission_probes,
+                "pending_probe_count": max(0, self.admission_attempts - settled),
+                "counted_request_count": self.requests,
+                "waiting_response_count": len(self.waiting_ordinals),
+            }
 
     def overflow_count(self):
         with self.request_lock:
@@ -4049,6 +4079,27 @@ def reopen_marker_composer_while_live(socket, agent, marker, windows, process, *
     return draft
 
 
+def quick_composer_targets(response):
+    """Decode the real unwrapped Targets response without exposing its payload."""
+    if not isinstance(response, dict) or set(response) != {"targets"} \
+            or not isinstance(response["targets"], list) \
+            or len(response["targets"]) > atspi.APP_TREE_NODE_LIMIT:
+        raise RuntimeError("the compositor quick composer target response is malformed")
+    result = {}
+    for name in ("agent-quick-editor", "agent-quick-send", "agent-quick-close"):
+        rows = [row for row in response["targets"]
+                if isinstance(row, dict) and row.get("name") == name]
+        if len(rows) != 1:
+            raise RuntimeError("the compositor did not publish unique quick composer controls")
+        rect = rows[0].get("rect")
+        if not isinstance(rect, list) or len(rect) != 4 \
+                or any(type(value) not in (int, float) or not math.isfinite(value) for value in rect) \
+                or rect[2] <= 0 or rect[3] <= 0:
+            raise RuntimeError("the compositor quick composer control geometry is unusable")
+        result[name] = rect
+    return result
+
+
 def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
                                  reopened_message_draft=None):
     """Use the actual shell controls while one genuine Agent run is current."""
@@ -4068,13 +4119,7 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
     access = wait_for("exact Agent quick composer controls", composer, process)
     if reopened_message_draft != fixture_drafts["message"]:
         raise RuntimeError("the marker's initial Message close and reopen was not proven")
-    targets = require_ok(call(socket, {"op": "list_targets"})).get("targets")
-    if not isinstance(targets, list):
-        raise RuntimeError("the compositor did not publish quick composer targets")
-    names = [row.get("name") for row in targets if isinstance(row, dict)]
-    for name in ("agent-quick-editor", "agent-quick-send", "agent-quick-close"):
-        if names.count(name) != 1:
-            raise RuntimeError(f"the compositor did not publish one exact {name} target")
+    quick_composer_targets(call(socket, {"op": "list_targets"}))
 
     for intent in ("message", "queue", "steer"):
         if intent == "message":
@@ -5970,8 +6015,13 @@ def managed_task_and_message_lifecycle(
     if re.fullmatch(r"[0-9a-fA-F-]{36}", message_invocation) is None:
         raise RuntimeError("direct Message lost its canonical invocation UUID")
     parent = "m_" + message_invocation.replace("-", "").lower()
-    wait_for("parallel direct Message model request",
-             lambda: provider.request_count() >= 2, process)
+    try:
+        wait_for("parallel direct Message model request",
+                 lambda: provider.request_count() >= 2, process)
+    except RuntimeError:
+        (output / "parallel-message-model-admission.json").write_text(
+            json.dumps(provider.admission_diagnostic(), indent=2) + "\n")
+        raise
 
     direction = wait_for("exact-run Direction action", lambda: offered_desktop_action(
         socket, room, "tasks", f"desktop:task:{task_id}", "direct"), process)

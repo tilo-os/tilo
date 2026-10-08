@@ -476,6 +476,29 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "private_content_recorded": False,
         })
 
+    def test_quick_composer_targets_use_actual_unwrapped_wire_and_real_control_geometry(self):
+        names = ("agent-quick-editor", "agent-quick-send", "agent-quick-close")
+        rows = [{"name": name, "rect": [10.0, 20.0, 100.0, 30.0]} for name in names]
+        response = {"targets": rows + [{"name": "PRIVATE-CANARY", "rect": [0, 0, 1, 1]}]}
+        self.assertEqual(PROOF.quick_composer_targets(response), {
+            name: [10.0, 20.0, 100.0, 30.0] for name in names})
+        invalid = [{"ok": response}, {"targets": "PRIVATE-CANARY"},
+                   {"targets": rows[:-1]}, {"targets": rows + [rows[0]]}]
+        for rect in (None, [0, 0, 0, 30], [0, 0, 30, -1], [True, 0, 30, 30],
+                     [0, float("nan"), 30, 30], [0, 0, 30], {"x": 0}):
+            invalid.append({"targets": [{"name": names[0], "rect": rect}, *rows[1:]],
+                            "private": "PRIVATE-CANARY"})
+            invalid.append({"targets": [{"name": names[0], "rect": rect}, *rows[1:]]})
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(RuntimeError) as refused:
+                PROOF.quick_composer_targets(value)
+            self.assertNotIn("PRIVATE-CANARY", str(refused.exception))
+            self.assertNotIn("targets", str(refused.exception))
+        source = inspect.getsource(PROOF.exercise_agent_quick_composer)
+        self.assertIn('quick_composer_targets(call(socket, {"op": "list_targets"}))', source)
+        self.assertNotIn('require_ok(call(socket, {"op": "list_targets"}))', source)
+        self.assertIn('for intent in ("message", "queue", "steer"):', source)
+
     def test_return_editor_continuity_reports_only_actual_field_equalities(self):
         before = {"draft_matches": True, "caret": 8, "selection": [7, 8],
                   "accessibility_focused": True, "private_content": "PRIVATE-CANARY"}
@@ -1551,6 +1574,54 @@ class PresentedEditorTargetTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 PROOF.canonical_physical_message("socket", "room", "", "fixture", None)
 
+    def test_provider_counts_http_arrival_before_blocking_owner_admission_without_content(self):
+        provider = PROOF.HeldProvider()
+        entered, release, refuse = threading.Event(), threading.Event(), threading.Event()
+        def probe():
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("bounded test probe did not release")
+            return None if refuse.is_set() else {"phase": "planning", "private": "PRIVATE-CANARY"}
+        provider.require_owner_admission(probe)
+        def post():
+            request = urllib.request.Request(
+                provider.endpoint + "/chat/completions",
+                json.dumps({"model": "bounded-fixture", "private": "PRIVATE-CANARY"}).encode(),
+                {"Authorization": "Bearer isolated-fixture-not-a-real-provider-key"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            try:
+                result = pool.submit(post)
+                self.assertTrue(entered.wait(5))
+                pending = provider.admission_diagnostic()
+                self.assertEqual(pending["admission_attempt_count"], 1)
+                self.assertEqual(pending["pending_probe_count"], 1)
+                self.assertEqual(pending["counted_request_count"], 0)
+                release.set()
+                PROOF.wait_for("actual owner admitted POST", lambda: provider.request_count() == 1, timeout=5)
+                provider.release_through(1)
+                self.assertEqual(result.result(timeout=5), 200)
+                admitted = provider.admission_diagnostic()
+                self.assertEqual(admitted["admitted_count"], 1)
+                self.assertEqual(admitted["pending_probe_count"], 0)
+                refuse.set()
+                with self.assertRaises(urllib.error.HTTPError) as refused:
+                    post()
+                self.assertEqual(refused.exception.code, 409)
+                closed = provider.admission_diagnostic()
+                self.assertEqual(closed["refused_count"], 1)
+                self.assertEqual(closed["admission_attempt_count"], 2)
+                self.assertTrue(all(type(value) is int and 0 <= value <= 64 for value in closed.values()))
+                self.assertNotIn("PRIVATE-CANARY", json.dumps(closed))
+            finally:
+                release.set()
+                provider.close()
+        source = inspect.getsource(PROOF.managed_task_and_message_lifecycle)
+        wait = source.index('"parallel direct Message model request"')
+        receipt = source.index('"parallel-message-model-admission.json"', wait)
+        self.assertLess(wait, receipt)
+
     def test_real_provider_fourth_post_settles_while_original_third_stays_held(self):
         provider = PROOF.HeldProvider()
         provider.require_owner_admission(lambda: {"phase": "accepted"})
@@ -1945,6 +2016,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
     def test_marker_composer_uses_physical_private_drafts_and_exact_owner_frontier(self):
         source = inspect.getsource(PROOF.exercise_agent_quick_composer)
+        source += inspect.getsource(PROOF.quick_composer_targets)
         for required in (
                 '"op": "click_named"', '"op": "type"',
                 '"agent-quick-editor"', '"agent-quick-send"', '"agent-quick-close"',
