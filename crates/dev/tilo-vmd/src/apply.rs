@@ -1088,8 +1088,8 @@ mod tests {
     #[test]
     fn slot_identity_environment_quotes_the_actual_account_home() {
         assert_eq!(
-            slot_identity_environment(std::path::Path::new("/var/home/tds-proof")).unwrap(),
-            "Environment=\"TILO_IDENTITY_ROOT=/var/home/tds-proof/.local/share/tilo/test-identity\"\n"
+            slot_identity_environment(std::path::Path::new("/var/home/you")).unwrap(),
+            "Environment=\"TILO_IDENTITY_ROOT=/var/home/you/.local/share/tilo/test-identity\"\n"
         );
         assert_eq!(
             slot_identity_environment(std::path::Path::new("/home/a %u\"b")).unwrap(),
