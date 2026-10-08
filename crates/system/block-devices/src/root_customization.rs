@@ -297,7 +297,7 @@ fn apply_owner_ssh(etc: &Path, username: &str, keys: &str) -> io::Result<Vec<Pat
 }
 
 /// The installed `/var` path of the account's home, which `/etc/passwd`
-/// names as `/var/home/NAME` or through the `/home` link.
+/// names as `/var/home/account` or through the `/home` link.
 fn installed_home(var: &Path, account: &Account) -> io::Result<PathBuf> {
     let relative = account
         .home
@@ -486,13 +486,9 @@ mod tests {
         )
         .unwrap();
         let mut passwd = fs::read_to_string(etc.join("passwd")).unwrap();
-        writeln!(
-            passwd,
-            "tester:x:{uid}:{gid}::/var/home/tester:/bin/bash"
-        )
-        .unwrap();
+        writeln!(passwd, "alice:x:{uid}:{gid}::/var/home/alice:/bin/bash").unwrap();
         fs::write(etc.join("passwd"), passwd).unwrap();
-        fs::create_dir_all(var.join("home/tester")).unwrap();
+        fs::create_dir_all(var.join("home/alice")).unwrap();
         (mnt, etc, var)
     }
 
@@ -500,11 +496,11 @@ mod tests {
     fn the_login_account_is_the_one_regular_user() {
         let (_mnt, etc, _var) = disk();
         let account = login_account(&etc).unwrap();
-        assert_eq!(account.name, "tester");
-        assert_eq!(account.home, "/var/home/tester");
+        assert_eq!(account.name, "alice");
+        assert_eq!(account.home, "/var/home/alice");
 
         let mut passwd = fs::read_to_string(etc.join("passwd")).unwrap();
-        passwd.push_str("other:x:59999:59999::/var/home/other:/bin/bash\n");
+        passwd.push_str("bob:x:59999:59999::/var/home/bob:/bin/bash\n");
         fs::write(etc.join("passwd"), passwd).unwrap();
         let error = login_account(&etc).unwrap_err();
         assert!(error.to_string().contains("2 login accounts"), "{error}");
@@ -529,13 +525,13 @@ mod tests {
         finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap();
 
         assert_eq!(
-            fs::read_to_string(etc.join("ssh/authorized_keys/tester")).unwrap(),
+            fs::read_to_string(etc.join("ssh/authorized_keys/alice")).unwrap(),
             format!("{KEY_A}\n{KEY_B}\n")
         );
         let config =
             fs::read_to_string(etc.join("ssh/sshd_config.d/00-tilo-bringup.conf")).unwrap();
         for directive in [
-            "AllowUsers tester",
+            "AllowUsers alice",
             "PasswordAuthentication no",
             "AuthorizedKeysFile /etc/ssh/authorized_keys/%u",
         ] {
@@ -554,7 +550,7 @@ mod tests {
         fs::write(etc.join("tilo/bringup-ssh.pub"), format!("{KEY_B}\n")).unwrap();
         finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap();
         assert_eq!(
-            fs::read_to_string(etc.join("ssh/authorized_keys/tester")).unwrap(),
+            fs::read_to_string(etc.join("ssh/authorized_keys/alice")).unwrap(),
             format!("{KEY_B}\n")
         );
     }
@@ -584,7 +580,7 @@ mod tests {
         fs::create_dir_all(staged.path().join("account-home")).unwrap();
         fs::write(staged.path().join("account-home/SETUP.md"), b"# Setup\n").unwrap();
         finish(&etc, &var, staged.path(), Placed::default(), requests()).unwrap();
-        let placed = var.join("home/tester/SETUP.md");
+        let placed = var.join("home/alice/SETUP.md");
         assert_eq!(fs::read(&placed).unwrap(), b"# Setup\n");
         {
             use std::os::unix::fs::PermissionsExt;
@@ -603,19 +599,19 @@ mod tests {
     fn a_home_outside_var_home_is_refused() {
         let (_mnt, etc, var) = disk();
         let account = Account {
-            name: "tester".into(),
+            name: "alice".into(),
             uid: 1000,
             gid: 1000,
-            home: "/root/../var/home/tester".into(),
+            home: "/root/../var/home/alice".into(),
         };
         assert!(installed_home(&var, &account).is_err());
         let account = Account {
-            home: "/home/tester".into(),
+            home: "/home/alice".into(),
             ..account
         };
         assert_eq!(
             installed_home(&var, &account).unwrap(),
-            var.join("home/tester")
+            var.join("home/alice")
         );
         let _ = etc;
     }
@@ -625,7 +621,7 @@ mod tests {
         let (_mnt, etc, var) = disk();
         fs::write(
             etc.join("passwd"),
-            "../outside:x:1000:1000::/var/home/tester:/bin/bash\n",
+            "../outside:x:1000:1000::/var/home/alice:/bin/bash\n",
         )
         .unwrap();
         let error =
@@ -633,12 +629,12 @@ mod tests {
         assert!(error.to_string().contains("plain SSH user name"), "{error}");
         fs::write(
             etc.join("passwd"),
-            "tester:x:1000:1000::/var/home/tester:/bin/bash\n",
+            "alice:x:1000:1000::/var/home/alice:/bin/bash\n",
         )
         .unwrap();
         fs::remove_dir_all(var.join("home")).unwrap();
         let outside = tempfile::tempdir().unwrap();
-        fs::create_dir(outside.path().join("tester")).unwrap();
+        fs::create_dir(outside.path().join("alice")).unwrap();
         std::os::unix::fs::symlink(outside.path(), var.join("home")).unwrap();
         let staged = tempfile::tempdir().unwrap();
         fs::create_dir(staged.path().join("account-home")).unwrap();
@@ -653,7 +649,7 @@ mod tests {
             error.to_string().contains("not a real directory"),
             "{error}"
         );
-        assert!(!outside.path().join("tester/SETUP.md").exists());
+        assert!(!outside.path().join("alice/SETUP.md").exists());
     }
 
     #[test]
