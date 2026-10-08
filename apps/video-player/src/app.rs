@@ -3157,12 +3157,13 @@ mod tests {
                 framed.open_button_rect.width() > 0.0,
                 "another video stays reachable"
             );
-            assert_eq!(
-                framed
-                    .open_button_rect
-                    .intersect(framed.status_action_rect)
-                    .area(),
-                0.0,
+            let open = framed.open_button_rect;
+            let formats = framed.status_action_rect;
+            assert!(
+                open.x1 <= formats.x0
+                    || formats.x1 <= open.x0
+                    || open.y1 <= formats.y0
+                    || formats.y1 <= open.y0,
                 "Open and the formats remedy have distinct painted targets"
             );
             let root = framed.accessibility().expect("player accessibility");
