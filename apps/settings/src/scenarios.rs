@@ -27,6 +27,13 @@ pub const NARROW_VIEWPORT: (u32, u32) = (440, 820);
 /// The query the `search` scenario types into the sidebar's field.
 pub const SEARCH_QUERY: &str = "light";
 
+const CODEC_SCENARIOS: &[&str] = &[
+    "codecsdemo-off",
+    "codecsdemo-installing",
+    "codecsdemo-installed",
+    "codecsdemo-waiting",
+    "codecsdemo-failed",
+];
 const DEVICE_DISPLAYS: &str = "device-displays";
 
 const NARROW: &str = "narrow";
@@ -49,6 +56,7 @@ pub fn names() -> &'static [&'static str] {
                 ACCOUNTS_NARROW,
                 DEVICE_DISPLAYS,
             ])
+            .chain(CODEC_SCENARIOS.iter().copied())
             .collect()
     });
     &NAMES
@@ -68,6 +76,8 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
 /// scenario opens.
 #[derive(Clone, Debug)]
 pub struct CaptureScene {
+    /// Fixed formats status for the explicit codecs capture scenarios.
+    pub codec_status: Option<crate::codec_pack::CodecPackStatus>,
     /// Where the capture keeps its account stores.
     pub account_root: Option<PathBuf>,
     /// The account form the scenario shows open.
@@ -84,6 +94,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         .ok()
         .map(|directory| directory.join("tilo"));
     fixture.provide(CaptureScene {
+        codec_status: codec_status(fixture.scenario()),
         account_root,
         account_form,
         device_displays: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
@@ -92,6 +103,26 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             Vec::new()
         },
     });
+}
+
+fn codec_status(scenario: Option<&str>) -> Option<crate::codec_pack::CodecPackStatus> {
+    let json = match scenario? {
+        "codecsdemo-off" => r#"{"state":"not-installed"}"#,
+        "codecsdemo-installing" => {
+            r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":5,"label":"Downloading","bytes":14000000,"total":38000000}}"#
+        }
+        "codecsdemo-installed" => {
+            r#"{"state":"installed","desired":true,"parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"}}"#
+        }
+        "codecsdemo-waiting" => {
+            r#"{"state":"installed","desired":true,"parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"waiting"}}"#
+        }
+        "codecsdemo-failed" => {
+            r#"{"state":"failed","desired":true,"last_error":"Could not download the manifest (connection reset)."}"#
+        }
+        _ => return None,
+    };
+    Some(crate::codec_pack::CodecPackStatus::parse(json))
 }
 
 /// Two fixture devices with device-qualified connector identities and logical sizes.
@@ -149,6 +180,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance),
         Some(ACCOUNT_FORM | ACCOUNTS_NARROW) => Staged::Pane(Category::ExternalAccounts),
+        Some(slug) if CODEC_SCENARIOS.contains(&slug) => Staged::Pane(Category::Updates),
         Some(slug) => Staged::Pane(Category::from_slug(slug).unwrap_or(Category::Appearance)),
     }
 }
@@ -157,10 +189,103 @@ pub fn staged(scenario: Option<&str>) -> Staged {
 mod tests {
     use super::*;
 
+    #[test]
+    fn codec_captures_publish_the_rendered_card_and_controls() {
+        use ui::framework::testing::TestApp;
+        let cases = [
+            ("codecsdemo-off", "Off", "Install"),
+            ("codecsdemo-installing", "Downloading 14 of 38 MB", ""),
+            (
+                "codecsdemo-installed",
+                "On, including hardware H.264/HEVC",
+                "Remove",
+            ),
+            (
+                "codecsdemo-waiting",
+                "follows once a matching driver is published",
+                "Check for hardware support again",
+            ),
+            ("codecsdemo-failed", "Could not install:", "Try again"),
+        ];
+        for theme in [
+            ui::Theme::dark(),
+            ui::Theme::light(),
+            ui::Theme::high_contrast(),
+        ] {
+            for (scenario, status, action) in cases {
+                let mut app = TestApp::<crate::resource::SettingsShell>::capture(Some(scenario))
+                    .expect("formats capture opens");
+                app.harness()
+                    .relayout_themed(WIDE_VIEWPORT, theme.clone())
+                    .expect("formats capture lays out");
+                app.settle();
+                let nodes = app.harness().a11y_nodes();
+                let labels: Vec<_> = nodes.iter().filter_map(|(_, node)| node.label()).collect();
+                assert!(
+                    labels.contains(&"Play more video and audio formats"),
+                    "{scenario}: {labels:?}"
+                );
+                assert!(labels.contains(&"Downloaded to this device from the formats' publishers. You can turn it off here at any time."), "{scenario}: {labels:?}");
+                assert!(
+                    labels.contains(&"Status"),
+                    "{scenario}: the status field is rendered"
+                );
+                assert!(
+                    labels.iter().any(|label| label.contains(status)),
+                    "{scenario}: {labels:?}"
+                );
+                // Captures intentionally have no effect runner. Assert
+                // activation and admission on the live framework host with
+                // the same status source and a hermetic operation runner.
+                let mut live =
+                    TestApp::<crate::resource::SettingsShell>::new().expect("live settings opens");
+                let status = codec_status(Some(scenario)).expect("formats fixture status");
+                live.with_surface::<crate::SettingsApp, ()>(|settings| {
+                    let model =
+                        crate::panes::updates::UpdatesModel::sample(settings.host().clone())
+                            .with_codec_pack(
+                                std::sync::Arc::new(move || status.clone()),
+                                std::sync::Arc::new(|_| Ok(())),
+                            );
+                    *settings.updates().model().borrow_mut() = model;
+                    settings.stage_scene(Staged::Pane(Category::Updates));
+                })
+                .expect("mounted Settings surface");
+                live.harness()
+                    .relayout_themed(WIDE_VIEWPORT, theme.clone())
+                    .expect("live formats card lays out");
+                live.settle();
+                let live_nodes = live.harness().a11y_nodes();
+                if !action.is_empty() {
+                    assert!(
+                        live_nodes
+                            .iter()
+                            .any(|(_, node)| node.label() == Some(action)
+                                && node.supports_action(ui::accesskit::Action::Click)),
+                        "{scenario}: {action} is activatable"
+                    );
+                }
+                assert!(
+                    live.harness().component_contract_violations().is_empty(),
+                    "{scenario}: the formats actions retain their published contract"
+                );
+            }
+        }
+    }
+
     /// Each scenario names one layout: its pane, its screen, its size.
     #[test]
     fn scenarios_name_their_pane_and_size() {
-        assert_eq!(names().len(), Category::ALL.len() + 6);
+        assert_eq!(
+            names().len(),
+            Category::ALL.len() + 6 + CODEC_SCENARIOS.len()
+        );
+        for scenario in CODEC_SCENARIOS {
+            assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Updates));
+            assert!(codec_status(Some(scenario)).is_some());
+        }
+        assert!(codec_status(None).is_none());
+        assert!(codec_status(Some("updates")).is_none());
         for category in Category::ALL {
             assert_eq!(staged(Some(category.slug())), Staged::Pane(*category));
             assert_eq!(viewport(Some(category.slug())), WIDE_VIEWPORT);
