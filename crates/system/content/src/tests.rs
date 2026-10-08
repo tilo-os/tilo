@@ -384,7 +384,8 @@ fn durable_publish_syncs_the_directory_and_regenerable_does_not() {
         "a new shard: the root that gained it and the shard that gained the item"
     );
     // Content whose address shares the first one's shard lands in an existing directory.
-    let same_shard = (0u32..)
+    // One candidate in 256 matches; ten thousand candidates all missing is not a real outcome.
+    let same_shard = (0u32..10_000)
         .map(|i| i.to_string())
         .find(|candidate| hash_bytes(candidate.as_bytes())[..2] == first[..2])
         .unwrap();
