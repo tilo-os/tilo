@@ -35,6 +35,10 @@ pub use super::xrgb_history::{
 };
 use crate::shell::hdr_surface::HdrLayer;
 
+mod output_view;
+use output_view::OutputSurface;
+pub use output_view::{OutputSignal, OutputTarget, OutputView};
+
 /// Errors the bridge can return; each variant maps to an operator-visible message and the DRM backend logs+skips the frame.
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
@@ -1975,6 +1979,9 @@ pub struct VelloDrmBridge {
     /// Fixed-size renderer for the overview panel. Created once so a fade
     /// does not compile pipelines on the first animated frame.
     panel_renderer: Option<ui::offscreen::OffscreenRenderer>,
+    /// One retained surface per output that is not the whole scene, for
+    /// [`Self::paint_output_until`]. They share `target`'s renderer and device.
+    output_surfaces: Vec<(super::OutputId, OutputSurface)>,
     /// Narrow fault injection for the tracked-swizzle cleanup test. It is absent from ordinary
     /// binaries and shortens only the test's mapped source view after GPU completion.
     #[cfg(test)]
@@ -2064,6 +2071,7 @@ impl VelloDrmBridge {
             shown_workspace: None,
             workspace_snapshots: Vec::new(),
             panel_renderer: None,
+            output_surfaces: Vec::new(),
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
         })
@@ -2430,6 +2438,7 @@ impl VelloDrmBridge {
         // Sparse rendering never clears pixels outside its rectangles. A new clear color is a
         // full-frame change even if the scene recording itself is unchanged.
         self.invalidate_retained();
+        self.invalidate_output_surfaces();
         self.bump_xrgb_history_epoch();
     }
 
@@ -2467,6 +2476,9 @@ impl VelloDrmBridge {
     /// plain copy; an HDR target receives the PQ BT.2020 encode with SDR white at
     /// `sdr_white_nits`, compositing `hdr_layers` at full precision in linear light.
     ///
+    /// The one-output case of [`Self::paint_output_until`]: the scene is the output, so the
+    /// bridge's own target is the output's retained surface.
+    ///
     /// # Errors
     ///
     /// Fails when the target size does not match this bridge, rendering or
@@ -2481,6 +2493,52 @@ impl VelloDrmBridge {
         sdr_white_nits: f32,
         hdr_layers: &[HdrLayer],
     ) -> Result<GpuFrameStats, BridgeError> {
+        self.paint_final_pass(
+            scene,
+            damage,
+            OutputTarget::imported(target),
+            deadline,
+            OutputSignal {
+                sdr_white_nits,
+                hdr_layers,
+            },
+        )
+    }
+
+    /// The PQ encode pipeline for `format` exists and encodes SDR white at `sdr_white_nits`.
+    fn prepare_hdr_encoder(&mut self, format: wgpu::TextureFormat, sdr_white_nits: f32) {
+        if !self
+            .hdr_encoders
+            .iter()
+            .any(|pipeline| pipeline.format() == format)
+        {
+            self.hdr_encoders
+                .push(HdrEncodePipeline::new(&self.target.device, format));
+        }
+        if let Some(pipeline) = self
+            .hdr_encoders
+            .iter()
+            .find(|pipeline| pipeline.format() == format)
+        {
+            pipeline.set_sdr_white(&self.target.queue, sdr_white_nits);
+        }
+    }
+
+    /// Render `scene` into the target currently swapped into `self.target`, then run the
+    /// final pass into `output`: a copy for `Bgra8Unorm`, the PQ encode (and the HDR
+    /// composite when there are layers) otherwise. Waits for the completion marker.
+    fn paint_final_pass(
+        &mut self,
+        scene: &Scene,
+        damage: SceneDamage<'_>,
+        output: OutputTarget<'_>,
+        deadline: Instant,
+        signal: OutputSignal<'_>,
+    ) -> Result<GpuFrameStats, BridgeError> {
+        let OutputSignal {
+            sdr_white_nits,
+            hdr_layers,
+        } = signal;
         self.last_phase_timing = None;
         if let Some(error) = self.take_device_error() {
             return Err(error);
@@ -2491,13 +2549,13 @@ impl VelloDrmBridge {
             let (width, height) = self.target.size;
             self.reconstruct_target(width, height)?;
         }
-        if (target.width, target.height) != self.target.size {
+        if output.size != self.target.size {
             return Err(BridgeError::InvalidSize(format!(
                 "imported scanout target is {}x{}, expected {}x{}",
-                target.width, target.height, self.target.size.0, self.target.size.1
+                output.size.0, output.size.1, self.target.size.0, self.target.size.1
             )));
         }
-        let hdr = target.format != wgpu::TextureFormat::Bgra8Unorm;
+        let hdr = output.format != wgpu::TextureFormat::Bgra8Unorm;
         let composite = hdr && !hdr_layers.is_empty();
         if composite {
             let (device, queue) = (&self.target.device, &self.target.queue);
@@ -2507,7 +2565,7 @@ impl VelloDrmBridge {
             self.target.hdr_pass = Some(compositor.prepare(
                 self.target.size,
                 hdr_layers,
-                Some((target.format, sdr_white_nits)),
+                Some((output.format, sdr_white_nits)),
             ));
         }
         // The substituted layer images are not what the retained target holds
@@ -2521,25 +2579,16 @@ impl VelloDrmBridge {
         } else {
             damage
         };
-        if hdr
-            && !self
-                .hdr_encoders
-                .iter()
-                .any(|pipeline| pipeline.format() == target.format)
-        {
-            self.hdr_encoders
-                .push(HdrEncodePipeline::new(&self.target.device, target.format));
+        if hdr {
+            self.prepare_hdr_encoder(output.format, sdr_white_nits);
         }
         let encode = self
             .hdr_encoders
             .iter()
-            .find(|pipeline| hdr && pipeline.format() == target.format);
-        if let Some(pipeline) = encode {
-            pipeline.set_sdr_white(&self.target.queue, sdr_white_nits);
-        }
+            .find(|pipeline| hdr && pipeline.format() == output.format);
         let blitter = &self.bgra_blitter;
-        let view = &target.view;
-        let format = target.format;
+        let view = output.view;
+        let format = output.format;
         let compositor = self.hdr_compositor.as_ref().filter(|_| composite);
         let previous_dispatch_submission = self.dispatch_stage_observer.as_ref().and_then(|_| {
             self.target
@@ -4179,6 +4228,7 @@ impl VelloDrmBridge {
         target.set_base_color(color);
         target.present_generation = self.target.present_generation;
         self.target = target;
+        self.invalidate_output_surfaces();
         (self.readback_buf, self.padded_bytes_per_row) =
             Self::allocate_staging(&self.target.device, width, height);
         self.readback.clear();
@@ -4510,6 +4560,7 @@ impl VelloDrmBridge {
         // that changed its output model but failed to complete reallocation from reusing an
         // ambiguous target on the next frame.
         self.invalidate_retained();
+        self.invalidate_output_surfaces();
         self.bump_xrgb_history_epoch();
         // A poisoned target refuses to resize; rebuilding it at the new size is what a failed
         // frame followed by a display change needs. Refusing instead left the presenter asking
@@ -5340,6 +5391,157 @@ mod tests {
         assert!(!adapter.device_type.is_empty());
         eprintln!("renderer gate adapter: {adapter:?}");
         bridge
+    }
+
+    /// One output's frame through the production per-output path, into an offscreen
+    /// stand-in for its imported scanout target, read back as BGRA bytes.
+    fn paint_output_pixels(
+        bridge: &mut VelloDrmBridge,
+        scene: &Scene,
+        view: &OutputView,
+        revision: u64,
+    ) -> Vec<u8> {
+        let (width, height) = view.size;
+        let (device, queue) = bridge.gpu();
+        let (device, queue) = (device.clone(), queue.clone());
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("output-view-test-scanout"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        bridge
+            .paint_output_into(
+                scene,
+                view,
+                SceneDamage {
+                    revision,
+                    previous_revision: None,
+                    regions: None,
+                },
+                OutputTarget {
+                    view: &target_view,
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    size: view.size,
+                },
+                Instant::now()
+                    .checked_add(tilo_test_env::hang_bound())
+                    .expect("the hang bound fits in an Instant"),
+                OutputSignal {
+                    sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                    hdr_layers: &[],
+                },
+            )
+            .expect("the output's frame renders");
+        let (buffer, stride) = VelloDrmBridge::allocate_staging(&device, width, height);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        VelloDrmBridge::append_full_copy(&mut encoder, &texture, &buffer, stride, width, height);
+        queue.submit([encoder.finish()]);
+        let mapped =
+            VelloDrmBridge::map_device_readback(&device, &buffer).expect("scanout stand-in maps");
+        let mut pixels = Vec::new();
+        for row in mapped.chunks(stride as usize).take(height as usize) {
+            pixels.extend_from_slice(&row[..(width as usize).saturating_mul(4)]);
+        }
+        drop(mapped);
+        buffer.unmap();
+        pixels
+    }
+
+    #[test]
+    fn output_view_renders_its_subrect() {
+        // A 200x100 desktop of two 100x100 outputs side by side: red on the
+        // left output, blue on the right.
+        let mut bridge = required_bridge(200, 100);
+        let mut scene = Scene::new();
+        for (x, color) in [
+            (0.0, Color::from_rgb8(255, 0, 0)),
+            (100.0, Color::from_rgb8(0, 0, 255)),
+        ] {
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                color,
+                None,
+                &vello::kurbo::Rect::new(x, 0.0, x + 100.0, 100.0),
+            );
+        }
+        let right = OutputView {
+            id: crate::shell::render::OutputId(1),
+            transform: Affine::translate((-100.0, 0.0)),
+            size: (100, 100),
+        };
+        let left = OutputView::at(crate::shell::render::OutputId(0), (0, 0), (100, 100));
+        // The scanout stand-in is BGRA.
+        let blue: [u8; 4] = [255, 0, 0, 255];
+        let red: [u8; 4] = [0, 0, 255, 255];
+        for (view, expected, name) in [(right, blue, "right"), (left, red, "left")] {
+            let pixels = paint_output_pixels(&mut bridge, &scene, &view, 1);
+            assert_eq!(pixels.len(), 100 * 100 * 4);
+            let wrong = pixels
+                .chunks_exact(4)
+                .filter(|pixel| *pixel != expected)
+                .count();
+            assert_eq!(
+                wrong, 0,
+                "every pixel of the {name} output is its half of the scene"
+            );
+        }
+        assert_eq!(
+            bridge.output_surfaces.len(),
+            2,
+            "each output keeps its own retained surface"
+        );
+        assert_eq!(
+            bridge.size(),
+            (200, 100),
+            "the scene's own target is untouched by the outputs"
+        );
+    }
+
+    #[test]
+    fn dropped_direct_frame_makes_the_output_render_in_full() {
+        // Two 100x100 outputs side by side; damage falls only on the left one.
+        let mut bridge = required_bridge(200, 100);
+        let scene = Scene::new();
+        let left = OutputView::at(crate::shell::render::OutputId(0), (0, 0), (100, 100));
+        let right = OutputView::at(crate::shell::render::OutputId(1), (100, 0), (100, 100));
+        paint_output_pixels(&mut bridge, &scene, &left, 1);
+        paint_output_pixels(&mut bridge, &scene, &right, 1);
+        let left_only = [vello::FineDamageRect {
+            x: 10,
+            y: 10,
+            width: 20,
+            height: 20,
+        }];
+        let damage = |revision| SceneDamage {
+            revision,
+            previous_revision: Some(revision - 1),
+            regions: Some(&left_only),
+        };
+        assert!(
+            !bridge.keep_unchanged_output(&left, damage(2)),
+            "the damaged output renders"
+        );
+        assert!(
+            bridge.keep_unchanged_output(&right, damage(2)),
+            "an undamaged output holding the previous revision keeps its image"
+        );
+        // A busy flip dropped the right output's frame: its surface is ahead of KMS.
+        bridge.invalidate_output_view(right.id);
+        assert!(
+            !bridge.keep_unchanged_output(&right, damage(3)),
+            "after a dropped flip the output must not count as unchanged"
+        );
     }
 
     impl VelloDrmBridge {

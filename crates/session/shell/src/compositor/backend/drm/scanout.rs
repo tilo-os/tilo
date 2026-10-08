@@ -1,9 +1,20 @@
 //! DRM scanout — modeset a connector and present GPU-rendered frames.
 //!
 //! KMS hardware cursor plane (`set_cursor2`/`move_cursor`, software cursor as fallback) plus
-//! two dumb buffers ping-ponged via `page_flip`, falling back to `dirty_framebuffer/set_crtc`.
-//! Not zero-copy (smithay's `DrmCompositor` drives GLES, not vello); pixel order: vello's
-//! `Rgba8Unorm` swizzles to framebuffer `Xrgb8888` in [`super::paint::VelloDrmBridge::paint_into_xrgb8888`].
+//! two buffer rings per output, each ping-ponged via `page_flip`:
+//!
+//! - **Direct** ([`DirectScanoutTargets`]): two GBM buffers the size of the output, imported as
+//!   Vulkan render targets. Vello renders the output's part of the scene straight into the back
+//!   slot ([`super::paint::VelloDrmBridge::paint_output_until`]); nothing crosses the CPU. Each
+//!   output is judged alone (`direct_scanout_rejection` in `drm/mod.rs`): a normal transform, no
+//!   ICC profile, a hardware cursor plane, page-flip events, and the renderer on this card.
+//! - **Readback**: two dumb buffers allocated at modeset, falling back to
+//!   `dirty_framebuffer/set_crtc` without page flips. The output's pixels are read back from
+//!   the GPU and written on the CPU (rotated, colour-managed, swizzled from vello's
+//!   `Rgba8Unorm` to `Xrgb8888`). Only outputs that fail a direct check, or whose direct
+//!   frame failed, present this way.
+//!
+//! smithay's `DrmCompositor` drives GLES, not vello, so neither ring uses it.
 //!
 //! HDR: an output driven in HDR scans out `XBGR2101010` (or `ABGR16161616F`) buffers holding a
 //! PQ BT.2020 signal, with the connector's HDR properties set by [`super::output_signal`]. The
@@ -343,6 +354,9 @@ pub struct DirectScanoutTargets {
     /// cannot change the framebuffer format, so HDR targets become visible
     /// through one `set_crtc` before flips take over.
     crtc_bound: bool,
+    /// KMS accepted a frame rendered into one of these targets; until then the
+    /// CRTC still shows the dumb front.
+    presented: bool,
     state: DirectScanoutState,
 }
 
@@ -381,17 +395,27 @@ fn retirement_after_poll(
 }
 
 impl DirectScanoutTargets {
-    /// Build both targets transactionally. No CRTC state changes here.
+    /// Build both targets transactionally, the size of the output they show
+    /// (`output_size`, its extent in the scene). No CRTC state changes here.
     ///
     /// # Errors
     ///
-    /// Fails when GBM cannot allocate the scanout buffers or the renderer
-    /// cannot import either of them.
+    /// Fails when the output's extent is not the scanout mode, GBM cannot
+    /// allocate the scanout buffers, or the renderer cannot import either of
+    /// them.
     pub fn new(
         scanout: &DrmScanout,
         bridge: &VelloDrmBridge,
         format: ScanoutFormat,
+        output_size: (u32, u32),
     ) -> Result<Self, String> {
+        let mode = scanout.size();
+        if mode != output_size {
+            return Err(format!(
+                "scanout mode {}x{} is not the output's {}x{} extent",
+                mode.0, mode.1, output_size.0, output_size.1
+            ));
+        }
         let buffers = scanout.allocate_gbm_scanout_buffers(format)?;
         let fourcc = match format {
             ScanoutFormat::Xrgb8888 => media::dmabuf::DRM_FORMAT_XRGB8888,
@@ -424,6 +448,7 @@ impl DirectScanoutTargets {
             buffers,
             format,
             crtc_bound: false,
+            presented: false,
             // The dumb-buffer front remains visible until the first complete
             // imported target is submitted, so index zero is merely the
             // initial ownership anchor; the first render uses index one.
@@ -433,6 +458,17 @@ impl DirectScanoutTargets {
 
     pub fn format(&self) -> ScanoutFormat {
         self.format
+    }
+
+    /// A queued flip onto one of these targets has not retired yet.
+    pub fn flip_pending(&self) -> bool {
+        self.state.pending.is_some()
+    }
+
+    /// KMS has accepted a frame from these targets, so the CRTC no longer shows
+    /// the dumb front.
+    pub fn presented(&self) -> bool {
+        self.presented
     }
 
     pub fn render_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
@@ -3200,6 +3236,7 @@ impl DrmScanout {
                 self.flip_pending = true;
                 if targets.state.submit(index) {
                     self.flip_submission = self.flip_submission.wrapping_add(1);
+                    targets.presented = true;
                     DirectSubmit::Queued
                 } else {
                     self.flip_pending = false;
@@ -3268,6 +3305,7 @@ impl DrmScanout {
             ));
         }
         targets.crtc_bound = true;
+        targets.presented = true;
         eprintln!(
             "tilo compositor: DRM HDR on connector={} path=direct format={:?}",
             u32::from(self.connector),

@@ -198,19 +198,33 @@ The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one 
 
 ### Composited frames: GBM render targets, dumb-buffer fallback
 
-On a single output with a normal transform, no colour transform, a hardware
-cursor plane, event-driven page flips, and a renderer on the same PCI
-function as the scanout card, the DRM backend allocates two linear
-XRGB8888 GBM buffer objects with `SCANOUT | RENDERING`, registers them as
-KMS framebuffers (`add_planar_framebuffer`), and imports them into Vulkan as
-render targets (`ui::dmabuf_import`). Vello renders the composited scene
-straight into the back slot and the backend flips to it; a slot stays
-owned by KMS until its page-flip event retires it, so the renderer never
-touches the front or flip-pending slot. When any eligibility check fails
-(`direct_scanout_rejection` in `backend/drm/mod.rs` names the reason in
-the log), or a direct submission fails, presentation falls back to the
-readback path: render, copy to CPU bytes, write the two dumb buffers the
-backend allocates at modeset.
+Eligibility is decided per output. An output with a normal transform, no
+colour transform, a hardware cursor plane, event-driven page flips, and a
+renderer on the same PCI function as its scanout card renders direct,
+however many other outputs there are: the DRM backend allocates two linear
+GBM buffer objects the size of that output (XRGB8888, or a 10-bit or
+half-float format in HDR) with `SCANOUT | RENDERING`, registers them as KMS
+framebuffers (`add_planar_framebuffer`), and imports them into Vulkan as
+render targets (`ui::dmabuf_import`). Vello renders the scene through the
+output's `OutputView` (the scene translated to the output's position) into
+a retained surface of the output's size, then copies, PQ-encodes or
+HDR-composites it into the back slot, and the backend flips to it
+(`VelloDrmBridge::paint_output_until`). Every output keeps its own retained
+surface and two-slot ring; the renderer and the device are shared. A slot
+stays owned by KMS until its page-flip event retires it, so the renderer
+never touches the front or flip-pending slot. Page-flip events are drained
+once per card and routed to the output whose CRTC they name, and a frame
+retires only when every output's queued flip has, so outputs at different
+refresh rates pace to the slowest direct output for now.
+
+When an output fails a check (`direct_scanout_rejection` in
+`backend/drm/mod.rs` logs the reason as `direct_scanout_status=unavailable
+reason=… output=…`), or its direct submission fails, that output alone
+falls back to the readback path: render, copy to CPU bytes, write the two
+dumb buffers the backend allocates at modeset. One such output renders and
+swizzles straight into its dumb buffer; with several outputs the bounding
+box of all of them is rendered once and only the outputs on the readback
+receive their sub-rect.
 
 ### No client fullscreen fast path
 
