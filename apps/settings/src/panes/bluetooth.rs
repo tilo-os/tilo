@@ -98,6 +98,10 @@ pub(crate) fn answer(
     let model = app.bluetooth().model();
     let (control, name) = {
         let mut model = model.borrow_mut();
+        model.poll_read();
+        if !model.loaded() {
+            return Err(t("settings-bluetooth-reading"));
+        }
         let name = effect_device(&effect).and_then(|path| model.name_of(path));
         if let BluetoothEffect::PairDevice { device } = &effect {
             if model.pairing.is_some() {
@@ -117,13 +121,18 @@ pub(crate) fn answer(
     }
     let name = name.unwrap_or_default();
     Ok(cx.thread(
-        move |_| carry_out(control.as_ref(), &effect, &name),
-        |app: &mut SettingsApp, outcome: Result<String, String>, _| {
+        move |_| {
+            let outcome = carry_out(control.as_ref(), &effect, &name);
+            let snapshot = read_control(control.as_ref());
+            (outcome, snapshot)
+        },
+        |app: &mut SettingsApp, (outcome, snapshot): (Result<String, String>, AdapterRead), _| {
             let model = app.bluetooth().model();
             let mut model = model.borrow_mut();
             model.pairing = None;
             model.notice = Some(outcome.clone().unwrap_or_else(|error| error));
-            model.refresh();
+            model.reading = None;
+            let _ = model.adopt_read(snapshot);
             outcome.map(|_| Effected::done())
         },
     ))
@@ -354,6 +363,8 @@ impl BluetoothControl for RealBluetooth {
 pub struct BluetoothArea {
     cx: PaneCx,
     model: OnceCell<Shared<BluetoothModel>>,
+    control: Arc<dyn BluetoothControl>,
+    device: bool,
 }
 
 impl BluetoothArea {
@@ -361,28 +372,55 @@ impl BluetoothArea {
         Self {
             cx: cx.clone(),
             model: OnceCell::new(),
+            control: if cx.reaches_devices() {
+                Arc::new(RealBluetooth)
+            } else {
+                Arc::new(SampleBluetooth)
+            },
+            device: cx.reaches_devices(),
         }
     }
 
     /// The model, over `BlueZ`, or over sample devices for a screenshot.
     pub fn model(&self) -> &Shared<BluetoothModel> {
         self.model.get_or_init(|| {
-            let control: Arc<dyn BluetoothControl> = if self.cx.reaches_devices() {
-                Arc::new(RealBluetooth)
+            let control = Arc::clone(&self.control);
+            let model = if self.device {
+                BluetoothModel::pending(self.cx.clone(), control)
             } else {
-                Arc::new(SampleBluetooth)
+                BluetoothModel::new(self.cx.clone(), control)
             };
-            Rc::new(std::cell::RefCell::new(BluetoothModel::new(
-                self.cx.clone(),
-                control,
-            )))
+            Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    pub(crate) fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        let mut model = self.model().borrow_mut();
+        model.poll_read();
+        if model.loaded() {
+            return Vec::new();
+        }
+        [
+            BluetoothEffect::SET_BLUETOOTH.id,
+            BluetoothEffect::SET_DISCOVERING.id,
+            BluetoothEffect::REFRESH_BLUETOOTH.id,
+        ]
+        .into_iter()
+        .map(|id| {
+            ui::framework::EffectStatus::unavailable(
+                tilo_resource::ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                "pending_adapter_read",
+                t("settings-bluetooth-reading"),
+            )
+        })
+        .collect()
     }
 
     /// One row per device, offering what can be done to it now.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
-        let model = self.model().borrow();
-        if model.read_error.is_some() {
+        let mut model = self.model().borrow_mut();
+        model.poll_read();
+        if !model.loaded() || model.read_error.is_some() {
             // The last devices read say nothing about the adapter now.
             return Vec::new();
         }
@@ -437,11 +475,24 @@ pub struct BluetoothModel {
     /// The name typed for each paired device, by object path.
     aliases: HashMap<String, Arc<Mutex<String>>>,
     changed: bool,
+    reading: Option<std::sync::mpsc::Receiver<AdapterRead>>,
+}
+
+type AdapterRead = Result<(Vec<DeviceInfo>, bool, bool), String>;
+
+fn read_control(control: &dyn BluetoothControl) -> AdapterRead {
+    control
+        .devices()
+        .and_then(|devices| Ok((devices, control.powered()?, control.scanning()?)))
 }
 
 impl BluetoothModel {
-    fn new(cx: PaneCx, control: Arc<dyn BluetoothControl>) -> Self {
-        let mut model = Self {
+    fn loaded(&self) -> bool {
+        self.reading.is_none()
+    }
+
+    fn empty(cx: PaneCx, control: Arc<dyn BluetoothControl>) -> Self {
+        Self {
             cx,
             control,
             devices: Vec::new(),
@@ -452,9 +503,51 @@ impl BluetoothModel {
             pairing: None,
             aliases: HashMap::new(),
             changed: false,
-        };
+            reading: None,
+        }
+    }
+
+    // Preview controls are in-process, deterministic and never reach BlueZ.
+    fn new(cx: PaneCx, control: Arc<dyn BluetoothControl>) -> Self {
+        let mut model = Self::empty(cx, control);
         model.refresh();
         model
+    }
+
+    fn pending(cx: PaneCx, control: Arc<dyn BluetoothControl>) -> Self {
+        let mut model = Self::empty(cx, control);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let control = Arc::clone(&model.control);
+        let wake = ui::WakeHandle::new();
+        match std::thread::Builder::new()
+            .name("settings-bluetooth-read".into())
+            .spawn(move || {
+                if sender.send(read_control(control.as_ref())).is_ok() {
+                    wake.wake();
+                }
+            }) {
+            Ok(_) => model.reading = Some(receiver),
+            Err(error) => {
+                let _ = model.adopt_read(Err(error.to_string()));
+            }
+        }
+        model.changed = true;
+        model
+    }
+
+    fn poll_read(&mut self) {
+        let Some(receiver) = &self.reading else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(t("settings-bluetooth-read-disconnected"))
+            }
+        };
+        self.reading = None;
+        let _ = self.adopt_read(result);
     }
 
     fn name_of(&self, path: &str) -> Option<String> {
@@ -475,10 +568,11 @@ impl BluetoothModel {
     /// keeps the last values and records why, so they are not shown as the
     /// adapter's state.
     fn read_adapter(&mut self) -> Result<(), String> {
-        let read = self
-            .control
-            .devices()
-            .and_then(|devices| Ok((devices, self.control.powered()?, self.control.scanning()?)));
+        self.adopt_read(read_control(self.control.as_ref()))
+    }
+
+    fn adopt_read(&mut self, read: AdapterRead) -> Result<(), String> {
+        self.changed = true;
         match read {
             Ok((devices, powered, scanning)) => {
                 self.devices = devices;
@@ -643,12 +737,15 @@ impl BluetoothModel {
         let refresh = t("settings-bluetooth-refresh");
         let mut body: Vec<El> = vec![Box::new(
             Row::new()
+                .push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new("settings.bluetooth.scan", &scan)
+                            .with_enabled(self.loaded() && self.read_error.is_none()),
+                        BluetoothEffect::SetDiscovering { on: !self.scanning },
+                    ),
+                ))
                 .push(Box::new(self.cx.bind_invocation(
-                    Button::new("settings.bluetooth.scan", &scan),
-                    BluetoothEffect::SetDiscovering { on: !self.scanning },
-                )))
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new("settings.bluetooth.refresh", &refresh),
+                    Button::new("settings.bluetooth.refresh", &refresh).with_enabled(self.loaded()),
                     BluetoothEffect::RefreshBluetooth,
                 )))
                 .push(Box::new(Spacer::new())),
@@ -661,6 +758,8 @@ impl BluetoothModel {
                 "settings-bluetooth-read-error",
                 &[("error", error.as_str().into())],
             )));
+        } else if !self.loaded() {
+            body.push(caption(&t("settings-bluetooth-reading")));
         } else {
             body.extend(self.devices.iter().map(|d| self.device_row(d)));
             if self.devices.is_empty() {
@@ -678,7 +777,7 @@ impl BluetoothModel {
                     Toggle::from_state(&LocalState::new(self.powered))
                         .with_id("bluetooth.toggle")
                         // An unread power state is not offered as a switch position.
-                        .with_enabled(self.read_error.is_none()),
+                        .with_enabled(self.loaded() && self.read_error.is_none()),
                     effect(BluetoothEffect::SET_BLUETOOTH),
                 ),
             ),
@@ -693,6 +792,7 @@ impl PaneModel for BluetoothModel {
     }
 
     fn poll(&mut self) -> bool {
+        self.poll_read();
         let paired: Vec<String> = self
             .devices
             .iter()
@@ -832,6 +932,267 @@ mod tests {
             Ok(())
         }
     }
+    struct DelayedRead {
+        mock: Mock,
+        delay: std::time::Duration,
+        reader_threads: Mutex<Vec<std::thread::ThreadId>>,
+    }
+    impl BluetoothControl for DelayedRead {
+        fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
+            self.reader_threads
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
+            std::thread::sleep(self.delay);
+            self.mock.devices()
+        }
+        fn powered(&self) -> Result<bool, String> {
+            self.mock.powered()
+        }
+        fn scanning(&self) -> Result<bool, String> {
+            self.mock.scanning()
+        }
+        fn set_powered(&self, on: bool) -> Result<(), String> {
+            self.mock.set_powered(on)
+        }
+        fn start_scan(&self) -> Result<(), String> {
+            self.mock.start_scan()
+        }
+        fn stop_scan(&self) -> Result<(), String> {
+            self.mock.stop_scan()
+        }
+        fn pair(&self, p: &str) -> Result<PairOutcome, String> {
+            self.mock.pair(p)
+        }
+        fn cancel_pairing(&self, p: &str) -> Result<(), String> {
+            self.mock.cancel_pairing(p)
+        }
+        fn connect(&self, p: &str) -> Result<(), String> {
+            self.mock.connect(p)
+        }
+        fn disconnect(&self, p: &str) -> Result<(), String> {
+            self.mock.disconnect(p)
+        }
+        fn set_trusted(&self, p: &str, on: bool) -> Result<(), String> {
+            self.mock.set_trusted(p, on)
+        }
+        fn set_alias(&self, p: &str, name: &str) -> Result<(), String> {
+            self.mock.set_alias(p, name)
+        }
+        fn forget(&self, p: &str) -> Result<(), String> {
+            self.mock.forget(p)
+        }
+    }
+
+    #[test]
+    fn publishing_bluetooth_rows_does_not_wait_for_the_adapter_read() {
+        let mut scope = ui::WakeScope::new();
+        let (woke, wakes) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        let _entry = scope.enter();
+        let profile = tempfile::tempdir().unwrap();
+        let control = Arc::new(DelayedRead {
+            mock: Mock {
+                calls: Mutex::new(vec![]),
+                devices: vec![dev()],
+            },
+            delay: std::time::Duration::from_millis(300),
+            reader_threads: Mutex::new(vec![]),
+        });
+        let area = BluetoothArea {
+            cx: PaneCx::in_file(profile.path().join("settings.json")),
+            model: OnceCell::new(),
+            control: control.clone(),
+            device: true,
+        };
+        let started = std::time::Instant::now();
+        let _ = area.rows();
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(150),
+            "publishing actual Bluetooth rows must not wait for BlueZ"
+        );
+        assert!(!area.model().borrow().loaded());
+        assert!(
+            area.rows().is_empty(),
+            "pending adapter state publishes no guessed devices"
+        );
+        wakes
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect(
+                "a completed adapter read must wake its actual owner without pointer or key input",
+            );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !area.model().borrow().loaded() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the real read must be adopted"
+            );
+            area.model().borrow_mut().poll_read();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(area.rows().len(), 1);
+        assert_eq!(area.model().borrow().devices, vec![dev()]);
+        assert!(
+            control
+                .reader_threads
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|thread| *thread != std::thread::current().id()),
+            "BlueZ reads must run outside the publisher"
+        );
+    }
+
+    #[test]
+    fn mounted_bluetooth_job_adopts_its_worker_read_without_blocking_the_ui() {
+        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        let control = Arc::new(DelayedRead {
+            mock: Mock {
+                calls: Mutex::new(vec![]),
+                devices: vec![dev()],
+            },
+            delay: std::time::Duration::from_millis(300),
+            reader_threads: Mutex::new(vec![]),
+        });
+        app.surface::<SettingsApp, _>(|surface| {
+            surface.bluetooth().model().borrow_mut().control = control.clone();
+        })
+        .unwrap();
+        let invocation = app
+            .start_effect(&SettingsEffect::from(BluetoothEffect::SetBluetooth {
+                on: false,
+            }))
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let started = std::time::Instant::now();
+            app.settle();
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(150),
+                "an actual mounted job completion must not reread BlueZ on the UI thread"
+            );
+            if app
+                .harness()
+                .job_updates(invocation)
+                .iter()
+                .any(tilo_actions::InvocationUpdate::is_terminal)
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the admitted job must answer"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(matches!(app.harness().job_updates(invocation).last(),
+            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: id, .. }) if *id == invocation));
+        assert_eq!(*control.mock.calls.lock().unwrap(), vec!["power:false"]);
+        assert!(
+            control
+                .reader_threads
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|thread| *thread != std::thread::current().id())
+        );
+        app.surface::<SettingsApp, _>(|surface| {
+            let model = surface.bluetooth().model().borrow();
+            assert_eq!(model.devices, vec![dev()]);
+            assert!(model.loaded() && model.read_error.is_none());
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn background_adapter_failure_is_adopted_without_inventing_an_empty_device_list() {
+        let profile = tempfile::tempdir().unwrap();
+        let area = BluetoothArea {
+            cx: PaneCx::in_file(profile.path().join("settings.json")),
+            model: OnceCell::new(),
+            control: Arc::new(Unreachable),
+            device: true,
+        };
+        assert!(area.rows().is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !area.model().borrow().loaded() {
+            assert!(std::time::Instant::now() < deadline);
+            area.model().borrow_mut().poll_read();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let model = area.model().borrow();
+        assert_eq!(
+            model.read_error.as_deref(),
+            Some("org.bluez is not reachable")
+        );
+        let text = crate::widgets::announced_text(model.build_composition().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line.contains("Can't read Bluetooth"))
+        );
+        assert!(
+            !text
+                .iter()
+                .any(|line| line == &t("settings-bluetooth-empty"))
+        );
+    }
+
+    #[test]
+    fn mounted_pending_adapter_keeps_the_actual_power_action_unavailable() {
+        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        let control = Arc::new(DelayedRead {
+            mock: Mock {
+                calls: Mutex::new(vec![]),
+                devices: vec![dev()],
+            },
+            delay: std::time::Duration::from_millis(300),
+            reader_threads: Mutex::new(vec![]),
+        });
+        app.surface::<SettingsApp, _>(|surface| {
+            let area = surface.bluetooth();
+            *area.model().borrow_mut() = BluetoothModel::pending(area.cx.clone(), control.clone());
+        })
+        .unwrap();
+        let descriptors = app.actions().unwrap();
+        let power = descriptors
+            .iter()
+            .find(|row| row.address.action == BluetoothEffect::SET_BLUETOOTH.id)
+            .unwrap();
+        assert!(
+            matches!(&power.contract.availability, tilo_actions::Availability::Unavailable { code, .. }
+            if code == "pending_adapter_read")
+        );
+        assert!(
+            app.start_effect(&SettingsEffect::from(BluetoothEffect::SetBluetooth {
+                on: false
+            }))
+            .is_err(),
+            "the published action must refuse while its real adapter read is pending"
+        );
+        assert!(control.mock.calls.lock().unwrap().is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            app.settle();
+            if app
+                .surface::<SettingsApp, _>(|surface| surface.bluetooth().model().borrow().loaded())
+                .unwrap()
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        app.effect(&SettingsEffect::from(BluetoothEffect::SetBluetooth {
+            on: false,
+        }))
+        .unwrap();
+        assert_eq!(*control.mock.calls.lock().unwrap(), vec!["power:false"]);
+    }
+
     /// An adapter that cannot be asked anything, as from a sandbox without
     /// the system bus.
     struct Unreachable;
