@@ -51,8 +51,21 @@ microphone control. Chromium's synthetic devices supply production Opus audio;
 each browser must report more than five decoded remote levels above RMS 0.015.
 Mute stops only local capture. Leave closes tracks, audio contexts and workers,
 and rejoin requires fresh Unmute. Removing one workspace member stops that
-person's capture while the other participant continues. The receipt and actual
-Chat frames are saved under `target/mounted-resource-voice/`. The SDK web lane
+person's capture while the other participant continues. Explicit authority loss on the
+authenticated media carrier closes that person's audio even if the separate
+signalling end event is lost or delayed. The carrier's revocation byte or
+reserved revocation close code establishes that loss; ordinary network closure
+pauses capture and retains the admitted reconnect path. A late revocation of a
+replaced carrier cannot end the newly admitted grant. The receipt and actual
+Chat frames are saved under `target/mounted-resource-voice/`. Each run also
+writes a `progress.json` receipt with a unique run id and elapsed checkpoints.
+The revocation receipt distinguishes waiting for the owner's acknowledgement,
+its committed generation and duration, stopping capture, closing audio resources,
+and the surviving person's capture and Leave. The unchanged 130-second global
+deadline writes `failure.json` before closing browsers; a successful `journey.json`
+and a failure receipt must be matched by run id. CI keeps mounted artifacts under
+`app-sdk-mounted-resource-<attempt>` so a later attempt cannot overwrite the
+failed attempt's evidence. The SDK web lane
 runs this journey as an unprivileged user with Chromium's sandbox enabled and
 an owned descendant supervisor; missing prerequisites fail.
 
