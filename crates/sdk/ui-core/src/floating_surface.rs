@@ -353,6 +353,10 @@ pub enum FloatingSurfaceHostMessage {
     /// new wallpaper, a window moved to another workspace, a colour chosen
     /// in Settings.
     Appearance {
+        /// The host's configured palette; apps cannot read its settings file
+        /// through their private sandbox configuration directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theme: Option<crate::theme_document::ThemeDocument>,
         /// OKLCH degrees; absent while the workspace has no temperature.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_hue: Option<f32>,
@@ -367,9 +371,39 @@ impl FloatingSurfaceHostMessage {
     #[must_use]
     pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
         Self::Appearance {
+            theme: None,
             workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
             your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
         }
+    }
+
+    /// The host's configured theme and the window's workspace appearance.
+    #[must_use]
+    pub fn appearance_with_theme(
+        appearance: &crate::theme::WindowAppearance,
+        theme: &crate::Theme,
+    ) -> Self {
+        let mut message = Self::appearance(appearance);
+        if let Self::Appearance {
+            theme: document, ..
+        } = &mut message
+        {
+            *document = Some(theme.document.clone());
+        }
+        message
+    }
+
+    /// Validate the host's authored palette before applying it.
+    #[must_use]
+    pub fn configured_theme(&self) -> Option<crate::Theme> {
+        let Self::Appearance {
+            theme: Some(document),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        crate::Theme::from_document(document)
     }
 
     /// What an [`Self::Appearance`] message says, `None` for any other. A
@@ -380,6 +414,7 @@ impl FloatingSurfaceHostMessage {
         let Self::Appearance {
             workspace_hue,
             your_colour,
+            ..
         } = self
         else {
             return None;

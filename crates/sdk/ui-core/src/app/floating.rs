@@ -32,6 +32,8 @@ impl AuxiliaryCaptureFrames {
 )]
 pub(super) struct FloatingRuntime {
     pub client: Option<FloatingSurfaceServiceClient>,
+    /// The authenticated shell's palette survives private settings reloads.
+    pub host_theme: Option<crate::Theme>,
     host_shell_allow: Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>>,
     display_move: Option<(
         u64,
@@ -70,6 +72,7 @@ impl FloatingRuntime {
         Self {
             capture_host_required: client.is_some(),
             client,
+            host_theme: None,
             host_shell_allow: None,
             display_move: None,
             next_display_move: 0,
@@ -647,6 +650,12 @@ impl App {
                     self.floating.suspended_ids.insert(id.clone());
                 }
                 FloatingSurfaceHostMessage::Appearance { .. } => {
+                    if let Some(theme) = message.configured_theme() {
+                        self.floating.host_theme = Some(theme.clone());
+                        if self.accessibility.base_theme.document != theme.document {
+                            self.set_theme(theme);
+                        }
+                    }
                     if let Some(appearance) = message.window_appearance() {
                         self.set_window_appearance(appearance);
                     }

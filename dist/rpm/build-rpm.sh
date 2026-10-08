@@ -23,6 +23,9 @@ version=$(<"$repo_root/dist/VERSION")
 release=${TILO_RPM_RELEASE:-1}
 [[ $release =~ ^[0-9][0-9A-Za-z._+~]*$ ]] || { echo "invalid TILO_RPM_RELEASE: $release" >&2; exit 1; }
 
+# Reject stale exception paths before spending time compiling the native payload.
+python3 "$repo_root/dist/rpm/test-rpmlint-config.py"
+
 run_cargo=1
 [[ ${1:-} == --no-cargo ]] && run_cargo=0
 
