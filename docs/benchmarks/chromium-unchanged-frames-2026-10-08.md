@@ -13,10 +13,11 @@ another scene or presentation. The remote forwarding path is unchanged.
 
 ## Reproduction
 
-Run the production-path tests remotely:
+Run the production-path tests with Cargo or a remote Cargo drop-in selected
+through `CARGO`:
 
 ```sh
-rcargo --no-fallback test --locked -p tilo-ui --lib webview::chromium::tests:: -j8
+"${CARGO:-cargo}" test --locked -p tilo-ui --lib webview::chromium::tests:: -j8
 ```
 
 `unchanged_frames_do_not_wake_or_replace_the_painted_pixels` failed before the
