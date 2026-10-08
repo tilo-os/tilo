@@ -2403,6 +2403,7 @@ dictation-listening = Microphone on · Speak, then finish to insert.
 dictation-finishing = Microphone off · Finishing your text…
 dictation-stopping = Stopping dictation…
 dictation-editable-required = Focus an editable field. Passwords cannot receive dictation.
+dictation-unsupported-field = Dictation is not supported in terminal fields yet. Focus another editable field.
 dictation-busy = The previous dictation is still stopping. Try again shortly.
 dictation-target-changed = The field changed. Dictation was canceled without inserting text.
 dictation-timeout = Dictation timed out. No text was inserted.

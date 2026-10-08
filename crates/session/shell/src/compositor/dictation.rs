@@ -13,6 +13,7 @@
 
 use std::time::{Duration, Instant};
 
+use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::ContentPurpose;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::backend::ObjectId;
 use smithay::wayland::text_input::TextInputSeat;
@@ -72,6 +73,8 @@ pub enum DictationError {
     Busy,
     NoEditableField,
     SensitiveField,
+    /// A terminal exposes process input, not a qualified editable inner field.
+    UnsupportedField,
     InputMethodUnavailable,
     StaleSession,
     TargetChanged,
@@ -1118,8 +1121,15 @@ impl State {
         self.seat
             .text_input()
             .with_active_text_input(|field, surface| {
-                target = if self.text_fields.content_type(field).is_sensitive() {
+                let content = self.text_fields.content_type(field);
+                target = if content.is_sensitive() {
                     Err(DictationError::SensitiveField)
+                } else if content.purpose == u32::from(ContentPurpose::Terminal) {
+                    // Terminal purpose does not identify an inner program's edit,
+                    // command or secret mode. Neither a caret nor a private
+                    // receipt supplies that contract. Refuse speech before capture
+                    // and on every revalidation; ordinary keyboard IME is separate.
+                    Err(DictationError::UnsupportedField)
                 } else {
                     self.text_fields
                         .revision(field)

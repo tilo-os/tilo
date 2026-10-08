@@ -299,6 +299,7 @@ impl DictationSurface {
             DictationError::NoEditableField | DictationError::SensitiveField => {
                 "dictation-editable-required"
             }
+            DictationError::UnsupportedField => "dictation-unsupported-field",
             DictationError::Busy => "dictation-busy",
             DictationError::TargetChanged | DictationError::StaleSession => {
                 "dictation-target-changed"
