@@ -5,29 +5,211 @@
 //! departures (kept in the user's state directory), live agent dispatch through the session's
 //! action broker, managed agent launches, and the native workspace tree as
 //! its causal history source.
+use crate::shell::automation_host::{
+    DocumentShare, FinishedShortcutRun, document_share, ordered_steps, record_run_steps,
+};
+use crate::shell::collab_broker::AppActionBroker;
+use crate::shell::room_records::RoomRecords;
 use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     Workspace, WorkspaceId, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
     WorkspaceTree,
 };
-use std::{collections::HashMap, rc::Rc};
+use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 use tilo_desktop::activity::{
     ActivityHost, ActivityTree, WorkspaceDeparture, WorkspaceSeenFrontier,
 };
 pub use tilo_desktop::activity::{ActivityView, Period, RoomActivityOutcome, RoomScope};
+use ui::record::{RecordId, RecordStore};
 
-/// Refreshes a finished shortcut run waits for its changes to reach an open
-/// document before it is given up.
-const SHORTCUT_RUN_RECORD_ATTEMPTS: u32 = 240;
+/// How long a finished shortcut run waits, on the wall clock, for its changes
+/// to reach a document on this device before it is given up.
+const SHORTCUT_RUN_SETTLE: Duration = Duration::from_secs(10);
+
+/// How often a waiting run looks again. Between looks nothing is read, and a
+/// look reads only the documents whose revision moved since the last one.
+const SHORTCUT_RUN_LOOK_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 pub(crate) struct NativeActivityHost {
     broker: Option<crate::shell::collab_broker::AppActionBroker>,
     review: Option<super::task_review::NativeTaskReview>,
-    /// Shortcut runs the broker finished whose history is not recorded yet,
-    /// with how many refreshes have looked for their changes.
-    pub(crate) pending_shortcut_runs:
-        std::cell::RefCell<Vec<(crate::shell::automation_host::FinishedShortcutRun, u32)>>,
+}
+
+/// A document's revision when a waiting run last looked at it: the heads of
+/// a document open here, or the persisted witness of one on disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LookedRevision {
+    Open(Vec<automerge::ChangeHash>),
+    Persisted(u64),
+}
+
+/// A shortcut run the broker finished whose history is not recorded yet.
+pub(crate) struct PendingShortcutRun {
+    finished: FinishedShortcutRun,
+    since: Instant,
+    /// What the last look found in each candidate document, under the
+    /// revision it was read at. `None` when the revision is unknown, so the
+    /// document is read again on the next look.
+    looked: HashMap<RecordId, (Option<LookedRevision>, Option<DocumentShare>)>,
+}
+
+impl PendingShortcutRun {
+    pub(crate) fn new(finished: FinishedShortcutRun, since: Instant) -> Self {
+        Self {
+            finished,
+            since,
+            looked: HashMap::new(),
+        }
+    }
+
+    /// The run's steps among `candidates`: documents open in `records` are
+    /// read in memory, the others from `local`, and only those whose
+    /// revision moved since the last look.
+    fn look(
+        &mut self,
+        candidates: &BTreeSet<RecordId>,
+        open: &BTreeSet<RecordId>,
+        records: &RecordStore,
+        local: &RoomRecords,
+    ) -> Vec<ui::RunStep> {
+        use automerge::transaction::Transactable as _;
+        let run = self.finished.report.run;
+        self.looked.retain(|id, _| candidates.contains(id));
+        for id in candidates {
+            let is_open = open.contains(id);
+            let revision = if is_open {
+                records.read(id, |doc| LookedRevision::Open(doc.base_heads()))
+            } else {
+                local
+                    .local_record_revision(id)
+                    .map(LookedRevision::Persisted)
+            };
+            if revision.is_some()
+                && self
+                    .looked
+                    .get(id)
+                    .is_some_and(|(seen, _)| *seen == revision)
+            {
+                continue;
+            }
+            let share = if is_open {
+                records
+                    .read(id, |doc| document_share(run, id.as_str(), doc))
+                    .flatten()
+            } else {
+                local
+                    .load_local_record(id)
+                    .and_then(|doc| document_share(run, id.as_str(), &doc))
+            };
+            self.looked.insert(id.clone(), (revision, share));
+        }
+        ordered_steps(
+            self.looked
+                .values()
+                .filter_map(|(_, share)| share.clone())
+                .collect(),
+        )
+    }
+}
+
+/// Records each shortcut run the broker finishes as one undoable run in the
+/// workspace document, from the documents it changed: those open here and
+/// those persisted on this device. Driven by the frame pump, never by paint.
+#[derive(Default)]
+pub(crate) struct ShortcutRunRecorder {
+    pending: Vec<PendingShortcutRun>,
+    next_look: Option<Instant>,
+}
+
+impl ShortcutRunRecorder {
+    /// Whether a run waits to be recorded, here or in `broker`. Cheap enough
+    /// for every tick.
+    pub(crate) fn has_work(&self, broker: Option<&AppActionBroker>) -> bool {
+        !self.pending.is_empty() || broker.is_some_and(AppActionBroker::has_finished_shortcut_runs)
+    }
+
+    /// Wait for `run` too, as if the broker had just handed it over.
+    #[cfg(test)]
+    pub(crate) fn push(&mut self, run: PendingShortcutRun) {
+        self.pending.push(run);
+        self.next_look = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Take `broker`'s finished runs and record every waiting run whose
+    /// changes reached a document here in `tree`'s document, committing it.
+    /// A run with no changes found is given up once [`SHORTCUT_RUN_SETTLE`]
+    /// has passed since it finished: it changed nothing this device can undo.
+    /// Returns whether `tree` was written.
+    pub(crate) fn record(
+        &mut self,
+        broker: Option<&AppActionBroker>,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        local: &RoomRecords,
+        now: Instant,
+    ) -> bool {
+        if let Some(broker) = broker {
+            let taken = broker.take_finished_shortcut_runs();
+            if !taken.is_empty() {
+                self.next_look = None;
+            }
+            self.pending.extend(
+                taken
+                    .into_iter()
+                    .map(|finished| PendingShortcutRun::new(finished, now)),
+            );
+        }
+        if self.pending.is_empty() || self.next_look.is_some_and(|at| now < at) {
+            return false;
+        }
+        self.next_look = now.checked_add(SHORTCUT_RUN_LOOK_INTERVAL);
+        let open: BTreeSet<RecordId> = records
+            .open_records()
+            .into_iter()
+            .map(|checkout| checkout.id)
+            .collect();
+        let known = local.known();
+        let mut recorded = false;
+        for mut run in std::mem::take(&mut self.pending) {
+            let room = crate::shell::state::RoomId::parse(&run.finished.room);
+            let candidates: BTreeSet<RecordId> = open
+                .iter()
+                .cloned()
+                .chain(
+                    known
+                        .iter()
+                        .filter(|record| room.is_some_and(|room| record.is_in(room)))
+                        .map(|record| record.id.clone()),
+                )
+                .collect();
+            let steps = run.look(&candidates, &open, records, local);
+            if record_run_steps(&mut tree.doc, &run.finished, &steps).is_some() {
+                recorded = true;
+                continue;
+            }
+            let settling = now.saturating_duration_since(run.since) < SHORTCUT_RUN_SETTLE;
+            if settling && !run.finished.report.invocations().is_empty() {
+                self.pending.push(run);
+            } else {
+                tracing::debug!(
+                    shortcut = %run.finished.shortcut.name,
+                    "a finished shortcut run changed no document on this device; not recorded"
+                );
+            }
+        }
+        if recorded {
+            tree.commit_room_change();
+        }
+        recorded
+    }
 }
 
 /// `$XDG_STATE_HOME/tilo/activity-history.json`: what this device has seen of
@@ -156,54 +338,6 @@ impl ActivityHost for NativeActivityHost {
     fn save_departures(&self, departures: &HashMap<u64, WorkspaceDeparture>) {
         save_history_map("departures", departures);
     }
-    /// Record each shortcut run the broker finished as one undoable run in
-    /// the workspace document, once its changes have reached documents open
-    /// here. A run whose changes never arrive is given up after a while: it
-    /// changed nothing this desktop can undo.
-    fn record_finished_runs(
-        &self,
-        doc: &mut automerge::AutoCommit,
-        records: &ui::record::RecordStore,
-    ) -> bool {
-        let mut pending = self.pending_shortcut_runs.borrow_mut();
-        if let Some(broker) = &self.broker {
-            pending.extend(
-                broker
-                    .take_finished_shortcut_runs()
-                    .into_iter()
-                    .map(|finished| (finished, 0)),
-            );
-        }
-        if pending.is_empty() {
-            return false;
-        }
-        let open = records.open_records();
-        let mut recorded = false;
-        pending.retain_mut(|(finished, attempts)| {
-            let shares = open
-                .iter()
-                .filter_map(|checkout| {
-                    records
-                        .with(&checkout.id, |doc| {
-                            crate::shell::automation_host::document_share(
-                                finished.report.run,
-                                checkout.id.as_str(),
-                                doc,
-                            )
-                        })
-                        .flatten()
-                })
-                .collect();
-            let steps = crate::shell::automation_host::ordered_steps(shares);
-            if crate::shell::automation_host::record_run_steps(doc, finished, &steps).is_some() {
-                recorded = true;
-                return false;
-            }
-            *attempts = attempts.saturating_add(1);
-            *attempts < SHORTCUT_RUN_RECORD_ATTEMPTS && !finished.report.invocations().is_empty()
-        });
-        recorded
-    }
     fn mutations_available(&self) -> bool {
         true
     }
@@ -278,6 +412,7 @@ impl ActivityTree for WorkspaceTree {
 pub struct RoomActivityPane(
     tilo_desktop::activity::RoomActivityPane,
     Option<crate::shell::collab_broker::AppActionBroker>,
+    ShortcutRunRecorder,
 );
 
 impl std::ops::Deref for RoomActivityPane {
@@ -300,7 +435,7 @@ impl RoomActivityPane {
     pub fn new() -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::new();
         pane.set_host(Rc::new(NativeActivityHost::default()));
-        Self(pane, None)
+        Self(pane, None, ShortcutRunRecorder::default())
     }
     /// The production pane: the device's private seen frontiers and
     /// departures are read from and written to the user's state directory.
@@ -312,7 +447,7 @@ impl RoomActivityPane {
     pub(crate) fn with_local_user(user: String) -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::with_local_user(user);
         pane.set_host(Rc::new(NativeActivityHost::default()));
-        Self(pane, None)
+        Self(pane, None, ShortcutRunRecorder::default())
     }
     /// Attach the live broker after the session binds. Without it, agent
     /// tasks remain visible but cannot be launched into an offline queue.
@@ -321,7 +456,6 @@ impl RoomActivityPane {
         self.set_host(Rc::new(NativeActivityHost {
             broker: Some(broker),
             review: None,
-            pending_shortcut_runs: std::cell::RefCell::default(),
         }));
     }
     pub(crate) fn attach_task_review(&mut self, review: super::task_review::NativeTaskReview) {
@@ -329,8 +463,27 @@ impl RoomActivityPane {
         self.set_host(Rc::new(NativeActivityHost {
             broker,
             review: Some(review),
-            pending_shortcut_runs: std::cell::RefCell::default(),
         }));
+    }
+    /// Whether a finished shortcut run waits to be recorded. Cheap: the
+    /// frame pump asks every tick before taking any lock.
+    pub(crate) fn shortcut_runs_pending(&self) -> bool {
+        self.2.has_work(self.1.as_ref())
+    }
+    /// Record the shortcut runs the broker finished in `tree`'s document,
+    /// each as one undoable run; see [`ShortcutRunRecorder::record`].
+    pub(crate) fn record_finished_shortcut_runs(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        records: &RecordStore,
+        local: &RoomRecords,
+        now: Instant,
+    ) -> bool {
+        self.2.record(self.1.as_ref(), tree, records, local, now)
+    }
+    #[cfg(test)]
+    pub(crate) fn shortcut_run_recorder_mut(&mut self) -> &mut ShortcutRunRecorder {
+        &mut self.2
     }
     /// Whether `agent` is admitted to `room` and holds a live task
     /// subscription right now. Without a broker no agent is ever present.
@@ -475,7 +628,7 @@ mod tests {
             serde_json::json!({"id": "publish", "name": "Publish a draft", "steps": []}),
         )
         .unwrap();
-        let finished = (
+        let finished = PendingShortcutRun::new(
             crate::shell::automation_host::FinishedShortcutRun {
                 room: room.to_string(),
                 shortcut,
@@ -490,18 +643,18 @@ mod tests {
                     outcome: tilo_automation::RunOutcome::Completed,
                 },
             },
-            0,
+            Instant::now(),
         );
-        let host = Rc::new(NativeActivityHost {
-            review: None,
-            broker: None,
-            pending_shortcut_runs: std::cell::RefCell::new(vec![finished]),
-        });
-        let mut pane = tilo_desktop::activity::RoomActivityPane::new();
-        pane.set_host(host.clone());
+        let mut pane = RoomActivityPane::new();
+        pane.shortcut_run_recorder_mut().push(finished);
+        let local = RoomRecords::in_memory();
 
-        pane.refresh_records(&mut tree, &records);
-        pane.refresh_records(&mut tree, &records);
+        let now = Instant::now();
+        let next = now
+            .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
+            .expect("the next look");
+        pane.record_finished_shortcut_runs(&mut tree, &records, &local, now);
+        pane.record_finished_shortcut_runs(&mut tree, &records, &local, next);
 
         let runs = ui::read_runs(&tree.doc);
         assert_eq!(runs.len(), 1, "recorded exactly once");
@@ -509,8 +662,164 @@ mod tests {
         assert_eq!(runs[0].issued_by.as_deref(), Some("ada"));
         assert_eq!(runs[0].steps[0].record, record.to_string());
         assert_eq!(runs[0].steps[0].app, "so.tilo.fixture-drafts");
-        let pending_left = host.pending_shortcut_runs.borrow().len();
-        drop(host);
+        let pending_left = pane.shortcut_run_recorder_mut().pending_len();
         assert_eq!(pending_left, 0, "the recorded run is no longer pending");
+    }
+
+    /// A change the "Publish a draft" fixture app makes as a step of `run`.
+    fn commit_draft_step(doc: &mut automerge::AutoCommit, run: tilo_automation::RunId) {
+        doc.put(automerge::ROOT, "draft", "Launch notes").unwrap();
+        let context = ui::tilo_actions::ActionContext::for_resource(
+            "Write draft",
+            "fixture.drafts:inbox",
+            "fixture.drafts",
+            "Inbox",
+        )
+        .with_app("so.tilo.fixture-drafts", "Drafts")
+        .with_group(run.0.to_string(), "Publish a draft", "shortcut");
+        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    }
+
+    /// The broker's report of "Publish a draft" run `run` in `room`, by Ada,
+    /// whose one step invoked the fixture app.
+    fn finished_invoked_run(
+        room: crate::shell::state::RoomId,
+        run: tilo_automation::RunId,
+    ) -> FinishedShortcutRun {
+        let shortcut: tilo_automation::Shortcut = serde_json::from_value(
+            serde_json::json!({"id": "publish", "name": "Publish a draft", "steps": []}),
+        )
+        .unwrap();
+        let path = tilo_automation::StepPath::root().child(0);
+        FinishedShortcutRun {
+            room: room.to_string(),
+            shortcut,
+            invoker: "ada".into(),
+            report: tilo_automation::RunReport {
+                run,
+                shortcut: "publish".into(),
+                trigger: "manual".into(),
+                mode: tilo_automation::RunMode::Unattended,
+                steps: vec![tilo_automation::StepRecord {
+                    invocation: Some(tilo_automation::invocation_id(run, &path)),
+                    path,
+                    step: "draft".into(),
+                    status: tilo_automation::StepStatus::Succeeded { output: None },
+                }],
+                output: None,
+                outcome: tilo_automation::RunOutcome::Completed,
+            },
+        }
+    }
+
+    /// A shortcut whose step changed a record that is not open on this
+    /// desktop (an app opened it headless, edited and saved it) is still
+    /// recorded as one undoable run, read from the record on disk once the
+    /// change has been written there.
+    #[test]
+    fn a_shortcut_run_over_a_closed_record_is_still_recorded() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let records = RecordStore::in_memory();
+        let record = RecordId::for_file("receipts.sheet");
+        let kind = ui::RecordKind::new("sheet");
+        let run = tilo_automation::RunId::new();
+
+        // The record exists on disk before the run, in the app's own store.
+        let data = tempfile::tempdir().expect("data home");
+        let path = RoomRecords::record_document_path_for_test(
+            data.path(),
+            "so.tilo.fixture-drafts",
+            "receipts",
+        );
+        std::fs::create_dir_all(path.parent().expect("record directory")).unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        ui::record::init(&mut doc, &record, &kind, &room.to_string());
+        doc.commit();
+        std::fs::write(&path, doc.save()).unwrap();
+        let mut local = RoomRecords::in_memory();
+        local.scan_now_for_test(data.path());
+        assert!(
+            records.open_records().is_empty(),
+            "the record is not open on this desktop"
+        );
+
+        let mut pane = RoomActivityPane::new();
+        let finished_at = Instant::now();
+        pane.shortcut_run_recorder_mut()
+            .push(PendingShortcutRun::new(
+                finished_invoked_run(room, run),
+                finished_at,
+            ));
+
+        // The run finished before the app's save reached the disk: nothing
+        // to record yet, and the run keeps waiting.
+        assert!(!pane.record_finished_shortcut_runs(&mut tree, &records, &local, finished_at));
+        assert!(ui::read_runs(&tree.doc).is_empty());
+        assert!(
+            pane.shortcut_runs_pending(),
+            "the run waits for its changes"
+        );
+
+        // The app's save lands; the next look reads the changed record.
+        commit_draft_step(&mut doc, run);
+        std::fs::write(&path, doc.save()).unwrap();
+        let next = finished_at
+            .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
+            .expect("the next look");
+        assert!(pane.record_finished_shortcut_runs(&mut tree, &records, &local, next));
+
+        let runs = ui::read_runs(&tree.doc);
+        assert_eq!(runs.len(), 1, "the run is recorded once");
+        assert_eq!(runs[0].label, "Publish a draft");
+        assert_eq!(runs[0].issued_by.as_deref(), Some("ada"));
+        assert_eq!(runs[0].steps.len(), 1, "one step, for the closed record");
+        assert_eq!(runs[0].steps[0].record, record.to_string());
+        assert_eq!(runs[0].steps[0].app, "so.tilo.fixture-drafts");
+        assert_eq!(runs[0].steps[0].summary, "Write draft");
+        assert_eq!(
+            runs[0].steps[0].run.start,
+            ui::history_source::entry_id_from_hash(
+                &doc.get_heads()
+                    .first()
+                    .expect("the step's change")
+                    .to_string()
+            ),
+            "the step names the exact change the run made"
+        );
+        assert!(!pane.shortcut_runs_pending());
+    }
+
+    /// A run whose changes never reach a document here waits on the wall
+    /// clock, not on how many frames were painted, and is then given up.
+    #[test]
+    fn a_run_that_changed_nothing_here_is_given_up_after_its_settle_time() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let records = RecordStore::in_memory();
+        let local = RoomRecords::in_memory();
+        let mut pane = RoomActivityPane::new();
+        let finished_at = Instant::now();
+        pane.shortcut_run_recorder_mut()
+            .push(PendingShortcutRun::new(
+                finished_invoked_run(room, tilo_automation::RunId::new()),
+                finished_at,
+            ));
+
+        // However many looks happen inside the settle time, the run waits.
+        let settled = finished_at
+            .checked_add(SHORTCUT_RUN_SETTLE)
+            .expect("the settle time");
+        let mut at = finished_at;
+        while at < settled {
+            assert!(!pane.record_finished_shortcut_runs(&mut tree, &records, &local, at));
+            assert!(pane.shortcut_runs_pending());
+            at = at
+                .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
+                .expect("the next look");
+        }
+        assert!(!pane.record_finished_shortcut_runs(&mut tree, &records, &local, at));
+        assert!(!pane.shortcut_runs_pending(), "given up once settled");
+        assert!(ui::read_runs(&tree.doc).is_empty());
     }
 }

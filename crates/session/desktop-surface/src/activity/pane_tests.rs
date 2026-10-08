@@ -431,6 +431,111 @@ mod tests {
         (tree, records, pane, record)
     }
 
+    /// A persisted record that is not open here is read from disk once:
+    /// later refreshes reuse what was read until the record's revision moves.
+    #[test]
+    fn agent_runs_are_not_reloaded_from_disk_when_unchanged() {
+        struct CountingDisk {
+            documents: std::collections::BTreeMap<RecordId, Vec<u8>>,
+            revision: std::cell::Cell<u64>,
+            loads: std::cell::Cell<usize>,
+        }
+        impl crate::activity::index::PersistedRecordHistory for CountingDisk {
+            fn load_record(&self, id: &RecordId) -> Option<automerge::AutoCommit> {
+                self.loads.set(self.loads.get().saturating_add(1));
+                automerge::AutoCommit::load(self.documents.get(id)?).ok()
+            }
+            fn revision(&self, _id: &RecordId) -> Option<u64> {
+                Some(self.revision.get())
+            }
+        }
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let record = RecordId::for_file("campaign-brief.qdoc");
+        let kind = ui::RecordKind::new("document");
+        let agent = ActorId::from(b"writing-agent".as_slice());
+        let agent_hex = agent.to_hex_string();
+        let mut doc = automerge::AutoCommit::new();
+        ui::record::init(&mut doc, &record, &kind, &room.to_string());
+        doc.set_actor(agent);
+        doc.put(automerge::ROOT, "intro", "A concrete opening")
+            .unwrap();
+        let context = ui::tilo_actions::ActionContext::for_resource(
+            "Rewrite opening",
+            record.as_str(),
+            "document",
+            "Campaign brief",
+        )
+        .with_app("org.tilo.Writer", "Writer")
+        .with_group("agent-run:cold", "Rewrite the opening", "agent-run");
+        doc.commit_with(
+            CommitOptions::default()
+                .with_time(20)
+                .with_message(context.change_message().unwrap()),
+        );
+        let change = ui::latest_run_by(&mut doc, &agent_hex).expect("agent change");
+        ui::record_run_with_details(
+            &mut doc,
+            "Rewrite the opening",
+            Some(&agent_hex),
+            None,
+            Some("Rewrite the opening"),
+            None,
+            &[ui::RunStep {
+                app: "org.tilo.Writer".to_string(),
+                record: record.to_string(),
+                run: change,
+                summary: "Rewrote the opening".to_string(),
+            }],
+        )
+        .expect("task receipt");
+        tilo_resource::history::commit_stamped_at(&mut doc, 21);
+        tree.desktop
+            .room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), kind.to_string());
+        let disk = CountingDisk {
+            documents: [(record.clone(), doc.save())].into_iter().collect(),
+            revision: std::cell::Cell::new(1),
+            loads: std::cell::Cell::new(0),
+        };
+        let records = RecordStore::in_memory();
+        let held_run = |pane: &RoomActivityPane| {
+            pane.agent_runs.iter().any(|indexed| {
+                indexed.source_record.as_ref() == Some(&record)
+                    && indexed.run.label == "Rewrite the opening"
+            })
+        };
+
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        pane.refresh_records_with_local(&mut tree, &records, &disk);
+        let first = disk.loads.get();
+        assert!(first > 0, "the record is read from disk");
+        assert!(held_run(&pane), "its run is read from the persisted record");
+
+        for _ in 0..3 {
+            pane.refresh(&mut tree);
+            pane.refresh_records_with_local(&mut tree, &records, &disk);
+        }
+        assert_eq!(
+            disk.loads.get(),
+            first,
+            "an unchanged record is not read from disk again"
+        );
+        assert!(held_run(&pane), "the run is still listed");
+
+        disk.revision.set(2);
+        pane.refresh_records_with_local(&mut tree, &records, &disk);
+        assert!(
+            disk.loads.get() > first,
+            "a record whose revision moved is read again"
+        );
+        assert!(held_run(&pane));
+    }
+
     #[test]
     fn selecting_agent_work_exposes_the_real_task_receipt_and_named_people() {
         let (_tree, _records, mut pane, _record) = agent_task_fixture();
