@@ -600,12 +600,15 @@ mod tests {
         read.applied();
         assert!(reads.readiness_diagnostic("route").unwrap().applied);
         reads.clear_stage("route", &read.merged);
-        ready.store(true, Ordering::Release);
+        assert!(reads.ready("route", &ready));
         let phase = reads.readiness_diagnostic("route").unwrap();
         assert!(!phase.staged && !phase.refresh_requested);
         assert!(reads.publishable("route"));
         assert!(!reads.refresh_requested("route"));
         assert!(reads.initial("route").is_none());
+        assert_eq!(reads.state("route"), DocumentRouteState::Applying);
+        assert!(!reads.publishable("route"));
+        assert!(!ready.load(Ordering::Acquire));
         assert!(
             reads
                 .readiness_diagnostic("route")
