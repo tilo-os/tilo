@@ -482,6 +482,7 @@ fn report_snapshots(
             .map(|app| serde_json::json!({
                 "connected": app.code.app.collaboration_is_connected(),
                 "ui": app.code.app.controlled_native_input_snapshot_for_test(),
+                "document_gates": app.code.app.controlled_native_document_sync_snapshot_for_test(),
                 "native": committed_snapshot(&app.network.native_owner().unwrap()),
                 "publication": publication_snapshot(&app.network.native_owner().unwrap()),
             }))
@@ -514,6 +515,7 @@ fn committed_snapshot(owner: &NativeWorkspaceOwner) -> Option<serde_json::Value>
                     let body = cold_code::body(&document);
                     serde_json::json!({
                         "generation": view.generation(),
+                        "continuity": view.continuity(),
                         "body_hash": hex::encode(Sha256::digest(body.as_bytes())),
                         "body_bytes": body.len(),
                         "heads": document.get_heads().iter().map(ToString::to_string).collect::<Vec<_>>(),
