@@ -593,6 +593,44 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn committed_small_captures_share_the_actual_byte_budget() {
+        let budget = ByteBudget::new();
+        let mut captures = Vec::new();
+        for capture in 1..=3 {
+            let first = Reply::Chunk {
+                capture,
+                revision: [7; 32],
+                total: 2,
+                offset: 0,
+                bytes: vec![1, 2],
+                token: [3; 16],
+            };
+            let mut sent = Vec::new();
+            let (read, _) = read_capture_using(first, &budget, async |request| {
+                sent.push(request);
+                Ok(Reply::Cancelled)
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                sent,
+                vec![Request::Cancel {
+                    capture,
+                    token: [3; 16]
+                }]
+            );
+            captures.push(read);
+        }
+        assert_eq!(budget.0.load(Ordering::Acquire), 6);
+        assert!(
+            budget
+                .reserve(MAX_DOCUMENT_BYTES * 2 - 5, MAX_DOCUMENT_BYTES * 2)
+                .is_none()
+        );
+        drop(captures);
+        assert_eq!(budget.0.load(Ordering::Acquire), 0);
+    }
+    #[tokio::test]
     async fn committed_document_allocation_refusal_acknowledges_received_token() {
         let budget = ByteBudget::new();
         let _held = budget
@@ -678,8 +716,14 @@ pub(super) async fn read_capture_using(
         _ => return Err("committed initial capture missing".into()),
     };
     let prepared = (|| {
+        let total = match &first {
+            Reply::Chunk { total, .. } if *total > 0 && *total as usize <= MAX_DOCUMENT_BYTES => {
+                *total as usize
+            }
+            _ => return Err("committed document initial bounds".to_string()),
+        };
         let reservation = budget
-            .reserve(MAX_DOCUMENT_BYTES, MAX_DOCUMENT_BYTES * 2)
+            .reserve(total, MAX_DOCUMENT_BYTES * 2)
             .ok_or("SDK committed read capacity")?;
         Ok::<_, String>((reservation, Assembly::start(first)?))
     })();
