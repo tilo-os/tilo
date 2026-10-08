@@ -16,19 +16,27 @@ struct Session {
 }
 pub struct Bridge {
     session: Mutex<Session>,
+    observed: Mutex<Observation>,
     pause: AtomicBool,
     flush: AtomicU64,
     closed: AtomicBool,
     reset: AtomicBool,
 }
 impl Bridge {
+    fn cache_observation(&self, observed: Observation) -> Observation {
+        if let Ok(mut cached) = self.observed.lock() {
+            *cached = observed;
+        }
+        observed
+    }
+
     fn controls(&self, session: &mut Session) -> Result<(), String> {
         if self.reset.swap(false, Ordering::AcqRel) {
             if let Some(output) = session.output.as_mut() {
                 output.close();
             }
             session.output = None;
-            session.observation = Observation::default();
+            session.observation = self.cache_observation(Observation::default());
             session.error = None;
         }
         let Some(output) = session.output.as_mut() else {
@@ -73,7 +81,7 @@ impl Bridge {
                 .output
                 .as_mut()
                 .ok_or("Audio output session ended")?;
-            session.observation = output.write(&samples)?;
+            session.observation = self.cache_observation(output.write(&samples)?);
             self.controls(&mut session)?;
         }
         drop(session);
@@ -109,13 +117,25 @@ impl Bridge {
         }
     }
     pub fn observation(&self) -> Observation {
+        if self.reset.load(Ordering::Acquire) || self.closed.load(Ordering::Acquire) {
+            return Observation::default();
+        }
         self.session.try_lock().map_or_else(
-            |_| Observation::default(),
+            // A decoder may be waiting for host backpressure while holding the
+            // session. Preserve its last host acknowledgment, without waiting
+            // on that RPC or inventing progress from submitted samples.
+            |_| {
+                self.observed
+                    .lock()
+                    .map_or_else(|_| Observation::default(), |observed| *observed)
+            },
             |session| {
-                session
-                    .output
-                    .as_ref()
-                    .map_or(session.observation, |output| output.cached_observation())
+                self.cache_observation(
+                    session
+                        .output
+                        .as_ref()
+                        .map_or(session.observation, |output| output.cached_observation()),
+                )
             },
         )
     }
@@ -147,7 +167,7 @@ impl Bridge {
             return Ok(Observation::default());
         };
         let observed = output.observation()?;
-        session.observation = observed;
+        session.observation = self.cache_observation(observed);
         drop(session);
         Ok(observed)
     }
@@ -196,6 +216,7 @@ pub fn sink_bin(name: &str, gain_name: &str) -> Result<(gst::Bin, Arc<Bridge>), 
             observation: Observation::default(),
             error: None,
         }),
+        observed: Mutex::new(Observation::default()),
         pause: AtomicBool::new(false),
         flush: AtomicU64::new(0),
         closed: AtomicBool::new(false),
@@ -237,4 +258,70 @@ pub fn sink_bin(name: &str, gain_name: &str) -> Result<(gst::Bin, Arc<Bridge>), 
     bin.add_pad(&pad)
         .map_err(|_| "Audio output input pad assembly failed")?;
     Ok((bin, bridge))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoder_backpressure_preserves_observed_host_progress() {
+        gst::init().expect("actual output bridge plugins available");
+        let (_bin, bridge) =
+            sink_bin("progress-test", "progress-gain").expect("actual output bridge constructed");
+        let observed = Observation {
+            rendered_frames: 960,
+            queued_frames: 1920,
+            ready: true,
+        };
+        bridge
+            .session
+            .lock()
+            .expect("test output session available")
+            .observation = observed;
+        assert_eq!(bridge.observation(), observed);
+        let _decoder_rpc = bridge
+            .session
+            .lock()
+            .expect("test output session available");
+        assert_eq!(
+            bridge.observation(),
+            observed,
+            "an in-flight decoder write must not erase confirmed host progress"
+        );
+    }
+
+    #[test]
+    fn source_reset_and_close_retire_cached_host_progress() {
+        gst::init().expect("actual output bridge plugins available");
+        for close in [false, true] {
+            let (_bin, bridge) = sink_bin("retirement-test", "retirement-gain")
+                .expect("actual output bridge constructed");
+            let observed = Observation {
+                rendered_frames: 960,
+                queued_frames: 1920,
+                ready: true,
+            };
+            bridge
+                .session
+                .lock()
+                .expect("test output session available")
+                .observation = observed;
+            assert_eq!(bridge.observation(), observed);
+            let _decoder_rpc = bridge
+                .session
+                .lock()
+                .expect("test output session available");
+            if close {
+                bridge.close();
+            } else {
+                bridge.reset();
+            }
+            assert_eq!(
+                bridge.observation(),
+                Observation::default(),
+                "a retired source must not reuse its prior host progress"
+            );
+        }
+    }
 }
