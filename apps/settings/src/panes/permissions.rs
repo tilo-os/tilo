@@ -422,6 +422,11 @@ pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
     build_view(cx, load_text().as_deref())
 }
 
+/// Include the hosted disk-unlock model beside the device security summary.
+pub(crate) fn build_with_disk_unlock(cx: &PaneCx, disk_unlock: El) -> Box<dyn Widget> {
+    crate::widgets::rows(vec![build(cx), disk_unlock])
+}
+
 fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
     let microphone_present = privacy.microphone_muted.is_some();
     let mute = match privacy.microphone_muted {

@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import textwrap
 from pathlib import Path
 import tomllib
 
@@ -76,6 +79,34 @@ linux_clipboard_dependencies = clipboard_manifest["target"]['cfg(target_os = "li
 assert "smithay-clipboard" in linux_clipboard_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text()
+# Standalone host-session runs build the same immutable app store as releases.
+# Exercise the actual preflight shell before any checkout/download/build step:
+# an absent authority must fail immediately, without weakening staging checks.
+host_session_workflow = (ROOT / ".forgejo/workflows/host-session-e2e.yml").read_text()
+host_rpms = host_session_workflow.split("  rpms:\n", 1)[1].split("  host-session:\n", 1)[0]
+assert "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}" in host_rpms
+preflight, expensive_steps = host_rpms.split("      # A full clone", 1)
+assert "if: ${{ !inputs.rpm-artifact }}" in preflight
+assert "Fetch the env-runtime environment image" in expensive_steps
+assert "dist/ci/run-package-job.sh" in expensive_steps
+owner_check = textwrap.dedent(preflight.split("        run: |\n", 1)[1])
+for owner, accepted in (
+    (None, False),
+    ("", False),
+    ("invalid", False),
+    ("0" * 64, False),
+    ("ab" * 31, False),
+    ("ab" * 33, False),
+    ("ab" * 32, True),
+    ("AB" * 32, True),
+):
+    check_env = os.environ.copy()
+    check_env.pop("TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY", None)
+    if owner is not None:
+        check_env["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"] = owner
+    result = subprocess.run(["bash", "-c", owner_check], env=check_env, capture_output=True)
+    assert (result.returncode == 0) == accepted, "host-session registry-owner preflight"
+
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
 rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
 rpm_signer = (ROOT / "dist/rpm/sign-rpms.sh").read_text()
@@ -105,7 +136,28 @@ assert "TILO_RPM_SIGNING_KEY_B64" in packaging_docs
 assert "unencrypted armored" in packaging_docs and "private key" in packaging_docs
 assert "TILO_RPM_SIGNING_KEY_B64" in session_workflow
 assert "TILO_RPM_SIGNING_FINGERPRINT" in session_workflow
-assert "startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0'" in session_workflow
+# A protected tag step, after exact-main qualification, is the only place
+# the RPM private key may enter packaging. Ordinary candidates stay unsigned.
+unsigned_step, signed_step = session_workflow.split(
+    "      - name: Build, install-test and sign protected desktop release userspaces\n", 1
+)
+signed_step = signed_step.split("      # The v4 artifact pins", 1)[0]
+unsigned_step = unsigned_step.split(
+    "      - name: Build and install-test unsigned candidate userspaces\n", 1
+)[1]
+assert "if: startsWith(github.ref, 'refs/tags/desktop-v')" in signed_step
+assert "if: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}" in unsigned_step
+assert 'TILO_RPM_SIGNING_ENABLED: "1"' in signed_step
+assert 'TILO_RPM_SIGNING_ENABLED: "0"' in unsigned_step
+assert "secrets." not in unsigned_step
+for signing_name in ("TILO_RPM_SIGNING_KEY_B64", "TILO_RPM_SIGNING_KEY_ID"):
+    reference = "secrets." + signing_name
+    assert session_workflow.count(reference) == 1
+    assert reference in signed_step
+validation = session_workflow.split("  validate:\n", 1)[1].split("  package:\n", 1)[0]
+assert 'run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin' in validation
+package_job = session_workflow.split("  package:\n", 1)[1].split("  host-session-e2e:\n", 1)[0]
+assert "    needs: validate\n" in package_job
 assert "TILO_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}" in session_workflow
 rpm_job = (ROOT / "dist/ci/run-package-job.sh").read_text()
 assert "--env TILO_RPM_SIGNING_KEY_B64" in rpm_job

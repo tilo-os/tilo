@@ -28,6 +28,14 @@ for final_root in "$final_app_root" "$final_runtime_root" "$final_registry_root"
     }
 done
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# Use the same independently configured release authority as the OS image.
+# Never discover a trust root from the catalogue being authenticated.
+owner=${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}
+[[ $owner =~ ^[0-9a-fA-F]{64}$ && $owner != $(printf '0%.0s' {1..64}) ]] || {
+    echo "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key" >&2
+    exit 1
+}
+
 arch=$(uname -m)
 collection=$release_dir/tilo-apps-$arch.tar.gz
 
@@ -154,6 +162,10 @@ if not re.fullmatch(r"[0-9a-f]{64}", registry_publisher):
 publishers = dict.fromkeys((publisher.lower(), registry_publisher))
 pathlib.Path(sys.argv[2]).write_text("".join(key + "\n" for key in publishers), encoding="utf-8")
 PY
+
+install -d -m 0755 "$stage/usr/share/tilo/trust"
+printf '%s\n' "${owner,,}" > "$stage/usr/share/tilo/trust/tilo-main-registry-owner.pub"
+chmod 0644 "$stage/usr/share/tilo/trust/tilo-main-registry-owner.pub"
 
 [[ -s $registry ]]
 find "$stage" -type d -exec chmod 0755 {} +

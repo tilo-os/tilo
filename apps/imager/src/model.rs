@@ -680,11 +680,27 @@ pub struct InstallProfile {
     pub enroll_local_identity: bool,
 }
 
+/// 1–63 letters, digits or hyphens, without a hyphen at either end: one DNS
+/// label, which is also what `<hostname>.local` needs.
+pub(crate) fn hostname_is_valid(hostname: &str) -> bool {
+    !hostname.is_empty()
+        && hostname.len() <= 63
+        && hostname
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !hostname.starts_with('-')
+        && !hostname.ends_with('-')
+}
+
+/// The hostname a profile starts with. A profile that still carries it has not
+/// chosen one, so a written disk keeps the image's own name.
+pub const DEFAULT_HOSTNAME: &str = "tilo";
+
 impl Default for InstallProfile {
     fn default() -> Self {
         Self {
             mode: InstallMode::Live,
-            hostname: "tilo".into(),
+            hostname: DEFAULT_HOSTNAME.into(),
             user: UserAccount::default(),
             locale: "en_US.UTF-8".into(),
             keyboard: "us".into(),
@@ -733,15 +749,7 @@ impl InstallProfile {
     /// Returns a field-specific message when any transported value would be
     /// rejected by the live installer.
     pub fn validate_media_profile(&self) -> Result<(), String> {
-        let hostname = self.hostname.trim();
-        if hostname.is_empty()
-            || hostname.len() > 63
-            || !hostname
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-')
-            || hostname.starts_with('-')
-            || hostname.ends_with('-')
-        {
+        if !hostname_is_valid(self.hostname.trim()) {
             return Err(
                 "Hostname must be 1–63 letters, numbers or hyphens, without a hyphen at either end."
                     .into(),

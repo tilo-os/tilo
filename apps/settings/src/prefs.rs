@@ -198,6 +198,19 @@ pub struct InputPrefs {
     /// Ordered XKB layouts. `keyboard_layout` remains the active first item
     /// for backward compatibility with old sessions.
     pub keyboard_layouts: Vec<String>,
+    /// Explicit physical model; no hardware detection is implied.
+    pub keyboard_model: String,
+    #[serde(deserialize_with = "settings_store::keyboard_sources::lenient_profiles")]
+    pub keyboard_assignments:
+        std::collections::BTreeMap<String, settings_store::keyboard_sources::KeyboardProfile>,
+    /// Layout being inspected without changing the active input source.
+    pub keyboard_preview: Option<String>,
+    /// Inspect the higher native XKB levels without changing typed input.
+    pub keyboard_preview_extra_levels: bool,
+    /// Ordered native level inspected without changing the live seat.
+    pub keyboard_preview_level: usize,
+    /// Explicit physical position inspected; never follows or records key presses.
+    pub keyboard_inspected_key: String,
     /// Per-tablet mapping, pressure and buttons, keyed by device identity.
     #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
     pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
@@ -234,6 +247,12 @@ impl Default for InputPrefs {
             compose_key: None,
             caps_lock: None,
             keyboard_layouts: vec!["us".into()],
+            keyboard_model: "pc105".into(),
+            keyboard_assignments: std::collections::BTreeMap::new(),
+            keyboard_preview: None,
+            keyboard_preview_extra_levels: false,
+            keyboard_preview_level: 0,
+            keyboard_inspected_key: "AD01".into(),
             tablets: std::collections::BTreeMap::new(),
         }
     }
@@ -274,8 +293,8 @@ impl InputPrefs {
 
     /// Reconcile the legacy active layout with the ordered source list using
     /// the same validation and bounds the compositor enforces.
-    pub fn normalise_keyboard_sources(&mut self) {
-        let mut config = settings_store::hardware::RichInputConfig {
+    pub fn rich_input(&self) -> settings_store::hardware::RichInputConfig {
+        settings_store::hardware::RichInputConfig {
             pointer_speed: self.pointer_speed,
             touchpad_pointer_speed: self.touchpad_pointer_speed,
             mouse_pointer_speed: self.mouse_pointer_speed,
@@ -298,6 +317,8 @@ impl InputPrefs {
             key_repeat_rate_hz: self.key_repeat_rate_hz,
             keyboard_layout: self.keyboard_layout.clone(),
             keyboard_layouts: self.keyboard_layouts.clone(),
+            keyboard_model: self.keyboard_model.clone(),
+            keyboard_assignments: self.keyboard_assignments.clone(),
             compose_key: self.compose_key.clone(),
             caps_lock: self.caps_lock.clone(),
             touchpad_gestures: self.touchpad_gestures,
@@ -305,8 +326,13 @@ impl InputPrefs {
             touchpad_scroll_method: self.touchpad_scroll_method,
             scroll_speed: self.scroll_speed,
             tablets: self.tablets.clone(),
-        };
+        }
+    }
+
+    pub fn normalise_keyboard_sources(&mut self) {
+        let mut config = self.rich_input();
         config.normalise_sources();
+        self.keyboard_model = config.keyboard_model;
         self.keyboard_layout = config.keyboard_layout;
         self.keyboard_layouts = config.keyboard_layouts;
     }

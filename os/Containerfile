@@ -74,7 +74,7 @@ ARG ENV_RUNTIME_REF=scratch
 # boot-test while the engine's own build is being repaired.
 ARG TILO_WITH_BROWSER=1
 # The engine runtime's version: ui::webview::chromium::runtime::RUNTIME_VERSION.
-ARG CHROMIUM_RUNTIME_VERSION=2026.10.3-chromium
+ARG CHROMIUM_RUNTIME_VERSION=2026.10.4-chromium
 # The pinned builder bootc-builder compiles the image's bootc in, the one
 # os/Containerfile.bootc-helper uses.
 ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
@@ -349,6 +349,8 @@ COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.s
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
+COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
+COPY tools/test-assets.py /build/tools/test-assets.py
 COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY scripts/browser/build-host.py scripts/browser/cef-lock.json /build/scripts/browser/
@@ -934,9 +936,11 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
           --identity /out/runtime-bundle-identity.json \
           --out-root /usr/lib/tilo-runtime \
           --version-out /out/runtime-version); \
+        report="$(LD_LIBRARY_PATH=/out ldd /out/libruntime_dylib.so /out/thin-apps/*)"; \
+        if grep -Fq "not found" <<<"$report"; then printf "%s\n" "$report" >&2; exit 1; fi; \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done \
-          < <(ldd /out/libruntime_dylib.so \
-              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
+          < <(printf "%s\n" "$report" \
+              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\// && $i !~ /:$/) print $i }'\'' \
               | sort -u); \
         "${args[@]}"' bundle "${RUST_LIBSTD}" \
       && /out/tilo-runtime-bundle key pubkey \
@@ -1080,6 +1084,7 @@ RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
 FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
+COPY os/usr/libexec/tilo-session /tilo-components/usr/libexec/
 COPY os/usr/lib/systemd/user/tilo-ush.service \
     os/usr/lib/systemd/user/tilo-app-host.service \
     /tilo-components/usr/lib/systemd/user/
@@ -1978,9 +1983,13 @@ COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.c
 COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
     /usr/lib/NetworkManager/conf.d/20-tilo-wake.conf
 COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
-COPY os/usr/share/polkit-1/actions/org.tilo.home-peer.policy /usr/share/polkit-1/actions/org.tilo.home-peer.policy
+COPY \
+    os/usr/share/polkit-1/actions/org.tilo.home-peer.policy \
+    os/usr/share/polkit-1/actions/org.tilo.disk-unlock.policy \
+    /usr/share/polkit-1/actions/
 COPY \
     os/etc/polkit-1/rules.d/49-tilo-home-peer.rules \
+    os/etc/polkit-1/rules.d/49-tilo-disk-unlock.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules \
     /etc/polkit-1/rules.d/
@@ -2112,7 +2121,6 @@ COPY os/etc/gitconfig /etc/gitconfig
 # absent from this image.
 COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
-    os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
     os/usr/libexec/tilo-firstboot-user \
     os/usr/libexec/tilo-firstboot-autologin-cleanup \

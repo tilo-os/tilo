@@ -88,6 +88,19 @@ class TestAssets(unittest.TestCase):
         self.assertEqual(path.read_bytes(), b"changed")
         self.assertEqual(new.read_bytes(), b"new")
 
+    def test_document_inputs_keep_pinned_names_and_reject_unknown_extensions(self):
+        for extension in ("pdf", "epub", "docx", "odt"):
+            name = f"case.{extension}"
+            row = dict(self.row, file=name, url=self.row["url"].replace("case.png", name))
+            self.write_manifest([row])
+            resolved = assets.resolve(self.path, self.cache, opener=lambda *a, **kw: io.BytesIO(self.payload))
+            self.assertEqual(resolved[0].read_bytes(), self.payload)
+            self.assertEqual(assets.resolve(self.path, self.cache, True, opener=self.no_network), resolved)
+        name = "case.exe"
+        self.write_manifest([dict(self.row, file=name, url=self.row["url"].replace("case.png", name))])
+        with self.assertRaisesRegex(ValueError, "filename"):
+            assets.resolve(self.path, self.cache, opener=self.no_network)
+
     def test_all_six_real_cases_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/sdk/ui-core/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 6)

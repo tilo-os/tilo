@@ -40,6 +40,22 @@ impl NativeMediaRequestContext {
 
 pub type NativeMediaFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Snapshot, String>> + Send>>;
+pub type AudioOutputFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<runtime_collab::audio_output::Snapshot, String>>
+            + Send,
+    >,
+>;
+
+pub trait AudioOutputServices: Send + Sync {
+    fn output(
+        &self,
+        context: NativeMediaRequestContext,
+        command: runtime_collab::audio_output::Command,
+    ) -> AudioOutputFuture;
+    /// Fence output belonging to this exact connected process.
+    fn disconnect(&self, peer_id: u64);
+}
 
 pub trait NativeMediaServices: Send + Sync {
     fn command(&self, context: NativeMediaRequestContext, request: Request) -> NativeMediaFuture;
@@ -52,6 +68,7 @@ pub(super) struct LocalAppConnection {
     pub(super) app_id: String,
     pub(super) workspace_id: String,
     pub(super) creation: Option<crate::services::ApplicationCreationEvidence>,
+    pub(super) continuation_instance: Option<u64>,
     process: PeerProcess,
     connected: AtomicBool,
 }
@@ -173,13 +190,14 @@ impl LocalAppConnection {
         app_id: String,
         workspace_id: String,
         process: PeerProcess,
-        creation: Option<crate::services::ApplicationCreationEvidence>,
+        launch: crate::services::AuthenticatedApplicationLaunch,
     ) -> Option<Arc<Self>> {
         process.alive().then(|| {
             Arc::new(Self {
                 app_id,
                 workspace_id,
-                creation,
+                creation: launch.creation,
+                continuation_instance: launch.continuation_instance,
                 process,
                 connected: AtomicBool::new(true),
             })
@@ -188,10 +206,10 @@ impl LocalAppConnection {
     pub(super) fn from_launch(
         handoff: super::CollabLaunchHandoff,
         process: Option<PeerProcess>,
-        creation: Option<crate::services::ApplicationCreationEvidence>,
+        launch: crate::services::AuthenticatedApplicationLaunch,
     ) -> Option<Arc<Self>> {
         process.and_then(|process| {
-            Self::attested(handoff.app_id, handoff.workspace_id, process, creation)
+            Self::attested(handoff.app_id, handoff.workspace_id, process, launch)
         })
     }
     pub(super) fn current(&self) -> bool {
@@ -230,6 +248,9 @@ impl ProcessMonitor {
                         service.disconnect(peer);
                     }
                     if let Some(service) = state.services.file_clipboard.as_ref() {
+                        service.disconnect(peer);
+                    }
+                    if let Some(service) = state.services.audio_output.as_ref() {
                         service.disconnect(peer);
                     }
                 }
@@ -285,6 +306,34 @@ impl Drop for ProcessMonitor {
 }
 
 impl CapnpChannelHandle {
+    pub(super) fn audio_output_dispatch(
+        self: Rc<Self>,
+        bytes: &[u8],
+    ) -> Result<AudioOutputFuture, capnp::Error> {
+        let command = runtime_collab::audio_output::Command::decode(bytes)
+            .map_err(|error| capnp::Error::failed(error.into()))?;
+        let context = self.native_media_context(matches!(
+            command,
+            runtime_collab::audio_output::Command::Close { .. }
+        ));
+        let context = match context {
+            Ok(context) => context,
+            Err(error) => {
+                if let Some(service) = &self.state.services.audio_output {
+                    service.disconnect(self.peer_id);
+                }
+                return Err(error);
+            }
+        };
+        let service = self
+            .state
+            .services
+            .audio_output
+            .as_ref()
+            .ok_or_else(|| capnp::Error::failed("governed audio output unavailable".into()))?;
+        Ok(service.output(context, command))
+    }
+
     #[expect(
         clippy::suspicious_operation_groupings,
         reason = "a route's cluster is the connection's workspace; the names differ by layer"

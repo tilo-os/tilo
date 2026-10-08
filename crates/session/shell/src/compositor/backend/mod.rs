@@ -401,6 +401,11 @@ pub enum BackendEvent {
     /// previously reported (keyboard unplug, VT pause, or keymap replacement).
     /// The compositor must retire its seat state before accepting new input.
     InputStateReset,
+    /// A discovered typing keyboard's effective source assignment, before its key event.
+    KeyboardConfiguration {
+        scope: String,
+        settings: Box<drm::input_config::KeyboardSettings>,
+    },
     /// A gesture the shell did **not** claim, for forwarding to the
     /// focused client over `zwp_pointer_gestures_v1`.
     Gesture(GestureEvent),
@@ -643,6 +648,12 @@ pub trait Backend {
     /// Whether this backend consumes versioned native-pixel retained damage. Other backends use
     /// the established dense `Scene` path and should not pay to construct segmented recordings.
     fn supports_retained_scene_damage(&self) -> bool {
+        false
+    }
+
+    /// Whether the presenter consumes empty workspace transition frames by
+    /// retaining/replaying its previous pixels, rather than rasterising them.
+    fn supports_workspace_clip(&self) -> bool {
         false
     }
 

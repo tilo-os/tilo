@@ -45,7 +45,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -66,13 +66,30 @@ jobs:
   rpms:
     runs-on: ${{ inputs.rpm-artifact && 'runner-quality' || 'runner-large' }}
     timeout-minutes: 120
+    env:
+      TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
     steps:
+      # Fail before checkout, runtime download and compilation if the existing
+      # independent app-store authority is not configured. Caller RPMs have
+      # already passed the package lane's staging checks.
+      - name: Validate the app-store registry owner
+        if: ${{ !inputs.rpm-artifact }}
+        run: |
+          set -euo pipefail
+          owner=${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}
+          [[ $owner =~ ^[0-9a-fA-F]{64}$ && $owner != $(printf '0%.0s' {1..64}) ]] || {
+            echo '::error::TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key'
+            exit 1
+          }
       # A full clone, as the package lane takes (dist/ci/run-package-job.sh).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: ${{ !inputs.rpm-artifact }}
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Validate RPM lint exception paths before building
+        if: ${{ !inputs.rpm-artifact }}
+        run: python3 dist/rpm/test-rpmlint-config.py
       - name: Fetch the env-runtime environment image
         if: ${{ !inputs.rpm-artifact }}
         run: bash dist/ci/fetch-package-env-runtime.sh
@@ -142,13 +159,21 @@ jobs:
           set -euo pipefail
           cd "$WORK/rpms"
           python3 - <<'EOF'
-          import json, os, pathlib
+          import hashlib, json, os, pathlib
           rpms = sorted(p.name for p in pathlib.Path(".").glob("*.rpm"))
+          artifacts = {}
+          for name in rpms:
+              path = pathlib.Path(name)
+              digest = hashlib.sha256()
+              with path.open("rb") as package:
+                  while block := package.read(1024 * 1024):
+                      digest.update(block)
+              artifacts[name] = {"byte_size": path.stat().st_size, "sha256": digest.hexdigest()}
           pathlib.Path("source.json").write_text(json.dumps({
               "workflow": os.environ["WORKFLOW"],
               "run": int(os.environ["RUN_NUMBER"]), "run_id": int(os.environ["RUN_ID"]),
               "commit": os.environ["GITHUB_SHA"], "ref": os.environ["GITHUB_REF_NAME"],
-              "artifact": os.environ["ARTIFACT"], "rpms": rpms}, indent=1) + "\n")
+              "artifact": os.environ["ARTIFACT"], "rpms": rpms, "artifacts": artifacts}, indent=1) + "\n")
           EOF
           cat source.json
 

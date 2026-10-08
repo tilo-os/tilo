@@ -297,6 +297,7 @@ impl EncoderChoice {
             EncoderChoice::Software => RealtimePolicy::SoftwareOnly,
             EncoderChoice::Vaapi => RealtimePolicy::Prefer(CodecFamily::Va),
             EncoderChoice::Nvenc => RealtimePolicy::Prefer(CodecFamily::NvCodec),
+            EncoderChoice::V4l2 => RealtimePolicy::Prefer(CodecFamily::V4l2),
         }
     }
 }
@@ -694,6 +695,12 @@ mod tests {
                 EncoderChoice::Nvenc.policy(),
                 RealtimePolicy::Prefer(CodecFamily::NvCodec)
             );
+            assert_eq!(
+                EncoderChoice::V4l2.policy(),
+                RealtimePolicy::Prefer(CodecFamily::V4l2)
+            );
+            let parsed: EncoderChoice = serde_json::from_str("\"v4l2\"").unwrap();
+            assert_eq!(parsed, EncoderChoice::V4l2);
         }
     }
 }

@@ -9,7 +9,7 @@
 //     `<PATH>` and exit. No window, no event loop. Headless snapshot for
 //     CI / visual inspection (output identical to the live binary's first
 //     frame). `<name>` ∈ {network, disk, account, keyboard, options, options-open, profile-locale-repair,
-//     review, install, finish, finish-recovery, failed, failed-recovery} (with `user`/`confirm` accepted as
+//     media, media-chosen, review, install, finish, finish-recovery, failed, failed-recovery} (with `user`/`confirm` accepted as
 //     legacy aliases); `options-open` renders the Options step with the
 //     time-zone dropdown popped open; `keyboard` renders the keyboard step
 //     seeded with a non-default (German) layout so the visual preview shows
@@ -187,6 +187,12 @@ fn build_shot(name: &str) -> Option<Box<dyn Widget>> {
         return Some(Box::new(app));
     }
 
+    if name == "media-chosen" {
+        let mut app = InstallerApp::for_shot(Step::Media);
+        app.shot_codecs_chosen();
+        return Some(Box::new(app));
+    }
+
     if name == "finish-recovery" {
         let mut app = InstallerApp::for_shot(Step::Install);
         app.shot_finished_with_recovery();
@@ -209,6 +215,7 @@ fn build_shot(name: &str) -> Option<Box<dyn Widget>> {
         "account" | "user" => (Step::Account, None),
         "keyboard-default" => (Step::Keyboard, None),
         "options" => (Step::Options, None),
+        "media" => (Step::Media, None),
         "review" | "confirm" => (Step::Review, None),
         "install" => (Step::Install, None),
         "finish" | "done" => (Step::Install, Some(true)),

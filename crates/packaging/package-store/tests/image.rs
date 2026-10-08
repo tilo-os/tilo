@@ -743,3 +743,294 @@ fn modified_system_image_is_not_imported_as_a_signed_overlay_lower() {
     assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
     assert!(!store.user().layout().payload(runtime.meta.id).exists());
 }
+
+#[cfg(target_os = "linux")]
+fn watch_staging(root: &Path) -> std::fs::File {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(root.as_os_str().as_bytes()).unwrap();
+    // SAFETY: no pointers are passed; the returned owned descriptor is checked.
+    let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+    assert!(fd >= 0, "inotify must observe the production staging path");
+    // SAFETY: fd is freshly owned and name is a live NUL-terminated path.
+    let watch = unsafe { libc::inotify_add_watch(fd, name.as_ptr(), libc::IN_CREATE) };
+    // SAFETY: fd is valid and its ownership is transferred exactly once.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    assert!(
+        watch >= 0,
+        "staging watch must be installed before resolution"
+    );
+    file
+}
+
+#[cfg(target_os = "linux")]
+fn created_staging_files(mut watch: std::fs::File) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut buffer = [0u8; 4096];
+    let mut total = 0usize;
+    loop {
+        let size = match watch.read(&mut buffer) {
+            Ok(size) => size,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            result => panic!("staging observation failed: {result:?}"),
+        };
+        assert!(size > 0);
+        total = total.checked_add(size).unwrap();
+        assert!(total <= 64 * 1024, "staging observation must be bounded");
+        let mut events = &buffer[..size];
+        while !events.is_empty() {
+            assert!(events.len() >= 16, "inotify event header is complete");
+            let (header, tail) = events.split_at(16);
+            let mask = u32::from_ne_bytes(header[4..8].try_into().unwrap());
+            let len = u32::from_ne_bytes(header[12..16].try_into().unwrap()) as usize;
+            assert_eq!(mask & libc::IN_Q_OVERFLOW, 0, "no lost staging events");
+            assert!(len <= tail.len(), "inotify event name is complete");
+            let (name, remaining) = tail.split_at(len);
+            if mask & libc::IN_CREATE != 0 && mask & libc::IN_ISDIR == 0 {
+                let name = std::ffi::CStr::from_bytes_until_nul(name).unwrap();
+                names.push(name.to_str().unwrap().to_owned());
+            }
+            events = remaining;
+        }
+    }
+    assert!(total > 0, "the watch must observe actual materialization");
+    names
+}
+
+fn runtime_with_large_blob(root: &Path) {
+    runtime_tree(root);
+    std::fs::write(root.join("usr/lib64/cached.bin"), bytes(9, 300_000)).unwrap();
+}
+
+fn forget_materialized_image(store: &PackageStore, id: PackageId) {
+    std::fs::remove_dir_all(store.layout().payload(id)).unwrap();
+    std::fs::remove_dir_all(store.layout().meta_dir(id)).unwrap();
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn local_overlay_reuses_complete_content_without_restaging_verified_source() {
+    let identity = SigningIdentity::generate();
+    let (_source, image) = seal(
+        Kind::EnvRuntime,
+        "so.tilo.env-runtime",
+        None,
+        &identity,
+        runtime_with_large_blob,
+    );
+    let system = scratch();
+    PackageStore::at(system.path())
+        .install_image(
+            full_tapp(&image).as_slice(),
+            |_| Ok(Admission::default()),
+            None,
+        )
+        .unwrap();
+    let user = scratch();
+    let packages = PackageStore::at(user.path());
+    packages
+        .install_image(
+            full_tapp(&image).as_slice(),
+            |_| Ok(Admission::default()),
+            None,
+        )
+        .unwrap();
+    forget_materialized_image(&packages, image.meta.id);
+    let watch = watch_staging(&packages.layout().tmp());
+    let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
+    let local = package_store::local_materialized_tree(&store, &image.meta.id).unwrap();
+    for (relative, expected) in &image.meta.collection.entries {
+        assert_eq!(
+            BlobHash::of_reader(&mut std::fs::File::open(local.join(relative)).unwrap())
+                .unwrap()
+                .0,
+            *expected
+        );
+    }
+    assert_eq!(mode(&local.join("usr/bin/bash")), 0o555);
+    assert_eq!(
+        std::fs::read_link(local.join("usr/bin/sh")).unwrap(),
+        Path::new("bash")
+    );
+    assert!(local.join("usr/share/empty").is_dir());
+    assert_eq!(
+        created_staging_files(watch),
+        Vec::<String>::new(),
+        "complete signed blobs must not be copied into ingestion staging again"
+    );
+}
+
+fn runtime_with_two_large_blobs(root: &Path) {
+    runtime_with_large_blob(root);
+    std::fs::write(root.join("usr/lib64/missing.bin"), bytes(10, 310_000)).unwrap();
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn local_overlay_imports_only_missing_content_from_partial_cache() {
+    let identity = SigningIdentity::generate();
+    let (_source, image) = seal(
+        Kind::EnvRuntime,
+        "so.tilo.env-runtime",
+        None,
+        &identity,
+        runtime_with_two_large_blobs,
+    );
+    let system = scratch();
+    PackageStore::at(system.path())
+        .install_image(
+            full_tapp(&image).as_slice(),
+            |_| Ok(Admission::default()),
+            None,
+        )
+        .unwrap();
+    let user = scratch();
+    let packages = PackageStore::at(user.path());
+    packages
+        .install_image(
+            full_tapp(&image).as_slice(),
+            |_| Ok(Admission::default()),
+            None,
+        )
+        .unwrap();
+    forget_materialized_image(&packages, image.meta.id);
+    let missing = image.meta.collection.entries["usr/lib64/missing.bin"];
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let content = fs::store::ContentStore::open(&packages.layout().content())
+            .await
+            .unwrap();
+        content
+            .evict_blobs(&std::collections::HashSet::from([
+                iroh_blobs::Hash::from_bytes(*missing.as_bytes()),
+            ]))
+            .await
+            .unwrap();
+        assert_eq!(
+            content
+                .complete_len(iroh_blobs::Hash::from_bytes(*missing.as_bytes()))
+                .await
+                .unwrap(),
+            None
+        );
+        content.close().await.unwrap();
+    });
+    let watch = watch_staging(&packages.layout().tmp());
+    let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
+    let local = package_store::local_materialized_tree(&store, &image.meta.id).unwrap();
+    assert_eq!(
+        std::fs::read(local.join("usr/lib64/missing.bin")).unwrap(),
+        bytes(10, 310_000)
+    );
+    assert_eq!(
+        std::fs::read(local.join("usr/lib64/cached.bin")).unwrap(),
+        bytes(9, 300_000)
+    );
+    assert_eq!(
+        created_staging_files(watch).len(),
+        1,
+        "only the missing large blob needs ingestion staging"
+    );
+}
+
+#[test]
+fn local_overlay_still_checks_modified_and_missing_source_with_cached_content() {
+    for missing in [false, true] {
+        let identity = SigningIdentity::generate();
+        let (_source, image) = seal(
+            Kind::EnvRuntime,
+            "so.tilo.env-runtime",
+            None,
+            &identity,
+            runtime_with_large_blob,
+        );
+        let system = scratch();
+        let source_store = PackageStore::at(system.path());
+        source_store
+            .install_image(
+                full_tapp(&image).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        let user = scratch();
+        let packages = PackageStore::at(user.path());
+        packages
+            .install_image(
+                full_tapp(&image).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        forget_materialized_image(&packages, image.meta.id);
+        let source = source_store
+            .layout()
+            .payload(image.meta.id)
+            .join("usr/lib64/cached.bin");
+        if missing {
+            std::fs::remove_file(&source).unwrap();
+        } else {
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::write(&source, bytes(11, 300_000)).unwrap();
+        }
+        let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
+        assert!(package_store::local_materialized_tree(&store, &image.meta.id).is_err());
+        assert!(!store.user().layout().payload(image.meta.id).exists());
+    }
+}
+
+#[test]
+fn local_overlay_refuses_corrupt_or_truncated_cached_bytes() {
+    for size in [300_000, 29] {
+        let identity = SigningIdentity::generate();
+        let (_source, image) = seal(
+            Kind::EnvRuntime,
+            "so.tilo.env-runtime",
+            None,
+            &identity,
+            runtime_with_large_blob,
+        );
+        let system = scratch();
+        PackageStore::at(system.path())
+            .install_image(
+                full_tapp(&image).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        let user = scratch();
+        let packages = PackageStore::at(user.path());
+        packages
+            .install_image(
+                full_tapp(&image).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        forget_materialized_image(&packages, image.meta.id);
+        let expected = image.meta.collection.entries["usr/lib64/cached.bin"];
+        let cached = packages
+            .layout()
+            .content()
+            .join("data")
+            .join(format!("{}.data", expected.to_hex()));
+        assert!(cached.is_file(), "large retained blob must be observable");
+        std::fs::write(&cached, bytes(12, size)).unwrap();
+        let store = Store::new(packages).with_system(package_store::Layout::new(system.path()));
+        assert!(package_store::local_materialized_tree(&store, &image.meta.id).is_err());
+        assert_eq!(
+            std::fs::read(
+                system
+                    .path()
+                    .join("pkgs")
+                    .join(image.meta.id.to_hex())
+                    .join("usr/lib64/cached.bin")
+            )
+            .unwrap(),
+            bytes(9, 300_000)
+        );
+    }
+}

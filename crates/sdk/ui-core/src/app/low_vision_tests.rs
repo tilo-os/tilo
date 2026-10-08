@@ -353,3 +353,44 @@ fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
     });
     assert_eq!(a.theme.tokens.colors.surfaces.content, neutral);
 }
+
+#[test]
+fn shell_palette_message_rethemes_the_open_app_without_settings_file_access() {
+    use crate::floating_surface::FloatingSurfaceHostMessage;
+
+    let mut app = app();
+    app.set_theme(Theme::dark());
+    app.set_text_scale(1.5);
+    let appearance = crate::theme::WindowAppearance::default();
+    for theme in [Theme::light(), Theme::high_contrast(), Theme::dark()] {
+        let message = FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &theme);
+        let wire = serde_json::to_vec(&message).unwrap();
+        let received = serde_json::from_slice(&wire).unwrap();
+        assert!(app.apply_floating_host_messages(vec![received]));
+        assert_eq!(app.theme.document, theme.document);
+        assert_eq!(
+            app.text_scale(),
+            1.5,
+            "palette changes preserve text scaling"
+        );
+        app.apply_configured_theme();
+        app.rebuild_theme();
+        assert_eq!(
+            app.theme.document, theme.document,
+            "private settings reloads preserve the host palette"
+        );
+    }
+    let mut wire = serde_json::to_value(FloatingSurfaceHostMessage::appearance_with_theme(
+        &appearance,
+        &Theme::light(),
+    ))
+    .unwrap();
+    wire["theme"]["schema_version"] = serde_json::json!(0);
+    let before = app.theme.clone();
+    let received = serde_json::from_value(wire).unwrap();
+    app.apply_floating_host_messages(vec![received]);
+    assert_eq!(
+        app.theme, before,
+        "an invalid host palette must not replace the live theme"
+    );
+}
