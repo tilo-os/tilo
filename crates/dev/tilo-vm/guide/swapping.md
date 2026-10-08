@@ -77,13 +77,13 @@ starts.
 and streams the layer through this host into tilo-vmd's upload, so no binary
 is ever written to this host's disk. The builder is any cargo drop-in whose
 `run` runs the program on a machine of that architecture, in this worktree,
-and passes its stdout through as text lines:
+and passes its stdout byte-for-byte:
 
 1. `<builder> run -p tilo-vm -- layer-pack --component <name> ...` runs
    tilo-vm's packer there: the same `cargo build` as above (its output
    streams here), then `os/scripts/install-components.py`, then the layer
-   tar on stdout as framed base64 lines with its sha256;
-2. tilo-vm decodes those lines straight into the upload and checks the
+   tar on stdout as bounded binary chunks with its sha256;
+2. tilo-vm reads those chunks straight into the upload and checks the
    sha256 and size before it imports. A remote `build` that brings its
    binaries back would put every one of them into `target/` instead;
 3. the layer records `builder = "remote"`, and the target and rustc read
@@ -283,13 +283,36 @@ the existing RPC protocol and works with older compatible daemons.
 
 ### Layer transfer
 
-Host-built layers travel over the existing authenticated daemon connection.
-The client sends one 1 MiB chunk at a time and verifies each reply's request
-id and cumulative byte count before sending the next chunk or requesting an
-import. An incorrect acknowledgment stops the transfer. This uses
-the existing protocol and works with already-installed development daemons.
-An import still validates and hashes the staged tree before atomically
-publishing it; applying or rolling back a generation uses the same paths.
+Component archives use the existing authenticated daemon connection. New clients
+on byte-transparent SSH/subprocess transports try the optional protocol-8 `layer.upload.binary` method. A ready response starts
+bounded raw chunks (at most 1 MiB each, 8 GiB total); a footer supplies the exact
+byte count and SHA-256. The final response must match the original request id
+and byte count. No per-chunk JSON, base64 or round-trip acknowledgement is needed.
+
+Remote component builders also produce binary framing with `layer-pack --binary`.
+Source inventory, target, canonical content identity and signed-cohort checks are
+unchanged. Default `layer-pack` output remains the existing base64 format; its
+reader accepts either encoding. An older daemon that rejects the optional method
+before receiving archive bytes gets the existing serial base64 upload. Authority,
+version, I/O or integrity failures never trigger that fallback.
+The existing device-admin peer bridge retains serial JSON uploads and its
+per-request accounting; the client defaults to legacy framing unless a known
+byte-transparent transport explicitly enables binary uploads.
+
+A source failure sends a cancellation frame and drains the final response, so the
+same connection can continue. A partial transport failure poisons the connection;
+truncation or loss of framing closes the daemon stream. Interrupted, cancelled or
+corrupt binary uploads are removed before they can be imported. Import still
+validates and hashes the staged tree before atomically publishing it; applying or
+rolling back a generation uses the same paths.
+
+The isolated benchmark `cargo run --release -p tilo-vmd --example transport-bench -- PATH [--archive]` takes a representative
+executable path (packed once), or an existing archive with `--archive`, and measures
+old/new builder framing and
+actual daemon upload/import over private Unix sockets. It requires its artifact;
+missing input fails. It reports artifact identity, wire bytes, transport time and
+import time and checks equal imported content hashes. These measurements describe
+codec and daemon transport costs, not live SSH, VM or device performance.
 
 Host-build receipts record `assemble`, `digest`, `layer_lookup`, `pack`,
 `transfer` and `import` separately. Use those phases to distinguish packaging,
