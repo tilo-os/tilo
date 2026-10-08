@@ -5571,6 +5571,8 @@ fn keycode_for_eis(key: PhysicalKey) -> Option<u32> {
 #[derive(Clone, Debug)]
 struct SpatialControlSession {
     target: crate::shell::personal_continuity::DeviceId,
+    lease_nonce: [u8; 16],
+    output: Option<String>,
     return_edge: crate::shell::device_fabric::DisplayEdge,
     x: f64,
     y: f64,
@@ -5587,9 +5589,10 @@ fn end_spatial_control(
         return;
     };
     for keycode in session.pressed_keys {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
             network,
             &session.target,
+            session.lease_nonce,
             crate::shell::device_fabric::FabricInputEvent::Key {
                 keycode,
                 pressed: false,
@@ -5598,9 +5601,10 @@ fn end_spatial_control(
         );
     }
     for button in session.pressed_buttons {
-        let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+        let _ = crate::shell::device_fabric_runtime::send_spatial_input_bound(
             network,
             &session.target,
+            session.lease_nonce,
             crate::shell::device_fabric::FabricInputEvent::PointerButton {
                 button,
                 pressed: false,
@@ -5646,7 +5650,219 @@ fn nearby_drop_candidate(
     Ok(Some(path.clone()))
 }
 
+fn queue_spatial_return_event(
+    pending: &mut std::collections::VecDeque<BackendEvent>,
+    point: (f64, f64),
+    parked_point: Option<(f64, f64)>,
+) {
+    // An unlocked relative motion has a paired absolute event; a parked
+    // physical mouse has none, while mouse keys report the parked point.
+    // Preserve independently positioned events behind the return.
+    if pending.front().is_some_and(|event| {
+        matches!(event,
+        BackendEvent::Input(WindowEvent::CursorMoved { position, .. })
+            if parked_point.is_none_or(|old| old == (position.x, position.y)))
+    }) {
+        pending.pop_front();
+    }
+    // The pending queue has already crossed event_to_logical. Only the
+    // backend warp uses scene coordinates; clients receive this logical point.
+    pending.push_front(BackendEvent::Input(WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(point.0, point.1),
+    }));
+}
+
 fn move_spatial_pointer(
+    state: &State,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+    delta: (f64, f64),
+) -> crate::compositor::spatial_pointer::SpatialMotion {
+    use crate::compositor::spatial_pointer::SpatialMotion;
+    if let Some(motion) = move_observed_spatial_pointer(
+        state.client_input.pointer_position(),
+        network,
+        active,
+        delta,
+    ) {
+        return motion;
+    }
+    if move_legacy_spatial_pointer(state, network, active, delta.0, delta.1) {
+        if active.is_some() {
+            SpatialMotion::Remote
+        } else {
+            SpatialMotion::Returned(None)
+        }
+    } else {
+        SpatialMotion::Local
+    }
+}
+
+fn move_observed_spatial_pointer(
+    cursor: Option<(f64, f64)>,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+    delta: (f64, f64),
+) -> Option<crate::compositor::spatial_pointer::SpatialMotion> {
+    use crate::compositor::spatial_pointer::{MotionPlan, PointerAt, SpatialMotion, plan_motion};
+    use crate::shell::device_fabric_runtime::person_layout;
+    // A gesture begun on a legacy peer keeps its existing edge protocol.
+    if active
+        .as_ref()
+        .is_some_and(|session| session.output.is_none())
+    {
+        return None;
+    }
+    let Some(view) = person_layout::current(network) else {
+        if active.is_some() {
+            end_spatial_control(network, active);
+            return Some(SpatialMotion::Returned(None));
+        }
+        return None;
+    };
+    let at = if let Some(session) = active.as_ref() {
+        let output = session.output.as_deref()?;
+        let Some(display) = view
+            .layout
+            .find(session.target.as_str(), output)
+            .filter(|display| person_layout::reachable(network, display))
+        else {
+            end_spatial_control(network, active);
+            return Some(SpatialMotion::Returned(None));
+        };
+        PointerAt::Remote {
+            device: session.target.as_str(),
+            output,
+            shared: display.to_shared((session.x, session.y)),
+        }
+    } else {
+        // Older leased peers remain reachable through their existing edge
+        // protocol until all participating targets supply output metadata.
+        if view.legacy_targets.iter().any(|target| {
+            crate::shell::device_fabric_runtime::spatial_pointer_lease(network, target).is_some()
+        }) {
+            return None;
+        }
+        let cursor = cursor?;
+        let index = view.layout.locate(view.local.as_str(), cursor)?;
+        if !view.layout.displays.get(index)?.enabled {
+            return Some(SpatialMotion::Local);
+        }
+        PointerAt::Local(cursor)
+    };
+    let plan = plan_motion(&view.layout, view.local.as_str(), at, delta, |display| {
+        person_layout::reachable(network, display)
+    });
+    Some(match plan {
+        MotionPlan::Local => SpatialMotion::Local,
+        MotionPlan::Return { local_point } => {
+            end_spatial_control(network, active);
+            SpatialMotion::Returned(local_point)
+        }
+        MotionPlan::Remote {
+            device,
+            output,
+            device_point,
+            ..
+        } => move_to_observed_display(network, active, (device, output), device_point),
+    })
+}
+
+fn move_to_observed_display(
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+    destination: (String, String),
+    point: (f64, f64),
+) -> crate::compositor::spatial_pointer::SpatialMotion {
+    use crate::compositor::spatial_pointer::SpatialMotion;
+    let Ok(target) = crate::shell::personal_continuity::DeviceId::new(destination.0) else {
+        return SpatialMotion::Local;
+    };
+    let Some(lease) = crate::shell::device_fabric_runtime::spatial_pointer_lease(network, &target)
+    else {
+        end_spatial_control(network, active);
+        return SpatialMotion::Returned(None);
+    };
+    if active
+        .as_ref()
+        .is_some_and(|session| session.target == target && session.lease_nonce != lease.nonce)
+    {
+        end_spatial_control(network, active);
+        return SpatialMotion::Returned(None);
+    }
+    let entering = active.is_none();
+    let nearby_drop = if entering {
+        let pending = file_explorer::external_drag::unclaimed();
+        let Ok(drop) = nearby_drop_candidate(pending.as_ref().map(|drag| drag.paths.as_slice()))
+        else {
+            return SpatialMotion::Local;
+        };
+        drop
+    } else {
+        None
+    };
+    if active
+        .as_ref()
+        .is_some_and(|session| session.target != target)
+    {
+        // End the previous target's held input under its original authority.
+        // The source file, if any, follows the pointer until its explicit drop.
+        let drop = active
+            .as_mut()
+            .and_then(|session| session.nearby_drop.take());
+        end_spatial_control(network, active);
+        *active = Some(SpatialControlSession {
+            target: target.clone(),
+            lease_nonce: lease.nonce,
+            output: Some(destination.1.clone()),
+            return_edge: crate::shell::device_fabric::DisplayEdge::Left,
+            x: point.0,
+            y: point.1,
+            pressed_keys: std::collections::BTreeSet::new(),
+            pressed_buttons: std::collections::BTreeSet::new(),
+            nearby_drop: drop,
+        });
+    }
+    if crate::shell::device_fabric_runtime::send_spatial_input_bound(
+        network,
+        &target,
+        lease.nonce,
+        crate::shell::device_fabric::FabricInputEvent::PointerMotion {
+            x: spatial_coord(point.0),
+            y: spatial_coord(point.1),
+        },
+    )
+    .is_err()
+    {
+        end_spatial_control(network, active);
+        return if entering {
+            SpatialMotion::Local
+        } else {
+            SpatialMotion::Returned(None)
+        };
+    }
+    if let Some(session) = active.as_mut() {
+        session.output = Some(destination.1);
+        session.x = point.0;
+        session.y = point.1;
+    } else {
+        *active = Some(SpatialControlSession {
+            target,
+            lease_nonce: lease.nonce,
+            output: Some(destination.1),
+            return_edge: crate::shell::device_fabric::DisplayEdge::Left,
+            x: point.0,
+            y: point.1,
+            pressed_keys: std::collections::BTreeSet::new(),
+            pressed_buttons: std::collections::BTreeSet::new(),
+            nearby_drop,
+        });
+    }
+    SpatialMotion::Remote
+}
+
+fn move_legacy_spatial_pointer(
     state: &State,
     network: &crate::shell::network::ShellNetwork,
     active: &mut Option<SpatialControlSession>,
@@ -5680,9 +5896,10 @@ fn move_spatial_pointer(
         }
         session.x = session.x.clamp(0.0, max_x);
         session.y = session.y.clamp(0.0, max_y);
-        if crate::shell::device_fabric_runtime::send_spatial_input(
+        if crate::shell::device_fabric_runtime::send_spatial_input_bound(
             network,
             &session.target,
+            session.lease_nonce,
             crate::shell::device_fabric::FabricInputEvent::PointerMotion {
                 x: spatial_coord(session.x),
                 y: spatial_coord(session.y),
@@ -5724,26 +5941,13 @@ fn move_spatial_pointer(
     let Some(transition) = fabric.cross_edge(&local, edge, local_x, local_y) else {
         return false;
     };
-    let pending_drag = file_explorer::external_drag::unclaimed();
-    let Ok(nearby_drop) =
-        nearby_drop_candidate(pending_drag.as_ref().map(|drag| drag.paths.as_slice()))
-    else {
-        // Keep unsupported Files drags local; crossing would otherwise swallow
-        // their release and strand the gesture on the source device.
+    let Some(session) = begin_spatial_control(network, transition, edge, (dx, dy)) else {
         return false;
     };
-    let session = SpatialControlSession {
-        target: transition.to,
-        return_edge: edge.opposite(),
-        x: f64::from(transition.target_x) + dx,
-        y: f64::from(transition.target_y) + dy,
-        pressed_keys: std::collections::BTreeSet::new(),
-        pressed_buttons: std::collections::BTreeSet::new(),
-        nearby_drop,
-    };
-    if crate::shell::device_fabric_runtime::send_spatial_input(
+    if crate::shell::device_fabric_runtime::send_spatial_input_bound(
         network,
         &session.target,
+        session.lease_nonce,
         crate::shell::device_fabric::FabricInputEvent::PointerMotion {
             x: spatial_coord(session.x),
             y: spatial_coord(session.y),
@@ -5755,6 +5959,32 @@ fn move_spatial_pointer(
     }
     *active = Some(session);
     true
+}
+
+fn begin_spatial_control(
+    network: &crate::shell::network::ShellNetwork,
+    transition: crate::shell::device_fabric::EdgeTransition,
+    edge: crate::shell::device_fabric::DisplayEdge,
+    delta: (f64, f64),
+) -> Option<SpatialControlSession> {
+    let pending_drag = file_explorer::external_drag::unclaimed();
+    // Unsupported Files drags stay local: losing their up edge would strand
+    // the gesture on the source device.
+    let nearby_drop =
+        nearby_drop_candidate(pending_drag.as_ref().map(|drag| drag.paths.as_slice())).ok()?;
+    let lease =
+        crate::shell::device_fabric_runtime::spatial_pointer_lease(network, &transition.to)?;
+    Some(SpatialControlSession {
+        target: transition.to,
+        lease_nonce: lease.nonce,
+        output: None,
+        return_edge: edge.opposite(),
+        x: f64::from(transition.target_x) + delta.0,
+        y: f64::from(transition.target_y) + delta.1,
+        pressed_keys: std::collections::BTreeSet::new(),
+        pressed_buttons: std::collections::BTreeSet::new(),
+        nearby_drop,
+    })
 }
 
 fn spatial_departure_edge(
@@ -5793,6 +6023,50 @@ fn spatial_departure_edge(
 mod spatial_edge_tests {
     use super::{nearby_drop_candidate, spatial_departure_edge};
     use crate::shell::device_fabric::DisplayEdge;
+
+    #[test]
+    fn mapped_pointer_return_precedes_discrete_input_and_preserves_new_motion() {
+        use crate::compositor::backend::BackendEvent;
+        use std::collections::VecDeque;
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        let cursor = |point: (f64, f64)| {
+            BackendEvent::Input(WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(point.0, point.1),
+            })
+        };
+        let click = || {
+            BackendEvent::Input(WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            })
+        };
+        let position = |event: Option<BackendEvent>| match event {
+            Some(BackendEvent::Input(WindowEvent::CursorMoved { position, .. })) => {
+                (position.x, position.y)
+            }
+            _ => panic!("expected a cursor return before discrete input"),
+        };
+        for parked in [None, Some((1439.0, 450.0))] {
+            let mut pending = VecDeque::from([cursor((1439.0, 450.0)), click()]);
+            super::queue_spatial_return_event(&mut pending, (10.5, -20.25), parked);
+            assert_eq!(position(pending.pop_front()), (10.5, -20.25));
+            assert!(matches!(
+                pending.pop_front(),
+                Some(BackendEvent::Input(WindowEvent::MouseInput { .. }))
+            ));
+            assert!(pending.is_empty());
+        }
+        let mut pending = VecDeque::from([cursor((40.0, 80.0)), click()]);
+        super::queue_spatial_return_event(&mut pending, (10.5, -20.25), Some((1439.0, 450.0)));
+        assert_eq!(position(pending.pop_front()), (10.5, -20.25));
+        assert_eq!(position(pending.pop_front()), (40.0, 80.0));
+        assert!(matches!(
+            pending.pop_front(),
+            Some(BackendEvent::Input(WindowEvent::MouseInput { .. }))
+        ));
+    }
 
     #[test]
     fn pointer_departs_through_edges_and_arms_nearby_drops() {
@@ -5942,10 +6216,15 @@ fn forward_spatial_window_event(
         }
         _ => return false,
     };
-    if crate::shell::device_fabric_runtime::send_spatial_input(network, &target, fabric_event)
-        .is_err()
+    if crate::shell::device_fabric_runtime::send_spatial_input_bound(
+        network,
+        &target,
+        session.lease_nonce,
+        fabric_event,
+    )
+    .is_err()
     {
-        *active = None;
+        end_spatial_control(network, active);
     } else if let Some(session) = active.as_mut() {
         match fabric_event {
             crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed } => {
@@ -8049,6 +8328,7 @@ pub fn run() {
         crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(network, notif_bridge.clone())
     });
     let mut spatial_control: Option<SpatialControlSession> = None;
+    let mut spatial_pointer_parked = false;
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
     // descriptor once at spawn, so a broker arriving later is one it never gets.
@@ -9600,16 +9880,48 @@ pub fn run() {
                             (dx_unaccel, dy_unaccel),
                             time_usec,
                         );
-                    } else if peer_sync.as_ref().is_some_and(|network| {
-                        move_spatial_pointer(&state, network, &mut spatial_control, dx, dy)
-                    }) {
-                        // The pointer is on an adjacent device.
                     } else {
-                        state.forward_client_relative_motion(
-                            (dx, dy),
-                            (dx_unaccel, dy_unaccel),
-                            time_usec,
+                        let motion = peer_sync.as_ref().map_or(
+                            crate::compositor::spatial_pointer::SpatialMotion::Local,
+                            |network| {
+                                move_spatial_pointer(
+                                    &state,
+                                    network,
+                                    &mut spatial_control,
+                                    (dx, dy),
+                                )
+                            },
                         );
+                        match motion {
+                            crate::compositor::spatial_pointer::SpatialMotion::Local => {
+                                state.forward_client_relative_motion(
+                                    (dx, dy),
+                                    (dx_unaccel, dy_unaccel),
+                                    time_usec,
+                                );
+                            }
+                            crate::compositor::spatial_pointer::SpatialMotion::Remote => {}
+                            crate::compositor::spatial_pointer::SpatialMotion::Returned(point) => {
+                                if let Some(point) = point {
+                                    let placements = crate::compositor::backend::layout::placements(
+                                        backend.outputs(),
+                                    );
+                                    let (x, y) =
+                                        crate::compositor::backend::layout::logical_to_scene(
+                                            &placements,
+                                            point,
+                                        );
+                                    backend.warp_pointer(x, y);
+                                    queue_spatial_return_event(
+                                        &mut pending_events,
+                                        point,
+                                        spatial_pointer_parked
+                                            .then(|| state.client_input.pointer_position())
+                                            .flatten(),
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 BackendEvent::ModifiersChanged(modifiers) => {
@@ -10376,6 +10688,21 @@ pub fn run() {
                 }
             }
         }
+        // Authority may disappear without another physical input event. A
+        // replacement lease cannot inherit a running gesture or held inputs.
+        if let Some(network) = peer_sync.as_ref()
+            && spatial_control.as_ref().is_some_and(|control| {
+                crate::shell::device_fabric_runtime::spatial_pointer_lease(network, &control.target)
+                    .is_none_or(|lease| lease.nonce != control.lease_nonce)
+                    || control.output.as_deref().is_some_and(|output| {
+                        crate::shell::device_fabric_runtime::person_layout::current(network)
+                            .is_none_or(|view| view.layout.find(control.target.as_str(), output)
+                                .is_none_or(|display| !crate::shell::device_fabric_runtime::person_layout::reachable(network, display)))
+                    })
+            })
+        {
+            end_spatial_control(network, &mut spatial_control);
+        }
         prev_locked = session.is_locked();
         // The dimming overlay is part of the scene, so switching it needs a frame.
         if screen_dimmer.overlay_alpha() != prev_dim_overlay {
@@ -10682,19 +11009,29 @@ pub fn run() {
         // Hand the remote-input firewall this frame's screen: foreign tile
         // positions, keyboard holder, chrome-drawn-over, locked — refreshed before remote events drain.
         client_input::publish_remote_input_view(&mut state, &frame_builder, session.is_locked());
+        if spatial_pointer_parked && spatial_control.is_none() {
+            // Restore before syncing any newly eligible client constraint.
+            backend
+                .set_pointer_constraint(crate::compositor::backend::PointerConstraintRegion::Free);
+        }
         if let Some(image) = client_input::sync_pointer_image(
             &state,
             &mut frame_builder,
             session.is_locked(),
-            test_control_ctx.input.last_used() == Some(ui::InputModality::Touch),
+            spatial_control.is_some()
+                || test_control_ctx.input.last_used() == Some(ui::InputModality::Touch),
         ) {
             backend.set_pointer_image(image);
             // A software cursor is drawn into the frame, so it needs one.
             injected_redraw_pending = true;
         }
-        if let Some(change) =
-            client_input::sync_pointer_constraint(&mut state, &frame_builder, session.is_locked())
-        {
+        // A parked pointer belongs to the certified remote gesture. A
+        // client cannot acquire its local lock until the pointer returns.
+        if let Some(change) = client_input::sync_pointer_constraint(
+            &mut state,
+            &frame_builder,
+            session.is_locked() || spatial_control.is_some(),
+        ) {
             if change.engaged {
                 frame_builder.with_chrome(|chrome| {
                     chrome.show_osd(crate::shell::osd::Osd::pointer_held(true));
@@ -10702,6 +11039,13 @@ pub fn run() {
                 injected_redraw_pending = true;
             }
             apply_pointer_constraint_change(backend.as_mut(), change);
+        }
+        spatial_pointer_parked = spatial_control.is_some();
+        if spatial_pointer_parked {
+            // A client release above must never unpark the remote gesture.
+            backend.set_pointer_constraint(
+                crate::compositor::backend::PointerConstraintRegion::Locked,
+            );
         }
         let inhibit_allowed = !session.is_locked()
             && !crate::shell::input_policy::chrome_captures_input(&frame_builder);
