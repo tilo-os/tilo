@@ -850,10 +850,59 @@ impl OskWidget {
     /// Show the keyboard preferences `preferences`: the layout text fields
     /// open in, the suggestion bar, personalization and the recent emoji.
     pub fn present_preferences(&mut self, preferences: &crate::resource::OskPreferences) {
+        self.present_layout_order(preferences);
         self.select_text_layout_from_preference(&preferences.layout);
         self.set_suggestions_enabled(preferences.suggestions);
         self.set_personalization_enabled(preferences.personalization);
         self.set_emoji_recents(&preferences.emoji_recents);
+    }
+
+    /// Layout keys follow configured order; an old profile keeps the historic choices.
+    fn present_layout_order(&mut self, preferences: &crate::resource::OskPreferences) {
+        let mut order: Vec<String> = if preferences.layouts.is_empty() {
+            crate::actions::LAYOUT_NAMES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect()
+        } else {
+            preferences
+                .layouts
+                .iter()
+                .filter(|name| crate::actions::LAYOUT_NAMES.contains(&name.as_str()))
+                .cloned()
+                .collect()
+        };
+        let mut seen = std::collections::HashSet::new();
+        order.retain(|name| seen.insert(name.clone()));
+        if crate::actions::LAYOUT_NAMES.contains(&preferences.layout.as_str())
+            && !order.contains(&preferences.layout)
+        {
+            order.push(preferences.layout.clone());
+        }
+        for layout in self.layouts.values_mut() {
+            if !crate::actions::LAYOUT_NAMES.contains(&layout.name.as_str()) {
+                continue;
+            }
+            let next = order
+                .iter()
+                .position(|name| name == &layout.name)
+                .and_then(|index| index.checked_add(1))
+                .and_then(|index| order.get(index).or_else(|| order.first()))
+                .or_else(|| order.first());
+            let Some(next) = next else {
+                continue;
+            };
+            for key in layout.rows.iter_mut().flatten() {
+                if matches!(key.action, KeyAction::Layout(_)) {
+                    key.action = KeyAction::Layout(next.clone());
+                    key.label = match next.as_str() {
+                        "qwerty" => "EN".into(),
+                        "azerty" => "FR".into(),
+                        _ => key.label.clone(),
+                    };
+                }
+            }
+        }
     }
 
     /// The preference changes the keyboard made itself since the last call
@@ -1175,7 +1224,9 @@ impl OskWidget {
                 self.last_correction = correction;
             }
             KeyAction::Layout(name) => {
-                self.select_text_layout(name);
+                if name != &self.preferred_text_layout || name != self.active_layout_name() {
+                    self.select_text_layout(name);
+                }
             }
             KeyAction::Emoji => {
                 self.open_emoji_panel();
@@ -1675,7 +1726,9 @@ impl OskWidget {
                 self.structure_dirty = true;
             }
             KeyAction::Layout(name) => {
-                self.select_text_layout(&name);
+                if name != self.preferred_text_layout || name != self.active_layout_name() {
+                    self.select_text_layout(&name);
+                }
             }
             KeyAction::Emoji => {
                 self.emoji_panel.end_search();
@@ -2870,7 +2923,7 @@ impl Widget for OskWidget {
                 AccessNode::new(Role::Button)
                     .with_name(name)
                     .with_bounds(*rect)
-                    .with_state(AccessState::new().focusable(true))
+                    .with_state(AccessState::new().focusable(true).disabled(matches!(&key.action, KeyAction::Layout(name) if name == &self.preferred_text_layout && name == self.active_layout_name())))
                     .with_hashed_key(format!("key:{}:{}:{}", layout.name, id.row, id.col))
                     .with_action_target(format!(
                         "osk:key:{}:{}:{}:{}",
@@ -3583,6 +3636,49 @@ mod tests {
     }
 
     // --- input-type layouts via purpose --------------------------------
+
+    #[test]
+    fn configured_layout_order_controls_the_actual_language_key() {
+        let mut keyboard = OskWidget::new();
+        keyboard.present_preferences(&crate::resource::OskPreferences {
+            layout: "qwerty".into(),
+            layouts: vec!["qwerty".into()],
+            ..Default::default()
+        });
+        let action = keyboard
+            .current_layout()
+            .rows
+            .iter()
+            .flatten()
+            .find_map(|key| {
+                matches!(key.action, KeyAction::Layout(_)).then_some(key.action.clone())
+            })
+            .unwrap();
+        assert_eq!(action, KeyAction::Layout("qwerty".into()));
+        keyboard.apply_action(action);
+        assert_eq!(keyboard.preferred_text_layout(), "qwerty");
+        assert!(keyboard.take_preference_edits().is_empty());
+        keyboard.apply_action(KeyAction::SymbolsToggle);
+        assert_eq!(keyboard.active_layout_name(), "symbols");
+        keyboard.apply_action(KeyAction::Layout("qwerty".into()));
+        assert_eq!(keyboard.active_layout_name(), "qwerty");
+        keyboard.present_preferences(&crate::resource::OskPreferences {
+            layout: "qwerty".into(),
+            layouts: vec!["azerty".into(), "qwerty".into()],
+            ..Default::default()
+        });
+        let action = keyboard
+            .current_layout()
+            .rows
+            .iter()
+            .flatten()
+            .find_map(|key| {
+                matches!(key.action, KeyAction::Layout(_)).then_some(key.action.clone())
+            })
+            .unwrap();
+        keyboard.apply_action(action);
+        assert_eq!(keyboard.preferred_text_layout(), "azerty");
+    }
 
     #[test]
     fn purpose_changes_swap_layouts_and_clear_stale_state() {

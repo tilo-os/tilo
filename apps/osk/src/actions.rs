@@ -48,7 +48,15 @@ impl SetPreference {
                 if !LAYOUT_NAMES.contains(&layout.as_str()) {
                     return Err(format!("no letter layout named {layout:?}"));
                 }
+                if !preferences.layouts.contains(&preferences.layout)
+                    && LAYOUT_NAMES.contains(&preferences.layout.as_str())
+                {
+                    preferences.layouts.push(preferences.layout.clone());
+                }
                 layout.clone_into(&mut preferences.layout);
+                if !preferences.layouts.contains(layout) {
+                    preferences.layouts.push(layout.clone());
+                }
             }
             Self::Suggestions(enabled) => preferences.suggestions = *enabled,
             Self::Personalization(enabled) => {

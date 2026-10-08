@@ -48,6 +48,10 @@ pub fn names() -> &'static [&'static str] {
                 ACCOUNT_FORM,
                 ACCOUNTS_NARROW,
                 DEVICE_DISPLAYS,
+                "keyboard-single",
+                "keyboard-many",
+                "keyboard-touch",
+                "keyboard-osk",
             ])
             .collect()
     });
@@ -74,6 +78,8 @@ pub struct CaptureScene {
     pub account_form: Option<AccountKind>,
     /// Synthetic certified-peer observations; available only to capture fixtures.
     pub device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
+    /// Synthetic attached keyboards; captures never discover the real host.
+    pub input_hardware: Option<settings_store::hardware::InputHardwareSnapshot>,
 }
 
 /// Prepare `fixture`'s capture: every capture shows the sample accounts.
@@ -86,6 +92,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
     fixture.provide(CaptureScene {
         account_root,
         account_form,
+        input_hardware: keyboard_fixture(fixture.scenario()),
         device_displays: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
             device_display_fixture()
         } else {
@@ -145,6 +152,9 @@ pub fn staged(scenario: Option<&str>) -> Staged {
     match scenario {
         None => Staged::Pane(Category::Appearance),
         Some(DEVICE_DISPLAYS) => Staged::Pane(Category::Displays),
+        Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
+            Staged::Pane(Category::MouseKeyboard)
+        }
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance),
@@ -178,4 +188,35 @@ mod tests {
         assert_eq!(staged(Some("search")), Staged::Search(Category::Appearance));
         assert_eq!(viewport(Some("accounts-narrow")), NARROW_VIEWPORT);
     }
+}
+
+/// Synthetic input observations use the same snapshot contract as the compositor.
+pub(crate) fn keyboard_fixture(
+    scenario: Option<&str>,
+) -> Option<settings_store::hardware::InputHardwareSnapshot> {
+    use settings_store::hardware::{InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot};
+    let kinds: &[InputDeviceKind] = match scenario? {
+        "keyboard-single" => &[InputDeviceKind::Keyboard],
+        "keyboard-many" => &[InputDeviceKind::Keyboard, InputDeviceKind::Keyboard],
+        "keyboard-touch" => &[InputDeviceKind::Keyboard, InputDeviceKind::Touchscreen],
+        "keyboard-osk" => &[InputDeviceKind::Touchscreen],
+        _ => return None,
+    };
+    Some(InputHardwareSnapshot {
+        devices: kinds
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| InputDeviceSnapshot {
+                key: format!("fixture-input-{index}"),
+                name: if *kind == InputDeviceKind::Keyboard {
+                    format!("Keyboard {}", index + 1)
+                } else {
+                    "Touchscreen".into()
+                },
+                kind: *kind,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    })
 }
