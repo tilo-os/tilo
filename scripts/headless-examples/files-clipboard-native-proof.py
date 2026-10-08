@@ -79,11 +79,13 @@ def door(socket, room, record, operation):
 
 
 def entry_keys(socket, room, record):
+    # Publication can be gated during capture. None is not an empty folder;
+    # callers must observe this exact folder before testing its entry set.
     rows = [row for row in shared.actions(socket) if row.get("application") == APP
             and row.get("room") == room and row.get("record") == record]
     if not any(row.get("semantic_identity") == {"kind": "files.folder", "key": "files.folder"}
                and row.get("operation") == "go-to" for row in rows):
-        raise RuntimeError("actual Files folder surface is unobservable")
+        return None
     return {row["semantic_identity"]["key"] for row in rows
             if isinstance(row.get("semantic_identity"), dict)
             and row["semantic_identity"].get("kind") == "files.entry"}
@@ -242,7 +244,7 @@ def proof(binaries, output, trash_restore=False, theme=None):
         shared.wait_for("actual pasted bytes", lambda: destination.is_file() and destination.read_bytes() == original, shell)
         def pasted_entry():
             keys = entry_keys(socket, room, record)
-            return next(iter(keys)) if len(keys) == 1 else None
+            return next(iter(keys)) if keys is not None and len(keys) == 1 else None
         entry = shared.wait_for("actual pasted entry resource", pasted_entry, shell)
         (output / "pasted-entry-resource.json").write_text(json.dumps({"key": entry}, indent=2))
         capture(socket, output, "after-paste")
@@ -262,7 +264,7 @@ def proof(binaries, output, trash_restore=False, theme=None):
             raise RuntimeError("post-Undo history did not observe the actual document")
         (output / "completed-post-undo-history.json").write_text(json.dumps(undo_history, indent=2))
         shared.wait_for("Undo withdraws the receiving entry resource", lambda:
-                        entry not in entry_keys(socket, room, record), shell)
+                        (keys := entry_keys(socket, room, record)) is not None and entry not in keys, shell)
         capture(socket, output, "after-undo")
         key(socket, "z", shift=True)
         shared.wait_for("native Redo restores later edited bytes", lambda: destination.is_file() and destination.read_bytes() == edited, shell)
@@ -273,7 +275,7 @@ def proof(binaries, output, trash_restore=False, theme=None):
         if not history_output.get("versions") or not history_output.get("now"):
             raise RuntimeError("post-Redo history did not observe the actual document")
         shared.wait_for("Redo republishes the exact receiving entry resource", lambda:
-                        entry in entry_keys(socket, room, record), shell)
+                        (keys := entry_keys(socket, room, record)) is not None and entry in keys, shell)
         capture(socket, output, "after-redo")
         if trash_restore:
             key(socket, "z")
