@@ -94,6 +94,12 @@ pub enum PersonalFabricPayload {
         stamp: crate::shell::device_fabric::FabricStamp,
         outputs: Vec<crate::shell::device_fabric::DisplayConnectorPlacement>,
     },
+    /// Rich output observations follow the same certified, opt-in route.
+    /// Appending preserves existing payload discriminants and checkpoints.
+    DisplayOutputs {
+        stamp: crate::shell::device_fabric::FabricStamp,
+        outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

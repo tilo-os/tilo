@@ -5306,6 +5306,36 @@ impl ShellNetwork {
         Ok(changed)
     }
 
+    /// Advertise this compositor's rich hardware observations for its exact
+    /// display revision. These facts confer no input or placement authority.
+    /// # Errors
+    /// Rejects metadata without the local owner identity or current revision.
+    pub fn publish_local_display_outputs(
+        &self,
+        stamp: &crate::shell::device_fabric::FabricStamp,
+        outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
+    ) -> Result<bool, crate::shell::device_fabric::FabricError> {
+        use crate::shell::device_fabric::FabricError;
+        if !self
+            .permits_continuity(crate::shell::continuity_policy::ContinuityCapability::DisplayInput)
+            || self.personal_continuity_device.as_ref() != Some(&stamp.device)
+        {
+            return Err(FabricError::ForeignAuthorship);
+        }
+        let changed = self
+            .device_fabric
+            .lock()
+            .map_err(|_| FabricError::InvalidCheckpoint)?
+            .observe_display_outputs(&stamp.device, stamp, outputs.clone())?;
+        if changed {
+            self.publish_device_fabric_payload(PersonalFabricPayload::DisplayOutputs {
+                stamp: stamp.clone(),
+                outputs,
+            });
+        }
+        Ok(changed)
+    }
+
     /// The person whose devices form this device's personal fabric.
     pub fn personal_user_public_key(&self) -> Option<[u8; 32]> {
         self.personal_continuity_user
@@ -5676,10 +5706,20 @@ impl ShellNetwork {
                 .get(local)
                 .and_then(|snapshot| snapshot.display.clone())
         {
+            let rich_outputs = self
+                .device_fabric()
+                .display_outputs(local)
+                .map(<[_]>::to_vec);
             self.publish_device_fabric_payload(PersonalFabricPayload::DisplayConnectors {
-                stamp: display.stamp,
+                stamp: display.stamp.clone(),
                 outputs: display.outputs,
             });
+            if let Some(outputs) = rich_outputs {
+                self.publish_device_fabric_payload(PersonalFabricPayload::DisplayOutputs {
+                    stamp: display.stamp,
+                    outputs,
+                });
+            }
         }
     }
 
@@ -6236,6 +6276,16 @@ impl ShellNetwork {
                         fabric.observe_display_connectors(&route.device, &stamp, outputs)
                 {
                     tracing::debug!(%error, peer = %peer, "dropping invalid connector observation");
+                }
+            }
+            PersonalFabricPayload::DisplayOutputs { stamp, outputs } => {
+                if self.permits_continuity(
+                    crate::shell::continuity_policy::ContinuityCapability::DisplayInput,
+                ) && let Ok(mut fabric) = self.device_fabric.lock()
+                    && let Err(error) =
+                        fabric.observe_display_outputs(&route.device, &stamp, outputs)
+                {
+                    tracing::debug!(%error, peer = %peer, "dropping invalid rich display observation");
                 }
             }
             PersonalFabricPayload::Action(bytes) => {
@@ -10086,6 +10136,126 @@ mod tests {
         );
         assert_eq!(std::fs::read(&key_path).unwrap(), key_before);
         assert_eq!(std::fs::read_dir(&key_dir).unwrap().count(), 1);
+    }
+
+    fn rich_display_network_snapshot(
+        owner: crate::shell::personal_continuity::DeviceId,
+    ) -> (
+        crate::shell::device_fabric::DeviceFabricSnapshot,
+        crate::shell::device_fabric::DisplayOutputObservation,
+    ) {
+        use crate::shell::device_fabric::{
+            DisplayConnectorPlacement, DisplayOutputObservation, DisplayPlacement, DisplayRect,
+        };
+        let mut snapshot = fabric_snapshot(owner.clone(), 1);
+        let rect = DisplayRect {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 800,
+        };
+        snapshot.display = Some(DisplayPlacement {
+            device: owner,
+            rect,
+            scale_milli: 1000,
+            stamp: snapshot.presence.stamp.clone(),
+            outputs: vec![DisplayConnectorPlacement {
+                connector: "eDP-1".into(),
+                label: "Panel".into(),
+                rect,
+                scale_milli: 1000,
+            }],
+        });
+        let observation = DisplayOutputObservation {
+            connector: "eDP-1".into(),
+            output: settings_store::person_displays::DeviceOutput {
+                id: "monitor:panel".into(),
+                name: "Panel".into(),
+                builtin: true,
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 800,
+                mode_width: 1280,
+                mode_height: 800,
+                refresh_mhz: 60_000,
+                scale_milli: 1000,
+                connected: true,
+                enabled: true,
+            },
+        };
+        (snapshot, observation)
+    }
+
+    #[test]
+    fn rich_display_dispatch_requires_opt_in_and_current_certified_route() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer = iroh::SecretKey::from_bytes(&[0xE2; 32]);
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let allowed = net.continuity_policy_override;
+        let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+        authenticated_personal_peer_at(&net, &root, &peer, epoch);
+        let owner =
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+                .unwrap();
+        let (mut snapshot, observation) = rich_display_network_snapshot(owner.clone());
+        net.device_fabric
+            .lock()
+            .unwrap()
+            .upsert(snapshot.clone())
+            .unwrap();
+        let payload = PersonalFabricPayload::DisplayOutputs {
+            stamp: snapshot.display.as_ref().unwrap().stamp.clone(),
+            outputs: vec![observation.clone()],
+        };
+        let topic = personal_continuity_topic_id(&user);
+        net.continuity_policy_override =
+            Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::default());
+        net.dispatch_personal_fabric(topic, peer.public(), epoch, user, payload.clone());
+        assert!(net.device_fabric().display_outputs(&owner).is_none());
+        net.continuity_policy_override = allowed;
+        net.dispatch_personal_fabric(
+            topic,
+            peer.public(),
+            crate::network::actor::MembershipEpoch::for_test(2),
+            user,
+            payload.clone(),
+        );
+        assert!(net.device_fabric().display_outputs(&owner).is_none());
+        net.dispatch_personal_fabric(
+            topic.wrapping_add(1),
+            peer.public(),
+            epoch,
+            user,
+            payload.clone(),
+        );
+        assert!(net.device_fabric().display_outputs(&owner).is_none());
+        net.dispatch_personal_fabric(topic, peer.public(), epoch, user, payload);
+        assert_eq!(
+            net.device_fabric().display_outputs(&owner),
+            Some([observation.clone()].as_slice())
+        );
+        snapshot.presence.stamp.counter = 2;
+        snapshot.display.as_mut().unwrap().stamp.counter = 2;
+        net.device_fabric
+            .lock()
+            .unwrap()
+            .upsert(snapshot.clone())
+            .unwrap();
+        net.peer_identities
+            .remove(&crate::shell::state::PeerOrigin::peer(&peer.public()));
+        net.dispatch_personal_fabric(
+            topic,
+            peer.public(),
+            epoch,
+            user,
+            PersonalFabricPayload::DisplayOutputs {
+                stamp: snapshot.display.unwrap().stamp,
+                outputs: vec![observation],
+            },
+        );
+        assert!(net.device_fabric().display_outputs(&owner).is_none());
     }
 
     #[test]

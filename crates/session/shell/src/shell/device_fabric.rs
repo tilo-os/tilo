@@ -1863,9 +1863,20 @@ impl DeviceFabricSnapshot {
     }
 }
 
+/// Rich hardware facts accompanying the connector extension. They describe
+/// an output but never grant control or change its live geometry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayOutputObservation {
+    pub connector: String,
+    pub output: settings_store::person_displays::DeviceOutput,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceFabric {
     snapshots: BTreeMap<DeviceId, DeviceFabricSnapshot>,
+    /// Revision-bound observations stay outside the schema-6 checkpoint.
+    #[serde(skip)]
+    display_outputs: BTreeMap<DeviceId, (FabricStamp, Vec<DisplayOutputObservation>)>,
 }
 
 impl DeviceFabric {
@@ -2062,9 +2073,119 @@ impl DeviceFabric {
         Ok(true)
     }
 
+    /// Admit bounded hardware facts for the owner's exact live display revision.
+    /// # Errors
+    /// Rejects unknown owners, stale revisions, conflicting facts and metadata
+    /// that disagrees with the independently admitted connector geometry.
+    pub fn observe_display_outputs(
+        &mut self,
+        owner: &DeviceId,
+        stamp: &FabricStamp,
+        outputs: Vec<DisplayOutputObservation>,
+    ) -> Result<bool, FabricError> {
+        let display = self
+            .snapshots
+            .get(owner)
+            .and_then(|snapshot| snapshot.display.as_ref())
+            .ok_or(FabricError::InvalidDisplayPlacement)?;
+        if &stamp.device != owner || stamp != &display.stamp {
+            return Err(FabricError::ForeignAuthorship);
+        }
+        if outputs.len() > settings_store::person_displays::MAX_DEVICE_OUTPUTS {
+            return Err(FabricError::InvalidDisplayPlacement);
+        }
+        unique(outputs.iter().map(|item| item.connector.as_str()))?;
+        unique(outputs.iter().map(|item| item.output.id.as_str()))?;
+        for item in &outputs {
+            if item.connector.is_empty()
+                || item.connector.len() > 256
+                || item.connector.chars().any(char::is_control)
+                || !item.output.valid()
+            {
+                return Err(FabricError::InvalidDisplayPlacement);
+            }
+            if item.output.active() {
+                let Some(connector) = display
+                    .outputs
+                    .iter()
+                    .find(|connector| connector.connector == item.connector)
+                else {
+                    return Err(FabricError::InvalidDisplayPlacement);
+                };
+                let output = &item.output;
+                if connector.rect
+                    != (DisplayRect {
+                        x: output.x,
+                        y: output.y,
+                        width: output.width,
+                        height: output.height,
+                    })
+                    || connector.scale_milli != output.scale_milli
+                {
+                    return Err(FabricError::InvalidDisplayPlacement);
+                }
+            } else if display
+                .outputs
+                .iter()
+                .any(|connector| connector.connector == item.connector)
+            {
+                return Err(FabricError::InvalidDisplayPlacement);
+            }
+        }
+        if display.outputs.iter().any(|connector| {
+            !outputs
+                .iter()
+                .any(|item| item.connector == connector.connector && item.output.active())
+        }) {
+            return Err(FabricError::InvalidDisplayPlacement);
+        }
+        if let Some((previous_stamp, previous)) = self.display_outputs.get(owner)
+            && previous_stamp == stamp
+        {
+            return if previous == &outputs {
+                Ok(false)
+            } else {
+                Err(FabricError::ConflictingRevision)
+            };
+        }
+        self.display_outputs
+            .insert(owner.clone(), (stamp.clone(), outputs));
+        Ok(true)
+    }
+
+    /// The current revision's observed facts; stale metadata is never projected.
+    pub fn display_outputs(&self, owner: &DeviceId) -> Option<&[DisplayOutputObservation]> {
+        let display = self.snapshots.get(owner)?.display.as_ref()?;
+        let (stamp, outputs) = self.display_outputs.get(owner)?;
+        (stamp == &display.stamp).then_some(outputs.as_slice())
+    }
+
+    /// Certified device observations consumed by the shared layout model.
+    pub fn person_devices(
+        &self,
+        local: &DeviceId,
+    ) -> Vec<settings_store::person_displays::PersonDevice> {
+        self.snapshots
+            .values()
+            .map(|snapshot| settings_store::person_displays::PersonDevice {
+                device: snapshot.owner.as_str().to_owned(),
+                label: snapshot.presence.label.clone(),
+                local: &snapshot.owner == local,
+                online: snapshot.presence.online,
+                outputs: self
+                    .display_outputs(&snapshot.owner)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|item| item.output.clone())
+                    .collect(),
+            })
+            .collect()
+    }
+
     /// Forget everything a device published, e.g. once it left the fleet.
     /// Returns whether it had published anything.
     pub fn remove_device(&mut self, device: &DeviceId) -> bool {
+        self.display_outputs.remove(device);
         self.snapshots.remove(device).is_some()
     }
 
@@ -2729,6 +2850,148 @@ mod tests {
                 Err(FabricError::InvalidRoamingSetting)
             );
         }
+    }
+
+    #[test]
+    fn rich_display_extension_keeps_existing_payload_bytes() {
+        let payload = crate::network::actor::PersonalFabricPayload::DisplayConnectors {
+            stamp: stamp("peer", 1),
+            outputs: Vec::new(),
+        };
+        let previous = hex::decode("0801047065657200").unwrap();
+        assert_eq!(postcard::to_allocvec(&payload).unwrap(), previous);
+        let decoded: crate::network::actor::PersonalFabricPayload =
+            postcard::from_bytes(&previous).unwrap();
+        assert!(matches!(decoded,
+            crate::network::actor::PersonalFabricPayload::DisplayConnectors { outputs, .. }
+                if outputs.is_empty()));
+    }
+
+    fn rich_display_fixture() -> (DeviceFabricSnapshot, DisplayOutputObservation) {
+        let mut source = snapshot("peer", 2, 960, FabricCapabilities::default());
+        let facts = DisplayOutputObservation {
+            connector: "DP-1".into(),
+            output: settings_store::person_displays::DeviceOutput {
+                id: "monitor:panel".into(),
+                name: "Panel".into(),
+                builtin: false,
+                x: 0,
+                y: 0,
+                width: 1000,
+                height: 800,
+                mode_width: 2000,
+                mode_height: 1600,
+                refresh_mhz: 59_940,
+                scale_milli: 2000,
+                connected: true,
+                enabled: true,
+            },
+        };
+        source
+            .display
+            .as_mut()
+            .unwrap()
+            .outputs
+            .push(DisplayConnectorPlacement {
+                connector: facts.connector.clone(),
+                label: "DP-1".into(),
+                rect: DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width: 1000,
+                    height: 800,
+                },
+                scale_milli: 2000,
+            });
+        (source, facts)
+    }
+
+    #[test]
+    fn rich_display_observations_bind_owner_revision_geometry_and_checkpoint() {
+        let (mut source, facts) = rich_display_fixture();
+        let owner = source.owner.clone();
+        let revision = source.display.as_ref().unwrap().stamp.clone();
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(source.clone()).unwrap();
+        let checkpoint = fabric.encode_checkpoint().unwrap();
+        for stamp in [stamp("stranger", 2), stamp("peer", 1)] {
+            assert_eq!(
+                fabric.observe_display_outputs(&owner, &stamp, vec![facts.clone()]),
+                Err(FabricError::ForeignAuthorship)
+            );
+        }
+        let mut wrong = facts.clone();
+        wrong.output.width += 1;
+        assert_eq!(
+            fabric.observe_display_outputs(&owner, &revision, vec![wrong]),
+            Err(FabricError::InvalidDisplayPlacement)
+        );
+        assert_eq!(
+            fabric.observe_display_outputs(&owner, &revision, Vec::new()),
+            Err(FabricError::InvalidDisplayPlacement)
+        );
+        assert!(
+            fabric
+                .observe_display_outputs(&owner, &revision, vec![facts.clone()])
+                .unwrap()
+        );
+        assert!(
+            !fabric
+                .observe_display_outputs(&owner, &revision, vec![facts.clone()])
+                .unwrap()
+        );
+        assert_eq!(fabric.encode_checkpoint().unwrap(), checkpoint);
+        assert!(
+            DeviceFabric::decode_checkpoint(&checkpoint)
+                .unwrap()
+                .display_outputs(&owner)
+                .is_none()
+        );
+        let mut conflicting = facts.clone();
+        conflicting.output.refresh_mhz = 60_000;
+        assert_eq!(
+            fabric.observe_display_outputs(&owner, &revision, vec![conflicting]),
+            Err(FabricError::ConflictingRevision)
+        );
+        source.presence.online = false;
+        source.presence.stamp.counter = 3;
+        fabric.upsert(source.clone()).unwrap();
+        let devices = fabric.person_devices(&owner);
+        assert_eq!(devices[0].outputs, vec![facts.output]);
+        assert!(!devices[0].online);
+        source.presence.stamp.counter = 4;
+        source.display.as_mut().unwrap().stamp.counter = 4;
+        fabric.upsert(source).unwrap();
+        assert!(fabric.display_outputs(&owner).is_none());
+        assert!(fabric.person_devices(&owner)[0].outputs.is_empty());
+        assert!(fabric.remove_device(&owner));
+        assert!(fabric.person_devices(&owner).is_empty());
+    }
+
+    #[test]
+    fn rich_display_observations_reject_unbounded_and_duplicate_metadata() {
+        let (source, facts) = rich_display_fixture();
+        let owner = source.owner.clone();
+        let revision = source.display.as_ref().unwrap().stamp.clone();
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(source).unwrap();
+        for invalid in [
+            {
+                let mut item = facts.clone();
+                item.output.x = i32::MIN;
+                vec![item]
+            },
+            vec![facts.clone(); settings_store::person_displays::MAX_DEVICE_OUTPUTS + 1],
+        ] {
+            assert_eq!(
+                fabric.observe_display_outputs(&owner, &revision, invalid),
+                Err(FabricError::InvalidDisplayPlacement)
+            );
+        }
+        assert_eq!(
+            fabric.observe_display_outputs(&owner, &revision, vec![facts.clone(), facts]),
+            Err(FabricError::DuplicateItem)
+        );
     }
 
     #[test]
