@@ -604,6 +604,11 @@ impl SettingsApp {
         &self.printers
     }
 
+    #[cfg(test)]
+    pub(crate) fn users_mut(&mut self) -> &mut panes::users::UsersArea {
+        &mut self.users
+    }
+
     pub(crate) fn users(&self) -> &panes::users::UsersArea {
         &self.users
     }

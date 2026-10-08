@@ -338,20 +338,27 @@ fn read_users() -> Result<Vec<DeviceUser>, String> {
     let mut users = fs::read_to_string("/etc/passwd")
         .map(|s| read_passwd_users(&s, current.as_deref(), &admins))
         .map_err(|error| format!("/etc/passwd: {error}"))?;
-    for user in &mut users {
-        match os_actions::users::automatic_login(&user.username) {
+    read_automatic_login(&mut users, &os_actions::users::automatic_login);
+
+    Ok(users)
+}
+
+fn read_automatic_login(users: &mut [DeviceUser], read: &dyn Fn(&str) -> Result<bool, String>) {
+    for user in users {
+        match read(&user.username) {
             Ok(enabled) => user.automatic_login = enabled,
             Err(error) => user.automatic_login_error = Some(error),
         }
     }
-    Ok(users)
 }
 
-/// Split a read into the accounts it found and why it found none.
-fn users_and_error(read: Result<Vec<DeviceUser>, String>) -> (Vec<DeviceUser>, Option<String>) {
-    match read {
-        Ok(users) => (users, None),
-        Err(error) => (Vec::new(), Some(error)),
+trait UsersRead: Send + Sync {
+    fn read(&self) -> Result<Vec<DeviceUser>, String>;
+}
+struct DeviceUsersRead;
+impl UsersRead for DeviceUsersRead {
+    fn read(&self) -> Result<Vec<DeviceUser>, String> {
+        read_users()
     }
 }
 
@@ -368,6 +375,8 @@ fn identities_for_display() -> (Vec<IdentitySummary>, Option<DiskIdentityAdmin>)
 pub struct UsersArea {
     cx: PaneCx,
     model: OnceCell<Shared<UsersModel>>,
+    reader: Arc<dyn UsersRead>,
+    device: bool,
 }
 
 impl UsersArea {
@@ -375,14 +384,16 @@ impl UsersArea {
         Self {
             cx: cx.clone(),
             model: OnceCell::new(),
+            reader: Arc::new(DeviceUsersRead),
+            device: cx.reaches_devices(),
         }
     }
 
     /// The model: this device's accounts, or sample ones for a screenshot.
     pub fn model(&self) -> &Shared<UsersModel> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                UsersModel::of_device(self.cx.clone())
+            let model = if self.device {
+                UsersModel::of_device(self.cx.clone(), self.reader.clone())
             } else {
                 UsersModel::sample(self.cx.clone())
             };
@@ -392,39 +403,44 @@ impl UsersArea {
 
     /// One row per account other than the signed-in one, and per identity.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
-        let model = self.model().borrow();
-        let accounts = model.users.iter().filter(|user| !user.current).map(|user| {
-            let name = user.username.clone();
-            let mut row = LiveRow::new(
-                format!("settings.user:{name}"),
-                "settings.user",
-                user.full_name.clone(),
-            )
-            .operation(
-                SettingsEffect::from(UsersEffect::SetAdministrator {
-                    user: name.clone(),
-                    admin: !user.admin,
-                })
-                .bound(),
-            );
-            // An unread automatic-login state offers no switch to flip.
-            if user.automatic_login_error.is_none() {
-                row = row.operation(
-                    SettingsEffect::from(UsersEffect::SetAutomaticLogin {
+        let mut model = self.model().borrow_mut();
+        model.poll_read();
+        let accounts = model
+            .users
+            .iter()
+            .filter(|user| !user.current && model.reading.is_none() && model.users_error.is_none())
+            .map(|user| {
+                let name = user.username.clone();
+                let mut row = LiveRow::new(
+                    format!("settings.user:{name}"),
+                    "settings.user",
+                    user.full_name.clone(),
+                )
+                .operation(
+                    SettingsEffect::from(UsersEffect::SetAdministrator {
                         user: name.clone(),
-                        on: !user.automatic_login,
+                        admin: !user.admin,
                     })
                     .bound(),
                 );
-            }
-            row.operation(
-                SettingsEffect::from(UsersEffect::RemoveUser {
-                    user: name,
-                    keep_files: true,
-                })
-                .bound(),
-            )
-        });
+                // An unread automatic-login state offers no switch to flip.
+                if user.automatic_login_error.is_none() {
+                    row = row.operation(
+                        SettingsEffect::from(UsersEffect::SetAutomaticLogin {
+                            user: name.clone(),
+                            on: !user.automatic_login,
+                        })
+                        .bound(),
+                    );
+                }
+                row.operation(
+                    SettingsEffect::from(UsersEffect::RemoveUser {
+                        user: name,
+                        keep_files: true,
+                    })
+                    .bound(),
+                )
+            });
         let identities = model.identities.iter().map(|identity| {
             let id = identity.id.clone();
             let mut row = LiveRow::new(
@@ -490,29 +506,36 @@ pub struct UsersModel {
     backends: Backends,
     /// Whether the accounts are this device's, read again after a change.
     of_device: bool,
+    reader: Arc<dyn UsersRead>,
+    reading: Option<std::sync::mpsc::Receiver<Result<Vec<DeviceUser>, String>>>,
+    refresh_requested: bool,
     form: AccountForm,
     error: Option<String>,
     changed: bool,
 }
 
 impl UsersModel {
-    fn of_device(cx: PaneCx) -> Self {
+    fn of_device(cx: PaneCx, reader: Arc<dyn UsersRead>) -> Self {
         let (identities, identity_admin) = identities_for_display();
-        let (users, users_error) = users_and_error(read_users());
-        Self {
+        let mut model = Self {
             cx,
-            users,
-            users_error,
+            users: Vec::new(),
+            users_error: None,
             identities,
             backends: Backends {
                 users: Arc::new(AccountsServiceAdmin),
                 identities: identity_admin.map(|admin| Arc::new(admin) as Arc<dyn IdentityAdmin>),
             },
             of_device: true,
+            reader,
+            reading: None,
+            refresh_requested: false,
             form: AccountForm::default(),
             error: None,
             changed: false,
-        }
+        };
+        model.start_read();
+        model
     }
 
     /// Two accounts and one identity, changed by nothing.
@@ -547,9 +570,60 @@ impl UsersModel {
                 identities: Some(Arc::new(SampleAdmin)),
             },
             of_device: false,
+            reader: Arc::new(DeviceUsersRead),
+            reading: None,
+            refresh_requested: false,
             form: AccountForm::default(),
             error: None,
             changed: false,
+        }
+    }
+
+    fn start_read(&mut self) {
+        self.changed = true;
+        if self.reading.is_some() {
+            self.refresh_requested = true;
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let reader = self.reader.clone();
+        let wake = ui::WakeHandle::new();
+        match std::thread::Builder::new()
+            .name("settings-users-read".into())
+            .spawn(move || {
+                if sender.send(reader.read()).is_ok() {
+                    wake.wake();
+                }
+            }) {
+            Ok(_) => self.reading = Some(receiver),
+            Err(error) => self.users_error = Some(error.to_string()),
+        }
+    }
+
+    fn poll_read(&mut self) {
+        let Some(receiver) = &self.reading else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(t("settings-users-read-disconnected"))
+            }
+        };
+        self.reading = None;
+        if std::mem::take(&mut self.refresh_requested) {
+            // A mutation completed during the read: its newer refresh owns the snapshot.
+            self.start_read();
+            return;
+        }
+        self.changed = true;
+        match result {
+            Ok(users) => {
+                self.users = users;
+                self.users_error = None;
+            }
+            Err(error) => self.users_error = Some(error),
         }
     }
 
@@ -558,7 +632,7 @@ impl UsersModel {
         if !self.of_device {
             return;
         }
-        (self.users, self.users_error) = users_and_error(read_users());
+        self.start_read();
         if let Ok(dir) = runtime_identity::identity_dir_from_env() {
             self.identities = runtime_identity::list_identities(&dir).unwrap_or_default();
         }
@@ -572,7 +646,9 @@ impl UsersModel {
                 rows(vec![caption(error)]),
             ));
         }
-        let people = if let Some(error) = &self.users_error {
+        let people = if self.reading.is_some() {
+            rows(vec![caption(&t("settings-users-loading-accounts"))])
+        } else if let Some(error) = &self.users_error {
             rows(vec![error_caption(&t_args(
                 "settings-users-read-error",
                 &[("error", error.as_str().into())],
@@ -865,6 +941,7 @@ impl PaneModel for UsersModel {
     }
 
     fn poll(&mut self) -> bool {
+        self.poll_read();
         std::mem::take(&mut self.changed)
     }
 
@@ -1113,3 +1190,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+include!("users_startup_tests.rs");
