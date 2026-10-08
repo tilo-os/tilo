@@ -622,3 +622,9 @@ files-history-restore-file = Datei wiederherstellen
 
 files-native-trash-delete-unavailable = Diese Objekte können wiederhergestellt werden. Dauerhaftes Löschen ist hier nicht verfügbar.
 files-user-trash-unavailable = Dein Papierkorb ist in diesem Arbeitsbereich nicht verfügbar.
+
+files-operation-outcome-unknown = Dateisystemaktion: Ergebnis unbekannt
+files-operation-settled = Dateisystemaktion: abgeschlossen
+files-operation-failed = Dateisystemaktion: fehlgeschlagen
+files-inspect-operation = Dateisystemaktion prüfen
+files-operation-unavailable = Diese Dateisystemaktion ist im aktuellen Datensatz nicht verfügbar.

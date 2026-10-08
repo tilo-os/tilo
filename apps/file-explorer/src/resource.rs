@@ -29,6 +29,24 @@ use crate::files_app::{
     FileExplorerWidget, Ran, published_place_resources, published_template_resources,
 };
 
+#[cfg(test)]
+#[path = "resource/restart_tests.rs"]
+mod restart_tests;
+
+fn require_known_revert(doc: &Doc, device: &str, op: &FileOp) -> Result<(), ActionError> {
+    if let FileOp::Revert { op: target } = op {
+        let known = OpsDoc::ops(doc).into_iter().any(|queued| {
+            queued.id == *target && queued.device == device && queued.outcome.is_some()
+        });
+        if !known {
+            return Err(ActionError::Refused(crate::i18n::t(
+                "files-operation-outcome-unknown",
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A change to the Files document: the bookmarked places (stored as
 /// [`crate::places`] names them, so they mean the same folder on every
 /// device) and the filesystem operations queued from Files.
@@ -82,8 +100,11 @@ impl Action for FilesDocAction {
             Self::AddBookmark { place, at } => PlacesDoc::add(doc, place, *at)?,
             Self::RemoveBookmark { place } => PlacesDoc::remove(doc, place)?,
             Self::MoveBookmark { place, to } => PlacesDoc::move_to(doc, place, *to)?,
-            Self::QueueFileOp { id, device, op } => OpsDoc::queue(doc, id, device, op)?,
-            Self::SettleFileOp { id, outcome } => OpsDoc::settle(doc, id, outcome)?,
+            Self::QueueFileOp { id, device, op } => {
+                require_known_revert(doc, device, op)?;
+                OpsDoc::queue(doc, id, device, op)?;
+            }
+            Self::SettleFileOp { id, outcome } => settle_file_operation(doc, id, outcome)?,
             Self::RecordClipboardTransfer { receipt, device } => {
                 if uuid::Uuid::parse_str(&receipt.operation).is_err()
                     || receipt.completed == 0
@@ -191,6 +212,25 @@ impl Action for FilesDocAction {
     }
 
     fn redo_encoded(&self, doc: &ui::tilo_actions::Doc) -> Option<EncodedAction> {
+        if let Self::QueueFileOp { id, device, .. } = self {
+            // Restore only what the settled compensation actually changed;
+            // never re-run the original name allocation or guess its paths.
+            let reverted = OpsDoc::ops(doc)
+                .into_iter()
+                .filter(|queued| queued.device == *device)
+                .filter(|queued| matches!(&queued.op, FileOp::Revert { op } if op == id))
+                .filter(|queued| matches!(queued.outcome, Some(Outcome::Done { .. })))
+                .max_by_key(|queued| queued.order)?;
+            return EncodedAction::encode(
+                FileExplorer::ACTION_TYPE,
+                &Self::QueueFileOp {
+                    id: format!("{}-redo", reverted.id),
+                    device: device.clone(),
+                    op: FileOp::Revert { op: reverted.id },
+                },
+            )
+            .ok();
+        }
         let Self::RecordClipboardTransfer { receipt, device } = self else {
             return None;
         };
@@ -210,7 +250,10 @@ impl Action for FilesDocAction {
     }
 
     fn inverse_requires_settlement(&self) -> bool {
-        matches!(self, Self::RecordClipboardTransfer { .. })
+        matches!(
+            self,
+            Self::QueueFileOp { .. } | Self::RecordClipboardTransfer { .. }
+        )
     }
 
     /// What a device reports it did is content from outside: it syncs, but
@@ -223,6 +266,55 @@ impl Action for FilesDocAction {
             _ => ui::tilo_actions::ChangeKind::Content,
         }
     }
+}
+
+/// An outside history step changes status only after its actual compensation
+/// succeeds. Use the existing canonical history ledger, not a Files ledger.
+fn settle_file_operation(doc: &mut Doc, id: &str, outcome: &Outcome) -> Result<(), ActionError> {
+    if matches!(outcome, Outcome::Done { .. }) {
+        let ops = OpsDoc::ops(doc);
+        let mut current = ops.iter().find(|queued| queued.id == id);
+        let mut root = None;
+        for _ in 0..ops.len() {
+            let Some(queued) = current else { break };
+            let FileOp::Revert { op } = &queued.op else {
+                break;
+            };
+            root = Some(op.as_str());
+            current = ops.iter().find(|original| original.id == *op);
+        }
+        if let Some(root) = root {
+            let mut registry = ActionRegistry::new();
+            ui::tilo_resource::group::register::<FileExplorer>(&mut registry);
+            for hash in ui::history_source::steps::pending_compensations(doc) {
+                if !ui::tilo_actions::executor::verified_compensation(doc, hash, &registry)
+                    .is_ok_and(|inverse| inverse.is_some())
+                {
+                    continue;
+                }
+                let inverse = doc
+                    .get_change_meta_by_hash(&hash)
+                    .and_then(|change| {
+                        change
+                            .message
+                            .as_deref()
+                            .and_then(ui::tilo_actions::ActionContext::from_change_message)
+                    })
+                    .and_then(|context| context.compensation)
+                    .filter(|compensation| compensation.undo.type_id == FileExplorer::ACTION_TYPE)
+                    .and_then(|compensation| {
+                        serde_json::from_slice::<FilesDocAction>(&compensation.undo.payload).ok()
+                    });
+                if matches!(inverse, Some(FilesDocAction::QueueFileOp { op: FileOp::Revert { op }, .. }) if op == root)
+                {
+                    ui::history_source::steps::settle_compensation(doc, hash)
+                        .map_err(ActionError::Refused)?;
+                }
+            }
+        }
+    }
+    OpsDoc::settle(doc, id, outcome)?;
+    Ok(())
 }
 
 /// Resolve the exact canonical transfer before changing any settlement state.
@@ -322,17 +414,18 @@ impl FilesState {
         self.ops
             .iter()
             .filter(|op| op.device == device && op.outcome.is_none())
-            .filter_map(|op| {
+            .map(|op| {
                 let reverting = match &op.op {
-                    FileOp::Revert { op: target } => {
-                        match self.ops.iter().find(|queued| queued.id == *target) {
-                            Some(queued) => Some(queued.outcome.clone()?),
-                            None => None,
-                        }
-                    }
+                    // Retain unknown inverses in the causal baseline too:
+                    // later receipt arrival is not a new compensation intent.
+                    FileOp::Revert { op: target } => self
+                        .ops
+                        .iter()
+                        .find(|queued| queued.id == *target)
+                        .and_then(|queued| queued.outcome.clone()),
                     _ => None,
                 };
-                Some((op.id.clone(), (op.clone(), reverting)))
+                (op.id.clone(), (op.clone(), reverting))
             })
             .collect()
     }
@@ -421,8 +514,41 @@ impl Resource for FileExplorer {
         let mut children =
             published_place_resources(&crate::files_app::device_places(&state.bookmarks));
         children.extend(published_template_resources());
+        children.extend(operation_resources(state));
         children
     }
+}
+
+/// A retained intent without a committed outcome is uncertain, not permission
+/// to execute it again. Inspecting it uses the original record's read door.
+fn operation_resources(state: &FilesState) -> Vec<tilo_actions::Resource> {
+    use sha2::Digest;
+    state
+        .ops
+        .iter()
+        .map(|op| {
+            let label = match &op.outcome {
+                None => "files-operation-outcome-unknown",
+                Some(Outcome::Done { .. }) => "files-operation-settled",
+                Some(Outcome::Failed { .. }) => "files-operation-failed",
+            };
+            tilo_actions::Resource::new(
+                format!(
+                    "files.operation:{}",
+                    hex::encode(sha2::Sha256::digest(op.id.as_bytes()))
+                ),
+                "files.operation",
+                crate::i18n::t(label),
+            )
+            .with_action(crate::effects::row_action(
+                &FilesEffect::InspectFileOperation {
+                    operation: op.id.clone(),
+                },
+                "inspect-file-operation",
+                crate::i18n::t("files-inspect-operation"),
+            ))
+        })
+        .collect()
 }
 
 fn clipboard_record_declaration(name: &'static str, label: String) -> ActionDecl<FileExplorer> {
@@ -665,11 +791,13 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                 Err(error) => self.set_external_status(error),
             }
         }
-        // Each device carries out the filesystem changes queued for it, and
-        // records what it changed.
-        let ops = cx.device().map(|device| {
+        // Only the current admitted document action can cause filesystem work.
+        // Startup, hydration and an old pending intent cannot recreate its
+        // authority or repeat an uncertain mutation. Settlement keeps the
+        // original invocation's custody instead of becoming background intent.
+        if let Some(device) = cx.device() {
             let device = device.to_owned();
-            cx.drain(
+            cx.drain_causal(
                 move |state: &FilesState| state.pending_for(&device),
                 |(queued, reverting): (QueuedOp, Option<Outcome>), cx| {
                     let outcome = crate::file_ops::execute(&queued.op, reverting.as_ref());
@@ -679,14 +807,13 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                     });
                     Ok(Effected::done())
                 },
-            )
-        });
+            );
+        }
         self.attach_framework(
             cx.dispatcher(),
             cx.settings::<FilesPreferences>(),
             cx.settings::<crate::recent::RecentFiles>(),
             cx.device().map(str::to_owned),
-            ops,
         );
     }
 
@@ -699,6 +826,26 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         effect: FilesEffect,
         cx: &mut EffectCx<FileExplorer, Self>,
     ) -> EffectAnswer {
+        if let FilesEffect::InspectFileOperation { operation } = &effect {
+            let answer = cx.live().with(|state| {
+                let op = state
+                    .ops
+                    .iter()
+                    .find(|op| op.id == *operation)
+                    .ok_or_else(|| crate::i18n::t("files-operation-unavailable"))?;
+                Ok::<_, String>(serde_json::json!({
+                    "operation": op.id,
+                    "device": op.device,
+                    "state": match &op.outcome {
+                        None => "outcome_unknown",
+                        Some(Outcome::Done { .. }) => "done",
+                        Some(Outcome::Failed { .. }) => "failed",
+                    },
+                    "outcome": op.outcome,
+                }))
+            })?;
+            return Ok(Effected::value(answer));
+        }
         let recovery =
             matches!(effect, FilesEffect::RecoverClipboardTransfers) && self.hosted_clipboard();
         let receipt = matches!(effect, FilesEffect::Paste | FilesEffect::Restore { .. })

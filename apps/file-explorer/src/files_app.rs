@@ -595,8 +595,6 @@ pub struct FileExplorerWidget {
     /// The device this window changes the filesystem of, which carries out
     /// the operations it queues; `None` outside a framework host.
     device: Option<String>,
-    /// Carries out the operations queued for this device.
-    ops_drain: Option<ui::framework::Projection>,
     /// Operations this window queued, and what it shows when they settle.
     awaiting_ops: HashMap<String, OpFollowUp>,
     /// Operations already seen carried out, so each settles once here.
@@ -876,13 +874,11 @@ impl FileExplorerWidget {
         preferences: ui::framework::Setting<crate::resource::FilesPreferences>,
         recent: ui::framework::Setting<crate::recent::RecentFiles>,
         device: Option<String>,
-        ops_drain: Option<ui::framework::Projection>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.preferences = Some(preferences);
         self.recent_setting = Some(recent);
         self.device = device;
-        self.ops_drain = ops_drain;
         self.adopt_preferences();
     }
 
@@ -1712,7 +1708,6 @@ impl FileExplorerWidget {
             clipboard_cut: false,
             last_trash_undo: None,
             device: None,
-            ops_drain: None,
             awaiting_ops: HashMap::new(),
             settled_ops: std::collections::HashSet::new(),
             ops_presented: false,
@@ -1975,6 +1970,9 @@ impl FileExplorerWidget {
     ) -> Result<Ran, String> {
         use crate::effects::FilesEffect;
         let answer = match effect {
+            FilesEffect::InspectFileOperation { .. } => {
+                return Err(t("files-operation-unavailable"));
+            }
             FilesEffect::ClipboardStatus => return self.snapshot_clipboard(invocation),
             FilesEffect::RecoverClipboardTransfers => return self.recover_clipboard(invocation),
             FilesEffect::Refresh => {

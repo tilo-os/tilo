@@ -19,6 +19,15 @@ use ui::tilo_resource::Effect;
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "files.effects")]
 pub enum FilesEffect {
+    /// Inspect filesystem operation.
+    ///
+    /// Read the retained operation's committed outcome. An absent outcome
+    /// remains unknown and inspecting it never retries its filesystem work.
+    #[effect(view, row, returns)]
+    InspectFileOperation {
+        #[param("The retained filesystem operation's id")]
+        operation: String,
+    },
     /// Refresh folder.
     #[effect(permission = "read", idempotent)]
     Refresh,

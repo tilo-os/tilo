@@ -1937,6 +1937,48 @@ impl FrameHarness {
             .is_some()
     }
 
+    /// A history action declaring background consequences needs the same
+    /// admitted invocation as the live broker path. Pure document inverses
+    /// retain their local history path.
+    fn perform_component_history(
+        &mut self,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        request: crate::undo::UndoRequest,
+    ) -> bool {
+        let Ok(resources) = self.bound_resources_of(Some(binding.instance_id), None) else {
+            return false;
+        };
+        let action = request.verb();
+        let mut targets = resources.iter().filter(|resource| {
+            resource.actions.iter().any(|spec| {
+                spec.id == action
+                    && spec.kind == tilo_actions::OperationKind::Document
+                    && matches!(
+                        spec.contract.execution,
+                        tilo_actions::ExecutionMode::Background { .. }
+                    )
+            })
+        });
+        let Some(resource) = targets.next() else {
+            return Self::history_through_component(
+                &mut *self.root,
+                &mut self.state.doc,
+                binding,
+                request,
+                &self.action_registry,
+            );
+        };
+        if targets.next().is_some() {
+            return false;
+        }
+        let address = crate::bound_dispatch::BoundActionAddress {
+            instance_id: binding.instance_id,
+            address: tilo_actions::ActionAddress::new(resource.id.as_str(), action),
+        };
+        self.invoke_bound_action(&address, &serde_json::Map::new())
+            .is_ok()
+    }
+
     /// Undo the last action, the way the live host does — through
     /// [`State::undo_as`](crate::state::State::undo_as) with this driver's
     /// author. Returns whether anything was undone.
@@ -1965,13 +2007,7 @@ impl FrameHarness {
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| self.root.callback_binding())
         {
-            Self::history_through_component(
-                &mut *self.root,
-                &mut self.state.doc,
-                &binding,
-                crate::undo::UndoRequest::Undo,
-                &self.action_registry,
-            )
+            self.perform_component_history(&binding, crate::undo::UndoRequest::Undo)
         } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
             crate::bound_dispatch::legacy_history_request(
                 &owner,
@@ -2013,13 +2049,7 @@ impl FrameHarness {
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| self.root.callback_binding())
         {
-            Self::history_through_component(
-                &mut *self.root,
-                &mut self.state.doc,
-                &binding,
-                crate::undo::UndoRequest::Redo,
-                &self.action_registry,
-            )
+            self.perform_component_history(&binding, crate::undo::UndoRequest::Redo)
         } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
             crate::bound_dispatch::legacy_history_request(
                 &owner,

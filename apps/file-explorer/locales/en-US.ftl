@@ -623,3 +623,9 @@ files-history-restore-file = Restore file
 
 files-native-trash-delete-unavailable = These items can be restored. Permanent deletion is unavailable here.
 files-user-trash-unavailable = Your Trash isn’t available in this workspace.
+
+files-operation-outcome-unknown = Filesystem operation: outcome unknown
+files-operation-settled = Filesystem operation: settled
+files-operation-failed = Filesystem operation: failed
+files-inspect-operation = Inspect filesystem operation
+files-operation-unavailable = This filesystem operation is not available in the current record.

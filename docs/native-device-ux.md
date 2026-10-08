@@ -56,6 +56,15 @@ single-flight hydration, verified byte-range fetching and the existing eviction
 coordinator. Safe eviction requires durable remote evidence and retained-history
 checks. No durable user resource is deleted by this slice.
 
+Files executes a queued filesystem operation only as a consequence of the current
+admitted document action, using the shared framework's causal drain and original
+invocation custody. Loading, hydrating or reopening a retained record never
+repeats its filesystem work. Its committed outcome remains in the operation's
+CRDT history. An old intent with no outcome stays uncertain: each operation
+publishes a read-only inspection action reporting that state, without inferring
+completion from a matching path or silently retrying the mutation. This does not
+repair a historical missing outcome or remove any existing files.
+
 ## Pending usable integration
 
 Code Editor's typed continuation projects its active durable buffer identity,
