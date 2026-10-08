@@ -1,4 +1,9 @@
 #include "needle.h"
+#include <unistd.h>
+__attribute__((constructor(101))) static void early_phase() {
+ const char message[] = "WHISTLE_PHASE early_program_constructor\n";
+ (void)write(STDOUT_FILENO, message, sizeof(message)-1);
+}
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -27,6 +32,7 @@ static void emit(const char * kind, int session, double wall, double inference,
     std::fflush(stdout);
 }
 int main(int argc, char ** argv) try {
+    std::puts("WHISTLE_PHASE main_entered"); std::fflush(stdout);
     if (argc != 4) return 2;
     const std::array<const char *, 7> languages{"en", "de", "fr", "es", "it", "nl", "pl"};
     if (std::none_of(languages.begin(), languages.end(), [&](const char * value) {
@@ -44,6 +50,7 @@ int main(int argc, char ** argv) try {
     if (!input || std::any_of(audio.begin(), audio.end(), [](float value) {
         return !std::isfinite(value) || value < -1 || value > 1;
     })) return 5;
+    std::puts("WHISTLE_PHASE before_needle_load"); std::fflush(stdout);
     const auto loading = Clock::now();
     if (needle_load(model.data(), model.size()) < 0 || !(needle_models() & NEEDLE_SPEECH)) return 6;
     std::printf("WHISTLE_LOAD {\"native_ms\":%.6f}\n", ms(loading));

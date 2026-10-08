@@ -371,5 +371,7 @@
       "No Whistle, .cact or needle_stream_transcribe symbol appears in these five files. This limited audit establishes no compatibility or complete native source provenance.",
       "No source from this repository is incorporated, built or used to replace the pinned runtime."
     ]
-  }
+  },
+  "followup": "dictation-whistle-paced-review.json distinguishes the earlier static archive from current wrapper-selected 3.2.0 shared runtime and locates both strict guard refusals before audio submission; original failures retained.",
+  "source_fixture_revision_note": "source_fixture_sha256 identifies the original adapter used here. The current file adds phase markers, recorded separately in the follow-up; it does not rewrite these historical receipts."
 }
