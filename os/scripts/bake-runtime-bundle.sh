@@ -41,6 +41,8 @@
 #                       must exist -- a typo is an error, not a silent skip,
 #                       because a bundle missing the toolkit produces a thin
 #                       app that dies at exec with an unresolved soname.
+#   DEPENDENCY_OBJECTS_FILE newline-separated built ELF paths whose native
+#                       dependencies must also be signed (for thin apps).
 #
 # Called from os/build.sh via `--bake-runtime` before the container build.
 # Callable stand-alone during dev — the output tree can then be COPYied
@@ -98,11 +100,31 @@ msg "baking runtime $RUNTIME_RELEASE under $OUT_DIR/tilo-runtime (arch=$ARCH, fr
 # Shared objects to fold in beside the loader/libc set. Checked before the
 # bake so a missing toolkit is reported here rather than at an app's exec.
 INCLUDE_ARGS=()
+dependency_objects=()
+dependency_dirs=()
 for lib in $EXTRA_LIBS; do
     [ -f "$lib" ] || die "EXTRA_LIBS entry does not exist: $lib"
     INCLUDE_ARGS+=(--include "$lib")
+    dependency_objects+=("$lib")
+    dependency_dirs+=(--library-dir "$(dirname "$lib")")
     msg "including shared object: $lib"
 done
+if [ -n "${DEPENDENCY_OBJECTS_FILE:-}" ]; then
+    [ -f "$DEPENDENCY_OBJECTS_FILE" ] || die "dependency objects file is absent"
+    while IFS= read -r object; do
+        [ -n "$object" ] && dependency_objects+=("$object")
+    done < "$DEPENDENCY_OBJECTS_FILE"
+fi
+if [ "${#dependency_objects[@]}" -gt 0 ]; then
+    # Capture the exit status before consuming output: process substitution
+    # would hide an ldd failure and let an incomplete runtime be signed.
+    dependencies=$(python3 "$SCRIPT_DIR/collect-runtime-dependencies.py" \
+        "${dependency_dirs[@]}" "${dependency_objects[@]}") \
+        || die "cannot sign an incomplete native dependency closure"
+    while IFS= read -r dependency; do
+        INCLUDE_ARGS+=(--include "$dependency")
+    done <<< "$dependencies"
+fi
 
 rm -rf "$OUT_DIR/tilo-runtime"
 "$BUNDLE_BIN" build \
