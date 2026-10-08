@@ -4,6 +4,7 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
+pub(crate) mod person_layout;
 mod receive_recovery;
 mod remote_capture;
 mod window_views;
@@ -6734,6 +6735,7 @@ pub fn observed_device_displays(
 }
 
 fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    person_layout::refresh(network, policy);
     let Ok((publisher_pid, publisher_start_ticks)) = settings_store::hardware::publisher_identity()
     else {
         return;
@@ -7840,6 +7842,89 @@ mod tests {
             y: 720,
         };
         (fabric, local, peer, request)
+    }
+
+    #[test]
+    fn shared_pointer_layout_retains_checked_origins_and_observed_output_offsets() {
+        use crate::shell::device_fabric::DisplayOutputObservation;
+        use settings_store::person_displays::{Arrangement, DeviceOutput};
+        let (mut fabric, local, remote, _) = drag_pair();
+        let unknown = person_layout::resolve(&fabric, &local, Arrangement::default());
+        assert!(unknown.layout.displays.is_empty());
+        assert_eq!(unknown.legacy_targets, vec![remote.clone()]);
+        // Negative local output origins must not turn a device bounding box
+        // into its desktop origin. Both the admitted connector and rich facts
+        // report the same desktop-relative coordinate.
+        for owner in [&local, &remote] {
+            let mut snapshot = fabric.snapshots().get(owner).unwrap().clone();
+            snapshot.display.as_mut().unwrap().stamp.counter += 1;
+            snapshot.presence.stamp.counter += 1;
+            snapshot.display.as_mut().unwrap().outputs[0].rect.x = -120;
+            let display = snapshot.display.as_ref().unwrap().clone();
+            fabric.upsert(snapshot).unwrap();
+            let connector = &display.outputs[0];
+            fabric
+                .observe_display_outputs(
+                    owner,
+                    &display.stamp,
+                    vec![DisplayOutputObservation {
+                        connector: connector.connector.clone(),
+                        output: DeviceOutput {
+                            id: format!("monitor:{}", owner.as_str()),
+                            name: "Panel".into(),
+                            builtin: true,
+                            x: connector.rect.x,
+                            y: connector.rect.y,
+                            width: connector.rect.width,
+                            height: connector.rect.height,
+                            mode_width: 1600,
+                            mode_height: 900,
+                            refresh_mhz: 60_000,
+                            scale_milli: connector.scale_milli,
+                            connected: true,
+                            enabled: true,
+                        },
+                    }],
+                )
+                .unwrap();
+        }
+        let view = person_layout::resolve(&fabric, &local, Arrangement::default());
+        assert!(view.legacy_targets.is_empty());
+        let local_display = view
+            .layout
+            .find(local.as_str(), &format!("monitor:{}", local.as_str()))
+            .unwrap();
+        let remote_display = view
+            .layout
+            .find(remote.as_str(), &format!("monitor:{}", remote.as_str()))
+            .unwrap();
+        assert_eq!(local_display.local_rect.x, -120);
+        assert_eq!(local_display.rect.x, -120);
+        assert_eq!(remote_display.local_rect.x, -120);
+        assert_eq!(remote_display.rect.x, 1160);
+        assert_eq!(remote_display.to_device((1160.5, 40.25)), (-119.5, 40.25));
+        assert_eq!(remote_display.to_shared((-119.5, 40.25)), (1160.5, 40.25));
+        // The checked target-owned placement remains the anchor until an
+        // explicit arrangement pins this device elsewhere.
+        let mut snapshot = fabric.snapshots().get(&remote).unwrap().clone();
+        let display = snapshot.display.as_mut().unwrap();
+        display.rect.x = 2000;
+        display.stamp.counter += 1;
+        snapshot.presence.stamp.counter += 1;
+        let stamp = display.stamp.clone();
+        let facts = fabric.display_outputs(&remote).unwrap().to_vec();
+        fabric.upsert(snapshot).unwrap();
+        fabric
+            .observe_display_outputs(&remote, &stamp, facts)
+            .unwrap();
+        assert!(
+            !view.is_current(&fabric, &local),
+            "a stale pointer layout must stop routing immediately"
+        );
+        let moved = person_layout::resolve(&fabric, &local, Arrangement::default());
+        assert!(moved.is_current(&fabric, &local));
+        assert!(!moved.is_current(&fabric, &remote));
+        assert_eq!(moved.layout.device_bounds(remote.as_str()).unwrap().x, 1880);
     }
 
     #[test]
