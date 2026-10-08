@@ -956,7 +956,8 @@ pub struct CreateArgs {
     /// `[user@]host[:port]` when the adapter cannot discover it.
     #[arg(long)]
     pub ssh: Option<String>,
-    /// Host port forwarded to the guest's SSH (libvirt, qemu).
+    /// Host port forwarded to the guest's SSH (libvirt, qemu, whpx).
+    /// Defaults to the first unregistered, available port from 2222.
     #[arg(long)]
     pub ssh_port: Option<u16>,
     /// UTM VM to clone.
