@@ -115,6 +115,23 @@ def receive(stream, size):
     return bytes(data)
 
 
+def projector_events(path):
+    """The service events the `connect` client printed, one JSON value per line."""
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def has_event(path, kind, timeout=0.0):
+    deadline = time.monotonic() + timeout
+    while True:
+        if any(isinstance(event, dict) and kind in event for event in projector_events(path)):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
 def file_sha256(path):
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
@@ -208,10 +225,23 @@ def main():
         env = os.environ.copy()
         env.update(TILO_PROJECTOR_RUNTIME_DIR=str(session), XDG_RUNTIME_DIR=str(root))
         log = (root / "projector.log").open("wb")
-        process = subprocess.Popen([str(binary), "_session", "--protocol", "chromecast",
-            "--address", "127.0.0.1", "--port", str(listener.getsockname()[1]),
-            "--device", "isolated fixture"], env=env, stdout=log, stderr=log, start_new_session=True)
+        events = root / "events.jsonl"
+        events_log = events.open("wb")
+        # The production service, then a control-socket client that owns the
+        # session for as long as it stays connected.
+        service = subprocess.Popen([str(binary), "serve"], env=env, stdout=log, stderr=log,
+            start_new_session=True)
+        process = None
         try:
+            control_socket = session / "control.sock"
+            deadline = time.monotonic() + 10
+            while not control_socket.exists() and service.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert control_socket.exists(), "projector service must listen on its control socket"
+            process = subprocess.Popen([str(binary), "connect", "--protocol", "chromecast",
+                "--address", "127.0.0.1", "--port", str(listener.getsockname()[1]),
+                "--device", "isolated fixture"], env=env, stdout=events_log, stderr=log,
+                start_new_session=True)
             deadline = time.monotonic() + 20
             while not (loaded.is_set() if args.legacy_transport_only else disconnected.is_set()) and time.monotonic() < deadline and process.poll() is None and not errors:
                 time.sleep(0.1)
@@ -223,8 +253,8 @@ def main():
                 assert not thread.is_alive() and not errors, errors
                 assert observed == [(PREFIX + "tp.deviceauth", "DEVICE_AUTH_CHALLENGE")]
                 assert not loaded.is_set() and not fetched, "no media URL or HLS fetch after failed authentication"
-                assert not (session / "ready").exists(), "failed authentication must not report streaming"
-                assert not (session / "session.pid").exists(), "failed session must release its runtime ownership"
+                assert not has_event(events, "Connected"), "failed authentication must not report streaming"
+                assert has_event(events, "Ended"), "failed session must end"
                 report = {"schema": 2, "artifact_sha256": file_sha256(binary), "tls": tls, "messages": observed,
                           "fetched": fetched, "receiver_authenticated": False, "device_auth_challenge_observed": True,
                           "control_or_media_before_authentication": False, "media_url_disclosed": False,
@@ -234,13 +264,16 @@ def main():
                 print("PASS real projector DeviceAuth challenge, fail-closed disconnect, no readiness/control/media URL")
                 return
             assert loaded.is_set(), "production LOAD and protected HLS fetch must be observed"
-            assert (session / "ready").is_file(), "real projector must publish readiness"
-            (session / "stop").write_bytes(b"stop")
+            assert has_event(events, "Connected", timeout=5), "real projector must report the session connected"
+            subprocess.run([str(binary), "disconnect"], env=env, stdout=log, stderr=log, check=True, timeout=15)
             assert process.wait(timeout=15) == 0, "production projector must stop successfully"
             assert disconnected.wait(5), "TLS receiver must observe sender disconnect"
             thread.join(timeout=5)
             assert not thread.is_alive() and not errors, errors
-            assert not (session / "ready").exists() and not (session / "session.pid").exists()
+            assert {"Ended": {"device_id": "Google Cast:127.0.0.1", "error": None}} in projector_events(events), \
+                "the session must end without an error"
+            assert not {"ready", "stop", "error", "session.pid"} & {p.name for p in session.glob("*")}, \
+                "session state travels as events, never as runtime files"
             report = {"schema": 1, "artifact_sha256": file_sha256(binary), "tls": tls, "messages": observed, "fetched": fetched,
                       "receiver_authenticated": False,
                       "device_auth_challenge_observed": any(namespace == PREFIX + "tp.deviceauth" for namespace, _ in observed),
@@ -251,20 +284,28 @@ def main():
             print("PASS real Cast TLS control, tokenized HLS isolation and clean disconnect; endpoint authentication unqualified")
         except BaseException:
             log.flush()
-            print("OBSERVATIONS", {"tls": tls, "messages": observed, "errors": [str(e) for e in errors], "process": process.poll(), "markers": sorted(p.name for p in session.glob("*"))})
-            if (session / "error").exists():
-                print("SESSION ERROR", (session / "error").read_text())
+            print("OBSERVATIONS", {"tls": tls, "messages": observed, "errors": [str(e) for e in errors],
+                "process": process.poll() if process else None, "service": service.poll(),
+                "files": sorted(p.name for p in session.glob("*"))})
+            print("SESSION EVENTS", projector_events(events))
             print((root / "projector.log").read_text(errors="replace")[-4000:])
             raise
         finally:
             for sig in (signal.SIGTERM, signal.SIGKILL):
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(process.pid, sig)
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    process.wait(timeout=5)
+                for child in (process, service):
+                    if child is None:
+                        continue
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(child.pid, sig)
+                for child in (process, service):
+                    if child is None:
+                        continue
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        child.wait(timeout=5)
             listener.close()
             thread.join(timeout=20)
             log.close()
+            events_log.close()
             assert not thread.is_alive(), "fixture receiver must be reaped"
 
 

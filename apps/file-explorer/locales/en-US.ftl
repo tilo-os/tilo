@@ -356,6 +356,7 @@ files-place-favorites = Favorites
 files-place-system = Locations
 files-place-root = Root
 files-place-trash = Trash
+files-trash-unavailable = Trash is unavailable on this device.
 files-place-workspace = Workspace
 files-place-documents = Documents
 files-place-downloads = Downloads
@@ -612,3 +613,13 @@ files-menu-recover-transfers = Recover interrupted transfers
 files-clipboard-redone = Paste restored.
 
 files-clipboard-cancelled = File transfer cancelled. Recover interrupted transfers before retrying.
+
+files-invalid-destination-name = The destination must be one file name.
+
+files-native-restore-select-one = Select one home Trash entry to restore. Other items are unchanged.
+
+files-history-paste-files = Paste files
+files-history-restore-file = Restore file
+
+files-native-trash-delete-unavailable = These items can be restored. Permanent deletion is unavailable here.
+files-user-trash-unavailable = Your Trash isn’t available in this workspace.

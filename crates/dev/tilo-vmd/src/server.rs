@@ -18,23 +18,75 @@ struct Header {
 /// Only transport failures; request failures become error responses.
 pub fn serve(
     daemon: &mut Daemon,
-    input: impl BufRead,
+    mut input: impl BufRead,
     mut output: impl Write,
 ) -> std::io::Result<()> {
-    for line in input.lines() {
-        let line = zeroize::Zeroizing::new(line?);
+    loop {
+        let mut line = zeroize::Zeroizing::new(String::new());
+        if input.read_line(&mut line)? == 0 {
+            break;
+        }
         if line.trim().is_empty() {
             continue;
         }
-        let response = handle_line(daemon, &line);
-        serde_json::to_writer(&mut output, &response).map_err(std::io::Error::other)?;
-        output.write_all(b"\n")?;
-        output.flush()?;
+        let (response, is_binary) = handle_request(daemon, &line);
+        let binary = if is_binary {
+            response.result.as_ref()
+        } else {
+            None
+        }
+        .and_then(|value| {
+            serde_json::from_value::<tilo_vm_protocol::LayerUploadBeginResult>(value.clone()).ok()
+        });
+        if let Err(error) = reply(&mut output, &response) {
+            if let Some(binary) = binary {
+                daemon.cancel_upload(&binary.upload);
+            }
+            return Err(error);
+        }
+        if let Some(binary) = binary {
+            let (result, boundary) = daemon.receive_binary(&binary.upload, &mut input);
+            if !boundary {
+                return Err(result
+                    .err()
+                    .unwrap_or_else(|| std::io::Error::other("binary upload lost framing")));
+            }
+            let (result, error) = match result {
+                Ok(received) => (Some(serde_json::json!({"received":received})), None),
+                Err(_) => (
+                    None,
+                    Some(
+                        DaemonError::InvalidParams(
+                            "binary upload cancelled or failed integrity verification".into(),
+                        )
+                        .to_rpc(),
+                    ),
+                ),
+            };
+            if let Err(error) = reply(
+                &mut output,
+                &ResponseEnvelope {
+                    jsonrpc: "2.0".into(),
+                    id: response.id,
+                    result,
+                    error,
+                },
+            ) {
+                daemon.cancel_upload(&binary.upload);
+                return Err(error);
+            }
+        }
     }
     Ok(())
 }
 
-fn handle_line(daemon: &mut Daemon, line: &str) -> ResponseEnvelope {
+fn reply(output: &mut impl Write, response: &ResponseEnvelope) -> std::io::Result<()> {
+    serde_json::to_writer(&mut *output, response).map_err(std::io::Error::other)?;
+    output.write_all(b"\n")?;
+    output.flush()
+}
+
+fn handle_request(daemon: &mut Daemon, line: &str) -> (ResponseEnvelope, bool) {
     let reply = |id, outcome: Result<serde_json::Value, DaemonError>| match outcome {
         Ok(result) => ResponseEnvelope {
             jsonrpc: "2.0".into(),
@@ -51,14 +103,28 @@ fn handle_line(daemon: &mut Daemon, line: &str) -> ResponseEnvelope {
     };
     let id = serde_json::from_str::<Header>(line).map_or(0, |header| header.id);
     match serde_json::from_str::<RequestEnvelope>(line) {
-        Ok(envelope) => reply(id, daemon.handle(envelope.request)),
-        Err(_) => reply(
-            id,
-            Err(DaemonError::InvalidParams(
-                "invalid request encoding or arguments".into(),
-            )),
+        Ok(envelope) => {
+            let binary = matches!(
+                &envelope.request,
+                tilo_vm_protocol::Request::LayerUploadBinary(_)
+            );
+            (reply(id, daemon.handle(envelope.request)), binary)
+        }
+        Err(_) => (
+            reply(
+                id,
+                Err(DaemonError::InvalidParams(
+                    "invalid request encoding or arguments".into(),
+                )),
+            ),
+            false,
         ),
     }
+}
+
+#[cfg(test)]
+fn handle_line(daemon: &mut Daemon, line: &str) -> ResponseEnvelope {
+    handle_request(daemon, line).0
 }
 
 #[cfg(test)]
@@ -118,5 +184,94 @@ mod tests {
                     .contains("private-fixture-answer")
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "wire fixtures assert the authenticated production RPC loop"
+)]
+mod binary_tests {
+    use super::*;
+    fn input() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for request in [
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":tilo_vm_protocol::PROTOCOL_VERSION,"client_version":"fixture"}}),
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"layer.upload.binary","params":{}}),
+        ] {
+            serde_json::to_writer(&mut bytes, &request).unwrap();
+            bytes.push(b'\n');
+        }
+        bytes
+    }
+    fn daemon(root: &std::path::Path) -> Daemon {
+        Daemon::new(
+            root,
+            Box::new(crate::apply::RecordingApply::default()),
+            None,
+            tilo_vm_protocol::BaseInfo::default(),
+        )
+    }
+    #[test]
+    fn binary_bad_hash_cancel_and_disconnect_remove_partial_uploads() {
+        for mode in ["hash", "cancel", "disconnect", "oversize"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut daemon = daemon(dir.path());
+            let mut bytes = input();
+            let mut body = Vec::new();
+            let mut encoder = tilo_vm_protocol::binary::Encoder::new(&mut body);
+            encoder.write_all(&vec![19; 2 << 20]).unwrap();
+            if mode == "cancel" {
+                encoder.cancel().unwrap();
+            } else {
+                encoder.finish().unwrap();
+            }
+            if mode == "hash" {
+                *body.last_mut().unwrap() ^= 1;
+            }
+            if mode == "disconnect" {
+                body.truncate(body.len().saturating_sub(10));
+            }
+            if mode == "oversize" {
+                body = u32::MAX.saturating_sub(1).to_be_bytes().to_vec();
+            }
+            bytes.extend(body);
+            if matches!(mode, "hash" | "cancel") {
+                bytes.extend(
+                    b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"layer.list\",\"params\":{}}\n",
+                );
+            }
+            let mut output = Vec::new();
+            let result = serve(&mut daemon, bytes.as_slice(), &mut output);
+            assert_eq!(
+                std::fs::read_dir(dir.path().join("uploads"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+            if matches!(mode, "hash" | "cancel") {
+                result.unwrap();
+                let responses: Vec<ResponseEnvelope> = output
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| serde_json::from_slice(line).unwrap())
+                    .collect();
+                assert_eq!(responses.len(), 4);
+                assert!(responses[2].error.is_some());
+                assert_eq!(responses[3].id, 3);
+            } else {
+                assert!(result.is_err());
+            }
+        }
+    }
+    #[test]
+    fn binary_upgrade_still_requires_the_matching_hello() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon(dir.path());
+        let request =
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"layer.upload.binary\",\"params\":{}}";
+        assert!(handle_line(&mut daemon, request).error.is_some());
+        assert!(!dir.path().join("uploads").exists());
     }
 }

@@ -158,6 +158,41 @@ pub struct Entry {
     pub author: String,
 }
 
+/// The fields of an [`Entry`] that serve FUSE attributes and content reads.
+#[derive(Clone, Copy, Debug)]
+struct NodeMeta {
+    record_id: FileRecordId,
+    kind: NodeKind,
+    hash: Option<Hash>,
+    size: u64,
+    mtime: u64,
+}
+
+/// What [`Namespace::inode_view`] is asked for.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct InodeQuery {
+    /// Also describe an inode no longer reachable from the root, as a kernel
+    /// handle opened before its unlink or replacement may.
+    pub unlinked: bool,
+    /// Build the inode's absolute path, for the ACL check.
+    pub path: bool,
+}
+
+/// One inode as a single FUSE request sees it, read under one namespace
+/// lock. See [`Namespace::inode_view`].
+#[derive(Clone, Debug)]
+pub(crate) struct InodeView {
+    pub attr: FileAttr,
+    pub hash: Option<Hash>,
+    /// Reachable from the root, as [`Namespace::getattr`] requires.
+    pub live: bool,
+    /// The absolute path, when asked for and the inode is live.
+    pub path: Option<String>,
+    /// A CRDT-backed document whose bytes are its export: a codec under the
+    /// legacy content authority.
+    pub document: bool,
+}
+
 /// One authoritative, path-current row in the namespace-owned record index.
 ///
 /// The record UUID is the durable identity. `path` is deliberately projection
@@ -1167,28 +1202,52 @@ impl Namespace {
 
     fn entry(&self, id: &str) -> Option<Entry> {
         let obj = self.node(id)?;
-        let record_id = self.record_id_for_id(id)?;
-        let revision = self.content_revision_for_id(id);
+        let meta = self.node_meta_at(id, &obj)?;
         Some(Entry {
             id: id.to_string(),
-            record_id,
+            record_id: meta.record_id,
             parent: read_str(&self.doc, &obj, "parent").unwrap_or_default(),
             name: read_name(&self.doc, &obj, "name").unwrap_or_default(),
-            kind: NodeKind::from_str(&read_str(&self.doc, &obj, "kind").unwrap_or_default()),
+            kind: meta.kind,
+            hash: meta.hash,
+            size: meta.size,
+            mtime: meta.mtime,
+            author: read_str(&self.doc, &obj, "author").unwrap_or_default(),
+        })
+    }
+
+    /// The fields of [`Self::entry`] a FUSE request needs, read from the
+    /// node once: no parent, name or author strings, and the record id and
+    /// content revision resolved without looking the node up again.
+    fn node_meta(&self, id: &str) -> Option<NodeMeta> {
+        self.node_meta_at(id, &self.node(id)?)
+    }
+
+    /// [`Self::node_meta`] of the node object `obj` for `id`. A node with no
+    /// record id has no entry, exactly as [`Self::entry`] requires.
+    fn node_meta_at(&self, id: &str, obj: &ObjId) -> Option<NodeMeta> {
+        let record_id = if id == ROOT_ID {
+            self.record_id_for_id(id)?
+        } else {
+            FileRecordId(Uuid::parse_str(&read_str(&self.doc, obj, RECORD_ID_KEY)?).ok()?)
+        };
+        let revision = self.content_revision_of(obj, record_id);
+        Some(NodeMeta {
+            record_id,
+            kind: NodeKind::from_str(&read_str(&self.doc, obj, "kind").unwrap_or_default()),
             hash: match (self.content_authority, revision) {
                 (_, Some(revision)) => revision.content_hash.map(|hash| Hash::from(hash.0)),
                 (ContentAuthority::SignedRecords, None) => None,
                 (ContentAuthority::LegacyNamespace, None) => {
-                    read_str(&self.doc, &obj, "hash").and_then(|h| hash_from_hex(&h))
+                    read_str(&self.doc, obj, "hash").and_then(|h| hash_from_hex(&h))
                 }
             },
             size: match (self.content_authority, revision) {
                 (_, Some(revision)) => revision.byte_len,
                 (ContentAuthority::SignedRecords, None) => 0,
-                (ContentAuthority::LegacyNamespace, None) => read_u64(&self.doc, &obj, "size"),
+                (ContentAuthority::LegacyNamespace, None) => read_u64(&self.doc, obj, "size"),
             },
-            mtime: read_u64(&self.doc, &obj, "mtime"),
-            author: read_str(&self.doc, &obj, "author").unwrap_or_default(),
+            mtime: read_u64(&self.doc, obj, "mtime"),
         })
     }
 
@@ -1931,6 +1990,26 @@ impl Namespace {
         self.raw_content_revision_for_id(id)
     }
 
+    /// [`Self::content_revision_for_id`] for a node whose object and record
+    /// id the caller has already read.
+    fn content_revision_of(
+        &self,
+        obj: &ObjId,
+        record_id: FileRecordId,
+    ) -> Option<ContentRevisionV1> {
+        if self.content_authority == ContentAuthority::SignedRecords {
+            return self
+                .verified_records
+                .get(&record_id)
+                .map(|projection| projection.revision);
+        }
+        let revision = match self.doc.get(obj, CONTENT_REVISION_KEY) {
+            Ok(Some((Value::Scalar(value), _))) => revision_from_scalar(value.as_ref())?,
+            _ => return None,
+        };
+        (revision.record_id == record_id).then_some(revision)
+    }
+
     fn raw_content_revision_for_id(&self, id: &str) -> Option<ContentRevisionV1> {
         let obj = self.node(id)?;
         let revision = match self.doc.get(&obj, CONTENT_REVISION_KEY) {
@@ -2161,27 +2240,27 @@ impl Namespace {
     }
 
     pub fn getattr(&self, ino: u64) -> Option<FileAttr> {
-        let id = self.ino_to_id.get(&ino)?.clone();
+        let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
             return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
         }
-        if !self.reaches_root(&id) {
+        if !self.reaches_root(id) {
             return None;
         }
-        let e = self.entry(&id)?;
-        Some(Self::attr_for(ino, e.kind, e.size, e.mtime))
+        let meta = self.node_meta(id)?;
+        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
     }
 
     /// Attribute lookup for a kernel file handle whose directory entry has
     /// since been unlinked or replaced. Path lookup must continue using
     /// [`Self::getattr`]; only an already-open handle may reach this view.
     pub(crate) fn getattr_including_unlinked(&self, ino: u64) -> Option<FileAttr> {
-        let id = self.ino_to_id.get(&ino)?.clone();
+        let id = self.ino_to_id.get(&ino)?;
         if id == ROOT_ID {
             return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
         }
-        let entry = self.entry(&id)?;
-        Some(Self::attr_for(ino, entry.kind, entry.size, entry.mtime))
+        let meta = self.node_meta(id)?;
+        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
     }
 
     /// [`Self::getattr`] and [`Self::hash_for`] of a live node, reading it
@@ -2194,8 +2273,51 @@ impl Namespace {
         if !self.reaches_root(id) {
             return None;
         }
-        let e = self.entry(id)?;
-        Some((Self::attr_for(ino, e.kind, e.size, e.mtime), e.hash))
+        let meta = self.node_meta(id)?;
+        Some((
+            Self::attr_for(ino, meta.kind, meta.size, meta.mtime),
+            meta.hash,
+        ))
+    }
+
+    /// Everything one FUSE request asks about `ino`, read in one pass so the
+    /// caller takes the namespace lock once: what [`Self::getattr`] (or,
+    /// with `unlinked`, [`Self::getattr_including_unlinked`]),
+    /// [`Self::hash_for`], [`Self::path_for`] and [`Self::document_codec`]
+    /// would each answer. The path is only built when `query.path` asks for
+    /// it — a mount without an ACL never looks at it.
+    ///
+    /// `None` when [`Self::getattr`] is `None` and either `unlinked` is not
+    /// set or the inode is unknown.
+    pub(crate) fn inode_view(&self, ino: u64, query: InodeQuery) -> Option<InodeView> {
+        let id = self.ino_to_id.get(&ino)?;
+        if id == ROOT_ID {
+            return Some(InodeView {
+                attr: Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0),
+                hash: None,
+                live: true,
+                path: query.path.then(|| "/".to_string()),
+                document: false,
+            });
+        }
+        let live = self.reaches_root(id);
+        if !live && !query.unlinked {
+            return None;
+        }
+        let obj = self.node(id)?;
+        let meta = self.node_meta_at(id, &obj)?;
+        Some(InodeView {
+            attr: Self::attr_for(ino, meta.kind, meta.size, meta.mtime),
+            hash: meta.hash,
+            live,
+            path: if live && query.path {
+                self.path_for_id(id)
+            } else {
+                None
+            },
+            document: self.content_authority == ContentAuthority::LegacyNamespace
+                && read_str(&self.doc, &obj, "codec").is_some(),
+        })
     }
 
     /// The inode and kind of `parent_ino`'s live child `name`: what
@@ -2215,9 +2337,9 @@ impl Namespace {
     pub fn lookup(&mut self, parent_ino: u64, name: impl AsRef<[u8]>) -> Option<FileAttr> {
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
         let child = self.child_named(&parent_id, name)?;
-        let e = self.entry(&child)?;
+        let meta = self.node_meta(&child)?;
         let ino = self.ino_for_id(&child);
-        Some(Self::attr_for(ino, e.kind, e.size, e.mtime))
+        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
     }
 
     pub fn readdir(&mut self, ino: u64) -> Option<Vec<(u64, FileType, FileNameV1)>> {
@@ -2259,7 +2381,7 @@ impl Namespace {
 
     pub fn hash_for(&self, ino: u64) -> Option<Hash> {
         let id = self.ino_to_id.get(&ino)?;
-        self.entry(id)?.hash
+        self.node_meta(id)?.hash
     }
 
     /// `None` only if the document's node map itself has become unwritable
@@ -2588,6 +2710,24 @@ impl Namespace {
     /// Current heads of the document — a cheap change token (e.g. to invalidate a derived export cache).
     pub fn heads(&mut self) -> Vec<automerge::ChangeHash> {
         self.doc.get_heads()
+    }
+
+    /// Whether the document file `ino` (its node: codec and content) changed
+    /// between namespace heads `before` and `after`. The diff walks only
+    /// that node's objects, so a change to another file costs little and
+    /// keeps a derived export valid. Unknown inodes count as changed.
+    pub fn document_changed_between(
+        &mut self,
+        ino: u64,
+        before: &[automerge::ChangeHash],
+        after: &[automerge::ChangeHash],
+    ) -> bool {
+        let Some(node) = self.ino_to_id.get(&ino).and_then(|id| self.node(id)) else {
+            return true;
+        };
+        self.doc
+            .diff_obj(&node, before, after, true)
+            .map_or(true, |patches| !patches.is_empty())
     }
 
     /// Every change this document holds beyond `heads`, as one incremental
@@ -4258,6 +4398,99 @@ mod tests {
         assert_eq!(ns.tree.children, rebuilt.tree.children);
         assert_eq!(ns.record_index_digest, rebuilt.record_index_digest);
         assert_eq!(ns.record_index_revision, rebuilt.record_index_revision);
+    }
+
+    /// `inode_view` is the one-lock read FUSE `read` and `getattr` are served
+    /// from. It must answer exactly what the separate accessors it replaced
+    /// answer, through remote renames, moves, content changes and deletes
+    /// applied by the production merge path.
+    #[test]
+    fn inode_view_matches_the_separate_accessors_after_remote_apply() {
+        let mut source = Namespace::new("source").unwrap();
+        let dir = source.create_dir(ROOT_INO, "dir", 1).unwrap();
+        source
+            .create_file(dir, "a.txt", Some(&h(1)), 10, 1)
+            .unwrap();
+        let b = source
+            .create_file(ROOT_INO, "b.txt", Some(&h(2)), 20, 1)
+            .unwrap();
+        let gone = source
+            .create_file(ROOT_INO, "gone.txt", Some(&h(3)), 30, 1)
+            .unwrap();
+        source
+            .create_document(ROOT_INO, "note.md", "md", 1)
+            .unwrap();
+        let mut peer = Namespace::from_bytes("peer", &source.save()).unwrap();
+        let peer_dir = peer.lookup(ROOT_INO, "dir").unwrap().ino.0;
+        let peer_a = peer.lookup(peer_dir, "a.txt").unwrap().ino.0;
+        let peer_b = peer.lookup(ROOT_INO, "b.txt").unwrap().ino.0;
+        let peer_gone = peer.lookup(ROOT_INO, "gone.txt").unwrap().ino.0;
+        let peer_note = peer.lookup(ROOT_INO, "note.md").unwrap().ino.0;
+        let inos = [
+            ROOT_INO, peer_dir, peer_a, peer_b, peer_gone, peer_note, 9_999,
+        ];
+        for ino in inos {
+            assert_view_matches_accessors(&peer, ino);
+        }
+
+        assert!(source.rename(dir, "a.txt", ROOT_INO, "moved.txt", 2));
+        assert!(source.set_content(b, Some(&h(4)), 40, 2));
+        assert!(source.remove(gone));
+        peer.apply_remote_and_resolve(&source.save_incremental())
+            .unwrap();
+        for ino in inos {
+            assert_view_matches_accessors(&peer, ino);
+        }
+
+        let live = InodeQuery {
+            unlinked: false,
+            path: true,
+        };
+        let moved = peer.inode_view(peer_a, live).unwrap();
+        assert_eq!(moved.path.as_deref(), Some("/moved.txt"));
+        let changed = peer.inode_view(peer_b, live).unwrap();
+        assert_eq!((changed.hash, changed.attr.size), (Some(h(4)), 40));
+        assert!(peer.inode_view(peer_gone, live).is_none());
+        let retained = peer
+            .inode_view(
+                peer_gone,
+                InodeQuery {
+                    unlinked: true,
+                    path: true,
+                },
+            )
+            .unwrap();
+        assert!(!retained.live);
+        assert_eq!(retained.path, None, "a trashed inode has no live path");
+        let note = peer.inode_view(peer_note, live).unwrap();
+        assert!(note.document);
+    }
+
+    fn assert_view_matches_accessors(ns: &Namespace, ino: u64) {
+        for unlinked in [false, true] {
+            for path in [false, true] {
+                let view = ns.inode_view(ino, InodeQuery { unlinked, path });
+                let attr = if unlinked {
+                    ns.getattr_including_unlinked(ino)
+                } else {
+                    ns.getattr(ino)
+                };
+                assert_eq!(view.as_ref().map(|v| v.attr), attr, "attr of {ino}");
+                let Some(view) = view else {
+                    continue;
+                };
+                assert_eq!(view.live, ns.getattr(ino).is_some(), "liveness of {ino}");
+                assert_eq!(view.hash, ns.hash_for(ino), "hash of {ino}");
+                let expected_path = if path { ns.path_for(ino) } else { None };
+                assert_eq!(view.path, expected_path, "path of {ino}");
+                assert_eq!(
+                    view.document,
+                    ns.document_codec(ino).is_some()
+                        && ns.content_authority() == ContentAuthority::LegacyNamespace,
+                    "document of {ino}"
+                );
+            }
+        }
     }
 
     // test-only helper to merge using a fresh loaded copy

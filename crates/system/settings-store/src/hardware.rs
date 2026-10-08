@@ -375,6 +375,9 @@ pub enum DisplayTransactionState {
     Rejected,
 }
 
+/// The section a [`DisplayTransaction`] is stored in, whole.
+pub const DISPLAY_TRANSACTION_SECTION: &str = "display_transaction";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayTransaction {
@@ -568,6 +571,8 @@ pub struct InputHardwareSnapshot {
     /// outlive its compositor.
     pub publisher_start_ticks: u64,
     pub devices: Vec<InputDeviceSnapshot>,
+    /// Last typing keyboard; presentation state, never a saved assignment.
+    pub active_keyboard: Option<String>,
 }
 
 impl InputHardwareSnapshot {
@@ -1152,6 +1157,28 @@ pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
 /// means off.
 pub const TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY: &str = "touchpad_disabled_on_external_mouse";
 
+/// The section of [`RichInputConfig`]: pointer, touchpad and keyboard.
+pub const INPUT_SECTION: &str = "input";
+/// The section of [`DisplayConfig`] and the display toggles below.
+pub const DISPLAY_SECTION: &str = "display";
+
+/// Whether touchpads send events at all ([`TOUCHPAD_ENABLED_KEY`]).
+pub const TOUCHPAD_ENABLED: crate::Key<bool> =
+    crate::Key::new(INPUT_SECTION, TOUCHPAD_ENABLED_KEY, || true);
+/// Mouse keys: the numeric keypad moves the pointer. The Shift+Alt+Num Lock
+/// chord flips it.
+pub const MOUSE_KEYS: crate::Key<bool> =
+    crate::Key::new(crate::magnifier::SECTION, "mouse_keys", || false);
+/// Whether the built-in panel stays put when a convertible is turned (the
+/// Quick Settings rotation tile).
+pub const ROTATION_LOCK: crate::Key<bool> =
+    crate::Key::new(DISPLAY_SECTION, "rotation_lock", || false);
+/// Whether the backlight follows the ambient light sensor.
+pub const AUTO_BRIGHTNESS: crate::Key<bool> =
+    crate::Key::new(DISPLAY_SECTION, "auto_brightness", || false);
+/// Night light (the Quick Settings tile).
+pub const NIGHT_LIGHT: crate::Key<bool> = crate::Key::new(DISPLAY_SECTION, "night_light", || false);
+
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of
 /// these it supports; the compositor asks only for a supported one.
@@ -1279,6 +1306,9 @@ pub struct RichInputConfig {
     pub keyboard_layouts: Vec<String>,
     /// Explicit XKB physical model, bounded to the supported PC geometries.
     pub keyboard_model: String,
+    /// Scoped keyboard choices survive device removal; the default retains legacy fields.
+    #[serde(deserialize_with = "crate::keyboard_sources::lenient_profiles")]
+    pub keyboard_assignments: BTreeMap<String, crate::keyboard_sources::KeyboardProfile>,
     pub compose_key: Option<String>,
     /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
     /// `backspace` turn it into that key.
@@ -1317,6 +1347,7 @@ impl Default for RichInputConfig {
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
             keyboard_model: "pc105".into(),
+            keyboard_assignments: BTreeMap::new(),
             compose_key: None,
             caps_lock: None,
             touchpad_gestures: true,
@@ -3339,6 +3370,7 @@ mod tests {
             publisher_pid,
             publisher_start_ticks,
             devices: vec![pen.clone(), pen],
+            active_keyboard: None,
         };
         live.save_at(&path).unwrap();
         let back = InputHardwareSnapshot::load_at(&path).expect("live publisher");

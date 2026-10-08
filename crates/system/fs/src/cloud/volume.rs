@@ -28,9 +28,9 @@ use std::io::{self, Seek, SeekFrom};
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use cloud_source::tree::Tree;
 use cloud_source::{
@@ -99,6 +99,10 @@ const READAHEAD_MAX: u64 = 16 << 20;
 /// Prefix of ids of items created locally and not uploaded yet. NUL never
 /// occurs in a provider id or a file name.
 const LOCAL_PREFIX: &str = "\u{0}local:";
+/// Default [`VolumeConfig::idle_poll_max`].
+pub const DEFAULT_IDLE_POLL_MAX: Duration = Duration::from_secs(600);
+/// Largest jitter applied to an idle poll wait, in thousandths (±10 %).
+const IDLE_JITTER_PERMILLE: i32 = 100;
 
 /// Account health as the volume sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,6 +171,50 @@ pub struct VolumeConfig {
     /// How often a provider without change notification is asked for
     /// changes while idle.
     pub poll_interval: Duration,
+    /// The longest a provider without a change feed (one whose changes are
+    /// found by walking listings) is left unpolled: every pass that finds
+    /// nothing doubles the wait from `poll_interval` up to this, and a
+    /// change or local activity resets it.
+    pub idle_poll_max: Duration,
+}
+
+/// How long a walking provider waits after `idle_passes` consecutive passes
+/// that changed nothing: `base` doubled per idle pass up to `max`, scaled by
+/// `jitter_permille` (clamped to ±10 %), and never below `base`, so a rate
+/// limit is never polled faster than configured.
+pub fn idle_wait(
+    idle_passes: u32,
+    base: Duration,
+    max: Duration,
+    jitter_permille: i32,
+) -> Duration {
+    let nominal = base
+        .saturating_mul(1_u32.checked_shl(idle_passes).unwrap_or(u32::MAX))
+        .min(max);
+    let jitter = jitter_permille.clamp(-IDLE_JITTER_PERMILLE, IDLE_JITTER_PERMILLE);
+    let factor = u32::try_from(1000_i32.saturating_add(jitter)).unwrap_or(1000);
+    let jittered = nominal
+        .saturating_mul(factor)
+        .checked_div(1000)
+        .unwrap_or(nominal);
+    jittered.clamp(base, max.max(base))
+}
+
+/// A jitter sample in [-`IDLE_JITTER_PERMILLE`, `IDLE_JITTER_PERMILLE`],
+/// so mounts started together do not poll in lockstep.
+fn idle_jitter() -> i32 {
+    use std::hash::BuildHasher;
+    let span = u64::try_from(IDLE_JITTER_PERMILLE)
+        .unwrap_or(0)
+        .saturating_mul(2)
+        .saturating_add(1);
+    let sample = std::hash::RandomState::new()
+        .hash_one(Instant::now())
+        .checked_rem(span)
+        .unwrap_or(0);
+    i32::try_from(sample)
+        .unwrap_or(0)
+        .saturating_sub(IDLE_JITTER_PERMILLE)
 }
 
 /// A queued local change, executed in order.
@@ -243,6 +291,9 @@ struct Inner {
     next_fh: u64,
     /// Folders listed at least once in this process (poll walks).
     listed: HashSet<ItemId>,
+    /// `tree.json` is behind: the tree, the cursor or the pending set
+    /// changed since it was last written.
+    tree_dirty: bool,
 }
 
 impl Inner {
@@ -273,6 +324,12 @@ impl Inner {
         if !self.outbox.contains(&op) {
             self.outbox.push_back(op);
         }
+    }
+
+    /// The tree, for a change `tree.json` must catch up with.
+    fn tree_mut(&mut self) -> &mut Tree {
+        self.tree_dirty = true;
+        &mut self.tree
     }
 }
 
@@ -318,7 +375,11 @@ pub struct CloudVolume {
     /// directory can be opened again.
     content: Mutex<Option<Arc<FileArea>>>,
     poll_interval: Duration,
+    idle_poll_max: Duration,
     inner: Mutex<Inner>,
+    /// Serialises `tree.json` writes, so an older snapshot never lands
+    /// after a newer one.
+    saving: Mutex<()>,
     /// Serialises fetches of one revision so concurrent readers of the same
     /// range download it once.
     flights: Mutex<HashMap<RevKey, Arc<Mutex<()>>>>,
@@ -330,6 +391,11 @@ pub struct CloudVolume {
     wake: Condvar,
     /// Bumped whenever a local change is queued.
     queued: Mutex<u64>,
+    /// Bumped by local activity (listings, opens, queued changes); resets a
+    /// walking provider's idle poll interval.
+    activity: AtomicU64,
+    /// The sync loop is in an idle wait and wants to be woken by activity.
+    idling: AtomicBool,
     stop: AtomicBool,
 }
 
@@ -368,6 +434,7 @@ impl CloudVolume {
             handles: HashMap::new(),
             next_fh: 1,
             listed: HashSet::new(),
+            tree_dirty: false,
         };
         inner.ino_by_id.insert(root.clone(), ROOT_INO);
         inner.id_by_ino.insert(ROOT_INO, root);
@@ -388,7 +455,9 @@ impl CloudVolume {
             staging,
             content,
             poll_interval: config.poll_interval,
+            idle_poll_max: config.idle_poll_max,
             inner: Mutex::new(inner),
+            saving: Mutex::new(()),
             flights: Mutex::new(HashMap::new()),
             uploading: Mutex::new(()),
             health: Mutex::new(None),
@@ -396,6 +465,8 @@ impl CloudVolume {
             on_health,
             wake: Condvar::new(),
             queued: Mutex::new(0),
+            activity: AtomicU64::new(0),
+            idling: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         }))
     }
@@ -446,10 +517,21 @@ impl CloudVolume {
 
     // ---- persistence -------------------------------------------------
 
+    /// Write `tree.json` if the tree or cursor changed since the last
+    /// write. Items and cursor go out together in one atomic write, so a
+    /// crash never leaves a cursor newer than the items it covers.
     fn save_tree(&self) -> io::Result<()> {
-        let bytes = {
-            let inner = self.inner();
-            let file = TreeFile {
+        let _saving = self
+            .saving
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Snapshot under the volume lock; serialise and write without it.
+        let file = {
+            let mut inner = self.inner();
+            if !std::mem::take(&mut inner.tree_dirty) {
+                return Ok(());
+            }
+            TreeFile {
                 items: inner
                     .tree
                     .items()
@@ -457,10 +539,20 @@ impl CloudVolume {
                     .cloned()
                     .collect(),
                 cursor: inner.cursor.clone(),
-            };
-            serde_json::to_vec(&file).map_err(io::Error::other)?
+            }
         };
-        tilo_files::native::atomic::write(&self.dir.join("tree.json"), &bytes)?;
+        let written = serde_json::to_vec(&file)
+            .map_err(io::Error::other)
+            .and_then(|bytes| {
+                tilo_files::native::atomic::write(&self.dir.join("tree.json"), &bytes)
+            });
+        if written.is_err() {
+            self.inner().tree_dirty = true;
+        }
+        written
+    }
+
+    fn flush_content(&self) -> io::Result<()> {
         self.content().map_or(Ok(()), |content| content.flush())
     }
 
@@ -474,7 +566,9 @@ impl CloudVolume {
 
     fn save_local(&self) -> io::Result<()> {
         let bytes = {
-            let inner = self.inner();
+            let mut inner = self.inner();
+            // Which items count as pending decides what `tree.json` holds.
+            inner.tree_dirty = true;
             let file = LocalFile {
                 items: inner
                     .tree
@@ -588,6 +682,7 @@ impl CloudVolume {
         reason = "the listing borrows the tree; attributes need it mutably"
     )]
     pub fn readdir(&self, ino: u64) -> Result<Vec<(String, Attr)>, Errno> {
+        self.touched();
         let mut inner = self.inner();
         let folder = Self::folder_id(&inner, ino)?;
         let children: Vec<(String, ItemId)> = inner
@@ -661,7 +756,7 @@ impl CloudVolume {
                     continue;
                 }
                 Err(Error::NotFound) => {
-                    self.inner().tree.remove(id);
+                    self.inner().tree_mut().remove(id);
                     return Err(libc::ENOENT);
                 }
                 Err(error) => {
@@ -830,6 +925,7 @@ impl CloudVolume {
     }
 
     pub fn open_file(&self, ino: u64, write: bool, truncate: bool) -> Result<u64, Errno> {
+        self.touched();
         let id = {
             let inner = self.inner();
             let id = inner.id(ino)?;
@@ -968,7 +1064,7 @@ impl CloudVolume {
         Self::check_new_name(&inner, &folder, name)?;
         let item = Self::new_local(&folder, name, ItemKind::File);
         let id = item.id.clone();
-        inner.tree.upsert(item);
+        inner.tree_mut().upsert(item);
         inner.local.insert(
             id.clone(),
             Local {
@@ -1003,7 +1099,7 @@ impl CloudVolume {
         let mut item = Self::new_local(&folder, name, ItemKind::Folder);
         item.size = None;
         let id = item.id.clone();
-        inner.tree.upsert(item);
+        inner.tree_mut().upsert(item);
         inner.queue(Op::Mkdir(id.clone()));
         let attr = self.attr_of(&mut inner, &id)?;
         drop(inner);
@@ -1044,7 +1140,7 @@ impl CloudVolume {
                 revision,
             });
         }
-        inner.tree.remove_recursive(id);
+        inner.tree_mut().remove_recursive(id);
     }
 
     fn remove(&self, parent: u64, name: &str, dir: bool) -> Result<(), Errno> {
@@ -1121,7 +1217,7 @@ impl CloudVolume {
             }
         }
         new_name.clone_into(&mut moved.name);
-        inner.tree.upsert(moved);
+        inner.tree_mut().upsert(moved);
         if !is_local(&source.id) {
             inner.queue(Op::Move(source.id));
         }
@@ -1368,13 +1464,13 @@ impl CloudVolume {
             inner.local.remove(id);
             match remote {
                 Some(remote) => {
-                    inner.tree.upsert(remote);
+                    inner.tree_mut().upsert(remote);
                 }
                 None => {
-                    inner.tree.remove(id);
+                    inner.tree_mut().remove(id);
                 }
             }
-            inner.tree.upsert(copy.clone());
+            inner.tree_mut().upsert(copy.clone());
         }
         let key = rev_key(&copy.id, copy.revision.as_ref());
         if let Some(content) = self.content() {
@@ -1445,7 +1541,7 @@ impl CloudVolume {
                 // Keep showing the local bytes' size until they settle.
                 item.size = inner.tree.get(old).and_then(|i| i.size).or(item.size);
             }
-            inner.tree.upsert(item);
+            inner.tree_mut().upsert(item);
             return;
         }
         let children: Vec<Item> = inner
@@ -1454,15 +1550,15 @@ impl CloudVolume {
             .into_iter()
             .map(|(_, child)| child.clone())
             .collect();
-        inner.tree.remove(old);
-        inner.tree.upsert(item);
+        inner.tree_mut().remove(old);
+        inner.tree_mut().upsert(item);
         for mut child in children {
             for parent in &mut child.parents {
                 if parent == old {
                     parent.clone_from(&new);
                 }
             }
-            inner.tree.upsert(child);
+            inner.tree_mut().upsert(child);
         }
         if let Some(ino) = inner.ino_by_id.remove(old) {
             inner.ino_by_id.insert(new.clone(), ino);
@@ -1517,34 +1613,53 @@ impl CloudVolume {
 
     // ---- remote → local --------------------------------------------------
 
-    fn apply_upsert(&self, item: Item) {
+    /// Apply a remote upsert; whether it changed the tree.
+    fn apply_upsert(&self, item: Item) -> bool {
         let mut inner = self.inner();
         if inner.pending(&item.id) {
-            return;
+            return false;
         }
-        if let Some(old) = inner.tree.get(&item.id)
-            && old.revision != item.revision
-            && let Some(content) = self.content()
-        {
-            let _ = content.remove(&rev_key(&old.id, old.revision.as_ref()));
+        if let Some(old) = inner.tree.get(&item.id) {
+            if *old == item {
+                return false;
+            }
+            if old.revision != item.revision
+                && let Some(content) = self.content()
+            {
+                let _ = content.remove(&rev_key(&old.id, old.revision.as_ref()));
+            }
         }
-        inner.tree.upsert(item);
+        inner.tree_mut().upsert(item);
+        true
     }
 
-    fn apply_remove(&self, id: &ItemId) {
+    /// Apply a remote removal; whether it changed the tree.
+    fn apply_remove(&self, id: &ItemId) -> bool {
         let mut inner = self.inner();
         if inner.pending(id) {
-            return;
+            return false;
         }
-        for item in inner.tree.remove_recursive(id) {
+        let removed = inner.tree.remove_recursive(id);
+        if removed.is_empty() {
+            return false;
+        }
+        inner.tree_dirty = true;
+        for item in removed {
             if let Some(content) = self.content() {
                 let _ = content.remove(&rev_key(&item.id, item.revision.as_ref()));
             }
         }
+        true
     }
 
     /// Pull remote changes once: the cursor feed, or a walk of listings.
     pub fn sync_once(&self) -> Result<(), Error> {
+        self.sync_pass().map(|_| ())
+    }
+
+    /// One sync pass; whether it changed the tree or the cursor.
+    /// `tree.json` is written only when it did (or a local change is due).
+    fn sync_pass(&self) -> Result<bool, Error> {
         let result = match self.source.capabilities().change_feed {
             ChangeFeed::Cursor => self.sync_feed(),
             ChangeFeed::Poll => {
@@ -1560,16 +1675,18 @@ impl CloudVolume {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = quota;
         }
         match &result {
-            Ok(()) => self.report(Health::Healthy),
+            Ok(_) => self.report(Health::Healthy),
             Err(error) => self.report(Health::of(error)),
         }
         self.save_tree()?;
+        self.flush_content()?;
         result
     }
 
-    fn sync_feed(&self) -> Result<(), Error> {
+    fn sync_feed(&self) -> Result<bool, Error> {
         let mut cursor = self.inner().cursor.clone();
         let mut seen: Option<HashSet<ItemId>> = None;
+        let mut changed = false;
         loop {
             let page = match self.source.changes(cursor.as_ref()) {
                 Ok(page) => page,
@@ -1583,15 +1700,15 @@ impl CloudVolume {
                 seen = Some(HashSet::new());
             }
             for change in page.changes {
-                match change {
+                changed |= match change {
                     Change::Upsert(item) => {
                         if let Some(seen) = seen.as_mut() {
                             seen.insert(item.id.clone());
                         }
-                        self.apply_upsert(item);
+                        self.apply_upsert(item)
                     }
                     Change::Remove(id) => self.apply_remove(&id),
-                }
+                };
             }
             cursor = Some(page.cursor);
             if !page.has_more {
@@ -1607,16 +1724,23 @@ impl CloudVolume {
                 .map(|item| item.id.clone())
                 .collect();
             for id in stale {
-                self.apply_remove(&id);
+                changed |= self.apply_remove(&id);
             }
         }
-        self.inner().cursor = cursor;
-        Ok(())
+        let mut inner = self.inner();
+        if inner.cursor != cursor {
+            inner.cursor = cursor;
+            inner.tree_dirty = true;
+            changed = true;
+        }
+        drop(inner);
+        Ok(changed)
     }
 
-    fn walk(&self, root: &ItemId) -> Result<(), Error> {
+    fn walk(&self, root: &ItemId) -> Result<bool, Error> {
         let recursive = self.source.capabilities().recursive_folder_revisions;
         let mut pending = vec![root.clone()];
+        let mut changed = false;
         while let Some(folder) = pending.pop() {
             let listing = self.source.list(&folder)?;
             let listed: HashSet<ItemId> = listing.iter().map(|i| i.id.clone()).collect();
@@ -1629,7 +1753,7 @@ impl CloudVolume {
                 .filter(|id| !is_local(id))
                 .collect();
             for id in known.iter().filter(|id| !listed.contains(*id)) {
-                self.apply_remove(id);
+                changed |= self.apply_remove(id);
             }
             for item in listing {
                 if item.is_folder() {
@@ -1646,17 +1770,18 @@ impl CloudVolume {
                         pending.push(item.id.clone());
                     }
                 }
-                self.apply_upsert(item);
+                changed |= self.apply_upsert(item);
             }
             self.inner().listed.insert(folder);
         }
-        Ok(())
+        Ok(changed)
     }
 
     // ---- background work -------------------------------------------------
 
     /// Wake the uploader (a change was queued).
     pub fn kick(&self) {
+        self.activity.fetch_add(1, Ordering::SeqCst);
         let mut queued = self
             .queued
             .lock()
@@ -1664,6 +1789,60 @@ impl CloudVolume {
         *queued = queued.wrapping_add(1);
         drop(queued);
         self.wake.notify_all();
+    }
+
+    /// Note local use of the mount (a listing, an open): a walking provider
+    /// that backed off while idle is polled again within `poll_interval`.
+    pub fn touched(&self) {
+        self.activity.fetch_add(1, Ordering::SeqCst);
+        if self.idling.load(Ordering::SeqCst) {
+            // Taken so the notification cannot fall between the sync loop's
+            // check of `activity` and its wait.
+            let queued = self
+                .queued
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            drop(queued);
+            self.wake.notify_all();
+        }
+    }
+
+    /// The idle wait after a walking pass: up to `wait`, cut to
+    /// `poll_interval` (counted from the start of the wait) once activity
+    /// moves past `seen`; ends early when stopped. Whether there was
+    /// activity.
+    fn wait_idle(&self, wait: Duration, seen: u64) -> bool {
+        let start = Instant::now();
+        let mut queued = self
+            .queued
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.idling.store(true, Ordering::SeqCst);
+        let active = loop {
+            let active = self.activity.load(Ordering::SeqCst) != seen;
+            if self.stop.load(Ordering::SeqCst) {
+                break active;
+            }
+            let limit = if active {
+                wait.min(self.poll_interval)
+            } else {
+                wait
+            };
+            let Some(left) = limit
+                .checked_sub(start.elapsed())
+                .filter(|left| !left.is_zero())
+            else {
+                break active;
+            };
+            queued = self
+                .wake
+                .wait_timeout(queued, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        };
+        self.idling.store(false, Ordering::SeqCst);
+        drop(queued);
+        active
     }
 
     /// Wait up to `timeout` for a change queued after `seen` (or a stop);
@@ -1707,19 +1886,45 @@ impl CloudVolume {
 
     fn sync_loop(&self) {
         let mut backoff = self.poll_interval;
+        let mut idle_passes = 0_u32;
         while !self.stop.load(Ordering::SeqCst) {
-            match self.sync_once() {
-                Ok(()) => backoff = self.poll_interval,
+            let seen = self.activity.load(Ordering::SeqCst);
+            let changed = match self.sync_pass() {
+                Ok(changed) => {
+                    backoff = self.poll_interval;
+                    Some(changed)
+                }
                 Err(error) => {
                     tracing::info!(%error, "cloud sync failed; retrying");
                     backoff = backoff.saturating_mul(2).min(Duration::from_secs(300));
+                    None
                 }
-            }
+            };
             if self.stop.load(Ordering::SeqCst) {
                 return;
             }
-            let notify = self.source.capabilities().notify;
-            if notify == Notify::None || self.health() != Some(Health::Healthy) {
+            let capabilities = self.source.capabilities();
+            let walking =
+                capabilities.change_feed == ChangeFeed::Poll && capabilities.notify == Notify::None;
+            if let (Some(changed), true) = (changed, walking) {
+                // Each pass lists every folder: back off while nothing
+                // changes, and come back on a change or local activity.
+                idle_passes = if changed {
+                    0
+                } else {
+                    idle_passes.saturating_add(1)
+                };
+                let wait = idle_wait(
+                    idle_passes,
+                    self.poll_interval,
+                    self.idle_poll_max,
+                    idle_jitter(),
+                );
+                if self.wait_idle(wait, seen) {
+                    idle_passes = 0;
+                }
+            } else if capabilities.notify == Notify::None || self.health() != Some(Health::Healthy)
+            {
                 self.wait_stop(backoff);
             } else {
                 let cursor = self.inner().cursor.clone();
@@ -1758,6 +1963,7 @@ impl CloudVolume {
         self.kick();
         let _ = self.save_local();
         let _ = self.save_tree();
+        let _ = self.flush_content();
         // Dropping the last handle flushes and closes the cache.
         self.content
             .lock()
@@ -1768,4 +1974,39 @@ impl CloudVolume {
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: Duration = Duration::from_secs(30);
+    const MAX: Duration = Duration::from_secs(600);
+
+    #[test]
+    fn idle_waits_double_from_the_poll_interval_up_to_the_cap() {
+        let waits: Vec<u64> = (0..8)
+            .map(|passes| idle_wait(passes, BASE, MAX, 0).as_secs())
+            .collect();
+        assert_eq!(waits, [30, 60, 120, 240, 480, 600, 600, 600]);
+        assert_eq!(idle_wait(u32::MAX, BASE, MAX, 0), MAX);
+    }
+
+    #[test]
+    fn idle_wait_jitter_is_bounded_and_never_undercuts_the_poll_interval() {
+        assert_eq!(idle_wait(2, BASE, MAX, 100), Duration::from_secs(132));
+        assert_eq!(idle_wait(2, BASE, MAX, -100), Duration::from_secs(108));
+        // Out-of-range jitter is clamped to ±10 %.
+        assert_eq!(idle_wait(2, BASE, MAX, 5000), Duration::from_secs(132));
+        assert_eq!(idle_wait(2, BASE, MAX, -5000), Duration::from_secs(108));
+        // Never faster than configured, never past the cap.
+        assert_eq!(idle_wait(0, BASE, MAX, -100), BASE);
+        assert_eq!(idle_wait(9, BASE, MAX, 100), MAX);
+        // A cap below the poll interval leaves the poll interval in force.
+        assert_eq!(idle_wait(3, BASE, Duration::from_secs(5), 0), BASE);
+        for _ in 0..1000 {
+            let jitter = idle_jitter();
+            assert!((-IDLE_JITTER_PERMILLE..=IDLE_JITTER_PERMILLE).contains(&jitter));
+        }
+    }
 }

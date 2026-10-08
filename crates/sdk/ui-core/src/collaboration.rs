@@ -1673,6 +1673,19 @@ impl CollaborationManager {
             }
     }
 
+    /// Independently sample the existing transport read gates without admission.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub(crate) fn controlled_document_read_phase_for_test(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<serde_json::Value> {
+        if let Backend::Transport(transport) = &self.backend {
+            transport.controlled_document_read_phase_for_test(&route.channel_id())
+        } else {
+            None
+        }
+    }
+
     /// Test-only: whether `route` has resolved its document mode, so a
     /// document mutation on it would be admitted rather than refused.
     #[cfg(test)]
@@ -1775,6 +1788,18 @@ impl CollaborationManager {
             Backend::Disabled("pre-terminal document publication; outcome unknown".into());
         self.awaiting_primary = false;
         self.primary_route.accepted = None;
+    }
+
+    pub(crate) fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.set_document_owner_routes(routes);
+        }
+    }
+
+    pub(crate) fn finish_event_batch(&mut self) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.finish_event_batch();
+        }
     }
 
     /// Drain every event pending on the current backend. Non-blocking.

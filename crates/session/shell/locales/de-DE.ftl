@@ -2227,8 +2227,6 @@ speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 
 # Drahtlose Bildschirmprojektion
 projection-service-unavailable-detail = Der Projektionsdienst ist nicht verfügbar ({ $error }). Prüfe den Tilo-Projektordienst.
-projection-service-exited = Der Projektionsdienst wurde beendet: { $status }
-projection-service-invalid-discovery = Der Projektionsdienst hat ungültige Suchergebnisse geliefert: { $error }
 projection-mode-unsupported = { $device } unterstützt den Modus „{ $mode }“ nicht
 projection-service-unavailable = Der Projektionsdienst ist nicht verfügbar
 projection-service-stopped = Der Projektionsdienst wurde beendet
@@ -2481,5 +2479,14 @@ task-review-retry = Aufgabe erneut versuchen
 task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
 task-review-provider = Aufgabenprüfung
 
+host-history-task-refused-title = Aufgabe konnte nicht geändert werden
+host-history-task-refused-body = Der Arbeitsbereich hat diese Änderung nicht angenommen. Ihr Entwurf bleibt erhalten. Prüfen Sie vor einem erneuten Versuch Ihre Identität und die Berechtigungen im Arbeitsbereich.
 shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht verfügbar.
 shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.
+
+shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
+shell-window-retry = Fenster erneut öffnen
+
+device-fabric-error-input-operation-unavailable = Die Eingabesteuerung ist beschäftigt. Versuche es erneut.
+device-fabric-error-input-decline-unavailable = Deine abgelehnten Eingabegeräte konnten nicht gelesen werden.
+device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde widerrufen, aber die Ablehnung konnte nicht gespeichert werden. Automatische Eingabe bleibt deaktiviert.

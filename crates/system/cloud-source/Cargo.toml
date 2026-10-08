@@ -10,8 +10,13 @@ description = "The provider interface behind mounted cloud accounts: items, chan
 
 # Provider crates (WebDAV/Nextcloud, Google Drive, OneDrive, Dropbox, iCloud
 # Drive) implement `CloudSource`; the storage daemon consumes it. This crate
-# stays free of HTTP and TLS so both sides can depend on it cheaply.
+# stays free of HTTP and TLS so both sides can depend on it cheaply: the
+# shared response handling in `http` is pure, over statuses, header values
+# and readers.
 [dependencies]
+# RFC 3339 timestamps and HTTP-dates (`http::parse_rfc3339`,
+# `http::parse_http_date`), as every provider reads them.
+chrono = { workspace = true, features = ["std"] }
 serde.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true

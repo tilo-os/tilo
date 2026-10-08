@@ -1,6 +1,90 @@
 use super::*;
 
 #[test]
+fn repeated_full_size_packets_keep_one_frame_but_events_still_wake() {
+    use std::sync::atomic::AtomicUsize;
+
+    let shared = Arc::new(Shared::default());
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let observed = wakes.clone();
+    *shared.waker.lock().unwrap() = Some(Arc::new(move || {
+        observed.fetch_add(1, Ordering::Relaxed);
+    }));
+    let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let frame = super::super::Frame {
+        trace_id: None,
+        rgba: Arc::new(vec![255; 868 * 772 * 4]),
+        width: 868,
+        height: 772,
+    };
+    let mut packet = Vec::new();
+    protocol::write_tab_frame(&mut packet, 1, &frame).unwrap();
+    let mut retained = None;
+    for _ in 0..40 {
+        let Some(protocol::Packet::TabFrame(tab, decoded)) =
+            protocol::read_packet(&mut std::io::Cursor::new(&packet)).unwrap()
+        else {
+            panic!("expected routed full-size frame");
+        };
+        deliver_frame(&routes, tab, decoded);
+        let pixels = shared.frames.lock().unwrap().as_ref().unwrap().rgba.clone();
+        if let Some(first) = &retained {
+            assert!(Arc::ptr_eq(first, &pixels));
+        } else {
+            retained = Some(pixels);
+        }
+    }
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    shared.event(WebViewEvent::TitleChanged("Updated title".into()));
+    assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    assert!(matches!(
+        shared.events.lock().unwrap().front(),
+        Some(WebViewEvent::TitleChanged(title)) if title == "Updated title"
+    ));
+}
+
+#[test]
+fn unchanged_frames_do_not_wake_or_replace_the_painted_pixels() {
+    use std::sync::atomic::AtomicUsize;
+
+    let shared = Arc::new(Shared::default());
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let observed = wakes.clone();
+    *shared.waker.lock().unwrap() = Some(Arc::new(move || {
+        observed.fetch_add(1, Ordering::Relaxed);
+    }));
+    let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let pixels = Arc::new(vec![255; 8]);
+    let frame = |width, height, rgba, trace_id| super::super::Frame {
+        trace_id,
+        rgba,
+        width,
+        height,
+    };
+    deliver_frame(&routes, 1, frame(2, 1, pixels.clone(), Some(1)));
+    deliver_frame(&routes, 1, frame(2, 1, Arc::new(vec![255; 8]), Some(2)));
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    let retained = shared.frames.lock().unwrap().clone().unwrap();
+    assert!(Arc::ptr_eq(&retained.rgba, &pixels));
+    assert_eq!(retained.trace_id, Some(1));
+
+    let changed = Arc::new(vec![0, 255, 255, 255, 255, 255, 255, 255]);
+    deliver_frame(&routes, 1, frame(2, 1, changed.clone(), Some(3)));
+    assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    assert!(Arc::ptr_eq(
+        &shared.frames.lock().unwrap().as_ref().unwrap().rgba,
+        &changed,
+    ));
+    deliver_frame(&routes, 1, frame(1, 2, changed, Some(4)));
+    assert_eq!(wakes.load(Ordering::Relaxed), 3);
+    let resized = shared.frames.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        (resized.width, resized.height, resized.trace_id),
+        (1, 2, Some(4))
+    );
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario, one labelled phase per merged case"
@@ -1915,6 +1999,13 @@ fn owned_navigation_real_transport_ignores_bootstrap_and_keeps_redirect_owner() 
             .drain_events()
             .iter()
             .any(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
+    );
+    // The helper's input recorder and event emitter run independently.
+    // Observe the real command before permitting its canned terminal events.
+    wait_for_command(
+        &profile,
+        "owned navigation recorded on helper wire",
+        |command| command["op"] == "scoped_navigation" && command["request_id"] == 1,
     );
     std::fs::write(profile.join("emit"), "").unwrap();
     let mut events = Vec::new();

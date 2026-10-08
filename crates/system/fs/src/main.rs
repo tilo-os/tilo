@@ -572,6 +572,11 @@ impl std::fmt::Display for NotGovernor {
 impl std::error::Error for NotGovernor {}
 
 fn main() -> Result<()> {
+    // Before the runtime starts any thread: this executable also serves as
+    // the Automerge worker the conflict merge decodes peer versions in.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        std::process::exit(i32::from(code));
+    }
     // FUSE callbacks poll their futures on the fuser threads via the
     // runtime handle; the workers only serve iroh, sockets and timers.
     let result = tilo_rt::daemon("tilo-fs").run(run_command())?;
@@ -3508,6 +3513,16 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
                 fs
             }
         },
+        None => fs,
+    };
+
+    // Written bytes of open files are staged in sparse files beside the
+    // cache rather than in memory, so a large write never has to fit in RAM.
+    let fs = match predictive_cache_root.as_ref().filter(|_| !read_only) {
+        Some(root) => fs.with_write_stage_dir(
+            root.join("write-stage")
+                .join(checked_history_workspace.to_string()),
+        ),
         None => fs,
     };
 
