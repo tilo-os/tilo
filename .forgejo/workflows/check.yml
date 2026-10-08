@@ -146,6 +146,7 @@ jobs:
       - name: Select and balance affected packages
         id: plan
         env:
+          TILO_CI_BUILDER: ${{ needs.builder.outputs.image }}
           EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_BASE: ${{ steps.merge.outputs.main }}
           PUSH_BEFORE: ${{ github.event.before }}
@@ -436,7 +437,7 @@ jobs:
       # native audit the nightly runs for every app, so a change that breaks
       # an app's Tilo-native contract fails here, not overnight.
       - name: Certify affected apps of shard ${{ matrix.shard }}
-        if: matrix.test_packages != ''
+        if: matrix.test_packages != '' && matrix.certify == true
         env:
           TILO_REQUIRE_GPU: "1"
         run: >-
