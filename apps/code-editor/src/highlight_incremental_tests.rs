@@ -206,3 +206,53 @@ fn representative_fixture_prepend_and_revert_reuse_the_unaffected_functions() {
         "revert reparsed {restored} lines instead of stopping after the changed function"
     );
 }
+
+#[test]
+fn background_batches_match_continuous_grammars_and_cancel_replaced_work() {
+    let pumped = ui::rt::background::Pumped::new();
+    let background = pumped.background();
+    let _scope = background.enter();
+    for (language, opening, closing) in [
+        (Language::Rust, "/*", "*/ let outside = 1;"),
+        (Language::Python, "text = '''", "'''\nprint(text)"),
+        (
+            Language::JavaScript,
+            "let text = `",
+            "`;\nconsole.log(text);",
+        ),
+    ] {
+        let text = std::iter::once(opening.to_owned())
+            .chain((0..30).map(|line| format!("different source line {line}")))
+            .chain([closing.to_owned(), String::new()])
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = std::sync::Arc::new(lines(&text));
+        let mut job = BackgroundHighlights::start(
+            language,
+            std::sync::Arc::clone(&lines),
+            ui::WakeHandle::new(),
+        )
+        .unwrap();
+        let mut spans = Vec::new();
+        assert_eq!(pumped.run_pending(), 1);
+        assert!(job.collect(&mut spans));
+        assert_eq!(spans.len(), 8);
+        while {
+            pumped.run_pending();
+            job.collect(&mut spans)
+        } {}
+        assert_eq!(
+            spans,
+            fresh(language, &lines),
+            "every row agrees with the real continuous grammar"
+        );
+        let abandoned =
+            BackgroundHighlights::start(language, lines, ui::WakeHandle::new()).unwrap();
+        drop(abandoned);
+        assert_eq!(pumped.run_pending(), 1);
+        assert!(
+            pumped.is_idle(),
+            "replacing a buffer schedules no stale continuation"
+        );
+    }
+}
