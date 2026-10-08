@@ -40,7 +40,7 @@ mod buffer_demand_cache;
 use buffer_demand_cache::BufferDemandCache;
 
 /// Stable id prefix for the published project root.
-pub const PROJECT_KIND: &str = "code_editor.project";
+pub const PROJECT_KIND: &str = <CodeEditor as Resource>::KIND;
 
 /// The project: its file and folder records, and the text of the files a
 /// view is showing.
@@ -68,12 +68,23 @@ pub const TERMINAL_RESOURCE_ID: &str = "code_editor.terminal";
 pub struct CodeEditor;
 
 impl Resource for CodeEditor {
-    const KIND: &'static str = PROJECT_KIND;
+    // The normal packager signs literal resource declarations into its manifest.
+    const KIND: &'static str = "code_editor.project";
     const LABEL: &'static str = "Code Editor";
     const ACTION_TYPE: &'static str = CODE_EDITOR_ACTION_TYPE;
+    const AUDITED_LOW_MUTATIONS: bool = true;
 
     type State = ProjectState;
     type Action = CodeEditorAction;
+
+    fn allows_low_mutation(action: &Self::Action) -> bool {
+        matches!(
+            action,
+            CodeEditorAction::ImportEntry { .. }
+                | CodeEditorAction::EnsureBuffer { .. }
+                | CodeEditorAction::EditText(_)
+        )
+    }
 
     fn register(registry: &mut tilo_actions::ActionRegistry) {
         register(registry);

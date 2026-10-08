@@ -8968,6 +8968,7 @@ pub fn run() {
         if let Some(service) = floating_surface_service.as_ref() {
             window_appearances.publish(
                 |app_id| frame_builder.window_appearance_for_app(app_id),
+                frame_builder.configured_app_theme(),
                 |connection, message| service.send(connection, message),
             );
         }
