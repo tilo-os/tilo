@@ -1777,6 +1777,7 @@ settings-printers-jobs-read-error = Druckaufträge können nicht aufgelistet wer
 settings-printers-scanners-read-error = Scanner können nicht aufgelistet werden: { $error }
 agent-key-read-error = Ob ein Schlüssel gespeichert ist, kann nicht festgestellt werden: { $error }
 
+display-host-observation-timeout = Der Status der Bildschirmvorschau konnte nicht aktualisiert werden. Prüfe die aktuelle Konfiguration, bevor du fortfährst.
 shortcut-name-dictation-toggle = Diktat starten oder beenden
 shortcut-name-dictation-finish = Diktat beenden
 shortcut-name-dictation-cancel = Diktat abbrechen
