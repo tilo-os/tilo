@@ -65,6 +65,12 @@ and explicit full-native builds use native amd64 and ARM64 runners. Weekly and d
 PRs run preflight only. Desktop package publication requires a tag.
 No package or artifact definition needs to change if scheduling is paused.
 
+This describes workflow selection, not accepted release support:
+[the install contract](install-contract.json) still marks ARM64 desktop sessions as
+planned. Architecture-specific install/release receipts and the product owner's
+[TIL-359 support-matrix decision](https://linear.app/tilo-os/issue/TIL-359) remain
+separate from enabling the lane.
+
 The Fedora desktop lane also emits a small deterministic OS payload containing
 the same install-tested `shell`, `tilo-launcher`, and `tilo-unlock-helper`
 binaries. A successful `main` build publishes it immutably and advances
