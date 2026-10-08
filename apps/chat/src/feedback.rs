@@ -16,6 +16,7 @@ use crate::{
 const REPORTS: &str = "feedback_reports";
 
 pub(crate) mod receipt_read;
+pub(crate) mod status_read;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -449,6 +450,7 @@ pub fn publish(report: &Report) -> tilo_actions::Resource {
         .bound(),
     )
     .with_action(receipt_read::spec(&report.submission.id))
+    .with_action(status_read::spec(&report.submission.id))
     .with_action(triage_spec(report))
 }
 
