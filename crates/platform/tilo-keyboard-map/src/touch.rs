@@ -2,13 +2,16 @@
 //!
 //! A [`KeyboardLayout`] is just rows of [`Key`]s. Adding AZERTY, QWERTZ, a
 //! Dvorak layer, an emoji layer, … is *data* — build a `KeyboardLayout` and
-//! register it on the widget (see [`crate::widget::OskWidget::with_layout`]).
+//! register it on the OSK widget.
 //! Nothing about rendering, sizing, or input is layout-specific.
 //!
 //! The *same* normalized key positions double as the FUTO
 //! swipe `load_layout_json()` geometry — one source of truth for rendering and
 //! (later) swipe decoding. [`key_rects`] is that single geometry pass;
 //! a swipe decoder can normalise its output rects into 0..1 space.
+
+/// Bundled letter layouts, in their legacy switching order.
+pub const LAYOUT_NAMES: [&str; 2] = ["qwerty", "azerty"];
 
 use ui::icons::Icon;
 use vello::kurbo::Rect;
@@ -307,6 +310,11 @@ impl KeyboardLayout {
             Key::action("Emoji", KeyAction::Emoji, 1.5).with_icon(Icon::Smile),
             Key::action("space", KeyAction::Space, 5.0),
             Key::ch("."),
+            Key::action(
+                if name == "qwerty" { "FR" } else { "EN" },
+                KeyAction::Layout(if name == "qwerty" { "azerty" } else { "qwerty" }.into()),
+                1.5,
+            ),
             Key::action("Return", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
         ]);
         Self {
@@ -570,12 +578,16 @@ impl KeyboardLayout {
 ///   so the keyboard always *fills the available width* and wide keys
 ///   (spacebar = 5.0) scale proportionally. Doubling `area.width` doubles
 ///   every key's width; the target key *height* is chosen by the caller
-///   when it sizes `area` (see [`crate::widget::OskWidget`]).
+///   when it sizes `area`.
 ///
 /// `shift` is accepted for forward-compatibility (a future layout could
 /// vary geometry by shift — e.g. revealing long-press accent rows). The
 /// current built-in layouts are shift-invariant in geometry, so it does
 /// not affect the returned rects today.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "row counts and indices become floating display coordinates; subpixel rounding is inherent in the geometry"
+)]
 pub fn key_rects(layout: &KeyboardLayout, area: Rect, shift: ShiftState) -> Vec<(KeyId, Rect)> {
     // Reserved for shift-dependent geometry (accent rows etc.); the shipped
     // layouts size identically regardless of shift.

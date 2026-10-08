@@ -491,6 +491,8 @@ settings-category-about-subtitle = Geräteidentität und Übertragung
 
 # Users pane
 settings-users-error-title = Diese Änderung konnte nicht übernommen werden
+settings-users-loading-accounts = Konten dieses Geräts werden geladen…
+settings-users-read-disconnected = Die Kontenabfrage wurde vor der Rückmeldung beendet.
 settings-users-add = Benutzer hinzufügen
 settings-users-empty-accounts = Auf diesem Gerät wurden keine normalen Anmeldekonten gefunden.
 settings-users-login-accounts = Anmeldekonten
@@ -1030,6 +1032,8 @@ agent-location-hosted = Gehosteter Anbieter
 agent-location-this-device = Dieses Gerät (lokal)
 agent-location-private = Privates Netzwerk
 sound-output = Ausgabe
+sound-reading-device = Audiogeräte werden gelesen…
+sound-read-failed = Audiogeräte konnten nicht gelesen werden.
 sound-input = Eingabe
 sound-output-device = Ausgabegerät
 sound-input-device = Eingabegerät
@@ -1115,6 +1119,8 @@ sound-notice-profile-err = Audiogeräteprofil konnte nicht geändert werden: { $
 sound-notice-vol-err = Lautstärke konnte nicht geändert werden: { $error }
 sound-notice-test-started = { $channel }-Lautsprechertest gestartet.
 settings-bluetooth-card = Bluetooth
+settings-bluetooth-reading = Bluetooth-Status wird gelesen…
+settings-bluetooth-read-disconnected = Der Bluetooth-Statusleser wurde vor seiner Antwort beendet.
 settings-bluetooth-cancel-pairing = Kopplung abbrechen
 settings-bluetooth-pair = Koppeln
 settings-bluetooth-disconnect = Trennen
@@ -1173,7 +1179,7 @@ settings-bluetooth-forgot = { $name } vergessen.
 settings-bluetooth-forget-failed = { $name } konnte nicht vergessen werden: { $error }
 settings-bluetooth-forget-ask = { $name } vergessen? Das entfernt Bindung und Schlüssel.
 input-keyboard-title = Tastatur
-input-keyboard-caption = Passe die Tastenwiederholung, die Compose-Taste und die Feststelltaste an.
+input-keyboard-caption = Wähle, wie schnell gehaltene Tasten wiederholt werden.
 input-active-source = Aktive Eingabequelle
 input-key-repeat = Wiederholgeschwindigkeit
 input-key-repeat-off = Wiederholung ist aus — Schieberegler bewegen, um sie einzuschalten
@@ -1427,6 +1433,9 @@ perm-capture-audio = Audio aufnehmen
 perm-stream-workspace = Diesen Arbeitsbereich übertragen
 perm-inject-input = Zeiger und Tastatur einspeisen
 power-source-title = Stromquelle
+power-reading = Energiestatus des Geräts wird gelesen…
+power-read-disconnected = Der Energiedienst antwortet nicht mehr.
+power-read-error = Energiestatus des Geräts konnte nicht gelesen werden: { $error }
 power-source = Quelle
 power-source-ac = Netzstrom
 power-source-caption = Dieses Gerät hat keinen Akku — es läuft am Netz, daher gelten Lade- und Sparmodi nicht.
@@ -1617,6 +1626,8 @@ settings-storage-backups = Sicherungen
 settings-storage-backups-desc = Sicherungsverlauf, Zeitpläne, Aufbewahrung und Wiederherstellung
 settings-storage-open-backups = Sicherungen öffnen
 time-clock-title = Uhr
+time-reading = Geräteuhr wird gelesen…
+time-read-disconnected = Der Uhrendienst antwortet nicht mehr.
 time-auto = Zeit automatisch stellen
 time-24h = 24-Stunden-Uhr
 time-timezone = Zeitzone
@@ -1959,7 +1970,6 @@ input-map-inspect-key = Physische Taste untersuchen
 input-map-inspection-unavailable = Die aktuellen Zeichen dieser physischen Taste sind nicht verfügbar. Aktiviere das Einstellungsfenster oder wähle eine Layout-Vorschau.
 input-map-current-symbols = Aktuelle Zeichen
 
-settings-appearance-text-scale = Textskalierung
 
 display-devices-title = Bildschirme auf deinen Geräten
 display-device-screen = { $device } · { $screen } · { $status }
@@ -1989,19 +1999,50 @@ input-dictionary-reset = Alle Wörter entfernen
 input-dictionary-word-placeholder = Ein Wort eingeben
 input-dictionary-all-languages = Alle Sprachen
 
-sound-reading-device = Audiogeräte werden gelesen…
-sound-read-failed = Audiogeräte konnten nicht gelesen werden.
-settings-bluetooth-reading = Bluetooth-Status wird gelesen…
-settings-bluetooth-read-disconnected = Der Bluetooth-Statusleser wurde vor seiner Antwort beendet.
 
-time-reading = Geräteuhr wird gelesen…
-time-read-disconnected = Der Uhrendienst antwortet nicht mehr.
-settings-users-loading-accounts = Konten dieses Geräts werden geladen…
-settings-users-read-disconnected = Die Kontenabfrage wurde vor der Rückmeldung beendet.
 
-power-reading = Energiestatus des Geräts wird gelesen…
-power-read-disconnected = Der Energiedienst antwortet nicht mehr.
-power-read-error = Energiestatus des Geräts konnte nicht gelesen werden: { $error }
+
+input-scope-all = Alle Tastaturen
+input-scope-inheritance = Physische Tastaturen nutzen diese Quellen, bis du die eigene Liste einer Tastatur änderst. Die Bildschirmtastatur hat eigene Quellen.
+input-keyboard-scope = Tastatur
+input-source-activate = Aktivieren
+input-sources-selection-description = Wähle eine Quelle zum Ansehen oder Bearbeiten. Ziehe sie, um die Reihenfolge zu ändern.
+input-sources-back = Zurück zu den Eingabequellen
+input-sources-cancel = Abbrechen
+input-sources-unavailable = Die Liste der Eingabequellen konnte nicht angezeigt werden.
+input-osk-qwerty = Englisch (QWERTY)
+input-osk-azerty = Französisch (AZERTY)
+input-osk-preview-description = Die Bildschirmtastatur verwendet diese Buchstabenanordnung. Compose- und Feststelltastenoptionen gelten für physische Tastaturen.
+input-source-options = Layout-Optionen
+input-source-inspection = Tasten untersuchen
+
+input-keyboard-numbered = { $name } ({ $number })
+
+input-source-show = Anzeigen
+input-source-hide = Ausblenden
+
+input-source-add-short = Hinzufügen
+input-source-add-title = Eingabequelle hinzufügen
+
+# Keyboard source editing errors.
+input-error-keyboard-retained = Die Tastatur ist nicht mehr verfügbar; ihre Zuordnung bleibt gespeichert.
+input-error-keyboard-unavailable = Die Tastatur ist derzeit nicht verfügbar.
+input-error-source-unconfigured = Die Quelle ist für diese Tastatur nicht eingerichtet.
+input-error-source-add-unavailable = Die Quelle ist in der Ansicht zum Hinzufügen nicht verfügbar.
+input-error-source-choose = Wähle eine Quelle zum Hinzufügen.
+input-error-source-physical-options = Optionen für physische Tastaturen gelten nicht für die Bildschirmtastatur.
+input-error-source-compose = Ungültige Compose-Taste.
+input-error-source-caps = Ungültiges Verhalten der Feststelltaste.
+input-error-source-option = Ungültige Tastaturoption.
+input-error-source-missing = Die Quelle ist nicht eingerichtet.
+input-error-source-add = Die Quelle kann dieser Tastatur nicht hinzugefügt werden.
+input-error-source-last = Die letzte Quelle kann nicht entfernt werden.
+input-error-source-empty = Es ist keine Quelle mehr vorhanden.
+input-error-source-first = Die Quelle steht bereits an erster Stelle.
+input-error-source-end = Die Quelle steht bereits an letzter Stelle.
+input-error-source-overflow = Die Position der Quelle liegt außerhalb des gültigen Bereichs.
+input-error-source-operation = Dieser Vorgang ist keine Quellenaktion.
+input-error-live-map-physical = Die Live-Ansicht einer physischen Tastatur ist für die Bildschirmtastatur nicht verfügbar.
 
 settings-disk-unlock-title = Entsperren der Festplatte
 settings-disk-unlock-intro = Nach einem Neustart kann eine hier eingerichtete verschlüsselte Festplatte statt mit der Passphrase mit der Zustimmung eines deiner anderen Geräte öffnen.
