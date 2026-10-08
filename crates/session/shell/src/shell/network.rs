@@ -8206,26 +8206,7 @@ pub(crate) fn shell_network_for_test(
         personal_focus_recency: Mutex::new(
             crate::shell::continuity_suggestion::FocusRecency::default(),
         ),
-        continuity_policy_override: Some(
-            crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
-                serde_json::json!({
-                    "continuity": {
-                        "enabled": true,
-                        "clipboard": true,
-                        "notifications": true,
-                        "wifi_settings": true,
-                        "media": true,
-                        "display_input": true,
-                        "file_transfer": true,
-                        "realtime_sessions": true,
-                        "typed_gamepad": true,
-                        "app_continuations": true
-                    }
-                })
-                .as_object()
-                .expect("test continuity policy object"),
-            ),
-        ),
+        continuity_policy_override: Some(continuity_policy_for_test()),
         device_fabric: Mutex::new(crate::shell::device_fabric::DeviceFabric::default()),
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
@@ -8264,6 +8245,28 @@ pub(crate) fn shell_network_for_test(
         peer_departures: Arc::new(PeerDepartureHistory::default()),
     };
     (net, cmd_rx)
+}
+
+#[cfg(test)]
+fn continuity_policy_for_test() -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
+    crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
+        serde_json::json!({
+            "continuity": {
+                "enabled": true,
+                "clipboard": true,
+                "notifications": true,
+                "wifi_settings": true,
+                "media": true,
+                "display_input": true,
+                "file_transfer": true,
+                "realtime_sessions": true,
+                "typed_gamepad": true,
+                "app_continuations": true
+            }
+        })
+        .as_object()
+        .expect("test continuity policy object"),
+    )
 }
 
 /// Read-service custody fixture; transport is proved by the real native actor separately.

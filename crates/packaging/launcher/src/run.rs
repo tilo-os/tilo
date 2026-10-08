@@ -2798,38 +2798,13 @@ pub(crate) fn run_with_context(
     // Connect only after cold runtime verification, loader preflight and host
     // preparation. The broker starts its executing-task deadline at handoff;
     // those checks must not consume the sandboxed app's response window.
-    let package_id = manifest.package_id.as_str();
     let resolved = if let Some((services, _)) = enrolled.as_mut() {
         let binding = services.binding().clone();
         services
             .take_for_launch(&binding, &manifest.sandbox.services)
             .map_err(RunError::InvalidServiceLaunch)?
     } else {
-        let mut resolved = resolve_service_binds_for_launch(
-            &manifest.sandbox.services,
-            opts.no_services,
-            ServiceLaunchContext {
-                app_id: package_id,
-                workspace_id: opts.workspace_id.as_deref(),
-            },
-        )?;
-        crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
-        if let Some(identity) =
-            resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-        {
-            resolved.push(identity);
-        }
-        if let Some(blobs) =
-            resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-        {
-            resolved.push(blobs);
-        }
-        if let Some(chooser) =
-            resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-        {
-            resolved.push(chooser);
-        }
-        resolved
+        resolve_app_services(manifest, opts)?
     };
     let binds = to_service_binds(&resolved);
 
@@ -3346,6 +3321,32 @@ pub fn run_with_captured_bounded(
     )
 }
 
+fn resolve_app_services(
+    manifest: &MinimalManifest,
+    opts: &RunOptions,
+) -> Result<Vec<crate::services::ResolvedService>, RunError> {
+    let package_id = manifest.package_id.as_str();
+    let mut resolved = resolve_service_binds_for_launch(
+        &manifest.sandbox.services,
+        opts.no_services,
+        ServiceLaunchContext {
+            app_id: package_id,
+            workspace_id: opts.workspace_id.as_deref(),
+        },
+    )?;
+    crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
+    for resolve in [
+        resolve_identity_bind,
+        resolve_blob_bind,
+        resolve_chooser_bind,
+    ] {
+        if let Some(bind) = resolve(package_id, opts.workspace_id.as_deref(), opts.no_services)? {
+            resolved.push(bind);
+        }
+    }
+    Ok(resolved)
+}
+
 fn run_with_capture_spawn<T>(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -3391,31 +3392,7 @@ fn run_with_capture_spawn<T>(
     let capabilities = resolve_capabilities(manifest, opts);
     // As in `run_with_context`, cold runtime checks precede service handoff.
     // Capture must not start the executing-task deadline during verification.
-    let package_id = manifest.package_id.as_str();
-    let mut resolved = resolve_service_binds_for_launch(
-        &manifest.sandbox.services,
-        opts.no_services,
-        ServiceLaunchContext {
-            app_id: package_id,
-            workspace_id: opts.workspace_id.as_deref(),
-        },
-    )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
-    if let Some(identity) =
-        resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-    {
-        resolved.push(identity);
-    }
-    if let Some(blobs) =
-        resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-    {
-        resolved.push(blobs);
-    }
-    if let Some(chooser) =
-        resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-    {
-        resolved.push(chooser);
-    }
+    let resolved = resolve_app_services(manifest, opts)?;
     let binds = to_service_binds(&resolved);
 
     let keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();

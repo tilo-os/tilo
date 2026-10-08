@@ -1813,37 +1813,7 @@ mod tests {
                 .to_string()
                 .ends_with("do this on 'Primary device'")
         );
-        for refusal in [
-            joined_store
-                .sign_unlock_setting(&identity_id, &[0; 32])
-                .unwrap_err(),
-            joined_store.secret_sync_key(&identity_id).unwrap_err(),
-        ] {
-            assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
-            assert!(
-                refusal.to_string().ends_with("do this on 'Primary device'"),
-                "{refusal}"
-            );
-        }
-        let mut boot_certificate = tilo_unlock_protocol::BootKeyCert {
-            version: tilo_unlock_protocol::PROTOCOL_VERSION,
-            user_public_key: joined.user_public_key,
-            device_public_key: joined.device_public_key,
-            boot_public_key: [45; 32],
-            slot: tilo_unlock_protocol::SlotId {
-                volume_uuid: [0; 16],
-                keyslot: 1,
-            },
-            attestation_key: None,
-            issued_at_ns: now_ns_u64(),
-            signature: [0; 64],
-        };
-        let refusal = joined_store
-            .certify_boot_key(&identity_id, &mut boot_certificate)
-            .unwrap_err();
-        assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
-        assert!(refusal.to_string().ends_with("do this on 'Primary device'"));
-        assert_eq!(boot_certificate.signature, [0; 64]);
+        assert_new_root_operations_refuse(&joined_store, &identity_id, &joined);
 
         // The primary revokes the board; the board's fleet remembers it once,
         // and refuses another identity's revocation.
@@ -1888,6 +1858,44 @@ mod tests {
             io::ErrorKind::PermissionDenied
         );
     }
+    fn assert_new_root_operations_refuse(
+        joined_store: &crate::device_fleet::DeviceFleetStore,
+        identity_id: &str,
+        joined: &DeviceCert,
+    ) {
+        for refusal in [
+            joined_store
+                .sign_unlock_setting(identity_id, &[0; 32])
+                .unwrap_err(),
+            joined_store.secret_sync_key(identity_id).unwrap_err(),
+        ] {
+            assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
+            assert!(
+                refusal.to_string().ends_with("do this on 'Primary device'"),
+                "{refusal}"
+            );
+        }
+        let mut boot_certificate = tilo_unlock_protocol::BootKeyCert {
+            version: tilo_unlock_protocol::PROTOCOL_VERSION,
+            user_public_key: joined.user_public_key,
+            device_public_key: joined.device_public_key,
+            boot_public_key: [45; 32],
+            slot: tilo_unlock_protocol::SlotId {
+                volume_uuid: [0; 16],
+                keyslot: 1,
+            },
+            attestation_key: None,
+            issued_at_ns: now_ns_u64(),
+            signature: [0; 64],
+        };
+        let refusal = joined_store
+            .certify_boot_key(identity_id, &mut boot_certificate)
+            .unwrap_err();
+        assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
+        assert!(refusal.to_string().ends_with("do this on 'Primary device'"));
+        assert_eq!(boot_certificate.signature, [0; 64]);
+    }
+
     fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
         super::ensure_primary_identity(identity_dir, FILES)
     }
