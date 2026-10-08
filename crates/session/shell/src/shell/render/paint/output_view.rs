@@ -63,7 +63,7 @@ impl OutputView {
 
     /// Scene damage seen by this output, clipped to it. `None` when the view cannot map it
     /// exactly; the output then renders in full.
-    fn damage(&self, regions: &[FineDamageRect]) -> Option<Vec<FineDamageRect>> {
+    pub fn damage(&self, regions: &[FineDamageRect]) -> Option<Vec<FineDamageRect>> {
         let (origin_x, origin_y) = self.whole_pixel_offset()?;
         let (width, height) = (i64::from(self.size.0), i64::from(self.size.1));
         let mut mapped = Vec::with_capacity(regions.len());
@@ -132,10 +132,11 @@ pub(super) struct OutputSurface {
     transform: Affine,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    band: Option<(wgpu::Texture, wgpu::TextureView, u32)>,
-    size: (u32, u32),
+    pub(super) band: Option<(wgpu::Texture, wgpu::TextureView, u32)>,
+    pub(super) size: (u32, u32),
     retained_target_valid: bool,
     last_successful_revision: Option<u64>,
+    owed_damage: Vec<FineDamageRect>,
 }
 
 impl OutputSurface {
@@ -151,6 +152,7 @@ impl OutputSurface {
             size,
             retained_target_valid: false,
             last_successful_revision: None,
+            owed_damage: Vec::new(),
         })
     }
 
@@ -169,12 +171,24 @@ impl OutputSurface {
             &mut self.last_successful_revision,
             &mut target.last_successful_revision,
         );
+        std::mem::swap(&mut self.owed_damage, &mut target.owed_damage);
     }
 
     fn invalidate(&mut self) {
         self.retained_target_valid = false;
         self.last_successful_revision = None;
+        self.owed_damage.clear();
     }
+}
+
+/// Owed regions past this render in full anyway (the sparse renderer's own rectangle limit),
+/// so a longer debt is not kept.
+const MAX_OWED_RECTS: usize = 64;
+
+/// The revision an output's retained pixels hold, and the damage skipped frames owe them.
+struct RetainedPixels<'a> {
+    revision: &'a mut Option<u64>,
+    owed: &'a mut Vec<FineDamageRect>,
 }
 
 /// `frame`'s backdrops as `transform` sees them.
@@ -317,35 +331,87 @@ impl VelloDrmBridge {
         OutputSurface::new(&self.target.device, view)
     }
 
-    /// Whether an output that is not the whole scene can keep the image it shows for
-    /// `damage`: none of the damage falls on it and its surface holds the previous
-    /// revision through this view. Its surface then holds this revision too, so the
-    /// next frame's damage still repairs it sparsely.
-    pub fn keep_unchanged_output(&mut self, view: &OutputView, damage: SceneDamage<'_>) -> bool {
+    /// Whether `view` renders straight into the bridge's own target: it is the whole scene.
+    /// Every other view renders into its output's own surface.
+    pub fn view_is_whole_scene(&self, view: &OutputView) -> bool {
+        view.covers_whole_scene(self.target.size)
+    }
+
+    /// The retained state of the pixels `view` renders into, when they hold a complete
+    /// frame rendered through this view.
+    fn retained_through(&mut self, view: &OutputView) -> Option<RetainedPixels<'_>> {
         if view.covers_whole_scene(self.target.size) {
-            return false;
+            let target = &mut self.target;
+            if !target.retained_target_valid {
+                return None;
+            }
+            return Some(RetainedPixels {
+                revision: &mut target.last_successful_revision,
+                owed: &mut target.owed_damage,
+            });
         }
+        let (_, surface) = self
+            .output_surfaces
+            .iter_mut()
+            .find(|(id, _)| *id == view.id)?;
+        if !surface.retained_target_valid
+            || surface.size != view.size
+            || surface.transform != view.transform
+        {
+            return None;
+        }
+        Some(RetainedPixels {
+            revision: &mut surface.last_successful_revision,
+            owed: &mut surface.owed_damage,
+        })
+    }
+
+    /// Whether an output can keep the image it shows for `damage`: none of the damage falls
+    /// on it, its pixels hold the previous revision through this view, and no skipped frame
+    /// left damage owed. Its pixels then hold this revision too, so the next frame's damage
+    /// still repairs it sparsely.
+    pub fn keep_unchanged_output(&mut self, view: &OutputView, damage: SceneDamage<'_>) -> bool {
         let (Some(regions), Some(previous)) = (damage.regions, damage.previous_revision) else {
             return false;
         };
         if !view.damage(regions).is_some_and(|mapped| mapped.is_empty()) {
             return false;
         }
-        let Some((_, surface)) = self
-            .output_surfaces
-            .iter_mut()
-            .find(|(id, _)| *id == view.id)
-        else {
+        let Some(retained) = self.retained_through(view) else {
             return false;
         };
-        let current = surface.retained_target_valid
-            && surface.size == view.size
-            && surface.transform == view.transform
-            && surface.last_successful_revision == Some(previous);
-        if current {
-            surface.last_successful_revision = Some(damage.revision);
+        if *retained.revision != Some(previous) || !retained.owed.is_empty() {
+            return false;
         }
-        current
+        *retained.revision = Some(damage.revision);
+        true
+    }
+
+    /// The output skips this frame: its previous page flip has not retired, so it could
+    /// not show it. When its pixels hold the previous revision through this view, the
+    /// frame's damage on it is owed to its next render, which then stays sparse; otherwise
+    /// its next render is full. Returns whether the damage was recorded as owed.
+    pub fn defer_output(&mut self, view: &OutputView, damage: SceneDamage<'_>) -> bool {
+        let mapped = damage.regions.and_then(|regions| view.damage(regions));
+        let recorded = match (
+            self.retained_through(view),
+            mapped,
+            damage.previous_revision,
+        ) {
+            (Some(retained), Some(mapped), Some(previous))
+                if *retained.revision == Some(previous)
+                    && retained.owed.len().saturating_add(mapped.len()) <= MAX_OWED_RECTS =>
+            {
+                retained.owed.extend(mapped);
+                *retained.revision = Some(damage.revision);
+                true
+            }
+            _ => false,
+        };
+        if !recorded {
+            self.invalidate_output_view(view);
+        }
+        recorded
     }
 
     /// Release the surfaces of outputs that are gone.
@@ -354,11 +420,15 @@ impl VelloDrmBridge {
     }
 
     /// The output renders its next frame in full.
-    pub fn invalidate_output_view(&mut self, id: OutputId) {
+    pub fn invalidate_output_view(&mut self, view: &OutputView) {
+        if view.covers_whole_scene(self.target.size) {
+            self.invalidate_retained();
+            return;
+        }
         for (_, surface) in self
             .output_surfaces
             .iter_mut()
-            .filter(|(surface_id, _)| *surface_id == id)
+            .filter(|(id, _)| *id == view.id)
         {
             surface.invalidate();
         }

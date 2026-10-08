@@ -40,9 +40,9 @@ display's real interval, taken from `Backend::refresh_interval`:
 
 - `drm` derives it from the connector's raw mode timing (pixel clock over
   htotal×vtotal), so a 59.94 Hz panel is paced at 59.94 rather than a
-  rounded 60. Multi-output paces to the fastest connected mode, because
-  the compositor paints one scene across the combined geometry and there
-  is only one cadence to pick.
+  rounded 60. Multi-output ticks at the fastest connected mode; each direct
+  output renders only once its own previous flip has retired, so a slower
+  output skips the frames it could not show (see Direct scanout below).
 - `winit` reports the host monitor's rate — what a nested client can
   actually present at.
 - `headless` reports `None`. It has no display, so it falls back to 60 Hz
@@ -213,18 +213,35 @@ HDR-composites it into the back slot, and the backend flips to it
 surface and two-slot ring; the renderer and the device are shared. A slot
 stays owned by KMS until its page-flip event retires it, so the renderer
 never touches the front or flip-pending slot. Page-flip events are drained
-once per card and routed to the output whose CRTC they name, and a frame
-retires only when every output's queued flip has, so outputs at different
-refresh rates pace to the slowest direct output for now.
+once per card and routed to the output whose CRTC they name.
+
+While every output renders direct, no texture spans the desktop: the
+bridge's own target is the output at the scene origin, which renders
+straight into it, and the others render into their own surfaces, so the
+space between outputs of different shapes is never rasterised and two 4K
+heads side by side render without banding (banding remains for a single
+output past Vello's bin limit). Damage is routed per output: an output none
+of the frame's damage falls on is neither rendered nor flipped.
+
+Outputs are paced apart. A frame retires when the flips of the outputs at
+the fastest refresh have (`DrmPresenter::retire_direct_flips`), so the loop
+runs at that rate; a slower output's flip retires through the next frame's
+non-blocking drain, and until it has, that output skips frames
+(`DirectOutcome::Deferred`): it renders at most once per its own vblank.
+The damage of a skipped frame is owed to its next render
+(`VelloDrmBridge::defer_output`), which stays sparse. A slow output whose
+flip has not retired within the retirement timeout is demoted to the
+readback.
 
 When an output fails a check (`direct_scanout_rejection` in
 `backend/drm/mod.rs` logs the reason as `direct_scanout_status=unavailable
 reason=… output=…`), or its direct submission fails, that output alone
 falls back to the readback path: render, copy to CPU bytes, write the two
 dumb buffers the backend allocates at modeset. One such output renders and
-swizzles straight into its dumb buffer; with several outputs the bounding
-box of all of them is rendered once and only the outputs on the readback
-receive their sub-rect.
+swizzles straight into its dumb buffer; with several outputs the bridge's
+target grows to the bounding box of all of them (logged once), which is
+rendered once, and only the outputs on the readback receive their sub-rect.
+It returns to one output's size once every output renders direct again.
 
 ### No client fullscreen fast path
 
@@ -333,7 +350,7 @@ cards.
 
 Multi-monitor support is feature-complete for the shared-workspace-plane model.
 Every usable seat GPU is retained once through libseat; its connector scanouts
-receive duplicate fds and consume the same combined scene, so hybrid-GPU docks
+receive duplicate fds and render their own views of the same scene, so hybrid-GPU docks
 participate in topology, input routing, hotplug, VT resume and presentation.
 The cursor is confined to the union of live output rectangles rather than the
 combined bounding box, which keeps L-shaped and vertically offset layouts from

@@ -89,8 +89,9 @@ impl DrmBackend {
         let commands = inner.commands.take();
         let signal_reports = inner.signal_reports.take();
         let outputs = Self::refresh_outputs(&inner);
-        // Pace to the *fastest* connected mode: the compositor paints one scene across the combined
-        // geometry, so there's one cadence to pick — showing every Nth frame on a slower output beats throttling the fast panel down.
+        // The loop ticks at the *fastest* connected mode. Each output renders only once its own
+        // previous flip has retired, so a slower output skips the frames it cannot show rather
+        // than throttling the fast panel down (`DrmPresenter::retire_direct_flips`).
         let refresh = Self::refresh_from(&inner);
         if let Some(d) = refresh {
             tracing::info!(
@@ -214,6 +215,65 @@ const DIRECT_RETIREMENT_TIMEOUT: Duration = Duration::from_millis(250);
 /// The GPU budget for one direct frame. Missing it hands the output to the
 /// readback presenter until the retry the failure earns.
 const DIRECT_FRAME_DEADLINE: Duration = Duration::from_secs(1);
+
+/// What the frame that just submitted does about one direct output's pending page flip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FlipWait {
+    /// The output paces the loop: the frame completes when its flip retires.
+    Await,
+    /// A slower output: its flip retires through a later frame's drain, and until then
+    /// the output skips frames.
+    Leave,
+    /// A slower output whose flip has not retired within [`DIRECT_RETIREMENT_TIMEOUT`]:
+    /// checked once more without waiting, then demoted.
+    Overdue,
+}
+
+/// Rates within this many percent of the fastest pace the loop with it: a 59.94 Hz panel
+/// beside a 60 Hz one is the same cadence, not a slower output.
+const PACING_TOLERANCE_PERCENT: u64 = 5;
+
+/// Whether the loop waits for a direct output's pending flip. Outputs at the fastest
+/// refresh (`fastest_mhz`) do; an output of unknown rate, or any output when no rate is
+/// known, does too, as every output did before outputs were paced apart.
+fn flip_wait(
+    refresh_mhz: Option<u32>,
+    fastest_mhz: Option<u32>,
+    pending_for: Duration,
+) -> FlipWait {
+    let paces = match (refresh_mhz, fastest_mhz) {
+        (Some(rate), Some(fastest)) => {
+            u64::from(rate).saturating_mul(100)
+                >= u64::from(fastest)
+                    .saturating_mul(100_u64.saturating_sub(PACING_TOLERANCE_PERCENT))
+        }
+        _ => true,
+    };
+    if paces {
+        FlipWait::Await
+    } else if pending_for >= DIRECT_RETIREMENT_TIMEOUT {
+        FlipWait::Overdue
+    } else {
+        FlipWait::Leave
+    }
+}
+
+/// The refresh rate `id` scans out at, in millihertz.
+fn refresh_of(outputs: &[Output], id: OutputId) -> Option<u32> {
+    outputs
+        .iter()
+        .find(|output| output.id == id)
+        .and_then(|output| output.refresh_mhz)
+}
+
+/// The fastest refresh among the powered outputs presenting direct: the loop's cadence.
+fn fastest_direct_refresh(scanouts: &[ScanoutEntry], outputs: &[Output]) -> Option<u32> {
+    scanouts
+        .iter()
+        .filter(|entry| !entry.powered_off && entry.direct_targets.is_some())
+        .filter_map(|entry| refresh_of(outputs, entry.id))
+        .max()
+}
 
 /// Hand an output back to the readback presenter after direct scanout
 /// failed in `stage`, until the back-off the failure earns has passed.
@@ -820,7 +880,7 @@ impl DrmPresenter {
             Some(&mut self.phase_window),
         );
         publish_readback_presenting(&self.scanouts, &self.readback_presenting);
-        if sample.direct_queued {
+        if sample.direct_queued || self.direct_flip_pending() {
             let _ = self.retire_direct_flips();
         }
         self.emit_phase_profile(sample);
@@ -885,7 +945,9 @@ impl DrmPresenter {
                     .first()
                     .map(|entry| entry.scanout.flip_submission())
                     != before);
-        let physical = if sample.direct_queued {
+        // A slower output's flip from an earlier frame is checked as well: one that is overdue
+        // is demoted even on a frame that queued nothing.
+        let physical = if sample.direct_queued || self.direct_flip_pending() {
             self.retire_direct_flips()
         } else if self.scanouts.len() == 1
             && self
@@ -920,31 +982,55 @@ impl DrmPresenter {
         physical
     }
 
-    /// Tighten `Presenter::present_frame`'s completion boundary to the KMS
-    /// page-flip events of every output that queued a direct flip.
-    /// `PresentPipe` only frees producer capacity after this method returns, so
-    /// no second frame is rendered while both double-buffered targets of an
-    /// output remain owned by KMS. Waiting for each output, rather than the
-    /// first, keeps an output whose vblank trails another's from dropping every
-    /// other frame; outputs at different rates pace to the slowest until
-    /// per-output pacing exists (TIL-256). Each output gets the whole timeout, so
-    /// one wedged output cannot spend a healthy sibling's budget and demote it.
+    /// Tighten `Presenter::present_frame`'s completion boundary to the KMS page-flip events of
+    /// the outputs that pace the loop: those at the fastest refresh (`flip_wait`).
+    /// `PresentPipe` only frees producer capacity after this method returns, so the loop
+    /// renders at the fastest output's rate. A slower output's flip is left pending and
+    /// retires through the next frame's non-blocking drain; until it has, that output skips
+    /// the frames it could not show (`DirectOutcome::Deferred`), so no output renders more
+    /// than once per its own vblank and no target KMS owns is rendered into. Waiting for
+    /// every pacing output, rather than the first, keeps one whose vblank trails another's
+    /// from dropping every other frame. Each gets the whole timeout, so one wedged output
+    /// cannot spend a healthy sibling's budget and demote it; a slow output whose flip is
+    /// overdue is demoted without a wait.
     fn retire_direct_flips(&mut self) -> Option<crate::shell::present::PhysicalPresentation> {
+        let fastest = fastest_direct_refresh(&self.scanouts, &self.outputs);
         let mut proof = None;
         // Each pass retires or demotes one output; the bound is a backstop.
         for _ in 0..self.scanouts.len() {
-            let Some(index) = self.scanouts.iter().position(|entry| {
-                entry
-                    .direct_targets
-                    .as_ref()
-                    .is_some_and(scanout::DirectScanoutTargets::flip_pending)
-            }) else {
+            let now = Instant::now();
+            let Some((index, timeout)) =
+                self.scanouts.iter().enumerate().find_map(|(index, entry)| {
+                    let targets = entry.direct_targets.as_ref()?;
+                    let queued_at = targets.flip_queued_at()?;
+                    let wait = flip_wait(
+                        refresh_of(&self.outputs, entry.id),
+                        fastest,
+                        now.saturating_duration_since(queued_at),
+                    );
+                    match wait {
+                        FlipWait::Await => Some((index, DIRECT_RETIREMENT_TIMEOUT)),
+                        FlipWait::Overdue => Some((index, Duration::ZERO)),
+                        FlipWait::Leave => None,
+                    }
+                })
+            else {
                 break;
             };
-            let retired = self.retire_physical_flip(index, DIRECT_RETIREMENT_TIMEOUT);
+            let retired = self.retire_physical_flip(index, timeout);
             proof = proof.or(retired);
         }
         proof
+    }
+
+    /// Some direct output still waits for a page flip queued by an earlier frame.
+    fn direct_flip_pending(&self) -> bool {
+        self.scanouts.iter().any(|entry| {
+            entry
+                .direct_targets
+                .as_ref()
+                .is_some_and(scanout::DirectScanoutTargets::flip_pending)
+        })
     }
 
     /// Wait up to `timeout` for the page flip queued on `scanouts[index]`.
@@ -1493,8 +1579,38 @@ fn ensure_bridge(paint: &mut Option<paint::VelloDrmBridge>, target_size: (u32, u
     }
 }
 
-/// Render the frame's scene into `scanouts`, sized to the combined geometry of
-/// `outputs`; lazily (re)allocates `*paint` to that size. Shared by
+/// Whether the bridge's target should span the desktop this frame: some powered output
+/// presented through the combined readback last frame, or cannot render direct.
+fn expects_readback(scanouts: &[ScanoutEntry]) -> bool {
+    scanouts.iter().any(|entry| {
+        !entry.powered_off && (entry.present_by_readback || entry.direct_ineligible.is_some())
+    })
+}
+
+/// The extent of the bridge's own target. The combined readback renders the bounding box of
+/// every output, so while one presents through it (`readback`) the target spans the desktop.
+/// Otherwise every output renders into its own GPU target and nothing needs that box: the
+/// bridge's target is the output at the scene origin, which renders straight into it, so no
+/// texture is larger than an output and none rasterises the space between outputs.
+fn bridge_extent(outputs: &[Output], readback: bool) -> (u32, u32) {
+    let combined = combined_geometry(outputs);
+    if readback {
+        return combined;
+    }
+    outputs
+        .iter()
+        .find(|output| output.position == (0, 0))
+        .or_else(|| {
+            outputs.iter().max_by_key(|output| {
+                u64::from(output.size.0).saturating_mul(u64::from(output.size.1))
+            })
+        })
+        .map_or(combined, |output| output.size)
+}
+
+/// Render the frame's scene into `scanouts`. Each output renders through its own view of the
+/// scene where it can; the rest present through the combined readback. `*paint` is lazily
+/// (re)allocated to [`bridge_extent`]. Shared by
 /// [`DrmPresenter::render`] (post-split, render thread) and
 /// [`Backend::submit_frame`] for [`DrmBackend`] (inline path, pre-split) —
 /// same painting logic, different owner of the scanouts and the pointer.
@@ -1530,17 +1646,27 @@ fn paint_scanouts(
     {
         return PaintScanoutSample::default();
     }
-    let target_size = combined_geometry(outputs);
-    if target_size.0 == 0 || target_size.1 == 0 {
+    let combined = combined_geometry(outputs);
+    if combined.0 == 0 || combined.1 == 0 {
         return PaintScanoutSample::default();
     }
     // Chosen once from the device, never as a fallback: a GPU that cannot
     // run vello must not be initialised for the desktop at all.
     if cpu_present::cpu_render_reason().is_some() {
         let renderer = cpu.get_or_insert_with(cpu_present::CpuRenderer::new);
-        paint_scanouts_cpu(scanouts, outputs, renderer, pointer, frame, target_size);
+        paint_scanouts_cpu(scanouts, outputs, renderer, pointer, frame, combined);
         return PaintScanoutSample::default();
     }
+    let readback_expected = expects_readback(scanouts);
+    let target_size = bridge_extent(outputs, readback_expected);
+    if target_size.0 == 0 || target_size.1 == 0 {
+        return PaintScanoutSample::default();
+    }
+    // With several outputs and no readback, every output's pixels are its own, the bridge's
+    // target included: an undamaged one keeps its image, and one whose flip is pending owes
+    // its damage to its next render.
+    let per_output =
+        !readback_expected && scanouts.iter().filter(|entry| !entry.powered_off).count() > 1;
     if let Some(reason) = paint.as_ref().and_then(paint::VelloDrmBridge::device_lost) {
         // Every call on a lost device fails, and the bridge cannot replace its own device.
         tracing::error!(%reason, "DRM backend: the renderer's GPU device was lost; opening a new one");
@@ -1588,7 +1714,7 @@ fn paint_scanouts(
         && outputs.first().is_some_and(|output| {
             output.position == (0, 0)
                 && output.scale.to_bits() == 1.0_f32.to_bits()
-                && output.size == target_size
+                && output.size == combined
                 && output.transform == settings_store::hardware::OutputTransform::Normal
         });
     // Scanouts on one card share an open file description, so their page-flip completions
@@ -1626,6 +1752,7 @@ fn paint_scanouts(
                 &view,
                 &frame,
                 phase_window.as_deref_mut(),
+                per_output,
             );
             entry.present_by_readback = outcome == DirectOutcome::Readback;
             match outcome {
@@ -1639,7 +1766,9 @@ fn paint_scanouts(
                     entry.readback_current = false;
                 }
                 // The output keeps its current image.
-                DirectOutcome::Dropped | DirectOutcome::Kept => entry.readback_current = false,
+                DirectOutcome::Dropped | DirectOutcome::Kept | DirectOutcome::Deferred => {
+                    entry.readback_current = false;
+                }
                 DirectOutcome::Readback => readback = true,
             }
         }
@@ -1656,6 +1785,27 @@ fn paint_scanouts(
     }
     if !readback {
         return direct;
+    }
+    // An output fell back to the readback while the bridge's target was one output's: the
+    // readback renders the bounding box of every output, so the target grows to it, and the
+    // next frames keep that size while any output presents by readback (`bridge_extent`).
+    let mut resized_for_readback = false;
+    if let Some(bridge) = paint.as_mut()
+        && bridge.size() != combined
+    {
+        tracing::info!(
+            width = combined.0,
+            height = combined.1,
+            "DRM backend: an output presents by readback; rendering the combined desktop"
+        );
+        if let Err(e) = bridge.resize(combined.0, combined.1) {
+            tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
+            return direct;
+        }
+        for entry in scanouts.iter_mut() {
+            entry.scanout.invalidate_xrgb_history();
+        }
+        resized_for_readback = true;
     }
 
     // One unrotated, uncalibrated output: render and swizzle straight into its back dumb
@@ -1682,7 +1832,8 @@ fn paint_scanouts(
 
     // The combined readback: render the bounding box of every output once, then copy each
     // remaining output's sub-rect out of it on the CPU.
-    let mut stale = false;
+    // A target grown this frame holds no readback image to patch.
+    let mut stale = resized_for_readback;
     for entry in scanouts
         .iter_mut()
         .filter(|entry| entry.present_by_readback)
@@ -1763,11 +1914,22 @@ impl RendererIdentity {
 
 /// The part of the scene `entry` shows.
 fn output_view(entry: &ScanoutEntry, outputs: &[Output]) -> paint::OutputView {
+    view_of(entry.id, entry.position, entry.scanout.size(), outputs)
+}
+
+/// The view of output `id`, at `position` in the scene: its extent from the output table, or
+/// its scanout `mode` while the table does not list it.
+fn view_of(
+    id: OutputId,
+    position: (i32, i32),
+    mode: (u32, u32),
+    outputs: &[Output],
+) -> paint::OutputView {
     let size = outputs
         .iter()
-        .find(|output| output.id == entry.id)
-        .map_or_else(|| entry.scanout.size(), |output| output.size);
-    paint::OutputView::at(entry.id, entry.position, size)
+        .find(|output| output.id == id)
+        .map_or(mode, |output| output.size);
+    paint::OutputView::at(id, position, size)
 }
 
 /// What the direct path did with one output's frame.
@@ -1780,9 +1942,12 @@ enum DirectOutcome {
         render_us: u128,
         sparse: bool,
     },
-    /// KMS still owns both targets, or refused the flip as busy: the output keeps
-    /// its current image this frame.
+    /// KMS refused the flip as busy: the output keeps its current image this frame.
     Dropped,
+    /// The output's previous flip has not retired, so KMS owns both its targets: it skips
+    /// this frame, which it could not show, and owes the frame's damage to its next render.
+    /// This is how an output slower than the loop's cadence is paced to its own vblank.
+    Deferred,
     /// Nothing new reaches this output (no damage falls on it, or the frame is a
     /// clip that only the readback replays): it keeps its current image.
     Kept,
@@ -1828,6 +1993,7 @@ fn present_direct(
     view: &paint::OutputView,
     frame: &ScanoutFrame<'_>,
     mut phase_window: Option<&mut PhaseWindow>,
+    per_output: bool,
 ) -> DirectOutcome {
     let drm_bus_id = entry.scanout.drm_bus_id();
     let eligibility = DirectEligibility {
@@ -1935,9 +2101,14 @@ fn present_direct(
             DirectOutcome::Readback
         };
     }
+    // The output's retained pixels are its own: a surface of its own, or the bridge's target
+    // while no other output or readback shares it (`per_output`). A lone output's frames
+    // always render, as they did before outputs were judged apart.
+    let own_pixels = per_output || !bridge.view_is_whole_scene(view);
     // No damage falls on this output: its retained surface and front slot already
     // hold this revision.
-    if frame.hdr_layers.is_empty()
+    if own_pixels
+        && frame.hdr_layers.is_empty()
         && targets.presented()
         && let Some(damage) = frame.damage
         && bridge.keep_unchanged_output(view, damage)
@@ -1945,12 +2116,14 @@ fn present_direct(
         return DirectOutcome::Kept;
     }
     // A queued imported-buffer flip retires before a new render target is selected. With
-    // two slots, a pending flip owns both.
+    // two slots, a pending flip owns both. Only the outputs pacing the loop are waited for
+    // (`DrmPresenter::retire_direct_flips`), so a slower output arrives here until its flip
+    // retires on its own vblank, and renders at most once per vblank.
     let Some((index, target)) = targets.render_slot() else {
-        if let Some(window) = phase_window.as_deref_mut() {
-            window.record_direct_drop();
+        if own_pixels && let Some(damage) = frame.damage {
+            bridge.defer_output(view, damage);
         }
-        return DirectOutcome::Dropped;
+        return DirectOutcome::Deferred;
     };
     let revision = frame.damage.map_or(1, |damage| damage.revision.max(1));
     // The output's own retained surface holds the previous revision whichever slot comes
@@ -2020,8 +2193,10 @@ fn present_direct(
                 window.record_direct_drop();
             }
             // The surface is ahead of the image KMS shows: the next frame must not
-            // count this output as unchanged.
-            bridge.invalidate_output_view(view.id);
+            // count this output as unchanged. A lone output is never kept unchanged.
+            if own_pixels {
+                bridge.invalidate_output_view(view);
+            }
             DirectOutcome::Dropped
         }
         scanout::DirectSubmit::Failed(error) => {
@@ -2893,7 +3068,7 @@ impl Presenter for DrmPresenter {
         {
             return;
         }
-        let target_size = combined_geometry(&self.outputs);
+        let target_size = bridge_extent(&self.outputs, expects_readback(&self.scanouts));
         if target_size.0 != 0 && target_size.1 != 0 {
             ensure_bridge(&mut self.paint, target_size);
         }
@@ -3455,7 +3630,7 @@ mod tests {
         }
         // Phase `a_reconfigure_adopts_the_new_output_table`.
         {
-            // The presenter sizes its paint buffer from `combined_geometry` of this table and presents each output's sub-rect from its position, so adopting it is what makes an unplugged monitor stop being painted for.
+            // The presenter sizes its paint target from this table (`bridge_extent`) and renders each output's view from its position, so adopting it is what makes an unplugged monitor stop being painted for.
             let mut scanouts: Vec<ScanoutEntry> = Vec::new();
             let mut outputs: Vec<Output> = vec![
                 Output::new(OutputId(0), (1920, 1080), 1.0),
@@ -3617,5 +3792,214 @@ mod presentation_proof_tests {
             physical_flip_proof(scanout::DirectRetirement::Complete, &events, sibling, true)
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod per_output_presentation_tests {
+    use super::*;
+
+    /// An output at `position` (scene and logical alike) scanning out at `refresh_mhz`.
+    fn head(id: u32, position: (i32, i32), size: (u32, u32), refresh_mhz: u32) -> Output {
+        Output {
+            position,
+            logical_position: position,
+            refresh_mhz: Some(refresh_mhz),
+            ..Output::new(OutputId(id), size, 1.0)
+        }
+    }
+
+    fn area((width, height): (u32, u32)) -> u64 {
+        u64::from(width).saturating_mul(u64::from(height))
+    }
+
+    #[test]
+    fn no_bridge_target_spans_the_desktop_while_every_output_is_direct() {
+        // Two 4K heads side by side: 7680x2160 rasterised the whole desktop in two bands.
+        let twin = [
+            head(0, (0, 0), (3840, 2160), 60_000),
+            head(1, (3840, 0), (3840, 2160), 60_000),
+        ];
+        assert_eq!(bridge_extent(&twin, false), (3840, 2160));
+        assert_eq!(
+            bridge_extent(&twin, true),
+            (7680, 2160),
+            "the readback fallback renders the bounding box"
+        );
+        // A landscape monitor beside a portrait one: 4000x2560 combined, 28 % of it
+        // between the outputs.
+        let mixed = [
+            head(0, (0, 0), (2560, 1440), 60_000),
+            head(1, (2560, 0), (1440, 2560), 60_000),
+        ];
+        let extent = bridge_extent(&mixed, false);
+        assert_eq!(
+            extent,
+            (2560, 1440),
+            "the target is the output at the origin"
+        );
+        assert!(
+            mixed.iter().any(|output| area(output.size) >= area(extent)),
+            "no target is larger than the larger output"
+        );
+        // One output is the whole scene, as before.
+        let single = [head(0, (0, 0), (1920, 1080), 60_000)];
+        assert_eq!(bridge_extent(&single, false), (1920, 1080));
+        assert_eq!(bridge_extent(&single, true), (1920, 1080));
+    }
+
+    #[test]
+    fn damage_is_routed_only_to_the_output_it_touches() {
+        let outputs = [
+            head(0, (0, 0), (2560, 1440), 60_000),
+            head(1, (2560, 0), (1440, 2560), 60_000),
+        ];
+        let [first, second] = [OutputId(0), OutputId(1)].map(|id| {
+            let output = outputs
+                .iter()
+                .find(|output| output.id == id)
+                .expect("the head is listed");
+            view_of(id, output.position, (1, 1), &outputs)
+        });
+        // A caret blinking on head 2.
+        let caret = [vello::FineDamageRect {
+            x: 2600,
+            y: 2000,
+            width: 8,
+            height: 20,
+        }];
+        assert_eq!(
+            first.damage(&caret),
+            Some(Vec::new()),
+            "head 1 receives no damage region, so it is neither rendered nor flipped"
+        );
+        assert_eq!(
+            second.damage(&caret),
+            Some(vec![vello::FineDamageRect {
+                x: 40,
+                y: 2000,
+                width: 8,
+                height: 20,
+            }]),
+            "head 2 receives the damage in its own pixels"
+        );
+        // Damage straddling the seam splits exactly at it: a window across both heads
+        // repairs both halves and nothing else.
+        let seam = [vello::FineDamageRect {
+            x: 2500,
+            y: 100,
+            width: 100,
+            height: 50,
+        }];
+        assert_eq!(
+            first.damage(&seam),
+            Some(vec![vello::FineDamageRect {
+                x: 2500,
+                y: 100,
+                width: 60,
+                height: 50,
+            }])
+        );
+        assert_eq!(
+            second.damage(&seam),
+            Some(vec![vello::FineDamageRect {
+                x: 0,
+                y: 100,
+                width: 40,
+                height: 50,
+            }])
+        );
+    }
+
+    #[test]
+    fn slow_output_skips_frames_while_its_flip_is_pending() {
+        // A 144 Hz monitor beside a 60 Hz panel, both rendering direct and damaged every
+        // frame. The loop ticks at 144 Hz and waits only for the fast output's flip; the
+        // panel renders only once its previous flip has retired on its own vblank.
+        let outputs = [
+            head(0, (0, 0), (2560, 1440), 144_000),
+            head(1, (2560, 0), (1920, 1080), 60_000),
+        ];
+        let fastest = outputs.iter().filter_map(|output| output.refresh_mhz).max();
+        // Refresh periods in nanoseconds.
+        let fast_period: u64 = 6_944_444;
+        let slow_period: u64 = 16_666_667;
+        let mut fast = scanout::DirectScanoutState::new(0);
+        let mut slow = scanout::DirectScanoutState::new(0);
+        // The vblank (in nanoseconds) the panel's pending flip retires on.
+        let mut slow_retires_at: Option<u64> = None;
+        let (mut fast_renders, mut slow_renders, mut slow_skips) = (0_u32, 0_u32, 0_u32);
+        // One second of 144 Hz ticks.
+        for tick in 0..144_u64 {
+            let now = tick.saturating_mul(fast_period);
+            // The frame's non-blocking drain: the panel's flip retired at its vblank.
+            if slow_retires_at.is_some_and(|at| now >= at) {
+                assert!(slow.complete());
+                slow_retires_at = None;
+            }
+            let slot = fast
+                .render_slot()
+                .expect("the fast output's flip retired before the next frame");
+            assert!(fast.submit(slot));
+            fast_renders = fast_renders.saturating_add(1);
+            if let Some(slot) = slow.render_slot() {
+                assert!(slow.submit(slot));
+                slow_renders = slow_renders.saturating_add(1);
+                let next_vblank = now
+                    .checked_div(slow_period)
+                    .expect("the period is not zero")
+                    .saturating_add(1);
+                slow_retires_at = Some(next_vblank.saturating_mul(slow_period));
+            } else {
+                slow_skips = slow_skips.saturating_add(1);
+            }
+            // The frame retires once the outputs pacing the loop have flipped.
+            assert_eq!(
+                flip_wait(refresh_of(&outputs, OutputId(0)), fastest, Duration::ZERO),
+                FlipWait::Await,
+                "the frame waits for the fast output"
+            );
+            assert!(fast.complete());
+            assert_eq!(
+                flip_wait(refresh_of(&outputs, OutputId(1)), fastest, Duration::ZERO),
+                FlipWait::Leave,
+                "the frame does not wait for the slower output"
+            );
+        }
+        assert_eq!(fast_renders, 144, "the fast output renders every frame");
+        assert!(
+            slow_renders <= 60,
+            "the 60 Hz output renders at most once per its own vblank: {slow_renders}"
+        );
+        assert!(
+            slow_renders >= 59,
+            "and once on every vblank it can: {slow_renders}"
+        );
+        assert_eq!(
+            slow_skips,
+            144_u32.saturating_sub(slow_renders),
+            "it skips the frames it cannot show"
+        );
+    }
+
+    #[test]
+    fn only_outputs_at_the_fastest_rate_pace_the_loop() {
+        let fastest = Some(144_000);
+        let quick = Duration::from_millis(1);
+        assert_eq!(flip_wait(Some(144_000), fastest, quick), FlipWait::Await);
+        assert_eq!(flip_wait(Some(60_000), fastest, quick), FlipWait::Leave);
+        assert_eq!(
+            flip_wait(Some(60_000), fastest, DIRECT_RETIREMENT_TIMEOUT),
+            FlipWait::Overdue,
+            "a slow output whose flip never retires is demoted, not waited for"
+        );
+        // A 59.94 Hz panel beside a 60 Hz one shares its cadence.
+        assert_eq!(
+            flip_wait(Some(59_940), Some(60_000), quick),
+            FlipWait::Await
+        );
+        // Without known rates every output paces the loop, as all did before.
+        assert_eq!(flip_wait(None, fastest, quick), FlipWait::Await);
+        assert_eq!(flip_wait(Some(60_000), None, quick), FlipWait::Await);
     }
 }
