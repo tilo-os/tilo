@@ -523,6 +523,16 @@ from logical key events. A real Smithay-to-Winit wire regression covers initial
 keymap/focus and several queued modifier/group changes; no global capture or new
 protocol/socket is introduced.
 
+### Opt-in whole-recording GPU envelopes
+
+The existing bounded Vello timestamp query/readback adds four encoder-level
+queries only when its initialized device enables TIMESTAMP_QUERY_INSIDE_ENCODERS.
+They surround the actual recording and nested post_render output/blit; resolution
+follows the final output commands. Pass durations remain separate. Missing or
+partial recording ownership never certifies a complete frame. The envelope excludes
+pre-execution queue/relay waits and its own query-resolution/copy overhead. Normal
+feature requests, submits, completion fences and pixels are unchanged.
+
 ## Build-script-generated protobuf descriptors
 
 `buffa-build` 0.9.2 is carried as verified registry source with a small

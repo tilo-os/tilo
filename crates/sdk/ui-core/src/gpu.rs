@@ -404,6 +404,7 @@ impl RenderContext {
         let dispatch_timestamps_requested = diagnostics.gpu_dispatch_timestamps;
         let timestamp_feature = wgpu::Features::TIMESTAMP_QUERY;
         let inside_pass_feature = wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+        let encoder_feature = wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         let timestamp_features = if gpu_timestamps_requested && features.contains(timestamp_feature)
         {
             if dispatch_timestamps_requested && features.contains(inside_pass_feature) {
@@ -429,6 +430,14 @@ impl RenderContext {
             }
             wgpu::Features::empty()
         };
+        // Whole-recording/output intervals are opt-in alongside the existing timestamps.
+        // Unsupported encoder timestamps leave pass measurements available but coverage absent.
+        let timestamp_features = timestamp_features
+            | if gpu_timestamps_requested && timestamp_features.contains(timestamp_feature) {
+                features & encoder_feature
+            } else {
+                wgpu::Features::empty()
+            };
         tilo_startup_metrics::mark("gpu-device-request-start");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {

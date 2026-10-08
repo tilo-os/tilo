@@ -2444,6 +2444,7 @@ mod tests {
         summed_ns: f64,
     ) -> vello::GpuTimestampSample {
         vello::GpuTimestampSample {
+            recording_envelope: None,
             submission_id: 1,
             pass_count,
             span_ticks: 0,

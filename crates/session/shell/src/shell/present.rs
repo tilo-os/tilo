@@ -233,7 +233,7 @@ struct FrameLifecycle {
     display: DisplayTiming,
 }
 
-fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
+fn log_frame_lifecycle(serial: u64, revision: u64, timing: &FrameLifecycle) {
     let FrameLifecycle {
         queue_wait,
         render,
@@ -242,7 +242,7 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
         input_age_at_enqueue,
         phases,
         display,
-    } = timing;
+    } = *timing;
     // Keep the first completed presentation observable even when
     // it is fast and the event loop then parks indefinitely.
     if phases.is_some()
@@ -251,6 +251,9 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
         || render >= SLOW_FRAME_LIFECYCLE
         || total >= SLOW_FRAME_LIFECYCLE
     {
+        if let Some(record) = submission_gpu_record(serial, revision, timing) {
+            eprintln!("{record}");
+        }
         eprintln!(
             "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={} monotonic_us={}",
             queue_wait.as_micros(),
@@ -277,6 +280,139 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
             // session's first presented frame on the system's own clock (TIL-767).
             crate::compositor::client_input::monotonic_time_ns()
                 .map_or_else(|| "none".to_owned(), |ns| (ns / 1_000).to_string()),
+        );
+    }
+}
+
+/// Device-clock intervals joined only by actual recording ownership and frame serial.
+fn submission_gpu_record(serial: u64, revision: u64, timing: &FrameLifecycle) -> Option<String> {
+    let gpu = timing.phases?.paint.submission_gpu;
+    let status = match gpu {
+        Some(value) if value.complete() => "complete",
+        Some(value) if !value.encoder_supported => "unsupported",
+        Some(value) if !value.encoder_enabled => "disabled",
+        Some(_) => "incomplete",
+        None => "missing",
+    };
+    let value = gpu.unwrap_or_default();
+    let identity =
+        |value: Option<u64>| value.map_or_else(|| "none".to_owned(), |value| value.to_string());
+    let measured = |value: u64| {
+        if gpu.is_some_and(|gpu| gpu.measured > 0) {
+            value.to_string()
+        } else {
+            "none".to_owned()
+        }
+    };
+    Some(format!(
+        "FRAME-GPU-SUBMISSION serial={serial} revision={revision} status={status} process_id={} encoder_supported={} encoder_enabled={} external_queue_work={} renderer_generation={} first_recording={} last_recording={} recording_count={} measured_count={} stale_count={} recording_ns={} post_render_ns={} scope=encoder_before_query_resolve",
+        std::process::id(),
+        value.encoder_supported,
+        value.encoder_enabled,
+        value.external_queue_work,
+        identity(value.renderer_generation),
+        identity(value.first_recording),
+        identity(value.last_recording),
+        value.recordings,
+        value.measured,
+        value.stale,
+        measured(value.recording_ns),
+        measured(value.post_render_ns),
+    ))
+}
+
+#[cfg(test)]
+mod phase_record_tests {
+    use super::*;
+
+    #[test]
+    fn submission_gpu_record_keeps_serial_revision_and_missing_coverage() {
+        use crate::shell::render::paint::GpuSubmissionTiming;
+        let mut timing = FrameLifecycle {
+            queue_wait: Duration::ZERO,
+            render: Duration::ZERO,
+            total: Duration::ZERO,
+            inflight_at_enqueue: 0,
+            input_age_at_enqueue: None,
+            phases: Some(FramePhaseTiming::default()),
+            display: DisplayTiming::default(),
+        };
+        assert!(
+            submission_gpu_record(41, 9, &timing)
+                .unwrap()
+                .contains("status=missing")
+        );
+        timing.phases.as_mut().unwrap().paint.submission_gpu = Some(GpuSubmissionTiming {
+            renderer_generation: Some(7),
+            encoder_supported: true,
+            encoder_enabled: true,
+            external_queue_work: false,
+            first_recording: Some(3),
+            last_recording: Some(4),
+            recordings: 2,
+            measured: 1,
+            recording_ns: 30,
+            post_render_ns: 15,
+            stale: 0,
+        });
+        let partial = submission_gpu_record(41, 9, &timing).unwrap();
+        assert!(partial.contains("serial=41 revision=9 status=incomplete"));
+        assert!(partial.contains("recording_count=2 measured_count=1"));
+        timing
+            .phases
+            .as_mut()
+            .unwrap()
+            .paint
+            .submission_gpu
+            .as_mut()
+            .unwrap()
+            .measured = 2;
+        let complete = submission_gpu_record(42, 10, &timing).unwrap();
+        assert!(complete.contains("serial=42 revision=10 status=complete"));
+        assert!(complete.contains("recording_ns=30 post_render_ns=15"));
+        timing
+            .phases
+            .as_mut()
+            .unwrap()
+            .paint
+            .submission_gpu
+            .as_mut()
+            .unwrap()
+            .external_queue_work = true;
+        assert!(
+            submission_gpu_record(42, 10, &timing)
+                .unwrap()
+                .contains("status=incomplete")
+        );
+        let gpu = timing
+            .phases
+            .as_mut()
+            .unwrap()
+            .paint
+            .submission_gpu
+            .as_mut()
+            .unwrap();
+        gpu.measured = 0;
+        gpu.encoder_supported = false;
+        gpu.encoder_enabled = false;
+        assert!(
+            submission_gpu_record(43, 11, &timing)
+                .unwrap()
+                .contains("status=unsupported")
+        );
+        timing
+            .phases
+            .as_mut()
+            .unwrap()
+            .paint
+            .submission_gpu
+            .as_mut()
+            .unwrap()
+            .encoder_supported = true;
+        assert!(
+            submission_gpu_record(44, 12, &timing)
+                .unwrap()
+                .contains("status=disabled")
         );
     }
 }
@@ -327,7 +463,12 @@ impl RetireBoard {
 }
 
 /// Log one presented frame: its lifecycle record and the presenter's own detail.
-fn report_frame(presenter: &mut dyn Presenter, serial: u64, revision: u64, timing: FrameLifecycle) {
+fn report_frame(
+    presenter: &mut dyn Presenter,
+    serial: u64,
+    revision: u64,
+    timing: &FrameLifecycle,
+) {
     log_frame_lifecycle(serial, revision, timing);
     if let Some(detail) = presenter.frame_detail() {
         eprintln!("CPU-FRAME serial={serial} revision={revision} {detail}");
@@ -431,7 +572,7 @@ impl PresentPipe {
                                 &mut *presenter,
                                 serial,
                                 frame.revision,
-                                FrameLifecycle {
+                                &FrameLifecycle {
                                     queue_wait,
                                     render,
                                     total,

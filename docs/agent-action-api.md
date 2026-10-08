@@ -704,6 +704,7 @@ payload already in the canonical content store; Store does not invent an
 untrusted download source. The review reports actual installed state separately
 from the candidate, and successful installation requires the reviewed root to
 be the selected installed package.
+
 ### Timing diagnostics in an active owner session
 
 The authenticated local owner socket publishes `session-diagnostics` with
@@ -741,6 +742,22 @@ action or change diagnostic configuration. An unsupported connection receives
 `not_permitted` explaining the required owner socket. Agent-scoped, sandboxed, other-account and locked-session calls cannot
 configure this owner-only surface. No application content or typed keys are
 recorded by these timing options.
+
+For compositor whole-submission GPU timing, enable `gpu_timestamps` through the
+existing greeter's next-sign-in diagnostics before the compositor creates its
+device. Active-session configure does not renegotiate renderer features. Actual
+`FRAME-GPU-SUBMISSION` rows report complete, incomplete, unsupported, disabled or missing
+coverage, with exact presenter serial/revision and renderer/recording identities.
+The nested output interval includes the actual appended scanout blit; never add it
+to the containing recording envelope. Encoder queries require actual adapter/device
+support. These device-clock intervals exclude pre-execution queue/relay delay and
+query readback copies; CPU fence wait and physical KMS outcome remain separate.
+Frames with unmeasured auxiliary queue work (including backdrop blur, scroll
+copies and retained-layer composition) report incomplete envelope coverage.
+Multi-output frames also report incomplete coverage when only the last output's
+bridge timing is available. A desktop-only restart preserves the login wrapper
+environment; configure
+the existing greeter before a normal PAM sign-in to initialize timestamp features.
 
 ## Cloud account mounts
 

@@ -3333,6 +3333,7 @@ mod tests {
                     readback_bytes: 9,
                     cpu_output_bytes: 10,
                     backdrop_us: 0,
+                    ..Default::default()
                 },
             });
             totals.add_sample(BenchmarkPhaseTiming {
@@ -3348,6 +3349,7 @@ mod tests {
                     readback_bytes: 90,
                     cpu_output_bytes: 100,
                     backdrop_us: 0,
+                    ..Default::default()
                 },
             });
             assert_eq!(totals.input_us, 11);
@@ -3575,6 +3577,7 @@ mod tests {
                     readback_bytes: 9,
                     cpu_output_bytes: 10,
                     backdrop_us: 0,
+                    ..Default::default()
                 },
             },
             attempts: 1,

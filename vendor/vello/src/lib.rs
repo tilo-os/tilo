@@ -489,6 +489,17 @@ pub struct GpuTimestampSample {
     pub span_ns: f64,
     pub summed_pass_ns: f64,
     pub timestamp_bytes: Vec<u8>,
+    /// Encoder-level intervals excluding timestamp resolve/copy and pre-execution queue waits.
+    /// None means the actual device or this recording did not provide complete coverage.
+    pub recording_envelope: Option<GpuRecordingEnvelope>,
+}
+
+/// Complete encoder interval and its nested appended-output interval. Never add them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct GpuRecordingEnvelope {
+    pub recording_ns: u64,
+    pub post_render_ns: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

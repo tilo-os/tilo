@@ -5,6 +5,15 @@ executable stand-alone; the higher-level flow is described below.
 
 ## Measure
 
+- `compositor_gpu.py` — `summarize_compositor_gpu(lines)` joins opt-in
+  `FRAME-GPU-SUBMISSION` records to main's `FRAME-LIFECYCLE` retirement records
+  by exact serial and revision. It rejects reused renderer recordings and
+  incomplete coverage claims; absent measurements stay missing, not zero.
+  Enable `gpu_timestamps` before sign-in and compositor phase timing for the
+  capture (see [diagnostics](../../docs/agent-action-api.md)). The appended
+  output/blit interval is nested in the recording interval, never additive.
+  Neither interval measures queue delay or proves physical display completion.
+
 - `shm_swizzle_bench` — a Cargo example calling the production SHM pixel
   conversion on reused storage, with pixel/capacity checks and raw timing
   samples. Run it in the benchmark environment with `cargo run --locked
