@@ -240,8 +240,13 @@ impl DeviceHarness {
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("fs-blobs.sock");
+        // The in-memory store spawns its actor on the ambient runtime.
+        let media = {
+            let _guard = runtime.enter();
+            DocumentMedia::new(Arc::new(ContentStore::memory()))
+        };
         let observed = Arc::new(Observed {
-            media: DocumentMedia::new(Arc::new(ContentStore::memory())),
+            media,
             reads: std::sync::Mutex::default(),
             puts: std::sync::atomic::AtomicUsize::default(),
             tamper: std::sync::atomic::AtomicBool::default(),
