@@ -996,6 +996,12 @@ pub(super) async fn install(
                         unexpected_reply = matches!(&result, Ok(Ok(_))),
                         "committed document polling stopped"
                     );
+                    // An expired Open may have allocated a broker capture. Its
+                    // outcome is unknown: do not replay it or leave a stopped
+                    // reader advertising a connected, publishable route.
+                    inbound
+                        .state
+                        .fail_closed("committed document read outcome unknown");
                     set_read_ready(&inbound, &ready, false);
                     break;
                 }

@@ -5,6 +5,9 @@ use crate::shell::network::ShellNetwork;
 use cold_code::{APP, BODY, FILE, LocalSurface, MountedCode};
 use sha2::{Digest as _, Sha256};
 
+#[path = "mounted_code/blocked_read.rs"]
+mod blocked_read;
+
 // The mounted UI stays on the caller thread while Iroh and persistence can
 // progress independently, as on ShellNetwork's two-worker runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -34,6 +37,7 @@ fn trace_publication_hops() {
 pub(super) enum Journey {
     Document,
     PrivateAdmission,
+    BlockedRead,
 }
 
 pub(super) struct Context<'a> {
@@ -217,34 +221,18 @@ pub(super) async fn run(
     )
     .await;
     inspect_while_ui_caller_is_blocked(&context, &authority);
-    report_owner_phases("before edit", &mounted);
-    let edited = format!("{BODY}// edited through a mounted resource action\n");
-    mounted[0].invoke("replace-text", Some(&edited));
-    drive(
-        &context,
-        &authority,
-        &receipts.owner,
-        &mut refreshes,
-        &mut mounted,
-        &edited,
-        2,
-    )
-    .await;
-    report_owner_phases("after first edit", &mounted);
-    // A second fresh edit proves the receiving root remains connected after
-    // its first remote merge; no app remount or record-graph copy occurs.
-    let edited_again = format!("{edited}// second mounted device edits\n");
-    mounted[1].invoke("replace-text", Some(&edited_again));
-    drive(
-        &context,
-        &authority,
-        &receipts.owner,
-        &mut refreshes,
-        &mut mounted,
-        &edited_again,
-        2,
-    )
-    .await;
+    if matches!(context.journey, Journey::BlockedRead) {
+        blocked_read::run(&first, &mut mounted[0]).await;
+    } else {
+        edit_and_converge(
+            &context,
+            &authority,
+            &receipts.owner,
+            &mut refreshes,
+            &mut mounted,
+        )
+        .await;
+    }
     let private_routes = mounted
         .iter_mut()
         .map(|app| app.code.app.controlled_private_continuity_route_for_test())
@@ -267,6 +255,38 @@ pub(super) async fn run(
             "private admission stays on the original document route, without a continuation-label shortcut"
         );
     }
+}
+
+#[expect(
+    clippy::future_not_send,
+    reason = "mounted UI roots use Rc and run on this test runtime thread"
+)]
+async fn edit_and_converge(
+    context: &Context<'_>,
+    authority: &ActualAuthority,
+    source: &NativeWorkspaceOwner,
+    refreshes: &mut tokio::sync::mpsc::Receiver<tilo_relay::peer::sync_refresh::Request>,
+    mounted: &mut [Mounted],
+) {
+    report_owner_phases("before edit", mounted);
+    let edited = format!("{BODY}// edited through a mounted resource action\n");
+    mounted[0].invoke("replace-text", Some(&edited));
+    drive(context, authority, source, refreshes, mounted, &edited, 2).await;
+    report_owner_phases("after first edit", mounted);
+    // A second fresh edit proves the receiving root remains connected after
+    // its first remote merge; no app remount or record-graph copy occurs.
+    let edited_again = format!("{edited}// second mounted device edits\n");
+    mounted[1].invoke("replace-text", Some(&edited_again));
+    drive(
+        context,
+        authority,
+        source,
+        refreshes,
+        mounted,
+        &edited_again,
+        2,
+    )
+    .await;
 }
 
 fn report_owner_phases(stage: &str, mounted: &[Mounted]) {
