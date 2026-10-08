@@ -4,6 +4,7 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
+mod display_auto_leases;
 pub(crate) mod person_layout;
 mod receive_recovery;
 mod remote_capture;
@@ -702,6 +703,7 @@ struct OutboundSpatialInput {
 struct SpatialInputState {
     /// Permissions this device issued and must enforce on inbound input.
     issued: BTreeMap<[u8; 16], InputLease>,
+    automatic_issued: BTreeMap<crate::shell::personal_continuity::DeviceId, [u8; 16]>,
     issued_routes: BTreeMap<[u8; 16], crate::shell::network::AuthenticatedPersonalRoute>,
     /// Permissions other devices issued to this controller.
     received: BTreeMap<crate::shell::personal_continuity::DeviceId, InputLease>,
@@ -852,6 +854,11 @@ impl SpatialInputState {
         self.outbound.push_back(input);
         Ok(())
     }
+}
+
+fn input_control_operations() -> &'static Mutex<()> {
+    static OPERATIONS: OnceLock<Mutex<()>> = OnceLock::new();
+    OPERATIONS.get_or_init(|| Mutex::new(()))
 }
 
 fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
@@ -3004,6 +3011,9 @@ fn prune_spatial_state(
     spatial
         .issued_routes
         .retain(|nonce, _| spatial.issued.contains_key(nonce));
+    spatial
+        .automatic_issued
+        .retain(|_, nonce| spatial.issued.contains_key(nonce));
     spatial.received.retain(|target, lease| {
         lease.validate_at(now).is_ok() && !departed.contains(target) && is_online(target)
     });
@@ -6359,7 +6369,50 @@ pub fn grant_input_control(
     network: &ShellNetwork,
     controller: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<InputLease, String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    let lease = grant_input_control_inner(network, controller, false)?;
+    display_auto_leases::record_decline(network, controller, false)?;
+    Ok(lease)
+}
+
+fn grant_input_control_automatic(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+) -> Result<(), String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    prune_spatial_leases(network);
+    let policy = ContinuityPolicySnapshot::load();
+    let view = person_layout::current(network);
+    if !display_auto_leases::wanted_controllers(network, view.as_deref(), policy)
+        .contains(controller)
+    {
+        return Ok(());
+    }
+    let renew = spatial_input_state()
+        .lock()
+        .map_err(|_| "spatial input state is unavailable".to_string())?
+        .automatic_needs_grant(controller, unix_now_ms());
+    if renew {
+        grant_input_control_inner(network, controller, true)?;
+    }
+    Ok(())
+}
+
+fn grant_input_control_inner(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+    automatic: bool,
+) -> Result<InputLease, String> {
     require_continuity(ContinuityCapability::DisplayInput)?;
+    if !network.personal_device_is_enrolled(controller) {
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-controller-not-enrolled",
+        ));
+    }
     // Advance the authenticated-departure cursor before minting replacement
     // authority, so retained history cannot revoke a fresh reconnect lease.
     prune_spatial_leases(network);
@@ -6420,6 +6473,10 @@ pub fn grant_input_control(
             .retain(|nonce, _| retained.contains(nonce));
         spatial.issued_routes.insert(nonce, route);
         spatial.issued.insert(nonce, lease.clone());
+        spatial.automatic_issued.remove(controller);
+        if automatic {
+            spatial.automatic_issued.insert(controller.clone(), nonce);
+        }
     }
     Ok(lease)
 }
@@ -6435,12 +6492,44 @@ pub fn revoke_input_control(
     network: &ShellNetwork,
     controller: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<(), String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    let persisted = display_auto_leases::record_decline(network, controller, true);
+    let revoked = revoke_input_control_inner(network, controller, None);
+    revoked.and(persisted)
+}
+
+fn revoke_input_control_automatic(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+) -> Result<(), String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    if !spatial_input_state()
+        .lock()
+        .is_ok_and(|state| state.automatic_lease_matches(controller, nonce))
+    {
+        return Ok(());
+    }
+    revoke_input_control_inner(network, controller, Some(nonce))
+}
+
+fn revoke_input_control_inner(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+    expected: Option<[u8; 16]>,
+) -> Result<(), String> {
     let leases = spatial_input_state()
         .lock()
         .map_err(|_| "spatial input state is unavailable".to_string())?
         .issued
         .values()
-        .filter(|lease| &lease.controller == controller)
+        .filter(|lease| {
+            &lease.controller == controller && expected.is_none_or(|nonce| lease.nonce == nonce)
+        })
         .cloned()
         .collect::<Vec<_>>();
     if leases.is_empty() {
@@ -6456,10 +6545,21 @@ pub fn revoke_input_control(
         }
     }
     if let Ok(mut spatial) = spatial_input_state().lock() {
+        let revoked = leases
+            .iter()
+            .map(|lease| lease.nonce)
+            .collect::<BTreeSet<_>>();
+        let removed = spatial.issued.keys().any(|nonce| revoked.contains(nonce));
+        spatial.issued.retain(|nonce, _| !revoked.contains(nonce));
         spatial
-            .issued
-            .retain(|_, lease| &lease.controller != controller);
-        spatial.release_controller(controller);
+            .issued_routes
+            .retain(|nonce, _| !revoked.contains(nonce));
+        spatial
+            .automatic_issued
+            .retain(|_, nonce| !revoked.contains(nonce));
+        if removed {
+            spatial.release_controller(controller);
+        }
     }
     delivery_error.map_or(Ok(()), Err)
 }
@@ -7530,6 +7630,7 @@ fn tear_down_spatial_input(network: &ShellNetwork) {
         spatial.received.clear();
         spatial.received_routes.clear();
         spatial.issued_routes.clear();
+        spatial.automatic_issued.clear();
         spatial.outbound.clear();
         spatial.inbound.clear();
     }

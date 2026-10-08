@@ -106,6 +106,10 @@ pub enum DisplayEffect {
         x: i32,
         y: i32,
     },
+    /// Opt this device into automatic grants to its enrolled online input devices.
+    /// The separate Continuity master and Display/input switches must also be on.
+    #[effect(returns, permission = "admin", idempotent)]
+    SetAutomaticDisplayInput { on: bool },
     /// Inspect the observed displays and their shared arrangement, including offline devices.
     #[effect(view, returns, permission = "read", label = "Inspect shared displays")]
     InspectSharedDisplays,
@@ -783,6 +787,7 @@ pub struct DisplayModel {
     device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
     person_devices: Vec<settings_store::person_displays::PersonDevice>,
     shared_display_prefs: Followed<shared_displays::SharedDisplayPrefs>,
+    automatic_display_prefs: Followed<shared_displays::AutomaticDisplayPrefs>,
     pending_device_move: Option<settings_store::device_displays::DeviceDisplayMove>,
     awaiting_device_move: Option<(settings_store::device_displays::DeviceDisplayMove, Instant)>,
     shared_move_revisions: Option<Vec<(String, u64)>>,
@@ -949,6 +954,7 @@ impl DisplayModel {
         let output_brightness = read_output_brightness(&outputs);
         Self {
             shared_display_prefs: cx.follow::<shared_displays::SharedDisplayPrefs>(),
+            automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
             prefs: cx.follow::<DisplayPrefs>(),
             cx,
             of_device: true,
@@ -1029,6 +1035,7 @@ impl DisplayModel {
     fn detached(cx: PaneCx) -> Self {
         Self {
             shared_display_prefs: cx.follow::<shared_displays::SharedDisplayPrefs>(),
+            automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
             prefs: cx.follow::<DisplayPrefs>(),
             cx,
             of_device: false,
@@ -1457,6 +1464,7 @@ impl DisplayModel {
         }
         self.changed = true;
         let reported = match effect {
+            DisplayEffect::SetAutomaticDisplayInput { on } => self.set_automatic_display_input(*on),
             DisplayEffect::IncludeSharedDisplay { .. }
             | DisplayEffect::OrderSharedDisplay { .. } => self.edit_shared_display(effect),
             DisplayEffect::InspectSharedDisplays => Err(t("display-shared-read-only")),
@@ -2671,6 +2679,9 @@ impl PaneModel for DisplayModel {
         self.poll_device_move();
         self.poll_background();
         self.poll_device();
+        if self.automatic_display_prefs.refresh() {
+            self.changed = true;
+        }
         if self.shared_display_prefs.refresh() {
             self.changed = true;
         }

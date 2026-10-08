@@ -17,7 +17,32 @@ impl ui::storage::SettingsSchema for SharedDisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
 }
 
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub(super) struct AutomaticDisplayPrefs {
+    pub automatic_display_input: bool,
+}
+
+impl ui::storage::SettingsSchema for AutomaticDisplayPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("continuity");
+}
+
 impl DisplayModel {
+    pub(super) fn set_automatic_display_input(&mut self, on: bool) -> Result<String, String> {
+        self.automatic_display_prefs
+            .settings()
+            .update(|prefs| prefs.automatic_display_input = on)
+            .map_err(|error| {
+                t_args(
+                    "display-shared-save-failed",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
+        self.automatic_display_prefs.refresh();
+        self.changed = true;
+        Ok(t("display-shared-saved"))
+    }
+
     fn bind_shared_row<I: 'static, C: ui::framework::ActionControl<I>>(
         &self,
         row: &ui::tilo_actions::Resource,
@@ -195,7 +220,7 @@ impl DisplayModel {
     }
 
     pub(super) fn shared_display_inspection(&self) -> serde_json::Value {
-        serde_json::json!({"devices": self.person_devices, "layout": self.shared_layout(), "arrangement": self.shared_display_prefs.get().arrangement})
+        serde_json::json!({"devices": self.person_devices, "layout": self.shared_layout(), "arrangement": self.shared_display_prefs.get().arrangement, "automatic_input": self.automatic_display_prefs.get().automatic_display_input})
     }
 
     pub(super) fn edit_shared_display(&mut self, effect: &DisplayEffect) -> Result<String, String> {
@@ -269,6 +294,16 @@ impl DisplayModel {
             return None;
         }
         let mut content = vec![caption(&t("display-shared-description"))];
+        content.push(setting_row_described(
+            &t("display-shared-auto-input"),
+            &t("display-shared-auto-description"),
+            Box::new(self.cx.bind(
+                Toggle::from_state(&LocalState::new(
+                    self.automatic_display_prefs.get().automatic_display_input,
+                )),
+                effect(DisplayEffect::SET_AUTOMATIC_DISPLAY_INPUT),
+            )),
+        ));
         for display in layout.displays.iter().chain(&layout.inactive) {
             let row = self.shared_row(display).into_resource();
             let device = display.device.clone();
@@ -572,5 +607,61 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(before, after);
+    }
+    #[test]
+    fn shared_display_automatic_input_is_a_separate_local_admin_choice() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let before = app
+            .call("inspect-shared-displays", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(before["automatic_input"], false);
+        app.call(
+            "set-automatic-display-input",
+            serde_json::json!({"on":true}),
+        )
+        .unwrap();
+        app.settle();
+        let after = app
+            .call("inspect-shared-displays", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(after["automatic_input"], true);
+        app.surface::<SettingsApp, _>(|settings| {
+            let privacy = settings
+                .displays()
+                .model()
+                .borrow()
+                .cx
+                .settings::<crate::continuity::ContinuityPrivacy>()
+                .get();
+            assert!(
+                !privacy.enabled && !privacy.display_input,
+                "automatic opt-in never enables the existing privacy switches"
+            );
+        });
+        assert_eq!(
+            settings_store::continuity::classify("tilo.continuity.automatic_display_input"),
+            Some(settings_store::continuity::SettingScope::DeviceLocal)
+        );
+    }
+
+    #[test]
+    fn shared_display_automatic_input_cannot_be_enabled_by_a_viewer() {
+        let mut app =
+            ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
+                .unwrap();
+        assert!(
+            app.call(
+                "set-automatic-display-input",
+                serde_json::json!({"on":true})
+            )
+            .is_err()
+        );
+        let view = app
+            .call("inspect-shared-displays", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(view["automatic_input"], false);
     }
 }

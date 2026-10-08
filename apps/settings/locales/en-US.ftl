@@ -2078,3 +2078,5 @@ display-shared-order-invalid = Choose a display number from the current list.
 display-shared-save-failed = The arrangement could not be saved: { $error }
 display-shared-saved = Shared display arrangement saved.
 display-shared-move-stale = The device confirmed its position, but the shared arrangement changed. Refresh and try again.
+display-shared-auto-input = Allow automatic input from your devices
+display-shared-auto-description = While one of this device's displays is included, let your enrolled online devices control it. Continuity and Display/input must also be enabled. Devices you have declined stay declined. This choice applies only here.

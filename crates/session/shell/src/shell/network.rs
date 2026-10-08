@@ -6,9 +6,12 @@
 use crate::shell::state::WorkspaceAuthority as _;
 
 mod boot_join;
+#[cfg(test)]
+mod display_input_tests;
 mod display_observations;
 mod governor_actions;
 mod hosted_topology;
+mod input_declines;
 #[cfg(test)]
 mod live_identity_tests;
 mod native_enrollment;
@@ -5442,6 +5445,37 @@ impl ShellNetwork {
         Ok(changed)
     }
 
+    fn display_input_declines_path(&self) -> Result<(PathBuf, [u8; 32]), String> {
+        let user = self
+            .personal_continuity_user
+            .ok_or("display input has no selected identity")?;
+        let path = self
+            .device_fabric_path
+            .as_ref()
+            .ok_or("display input has no private state directory")?;
+        let name = format!(
+            "personal-display-input-declines-{}.json",
+            blake3::hash(&user).to_hex()
+        );
+        Ok((path.with_file_name(name), user))
+    }
+
+    pub(crate) fn load_display_input_declines(
+        &self,
+    ) -> Result<std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>, String>
+    {
+        let (path, user) = self.display_input_declines_path()?;
+        input_declines::load(&path, user)
+    }
+
+    pub(crate) fn save_display_input_declines(
+        &self,
+        devices: &std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>,
+    ) -> Result<(), String> {
+        let (path, user) = self.display_input_declines_path()?;
+        input_declines::save(&path, user, devices)
+    }
+
     /// The person whose devices form this device's personal fabric.
     pub fn personal_user_public_key(&self) -> Option<[u8; 32]> {
         self.personal_continuity_user
@@ -9543,7 +9577,7 @@ mod tests {
 
     /// A shell for one of `root`'s devices, `device`, holding `tree` and
     /// keeping the person's workspace list.
-    fn personal_workspaces_network_for_test(
+    pub(super) fn personal_workspaces_network_for_test(
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
         mut tree: WorkspaceTree,
@@ -9595,7 +9629,7 @@ mod tests {
         (tree, room)
     }
 
-    fn drain(commands: &mut mpsc::Receiver<NetCmd>) -> Vec<NetCmd> {
+    pub(super) fn drain(commands: &mut mpsc::Receiver<NetCmd>) -> Vec<NetCmd> {
         std::iter::from_fn(|| commands.try_recv().ok()).collect()
     }
 
@@ -9797,7 +9831,7 @@ mod tests {
         )
     }
 
-    fn authenticated_personal_peer(
+    pub(super) fn authenticated_personal_peer(
         net: &ShellNetwork,
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
@@ -10243,7 +10277,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(&key_dir).unwrap().count(), 1);
     }
 
-    fn rich_display_network_snapshot(
+    pub(super) fn rich_display_network_snapshot(
         owner: crate::shell::personal_continuity::DeviceId,
     ) -> (
         crate::shell::device_fabric::DeviceFabricSnapshot,

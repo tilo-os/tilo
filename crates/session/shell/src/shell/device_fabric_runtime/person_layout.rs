@@ -82,7 +82,7 @@ pub(super) fn resolve(
     }
 }
 
-pub(super) fn refresh(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+pub(crate) fn refresh(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
     let view = network
         .local_device_fabric_identity()
         .filter(|_| policy.permits(ContinuityCapability::DisplayInput))
@@ -95,8 +95,9 @@ pub(super) fn refresh(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
             ))
         });
     if let Ok(mut cached) = cache().lock() {
-        *cached = view;
+        cached.clone_from(&view);
     }
+    super::display_auto_leases::follow(network, view.as_deref(), policy);
 }
 
 /// A hardware revision change invalidates the old layout immediately rather
