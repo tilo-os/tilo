@@ -16,6 +16,15 @@
 //! The sibling half is wiped here once it is handed over. A failure after the
 //! slot was added removes the slot again, so a half-enrolled volume never
 //! remains.
+//!
+//! Enrolling again with `--replace-networks` keeps the slot, the certificate
+//! and the siblings, and only chooses the unlock networks anew: the material
+//! is unsealed, its networks replaced, and it is sealed the same way again.
+//!
+//! What is enrolled is described for Settings under [`STATE_DIR`], without
+//! secrets but readable only by root: it names the networks the owner trusts
+//! to unlock this machine. Settings reads it through polkit
+//! (`tilo-sibling-unlock volumes`).
 
 use crate::luks;
 use crate::material::{self, Material};
@@ -23,7 +32,7 @@ use crate::seal;
 use crate::token::{Sealing, Sibling, TOKEN_TYPE, TOKEN_VERSION, Token};
 use anyhow::{Context, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tilo_unlock_protocol::{
     ENROL_SOCKET, EnrolReply, EnrolRequest, EnrolResponse, Half, SlotId, decode_frame,
@@ -48,6 +57,11 @@ pub struct Args {
     /// anyone holding the disk.
     #[arg(long = "network")]
     pub networks: Vec<String>,
+    /// Keep the volume's sibling unlock and only choose its unlock networks
+    /// again: the `--network` list replaces the earlier one, and none leaves
+    /// wired links only. Needs no passphrase and no signed-in session.
+    #[arg(long)]
+    pub replace_networks: bool,
     /// The signed-in person whose session registers the enrolment with
     /// their devices (its `tilo-session/device-unlock.sock`). Without it the
     /// one session that serves the socket is used.
@@ -125,7 +139,7 @@ impl Registrar for SessionRegistrar {
 }
 
 /// What Settings shows about an enrolment.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
     pub keyslot: u32,
     /// `tpm2`, or `cleartext`: the device half and the unlock networks'
@@ -230,17 +244,26 @@ fn for_early_boot(keyfile: &str, mac_of: impl Fn(&str) -> Option<String>) -> Str
 /// When any step fails; the slot is removed again.
 pub fn run(args: &Args) -> Result<()> {
     let sealing = enrollment_sealing(seal::available(), args.require_tpm)?;
-    if luks::token(&args.device)?.is_some() {
-        bail!(
-            "{} already has a sibling unlock; remove it first",
+    let enrolled = luks::token(&args.device)?.is_some();
+    match (enrolled, args.replace_networks) {
+        (true, false) => bail!(
+            "{} already has a sibling unlock; pass --replace-networks to choose its networks again, or remove it first",
             args.device.display()
-        );
+        ),
+        (false, true) => bail!(
+            "{} has no sibling unlock whose networks could be replaced",
+            args.device.display()
+        ),
+        _ => {}
     }
     let networks = args
         .networks
         .iter()
         .map(|name| network(name))
         .collect::<Result<Vec<_>>>()?;
+    if args.replace_networks {
+        return replace_networks(&args.device, networks);
+    }
     let registrar = SessionRegistrar::find(args.session_uid)?;
     enrol_with_sealing(
         &args.device,
@@ -333,6 +356,25 @@ fn enrol_with_sealing(
     }
 }
 
+/// Chooses the unlock networks of an enrolled volume again, leaving its slot,
+/// certificate and siblings as they are. The material is sealed the way it
+/// was: a volume enrolled in the clear stays in the clear.
+///
+/// # Errors
+/// When the volume has no sibling unlock, its material cannot be unsealed,
+/// or cryptsetup refuses the new token.
+pub fn replace_networks(device: &Path, networks: Vec<material::Network>) -> Result<()> {
+    let mut token = luks::token(device)?
+        .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;
+    let mut material = Material::from_json(&seal::unseal(token.sealing, &token.material)?)?;
+    material.networks = networks;
+    token.material = seal::seal(token.sealing, &material.to_json()?)?;
+    token.validate()?;
+    luks::import_token(device, &token)?;
+    write_status(&status_of(&token)?, &luks::uuid_bytes(device)?);
+    Ok(())
+}
+
 fn status_of(token: &Token) -> Result<Status> {
     let material = Material::from_json(&seal::unseal(token.sealing, &token.material)?)?;
     Ok(Status {
@@ -358,12 +400,94 @@ fn status_of(token: &Token) -> Result<Status> {
 }
 
 fn write_status(status: &Status, volume_uuid: &[u8; 16]) {
-    let dir = Path::new(STATE_DIR);
-    if std::fs::create_dir_all(dir).is_ok()
-        && let Ok(json) = serde_json::to_vec_pretty(status)
-    {
-        let _ = std::fs::write(dir.join(format!("{}.json", hex::encode(volume_uuid))), json);
+    let _ = write_status_in(Path::new(STATE_DIR), status, volume_uuid);
+}
+
+/// Writes the description root-only, replacing an earlier one whole.
+fn write_status_in(dir: &Path, status: &Status, volume_uuid: &[u8; 16]) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    let mut file = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o600))
+        .tempfile_in(dir)?;
+    file.write_all(&serde_json::to_vec_pretty(status)?)?;
+    file.as_file().sync_all()?;
+    file.persist(dir.join(format!("{}.json", hex::encode(volume_uuid))))?;
+    Ok(())
+}
+
+/// One volume enrolled on this machine, as `tilo-sibling-unlock volumes`
+/// prints it for Settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Enrolled {
+    /// The LUKS UUID, as `/dev/disk/by-uuid` names the volume.
+    pub volume: String,
+    /// Where `enrol --replace-networks` finds it.
+    pub device: PathBuf,
+    #[serde(flatten)]
+    pub status: Status,
+}
+
+/// Every enrolment described under [`STATE_DIR`].
+///
+/// # Errors
+/// When the directory exists but cannot be read (it is root's alone).
+pub fn enrolled() -> Result<Vec<Enrolled>> {
+    enrolled_in(Path::new(STATE_DIR))
+}
+
+fn enrolled_in(dir: &Path) -> Result<Vec<Enrolled>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("could not read {}", dir.display()));
+        }
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        let Some(hex_uuid) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        let Some(volume) = dashed_uuid(hex_uuid) else {
+            continue;
+        };
+        let status: Status = serde_json::from_slice(&std::fs::read(&path)?)
+            .with_context(|| format!("{} is malformed", path.display()))?;
+        out.push(Enrolled {
+            device: Path::new("/dev/disk/by-uuid").join(&volume),
+            volume,
+            status,
+        });
     }
+    out.sort_by(|a, b| a.volume.cmp(&b.volume));
+    Ok(out)
+}
+
+/// `0123…` (32 hex digits) as `01234567-89ab-cdef-0123-456789abcdef`.
+fn dashed_uuid(hex_uuid: &str) -> Option<String> {
+    let bytes = hex::decode(hex_uuid)
+        .ok()
+        .filter(|bytes| bytes.len() == 16)?;
+    let part = |range: std::ops::Range<usize>| bytes.get(range).map(hex::encode);
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        part(0..4)?,
+        part(4..6)?,
+        part(6..8)?,
+        part(8..10)?,
+        part(10..16)?
+    ))
 }
 
 /// What is enrolled on `device`.
@@ -394,6 +518,45 @@ pub fn remove(device: &Path, key_file: Option<&Path>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_description_is_root_only_and_lists_back() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("sibling-unlock");
+        let status = Status {
+            keyslot: 2,
+            sealing: Sealing::Cleartext,
+            networks: vec!["home".into()],
+            siblings: vec!["laptop".into()],
+        };
+        let uuid = [0xab_u8; 16];
+        write_status_in(&dir, &status, &uuid).unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        let file = dir.join(format!("{}.json", hex::encode(uuid)));
+        assert_eq!(mode(&file), 0o600);
+
+        let replaced = Status {
+            networks: Vec::new(),
+            ..status
+        };
+        write_status_in(&dir, &replaced, &uuid).unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+        let listed = enrolled_in(&dir).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].volume, "abababab-abab-abab-abab-abababababab");
+        assert_eq!(
+            listed[0].device,
+            Path::new("/dev/disk/by-uuid/abababab-abab-abab-abab-abababababab")
+        );
+        assert_eq!(listed[0].status, replaced);
+
+        let json = serde_json::to_value(&listed[0]).unwrap();
+        assert_eq!(json["sealing"], "cleartext");
+        assert_eq!(json["networks"], serde_json::json!([]));
+        assert!(enrolled_in(&root.path().join("absent")).unwrap().is_empty());
+    }
 
     #[test]
     fn enrollment_pins_required_tpm_before_any_slot_is_added() {
