@@ -46,7 +46,7 @@ tilo-automerge.workspace = true
 blake3.workspace = true
 chrono.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 uuid.workspace = true
 tracing.workspace = true
 # A pasted or dropped image larger than a notebook asset is re-encoded smaller.

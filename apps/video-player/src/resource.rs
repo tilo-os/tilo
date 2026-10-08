@@ -70,6 +70,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "empty",
     "loading",
     "error",
+    "missing-codec",
     "native-error",
     "playing",
     "paused",

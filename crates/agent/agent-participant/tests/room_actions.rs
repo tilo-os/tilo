@@ -30,8 +30,13 @@ pub(crate) mod support;
 
 mod common;
 #[cfg(test)]
+#[path = "room_actions/encrypted_resource.rs"]
+mod encrypted_resource;
+#[cfg(test)]
 #[path = "room_actions/feedback_journey.rs"]
 mod feedback_journey;
+#[path = "room_actions/resource_support.rs"]
+mod resource_support;
 
 #[cfg(not(test))]
 pub mod mounted_resource;

@@ -39,6 +39,22 @@ impl AppSurface for winit::window::Window {
 }
 
 impl App {
+    /// Restore the real focused native configuration after modal/page
+    /// replacement, without replaying any key press or typed input.
+    pub(super) fn restore_physical_configuration(&mut self) {
+        if self.close_admission.dialog.is_none()
+            && self
+                .history
+                .as_ref()
+                .is_none_or(|history| history.live_interactive())
+            && self.history_layout.is_none_or(|layout| layout.app_visible)
+            && let Some(layout) = self.input.keyboard_layout.clone()
+        {
+            self.root_widget
+                .observe_physical_input(crate::widget::PhysicalInput::Layout(Some(layout)));
+        }
+    }
+
     /// Handle `event` from the surface the app is shown on. Pointer
     /// positions are in the surface's physical pixels, relative to the
     /// app's own origin. `synthesized_touch` marks pointer events the host
@@ -75,7 +91,31 @@ impl App {
         ) {
             self.take_over_owner_view();
         }
+        match &event {
+            WindowEvent::KeyboardLayoutChanged(layout) => {
+                self.input.keyboard_layout.clone_from(layout)
+            }
+            WindowEvent::Focused(false) => self.input.keyboard_layout = None,
+            _ => {}
+        }
+        self.restore_physical_configuration();
+        if self.close_admission.dialog.is_some()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| !history.live_interactive())
+            || self
+                .history_layout
+                .is_some_and(|layout| !layout.app_visible)
+        {
+            self.root_widget
+                .observe_physical_input(crate::widget::PhysicalInput::Focused(false));
+        } else if let Some(input) = crate::widget::PhysicalInput::from_window_event(&event) {
+            self.root_widget.observe_physical_input(input);
+        }
         if self.close_handle_event(&event, window.scale_factor()) {
+            self.root_widget
+                .observe_physical_input(crate::widget::PhysicalInput::Focused(false));
             window.request_redraw();
             return true;
         }
@@ -754,6 +794,8 @@ mod tests {
 
     thread_local! {
         static CLICKS: RefCell<Option<Rc<RefCell<Vec<Point>>>>> = const { RefCell::new(None) };
+        static PHYSICAL: RefCell<Vec<crate::widget::PhysicalInput>> = const { RefCell::new(Vec::new()) };
+
     }
 
     /// Records where it is clicked, in its own logical coordinates.
@@ -764,6 +806,9 @@ mod tests {
     }
 
     impl Widget for ClickProbe {
+        fn observe_physical_input(&mut self, input: crate::widget::PhysicalInput) {
+            PHYSICAL.with_borrow_mut(|events| events.push(input));
+        }
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -955,6 +1000,184 @@ mod tests {
             false,
         ));
         assert_eq!(*clicks.borrow(), vec![Point::new(40.0, 30.0)]);
+    }
+
+    #[test]
+    fn physical_feedback_precedes_framework_shortcuts_without_consuming_them() {
+        use winit::keyboard::{Key, KeyCode, KeyLocation, PhysicalKey};
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        app.input.modifiers =
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        PHYSICAL.with_borrow_mut(Vec::clear);
+        let key = PhysicalKey::Code(KeyCode::KeyZ);
+        let event = WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: key,
+                    state: ElementState::Pressed,
+                },
+                Key::Character("z".into()),
+                None,
+                KeyLocation::Standard,
+                false,
+                None,
+                Key::Character("z".into()),
+            ),
+            is_synthetic: false,
+        };
+        assert!(
+            app.surface_input(&region, event.clone(), false),
+            "framework Undo still handles the chord"
+        );
+        PHYSICAL.with_borrow(|events| {
+            assert_eq!(events.len(), 1);
+            assert!(matches!(events[0], crate::widget::PhysicalInput::Key {
+                key: observed, state: ElementState::Pressed
+            } if observed == key));
+        });
+        let mut synthetic = event;
+        if let WindowEvent::KeyboardInput { is_synthetic, .. } = &mut synthetic {
+            *is_synthetic = true;
+        }
+        assert!(crate::widget::PhysicalInput::from_window_event(&synthetic).is_none());
+        app.surface_input(&region, synthetic, false);
+        PHYSICAL.with_borrow(|events| assert_eq!(events.len(), 1));
+        app.surface_input(&region, WindowEvent::Focused(false), false);
+        PHYSICAL.with_borrow(|events| {
+            assert!(matches!(
+                events.last(),
+                Some(crate::widget::PhysicalInput::Focused(false))
+            ))
+        });
+    }
+
+    #[test]
+    fn physical_feedback_clears_when_framework_modal_takes_input() {
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        app.close_admission.show(
+            "close-title",
+            "close-unsaved",
+            &[crate::close_admission::Choice::KeepEditing],
+            app.input.platform,
+        );
+        app.layout.structure_dirty = true;
+        app.layout.layout_dirty = true;
+        app.surface_frame(&region, &mut Scene::new());
+        PHYSICAL.with_borrow_mut(Vec::clear);
+        app.surface_input(
+            &region,
+            WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: winit::event::KeyEvent::synthetic(
+                    winit::event::RawKeyEvent {
+                        physical_key: winit::keyboard::PhysicalKey::Code(
+                            winit::keyboard::KeyCode::KeyY,
+                        ),
+                        state: ElementState::Pressed,
+                    },
+                    winit::keyboard::Key::Character("private-modal-input".into()),
+                    None,
+                    winit::keyboard::KeyLocation::Standard,
+                    false,
+                    None,
+                    winit::keyboard::Key::Character("private-modal-input".into()),
+                ),
+                is_synthetic: false,
+            },
+            false,
+        );
+        PHYSICAL.with_borrow(|events| {
+            assert!(
+                !events.is_empty(),
+                "modal priority clears previous held positions"
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| matches!(event, crate::widget::PhysicalInput::Focused(false))),
+                "modal keystrokes must not reach foreground observers"
+            );
+        });
+    }
+
+    #[test]
+    fn native_configuration_resumes_after_modal_without_replaying_private_input() {
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        let snapshot = |text: &str| {
+            std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+                depressed: 0,
+                latched: 0,
+                locked: 0,
+                group: 1,
+                keys: vec![winit::keyboard::KeyboardLayoutKey {
+                    physical: winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY),
+                    symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                        name: text.into(),
+                        text: text.into(),
+                    }],
+                }],
+            })
+        };
+        app.surface_input(
+            &region,
+            WindowEvent::KeyboardLayoutChanged(Some(snapshot("z"))),
+            false,
+        );
+        app.close_admission.show(
+            "close-title",
+            "close-unsaved",
+            &[crate::close_admission::Choice::KeepEditing],
+            app.input.platform,
+        );
+        PHYSICAL.with_borrow_mut(Vec::clear);
+        let active = snapshot("Z");
+        let heads = app.state.doc.get_heads();
+        app.surface_input(
+            &region,
+            WindowEvent::KeyboardLayoutChanged(Some(active.clone())),
+            false,
+        );
+        PHYSICAL.with_borrow(|events| {
+            assert!(
+                events
+                    .iter()
+                    .all(|event| matches!(event, crate::widget::PhysicalInput::Focused(false)))
+            )
+        });
+        app.close_admission.dialog = None;
+        app.surface_frame(&region, &mut Scene::new());
+        PHYSICAL.with_borrow(|events| assert!(events.iter().any(|event|
+            matches!(event, crate::widget::PhysicalInput::Layout(Some(layout)) if layout == &active))));
+        assert_eq!(
+            app.state.doc.get_heads(),
+            heads,
+            "configuration never edits the document"
+        );
+        app.surface_input(&region, WindowEvent::Focused(false), false);
+        PHYSICAL.with_borrow_mut(Vec::clear);
+        app.surface_frame(&region, &mut Scene::new());
+        PHYSICAL.with_borrow(|events| {
+            assert!(
+                events.is_empty(),
+                "actual window blur revokes native metadata"
+            )
+        });
     }
 
     fn clicks_app() -> (App, Rc<RefCell<Vec<Point>>>) {

@@ -95,7 +95,7 @@ pub mod futo;
 mod i18n;
 pub mod imclient;
 pub mod inject;
-pub mod layout;
+pub use tilo_keyboard_map::touch as layout;
 pub mod learned;
 pub mod output;
 pub mod predict;

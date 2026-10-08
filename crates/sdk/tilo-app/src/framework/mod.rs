@@ -320,6 +320,8 @@ mod participant;
 mod people;
 mod person;
 mod preview;
+#[cfg(feature = "test-support")]
+pub mod profiling;
 mod root;
 mod rows;
 mod scenario;
@@ -365,3 +367,10 @@ pub use view::{EffectsHandle, ViewCx};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod headless_results_tests;
+
+/// Record content and canonical hashing. Use the store borrowed through
+/// `SurfaceCx::content` or `LaunchInput::content` so the host binds reads and
+/// writes to the resource's content lane.
+pub mod content {
+    pub use tilo_content::{ContentStore, hash_bytes, valid_hash};
+}

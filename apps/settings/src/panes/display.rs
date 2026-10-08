@@ -136,16 +136,16 @@ pub enum DisplayEffect {
     )]
     InspectDisplayConfiguration,
     /// Show each display's number and name on it for a few seconds.
-    #[effect(returns, label = "Identify displays")]
+    #[effect(returns, permission = "admin", label = "Identify displays")]
     IdentifyDisplays,
     /// Preview the staged arrangement; it is kept only when confirmed.
-    #[effect(returns, label = "Apply display changes")]
+    #[effect(returns, permission = "admin", label = "Apply display changes")]
     ApplyDisplayChanges,
     /// Keep the arrangement being previewed.
-    #[effect(returns, label = "Keep display changes")]
+    #[effect(returns, permission = "admin", label = "Keep display changes")]
     KeepDisplayChanges,
     /// Go back to the arrangement before the preview.
-    #[effect(returns, label = "Revert display changes")]
+    #[effect(returns, permission = "admin", label = "Revert display changes")]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
     #[effect(returns, row, label = "Ask again")]
@@ -163,8 +163,54 @@ pub enum DisplayEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: DisplayEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if matches!(
+        effect,
+        DisplayEffect::InspectDisplayConfiguration
+            | DisplayEffect::IdentifyDisplays
+            | DisplayEffect::ApplyDisplayChanges
+            | DisplayEffect::KeepDisplayChanges
+            | DisplayEffect::RevertDisplayChanges
+    ) && app.displays().model().borrow().of_device
+    {
+        let command = app.displays().model().borrow().host_command(&effect)?;
+        let inspect = effect == DisplayEffect::InspectDisplayConfiguration;
+        // Only a delivered invocation can name broker-retained original custody.
+        // Physical UI effects have no remote invoker and use the certified local channel.
+        let original = if ui::invocation_scope::current_invoker().is_some() {
+            ui::collaboration::DisplayOrigin::Published(
+                cx.invocation()
+                    .ok_or("The original display invocation is unavailable.")?
+                    .0
+                    .into_bytes(),
+            )
+        } else {
+            ui::collaboration::DisplayOrigin::LocalHost
+        };
+        return Ok(cx.thread(
+            move |_| request_host_display(&command, original),
+            move |app, result, _| {
+                let model = app.displays().model();
+                let mut model = model.borrow_mut();
+                model.accept_host_reply(result?);
+                let value = if inspect {
+                    model.inspection()
+                } else {
+                    let transaction = model
+                        .host_state
+                        .as_ref()
+                        .and_then(|state| state.transaction.as_ref());
+                    serde_json::json!({
+                        "transaction": transaction.map(|value| value.id),
+                        "state": transaction.map(|value| value.state),
+                        "identify_requested_unix_ms": model.host_state.as_ref().and_then(|state| state.identify).map(|request| request.requested_unix_ms),
+                    })
+                };
+                Ok(Effected::value(value))
+            },
+        ));
+    }
     if effect == DisplayEffect::InspectDisplayConfiguration {
         return Ok(Effected::value(
             app.displays().model().borrow().inspection(),
@@ -175,6 +221,17 @@ pub(crate) fn answer(
         .borrow_mut()
         .apply(&effect)
         .map(Effected::value)
+}
+
+fn request_host_display(
+    command: &settings_store::display_control::DisplayCommand,
+    original: ui::collaboration::DisplayOrigin,
+) -> Result<settings_store::display_control::DisplayReply, String> {
+    let bytes =
+        serde_json::to_vec(command).map_err(|_| "The display request could not be encoded.")?;
+    let reply = ui::collaboration::display_control(bytes, original)?;
+    serde_json::from_slice(&reply)
+        .map_err(|_| "The display service returned an invalid reply.".into())
 }
 
 const NIGHT_LIGHT_TEMPERATURES: &[(&str, u32)] = &[
@@ -513,15 +570,17 @@ fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
         .map_or_else(|| base.clone(), |card| format!("{base} on {card}"))
 }
 
-/// Enumerate real DRM connectors from `/sys/class/drm`. Best-effort: returns
-/// an empty vec when the directory is unavailable (a container under
-/// `--shots`), in which case the pane shows an honest "no displays" note.
-/// Virtual connectors (compositor writeback) are skipped — they are not
-/// displays a user can plug into.
+/// Read capabilities only from the active compositor's leased snapshot.
 fn read_outputs() -> Vec<DisplayOutput> {
-    let mut out: Vec<_> = DisplayHardwareSnapshot::load()
-        .into_iter()
-        .flat_map(|snapshot| snapshot.outputs)
+    DisplayHardwareSnapshot::load()
+        .map_or_else(Vec::new, |snapshot| outputs_from_snapshot(&snapshot))
+}
+
+fn outputs_from_snapshot(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutput> {
+    let mut out: Vec<_> = snapshot
+        .outputs
+        .iter()
+        .cloned()
         .map(|snapshot| {
             let label = snapshot_label(&snapshot.descriptor, snapshot.builtin);
             let connector_label = snapshot.descriptor.label().to_string();
@@ -708,6 +767,11 @@ pub struct DisplayModel {
     output_brightness: BTreeMap<String, f32>,
     pending_candidate: Option<DisplayConfig>,
     last_seen_transaction: Option<(u64, DisplayTransactionState)>,
+    host_state: Option<settings_store::display_control::DisplayReply>,
+    host_poll_deadline: Option<Instant>,
+    host_probe: Option<
+        std::sync::mpsc::Receiver<Result<settings_store::display_control::DisplayReply, String>>,
+    >,
     last_snapshot_check: Instant,
     snapshot_stamp: Option<SystemTime>,
     hardware_probe: Option<std::sync::mpsc::Receiver<HardwareProbe>>,
@@ -857,6 +921,9 @@ impl DisplayModel {
             awaiting_device_move: None,
             device_move_reply: None,
             last_seen_transaction: None,
+            host_state: None,
+            host_probe: None,
+            host_poll_deadline: None,
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: settings_store::hardware::display_snapshot_path()
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
@@ -926,6 +993,9 @@ impl DisplayModel {
             awaiting_device_move: None,
             device_move_reply: None,
             last_seen_transaction: None,
+            host_state: None,
+            host_probe: None,
+            host_poll_deadline: None,
             last_snapshot_check: ui::time::now(),
             snapshot_stamp: None,
             hardware_probe: None,
@@ -967,6 +1037,75 @@ impl DisplayModel {
     }
 
     /// Observed output timing stays separate from a requested candidate.
+    fn transaction(&self) -> Option<DisplayTransaction> {
+        if let Some(state) = &self.host_state {
+            state.transaction.clone()
+        } else {
+            self.of_device.then(DisplayTransaction::load).flatten()
+        }
+    }
+
+    fn host_command(
+        &self,
+        effect: &DisplayEffect,
+    ) -> Result<settings_store::display_control::DisplayCommand, String> {
+        use settings_store::display_control::DisplayCommand;
+        match effect {
+            DisplayEffect::InspectDisplayConfiguration => Ok(DisplayCommand::Inspect),
+            DisplayEffect::IdentifyDisplays => Ok(DisplayCommand::Identify),
+            DisplayEffect::ApplyDisplayChanges => Ok(DisplayCommand::Apply {
+                observed_set: self.display_set(),
+                candidate: self
+                    .pending_candidate
+                    .clone()
+                    .ok_or("There are no staged display changes to apply.")?,
+            }),
+            DisplayEffect::KeepDisplayChanges => Ok(DisplayCommand::Keep {
+                transaction: self
+                    .transaction()
+                    .ok_or("There is no display preview to keep.")?
+                    .id,
+            }),
+            DisplayEffect::RevertDisplayChanges => Ok(DisplayCommand::Revert {
+                transaction: self
+                    .transaction()
+                    .ok_or("There is no display preview to revert.")?
+                    .id,
+            }),
+            _ => Err("This action is not a display transaction request.".into()),
+        }
+    }
+
+    fn accept_host_reply(&mut self, reply: settings_store::display_control::DisplayReply) {
+        let pending = reply.transaction.as_ref().is_some_and(|transaction| {
+            matches!(
+                transaction.state,
+                DisplayTransactionState::Requested
+                    | DisplayTransactionState::AwaitingConfirmation
+                    | DisplayTransactionState::ConfirmRequested
+                    | DisplayTransactionState::RevertRequested
+            )
+        });
+        let same = self
+            .host_state
+            .as_ref()
+            .and_then(|state| state.transaction.as_ref())
+            .map(|transaction| transaction.id)
+            == reply.transaction.as_ref().map(|transaction| transaction.id);
+        if pending && (!same || self.host_poll_deadline.is_none()) {
+            self.host_poll_deadline = Some(ui::time::now() + Duration::from_secs(30));
+        } else if !pending {
+            self.host_poll_deadline = None;
+        }
+        if let Some(transaction) = &reply.transaction {
+            self.settle(transaction);
+        }
+        self.outputs = outputs_from_snapshot(&reply.observed);
+        self.output_config = reply.committed.clone();
+        self.host_state = Some(reply);
+        self.changed = true;
+    }
+
     fn inspection(&self) -> serde_json::Value {
         serde_json::json!({
             "observed_outputs": self.connected_outputs().into_iter().map(|output| {
@@ -984,7 +1123,7 @@ impl DisplayModel {
             "saved_configuration": self.output_config,
             "staged_configuration": self.staged(),
             "has_staged_changes": self.pending_candidate.is_some(),
-            "transaction": self.of_device.then(DisplayTransaction::load).flatten(),
+            "transaction": self.transaction(),
             "notice": self.notice,
         })
     }
@@ -1657,6 +1796,52 @@ impl DisplayModel {
             return;
         }
         self.last_snapshot_check = ui::time::now();
+        if let Some(receiver) = &self.host_probe {
+            match receiver.try_recv() {
+                Ok(Ok(reply)) => {
+                    self.host_probe = None;
+                    self.accept_host_reply(reply);
+                }
+                Ok(Err(error)) => {
+                    self.host_probe = None;
+                    self.notice = Some(error);
+                    self.changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.host_probe = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if self.host_probe.is_none()
+            && self
+                .host_poll_deadline
+                .is_some_and(|deadline| ui::time::now() < deadline)
+            && self
+                .host_state
+                .as_ref()
+                .and_then(|state| state.transaction.as_ref())
+                .is_some_and(|transaction| {
+                    matches!(
+                        transaction.state,
+                        DisplayTransactionState::Requested
+                            | DisplayTransactionState::AwaitingConfirmation
+                            | DisplayTransactionState::ConfirmRequested
+                            | DisplayTransactionState::RevertRequested
+                    )
+                })
+        {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            self.host_probe = Some(receiver);
+            let wake = ui::WakeHandle::new();
+            std::thread::spawn(move || {
+                let _ = sender.send(request_host_display(
+                    &settings_store::display_control::DisplayCommand::Inspect,
+                    ui::collaboration::DisplayOrigin::LocalHost,
+                ));
+                wake.wake();
+            });
+        }
         let devices = settings_store::device_displays::DeviceDisplaySnapshot::load()
             .map_or_else(Vec::new, |snapshot| snapshot.displays);
         if devices != self.device_displays {
@@ -1668,7 +1853,10 @@ impl DisplayModel {
         if stamp != self.snapshot_stamp {
             self.snapshot_stamp = stamp;
             self.outputs = read_outputs();
-            self.output_config = DisplayConfig::load_for(&self.display_set());
+            self.output_config = self.host_state.as_ref().map_or_else(
+                || DisplayConfig::load_for(&self.display_set()),
+                |state| state.committed.clone(),
+            );
             self.changed = true;
         }
         // Monitor probing finishes in the background; a monitor that turns
@@ -1678,7 +1866,7 @@ impl DisplayModel {
             self.output_brightness = controllable;
             self.changed = true;
         }
-        if let Some(transaction) = DisplayTransaction::load() {
+        if let Some(transaction) = self.transaction() {
             self.settle(&transaction);
         }
     }
@@ -1701,7 +1889,10 @@ impl DisplayModel {
                 .unwrap_or_else(|| "Display configuration was rejected.".into()),
             _ => return,
         };
-        self.output_config = DisplayConfig::load_for(&self.display_set());
+        self.output_config = self.host_state.as_ref().map_or_else(
+            || DisplayConfig::load_for(&self.display_set()),
+            |state| state.committed.clone(),
+        );
         self.pending_candidate = None;
         self.notice = Some(notice);
     }
@@ -2289,7 +2480,7 @@ impl DisplayModel {
     /// The safety/apply-transaction card, driven by the on-disk
     /// [`DisplayTransaction`] state machine.
     fn build_safety_card(&self) -> El {
-        let transaction = self.of_device.then(DisplayTransaction::load).flatten();
+        let transaction = self.transaction();
         match transaction.as_ref().map(|transaction| transaction.state) {
             Some(DisplayTransactionState::AwaitingConfirmation) => {
                 let seconds = transaction
@@ -2948,6 +3139,90 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn readonly_display_surface_keeps_inspection_and_has_no_stale_admin_controls() {
+        for role in [ui::Role::Viewer, ui::Role::Editor] {
+            let mut app =
+                ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(role).unwrap();
+            let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
+            app.call_on(&open.resource, &open.action, serde_json::json!({}))
+                .unwrap();
+            app.settle();
+            let audit = app.harness().native_app_audit();
+            assert!(
+                audit
+                    .issues
+                    .iter()
+                    .all(|issue| issue.code != "stale-action-binding"),
+                "role {role:?}: stale control in the actual application and host doors: {:?}",
+                audit.issues
+            );
+            assert!(
+                app.call("inspect-display-configuration", serde_json::json!({}))
+                    .unwrap()
+                    .is_some()
+            );
+            for action in [
+                "identify-displays",
+                "apply-display-changes",
+                "keep-display-changes",
+                "revert-display-changes",
+            ] {
+                assert!(
+                    app.call(action, serde_json::json!({})).is_err(),
+                    "{role:?} cannot invoke {action}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn readonly_host_reply_replaces_stale_observation_without_staging_or_disk_writes() {
+        let mut model = model(vec![classify_connector("eDP-1", "connected")]);
+        let mode = OutputMode {
+            width: 2944,
+            height: 1840,
+            refresh_mhz: 89999,
+        };
+        let observed = DisplayHardwareSnapshot {
+            outputs: vec![settings_store::hardware::DisplayOutputSnapshot {
+                descriptor: OutputDescriptor {
+                    connector: "eDP-1".into(),
+                    connector_label: "eDP-1".into(),
+                    modes: vec![mode],
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: vec![],
+                    monitor: None,
+                },
+                current_mode: mode,
+                scale: 2.0,
+                builtin: true,
+                sink_hdr: false,
+                hdr_unavailable_reason: None,
+                sink_vrr: false,
+                vrr_unavailable_reason: None,
+                color_profile_labels: BTreeMap::new(),
+            }],
+            ..DisplayHardwareSnapshot::default()
+        };
+        model.accept_host_reply(settings_store::display_control::DisplayReply {
+            identify: None,
+            observed,
+            transaction: None,
+            committed: DisplayConfig::default(),
+        });
+        let inspection = model.inspection();
+        assert_eq!(
+            inspection["observed_outputs"][0]["current_mode"]["refresh_mhz"],
+            89999
+        );
+        assert_eq!(inspection["observed_outputs"][0]["scale"], 2.0);
+        assert_eq!(inspection["has_staged_changes"], false);
+        assert!(inspection["transaction"].is_null());
+        assert!(model.pending_candidate.is_none());
     }
 
     fn model(outputs: Vec<DisplayOutput>) -> DisplayModel {

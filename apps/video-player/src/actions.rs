@@ -25,6 +25,10 @@ pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "video-player.effect")]
 pub enum VideoEffect {
+    /// Play more video and audio formats.
+    /// Opens Settings at Updates, where this device's owner can install formats.
+    #[effect(view)]
+    OpenFormats,
     /// Open video.
     ///
     /// Opens a video file or stream on this device and answers once its

@@ -2583,6 +2583,10 @@ fn hosted_behaviour_app(create: crate::application::ComponentFactory) -> App {
     App::from_component(component, crate::application_test_support::runner_inputs()).unwrap()
 }
 
+#[cfg(unix)]
+#[path = "responsive_nav_publication_tests.rs"]
+mod responsive_nav_publication_tests;
+
 fn hosted_behaviour(
     create: crate::application::ComponentFactory,
 ) -> crate::application::ComponentBehaviour {
