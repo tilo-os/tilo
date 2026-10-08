@@ -290,10 +290,10 @@ byte count and SHA-256. The final response must match the original request id
 and byte count. No per-chunk JSON, base64 or round-trip acknowledgement is needed.
 
 `layer-pack --binary` can produce binary framing for a byte-transparent caller.
-Automatic remote component builds retain base64 framing because the installed
-`rcargo` output collector interprets stdout as text. The SSH upload leg alone
-uses binary framing; enabling binary builder output requires a byte-transparent
-wrapper first.
+Automatic remote component builds retain base64 framing for compatibility
+with cargo drop-ins that present stdout as text. The SSH upload leg alone
+uses binary framing; binary builder output requires a byte-transparent
+transport.
 Source inventory, target, canonical content identity and signed-cohort checks are
 unchanged. Default `layer-pack` output remains the existing base64 format; its
 reader accepts either encoding. An older daemon that rejects the optional method
