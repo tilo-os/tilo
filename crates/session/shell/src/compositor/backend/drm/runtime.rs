@@ -1357,7 +1357,7 @@ impl DrmDispatchState {
             ConnectorProbe::Force => {
                 #[cfg(test)]
                 {
-                    self.forced_probes += 1;
+                    self.forced_probes = self.forced_probes.saturating_add(1);
                 }
                 self.connector_probes = force_probe_connectors(&self.cards);
                 self.connector_probes.clone()
@@ -1376,7 +1376,7 @@ impl DrmDispatchState {
                         );
                         #[cfg(test)]
                         {
-                            self.forced_probes += 1;
+                            self.forced_probes = self.forced_probes.saturating_add(1);
                         }
                         card.connected()
                     });
@@ -4095,14 +4095,8 @@ impl DrmRuntime {
         // Retain and drive every usable KMS card.  The CPU bridge renders the
         // combined scene once, then each card scans its own XRGB dumb buffer;
         // no unsafe cross-GPU texture import is needed for this path.
-        let StartupDevices {
-            cards,
-            primary_gpu,
-            builds: scanout_builds,
-            display_set,
-            connector_probes,
-        } = bring_up_all_devices(&session, &kms_gpus);
-        if scanout_builds.is_empty() {
+        let startup = bring_up_all_devices(&session, &kms_gpus);
+        if startup.builds.is_empty() {
             // `--backend headless` is the explicit display-free mode. A real
             // DRM login that cannot drive a connector must return control to
             // the display manager instead of staying alive behind the stale
@@ -4152,7 +4146,7 @@ impl DrmRuntime {
 
         let mut dispatch = DrmDispatchState::new(
             session_state,
-            cards,
+            startup.cards,
             session.clone(),
             input,
             accessibility,
@@ -4160,8 +4154,8 @@ impl DrmRuntime {
             tx,
             keyboard,
         );
-        dispatch.display_set = display_set;
-        dispatch.connector_probes = connector_probes;
+        dispatch.display_set = startup.display_set;
+        dispatch.connector_probes = startup.connector_probes;
         dispatch.signal_reports = Some(signal_rx);
         // Tablet pads are read from a context of their own; see `PadInput`.
         let pads = PadInput::new(session.clone());
@@ -4182,7 +4176,7 @@ impl DrmRuntime {
         // Adopt the connectors already live at startup — the same path a
         // hot-plug takes — and seed the pointer/snapshot; see the helper's
         // doc comment.
-        let scanouts = dispatch.finalize_startup_scanouts(scanout_builds);
+        let scanouts = dispatch.finalize_startup_scanouts(startup.builds);
         // Seat assignment queues the attached devices immediately, before the
         // libinput fd becomes readable. Publish/configure those devices through
         // the ordinary handler before waiting for physical input.
@@ -4192,7 +4186,7 @@ impl DrmRuntime {
             event_loop,
             dispatch,
             session,
-            primary_gpu,
+            primary_gpu: startup.primary_gpu,
             scanouts,
             commands: Some(rx),
             signal_reports: Some(signal_tx),

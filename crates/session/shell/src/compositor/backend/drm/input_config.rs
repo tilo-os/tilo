@@ -1546,8 +1546,10 @@ mod tests {
             .write(true)
             .open(path)
             .expect("open for times");
-        f.set_modified(std::time::SystemTime::now() + Duration::from_secs(seconds))
-            .expect("set mtime");
+        let moved = std::time::SystemTime::now()
+            .checked_add(Duration::from_secs(seconds))
+            .expect("a near-future mtime");
+        f.set_modified(moved).expect("set mtime");
     }
 
     #[test]
