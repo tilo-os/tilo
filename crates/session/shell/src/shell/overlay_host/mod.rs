@@ -14049,17 +14049,21 @@ impl ShellOverlayHost {
             return;
         }
         if let CollaboratorsHit::ToggleFollow(index) = hit {
-            let target = self.chrome.as_ref().and_then(|chrome| {
-                let state = chrome.borrow();
-                let local_user = state.active_local_user();
-                tilo_desktop::collaborators::collaborator_roster_rows(
-                    &state.tree().desktop,
-                    &local_user,
-                )
-                .get(index)
-                .filter(|row| row.followable)
-                .cloned()
-            });
+            let target = self
+                .collaborators_overlay
+                .follow_target(index)
+                .and_then(|id| {
+                    self.chrome.as_ref().and_then(|chrome| {
+                        let state = chrome.borrow();
+                        let local_user = state.active_local_user();
+                        tilo_desktop::collaborators::collaborator_roster_rows(
+                            &state.tree().desktop,
+                            &local_user,
+                        )
+                        .into_iter()
+                        .find(|row| row.id == id && row.followable)
+                    })
+                });
             if let Some(target) = target {
                 if self.followed_peer.as_deref() == Some(target.id.as_str()) {
                     self.set_followed_peer(None);
