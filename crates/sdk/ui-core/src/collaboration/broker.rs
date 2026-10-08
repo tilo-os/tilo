@@ -4568,6 +4568,10 @@ async fn spawn_action_catalogue_stream(
     // The initial baseline occupies the same turn as subsequent watched
     // snapshots. Otherwise a busy constructor retains both before its first
     // owner poll, which can exhaust the bridge despite each baseline fitting.
+    tracing::info!(target: "tilo_agent_catalogue",
+        surfaces = catalogue.surfaces.len(),
+        actions = catalogue.surfaces.iter().map(|surface| surface.actions.len()).sum::<usize>(),
+        "SDK initial catalogue boundary");
     let turns = Arc::new(tokio::sync::Semaphore::new(1));
     let turn = turns
         .clone()

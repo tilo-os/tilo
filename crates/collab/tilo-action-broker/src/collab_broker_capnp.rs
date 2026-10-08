@@ -561,6 +561,16 @@ struct AdmittedJoinIdentity {
     managed_peer: Option<u64>,
 }
 
+/// Closed, count-only discovery diagnostics. Never serialized into the catalogue.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct CatalogueBoundaryCounts {
+    published_surfaces: usize,
+    matching_live_surfaces: usize,
+    scoped_actions: usize,
+    permission_accepted_actions: usize,
+    final_surfaces: usize,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BrokerActor {
     id: String,
@@ -4730,16 +4740,26 @@ impl CapnpBrokerState {
         self.action_catalogue_json_for(cluster_id, &BrokerActor::person(actor), None)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "catalogue serialization and policy filtering remain adjacent so a published action cannot bypass the actor check"
-    )]
     fn action_catalogue_json_for(
         &self,
         cluster_id: &str,
         actor: &BrokerActor,
         scope: Option<&tilo_delivery_protocol::peer_actions::ExactActionRoute>,
     ) -> Result<String, String> {
+        self.action_catalogue_with_counts_for(cluster_id, actor, scope)
+            .map(|(json, _)| json)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "catalogue serialization and policy filtering remain adjacent so a published action cannot bypass the actor check"
+    )]
+    fn action_catalogue_with_counts_for(
+        &self,
+        cluster_id: &str,
+        actor: &BrokerActor,
+        scope: Option<&tilo_delivery_protocol::peer_actions::ExactActionRoute>,
+    ) -> Result<(String, CatalogueBoundaryCounts), String> {
         let now = self.policy_now_ns()? / 1_000_000_000;
         let membership = self
             .membership
@@ -4755,6 +4775,10 @@ impl CapnpBrokerState {
         drop(tree);
         let caller = actor.policy_in(&workspace, now);
         let published = self.published_surfaces_for_scope(scope);
+        let mut counts = CatalogueBoundaryCounts {
+            published_surfaces: published.len(),
+            ..Default::default()
+        };
         let live_apps = self
             .surfaces
             .lock()
@@ -4770,6 +4794,7 @@ impl CapnpBrokerState {
             .into_iter()
             .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
             .filter_map(|surface| {
+                counts.matching_live_surfaces = counts.matching_live_surfaces.saturating_add(1);
                 let actions = surface
                     .actions
                     .into_iter()
@@ -4779,6 +4804,7 @@ impl CapnpBrokerState {
                         })
                     })
                     .filter(|action| {
+                        counts.scoped_actions = counts.scoped_actions.saturating_add(1);
                         let Some(verb) = (match action.contract.permission {
                             tilo_actions::PermissionRequirement::None => None,
                             tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
@@ -4787,9 +4813,11 @@ impl CapnpBrokerState {
                             tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
                             tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
                         }) else {
+                            counts.permission_accepted_actions =
+                                counts.permission_accepted_actions.saturating_add(1);
                             return true;
                         };
-                        workspace.decide_at(
+                        let accepted = workspace.decide_at(
                             &caller,
                             &ResourceRef::Action {
                                 app: surface.app_id.clone(),
@@ -4797,7 +4825,11 @@ impl CapnpBrokerState {
                             },
                             verb,
                             now,
-                        ) == CapDecision::Allow
+                        ) == CapDecision::Allow;
+                        counts.permission_accepted_actions = counts
+                            .permission_accepted_actions
+                            .saturating_add(usize::from(accepted));
+                        accepted
                     })
                     .map(|action| {
                         let input = match action.input {
@@ -4886,10 +4918,12 @@ impl CapnpBrokerState {
                 }],
             }));
         }
+        counts.final_surfaces = surfaces.len();
         serde_json::to_string(&serde_json::json!({
             "version": 1,
             "surfaces": surfaces,
         }))
+        .map(|json| (json, counts))
         .map_err(|error| error.to_string())
     }
 
@@ -10039,11 +10073,21 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
         let cluster = self.route().cluster_id;
         let actor = self.verified_identity.broker_actor();
-        let snapshot = self.state.action_catalogue_json_for(&cluster, &actor, None);
+        let snapshot = self
+            .state
+            .action_catalogue_with_counts_for(&cluster, &actor, None);
         let initial = match snapshot {
-            Ok(snapshot) => {
+            Ok((snapshot, counts)) => {
                 if managed {
                     tracing::info!("managed Agent action catalogue snapshot prepared");
+                    // Once per admitted subscription, not per watched refresh.
+                    tracing::info!(target: "tilo_agent_catalogue",
+                        published_surfaces = counts.published_surfaces,
+                        matching_live_surfaces = counts.matching_live_surfaces,
+                        scoped_actions = counts.scoped_actions,
+                        permission_accepted_actions = counts.permission_accepted_actions,
+                        final_surfaces = counts.final_surfaces,
+                        "broker initial catalogue boundary");
                 }
                 Arc::<str>::from(snapshot)
             }
@@ -16926,6 +16970,25 @@ pub mod tests {
         }
         drop(surfaces);
         let actor = BrokerActor::person("owner");
+        let (full_json, counts) = state
+            .action_catalogue_with_counts_for(&cluster, &actor, None)
+            .unwrap();
+        assert_eq!(
+            counts,
+            CatalogueBoundaryCounts {
+                published_surfaces: 25,
+                matching_live_surfaces: 25,
+                scoped_actions: 25,
+                permission_accepted_actions: 25,
+                final_surfaces: 25,
+            }
+        );
+        assert_eq!(
+            full_json,
+            state
+                .action_catalogue_json_for(&cluster, &actor, None)
+                .unwrap()
+        );
         let full: serde_json::Value = serde_json::from_str(
             &state
                 .action_catalogue_json_for(&cluster, &actor, None)
@@ -16962,6 +17025,19 @@ pub mod tests {
             1
         );
         let denied = BrokerActor::person("stranger");
+        let (_, denied_counts) = state
+            .action_catalogue_with_counts_for(&cluster, &denied, Some(&scope))
+            .unwrap();
+        assert_eq!(
+            denied_counts,
+            CatalogueBoundaryCounts {
+                published_surfaces: 1,
+                matching_live_surfaces: 1,
+                scoped_actions: 1,
+                permission_accepted_actions: 0,
+                final_surfaces: 0,
+            }
+        );
         let denied: serde_json::Value = serde_json::from_str(
             &state
                 .action_catalogue_json_for(&cluster, &denied, Some(&scope))
