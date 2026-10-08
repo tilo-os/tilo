@@ -262,12 +262,16 @@ impl RenderContext {
     }
 
     async fn new_device(&mut self, compatible_surface: Option<&Surface<'_>>) -> Option<usize> {
+        tilo_startup_metrics::mark("gpu-adapter-request-start");
         let adapter =
             wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)
                 .await
                 .ok()?;
+        tilo_startup_metrics::mark("gpu-adapter-request-done");
         if compatible_surface.is_some() {
+            tilo_startup_metrics::mark("gpu-adapter-report-start");
             report_adapter(&self.instance, &adapter).await;
+            tilo_startup_metrics::mark("gpu-adapter-report-done");
         }
         let features = adapter.features();
         let maybe_features = wgpu::Features::CLEAR_TEXTURE | wgpu::Features::PIPELINE_CACHE;
@@ -313,6 +317,7 @@ impl RenderContext {
             } else {
                 wgpu::Features::empty()
             };
+        tilo_startup_metrics::mark("gpu-device-request-start");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -323,6 +328,7 @@ impl RenderContext {
             })
             .await
             .ok()?;
+        tilo_startup_metrics::mark("gpu-device-request-done");
         let loss = DeviceLossMonitor::default();
         let observer = loss.clone();
         device.set_device_lost_callback(move |reason, message| {
@@ -348,6 +354,25 @@ impl RenderContext {
         Some(self.devices.len().saturating_sub(1))
     }
 
+    async fn surface_device(
+        &mut self,
+        surface: &Surface<'_>,
+    ) -> Option<(usize, wgpu::SurfaceCapabilities)> {
+        // is_surface_supported performs a complete capabilities query. Reuse
+        // its result for configuration when an existing device can present.
+        for (id, handle) in self.devices.iter().enumerate() {
+            let capabilities = surface_capabilities(surface, &handle.adapter);
+            if !capabilities.formats.is_empty() {
+                return Some((id, capabilities));
+            }
+        }
+        // Preserve surface-aware selection and explicit adapter preferences
+        // for a fresh or incompatible device, including non-Vulkan backends.
+        let id = self.new_device(Some(surface)).await?;
+        let handle = self.devices.get(id)?;
+        Some((id, surface_capabilities(surface, &handle.adapter)))
+    }
+
     /// A surface for `window`, rendered at `width` x `height`.
     ///
     /// # Errors
@@ -362,6 +387,30 @@ impl RenderContext {
         height: u32,
         present_mode: wgpu::PresentMode,
     ) -> Result<RenderSurface<'w>, CreateSurfaceError> {
+        let surface = self
+            .create_surface_unconfigured(window, width, height, present_mode)
+            .await?;
+        tilo_startup_metrics::mark("surface-initial-configure-start");
+        self.configure_surface(&surface);
+        tilo_startup_metrics::mark("surface-initial-configure-done");
+        Ok(surface)
+    }
+
+    /// Build a surface and render targets without creating its swapchain.
+    ///
+    /// A caller that adjusts alpha or other configuration must configure the
+    /// returned surface before acquiring a frame. Native windows do that once
+    /// inside their existing validation error scope.
+    ///
+    /// # Errors
+    /// Returns the same surface, device and format errors as [`Self::create_surface`].
+    pub async fn create_surface_unconfigured<'w>(
+        &mut self,
+        window: impl Into<SurfaceTarget<'w>>,
+        width: u32,
+        height: u32,
+        present_mode: wgpu::PresentMode,
+    ) -> Result<RenderSurface<'w>, CreateSurfaceError> {
         tilo_startup_metrics::mark("surface-native-create-start");
         let surface = self
             .instance
@@ -369,8 +418,8 @@ impl RenderContext {
             .map_err(CreateSurfaceError::Surface)?;
         tilo_startup_metrics::mark("surface-native-create-done");
         tilo_startup_metrics::mark("surface-device-select-start");
-        let dev_id = self
-            .device(Some(&surface))
+        let (dev_id, capabilities) = self
+            .surface_device(&surface)
             .await
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
         tilo_startup_metrics::mark("surface-device-select-done");
@@ -379,7 +428,6 @@ impl RenderContext {
             .get(dev_id)
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
         tilo_startup_metrics::mark("surface-capabilities-start");
-        let capabilities = surface.get_capabilities(&handle.adapter);
         // The intermediate target is RGBA8. Prefer a matching surface format
         // so capable backends can present it with a texture copy instead of
         // compiling a fullscreen blit shader for every new surface.
@@ -424,9 +472,6 @@ impl RenderContext {
             target_view,
             blitter,
         };
-        tilo_startup_metrics::mark("surface-initial-configure-start");
-        self.configure_surface(&surface);
-        tilo_startup_metrics::mark("surface-initial-configure-done");
         Ok(surface)
     }
 
@@ -480,6 +525,13 @@ fn adapter_line(info: &wgpu::AdapterInfo) -> String {
         "{ADAPTER_LINE_PREFIX} window adapter {:?} type={:?} backend={:?} driver={:?}",
         info.name, info.device_type, info.backend, info.driver
     )
+}
+
+fn surface_capabilities(surface: &Surface<'_>, adapter: &Adapter) -> wgpu::SurfaceCapabilities {
+    tilo_startup_metrics::mark("gpu-surface-capabilities-start");
+    let capabilities = surface.get_capabilities(adapter);
+    tilo_startup_metrics::mark("gpu-surface-capabilities-done");
+    capabilities
 }
 
 /// The hardware adapters a window passed over for a CPU one, or nothing when

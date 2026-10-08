@@ -365,6 +365,9 @@ pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use view::{EffectsHandle, ViewCx};
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod headless_results_tests;
+
 /// Record content and canonical hashing. Use the store borrowed through
 /// `SurfaceCx::content` or `LaunchInput::content` so the host binds reads and
 /// writes to the resource's content lane.
