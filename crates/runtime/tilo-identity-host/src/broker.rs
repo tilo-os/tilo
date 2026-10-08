@@ -26,6 +26,11 @@ use wire_frame::FrameError;
 
 use tilo_desktop_model::{RoomId, Workspace};
 
+/// The resource an app's device-signature request names. A signature is
+/// asked for one of the app's own actions, so a grant letting an app sign
+/// names this resource and that action.
+pub const DEVICE_SIGNATURE_RESOURCE: &str = "identity.device-signature";
+
 /// The committed workspaces the broker authorizes each request against.
 pub trait WorkspaceMembership: Send + Sync + 'static {
     /// Run `read` over the workspace whose room is `room`, when this host has it.
@@ -307,6 +312,7 @@ fn sign(
         let actor = Actor::app(app_id);
         let resource = ResourceRef::Action {
             app: app_id.to_string(),
+            resource: DEVICE_SIGNATURE_RESOURCE.to_string(),
             action: action.to_string(),
         };
         decide_capability(
@@ -741,6 +747,7 @@ mod tests {
                     Subject::app("so.tilo.notes"),
                     Scope::Action {
                         app: "so.tilo.notes".into(),
+                        resource: DEVICE_SIGNATURE_RESOURCE.into(),
                         action: "document.save".into(),
                     },
                     Verb::Write,
@@ -1019,6 +1026,7 @@ mod tests {
             Subject::app("so.tilo.notes"),
             Scope::Action {
                 app: "so.tilo.notes".into(),
+                resource: DEVICE_SIGNATURE_RESOURCE.into(),
                 action: "document.save".into(),
             },
             Verb::Write,

@@ -68,6 +68,9 @@ const FIXTURE: &str = "so.tilo.fixture-drafts";
 const FIXTURE_HANDLE: &str = "drafts";
 const RECORD: &str = "file:drafts.qdoc";
 const INBOX: &str = "fixture.drafts:inbox";
+/// A second resource offering `draft`, so a grant on the inbox's `draft`
+/// can be shown not to reach it.
+const OUTBOX: &str = "fixture.outbox:outbox";
 /// Devices the owner runs applications on, each connecting as the owner.
 const SHORTCUTS_HANDLE: &str = "shortcuts-app";
 const SILENT_HANDLE: &str = "silent-app";
@@ -287,6 +290,21 @@ impl FixtureApp {
                     })
                     .expect("contract JSON"),
                     ..exported("archive", "Archive inbox", &[], ResultSpec::None)
+                },
+                ExportedAction {
+                    resource: OUTBOX.into(),
+                    resource_kind: "fixture.outbox".into(),
+                    resource_label: "Outbox".into(),
+                    ..exported(
+                        "draft",
+                        "Write draft",
+                        &[ActionParam::required(
+                            "title",
+                            ParamType::Text,
+                            "Title of the draft",
+                        )],
+                        ResultSpec::None,
+                    )
                 },
             ],
         });
@@ -660,6 +678,7 @@ fn publish_draft(id: &str, granted: &[&str]) -> Shortcut {
                 PermissionProfileRule::grant(
                     Scope::Action {
                         app: FIXTURE.into(),
+                        resource: INBOX.into(),
                         action: (*action).to_string(),
                     },
                     Verb::Write,
@@ -1204,6 +1223,7 @@ fn an_unattended_run_takes_a_confirmed_step_only_with_advance_consent() {
     tidy.grant.push(PermissionProfileRule::grant(
         Scope::Action {
             app: FIXTURE.into(),
+            resource: INBOX.into(),
             action: "archive".into(),
         },
         Verb::Write,
@@ -1531,6 +1551,10 @@ fn door_with_declared_access() -> Door {
 }
 
 fn fixture_draft(door: &Door) -> RemoteActionTarget {
+    fixture_target(door, INBOX, "draft")
+}
+
+fn fixture_target(door: &Door, resource: &str, action: &str) -> RemoteActionTarget {
     answer(door.host.query(
         &door.owner,
         CatalogueQuery {
@@ -1543,13 +1567,12 @@ fn fixture_draft(door: &Door) -> RemoteActionTarget {
     .iter()
     .find(|row| {
         row.app_id == FIXTURE
-            && row
-                .action
-                .as_ref()
-                .is_some_and(|descriptor| descriptor.address.action == "draft")
+            && row.action.as_ref().is_some_and(|descriptor| {
+                descriptor.address.resource == resource && descriptor.address.action == action
+            })
     })
     .and_then(tilo_actions::remote::CatalogueRow::target)
-    .expect("the fixture offers `draft`")
+    .expect("the fixture offers the action")
 }
 
 fn library(action: &str) -> RemoteActionTarget {
@@ -1708,6 +1731,7 @@ fn invoker_draft_grants(door: &Door) -> Vec<ui::permissions::CapOverride> {
                 && capability.scope
                     == ui::permissions::Scope::Action {
                         app: FIXTURE.to_string(),
+                        resource: INBOX.into(),
                         action: "draft".to_string(),
                     }
         })
@@ -1769,7 +1793,11 @@ fn allowing_once_admits_that_call_and_the_next_asks_again() {
         seen.title().contains("wants to use"),
         "the sheet names who wants what: {seen:?}"
     );
-    assert_eq!(seen.app_name(), "Write draft", "the action as published");
+    assert_eq!(
+        seen.app_name(),
+        "Inbox · Write draft",
+        "the action as published, on the resource it is on"
+    );
     assert!(seen.detail().contains("Low risk"), "{seen:?}");
     assert_eq!(
         seen.choices(),
@@ -1802,6 +1830,44 @@ fn allowing_once_admits_that_call_and_the_next_asks_again() {
     assert!(not_permitted(&status), "{status:?}");
     door.serve_briefly();
     assert_eq!(door.app.served.len(), 1, "the denied call never ran");
+}
+
+/// A grant names one resource's action: the same action on another
+/// resource is another action, asked about afresh and refused when denied.
+#[test]
+fn an_app_granted_one_resources_action_is_asked_again_for_another_resource() {
+    let (mut door, mut sheet) = door_asking(true);
+    let socket = door.dir.path().join("collab.sock");
+    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let inbox = fixture_draft(&door);
+    let outbox = fixture_target(&door, OUTBOX, "draft");
+
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        inbox,
+        &json!({"title": "First"}),
+        Some(AppActionConsent::Always),
+    );
+    assert!(seen.is_some());
+    if let ReceiptStatus::Rejected { error } = status {
+        panic!("always allowed, the call goes ahead: {error:?}");
+    }
+    served_until(&mut door, 1);
+    assert_eq!(invoker_draft_grants(&door).len(), 1, "a grant on the inbox");
+
+    let (status, seen) = invoker.invoke_answering(
+        &mut door,
+        &mut sheet,
+        outbox,
+        &json!({"title": "Elsewhere"}),
+        Some(AppActionConsent::Deny),
+    );
+    let seen = seen.expect("the same action on another resource asks again");
+    assert_eq!(seen.app_name(), "Outbox · Write draft");
+    assert!(not_permitted(&status), "{status:?}");
+    door.serve_briefly();
+    assert_eq!(door.app.served.len(), 1, "the outbox's draft never ran");
 }
 
 #[test]
@@ -1862,10 +1928,15 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
                         ),
                     },
                     argument: InvokeArgument::Json(
-                        json!({"app": INVOKER_APP, "target_app": FIXTURE, "action": "draft"})
-                            .as_object()
-                            .cloned()
-                            .expect("an object"),
+                        json!({
+                            "app": INVOKER_APP,
+                            "target_app": FIXTURE,
+                            "resource": INBOX,
+                            "action": "draft",
+                        })
+                        .as_object()
+                        .cloned()
+                        .expect("an object"),
                     ),
                     context: None,
                     confirmation,
@@ -1956,6 +2027,7 @@ fn archive_grant() -> PermissionProfileRule {
     PermissionProfileRule::grant(
         Scope::Action {
             app: FIXTURE.into(),
+            resource: INBOX.into(),
             action: "archive".into(),
         },
         Verb::Write,

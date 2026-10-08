@@ -147,7 +147,10 @@ fn scenario_outcome(
     let _broker = typed_peer::spawn_with_agent_actions(
         &socket,
         if allowed {
-            &[(WP, "insert-table"), (WP, "zoom-in")][..]
+            &[
+                (WP, typed_peer::WP_DOCUMENT, "insert-table"),
+                (WP, typed_peer::WP_DOCUMENT, "zoom-in"),
+            ][..]
         } else {
             &[]
         },
