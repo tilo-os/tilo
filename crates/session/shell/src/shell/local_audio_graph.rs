@@ -285,9 +285,9 @@ mod tests {
     }
 
     fn wait_until(condition: impl Fn() -> bool) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let started = Instant::now();
         while !condition() {
-            if Instant::now() > deadline {
+            if started.elapsed() > Duration::from_secs(10) {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(5));

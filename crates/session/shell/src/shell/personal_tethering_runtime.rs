@@ -1143,7 +1143,7 @@ mod tests {
         fail_send_after: Option<usize>,
         fail_hotspot: bool,
         fail_connect: bool,
-        fail_seal: bool,
+        seal_error: Option<&'static str>,
         /// Finish each job as it is queued, as a quick `NetworkManager`
         /// would. Otherwise results wait in `held` until a test releases them.
         complete_jobs: bool,
@@ -1237,8 +1237,8 @@ mod tests {
             _ssid: &str,
             _password: &str,
         ) -> Result<crate::shell::device_fabric::WifiCredential, String> {
-            if self.fail_seal {
-                return Err("no certified identity to seal with".into());
+            if let Some(error) = self.seal_error {
+                return Err(error.into());
             }
             Ok(self.credential.clone())
         }
@@ -1274,7 +1274,7 @@ mod tests {
             fail_send_after: None,
             fail_hotspot: false,
             fail_connect: false,
-            fail_seal: false,
+            seal_error: None,
             complete_jobs: true,
             connects: Vec::new(),
             disconnected: Vec::new(),
@@ -1728,7 +1728,7 @@ mod tests {
         let provider = device(29);
         let request_id = [29; 16];
         let (mut runtime, mut host) = consenting_provider(&requester, &provider, request_id);
-        host.fail_seal = true;
+        host.seal_error = Some("no certified identity to seal with");
         authorize_phone_tethering(request_id, true).unwrap();
         runtime.pump_with(&mut host, &provider, "Phone", true, 1_001);
         assert_eq!(host.hotspot_starts, 1);

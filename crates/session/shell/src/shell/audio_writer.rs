@@ -343,10 +343,10 @@ mod tests {
     }
 
     fn wait_for(writes: &Mutex<Vec<String>>, count: usize) -> Vec<String> {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let started = Instant::now();
         loop {
             let seen = writes.lock().unwrap().clone();
-            if seen.len() >= count || Instant::now() > deadline {
+            if seen.len() >= count || started.elapsed() > Duration::from_secs(10) {
                 return seen;
             }
             std::thread::sleep(Duration::from_millis(5));
