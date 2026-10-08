@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "artifact_qualified": false,
+  "measurements": [
+    {
+      "stage": "production-A-calibrate",
+      "token": "d51aaf7656f047359afa69b05adfd2ed",
+      "receipt_sha256": "65b33d493b03785c79d05e0a380a95715ee90de5cb9160344d3c9d12223c04e0",
+      "child_exit": 0,
+      "stop_reason": null,
+      "peak_session_RSS_bytes": 6187044864,
+      "jobs": 1,
+      "initial_output_bytes": 13654331392,
+      "final_output_bytes": 4409479168,
+      "initial_free_disk_bytes": 342207795200,
+      "final_free_disk_bytes": 287778897920,
+      "cleanup_remaining_live_processes": [],
+      "container_removed": true
+    },
+    {
+      "stage": "production-A",
+      "token": "4e3f472cdd1f41a78600b3fd7f841988",
+      "receipt_sha256": "53f2fdf5429e2411c244fc227fcd445dd81a94cd72552a5d0f39c4772e16cf29",
+      "child_exit": -15,
+      "stop_reason": "remaining measured global disk headroom checkpoint",
+      "peak_session_RSS_bytes": 4124520448,
+      "jobs": 5,
+      "initial_output_bytes": 4409479168,
+      "final_output_bytes": 5015834624,
+      "initial_free_disk_bytes": 282308521984,
+      "final_free_disk_bytes": 141666586624,
+      "cleanup_remaining_live_processes": [],
+      "container_removed": true
+    },
+    {
+      "stage": "production-A",
+      "token": "5478a8654cd64ae7ac782bc0ad3daacf",
+      "receipt_sha256": "91d6a37bb9bc2e9e53fb110834f94173167b87234be77a3a5de928ab9246890b",
+      "child_exit": -15,
+      "stop_reason": "remaining measured global disk headroom checkpoint",
+      "peak_session_RSS_bytes": 3648299008,
+      "jobs": 5,
+      "initial_output_bytes": 5015834624,
+      "final_output_bytes": 5320306688,
+      "initial_free_disk_bytes": 179667820544,
+      "final_free_disk_bytes": 141561638912,
+      "cleanup_remaining_live_processes": [],
+      "container_removed": true
+    }
+  ],
+  "disk_admission": {
+    "filesystem_total_bytes": 2146435072000,
+    "operator_critical_watermark_percent": 95,
+    "operator_free_floor_bytes": 107321753600,
+    "task_recovery_margin_bytes": 17179869184,
+    "task_reaction_margin_bytes": 17179869184,
+    "task_estimated_output_growth_cap_bytes": 34359738368,
+    "admission_bytes": 176041230336,
+    "running_stop_bytes": 141681491968,
+    "remaining_output_and_link_scratch_peak_measured": false
+  },
+  "memory_admission": {
+    "measured_serial_production_RSS_peak_bytes": 6187044864,
+    "compile_safety_multiplier": 2,
+    "max_requested_jobs": 5,
+    "separate_link_allowance_bytes": 32212254720,
+    "host_available_memory_reserve_bytes": 68719476736,
+    "principal_CEF_link_peak_measured": false
+  },
+  "maintenance_performed": false,
+  "source_review_delivery_authorization": "Source-only PR may proceed independently of paused SDK compilation; mandatory remote shell compile remains explicit pending evidence."
+}

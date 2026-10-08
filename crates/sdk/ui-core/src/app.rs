@@ -1089,6 +1089,20 @@ impl App {
         }
     }
 
+    /// Where a [`Widget::take_focus_reset`] puts focus: the control the new
+    /// content marks as its default (so Enter takes the encouraged action),
+    /// otherwise the first focusable.
+    fn reset_focus_target(&self) -> Option<taffy::NodeId> {
+        self.focusable_order
+            .iter()
+            .copied()
+            .find(|&id| {
+                self.inspect_node(id, |widget| widget.is_default_keyboard_focus())
+                    .unwrap_or(false)
+            })
+            .or_else(|| self.focusable_order.first().copied())
+    }
+
     /// Apply the native host's fallback for an Enter/Space press that the
     /// focused widget did not consume during normal event dispatch.
     fn initial_live_focus_target(&self) -> Option<taffy::NodeId> {
@@ -2096,7 +2110,11 @@ impl App {
 
     #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
-        self.accessibility.base_theme = Theme::configured();
+        self.accessibility.base_theme = self
+            .floating
+            .host_theme
+            .clone()
+            .unwrap_or_else(Theme::configured);
         self.theme_schedule =
             Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
                 .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
@@ -2473,8 +2491,8 @@ impl App {
             && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
         {
             if focus_reset {
-                if let Some(&first) = self.focusable_order.first() {
-                    self.set_focused_node(Some(first));
+                if let Some(target) = self.reset_focus_target() {
+                    self.set_focused_node(Some(target));
                 }
             } else if let Some(idx) = prev_focus_idx {
                 let exact = self.focusable_order.get(idx).copied();

@@ -1135,6 +1135,7 @@ mod tests {
                 spotify_catalogue: false,
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
+                queue_catalogue: Vec::new(),
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();
@@ -1159,6 +1160,7 @@ mod tests {
                     ..Default::default()
                 },
                 local_file: Some(file),
+                queue_catalogue: Vec::new(),
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();

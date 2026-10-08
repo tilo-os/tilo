@@ -33,11 +33,19 @@ const fixture = JSON.parse((await lines.next()).value);
 if (fixture.encryptedRestart) assert.notEqual(process.getuid?.(), 0, 'cold encrypted resource requires an unprivileged sandboxed browser');
 process.env.CHROME ??= '/usr/bin/chromium-browser';
 let browser;
+let tab;
 const stages = [];
 const stage = name => {stages.push(name); process.stdout.write(JSON.stringify({stage: name}) + '\n');};
 const evidence = resolve(fixture.encryptedRestart ? 'target/mounted-resource-encrypted' : fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
 mkdirSync(evidence, {recursive:true});
 const deadline = setTimeout(async () => {
+  const pageStatus = await Promise.race([
+    tab?.evaluate('document.querySelector("#status")?.textContent ?? ""', {timeout:250})
+      .catch(() => 'status unavailable'),
+    new Promise(resolve => setTimeout(() => resolve('status observation unavailable'), 250)),
+  ]);
+  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'timeout',
+    lastStage:stages.at(-1) ?? null, pageStatus: String(pageStatus ?? '').slice(0, 500)}, null, 2) + '\n');
   console.error('Mounted resource journey exceeded its 130-second bound');
   await browser?.close();
   server.close();
@@ -49,7 +57,7 @@ try {
   browser = await launch({args: ['--ignore-certificate-errors', '--enable-features=Vulkan',
     '--use-vulkan=swiftshader', '--use-angle=swiftshader',
     ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
-  const tab = await browser.tab();
+  tab = await browser.tab();
   await tab.navigate(origin + '/fixture.html');
   await tab.waitFor('document.readyState === "complete"');
   await tab.send('Page.bringToFront');
@@ -62,6 +70,16 @@ try {
   assert.equal(initialized.error, undefined, JSON.stringify(initialized));
   await tab.waitFor('document.querySelector("canvas")?.width > 0');
   assert.ok((await tab.evaluate('mount.actions(fixture.reference.id)')).some(action => action.address.action === 'reveal-message-range'));
+  if (fixture.encryptedRestart) {
+    const read = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
+    assert.equal(read.state, 'completed');
+    const original = read.output.value.content.messages.find(message => message.id === fixture.reference.id.replace('chat.message:', ''));
+    assert.ok(original, 'the exact original message must be readable');
+    assert.equal(original.author, fixture.sourceAuthor, 'remote message retains the certified foreign writer identity');
+    assert.notEqual(original.author, fixture.root, 'the original author must differ from the viewing person');
+    assert.notEqual(fixture.sourcePeople.find(person => person.id === original.author)?.name, 'You', 'an unnamed writer must not persist the current-reader label as a shared name');
+    writeFileSync(join(evidence, 'identity-boundary.json'), JSON.stringify({writer:original.author, viewer:fixture.root, sourcePeople:fixture.sourcePeople, semantics:await tab.evaluate('mount.state().semantics')}, null, 2));
+  }
   stage('compiled-native-chat-mounted-exact-range');
   const initialShot = await tab.screenshot();
   assert.ok(initialShot?.length, 'the mounted fixture must produce a rendered frame');

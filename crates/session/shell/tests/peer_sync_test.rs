@@ -99,6 +99,7 @@ async fn wait_remote_input(events: &mut mpsc::Receiver<NetEvent>, surface: u64, 
 async fn two_actors_exchange_a_workspace_change() {
     let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
+    let a_id = addr_a.id;
     connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
     wait_peer_joined(&mut events_a).await;
     wait_peer_joined(&mut events_b).await;
@@ -135,6 +136,9 @@ async fn two_actors_exchange_a_workspace_change() {
     let mut target = WorkspaceTree::default();
     let target_id = target.append_empty_workspace("Placeholder");
     assert!(target.set_room(target_id, room));
+    // The invite names A's endpoint as the room's governor.
+    assert!(target.pin_room_authority(room, PeerOrigin::peer(&a_id)));
+    assert_eq!(sender, a_id, "the change arrives from A");
     assert!(
         target
             .apply_room_changes(room, &changes, &PeerOrigin::peer(&sender))
@@ -299,6 +303,7 @@ async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_bud
 
     let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
+    let a_id = addr_a.id;
     connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
     wait_peer_joined(&mut events_a).await;
     wait_peer_joined(&mut events_b).await;
@@ -311,6 +316,8 @@ async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_bud
     b.set_salt_override(SALT_B);
     let placeholder = b.append_empty_workspace("Placeholder");
     assert!(b.set_room(placeholder, room));
+    // The invite names A's endpoint as the room's governor.
+    assert!(b.pin_room_authority(room, PeerOrigin::peer(&a_id)));
 
     let publish = |changes: Vec<Vec<u8>>| NetCmd::Publish {
         ws: WS,

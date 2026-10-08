@@ -2220,9 +2220,10 @@ impl FrameBuilder {
             };
             let dest_x = scene_px(rect.x0);
             let dest_w = scene_px(rect.width()).max(1);
+            let pad = self.host.strip_canvas_pad(crate::shell::state::StripId(id));
             let right = dest_x
                 .saturating_add(dest_w)
-                .saturating_add(scene_px(max_scroll.ceil()));
+                .saturating_add(scene_px((max_scroll + 2.0 * pad).ceil()));
             if right > max_width {
                 // Too wide for the presenter: the pans stay in the scene.
                 return Some(StripPlan {
@@ -2240,7 +2241,7 @@ impl FrameBuilder {
                     strips: Vec::new(),
                 });
             }
-            if scroll > 0.0 && ui::widget::pan_within_canvas(scroll, max_scroll) {
+            if ui::widget::pan_within_canvas(scroll, max_scroll, pad) {
                 let pans = self
                     .host
                     .strip_pan_rect(crate::shell::state::StripId(id))
@@ -2252,7 +2253,7 @@ impl FrameBuilder {
                     dest_y,
                     dest_w,
                     dest_h: dest_y1.saturating_sub(dest_y).max(1),
-                    scroll_x: scene_px(scroll),
+                    scroll_x: scene_px(scroll + pad),
                 });
             }
         }
@@ -2731,6 +2732,12 @@ impl FrameBuilder {
                 .map(|workspace| workspace.id.0.to_string())
         };
         self.windows.in_workspace(id.as_deref())
+    }
+
+    /// The OS palette before the window's workspace tint is applied.
+    #[must_use]
+    pub fn configured_app_theme(&self) -> &Theme {
+        &self.configured_theme
     }
 
     /// Enable the session-wide configured theme and live settings watcher.
@@ -4802,7 +4809,9 @@ mod tests {
                 let chrome = fb.chrome();
                 let mut tree = chrome.tree_mut();
                 let active = tree.desktop.active;
-                tree.set_room(active, room)
+                // Joined through the peer's invite, which pins it (hub 1)
+                // as the room's governor.
+                tree.set_room(active, room) && tree.pin_room_authority(room, PeerOrigin::hub(1))
             };
             assert!(joined, "this session joins the peer's room");
 

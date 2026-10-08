@@ -135,6 +135,7 @@ fn the_whole_wizard_runs_headless_through_published_actions() {
           {{"invoke":{{"resource":"installer.options","action":"set-hostname","args":{{"hostname":"lab-1"}}}}}},
           {{"invoke":{{"resource":"installer.options","action":"set-filesystem","args":{{"filesystem":"xfs"}}}}}},
           {{"invoke":{{"resource":"installer","action":"next"}}}},
+          {{"invoke":{{"resource":"installer","action":"next"}}}},
           {{"invoke":{{"resource":"installer.review","action":"begin","confirmation_phrase":"/dev/vdb","expect_error":"action_unavailable"}}}}
         ]}}"#
     );

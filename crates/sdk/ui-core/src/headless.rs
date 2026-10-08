@@ -306,6 +306,8 @@ pub struct Spec {
     pub targets: Option<std::path::PathBuf>,
     /// Write one semantic widget/accessibility snapshot here as JSON.
     pub inspect: Option<std::path::PathBuf>,
+    /// Retain actual semantic invocation outputs and refusals, without input arguments.
+    pub results: Option<std::path::PathBuf>,
 }
 
 /// One node in a developer inspection snapshot.
@@ -494,6 +496,7 @@ pub struct FrameOutput<'a> {
 }
 
 mod caller_palette;
+mod invocation_results;
 mod search_open;
 pub mod system_search;
 pub mod test_support;
@@ -570,6 +573,9 @@ pub struct FrameHarness {
     focused: Option<NodeId>,
     focus_trap_active: bool,
     active_input_instance: Option<crate::application::InstanceId>,
+    // An activation is complete only when its current focus and encoded frame
+    // agree. Failed composition keeps this intent for the original retry path.
+    pending_app_activation: Option<crate::application::InstanceId>,
     saved_instance_focus:
         HashMap<crate::application::InstanceId, crate::widget::layout::CompositionFocus>,
     input_sequence: std::cell::Cell<u64>,
@@ -593,6 +599,7 @@ pub struct FrameHarness {
     /// The invoker each job started for someone else runs for, while it
     /// runs ([`FrameHarness::start_bound_job_for`]).
     acting_for: HashMap<tilo_actions::InvocationId, crate::invocation_scope::Continuation>,
+    invocation_results: Option<invocation_results::InvocationResults>,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
@@ -1101,6 +1108,7 @@ impl FrameHarness {
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.pending_app_activation = None;
         self.bound_publication.clear();
         self.control_domain.close();
         if let Some(wake) = &self.component_wake {
@@ -1142,6 +1150,7 @@ impl FrameHarness {
     /// freed widgets.
     #[cfg(test)]
     fn replace_root(&mut self, root: Box<dyn Widget>) {
+        self.pending_app_activation = None;
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
@@ -1590,6 +1599,7 @@ impl FrameHarness {
             focused: None,
             focus_trap_active: false,
             active_input_instance: None,
+            pending_app_activation: None,
             saved_instance_focus: HashMap::new(),
             input_sequence: std::cell::Cell::new(0),
             observed_input_owner: std::cell::RefCell::new(None),
@@ -1602,6 +1612,7 @@ impl FrameHarness {
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
             acting_for: HashMap::new(),
+            invocation_results: None,
             profiler: None,
             last_send_skipped_relayout: false,
             pointer_redraw_diagnostics: false,
@@ -2731,7 +2742,9 @@ impl FrameHarness {
             self.discard_layout_tree();
             self.owner_service_layout_retired = true;
         }
-        let result = if self.owner_service_layout_retired {
+        let finalizing_activation = self.pending_app_activation.is_some();
+        let previous_viewport = self.presence.viewport.get();
+        let result = if self.owner_service_layout_retired || finalizing_activation {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.try_relayout_content()
             })) {
@@ -2739,6 +2752,12 @@ impl FrameHarness {
                 Err(payload) => {
                     self.discard_layout_tree();
                     self.last_layout_viewport = None;
+                    if finalizing_activation {
+                        self.presence.pop_viewport(previous_viewport);
+                        self.scene.reset();
+                        self.owner_service_layout_retired = true;
+                        self.layout_requested = true;
+                    }
                     std::panic::resume_unwind(payload);
                 }
             }
@@ -2746,11 +2765,18 @@ impl FrameHarness {
             self.try_relayout_content()
         };
         if result.is_ok() {
+            self.pending_app_activation = None;
             self.owner_service_layout_retired = false;
             // This exclusive &mut frame completed the entire original
             // composition/draw/focus pipeline. Host reentry cannot acquire it.
             self.layout_requested = false;
         } else {
+            if finalizing_activation {
+                self.presence.pop_viewport(previous_viewport);
+                self.scene.reset();
+                self.owner_service_layout_retired = true;
+                self.layout_requested = true;
+            }
             if self.owner_service_layout_retired {
                 self.discard_layout_tree();
             }
@@ -3029,7 +3055,16 @@ impl FrameHarness {
                 );
                 self.layout_built = true;
             }
-            if rebuilt_this_pass || must_compute {
+            // Sync and view restoration can revive an outgoing owner's local
+            // focus. Normalize it within composition, before sizing and ink.
+            // Each arbitrary setter is followed by the existing structure
+            // contract; a replaced child invalidates maps before another visit.
+            if let Some(instance) = self.pending_app_activation
+                && !self.blur_inactive_app_components(instance)
+            {
+                return Ok((None, true));
+            }
+            if rebuilt_this_pass || must_compute || self.pending_app_activation.is_some() {
                 if !rebuilt_this_pass {
                     // Taffy caches every node's measurement; a retained tree
                     // re-measures exactly the widgets that report a possible
@@ -3202,6 +3237,7 @@ impl FrameHarness {
         // enabled state the user would see.
         self.publish_undo_status();
 
+        self.validate_app_activation_frame()?;
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         // Logical layout, rasterised at the capture's device scale, as the
         // live host draws at its window's scale factor.
@@ -3399,6 +3435,9 @@ impl FrameHarness {
         crate::history_mode::embedded::finish_returns(self.root.as_mut());
 
         self.restore_history_focus();
+        // Draw and History-return callbacks remain original. A late mutation
+        // cannot turn their already encoded ink into a successful activation.
+        self.validate_app_activation_frame()?;
 
         // One `relayout` is one rendered frame; commit it, folding in any
         // `handle_event` time banked by a preceding `send`.
@@ -3753,7 +3792,7 @@ impl FrameHarness {
             .or_else(|| order.first().copied())
     }
 
-    fn blur_inactive_app_components(&mut self, active: crate::application::InstanceId) {
+    fn blur_inactive_app_components(&mut self, active: crate::application::InstanceId) -> bool {
         let outgoing: Vec<_> = self
             .node_map
             .keys()
@@ -3766,12 +3805,84 @@ impl FrameHarness {
             .collect();
         for node in outgoing {
             let _ = self.mutate_node(node, |widget| widget.set_focus(false));
+            let changed = self.take_composition_dirty();
+            let history_invalidated = self.invalidate_unsupported_history_owner();
+            if changed || history_invalidated {
+                self.discard_layout_tree();
+                return false;
+            }
         }
+        true
+    }
+
+    fn validate_app_activation_frame(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        let Some(instance) = self.pending_app_activation else {
+            return Ok(());
+        };
+        let changed = self.take_composition_dirty();
+        let history_invalidated = self.invalidate_unsupported_history_owner();
+        if changed || history_invalidated {
+            self.discard_layout_tree();
+            return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+        }
+        if self.active_input_instance != Some(instance)
+            || self.focused.is_some_and(|node| {
+                self.bindings
+                    .binding_for(node)
+                    .is_none_or(|binding| binding.instance_id != instance)
+            })
+        {
+            return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+        }
+        if let Some(node) = self.focused {
+            let focused = self
+                .inspect_node(node, |widget| widget.is_focused())
+                .unwrap_or(false);
+            let changed = self.take_composition_dirty();
+            let history_invalidated = self.invalidate_unsupported_history_owner();
+            if changed || history_invalidated {
+                self.discard_layout_tree();
+                return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+            }
+            if !focused {
+                return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+            }
+        }
+        let outgoing: Vec<_> = self
+            .node_map
+            .keys()
+            .copied()
+            .filter(|&node| {
+                self.bindings
+                    .binding_for(node)
+                    .is_some_and(|binding| binding.instance_id != instance)
+            })
+            .collect();
+        for node in outgoing {
+            let focused = self
+                .inspect_node(node, |widget| widget.is_focused())
+                .unwrap_or(false);
+            // Even a custom inspection must report changed child storage before
+            // another mapped reference is used, as on the setter path above.
+            let changed = self.take_composition_dirty();
+            let history_invalidated = self.invalidate_unsupported_history_owner();
+            if changed || history_invalidated {
+                self.discard_layout_tree();
+                return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+            }
+            if focused {
+                return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+            }
+        }
+        Ok(())
     }
 
     /// Resolve focus only in the selected, live app instance. A missing control
     /// is an authoritative no-owner result; layout cannot revive another app.
     pub fn prepare_app_activation(&mut self, instance: crate::application::InstanceId) {
+        // A new explicit selection replaces failed prior selection metadata;
+        // its callbacks still require the original fresh layout admission.
+        self.pending_app_activation = None;
         if self.readmit_owner_service_layout().is_err() {
             return;
         }
@@ -3790,6 +3901,7 @@ impl FrameHarness {
     }
 
     pub fn activate_app_focus(&mut self, instance: crate::application::InstanceId) {
+        self.pending_app_activation = None;
         if self.readmit_owner_service_layout().is_err() {
             return;
         }
@@ -3830,12 +3942,8 @@ impl FrameHarness {
         self.input_sequence
             .set(self.input_sequence.get().wrapping_add(1));
         self.remember_app_focus();
+        self.pending_app_activation = Some(instance);
         self.relayout();
-        // Reconciliation can restore an opaque component's app-local focus
-        // flags after the runner has moved its own focus. Enforce the selected
-        // instance after that final layout so old controls cannot stay blue or
-        // claim accessibility focus.
-        self.blur_inactive_app_components(instance);
     }
 
     /// No-control shortcut routing stays inside the selected app and its
@@ -7793,6 +7901,7 @@ impl FrameHarness {
             invocation.confirm,
             invocation.confirmation_phrase.as_deref(),
         );
+        self.retain_invocation_outcome(invocation, &result)?;
         match (result, invocation.expect_error.as_deref()) {
             (Ok(_), None) => Ok(()),
             (Ok(_), Some(code)) => Err(format!(
@@ -8641,6 +8750,7 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
         dump: wire.dump.map(Into::into),
         targets: wire.targets.map(Into::into),
         inspect: wire.inspect.map(Into::into),
+        results: wire.results.map(Into::into),
     })
 }
 
@@ -8717,6 +8827,9 @@ fn drive_spec_actions(
     driver: &mut Driver,
     mut persist: impl FnMut(&mut Driver),
 ) -> Option<String> {
+    if spec.results.is_some() {
+        driver.retain_invocation_results();
+    }
     tilo_startup_metrics::mark("headless-actions-start");
     // Native idle frames admit queued local controls even without input. Use
     // the same host tick here, including fresh permissions and undo recording.
@@ -8778,6 +8891,11 @@ fn audit_spec(spec: &Spec, driver: &Driver, failure: &mut Option<String>) -> Res
 }
 
 fn write_spec_outputs(spec: &Spec, driver: &mut Driver) -> Result<(), String> {
+    if let Some(path) = &spec.results {
+        write_headless_output(path, driver.invocation_results_json()?).map_err(|error| {
+            format!("writing invocation results to {}: {error}", path.display())
+        })?;
+    }
     if let Some(path) = &spec.targets {
         let mut names: Vec<(String, [f64; 4])> = driver
             .targets()
@@ -13753,6 +13871,10 @@ mod owner_background_work;
 #[cfg(test)]
 #[path = "../../../browser/tilo-browser-runtime/src/mount_service_custody.rs"]
 mod owner_mount_service_custody;
+
+#[cfg(test)]
+#[path = "headless/activation_scene_consistency_tests.rs"]
+mod activation_scene_consistency_tests;
 
 // Native capture owns synchronous GPU readback. Both the convenience path
 // and reusable-renderer oracle share this existing platform boundary.

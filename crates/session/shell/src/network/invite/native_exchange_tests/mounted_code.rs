@@ -7,18 +7,25 @@ use sha2::{Digest as _, Sha256};
 
 #[tokio::test]
 async fn native_mounted_code_resource_edit_reaches_another_mounted_app() {
-    let _ = tracing_subscriber::fmt().with_env_filter("warn").try_init();
+    trace_publication_hops();
     Box::pin(super::actual_exchange(false, true, Some(Journey::Document))).await;
 }
 
 #[tokio::test]
 async fn native_mounted_code_has_acknowledged_private_continuity() {
+    trace_publication_hops();
     Box::pin(super::actual_exchange(
         false,
         true,
         Some(Journey::PrivateAdmission),
     ))
     .await;
+}
+
+fn trace_publication_hops() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,tilo_joined_room::session::cursor=debug,tilo_joined_room::testing::governor=debug,tilo_relay::native_publication=debug")
+        .try_init();
 }
 
 #[derive(Clone, Copy)]
@@ -352,6 +359,7 @@ async fn drive(
     body: &str,
     audits: usize,
 ) {
+    let stage_started = std::time::Instant::now();
     eprintln!(
         "mounted journey: awaiting {}",
         hex::encode(Sha256::digest(body.as_bytes()))
@@ -360,7 +368,7 @@ async fn drive(
         let mut reported = std::time::Instant::now();
         loop {
             if reported.elapsed() >= std::time::Duration::from_secs(20) {
-                eprintln!("mounted snapshots: {:?}", mounted.iter().map(|app| app.code.app.controlled_native_input_snapshot_for_test()).collect::<Vec<_>>());
+                report_snapshots(authority, source, mounted, stage_started.elapsed());
                 reported = std::time::Instant::now();
             }
             for app in &mut *mounted { app.frame(); }
@@ -372,7 +380,8 @@ async fn drive(
                     && signed_audits(&app.network.native_owner().unwrap()) == signed
                     && has_committed_body(&app.network.native_owner().unwrap(), body))
             {
-                eprintln!("mounted convergence: {} bytes; {audits} exact signed terminal audits on both live native owners", body.len());
+                eprintln!("mounted convergence after {:?}: {} bytes; {audits} exact signed terminal audits on both live native owners", stage_started.elapsed(), body.len());
+                report_snapshots(authority, source, mounted, stage_started.elapsed());
                 break;
             }
             tokio::select! {
@@ -388,7 +397,8 @@ async fn drive(
                         && app_id == APP
                         && author != authority.lock().unwrap().as_ref().unwrap().governor().device_public_key
                     {
-                        source.receive(RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(), tilo_peer_state::TransportOrigin::RelayDelta(author), message.clone(), SystemTime::now()).unwrap();
+                        let admission = source.receive(RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(), tilo_peer_state::TransportOrigin::RelayDelta(author), message.clone(), SystemTime::now()).unwrap();
+                        eprintln!("mounted native governor input {}: {:?}", hex::encode(blake3::hash(&data).as_bytes()), admission.primary());
                         {
                             let mut state = authority.lock().unwrap();
                             let state = state.as_mut().unwrap();
@@ -433,6 +443,82 @@ fn has_committed_body(owner: &NativeWorkspaceOwner, expected: &str) -> bool {
                     .is_some_and(|bytes| {
                         cold_code::body(&automerge::AutoCommit::load(&bytes).unwrap()) == expected
                     }))
+            },
+        )
+        .unwrap()
+}
+
+fn report_snapshots(
+    authority: &ActualAuthority,
+    source: &NativeWorkspaceOwner,
+    mounted: &[Mounted],
+    elapsed: std::time::Duration,
+) {
+    let publisher = authority.lock().unwrap();
+    if let Some(publisher) = publisher.as_ref() {
+        let document = publisher.peer().document(APP, cold_code::RECORD).map(|bytes| {
+            let mut document = automerge::AutoCommit::load(&bytes).unwrap();
+            let body = cold_code::body(&document);
+            serde_json::json!({
+                "body_hash": hex::encode(Sha256::digest(body.as_bytes())),
+                "body_bytes": body.len(),
+                "heads": document.get_heads().iter().map(ToString::to_string).collect::<Vec<_>>(),
+            })
+        });
+        eprintln!(
+            "mounted publisher after {elapsed:?}: pending={} document={document:?}",
+            publisher.peer().pending_count()
+        );
+    }
+    drop(publisher);
+    eprintln!(
+        "mounted governor after {elapsed:?}: {:?}",
+        committed_snapshot(source)
+    );
+    eprintln!(
+        "mounted snapshots: {:?}",
+        mounted
+            .iter()
+            .map(|app| serde_json::json!({
+                "connected": app.code.app.collaboration_is_connected(),
+                "ui": app.code.app.controlled_native_input_snapshot_for_test(),
+                "native": committed_snapshot(&app.network.native_owner().unwrap()),
+                "publication": publication_snapshot(&app.network.native_owner().unwrap()),
+            }))
+            .collect::<Vec<_>>()
+    );
+}
+
+fn publication_snapshot(owner: &NativeWorkspaceOwner) -> serde_json::Value {
+    let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    let now = SystemTime::now();
+    let status = owner
+        .outgoing_status(room, now)
+        .map(|status| serde_json::json!({ "pending": status.pending, "blocked": status.blocked }));
+    let eligible = owner.with_outgoing(room, now, |view, outgoing| {
+        Ok(serde_json::json!({
+            "generation": view.generation(),
+            "ids": outgoing.entries().map(|entry| hex::encode(entry.id())).collect::<Vec<_>>(),
+        }))
+    });
+    serde_json::json!({ "status": status, "eligible": eligible })
+}
+
+fn committed_snapshot(owner: &NativeWorkspaceOwner) -> Option<serde_json::Value> {
+    owner
+        .with_current(
+            RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
+            |view| {
+                Ok(view.peer().document(APP, cold_code::RECORD).map(|bytes| {
+                    let mut document = automerge::AutoCommit::load(&bytes).unwrap();
+                    let body = cold_code::body(&document);
+                    serde_json::json!({
+                        "generation": view.generation(),
+                        "body_hash": hex::encode(Sha256::digest(body.as_bytes())),
+                        "body_bytes": body.len(),
+                        "heads": document.get_heads().iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    })
+                }))
             },
         )
         .unwrap()
