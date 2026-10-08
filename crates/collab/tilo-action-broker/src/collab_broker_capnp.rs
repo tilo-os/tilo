@@ -13689,6 +13689,7 @@ pub mod tests {
 
     /// A directory whose container row carries a visibility contract the
     /// broker cannot read, beside a well-formed action row.
+    #[cfg(test)]
     struct UndecodableVisibilityDirectory {
         row: runtime_collab::ActionDirectoryRow,
     }
@@ -13697,6 +13698,7 @@ pub mod tests {
         refining_impl_trait,
         reason = "the generated Cap'n Proto test endpoint has the same concrete Promise shape as production endpoints"
     )]
+    #[cfg(test)]
     impl action_directory::Server for UndecodableVisibilityDirectory {
         fn query(
             self: Rc<Self>,
