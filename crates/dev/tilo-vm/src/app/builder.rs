@@ -295,7 +295,7 @@ impl App {
         provenance.component.clone_from(&component.name);
         let expected_hash = packed.layer_hash.clone();
         provenance.cargo_profile = Some(component.profile.clone());
-        provenance.features = component.build_features(&extra);
+        provenance.features = component.build_features(extra);
         provenance.target = packed.target;
         provenance.toolchain = packed.toolchain;
         inputs.unchanged(&worktree.root)?;
