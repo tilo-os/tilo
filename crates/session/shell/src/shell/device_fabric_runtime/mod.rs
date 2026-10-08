@@ -2203,13 +2203,7 @@ impl DeviceFabricRuntime {
             state.decisions.clear();
         }
         self.gamepad_broker.reap_expired(Instant::now());
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
+        let online = network.online_device_ids();
         let expired_pending = gamepad_authorization_state().lock().map_or_else(
             |_| Vec::new(),
             |mut state| {
@@ -2335,11 +2329,10 @@ impl DeviceFabricRuntime {
         if !policy.permits(ContinuityCapability::RealtimeSessions) {
             if let Some(adapter) = self.realtime_adapter.as_ref() {
                 let peers = network
-                    .device_fabric()
-                    .snapshots()
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>();
+                    .with_device_fabric(|fabric| {
+                        fabric.snapshots().keys().cloned().collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 for peer in peers {
                     adapter.peer_offline(&peer, Instant::now());
                 }
@@ -2351,13 +2344,7 @@ impl DeviceFabricRuntime {
         let Some(adapter) = self.realtime_adapter.as_ref() else {
             return;
         };
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
+        let online = network.online_device_ids();
         for peer in self.realtime_online_peers.difference(&online) {
             adapter.peer_offline(peer, Instant::now());
         }
@@ -2454,11 +2441,9 @@ impl DeviceFabricRuntime {
             return;
         };
         let peers = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.owner != local && snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
+            .online_device_ids()
+            .into_iter()
+            .filter(|peer| *peer != local)
             .collect::<Vec<_>>();
         let online_sources = peers
             .iter()
@@ -3315,20 +3300,27 @@ fn pump_fabric_clock(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
     if !enabled {
         return;
     }
-    let fabric = network.device_fabric();
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let snapshots = fabric.snapshots();
+    // Read in place, every frame; released before the clock lock is taken.
+    let (known, online_peers) = network
+        .with_device_fabric(|fabric| {
+            let snapshots = fabric.snapshots();
+            let online = snapshots
+                .values()
+                .filter(|snapshot| snapshot.presence.online)
+                .map(|snapshot| snapshot.owner.clone())
+                .collect::<BTreeSet<_>>();
+            (snapshots.keys().cloned().collect::<BTreeSet<_>>(), online)
+        })
+        .unwrap_or_default();
     let online = |peer: &crate::shell::personal_continuity::DeviceId| {
-        local.as_ref() != Some(peer)
-            && snapshots
-                .get(peer)
-                .is_some_and(|snapshot| snapshot.presence.online)
+        local.as_ref() != Some(peer) && online_peers.contains(peer)
     };
     let now_us = fabric_monotonic_us();
     let probes = with_fabric_clock(|core| {
-        core.retain_peers(|peer| snapshots.contains_key(peer));
+        core.retain_peers(|peer| known.contains(peer));
         core.due_probes(online, now, now_us, || {
             let mut nonce = [0; 16];
             while nonce == [0; 16] {
@@ -3353,17 +3345,22 @@ fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
         return;
     }
     let now = Instant::now();
-    let fabric = network.device_fabric();
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let snapshots = fabric.snapshots();
-    let all_peers = snapshots.keys().cloned().collect::<BTreeSet<_>>();
-    let online = snapshots
-        .values()
-        .filter(|snapshot| snapshot.presence.online && local.as_ref() != Some(&snapshot.owner))
-        .map(|snapshot| snapshot.owner.clone())
-        .collect::<Vec<_>>();
+    let (all_peers, online) = network
+        .with_device_fabric(|fabric| {
+            let snapshots = fabric.snapshots();
+            let online = snapshots
+                .values()
+                .filter(|snapshot| {
+                    snapshot.presence.online && local.as_ref() != Some(&snapshot.owner)
+                })
+                .map(|snapshot| snapshot.owner.clone())
+                .collect::<Vec<_>>();
+            (snapshots.keys().cloned().collect::<BTreeSet<_>>(), online)
+        })
+        .unwrap_or_default();
     let mut probes = Vec::new();
     {
         let Ok(mut state) = device_health_state().lock() else {
@@ -3850,13 +3847,7 @@ fn pump_bluetooth_handoffs(network: &ShellNetwork) {
         finish_bluetooth_worker(network, result);
     }
 
-    let fabric = network.device_fabric();
-    let online = fabric
-        .snapshots()
-        .values()
-        .filter(|snapshot| snapshot.presence.online)
-        .map(|snapshot| snapshot.owner.clone())
-        .collect::<BTreeSet<_>>();
+    let online = network.online_device_ids();
     let lost = bluetooth_handoff_state().lock().map_or_else(
         |_| Vec::new(),
         |mut state| {
