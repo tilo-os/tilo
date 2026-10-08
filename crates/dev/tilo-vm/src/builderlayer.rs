@@ -84,7 +84,6 @@ pub fn remote_command(builder: &[String], component: &Component, extra: &[String
         ]
         .map(str::to_owned),
     );
-    command.args.push("--binary".into());
     if !extra.is_empty() {
         command.args.push("--features".into());
         command.args.push(extra.join(","));
@@ -512,7 +511,7 @@ mod tests {
         let line = remote_command(&builder, &component, &["shell/dev-overrides".into()]);
         assert_eq!(
             line.display(),
-            "env BUILDER=arm remote-cargo --on-builder run --locked -p tilo-vm --bin tilo-vm -- layer-pack --component shell --profile release --binary --features shell/dev-overrides"
+            "env BUILDER=arm remote-cargo --on-builder run --locked -p tilo-vm --bin tilo-vm -- layer-pack --component shell --profile release --features shell/dev-overrides"
         );
     }
 }

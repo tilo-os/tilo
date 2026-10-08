@@ -77,13 +77,13 @@ starts.
 and streams the layer through this host into tilo-vmd's upload, so no binary
 is ever written to this host's disk. The builder is any cargo drop-in whose
 `run` runs the program on a machine of that architecture, in this worktree,
-and passes its stdout byte-for-byte:
+and preserves its framed base64 stdout:
 
 1. `<builder> run -p tilo-vm -- layer-pack --component <name> ...` runs
    tilo-vm's packer there: the same `cargo build` as above (its output
    streams here), then `os/scripts/install-components.py`, then the layer
-   tar on stdout as bounded binary chunks with its sha256;
-2. tilo-vm reads those chunks straight into the upload and checks the
+   tar on stdout as base64 lines with its sha256;
+2. tilo-vm decodes those lines straight into the upload and checks the
    sha256 and size before it imports. A remote `build` that brings its
    binaries back would put every one of them into `target/` instead;
 3. the layer records `builder = "remote"`, and the target and rustc read
@@ -289,7 +289,11 @@ bounded raw chunks (at most 1 MiB each, 8 GiB total); a footer supplies the exac
 byte count and SHA-256. The final response must match the original request id
 and byte count. No per-chunk JSON, base64 or round-trip acknowledgement is needed.
 
-Remote component builders also produce binary framing with `layer-pack --binary`.
+`layer-pack --binary` can produce binary framing for a byte-transparent caller.
+Automatic remote component builds retain base64 framing because the installed
+`rcargo` output collector interprets stdout as text. The SSH upload leg alone
+uses binary framing; enabling binary builder output requires a byte-transparent
+wrapper first.
 Source inventory, target, canonical content identity and signed-cohort checks are
 unchanged. Default `layer-pack` output remains the existing base64 format; its
 reader accepts either encoding. An older daemon that rejects the optional method
@@ -308,7 +312,7 @@ rolling back a generation uses the same paths.
 
 The isolated benchmark `cargo run --release -p tilo-vmd --example transport-bench -- PATH [--archive]` takes a representative
 executable path (packed once), or an existing archive with `--archive`, and measures
-old/new builder framing and
+legacy, production mixed and optional fully binary framing and
 actual daemon upload/import over private Unix sockets. It requires its artifact;
 missing input fails. It reports artifact identity, wire bytes, transport time and
 import time and checks equal imported content hashes. These measurements describe

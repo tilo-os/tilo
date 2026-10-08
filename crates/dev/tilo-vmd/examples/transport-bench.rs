@@ -30,7 +30,7 @@ impl<W: Write> Write for Count<W> {
         self.inner.flush()
     }
 }
-fn run(archive: &Path, binary_mode: bool) -> serde_json::Value {
+fn run(archive: &Path, builder_binary: bool, guest_binary: bool) -> serde_json::Value {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().to_owned();
     let (client_socket, server_socket) = UnixStream::pair().unwrap();
@@ -70,7 +70,7 @@ fn run(archive: &Path, binary_mode: bool) -> serde_json::Value {
         };
         let packed = tilo_vm::builderlayer::Packed {
             component: "shell".into(),
-            binary: binary_mode,
+            binary: builder_binary,
             ..Default::default()
         };
         writeln!(
@@ -81,7 +81,7 @@ fn run(archive: &Path, binary_mode: bool) -> serde_json::Value {
         )
         .unwrap();
         let mut input = File::open(artifact).unwrap();
-        if binary_mode {
+        if builder_binary {
             let mut frames = binary::Encoder::new(output);
             std::io::copy(&mut input, &mut frames).unwrap();
             frames.finish().unwrap();
@@ -95,8 +95,8 @@ fn run(archive: &Path, binary_mode: bool) -> serde_json::Value {
     let initial_guest_bytes = guest_bytes.load(Ordering::Relaxed);
     let mut stream = tilo_vm::builderlayer::Stream::new(BufReader::new(builder_read));
     let packed = stream.header(&mut std::io::sink()).unwrap();
-    assert_eq!(packed.binary, binary_mode);
-    let upload = if binary_mode {
+    assert_eq!(packed.binary, builder_binary);
+    let upload = if guest_binary {
         client.upload(stream)
     } else {
         client.upload_legacy(stream)
@@ -117,7 +117,7 @@ fn run(archive: &Path, binary_mode: bool) -> serde_json::Value {
     let import_seconds = import_timer.elapsed().as_secs_f64();
     drop(client);
     server.join().unwrap();
-    serde_json::json!({"mode":if binary_mode {"binary"} else {"legacy-double-base64"},"transfer_seconds":transfer_seconds,"import_seconds":import_seconds,"builder_wire_bytes":builder_bytes.load(Ordering::Relaxed),"guest_wire_bytes":guest_wire_bytes,"canonical_layer_hash":imported.hash})
+    serde_json::json!({"mode":if builder_binary {"binary-both-legs"} else if guest_binary {"legacy-builder-binary-upload"} else {"legacy-double-base64"},"transfer_seconds":transfer_seconds,"import_seconds":import_seconds,"builder_wire_bytes":builder_bytes.load(Ordering::Relaxed),"guest_wire_bytes":guest_wire_bytes,"canonical_layer_hash":imported.hash})
 }
 fn main() {
     let artifact = std::env::args_os()
@@ -150,14 +150,19 @@ fn main() {
     };
     let size = std::fs::metadata(archive_path).unwrap().len();
     assert!(size > 0 && size <= tilo_vm_protocol::binary::MAX_BYTES);
-    let old = run(archive_path, false);
-    let new = run(archive_path, true);
+    let old = run(archive_path, false, false);
+    let new = run(archive_path, false, true);
+    let binary_both = run(archive_path, true, true);
     assert_eq!(
         old.get("canonical_layer_hash").unwrap(),
         new.get("canonical_layer_hash").unwrap()
     );
+    assert_eq!(
+        new.get("canonical_layer_hash"),
+        binary_both.get("canonical_layer_hash")
+    );
     println!(
         "{}",
-        serde_json::json!({"scope":"rcargo builder; isolated Unix sockets; no live VM or SSH latency claim","artifact_sha256":hex::encode(sha.finalize()),"artifact_kind":if supplied_archive { "archive" } else { "executable" },"archive_bytes":size,"old":old,"new":new})
+        serde_json::json!({"scope":"rcargo builder; isolated Unix sockets; no live VM or SSH latency claim","artifact_sha256":hex::encode(sha.finalize()),"artifact_kind":if supplied_archive { "archive" } else { "executable" },"archive_bytes":size,"old":old,"new":new,"binary_both":binary_both})
     );
 }
