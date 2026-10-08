@@ -76,6 +76,12 @@ async fn thumbnail_prefetch_isolated_retries_without_another_namespace_change() 
     client_endpoint.close().await;
 }
 
+/// The namespace's current generation: its Automerge heads, which change
+/// with every change (reading them commits any open transaction).
+fn namespace_generation(namespace: &Arc<Mutex<Namespace>>) -> Vec<automerge::ChangeHash> {
+    namespace.lock().unwrap().heads()
+}
+
 #[test]
 fn tickets_round_trip_and_clean_merges_change_generation() {
     // Phase `ticket_roundtrips`.
@@ -3528,92 +3534,228 @@ async fn a_host_refuses_a_namespace_request_for_another_workspace() {
     );
 }
 
-/// A read-only device's per-request pull, for a peer without the session
-/// protocol: once authenticated is not enough, the peer must be a member
-/// this device's policy lets read the whole workspace, and its document
-/// must be bound to this workspace.
+/// A workspace member that serves `namespace` of `workspace` over the
+/// session protocol and runs no reconciliation of its own: whatever reaches
+/// the test's device came from that device's pass.
+async fn session_member(
+    workspace: uuid::Uuid,
+    namespace: Arc<Mutex<Namespace>>,
+) -> (Router, EndpointAddr, IdentityKey) {
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let person = identity.user_public_key();
+    let (announcements, _) = mpsc::unbounded_channel();
+    let protocol = SessionProtocol {
+        endpoint: endpoint.clone(),
+        identity,
+        policy: None,
+        namespace,
+        store: Arc::new(ContentStore::memory()),
+        records: None,
+        workspace_id: workspace,
+        announcements,
+        pool: std::sync::Weak::new(),
+    };
+    let router = Router::builder(endpoint.clone())
+        .accept(TILO_FS_SESSION_ALPN, protocol)
+        .spawn();
+    (router, endpoint.addr(), person)
+}
+
+/// A peer that takes session connections and never answers on them, as a
+/// device that hangs mid-handshake does.
+#[derive(Clone, Debug)]
+struct StalledPeer;
+
+impl ProtocolHandler for StalledPeer {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        connection.closed().await;
+        Ok(())
+    }
+}
+
+/// One shared tree and `n` members' later changes to it, each under its
+/// own name.
+fn forks_of_a_shared_tree(names: &[&str]) -> (Vec<u8>, Vec<Namespace>) {
+    let mut base = Namespace::new("base").unwrap();
+    base.create_dir(ROOT_INO, "shared", 1).unwrap();
+    let bytes = base.save();
+    let forks = names
+        .iter()
+        .map(|name| {
+            let mut fork = Namespace::from_bytes(*name, &bytes).unwrap();
+            fork.create_dir(ROOT_INO, name, 2).unwrap();
+            fork
+        })
+        .collect();
+    (bytes, forks)
+}
+
+/// The reconciliation loop's exchanges for a device holding `namespace`,
+/// with `policy` deciding whether it writes, exactly as the loop decides.
+fn exchanges_for(
+    endpoint: &Endpoint,
+    identity: &FsTransportIdentity,
+    (workspace, policy): (uuid::Uuid, PeerPolicy),
+    namespace: &Arc<Mutex<Namespace>>,
+    deadline: Duration,
+) -> PeerExchanges {
+    let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
+        || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
+    PeerExchanges::new(
+        PassShared {
+            endpoint: endpoint.clone(),
+            namespace: Arc::clone(namespace),
+            hydrator: Arc::new(Hydrator::new(
+                endpoint.clone(),
+                Arc::new(ContentStore::memory()),
+            )),
+            sender: None,
+            identity: identity.clone(),
+            policy,
+            workspace_id: workspace,
+            records: None,
+            sessions: Arc::new(SessionPool::new(
+                endpoint.clone(),
+                identity.clone(),
+                workspace,
+            )),
+            may_write,
+        },
+        deadline,
+    )
+}
+
+const TIMER_PASS: PassPlan = PassPlan {
+    announce: false,
+    reconcile: crate::record_materializer::ReconcileScope::Unplaced,
+};
+
+/// One stalled peer and three healthy ones: the pass exchanges with the
+/// healthy ones concurrently and is over within the per-peer deadline,
+/// not after the stalled one's handshake timeout; the next pass does not
+/// start the stalled peer again while its exchange is still running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_pass_is_bounded_with_unreachable_peer() {
+    let workspace = uuid::Uuid::new_v4();
+    let (base, forks) = forks_of_a_shared_tree(&["from-a", "from-b", "from-c"]);
+    let mut routers = Vec::new();
+    let (stalled_endpoint, _lookup, _identity) = bind_certified_endpoint().await;
+    routers.push(
+        Router::builder(stalled_endpoint.clone())
+            .accept(TILO_FS_SESSION_ALPN, StalledPeer)
+            .spawn(),
+    );
+    let mut peers = vec![stalled_endpoint.addr()];
+    for fork in forks {
+        let (router, addr, _person) = session_member(workspace, Arc::new(Mutex::new(fork))).await;
+        routers.push(router);
+        peers.push(addr);
+    }
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let namespace = Arc::new(Mutex::new(Namespace::from_bytes("device", &base).unwrap()));
+    let deadline = Duration::from_secs(5);
+    let exchanges = exchanges_for(
+        &endpoint,
+        &identity,
+        (workspace, None),
+        &namespace,
+        deadline,
+    );
+
+    let started = Instant::now();
+    let changed = exchanges.run(peers.clone(), TIMER_PASS).await;
+    let first = started.elapsed();
+    assert!(
+        first < deadline + Duration::from_secs(2) && first < Duration::from_secs(15),
+        "the pass waited {first:?} on a stalled peer"
+    );
+    assert!(changed, "the healthy peers' changes arrived");
+    for name in ["from-a", "from-b", "from-c"] {
+        assert!(
+            namespace.lock().unwrap().entry_at(name).is_some(),
+            "{name} was exchanged with despite the stalled peer"
+        );
+    }
+
+    let started = Instant::now();
+    exchanges.run(peers, TIMER_PASS).await;
+    let second = started.elapsed();
+    assert!(
+        second < deadline,
+        "the stalled peer, still exchanging, was started again ({second:?})"
+    );
+    for router in routers {
+        router.shutdown().await.unwrap();
+    }
+}
+
+/// A read-only device takes namespace changes from a session member as the
+/// changes beyond its heads, and asks a peer without the session protocol
+/// for nothing at all: not this workspace's document from a member, not
+/// another workspace's from a stranger. The full-document pull of earlier
+/// releases is gone from every pass.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_read_only_pull_merges_only_a_members_document_of_this_workspace() {
-    let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
-    let host_person = auth_a.user_public_key();
-    let store_a = Arc::new(ContentStore::memory());
-    let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-    let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-    ns_a.lock()
-        .unwrap()
-        .create_dir(ROOT_INO, "hosts-tree", 1)
-        .unwrap();
-    let (_ws_a, ticket) = Workspace::host(ep_a, look_a, store_a, hyd_a, ns_a.clone(), auth_a, None)
-        .await
-        .unwrap();
-    let workspace = ticket.workspace_id();
-    let (other_router, other_peer, other_person) = rogue_namespace_server(serve_document_of(
+async fn read_only_member_never_downloads_full_snapshot() {
+    let workspace = uuid::Uuid::new_v4();
+    let (base, mut forks) = forks_of_a_shared_tree(&["hosts-later", "legacy-only"]);
+    let legacy_tree = forks.pop().unwrap();
+    let host_tree = forks.pop().unwrap();
+    let (host_router, host, host_person) =
+        session_member(workspace, Arc::new(Mutex::new(host_tree))).await;
+    let documents_served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let serve = serve_document_of(workspace, legacy_tree);
+    let counted = Arc::clone(&documents_served);
+    let (legacy_router, legacy, legacy_person) = rogue_namespace_server(Arc::new(
+        move |identity: &FsTransportIdentity, request: NamespaceRequestV1| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            serve(identity, request)
+        },
+    ))
+    .await;
+    let (stranger_router, stranger, stranger_person) = rogue_namespace_server(serve_document_of(
         uuid::Uuid::new_v4(),
         other_workspace_namespace(),
     ))
     .await;
 
-    let (ep_b, _look_b, auth_b) = bind_certified_endpoint().await;
-    let hydrator = Hydrator::new(ep_b.clone(), Arc::new(ContentStore::memory()));
-    // The reader joined earlier; the host has changed its tree since.
-    let joined = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b, workspace, &None)
-        .await
-        .unwrap();
-    let namespace = Arc::new(Mutex::new(
-        Namespace::from_bytes("reader", &joined).unwrap(),
-    ));
-    ns_a.lock()
-        .unwrap()
-        .create_dir(ROOT_INO, "hosts-later", 2)
-        .unwrap();
-    let host_addr = ticket.node.clone();
-    let pass = |policy| {
-        let hydrator = &hydrator;
-        let namespace = &namespace;
-        let ep_b = &ep_b;
-        let auth_b = &auth_b;
-        let host_addr = &host_addr;
-        let other_peer = &other_peer;
-        async move {
-            let policy: PeerPolicy = Some(policy);
-            let pass = PeerPass {
-                endpoint: ep_b,
-                namespace,
-                hydrator,
-                sender: None,
-                identity: auth_b,
-                policy: &policy,
-                workspace_id: workspace,
-                records: None,
-                exchange_namespace: false,
-                read_only: true,
-                reconcile: crate::record_materializer::ReconcileScope::Everything,
-            };
-            (
-                pass.per_request(host_addr.clone()).await,
-                pass.per_request(other_peer.clone()).await,
-            )
-        }
-    };
-
-    // Both peers authenticate, neither is a member: nothing merges.
-    let (host_changed, other_changed) = pass(policy_granting(&[auth_b.user_public_key()])).await;
-    let has = |path: &str| namespace.lock().unwrap().entry_at(path).is_some();
-    assert!(!host_changed && !other_changed);
-    assert!(!has("hosts-later"));
-    assert!(!has("other-workspace-secret"));
-
-    // Both are members; only the document bound to this workspace merges.
-    let (host_changed, other_changed) = pass(policy_granting(&[
-        auth_b.user_public_key(),
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let namespace = Arc::new(Mutex::new(Namespace::from_bytes("reader", &base).unwrap()));
+    // Everyone is a reader of the whole workspace; nobody here writes it.
+    let policy = Some(policy_granting(&[
+        identity.user_public_key(),
         host_person,
-        other_person,
-    ]))
-    .await;
-    assert!(host_changed && !other_changed);
-    assert!(has("hosts-later"));
+        legacy_person,
+        stranger_person,
+    ]));
+    let exchanges = exchanges_for(
+        &endpoint,
+        &identity,
+        (workspace, policy),
+        &namespace,
+        PEER_DEADLINE,
+    );
+    let first_pass = PassPlan {
+        announce: false,
+        reconcile: crate::record_materializer::ReconcileScope::Everything,
+    };
+    for plan in [first_pass, TIMER_PASS] {
+        exchanges
+            .run(vec![host.clone(), legacy.clone(), stranger.clone()], plan)
+            .await;
+    }
+
+    let has = |path: &str| namespace.lock().unwrap().entry_at(path).is_some();
+    assert!(has("hosts-later"), "the session member's changes arrived");
+    assert!(!has("legacy-only"), "no document was merged per request");
     assert!(!has("other-workspace-secret"));
-    other_router.shutdown().await.unwrap();
+    assert_eq!(
+        documents_served.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a per-request peer was asked for its whole document"
+    );
+    for router in [host_router, legacy_router, stranger_router] {
+        router.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]
