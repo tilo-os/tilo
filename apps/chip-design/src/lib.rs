@@ -6,6 +6,8 @@ mod model;
 mod operator_graph;
 mod operator_graph_view;
 mod placement_view;
+mod project_composition;
+mod project_links;
 mod resource;
 mod verification;
 mod view;
@@ -43,3 +45,6 @@ mod placement_tests;
 
 #[cfg(test)]
 mod launch_tests;
+
+#[cfg(test)]
+mod project_composition_tests;

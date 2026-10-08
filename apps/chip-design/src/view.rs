@@ -18,13 +18,19 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
 )
 .with_system_locale();
 
-fn tr(key: &str) -> String {
+pub(crate) fn tr(key: &str) -> String {
     I18nManager::lookup_plain(key)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "chip_design.effect")]
 pub enum ChipEffect {
+    /// Inspect the original Code file then run its original approved Git check.
+    #[effect(job, cancellable, returns, device_only = false)]
+    RunExperiment { name: String },
+    /// Open the original published Code or Git resource view.
+    #[effect(job, cancellable, permission = "read", device_only = false)]
+    OpenProjectResource { name: String, source: bool },
     /// Import analytical report from the host's consented file chooser.
     #[effect(job, cancellable, device_only)]
     ImportFile,
@@ -114,6 +120,10 @@ impl ResourceApp for ChipDesignShell {
         let graph_opened = selected.clone();
         let graph_inspected = graph_selection.clone();
         cx.effects(move |effect: ChipEffect, cx| match effect {
+            ChipEffect::RunExperiment { name } => crate::project_composition::run(name, cx),
+            ChipEffect::OpenProjectResource { name, source } => {
+                crate::project_composition::open(&name, source, cx)
+            }
             effect @ (ChipEffect::OperatorGraph
             | ChipEffect::InspectOperator { .. }
             | ChipEffect::SelectOutput { .. }) => {
@@ -258,17 +268,22 @@ fn evidence_body(
             return crate::evidence_flow_view::body(cx, state, report, selection);
         }
     }
+    if selected.is_some_and(|selection| selection.starts_with("experiment:")) {
+        return crate::project_composition::body(cx, state);
+    }
     let reports = &state.reports;
     let verifications = &state.verifications;
     if selected.is_some_and(|id| !reports.contains_key(id) && !verifications.contains_key(id)) {
         return Box::new(EmptyState::new(tr("chip-report-missing")));
     }
-    if reports.is_empty() && verifications.is_empty() {
+    if reports.is_empty() && verifications.is_empty() && state.experiments.is_empty() {
         return Box::new(
             EmptyState::new(tr("chip-empty-title")).with_message(tr("chip-empty-message")),
         );
     }
-    let mut body = Column::new().with_intrinsic_height();
+    let mut body = Column::new()
+        .with_intrinsic_height()
+        .push(crate::project_composition::body(cx, state));
     for (id, report) in reports {
         if selected.is_some_and(|selection| selection != id.as_str()) {
             continue;

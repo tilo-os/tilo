@@ -18,12 +18,20 @@ const VERIFICATION_PREFIX: &str = "verification:";
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectState {
     pub reports: BTreeMap<String, StorageReport>,
+    pub experiments: BTreeMap<String, crate::project_links::Experiment>,
     pub operator_graph: crate::operator_graph::OperatorState,
     pub verifications: BTreeMap<String, VerificationRecord>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProjectAction {
+    BindExperiment {
+        json: String,
+    },
+    RetainInvocation {
+        name: String,
+        json: String,
+    },
     EditGraph {
         edit: crate::operator_graph::OperatorAction,
     },
@@ -42,8 +50,40 @@ pub enum ProjectAction {
 }
 
 impl Action for ProjectAction {
+    fn change_kind(&self) -> ui::tilo_actions::ChangeKind {
+        if self.external_reference() {
+            ui::tilo_actions::ChangeKind::External
+        } else {
+            ui::tilo_actions::ChangeKind::Content
+        }
+    }
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            Self::BindExperiment { json } => {
+                let experiment =
+                    crate::project_links::Experiment::parse(json).map_err(ActionError::Refused)?;
+                if !experiment.invocations.is_empty() {
+                    return Err(ActionError::Refused(
+                        "binding cannot introduce invocation references".into(),
+                    ));
+                }
+                let key = format!("{}{}", crate::project_links::PREFIX, experiment.name);
+                if doc.get(ROOT, &key)?.is_some() {
+                    return Err(ActionError::Refused(
+                        "experiment already exists; retain its original history".into(),
+                    ));
+                }
+                if doc
+                    .keys(ROOT)
+                    .filter(|key| key.starts_with(crate::project_links::PREFIX))
+                    .count()
+                    >= crate::project_links::MAX_PROJECTS
+                {
+                    return Err(ActionError::Refused("experiment limit reached".into()));
+                }
+                doc.put(ROOT, key, json.as_str())?;
+            }
+            Self::RetainInvocation { name, json } => crate::project_links::retain(doc, name, json)?,
             Self::EditGraph { edit } => edit.apply(doc)?,
             Self::ImportReport { json } => {
                 StorageReport::parse(json).map_err(ActionError::Refused)?;
@@ -93,12 +133,22 @@ impl Action for ProjectAction {
     }
 }
 
+impl ProjectAction {
+    fn external_reference(&self) -> bool {
+        matches!(self, Self::RetainInvocation { .. })
+    }
+}
+
 pub struct ChipProject;
 
 impl Resource for ChipProject {
     const KIND: &'static str = "chip_design.project";
     const LABEL: &'static str = "Chip Design";
     const ACTION_TYPE: &'static str = "chip_design.action";
+    const AUDITED_LOW_MUTATIONS: bool = true;
+    fn allows_low_mutation(action: &Self::Action) -> bool {
+        matches!(action, ProjectAction::RetainInvocation { .. })
+    }
     type State = ProjectState;
     type Action = ProjectAction;
 
@@ -119,7 +169,11 @@ impl Resource for ChipProject {
     }
 
     fn children(state: &ProjectState) -> Vec<PublishedResource> {
-        std::iter::once(graph_child(&state.operator_graph))
+        state
+            .experiments
+            .values()
+            .map(crate::project_composition::resource)
+            .chain(std::iter::once(graph_child(&state.operator_graph)))
             .chain(
                 state
                     .reports
@@ -136,6 +190,12 @@ impl Resource for ChipProject {
     }
 
     fn child(state: &ProjectState, resource: &str) -> Option<PublishedResource> {
+        if let Some(name) = resource.strip_prefix("chip_design.experiment:") {
+            return state
+                .experiments
+                .get(name)
+                .map(crate::project_composition::resource);
+        }
         if let Some(anchor) = resource.strip_prefix("chip_design.flow:") {
             let (report, kind, id) = crate::evidence_flow_view::split(anchor)?;
             crate::evidence_flow_view::item(state, anchor)?;
@@ -164,6 +224,13 @@ impl Resource for ChipProject {
         doc: &Doc,
         item: Option<&str>,
     ) -> Result<serde_json::Value, String> {
+        if let Some(name) = item.and_then(|item| item.strip_prefix("chip_design.experiment:")) {
+            return state
+                .experiments
+                .get(name)
+                .ok_or_else(|| "experiment no longer exists".into())
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()));
+        }
         if let Some(anchor) = item.and_then(|item| item.strip_prefix("chip_design.flow:")) {
             return crate::evidence_flow_view::item(state, anchor)
                 .ok_or_else(|| "evidence item no longer exists".into());
@@ -177,7 +244,7 @@ impl Resource for ChipProject {
         }
         match item {
             None => Ok(
-                serde_json::json!({"kind": Self::KIND, "operator_graph": {"resource":crate::operator_graph::RESOURCE_ID,"qualification":"structural_design_only","nodes":state.operator_graph.nodes.len(),"active_edges":state.operator_graph.active.len(),"rejected_candidates":state.operator_graph.rejected.len()}, "reports": state.reports.iter().map(|(id, report)| serde_json::json!({
+                serde_json::json!({"kind": Self::KIND, "experiments": state.experiments, "operator_graph": {"resource":crate::operator_graph::RESOURCE_ID,"qualification":"structural_design_only","nodes":state.operator_graph.nodes.len(),"active_edges":state.operator_graph.active.len(),"rejected_candidates":state.operator_graph.rejected.len()}, "reports": state.reports.iter().map(|(id, report)| serde_json::json!({
                 "resource": report_resource_id(id), "model": report.model,
                 "revision": report.revision, "evidence": report.evidence,
             })).collect::<Vec<_>>(), "verifications": state.verifications.iter().map(|(id, record)| serde_json::json!({
@@ -207,6 +274,27 @@ impl Resource for ChipProject {
             operator_graph: crate::operator_graph::OperatorGraph::read(doc)?,
             ..ProjectState::default()
         };
+        for key in doc
+            .keys(ROOT)
+            .filter(|key| key.starts_with(crate::project_links::PREFIX))
+        {
+            let Some((value, _)) = doc.get(ROOT, &key)? else {
+                continue;
+            };
+            let experiment = crate::project_links::read(
+                doc,
+                value
+                    .as_str()
+                    .ok_or_else(|| ModelError::invalid("invalid experiment"))?,
+            )
+            .map_err(ModelError::invalid)?;
+            if key != format!("{}{}", crate::project_links::PREFIX, experiment.name) {
+                return Err(ModelError::invalid("experiment identity mismatch"));
+            }
+            state
+                .experiments
+                .insert(experiment.name.clone(), experiment);
+        }
         let reports = match doc.get(ROOT, REPORTS)? {
             Some((Value::Object(ObjType::Map), reports)) => reports,
             None => return Ok(state),
@@ -251,6 +339,12 @@ impl Resource for ChipProject {
 
     fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
+            ActionDecl::new("bind-experiment", "Link project actions", vec![ActionParam::required("json", ParamType::Text, "Named experiment with exact current Code and Git record, action and semantic references")], |args, _| {
+                let json = args.text("json").ok_or("missing experiment links")?.to_owned();
+                let experiment = crate::project_links::Experiment::parse(&json)?;
+                if !experiment.invocations.is_empty() { return Err("binding cannot introduce invocation references".into()); }
+                Ok(ProjectAction::BindExperiment { json })
+            }).describe("Configure links, which confer no authority; running re-resolves the original public actions under current caller permissions."),
             ActionDecl::new("import-report", "Import analytical report", vec![ActionParam::required("json", ParamType::Text, "Complete analytical storage report JSON")], |args, _| {
                 let json = args.text("json").ok_or("missing report JSON")?.to_owned();
                 StorageReport::parse(&json)?;
@@ -270,32 +364,43 @@ impl Resource for ChipProject {
 
     fn search(state: &ProjectState) -> Vec<SearchEntry> {
         state
-            .reports
-            .iter()
-            .map(|(id, report)| SearchEntry {
-                anchor: Some(id.clone()),
-                title: report.model.clone(),
-                text: report.revision.clone(),
+            .experiments
+            .values()
+            .map(|experiment| SearchEntry {
+                anchor: Some(format!("experiment:{}", experiment.name)),
+                title: experiment.name.clone(),
+                text: experiment.check_id.clone(),
                 ..Default::default()
             })
-            .chain(state.verifications.iter().map(|(id, record)| SearchEntry {
-                anchor: Some(id.clone()),
-                title: record.receipt.evidence_flow.as_ref().map_or_else(
-                    || record.receipt.evidence.clone(),
-                    |flow| flow.title.clone(),
-                ),
-                text: format!(
-                    "{:?} {}",
-                    record.receipt.status,
-                    record.receipt.excludes.join(" ")
-                ),
-                ..Default::default()
-            }))
             .chain(
                 state
-                    .verifications
+                    .reports
                     .iter()
-                    .flat_map(|(id, record)| flow_search(id, record)),
+                    .map(|(id, report)| SearchEntry {
+                        anchor: Some(id.clone()),
+                        title: report.model.clone(),
+                        text: report.revision.clone(),
+                        ..Default::default()
+                    })
+                    .chain(state.verifications.iter().map(|(id, record)| SearchEntry {
+                        anchor: Some(id.clone()),
+                        title: record.receipt.evidence_flow.as_ref().map_or_else(
+                            || record.receipt.evidence.clone(),
+                            |flow| flow.title.clone(),
+                        ),
+                        text: format!(
+                            "{:?} {}",
+                            record.receipt.status,
+                            record.receipt.excludes.join(" ")
+                        ),
+                        ..Default::default()
+                    }))
+                    .chain(
+                        state
+                            .verifications
+                            .iter()
+                            .flat_map(|(id, record)| flow_search(id, record)),
+                    ),
             )
             .collect()
     }

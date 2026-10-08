@@ -164,3 +164,46 @@ flows while preserving the 1 MiB limit per imported report.
 The `evidence-flow` capture scenario uses anonymous synthetic contract data only.
 Live applications still start empty. Research producers and their adapters belong
 in the independent inference-hardware repository.
+
+## Original project actions
+
+An experiment links an existing Code file and Git repository in the same
+workspace to one host-approved `check_id`. `bind-experiment` accepts a bounded
+named configuration containing the original record routes, published action
+addresses, typed resource references and genuine semantic identities. These
+links confer no authority. Agents can use the same declared action door as
+people; the platform resource-selection workflow must supply these original
+references rather than asking a person to manufacture opaque identities.
+
+`run-experiment` resolves the exact current record custodian and action under
+its original caller, reads one bounded Code snapshot page, then invokes the
+existing Git `run-approved-check` action. It does not select commands, paths,
+permissions or sandbox limits. An earlier snapshot page does not pin the later
+check's source; the host's original check receipt identifies the actual inputs.
+Required confirmations stay with the target's platform action and are never
+manufactured by Chip.
+
+Each explicit `run-experiment` is a distinct original Job. Separately invoked
+runs may execute concurrently. No child UUID is automatically retried or
+reissued after an unknown answer; the original parent failure retains that
+child UUID even if an informative metadata update is refused. Inspect the
+original Jobs before deliberately starting another run. Cancellation and child retirement use the shared broker
+continuation relation. Cancellation-request delivery does not prove worker
+termination or process cleanup.
+
+After an original child answer, Chip queues a best-effort attributed update
+to retain bounded original invocation and output
+resource references on independent CRDT keys. Metadata refusal does not
+control execution or replace an original result. These links are not durable
+job ownership or admission proof. The document stores no runtime status,
+output bytes or scheduler state. Original Jobs and Git output resources remain
+canonical. Opening the original Code or Git resource resolves its current
+published primary view; Git's existing selected-output read/transfer actions
+and authenticated content opening supply evidence to the normal Chip import
+path. The check result returns its original output value and resource references
+unchanged. Imported analytical and verification records remain reported domain
+evidence, not substitutes for live execution custody.
+
+The semantic binding and detached-custody refusal tests do not establish an
+installed human-selection or process-cleanup result. Those require the shared
+platform selection bridge and an actual signed installed execution.

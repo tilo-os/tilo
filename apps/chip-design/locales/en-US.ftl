@@ -229,3 +229,14 @@ chip-flow-completed = Completed simulation
 chip-flow-expected-refusal = Expected refusal; no completed result
 
 chip-open-invalid = This file is not a supported Chip Design report. No report was imported.
+
+chip-project-check = Approved check
+chip-project-source = Original Code file
+chip-project-repository = Original Git repository
+chip-original-invocation = Original invocation
+chip-run-experiment = Run experiment
+chip-open-source = Open original Code file
+chip-open-repository = Open original Git repository
+chip-project-reference-scope = Reference scope
+chip-project-reference-scope-value = Links confer no authority or execution status. The Code snapshot page does not pin the later check inputs.
+chip-original-output-reference = Original output resource
