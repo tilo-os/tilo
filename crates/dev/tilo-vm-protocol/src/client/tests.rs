@@ -15,6 +15,33 @@ use serde_json::{Value, json};
 use super::*;
 use crate::{LayerList, Request};
 
+#[test]
+fn private_device_requests_bypass_the_retained_frame_even_when_the_send_fails() {
+    struct FailedWriter;
+    impl Write for FailedWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("fixture transport failure"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    fn check<C: Call>(request: C) {
+        let mut client = Client::new(Cursor::new(Vec::<u8>::new()), FailedWriter);
+        client.request_buffer = b"retained public upload".to_vec();
+        assert!(matches!(client.call(request), Err(ClientError::Io(_))));
+        assert_eq!(client.request_buffer, b"retained public upload");
+    }
+    check(crate::DeviceActions {
+        line: r#"{"passphrase":"private-fixture-answer","confirm":true}"#.into(),
+    });
+    check(crate::DeviceUnlockEnrol {
+        passphrase: "private-fixture-answer".into(),
+        networks: Vec::new(),
+        allow_unsealed: false,
+    });
+}
+
 #[derive(Default)]
 struct Wire {
     replies: VecDeque<Value>,

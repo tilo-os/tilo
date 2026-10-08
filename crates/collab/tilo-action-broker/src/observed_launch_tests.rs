@@ -366,3 +366,91 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for scenario in ["ready", "revoked"] {
+                let env = Environment::new();
+                let (started, started_rx) = std::sync::mpsc::channel();
+                let (adopt, receiver) = tokio::sync::oneshot::channel();
+                let launcher = Arc::new(ObservedLauncher {
+                    started,
+                    receiver: Mutex::new(Some(receiver)),
+                    requests: Mutex::new(vec![]),
+                    original: Mutex::new(None),
+                });
+                let rig = Rig::with_services(
+                    &env,
+                    HostServices {
+                        local_person: Some(Arc::new(NativePersonFixture(env.authority.clone()))),
+                        launcher: Some(launcher.clone()),
+                        ..env.membership.services()
+                    },
+                )
+                .await;
+                let person = principal_id_for_root(env.cert.user_public_key);
+                let caller = tilo_actions::remote::Caller::local_person(&person)
+                    .in_room(env.route.cluster_id.clone());
+                let original = tilo_actions::InvocationId::new();
+                let pending_admission = rig.state.action_invoke_local_person(
+                    &caller,
+                    &tilo_actions::remote::InvokeRequest {
+                        invocation: original,
+                        on_behalf_of: None,
+                        target: tilo_actions::remote::RemoteActionTarget {
+                            provider: "903".into(),
+                            address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                        },
+                        argument: tilo_actions::remote::InvokeArgument::None,
+                        context: None,
+                        confirmation: None,
+                        revision: Some("original-r1".into()),
+                    },
+                );
+                rig.state.drain_action_directory_bridge(&rig.directories);
+                let admitted = local_host_answer(pending_admission).await.unwrap();
+                assert_eq!(
+                    admitted.status,
+                    tilo_actions::remote::ReceiptStatus::Accepted
+                );
+                let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+                assert_eq!(delivered.actor, person);
+                assert_eq!(delivered.invocation_uuid, original.0.into_bytes());
+                let handle = rig.worker.handle.clone();
+                let pending = tokio::task::spawn_local(async move {
+                    handle
+                        .launch_installed_application_for(
+                            "host:org.example.App.desktop",
+                            None,
+                            None,
+                            Some(original.0.into_bytes()),
+                        )
+                        .await
+                });
+                certified_launch_wait(&started_rx).await;
+                assert!(
+                    !pending.is_finished(),
+                    "host origin is not a startup receipt"
+                );
+                assert_eq!(
+                    launcher.requests.lock().unwrap()[0].3.as_deref(),
+                    Some(person.as_str())
+                );
+                if scenario == "revoked" {
+                    *env.authority.certificate.lock().unwrap() = None;
+                }
+                adopt.send(Ok(())).unwrap();
+                let (_, json) = pending.await.unwrap().unwrap();
+                let update: tilo_actions::InvocationUpdate = serde_json::from_str(&json).unwrap();
+                assert_eq!(
+                    matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                    scenario == "ready",
+                    "{update:?}"
+                );
+                rig.stop().await;
+            }
+        })
+        .await;
+}
