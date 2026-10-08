@@ -53,6 +53,9 @@ pub struct Args {
     /// one session that serves the socket is used.
     #[arg(long)]
     pub session_uid: Option<u32>,
+    /// Refuse enrollment unless the device factor can be sealed to the TPM.
+    #[arg(long)]
+    pub require_tpm: bool,
 }
 
 /// Hands an [`EnrolRequest`] to the sibling service.
@@ -226,6 +229,7 @@ fn for_early_boot(keyfile: &str, mac_of: impl Fn(&str) -> Option<String>) -> Str
 /// # Errors
 /// When any step fails; the slot is removed again.
 pub fn run(args: &Args) -> Result<()> {
+    let sealing = enrollment_sealing(seal::available(), args.require_tpm)?;
     if luks::token(&args.device)?.is_some() {
         bail!(
             "{} already has a sibling unlock; remove it first",
@@ -238,7 +242,20 @@ pub fn run(args: &Args) -> Result<()> {
         .map(|name| network(name))
         .collect::<Result<Vec<_>>>()?;
     let registrar = SessionRegistrar::find(args.session_uid)?;
-    enrol(&args.device, args.key_file.as_deref(), networks, &registrar)
+    enrol_with_sealing(
+        &args.device,
+        args.key_file.as_deref(),
+        networks,
+        &registrar,
+        sealing,
+    )
+}
+
+fn enrollment_sealing(available: Sealing, require_tpm: bool) -> Result<Sealing> {
+    if require_tpm && available != Sealing::Tpm2 {
+        bail!("TPM sealing is required for this enrollment");
+    }
+    Ok(available)
 }
 
 /// The enrolment itself, with the registrar as a seam.
@@ -250,6 +267,16 @@ pub fn enrol(
     key_file: Option<&Path>,
     networks: Vec<material::Network>,
     registrar: &impl Registrar,
+) -> Result<()> {
+    enrol_with_sealing(device, key_file, networks, registrar, seal::available())
+}
+
+fn enrol_with_sealing(
+    device: &Path,
+    key_file: Option<&Path>,
+    networks: Vec<material::Network>,
+    registrar: &impl Registrar,
+    sealing: Sealing,
 ) -> Result<()> {
     let volume_uuid = luks::uuid_bytes(device)?;
     let device_half = Half::generate().map_err(|error| anyhow!("{error}"))?;
@@ -280,7 +307,6 @@ pub fn enrol(
         if response.siblings.is_empty() {
             bail!("none of your other devices holds the sibling half");
         }
-        let sealing = seal::available();
         let material = Material::new(&device_half, &boot_key, networks);
         let token = Token {
             kind: TOKEN_TYPE.into(),
@@ -368,6 +394,19 @@ pub fn remove(device: &Path, key_file: Option<&Path>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enrollment_pins_required_tpm_before_any_slot_is_added() {
+        assert!(enrollment_sealing(Sealing::Cleartext, true).is_err());
+        assert_eq!(
+            enrollment_sealing(Sealing::Tpm2, true).unwrap(),
+            Sealing::Tpm2
+        );
+        assert_eq!(
+            enrollment_sealing(Sealing::Cleartext, false).unwrap(),
+            Sealing::Cleartext
+        );
+    }
 
     #[test]
     fn a_saved_connection_is_tied_to_its_mac_for_early_boot() {
