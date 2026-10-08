@@ -283,6 +283,7 @@ fn live_preedit_keeps_exact_source_seat_until_commit_or_same_owner_return() {
         Some(other),
         "an unrelated focus transition is never proxied"
     );
+    assert_eq!(fixture.state.floating_preedit_source_for(child), None);
 
     let mut committed = Fixture::new();
     let [committed_source, committed_child, _] = committed.ids;
@@ -293,6 +294,11 @@ fn live_preedit_keeps_exact_source_seat_until_commit_or_same_owner_return() {
     let mut fb = committed.float();
     committed.ready(&mut fb);
     committed.state.input_method_preedit = InputMethodPreeditState::Inactive;
+    assert_eq!(
+        committed.state.floating_preedit_source_for(committed_child),
+        None,
+        "commit/disable retires the observation before the seat transfers"
+    );
     crate::compositor::client_input::sync_keyboard_focus(&mut committed.state, &fb);
     assert_eq!(
         committed.state.client_input.keyboard_focus(),
@@ -308,6 +314,11 @@ fn live_preedit_keeps_exact_source_seat_until_commit_or_same_owner_return() {
     let mut fb = wrong_alias.float();
     wrong_alias.ready(&mut fb);
     wrong_alias.state.floating_toplevels[0].public_id = "other-conversation".into();
+    assert_eq!(
+        wrong_alias.state.floating_preedit_source_for(wrong_child),
+        None,
+        "same-process ownership with the wrong public id is not observed"
+    );
     wrong_alias
         .state
         .set_client_keyboard_focus(Some(wrong_child));
@@ -316,12 +327,87 @@ fn live_preedit_keeps_exact_source_seat_until_commit_or_same_owner_return() {
         Some(wrong_child),
         "same-process ownership cannot substitute for the exact floating id"
     );
+
+    let mut retired = Fixture::new();
+    let [retired_source, retired_child, _] = retired.ids;
+    retired
+        .state
+        .set_client_keyboard_focus(Some(retired_source));
+    retired.state.input_method_preedit = InputMethodPreeditState::Active;
+    let mut fb = retired.float();
+    retired.ready(&mut fb);
+    assert_eq!(
+        retired.state.floating_preedit_source_for(retired_child),
+        Some(retired_source)
+    );
+    let owner = retired.state.floating_toplevels[0].owner.take();
+    assert_eq!(
+        retired.state.floating_preedit_source_for(retired_child),
+        None,
+        "a child without the exact authenticated owner is not observed"
+    );
+    retired.state.floating_toplevels[0].owner = owner;
+    retired.state.floating_toplevels[0].suspended = true;
+    assert_eq!(
+        retired.state.floating_preedit_source_for(retired_child),
+        None
+    );
+    retired.state.floating_toplevels[0].suspended = false;
+    retired.state.retire_floating_focus_source(retired_source);
+    assert_eq!(
+        retired.state.floating_preedit_source_for(retired_child),
+        None,
+        "destroying the source retires the exact observation"
+    );
+    retired.state.floating_toplevels.clear();
+    assert_eq!(
+        retired.state.floating_preedit_source_for(retired_child),
+        None,
+        "destroying the child cannot leave an observed proxy"
+    );
+}
+
+#[test]
+fn returned_primary_observes_only_its_exact_active_child_preedit() {
+    let mut fixture = Fixture::new();
+    let [source, child, other] = fixture.ids;
+    fixture.state.set_client_keyboard_focus(Some(source));
+    let mut fb = fixture.float();
+    fixture.ready(&mut fb);
+    crate::compositor::client_input::sync_keyboard_focus(&mut fixture.state, &fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(child));
+    fixture.state.input_method_preedit = InputMethodPreeditState::Active;
+    fixture
+        .state
+        .suspend_floating_toplevel(7, "conversation", None);
+    fixture
+        .state
+        .mark_floating_destination_presented(7, "conversation");
+    assert_eq!(
+        fixture.state.floating_preedit_child_for(source),
+        Some(child)
+    );
+    assert_eq!(fixture.state.floating_preedit_child_for(other), None);
+
+    fixture.state.input_method_preedit = InputMethodPreeditState::Inactive;
+    assert_eq!(
+        fixture.state.floating_preedit_child_for(source),
+        None,
+        "commit retires the reverse observation immediately"
+    );
+    fixture.state.input_method_preedit = InputMethodPreeditState::Active;
+    fixture.state.retire_floating_focus_source(source);
+    assert_eq!(
+        fixture.state.floating_preedit_child_for(source),
+        None,
+        "destroyed or replaced source ownership cannot be observed"
+    );
 }
 
 #[test]
 fn return_during_live_preedit_needs_no_reverse_protocol_focus() {
     let mut fixture = Fixture::new();
-    let [source, _, _] = fixture.ids;
+    let [source, child, _] = fixture.ids;
     fixture.state.set_client_keyboard_focus(Some(source));
     fixture.state.input_method_preedit = InputMethodPreeditState::Active;
     let mut fb = fixture.float();
@@ -330,9 +416,47 @@ fn return_during_live_preedit_needs_no_reverse_protocol_focus() {
     fixture
         .state
         .suspend_floating_toplevel(7, "conversation", None);
+    assert_eq!(
+        fixture.state.floating_preedit_source_for(child),
+        None,
+        "Return/suspension closes the detached continuation observation"
+    );
     fixture
         .state
         .mark_floating_destination_presented(7, "conversation");
     let _ = fixture.state.apply_floating_focus_handoffs(&fb);
     assert_eq!(fixture.state.client_input.keyboard_focus(), Some(source));
+}
+
+#[test]
+fn child_preedit_withholds_return_focus_only_until_commit() {
+    let mut fixture = Fixture::new();
+    let [source, child, _] = fixture.ids;
+    fixture.state.set_client_keyboard_focus(Some(source));
+    let mut fb = fixture.float();
+    fixture.ready(&mut fb);
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    assert_eq!(fixture.state.client_input.keyboard_focus(), Some(child));
+
+    fixture.state.input_method_preedit = InputMethodPreeditState::Active;
+    fixture
+        .state
+        .suspend_floating_toplevel(7, "conversation", None);
+    fixture
+        .state
+        .mark_floating_destination_presented(7, "conversation");
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    assert_eq!(
+        fixture.state.client_input.keyboard_focus(),
+        Some(child),
+        "Return cannot deactivate the child's live composition"
+    );
+
+    fixture.state.input_method_preedit = InputMethodPreeditState::Inactive;
+    let _ = fixture.state.apply_floating_focus_handoffs(&fb);
+    assert_eq!(
+        fixture.state.client_input.keyboard_focus(),
+        Some(source),
+        "the ordinary reverse handoff resumes immediately after commit"
+    );
 }

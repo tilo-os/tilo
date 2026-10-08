@@ -407,6 +407,97 @@ fn only_the_seat_owner_kind_sees_the_input_method_globals() {
     );
 }
 
+#[test]
+fn second_input_method_resource_retires_the_trusted_connection() {
+    let mut h = Harness::new();
+    h.state
+        .set_input_method_owner(Some(TrustedInputMethod::Composer));
+    let composer = h.connect(Some(TrustedInputMethod::Composer));
+    let (manager, seat) = {
+        let client = &h.clients[composer];
+        (
+            client
+                .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
+                    INPUT_METHOD_MANAGER,
+                    1,
+                )
+                .expect("trusted composer sees the manager"),
+            client.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat"),
+        )
+    };
+    let qh = h.clients[composer].queue.handle();
+    let _first = manager.get_input_method(&seat, &qh, ());
+    h.pump();
+    assert!(
+        h.display
+            .handle()
+            .backend_handle()
+            .get_client_data(h.clients[composer].server.id())
+            .is_ok(),
+        "one admitted resource remains connected"
+    );
+    let _unavailable_second = manager.get_input_method(&seat, &qh, ());
+    h.pump();
+    assert!(
+        h.display
+            .handle()
+            .backend_handle()
+            .get_client_data(h.clients[composer].server.id())
+            .is_err(),
+        "an unavailable second resource cannot mutate observed preedit state"
+    );
+    assert!(!h.state.input_method_preedit_active_for_tests());
+}
+
+#[test]
+fn destroying_the_manager_keeps_its_live_input_method_connected() {
+    let mut h = Harness::new();
+    h.state
+        .set_input_method_owner(Some(TrustedInputMethod::Composer));
+    let composer = h.connect(Some(TrustedInputMethod::Composer));
+    let (manager, seat) = {
+        let client = &h.clients[composer];
+        (
+            client
+                .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
+                    INPUT_METHOD_MANAGER,
+                    1,
+                )
+                .expect("trusted composer sees the manager"),
+            client.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat"),
+        )
+    };
+    let qh = h.clients[composer].queue.handle();
+    let _input_method = manager.get_input_method(&seat, &qh, ());
+    h.pump();
+
+    manager.destroy();
+    h.pump();
+
+    assert!(
+        h.display
+            .handle()
+            .backend_handle()
+            .get_client_data(h.clients[composer].server.id())
+            .is_ok(),
+        "destroying the manager is not a second input-method resource"
+    );
+    let replacement_manager = h.clients[composer]
+        .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(INPUT_METHOD_MANAGER, 1)
+        .expect("manager global remains available to the trusted connection");
+    let _unavailable_second =
+        replacement_manager.get_input_method(&seat, &h.clients[composer].queue.handle(), ());
+    h.pump();
+    assert!(
+        h.display
+            .handle()
+            .backend_handle()
+            .get_client_data(h.clients[composer].server.id())
+            .is_err(),
+        "the first input method remained tracked after its manager was destroyed"
+    );
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one transcript from keyboard grab to committed text and candidate placement"
@@ -520,8 +611,42 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
         h.clients[app].peer.keys
     );
 
-    // Preedit, then the composed text.
+    // A second native window of the same app may eagerly enable its text
+    // input before it receives the seat. Smithay rejects that resource while
+    // the primary resource is active; it must not advance the compositor's
+    // accepted input-method serial or poison the genuine composer commit.
+    let unfocused_text_input = {
+        let client = &h.clients[app];
+        let qh = client.queue.handle();
+        let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+        client
+            .bind::<zwp_text_input_manager_v3::ZwpTextInputManagerV3>(
+                "zwp_text_input_manager_v3",
+                1,
+            )
+            .expect("text-input manager")
+            .get_text_input(&seat, &qh, ())
+    };
     let serial = h.clients[im_client].peer.im_done;
+    unfocused_text_input.enable();
+    unfocused_text_input.commit();
+    h.pump();
+    assert_eq!(
+        h.clients[im_client].peer.im_done, serial,
+        "an unfocused sibling text input cannot advance the input-method serial"
+    );
+
+    // A preedit paired with a stale serial reaches Smithay's discard path,
+    // but must not become compositor authority for a floating handoff.
+    input_method.set_preedit_string("stale".into(), 5, 5);
+    input_method.commit(serial.saturating_add(1));
+    h.pump();
+    assert!(
+        !h.state.input_method_preedit_active_for_tests(),
+        "an invalid input-method commit serial cannot authorize continuation"
+    );
+
+    // Preedit, then the composed text.
     input_method.set_preedit_string("ni".into(), 2, 2);
     input_method.commit(serial);
     h.pump();

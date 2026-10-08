@@ -444,6 +444,16 @@ impl State {
             return;
         };
         let serial = mint_serial(self);
+        if self.input_method_resource_client.is_some() {
+            // Smithay deactivates (and sends `done`) once for the old focus
+            // and once again before entering the new one.
+            let protocol_done = u32::from(self.client_input.keyboard_focus.is_some())
+                .saturating_add(u32::from(target.is_some()));
+            self.input_method_serial = self.input_method_serial.saturating_add(protocol_done);
+            if self.client_input.keyboard_focus.is_some() {
+                self.text_fields.protocol_focus_left();
+            }
+        }
         self.client_input.keyboard_focus = target.as_ref().map(|(id, _)| *id);
         self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus);
         // Clipboard/primary selection follow the keyboard: smithay refuses `set_selection` from a client without keyboard focus.

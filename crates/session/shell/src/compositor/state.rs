@@ -457,8 +457,32 @@ pub(crate) const CLOSING_FRAME_GRACE: std::time::Duration = std::time::Duration:
 pub(crate) enum InputMethodPreeditState {
     #[default]
     Inactive,
-    Pending(bool),
+    Pending {
+        previous: bool,
+        next: bool,
+    },
     Active,
+}
+
+impl InputMethodPreeditState {
+    fn stage(&mut self, next: bool) {
+        let previous = match *self {
+            Self::Active => true,
+            Self::Inactive => false,
+            Self::Pending { previous, .. } => previous,
+        };
+        *self = Self::Pending { previous, next };
+    }
+
+    fn finish(&mut self, accepted: bool) {
+        if let Self::Pending { previous, next } = *self {
+            *self = if if accepted { next } else { previous } {
+                Self::Active
+            } else {
+                Self::Inactive
+            };
+        }
+    }
 }
 
 impl InputMethodPreeditState {
@@ -793,6 +817,14 @@ pub struct State {
     /// preedit. This is content-free protocol state used only to keep an
     /// exact same-owner floating handoff from deactivating the composer.
     pub(crate) input_method_preedit: InputMethodPreeditState,
+    /// Client holding the seat's single admitted input-method-v2 resource.
+    /// A second resource retires the connection instead of being allowed to
+    /// mutate protocol observations after Smithay marked it unavailable.
+    pub(crate) input_method_resource_client: Option<ClientId>,
+    /// Serial Smithay has most recently sent to the admitted input method.
+    /// This mirrors only content-free protocol ordering; mismatches fail
+    /// closed by retaining the last committed preedit state.
+    pub(crate) input_method_serial: u32,
     /// Whether one of the shell's own text fields holds the seat's
     /// text-input focus (see `compositor::shell_text_input`).
     pub(crate) shell_field_active: bool,
@@ -1459,6 +1491,8 @@ impl State {
             osk_surface: None,
             osk_commits: 0,
             input_method_preedit: InputMethodPreeditState::Inactive,
+            input_method_resource_client: None,
+            input_method_serial: 0,
             shell_field_active: false,
             shell_field_keys: Vec::new(),
             virtual_keymaps: std::collections::HashMap::new(),
@@ -4961,6 +4995,9 @@ impl State {
         if self.seat_input_method.get() != owner {
             self.cancel_active_dictation();
             self.input_method_preedit = InputMethodPreeditState::Inactive;
+            self.input_method_resource_client = None;
+            self.input_method_serial = 0;
+            self.text_fields.protocol_focus_left();
         }
         self.seat_input_method.set(owner);
         let handle = self.display_handle.clone();
@@ -6343,9 +6380,62 @@ smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
     smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2:
     smithay::wayland::input_method::InputMethodManagerGlobalData
 ] => InputMethodManagerState);
-smithay::reexports::wayland_server::delegate_dispatch!(State: [
-    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2: ()
-] => InputMethodManagerState);
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        (),
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        request: smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::Request,
+        data: &(),
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        let get_input_method = matches!(
+            request,
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::Request::GetInputMethod { .. }
+        );
+        let duplicate = get_input_method && state.input_method_resource_client.is_some();
+        if get_input_method && !duplicate {
+            state.input_method_resource_client = Some(client.id());
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+        }
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+            (),
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+        if duplicate {
+            state.input_method_resource_client = None;
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+            state.display_handle.backend_handle().kill_client(
+                client.id(),
+                DisconnectReason::ConnectionClosed,
+            );
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        data: &(),
+    ) {
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+            (),
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
 smithay::reexports::wayland_server::delegate_dispatch!(State: [
     smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2:
     smithay::wayland::input_method::InputMethodKeyboardUserData<State>
@@ -6373,19 +6463,15 @@ impl
         use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request;
         match &request {
             Request::SetPreeditString { text, .. } => {
-                state.input_method_preedit = InputMethodPreeditState::Pending(!text.is_empty());
+                state.input_method_preedit.stage(!text.is_empty());
             }
             Request::CommitString { .. } => {
-                state.input_method_preedit = InputMethodPreeditState::Pending(false);
+                state.input_method_preedit.stage(false);
             }
-            Request::Commit { .. } => {
-                if let InputMethodPreeditState::Pending(active) = state.input_method_preedit {
-                    state.input_method_preedit = if active {
-                        InputMethodPreeditState::Active
-                    } else {
-                        InputMethodPreeditState::Inactive
-                    };
-                }
+            Request::Commit { serial } => {
+                let accepted = state.input_method_resource_client.as_ref() == Some(&client.id())
+                    && *serial == state.input_method_serial;
+                state.input_method_preedit.finish(accepted);
             }
             _ => {}
         }
@@ -6410,10 +6496,12 @@ impl
         resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
         data: &smithay::wayland::input_method::InputMethodUserData<State>,
     ) {
-        // There is at most one admitted input-method resource for the seat.
-        // Its disappearance cancels an unfinished composition; retaining the
-        // bit could otherwise preserve focus for a dead owner.
-        state.input_method_preedit = InputMethodPreeditState::Inactive;
+        if state.input_method_resource_client.as_ref() == Some(&client) {
+            state.input_method_resource_client = None;
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+        }
         <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
             smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
             smithay::wayland::input_method::InputMethodUserData<State>,

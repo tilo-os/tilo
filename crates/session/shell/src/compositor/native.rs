@@ -118,6 +118,13 @@ type DesiredShares = HashMap<
     ),
 >;
 
+fn insert_preedit_route(row: &mut serde_json::Value, route: &str, source: u64) {
+    if let Some(object) = row.as_object_mut() {
+        object.insert("input_route".into(), route.into());
+        object.insert("input_source_surface_id".into(), source.into());
+    }
+}
+
 /// The legacy windows to encode for viewers: none while nobody watches the
 /// backend, so a headless machine's encoders stop and receivers get
 /// `SurfaceStreamEnd` at once.
@@ -2923,7 +2930,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     let buffer = store
                         .frame_size(tab.surface_id)
                         .map(|(w, h)| serde_json::json!({ "w": w, "h": h }));
-                    serde_json::json!({
+                    let mut row = serde_json::json!({
                         "surface_id": tab.surface_id,
                         "app_id": tab.app_id,
                         // Dialogs shown on this tile, bottom to top, where they are drawn.
@@ -2951,19 +2958,27 @@ impl ControlState for FrameBuilderControlState<'_> {
                         // And, while it is not, whether the placeholder card is up — without this
                         // a harness can't tell an empty desktop from one announcing an app is on its way.
                         "opening": store.is_opening(tab.surface_id),
-                    })
+                    });
+                    if let Some(child) = self
+                        .seat
+                        .and_then(|seat| seat.floating_preedit_child_for(tab.surface_id))
+                    {
+                        insert_preedit_route(&mut row, "floating-preedit-child", child);
+                    }
+                    row
                 })
                 .collect();
         if let Some(seat) = self.seat {
             frames.extend(seat.floating_toplevels.iter().map(|surface| {
                 let pixels = store.presentation_pixels(surface.surface_id);
+                let input_source = seat.floating_preedit_source_for(surface.surface_id);
                 // A mapped client or a retained transfer image is not proof
                 // that its secondary surface is currently being presented.
                 let visible = !surface.suspended
                     && surface.presented
                     && surface.transfer_source.is_none()
                     && store.is_presented(surface.surface_id);
-                serde_json::json!({
+                let mut row = serde_json::json!({
                     "surface_id": surface.surface_id,
                     "app_id": surface.app_id,
                     "floating_id": surface.public_id,
@@ -2985,7 +3000,11 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "keyboard_focused": keyboard_focus == Some(surface.surface_id),
                     "suspended": surface.suspended,
                     "transferring": surface.transfer_source.is_some(),
-                })
+                });
+                if let Some(source) = input_source {
+                    insert_preedit_route(&mut row, "floating-preedit-source", source);
+                }
+                row
             }));
         }
         serde_json::Value::Array(frames)
