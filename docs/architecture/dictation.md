@@ -148,8 +148,9 @@ across applications, over 100 languages, spoken corrections, filler removal,
 punctuation, dictionaries and context-dependent styles. Those are qualification
 targets, not capabilities established by this branch. This implementation has
 bounded partial recognition, final IME insertion, configurable toggle/finish/cancel
-shortcuts and one-session local consent. A spoken correction interpreter,
-dictionary, language/source chooser and hold-to-talk interaction remain unbuilt.
+shortcuts, one-session local consent, a shared person dictionary and language
+selection. A spoken correction interpreter, microphone source chooser and
+hold-to-talk interaction remain unbuilt.
 
 [Wispr's terminal guidance](https://docs.wisprflow.ai/articles/6478598909-using-flow-with-linux-wsl-and-terminal-applications)
 describes clipboard recovery and cautions that contextual formatting can change
@@ -184,6 +185,12 @@ and redoes the final once, and preserves it after reopening. Code's buffer,
 same-caret selection/content and pending-dispatch invalidation are separately
 asserted. These hosted app journeys do not establish standalone Wayland receipt
 transport, microphone capture, or terminal inner-program support.
+The shared CodeEditor used by Typst, Snippets, query and merge views follows the
+same distinction: it delegates source purpose and private invalidation to its
+existing TextInput, and publishes no dictation target while blurred or read-only.
+Its production event-path regression replaces a selection with Unicode and
+verifies that a read-only transition refuses a later IME final without editing.
+No new input implementation or toolkit crate split is introduced.
 An accepted private warm-up acknowledgement only prepares the original field.
 When an existing input method owns the seat, activation preserves an explicit
 terminal or sensitive-field refusal and drops the preparation rather than waiting
