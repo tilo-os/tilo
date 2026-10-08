@@ -2,6 +2,9 @@ name: Prepare Rust build
 description: Ensure native build tools and restore Cargo downloads. The runner provides the compiler cache.
 
 outputs:
+  cargo-cache-key:
+    description: Exact primary download-cache key emitted by the restore action.
+    value: ${{ steps.cargo-downloads.outputs.cache-key }}
   cargo-cache-hit:
     description: Whether the exact Cargo.lock download cache was restored.
     value: ${{ steps.cargo-downloads.outputs.cache-hit }}

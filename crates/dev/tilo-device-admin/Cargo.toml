@@ -32,6 +32,7 @@ serde_json.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 workspace-hack = { version = "0.1" }
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
