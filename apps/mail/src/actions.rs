@@ -368,6 +368,8 @@ pub enum MailAction {
     DeleteFolder { id: String },
     /// Save (create or overwrite) the in-progress draft.
     SaveDraft(DraftData),
+    /// Bind the saved draft to its visible message projection (external metadata).
+    ProjectDraft { message_id: String },
     /// Discard the in-progress draft, clearing it from the document.
     DiscardDraft,
     /// Start the in-progress draft's body afresh: a blank message, a reply's
@@ -703,6 +705,11 @@ impl Action for MailAction {
                     MailDoc::delete_folder(doc, id);
                 }
             }
+            MailAction::ProjectDraft { message_id } => {
+                if let Ok(id) = message_id.parse::<uuid::Uuid>() {
+                    MailDoc::set_draft_message_id(doc, id);
+                }
+            }
             MailAction::SaveDraft(data) => {
                 MailDoc::store_draft(doc, &data.to_draft());
             }
@@ -761,6 +768,7 @@ impl Action for MailAction {
         match self {
             MailAction::SetRead { .. } => tilo_actions::ChangeKind::Housekeeping,
             MailAction::IngestBaselines { .. }
+            | MailAction::ProjectDraft { .. }
             | MailAction::ServerApplied(_)
             | MailAction::Delivered { .. }
             | MailAction::SendFailed { .. } => tilo_actions::ChangeKind::External,

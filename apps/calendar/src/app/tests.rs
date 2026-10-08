@@ -3483,3 +3483,61 @@ fn open_platform_history(harness: &mut ui::headless::FrameHarness) {
         )
         .unwrap();
 }
+
+#[test]
+fn isolated_host_accounts_and_credentials_survive_reopening_without_crossing_profiles() {
+    use ui::framework::testing::TestApp;
+
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let mut roots = Vec::new();
+    for (directory, username, password) in [
+        (first.path(), "first-dav", "first-fixture-password"),
+        (second.path(), "second-dav", "second-fixture-password"),
+    ] {
+        let mut host = TestApp::<crate::resource::CalendarShell>::open_data_dir(directory).unwrap();
+        let root = host
+            .with_widget(|app: &mut CalendarApp| {
+                assert!(
+                    app.configured.accounts.is_empty(),
+                    "new profile starts empty"
+                );
+                app.account_config_root().expect("host profile config root")
+            })
+            .unwrap();
+        assert!(
+            root.starts_with(directory),
+            "account storage belongs to the supplied profile"
+        );
+        drop(host);
+        let account = crate::account::CalendarAccount::new(crate::account::CalDavConfig {
+            display_name: username.into(),
+            username: username.into(),
+            password: password.into(),
+            ..Default::default()
+        });
+        AccountStore {
+            accounts: vec![account],
+        }
+        .persist_in(&root)
+        .unwrap();
+        roots.push(root);
+    }
+    assert_ne!(roots[0], roots[1]);
+    for (directory, username, password) in [
+        (first.path(), "first-dav", "first-fixture-password"),
+        (second.path(), "second-dav", "second-fixture-password"),
+    ] {
+        let mut host = TestApp::<crate::resource::CalendarShell>::open_data_dir(directory).unwrap();
+        host.with_widget(|app: &mut CalendarApp| {
+            assert_eq!(app.configured.accounts.len(), 1);
+            let config = &app.configured.accounts[0].config;
+            assert_eq!(config.username, username);
+            assert_eq!(
+                config.password, password,
+                "only this profile's vault is hydrated"
+            );
+        })
+        .unwrap();
+    }
+}

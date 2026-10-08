@@ -332,6 +332,20 @@ impl MailDoc {
         }
     }
 
+    /// Stable identity of the visible projection of the one persisted draft.
+    pub fn draft_message_id(doc: &AutoCommit) -> Option<uuid::Uuid> {
+        let Ok(Some((Value::Object(ObjType::Map), draft))) = doc.get(&ROOT, "draft") else {
+            return None;
+        };
+        read_str(doc, &draft, "message_id").and_then(|value| value.parse().ok())
+    }
+
+    /// Keep projection metadata beside its draft so a new host reuses it.
+    pub fn set_draft_message_id(doc: &mut AutoCommit, id: uuid::Uuid) {
+        let draft = Self::map(doc, &ROOT, "draft");
+        ui::doc::put_if_changed(doc, &draft, "message_id", id.to_string().as_str());
+    }
+
     pub fn load_draft(doc: &AutoCommit) -> Draft {
         let Ok(Some((Value::Object(ObjType::Map), d))) = doc.get(&ROOT, "draft") else {
             return Draft::default();
@@ -403,6 +417,7 @@ impl MailDoc {
     pub fn clear_draft(doc: &mut AutoCommit) {
         let d = Self::map(doc, &ROOT, "draft");
         for key in [
+            "message_id",
             "to",
             "cc",
             "bcc",

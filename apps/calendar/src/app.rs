@@ -231,6 +231,7 @@ pub struct CalendarApp {
     /// accounts Settings configured on this device ([`Self::configured`])
     /// with the person's display choices applied.
     accounts: AccountStore,
+    account_profile: Option<ui::storage::SettingsDocument>,
     /// The accounts as Settings configured them on this device.
     configured: AccountStore,
     /// The same accounts, as the drains of the upload and delete queues
@@ -438,6 +439,7 @@ impl CalendarApp {
             selection,
             detail_open,
             accounts: accounts.clone(),
+            account_profile: None,
             device_accounts: std::rc::Rc::new(std::cell::RefCell::new(accounts.clone())),
             configured: accounts,
             display: crate::display::CalendarDisplay::default(),
@@ -537,6 +539,32 @@ impl CalendarApp {
     fn now(&self) -> chrono::NaiveDateTime {
         self.pinned_now
             .unwrap_or_else(|| Local::now().naive_local())
+    }
+
+    /// Bind account settings, device credentials and sync health to the host profile.
+    pub(crate) fn follow_account_profile(
+        &mut self,
+        storage: &ui::storage::AppStorage,
+    ) -> AccountStore {
+        self.account_profile = Some(storage.settings_document().clone());
+        match storage.settings_document() {
+            ui::storage::SettingsDocument::Session => {
+                AccountStore::load_from_settings().unwrap_or_default()
+            }
+            ui::storage::SettingsDocument::File(_) => self
+                .account_config_root()
+                .as_deref()
+                .map_or_else(AccountStore::default, AccountStore::load_from_settings_in),
+        }
+    }
+
+    fn account_config_root(&self) -> Option<std::path::PathBuf> {
+        match self.account_profile.as_ref()? {
+            ui::storage::SettingsDocument::Session => accounts::config_root(),
+            ui::storage::SettingsDocument::File(path) => {
+                path.parent().map(std::path::Path::to_path_buf)
+            }
+        }
     }
 
     pub(crate) fn attach_framework(
@@ -808,8 +836,12 @@ impl CalendarApp {
         let sync_tokens = CalDoc::sync_tokens(doc);
         let (tx, rx) = std::sync::mpsc::channel();
         let today = self.today;
+        let config_root = self.account_config_root();
         for id in &sync_account_ids {
-            if let Err(error) = accounts::AccountSyncReporter::new(id.clone()).started() {
+            if let Some(root) = &config_root
+                && let Err(error) =
+                    accounts::AccountSyncReporter::in_root(id.clone(), root).started()
+            {
                 tracing::warn!(%error, account = id, "calendar: could not persist sync start");
             }
         }
@@ -824,8 +856,10 @@ impl CalendarApp {
                     &sync_tokens,
                 )
                 .await;
-                let reporter = accounts::AccountSyncReporter::new(id.clone());
-                let persisted = match &account_outcome {
+                let reporter = config_root
+                    .as_ref()
+                    .map(|root| accounts::AccountSyncReporter::in_root(id.clone(), root));
+                let persisted = reporter.map_or(Ok(()), |reporter| match &account_outcome {
                     caldav::SyncOutcome::Synced { .. } => reporter.succeeded(),
                     caldav::SyncOutcome::Offline => reporter.offline(),
                     caldav::SyncOutcome::Failed(reason)
@@ -834,7 +868,7 @@ impl CalendarApp {
                         reporter.needs_authentication()
                     }
                     caldav::SyncOutcome::Failed(_) => reporter.failed(),
-                };
+                });
                 if let Err(error) = persisted {
                     tracing::warn!(%error, account = id, "calendar: could not persist sync result");
                 }
@@ -1924,7 +1958,17 @@ impl CalendarApp {
         if person.accounts.is_empty() {
             return;
         }
-        let adopted = AccountStore::from_store(&person.store(), &accounts::SecretVault::open());
+        let vault = match self.account_profile.as_ref() {
+            Some(ui::storage::SettingsDocument::Session) => accounts::SecretVault::open(),
+            Some(ui::storage::SettingsDocument::File(_)) => {
+                let Some(root) = self.account_config_root() else {
+                    return;
+                };
+                accounts::SecretVault::open_in(&root)
+            }
+            None => return,
+        };
+        let adopted = AccountStore::from_store(&person.store(), &vault);
         if adopted != self.configured {
             self.configured = adopted;
             self.show_accounts();

@@ -1101,3 +1101,58 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod restart_draft_tests {
+    use super::*;
+    use ui::framework::testing::TestApp;
+
+    #[test]
+    fn draft_projection_identity_and_document_survive_repeated_host_restarts() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut first = TestApp::<MailShell>::open_data_dir(profile.path()).unwrap();
+        first.call("compose", serde_json::json!({})).unwrap();
+        let owner = "BoundComponent[0]/ResourceApp[0]";
+        for (target, value) in [
+            ("to", "recipient@example.test"),
+            ("subject", "Restart fixture"),
+        ] {
+            first
+                .harness()
+                .perform_semantic_named(
+                    owner,
+                    Some(&format!("mail.compose:{target}")),
+                    &ui::a11y::Action::SetValue(value.into()),
+                )
+                .unwrap();
+            first.harness().relayout();
+        }
+        first
+            .harness()
+            .perform_semantic_named(
+                owner,
+                Some("mail.compose:save"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        first.harness().relayout();
+        first.settle();
+        let saved = first.read_document(|doc| doc.clone().save());
+        let expected = first
+            .read_document(crate::doc::MailDoc::draft_message_id)
+            .expect("persisted projection identity");
+        drop(first);
+        for _ in 0..2 {
+            let reopened = TestApp::<MailShell>::open_data_dir(profile.path()).unwrap();
+            assert_eq!(
+                reopened.read_document(crate::doc::MailDoc::draft_message_id),
+                Some(expected)
+            );
+            assert_eq!(
+                reopened.read_document(|doc| doc.clone().save()),
+                saved,
+                "hydrating the same draft must not create CRDT operations or ghost messages"
+            );
+        }
+    }
+}

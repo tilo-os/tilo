@@ -254,6 +254,12 @@ impl Drop for PendingSetupValidation {
     }
 }
 
+/// Secret-free context retained until the worker acknowledges a request.
+struct PendingEngineRequest {
+    kind: EngineRequestKind,
+    account: String,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the bools split across unrelated concerns (shell layout flags and engine-request bookkeeping); grouping them would need a real design pass"
@@ -348,7 +354,7 @@ pub struct MailApp {
     /// their terminal worker acknowledgement.
     awaiting_engine: bool,
     background_poll_deadline: Cell<Option<ui::time::Instant>>,
-    pending_engine_requests: HashMap<EngineRequestId, EngineRequestKind>,
+    pending_engine_requests: HashMap<EngineRequestId, PendingEngineRequest>,
     /// The one refresh invocation currently owned by the resource-operation
     /// host.  It remains occupied until the host has polled its terminal
     /// update, so a subsequent refresh cannot overwrite an unobserved result.
@@ -824,14 +830,16 @@ impl MailApp {
             return None;
         };
         let request_id = request.request_id();
-        let request_kind = request.kind();
+        let pending = PendingEngineRequest {
+            kind: request.kind(),
+            account: request.account_email(),
+        };
         if engine.tx.send(request).is_err() {
             self.shared.borrow_mut().status = Some("Mail couldn’t reach the mail server".into());
             self.dirty = true;
             return None;
         }
-        self.pending_engine_requests
-            .insert(request_id, request_kind);
+        self.pending_engine_requests.insert(request_id, pending);
         self.awaiting_engine = true;
         Some(request_id)
     }
@@ -840,7 +848,9 @@ impl MailApp {
     /// worker event is untrusted transport input: a malformed, delayed, or
     /// out-of-order result must not update a different operation's UI state.
     fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
-        self.pending_engine_requests.get(&request_id) == Some(&kind)
+        self.pending_engine_requests
+            .get(&request_id)
+            .is_some_and(|pending| pending.kind == kind)
     }
 
     /// Cached mail remains usable while connectivity is unavailable.
@@ -1470,7 +1480,7 @@ impl MailApp {
         self.shared.borrow_mut().save_draft(doc, &draft);
         // … and materialise it as a real, visible message in the Drafts folder
         // so it can be found and reopened — not a write-only slot.
-        let id = self.upsert_draft_message(doc, &draft);
+        let id = self.upsert_draft_message(doc, &draft, self.editing_draft);
         self.editing_draft = Some(id);
         self.shared.borrow_mut().status = Some("Draft saved to Drafts".into());
         self.compose.close();
@@ -1480,7 +1490,12 @@ impl MailApp {
 
     /// Insert (or, when editing an existing draft, update in place) a Drafts
     /// folder message reflecting `draft`, and return its id.
-    fn upsert_draft_message(&self, doc: &mut ui::widget::Edits<'_>, draft: &Draft) -> MessageId {
+    fn upsert_draft_message(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        draft: &Draft,
+        edited: Option<MessageId>,
+    ) -> MessageId {
         let (from, now) = {
             let st = self.shared.borrow();
             let acct = st.accounts.active_config();
@@ -1503,10 +1518,20 @@ impl MailApp {
             );
             (from, st.now_min)
         };
-        let id = self
-            .editing_draft
+        let persisted = MailDoc::draft_message_id(doc);
+        let id = edited
+            .or(persisted)
             .or_else(|| self.projected_draft.borrow().as_ref().map(|(id, _)| *id))
             .unwrap_or_else(uuid::Uuid::new_v4);
+        if persisted != Some(id) {
+            self.shared.borrow().dispatch_external(
+                doc,
+                &MailAction::ProjectDraft {
+                    message_id: id.to_string(),
+                },
+            );
+        }
+        let id = MailDoc::draft_message_id(doc).unwrap_or(id);
         let msg = Message {
             id,
             rfc_message_id: None,
@@ -2163,7 +2188,7 @@ impl MailApp {
         if self.engine.is_some() {
             let account_id = account.email.clone();
             let request_id = self.post_engine(EngineRequest::fetch(account, folder))?;
-            report_account_sync(
+            self.report_account_sync(
                 &account_id,
                 accounts::AccountSyncHealth::Syncing,
                 false,
@@ -2232,6 +2257,34 @@ impl MailApp {
         self.toast_deadline.is_some()
     }
 
+    fn report_account_sync(
+        &self,
+        account_id: &str,
+        health: accounts::AccountSyncHealth,
+        _success: bool,
+        _message: Option<&str>,
+    ) {
+        if account_id.trim().is_empty() {
+            return;
+        }
+        let Some(root) = self.accounts_persist.root() else {
+            return;
+        };
+        let reporter = accounts::AccountSyncReporter::in_root(account_id.to_string(), root);
+        let persisted = match health {
+            accounts::AccountSyncHealth::Never | accounts::AccountSyncHealth::Syncing => {
+                reporter.started()
+            }
+            accounts::AccountSyncHealth::Healthy => reporter.succeeded(),
+            accounts::AccountSyncHealth::Offline => reporter.offline(),
+            accounts::AccountSyncHealth::NeedsAuthentication => reporter.needs_authentication(),
+            accounts::AccountSyncHealth::Error => reporter.failed(),
+        };
+        if let Err(error) = persisted {
+            tracing::warn!(%error, account = account_id, "mail: could not persist sync status");
+        }
+    }
+
     // ---- engine drain -----------------------------------------------------
 
     fn apply_fetched_messages(
@@ -2263,7 +2316,7 @@ impl MailApp {
         } else {
             format!("Synced {count} messages")
         });
-        report_account_sync(
+        self.report_account_sync(
             account_id,
             accounts::AccountSyncHealth::Healthy,
             true,
@@ -2313,14 +2366,17 @@ impl MailApp {
         context: &str,
         message: &str,
     ) {
-        let detail = format!("{context}: {message}");
+        let Some(pending) = self.pending_engine_requests.get(&request_id) else {
+            return;
+        };
+        let account_id = pending.account.clone();
+        let detail = format!("{account_id}: {context}: {message}");
         let refused = self.server_outbox.borrow_mut().sent.remove(&request_id);
         if let Some((_, done)) = refused {
             done(Err(detail.clone()));
         }
         st.status = Some(detail.clone());
-        let account_id = st.accounts.active_config().email;
-        let lower = detail.to_ascii_lowercase();
+        let lower = format!("{context}: {message}").to_ascii_lowercase();
         let health = if ["auth", "login", "password", "oauth", "credential"]
             .iter()
             .any(|needle| lower.contains(needle))
@@ -2329,7 +2385,7 @@ impl MailApp {
         } else {
             accounts::AccountSyncHealth::Error
         };
-        report_account_sync(&account_id, health, false, Some(&detail));
+        self.report_account_sync(&account_id, health, false, Some(&detail));
         if let Some(pending) = self.pending_send.remove(&request_id) {
             // The server refused it: it stays in the outbox with the reason,
             // and comes back to the composer to be fixed and sent again.
@@ -2375,7 +2431,7 @@ impl MailApp {
                 account_id,
             } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
                 st.status = Some(format!("Connected {account_id}"));
-                report_account_sync(
+                self.report_account_sync(
                     &account_id,
                     accounts::AccountSyncHealth::Syncing,
                     false,
@@ -2407,7 +2463,7 @@ impl MailApp {
                 account_id,
             } if self.expects_engine_event(request_id, EngineRequestKind::OAuthAuthorize) => {
                 st.status = Some(format!("Signed in as {account_id}"));
-                report_account_sync(
+                self.report_account_sync(
                     &account_id,
                     accounts::AccountSyncHealth::Healthy,
                     true,
@@ -2784,7 +2840,7 @@ impl MailApp {
         // force another collaborator's composer open.
         let draft = MailDoc::load_draft(doc);
         if !draft.is_empty() {
-            self.upsert_draft_message(doc, &draft);
+            self.upsert_draft_message(doc, &draft, None);
         } else if let Some((id, _)) = self.projected_draft.borrow_mut().take() {
             self.shared.borrow_mut().mailbox.purge(id);
         }
@@ -2988,30 +3044,6 @@ fn draft_from_message(m: &Message) -> Draft {
                 .collect::<Vec<_>>(),
         ),
         in_reply_to: None,
-    }
-}
-
-fn report_account_sync(
-    account_id: &str,
-    health: accounts::AccountSyncHealth,
-    _success: bool,
-    _message: Option<&str>,
-) {
-    if account_id.trim().is_empty() {
-        return;
-    }
-    let reporter = accounts::AccountSyncReporter::new(account_id.to_string());
-    let persisted = match health {
-        accounts::AccountSyncHealth::Never | accounts::AccountSyncHealth::Syncing => {
-            reporter.started()
-        }
-        accounts::AccountSyncHealth::Healthy => reporter.succeeded(),
-        accounts::AccountSyncHealth::Offline => reporter.offline(),
-        accounts::AccountSyncHealth::NeedsAuthentication => reporter.needs_authentication(),
-        accounts::AccountSyncHealth::Error => reporter.failed(),
-    };
-    if let Err(error) = persisted {
-        tracing::warn!(%error, account = account_id, "mail: could not persist sync status");
     }
 }
 
@@ -5154,6 +5186,103 @@ mod tests {
         (app, doc)
     }
 
+    #[test]
+    fn delayed_engine_error_keeps_the_original_account_after_switching() {
+        let (mut app, mut doc) = app();
+        let (tx, requests) = std::sync::mpsc::channel();
+        let (events, rx) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle { tx, rx });
+        let original = crate::model::AccountConfig {
+            email: "original@example.test".into(),
+            ..Default::default()
+        };
+        let request = app
+            .post_engine(EngineRequest::fetch(original, Folder::Inbox))
+            .expect("request queued");
+        assert_eq!(
+            requests.try_recv().unwrap().account_email(),
+            "original@example.test"
+        );
+        app.shared.borrow_mut().accounts =
+            crate::account::AccountStore::single(crate::model::AccountConfig {
+                email: "other@example.test".into(),
+                ..Default::default()
+            });
+        events
+            .send(EngineEvent::Error {
+                request_id: request,
+                kind: EngineRequestKind::Fetch,
+                context: "authentication".into(),
+                message: "sign in again".into(),
+            })
+            .unwrap();
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        assert_eq!(
+            app.shared.borrow().status.as_deref(),
+            Some("original@example.test: authentication: sign in again")
+        );
+        let root = app
+            .accounts_persist_root()
+            .expect("isolated sample profile");
+        let statuses = accounts::AccountSyncStatusStore::load_in(&root);
+        let original_id = accounts::AccountId::from("original@example.test");
+        let other_id = accounts::AccountId::from("other@example.test");
+        let status = statuses
+            .get(&original_id)
+            .expect("original account status persisted");
+        assert_eq!(
+            status.health,
+            accounts::AccountSyncHealth::NeedsAuthentication
+        );
+        assert_eq!(status.message.as_deref(), Some("Sign-in required"));
+        assert!(
+            statuses.get(&other_id).is_none(),
+            "the selected account has no failure"
+        );
+        assert!(app.awaiting_engine, "error does not acknowledge completion");
+        events
+            .send(EngineEvent::Completed {
+                request_id: request,
+                kind: EngineRequestKind::Fetch,
+            })
+            .unwrap();
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        assert!(
+            !app.awaiting_engine,
+            "acknowledgement settles the loading state"
+        );
+        assert!(app.pending_engine_requests.is_empty());
+    }
+
+    #[test]
+    fn draft_projection_preserves_the_explicit_edit_target() {
+        let (mut app, mut doc) = app();
+        app.compose.open_with_draft(&crate::model::Draft {
+            to: "recipient@example.test".into(),
+            subject: "First local draft".into(),
+            ..Default::default()
+        });
+        app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
+        let first = MailDoc::draft_message_id(&doc).expect("first projection identity");
+        let mut other = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
+        other.id = uuid::Uuid::new_v4();
+        other.folder = Folder::Drafts;
+        other.subject = "Draft chosen for editing".into();
+        let selected = other.id;
+        app.shared.borrow_mut().mailbox.insert(other);
+        app.open_draft(selected);
+        app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
+        assert_ne!(first, selected);
+        assert_eq!(MailDoc::draft_message_id(&doc), Some(selected));
+        assert_eq!(app.editing_draft, Some(selected));
+        assert_eq!(
+            app.shared.borrow().mailbox.get(selected).unwrap().subject,
+            "Draft chosen for editing"
+        );
+        app.hydrate_domain_state(&mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(MailDoc::draft_message_id(&doc), Some(selected));
+    }
+
     struct InterleavedEngineFixture {
         app: MailApp,
         doc: AutoCommit,
@@ -5194,12 +5323,27 @@ mod tests {
                     done: Box::new(|_| {}),
                 },
             );
-            app.pending_engine_requests
-                .insert(refresh_id, EngineRequestKind::Fetch);
-            app.pending_engine_requests
-                .insert(send_id, EngineRequestKind::Send);
-            app.pending_engine_requests
-                .insert(unrelated_id, EngineRequestKind::StoreFlag);
+            app.pending_engine_requests.insert(
+                refresh_id,
+                PendingEngineRequest {
+                    kind: EngineRequestKind::Fetch,
+                    account: "me@example.test".into(),
+                },
+            );
+            app.pending_engine_requests.insert(
+                send_id,
+                PendingEngineRequest {
+                    kind: EngineRequestKind::Send,
+                    account: "me@example.test".into(),
+                },
+            );
+            app.pending_engine_requests.insert(
+                unrelated_id,
+                PendingEngineRequest {
+                    kind: EngineRequestKind::StoreFlag,
+                    account: "me@example.test".into(),
+                },
+            );
             app.awaiting_engine = true;
             Self {
                 app,
