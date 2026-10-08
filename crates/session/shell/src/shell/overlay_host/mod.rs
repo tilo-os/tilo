@@ -3964,7 +3964,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let snapshot = {
+        let (desktop, failures) = {
             let st = chrome.borrow();
             let tree = st.tree();
             let active_raw = tree.desktop.active.raw();
@@ -3990,9 +3990,9 @@ impl ShellOverlayHost {
                 }
                 Some(_) => {}
             }
-            tree.clone()
+            (tree.desktop.clone(), st.record_creation_errors(&tree))
         };
-        let swapped = self.rebuild_workspace_content(&chrome, &snapshot);
+        let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
             self.content_rebuild_owes_scene = true;
             self.start_workspace_switch_frames();
@@ -4000,40 +4000,43 @@ impl ShellOverlayHost {
         swapped
     }
 
-    /// Rebuilds the desktop surface for `snapshot` and replaces the row
+    /// Rebuilds the desktop surface for `desktop` and replaces the row
     /// pointer map with it. Tabs whose tile is unchanged in the same room
     /// keep their live hosts, so a strip added or removed beside them costs
-    /// no app state; a different workspace gets fresh content.
+    /// no app state; a different workspace gets fresh content. Takes the
+    /// desktop alone, with `failures` read beside it under the same tree
+    /// lock, so a workspace switch never copies the replication documents.
     fn rebuild_workspace_content(
         &mut self,
         chrome: &Chrome,
-        snapshot: &crate::shell::state::WorkspaceTree,
+        desktop: &crate::shell::state::DesktopTree,
+        failures: &std::collections::BTreeMap<u64, String>,
     ) -> bool {
         let records = chrome.borrow().records().clone();
         if let Some(surface) = self.desktop_surface_mut() {
-            let surface_chrome = crate::shell::workspace_surface_chrome(snapshot, chrome);
+            let surface_chrome = crate::shell::workspace_surface_chrome(desktop, chrome);
             let state = chrome.borrow();
-            let failures = state.record_creation_errors(snapshot);
             surface.rebuild_retaining(
-                &snapshot.desktop,
+                desktop,
                 &records,
                 &mut crate::shell::NativeTileResolver {
                     inputs: &state.hosted_inputs,
-                    failures: &failures,
+                    failures,
                 },
                 surface_chrome,
             );
             for id in surface.strip_ids() {
                 if let Some(row) = surface.row_mut(id) {
                     for group in &mut row.groups {
-                        crate::shell::tab_documents::apply_creation_failures(group, &failures);
+                        crate::shell::tab_documents::apply_creation_failures(group, failures);
                     }
                 }
             }
             // The rebuild replaced every row; the old addresses are gone.
             self.group_row_ptrs = crate::shell::surface_row_ptrs(surface);
         } else {
-            let (root, ptrs) = crate::shell::build_workspace_root(snapshot, &records, chrome);
+            let (root, ptrs) =
+                crate::shell::build_desktop_root(desktop, &records, chrome, failures);
             // Settle outgoing components while the old root still owns them,
             // so their recovery reports survive the swap.
             self.desktop_close_reports
@@ -4049,8 +4052,8 @@ impl ShellOverlayHost {
             self.content = root;
             self.group_row_ptrs = ptrs;
         }
-        self.content_built_for_ws = Some(snapshot.desktop.active.raw());
-        self.content_built_empty = snapshot.desktop.active_workspace().map(|workspace| {
+        self.content_built_for_ws = Some(desktop.active.raw());
+        self.content_built_empty = desktop.active_workspace().map(|workspace| {
             workspace
                 .strips
                 .iter()
@@ -4657,8 +4660,12 @@ impl ShellOverlayHost {
             tilo_desktop::composition::ReconcileOutcome::Unchanged => false,
             tilo_desktop::composition::ReconcileOutcome::Updated => true,
             tilo_desktop::composition::ReconcileOutcome::RebuildRequired => {
-                let snapshot = chrome.borrow().tree().clone();
-                self.rebuild_workspace_content(&chrome, &snapshot)
+                let (desktop, failures) = {
+                    let st = chrome.borrow();
+                    let tree = st.tree();
+                    (tree.desktop.clone(), st.record_creation_errors(&tree))
+                };
+                self.rebuild_workspace_content(&chrome, &desktop, &failures)
             }
         }
     }

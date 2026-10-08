@@ -211,6 +211,8 @@ struct Pending {
 /// the launcher correlates each arriving window with its app's FIFO placement.
 /// Wait for that claim, failure or expiry before starting a saved sibling.
 pub fn examine(tree: &mut WorkspaceTree) -> bool {
+    #[cfg(test)]
+    EXAMINE_PASSES.with(|passes| passes.set(passes.get().saturating_add(1)));
     let released = release_brought_over(tree);
     let installing = start_requested_installs(tree);
     let reread = reread_missing_apps(tree);
@@ -427,18 +429,56 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
     Ok(true)
 }
 
-/// Whether any peer window is still waiting to be examined.
+/// Whether any peer window is still waiting to be examined: an unanswered
+/// window, a saved window still opening, or a queued retry. One pass over the
+/// tabs that stops at the first hit and allocates nothing; the frame loop
+/// calls it only after the tree may have changed.
 pub fn any_pending(tree: &WorkspaceTree) -> bool {
-    !pending(tree).is_empty()
-        || tree
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .any(|tab| matches!(&tab.tile, TileContent::LocalApp { note, .. } if note == OPENING))
-        || with_retry_requests(|requests| !requests.is_empty())
+    #[cfg(test)]
+    PENDING_WALKS.with(|walks| walks.set(walks.get().saturating_add(1)));
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .any(|tab| {
+            awaits_examination(&tab.tile)
+                || matches!(&tab.tile, TileContent::LocalApp { note, .. } if note == OPENING)
+        })
+        || retry_requested()
+}
+
+/// Whether a card's explicit retry waits for the next [`examine`]. Queued
+/// outside the tree, so no tree revision announces it.
+pub(crate) fn retry_requested() -> bool {
+    with_retry_requests(|requests| !requests.is_empty())
+}
+
+/// A window no decision has been made for yet: [`examine`]'s work list.
+fn awaits_examination(tile: &TileContent) -> bool {
+    matches!(
+        tile,
+        TileContent::PeerWindow { app_id, note, .. } | TileContent::LocalApp { app_id, note, .. }
+            if note.is_empty() && !app_id.trim().is_empty()
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread walked the tree for [`any_pending`].
+    static PENDING_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many [`examine`] passes this thread ran.
+    static EXAMINE_PASSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Walks and examination passes this thread has made so far.
+#[cfg(test)]
+pub(crate) fn work_counts() -> (u64, u64) {
+    (
+        PENDING_WALKS.with(std::cell::Cell::get),
+        EXAMINE_PASSES.with(std::cell::Cell::get),
+    )
 }
 
 /// Settle a persisted app card whose process started but never produced
@@ -498,19 +538,18 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
         for strip in &ws.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
-                    match &tab.tile {
-                        TileContent::PeerWindow { app_id, note, .. }
-                        | TileContent::LocalApp { app_id, note, .. }
-                            if note.is_empty() && !app_id.trim().is_empty() =>
-                        {
-                            out.push(Pending {
-                                tab: tab.id,
-                                app_id: app_id.clone(),
-                                workspace: idx,
-                                local: matches!(&tab.tile, TileContent::LocalApp { .. }),
-                            });
-                        }
-                        _ => {}
+                    if !awaits_examination(&tab.tile) {
+                        continue;
+                    }
+                    if let TileContent::PeerWindow { app_id, .. }
+                    | TileContent::LocalApp { app_id, .. } = &tab.tile
+                    {
+                        out.push(Pending {
+                            tab: tab.id,
+                            app_id: app_id.clone(),
+                            workspace: idx,
+                            local: matches!(&tab.tile, TileContent::LocalApp { .. }),
+                        });
                     }
                 }
             }
@@ -1289,6 +1328,58 @@ mod tests {
         );
         assert_eq!(local_app_note(&tree, tab), NOT_INSTALLED);
         launcher::clear_pending_placements();
+    }
+
+    #[test]
+    fn peer_windows_any_pending_matches_pending_is_empty() {
+        with_retry_requests(std::mem::take);
+        let empty = WorkspaceTree::default();
+        let (mut answered, answered_tab) = tree_with_local_app("dev.tilo.answered-card");
+        set_note(&mut answered, answered_tab, NOT_INSTALLED.into());
+        let (blank_app, _) = tree_with_local_app("  ");
+        let (one_local, _) = tree_with_local_app("dev.tilo.one-local");
+        let (one_peer, _) = tree_with_peer_window(room_owned_by("ada"));
+        let (mut many, _) = tree_with_peer_window_for(room_owned_by("ada"), APP);
+        for app in ["dev.tilo.second", "dev.tilo.third"] {
+            let (other, _) = tree_with_local_app(app);
+            many.desktop.workspaces.extend(other.desktop.workspaces);
+        }
+        let (mut late, _) = tree_with_local_app("dev.tilo.answered-first");
+        let first = late.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        set_note(&mut late, first, NOT_INSTALLED.into());
+        let (pending_last, _) = tree_with_local_app("dev.tilo.pending-last");
+        late.desktop
+            .workspaces
+            .extend(pending_last.desktop.workspaces);
+
+        for (name, tree, expected) in [
+            ("an empty desktop", &empty, 0),
+            ("an answered card", &answered, 0),
+            ("a card without an app id", &blank_app, 0),
+            ("one saved window", &one_local, 1),
+            ("one peer window", &one_peer, 1),
+            ("several windows", &many, 3),
+            ("a pending window after an answered one", &late, 1),
+        ] {
+            assert_eq!(pending(tree).len(), expected, "{name}: fixture shape");
+            assert_eq!(
+                any_pending(tree),
+                !pending(tree).is_empty(),
+                "{name}: the early-exit walk agrees with examine's work list"
+            );
+        }
+
+        // A saved window still opening is owed another look, though it is
+        // not on the work list: its launch may still fail.
+        let (mut opening, tab) = tree_with_local_app("dev.tilo.still-opening");
+        set_note(&mut opening, tab, OPENING.into());
+        assert!(pending(&opening).is_empty());
+        assert!(any_pending(&opening));
+        // So is an explicit retry queued outside the tree.
+        request_retry(tab, "dev.tilo.still-opening");
+        assert!(any_pending(&empty), "a queued retry is owed a look");
+        with_retry_requests(std::mem::take);
+        assert!(!any_pending(&empty));
     }
 
     fn tree_with_peer_window(ws: Workspace) -> (WorkspaceTree, u64) {
