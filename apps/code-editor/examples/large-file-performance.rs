@@ -31,6 +31,12 @@ fn snapshot(app: &mut App, text: &str) -> Result<serde_json::Value, Box<dyn Erro
         .harness()
         .native_input_snapshot()
         .ok_or("actual editor observation missing")?;
+    eprintln!(
+        "reopen phase microseconds: {}",
+        snapshot
+            .get("reopen_phase_micros")
+            .unwrap_or(&serde_json::Value::Null)
+    );
     assert_snapshot(&snapshot, text);
     Ok(snapshot)
 }
@@ -57,6 +63,30 @@ fn assert_snapshot(snapshot: &serde_json::Value, text: &str) {
             .get("cached_buffers")
             .and_then(serde_json::Value::as_u64)
             .is_some_and(|count| count <= 2)
+    );
+    assert!(
+        snapshot
+            .get("cached_materializations")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|count| count <= 2)
+    );
+    assert!(
+        snapshot
+            .get("inactive_materialized_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|bytes| bytes <= 48 * 1024 * 1024)
+    );
+    assert!(
+        snapshot
+            .get("cached_diagnostic_buffers")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|count| count <= 2)
+    );
+    assert!(
+        snapshot
+            .get("inactive_diagnostic_records")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|count| count <= 16_384)
     );
     assert!(
         snapshot
@@ -232,6 +262,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     switch(&mut app, &second, &b)?;
     scroll(&mut app)?;
     let second_scroll = snapshot(&mut app, &b)?;
+    let returned = switch(&mut app, &first, &a)?;
+    assert_viewport(&before, &returned);
+    let returned = switch(&mut app, &second, &b)?;
+    assert_viewport(&second_scroll, &returned);
     let returned = switch(&mut app, &first, &a)?;
     assert_viewport(&before, &returned);
     let returned = switch(&mut app, &second, &b)?;
