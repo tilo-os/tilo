@@ -1461,6 +1461,46 @@ impl WorkspaceTree {
         out
     }
 
+    /// The person each of `room`'s certified devices belongs to, keyed by
+    /// the same presence handle as [`Self::room_peer_labels`] and spelled
+    /// as membership capabilities name people ([`person_id_of`]), so the
+    /// roster can ask the policy for a role by principal rather than by
+    /// display label. Only governed, root-signed device certificates
+    /// count — never a peer's own claim — and a revoked or expired device
+    /// maps to nobody.
+    pub fn room_peer_principals(&self, room: RoomId) -> std::collections::BTreeMap<u64, UserId> {
+        let identities = if self.governs_room(room) {
+            self.room_peer_identities
+                .get(&room)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            self.room_peer_identities_in_doc(room)
+        };
+        let revoked = identities
+            .values()
+            .flat_map(|identity| identity.revocations.iter())
+            .map(|entry| (entry.user_public_key, entry.revoked_device_public_key))
+            .collect::<std::collections::BTreeSet<_>>();
+        let now = now_unix_nanos();
+        identities
+            .into_iter()
+            .filter_map(|(peer, identity)| {
+                let cert = &identity.device_cert;
+                if cert.is_expired_at(now)
+                    || revoked.contains(&(cert.user_public_key, cert.device_public_key))
+                {
+                    return None;
+                }
+                let parsed = peer.parse::<iroh::EndpointId>().ok()?;
+                Some((
+                    crate::network::behaviour::peer_liveness_handle(&parsed),
+                    person_id_of(cert.user_public_key)?,
+                ))
+            })
+            .collect()
+    }
+
     /// Record that `room`'s governance is written by `peer` and nobody
     /// else. The value comes from a validated invite token (room id and
     /// owner peer id both inside the ed25519 signature), so a peer
@@ -7055,6 +7095,64 @@ mod automerge_foundation_tests {
                 assert!(host.room_peer_names_in_doc(room).is_empty());
             }
         }
+    }
+
+    #[test]
+    fn room_peer_principals_maps_handles_to_certified_people() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        let endpoint = iroh::SecretKey::generate().public();
+        let named_only = iroh::SecretKey::generate().public();
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[93; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: *endpoint.as_bytes(),
+            device_label: "Bob's laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        let owner = "quinten".to_string();
+        assert!(host.name_peer(room, &owner, &endpoint.to_string(), "Bob"));
+        assert!(host.name_peer(room, &owner, &named_only.to_string(), "Carol"));
+        assert!(host.certify_peer_identity(room, &endpoint.to_string(), certificate.clone()));
+
+        let handle = crate::network::behaviour::peer_liveness_handle(&endpoint);
+        let bob = person_id_of(root_key.verifying_key().to_bytes()).unwrap();
+        let expected = std::collections::BTreeMap::from([(handle, bob)]);
+        assert_eq!(
+            host.room_peer_principals(room),
+            expected,
+            "a certified device maps to its person, spelled as membership names them; \
+             a peer that is only named maps to nobody",
+        );
+
+        ship(&mut host, &mut guest, room, 1);
+        assert_eq!(
+            guest.room_peer_principals(room),
+            expected,
+            "a guest reads the same people out of the governed room document",
+        );
+
+        let mut revocation = tilo_user_identity::RevocationEntry {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            revoked_device_public_key: *endpoint.as_bytes(),
+            revoked_at_ns: 2,
+            reason: tilo_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut revocation, &root_key).unwrap();
+        assert!(host.certify_peer_identity_with_revocations(
+            room,
+            &endpoint.to_string(),
+            certificate,
+            vec![revocation]
+        ));
+        assert!(
+            host.room_peer_principals(room).is_empty(),
+            "a revoked device speaks for nobody",
+        );
     }
 
     #[test]
