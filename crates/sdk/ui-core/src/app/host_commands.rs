@@ -51,8 +51,7 @@ impl App {
     /// component with its own history (a text field), then to the focused
     /// document. Keyboard, menu and automation all land here.
     pub(crate) fn perform_undo_request(&mut self, request: crate::undo::UndoRequest) {
-        if crate::undo::handle_local_undo_request(self.root_widget.as_mut(), request) {
-            self.needs_sync = true;
+        if self.perform_local_undo_request(request) {
             return;
         }
         // Otherwise round-tripping document undo/redo loses caret position.
@@ -121,6 +120,38 @@ impl App {
                 self.apply_undo_entry(entry);
             }
         }
+    }
+
+    fn perform_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        let handled = crate::undo::handle_local_undo_request(self.root_widget.as_mut(), request);
+        self.needs_sync |= handled;
+        handled
+    }
+
+    /// A child native surface uses its focused component's history, never
+    /// the unrelated primary window's document/focus binding.
+    #[cfg(any(feature = "native", test))]
+    pub(crate) fn handle_floating_undo_shortcut(
+        &mut self,
+        event: &winit::event::WindowEvent,
+    ) -> bool {
+        let winit::event::WindowEvent::KeyboardInput { event, .. } = event else {
+            return false;
+        };
+        if event.state != winit::event::ElementState::Pressed {
+            return false;
+        }
+        let winit::keyboard::Key::Character(character) = &event.logical_key else {
+            return false;
+        };
+        let held = self.input.modifiers.state();
+        crate::undo::shortcut(
+            self.input.platform,
+            character,
+            self.input.platform.command_modifier_down(held),
+            held.shift_key(),
+        )
+        .is_some_and(|request| self.perform_local_undo_request(request))
     }
 
     /// What Undo would do for the target the keyboard would undo in. Reads a
@@ -274,5 +305,108 @@ impl App {
             .action_palette
             .as_ref()
             .is_some_and(|palette| palette.is_presented())
+    }
+}
+
+#[cfg(test)]
+mod floating_undo_tests {
+    use super::*;
+    use crate::undo::{LocalUndo, UndoRequest};
+    use crate::widget::{Decorator, Spacer, Widget};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    use winit::event::{DeviceId, ElementState, KeyEvent, RawKeyEvent, WindowEvent};
+    use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+
+    struct FocusedHistory {
+        inner: Spacer,
+        focused: Rc<Cell<bool>>,
+        requests: Rc<RefCell<Vec<UndoRequest>>>,
+    }
+
+    impl Decorator for FocusedHistory {
+        crate::provides!(dyn LocalUndo; inner = inner);
+        type Inner = Spacer;
+        fn inner(&self) -> &Spacer {
+            &self.inner
+        }
+        fn inner_mut(&mut self) -> &mut Spacer {
+            &mut self.inner
+        }
+    }
+
+    impl LocalUndo for FocusedHistory {
+        fn handle_local_undo_request(&mut self, request: UndoRequest) -> bool {
+            if !self.focused.get() {
+                return false;
+            }
+            self.requests.borrow_mut().push(request);
+            true
+        }
+    }
+
+    fn key(character: &str, state: ElementState) -> WindowEvent {
+        let key = Key::Character(character.into());
+        WindowEvent::KeyboardInput {
+            device_id: DeviceId::dummy(),
+            event: KeyEvent::synthetic(
+                RawKeyEvent {
+                    physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+                    state,
+                },
+                key.clone(),
+                None,
+                KeyLocation::Standard,
+                false,
+                None,
+                key,
+            ),
+            is_synthetic: true,
+        }
+    }
+
+    #[test]
+    fn native_floating_shortcuts_reach_focused_local_history_without_primary_fallback() {
+        let focused = Rc::new(Cell::new(true));
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let root = FocusedHistory {
+            inner: Spacer::new(),
+            focused: focused.clone(),
+            requests: requests.clone(),
+        };
+        let mut state = crate::State::new();
+        use automerge::transaction::Transactable;
+        assert!(state.doc.put(automerge::ROOT, "primary", "first").is_ok());
+        state.commit_action(None, None);
+        assert!(state.doc.put(automerge::ROOT, "primary", "second").is_ok());
+        state.commit_action(None, None);
+        let heads = state.doc.get_heads();
+        let depth = state.undo_depth();
+        let revision = state.history_revision();
+        let mut app = App::new_with_controlled_inputs(state, Box::new(root));
+        app.input.platform =
+            crate::platform::PlatformConventions::new(crate::platform::Platform::Linux);
+        app.input.modifiers = ModifiersState::CONTROL.into();
+        assert!(app.handle_floating_undo_shortcut(&key("z", ElementState::Pressed)));
+        app.input.modifiers = (ModifiersState::CONTROL | ModifiersState::SHIFT).into();
+        assert!(app.handle_floating_undo_shortcut(&key("z", ElementState::Pressed)));
+        assert_eq!(
+            requests.borrow().as_slice(),
+            &[UndoRequest::Undo, UndoRequest::Redo]
+        );
+        assert_eq!(app.state.doc.get_heads(), heads);
+        assert_eq!(app.state.undo_depth(), depth);
+        assert_eq!(app.state.history_revision(), revision);
+        assert!(app.needs_sync);
+        focused.set(false);
+        assert!(!app.handle_floating_undo_shortcut(&key("z", ElementState::Pressed)));
+        assert_eq!(app.state.doc.get_heads(), heads);
+        focused.set(true);
+        assert!(!app.handle_floating_undo_shortcut(&key("z", ElementState::Released)));
+        app.input.modifiers = ModifiersState::empty().into();
+        assert!(!app.handle_floating_undo_shortcut(&key("z", ElementState::Pressed)));
+        assert_eq!(requests.borrow().len(), 2);
     }
 }

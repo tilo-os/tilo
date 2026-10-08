@@ -756,6 +756,17 @@ fn apply_native_ime(
     *previous = next;
 }
 
+/// App-owned surfaces remain fixed to their live presentation rectangle.
+/// Winit's non-resizable Wayland window captures min/max at creation; a
+/// later request_inner_size does not advance those hints. Keep them aligned
+/// so the next activation configure cannot restore the transfer-frame size.
+fn resize_native_floating_window(window: &Window, rect: KurboRect) {
+    let size = native_floating_logical_size(rect);
+    window.set_min_inner_size(Some(size));
+    window.set_max_inner_size(Some(size));
+    let _ = window.request_inner_size(size);
+}
+
 fn secondary_ime_state(
     root: &dyn Widget,
     id: &str,
@@ -1706,9 +1717,7 @@ impl AppHandler {
                 return Err("shell changed the token of a live floating surface".into());
             }
             if existing.desktop_rect.size() != rect.size() {
-                let _ = existing
-                    .window
-                    .request_inner_size(native_floating_logical_size(rect));
+                resize_native_floating_window(&existing.window, rect);
             }
             existing.desktop_rect = rect;
             existing.coordinate_offset = coordinate_offset;
@@ -2003,9 +2012,7 @@ impl AppHandler {
                     // grows. Resize the real transparent buffer with the
                     // shared presentation rect so its soft chrome is never
                     // clipped inside the old native allocation.
-                    let _ = surface
-                        .window
-                        .request_inner_size(native_floating_logical_size(presentation.window_rect));
+                    resize_native_floating_window(&surface.window, presentation.window_rect);
                 }
                 surface.desktop_rect = presentation.window_rect;
                 surface.window.request_redraw();
@@ -2226,22 +2233,25 @@ impl AppHandler {
         else {
             return;
         };
-        let mut handled = false;
+        let is_undo_redo = app.handle_floating_undo_shortcut(&event);
+        let mut handled = is_undo_redo;
         let mut focus_target = None;
         app.refresh_control_action_availability();
-        app.root_widget.handle_event(
-            &event,
-            &mut crate::widget::EventCtx {
-                scale_factor: scale,
-                modifiers: &app.input.modifiers,
-                state: crate::widget::Edits::lend(&mut app.state.doc),
-                path: &app.state.root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: root_node,
-                taffy: &app.layout.taffy,
-            },
-        );
+        if !handled {
+            app.root_widget.handle_event(
+                &event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &app.input.modifiers,
+                    state: crate::widget::Edits::lend(&mut app.state.doc),
+                    path: &app.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: root_node,
+                    taffy: &app.layout.taffy,
+                },
+            );
+        }
         // `handle_event` may change presentation-only resource declarations
         // without touching the CRDT (selected tab, open media, local mode).
         app.invalidate_widget_resource_cache();
@@ -2249,7 +2259,9 @@ impl AppHandler {
             app.set_focused_node(Some(id));
         }
         if handled {
-            app.commit_action();
+            if !is_undo_redo {
+                app.commit_action();
+            }
             app.needs_sync = true;
             app.layout.layout_dirty |= app.root_widget.is_layout_dirty();
             if let Some(primary) = self.window.as_ref() {

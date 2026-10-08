@@ -2725,6 +2725,46 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertLess(committed, after)
         self.assertLess(after, selection)
         self.assertEqual(source.count("json.dumps(floating_numeric_geometry(frame),"), 2)
+        self.assertIn("stable_floating_commit_geometry(before_commit_frame, current)", source)
+
+    def test_real_ime_geometry_refuses_observed_transfer_height_rebound(self):
+        rect = {"x": 100, "y": 100, "w": 512, "h": 360}
+        extent = {"w": 512, "h": 360}
+        before = {"rect": rect, "content_rect": rect, "target_rect": rect,
+                  "frame_seq": 10, "device_scale": 1,
+                  "frame_geometry": {
+                      "raw_buffer": extent, "content_crop": {**rect, "x": 0, "y": 0},
+                      "configured_extent": extent, "min_size": extent, "max_size": extent,
+                      "window_geometry": None}}
+        after = json.loads(json.dumps(before))
+        after["frame_seq"] = 11
+        self.assertTrue(PROOF.stable_floating_commit_geometry(before, after))
+        rebound = json.loads(json.dumps(after))
+        rebound["frame_geometry"]["raw_buffer"]["h"] = 772
+        self.assertFalse(PROOF.stable_floating_commit_geometry(before, rebound))
+        stale_before = json.loads(json.dumps(before))
+        for name in ("configured_extent", "min_size", "max_size"):
+            stale_before["frame_geometry"][name]["h"] = 772
+        self.assertFalse(PROOF.stable_floating_commit_geometry(stale_before, after))
+        for name in ("raw_buffer", "content_crop", "configured_extent", "min_size", "max_size"):
+            wrong = json.loads(json.dumps(after))
+            wrong["frame_geometry"][name]["w"] += 2
+            with self.subTest(name=name):
+                self.assertFalse(PROOF.stable_floating_commit_geometry(before, wrong))
+        for name in ("rect", "content_rect", "target_rect"):
+            wrong = json.loads(json.dumps(after))
+            wrong[name]["h"] += 1
+            with self.subTest(name=name):
+                self.assertFalse(PROOF.stable_floating_commit_geometry(before, wrong))
+        wrong = {**after, "device_scale": 2}
+        self.assertFalse(PROOF.stable_floating_commit_geometry(before, wrong))
+        scaled_before = json.loads(json.dumps(before))
+        scaled_before["device_scale"] = 1.25
+        for name in ("raw_buffer", "content_crop"):
+            scaled_before["frame_geometry"][name].update({"w": 640, "h": 450})
+        scaled_after = json.loads(json.dumps(scaled_before))
+        scaled_after["frame_seq"] = 12
+        self.assertTrue(PROOF.stable_floating_commit_geometry(scaled_before, scaled_after))
 
     def test_editor_window_extent_is_translated_through_exact_presented_frame(self):
         sent = []

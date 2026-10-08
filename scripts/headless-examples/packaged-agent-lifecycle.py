@@ -874,6 +874,34 @@ def floating_numeric_geometry(frame):
     return result
 
 
+def stable_floating_commit_geometry(before, after):
+    """A fixed-size authenticated child must not rebound to stale transfer hints."""
+    before = floating_numeric_geometry(before)
+    after = floating_numeric_geometry(after)
+    if any(before[name] != after[name]
+           for name in ("rect", "content_rect", "target_rect", "device_scale")):
+        return False
+    for observed in (before, after):
+        geometry = observed["frame_geometry"]
+        if geometry is None or geometry["configured_extent"] is None:
+            return False
+        target = observed["target_rect"]
+        for axis in ("w", "h"):
+            logical = target[axis]
+            if logical <= 0 or abs(observed["rect"][axis] - logical) > 1 \
+                    or abs(observed["content_rect"][axis] - logical) > 1:
+                return False
+            # Physical buffers may round fractional logical sizes once to pixels.
+            physical = logical * observed["device_scale"]
+            if any(abs(geometry[name][axis] - physical) > 1
+                   for name in ("raw_buffer", "content_crop")):
+                return False
+            if any(abs(geometry[name][axis] - logical) > 1
+                   for name in ("configured_extent", "min_size", "max_size")):
+                return False
+    return True
+
+
 def physically_click_editor(socket, access, geometry):
     """Give the editor both pointer/widget focus and the compositor's Wayland seat."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
@@ -2025,6 +2053,7 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     # Commit through the real source-seat continuation while the same editor
     # is painted in the authenticated child. The child must then receive the
     # ordinary seat before any subsequent physical selection or undo.
+    before_commit_frame = frame
     (output / "ime-detached-before-commit-geometry.json").write_text(
         json.dumps(floating_numeric_geometry(frame), indent=2, allow_nan=False) + "\n"
     )
@@ -2040,8 +2069,14 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
         if current.get("input_route") is not None \
                 or current.get("input_source_surface_id") is not None:
             return None
-        return current if current["keyboard_focused"] is True \
-            and chat_text_input_active(socket) else None
+        if current["keyboard_focused"] is not True or not chat_text_input_active(socket):
+            return None
+        # Preserve the actual rejected measurement too; no identity/content leaves
+        # this closed receipt even when the original bounded wait must fail.
+        (output / "ime-detached-after-commit-geometry.json").write_text(
+            json.dumps(floating_numeric_geometry(current), indent=2, allow_nan=False) + "\n"
+        )
+        return current if stable_floating_commit_geometry(before_commit_frame, current) else None
 
     try:
         frame = wait_for(
