@@ -146,7 +146,6 @@ jobs:
       - name: Select and balance affected packages
         id: plan
         env:
-          TILO_CI_BUILDER: ${{ needs.builder.outputs.image }}
           EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_BASE: ${{ steps.merge.outputs.main }}
           PUSH_BEFORE: ${{ github.event.before }}
@@ -248,7 +247,7 @@ jobs:
   test:
     if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
     needs: [builder, select, security]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ contains(matrix.qualified_builders, needs.builder.outputs.image) && matrix.qualified_runner || matrix.runner }}
     timeout-minutes: 120
     outputs:
       cleanup-shared-libraries: ${{ steps.cleanup.outputs.shared-libraries }}
@@ -568,7 +567,7 @@ jobs:
   clippy:
     if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
     needs: [builder, select, security]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ contains(matrix.qualified_builders, needs.builder.outputs.image) && matrix.qualified_runner || matrix.runner }}
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: '8'
