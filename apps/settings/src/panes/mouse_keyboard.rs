@@ -1466,7 +1466,14 @@ impl InputArea {
                 None,
                 cx.scene().and_then(|scene| scene.input_hardware.clone()),
             ))),
-            editor: ui::LocalState::new(keyboard_editor::EditorState::default()),
+            editor: ui::LocalState::new(keyboard_editor::EditorState {
+                view: if cx.scene().is_some() {
+                    keyboard_editor::SourceView::Configured
+                } else {
+                    keyboard_editor::SourceView::Native
+                },
+                ..Default::default()
+            }),
             document: cx.storage().settings_document().clone(),
             osk_always: cx
                 .settings::<crate::prefs::AccessibilityPrefs>()
@@ -1741,7 +1748,8 @@ impl MouseKeyboardPane {
             ),
         ));
         let live = self.editor.get().selected.is_none()
-            && self.editor.get().view == keyboard_editor::SourceView::Live
+            && (self.editor.get().view == keyboard_editor::SourceView::Live
+                || self.editor.get().view == keyboard_editor::SourceView::Native)
             && !self.editor.get().adding
             && self.last.keyboard_preview.is_none();
         let details = map.clone().with_live_layout(live);
@@ -1785,7 +1793,8 @@ impl MouseKeyboardPane {
     }
 
     fn keyboard_inspection_section(&self, content: Vec<El>) -> El {
-        let open = self.editor.get().inspection_open;
+        let open = self.editor.get().inspection_open
+            || self.editor.get().view == keyboard_editor::SourceView::Native;
         let button = self.cx.bind_invocation(
             Button::new(
                 "input.source.inspection",
@@ -3072,7 +3081,14 @@ mod tests {
             catalog_error: None,
             live: std::cell::Cell::new(false),
             devices: std::rc::Rc::new(RefCell::new((None, None))),
-            editor: ui::LocalState::new(keyboard_editor::EditorState::default()),
+            editor: ui::LocalState::new(keyboard_editor::EditorState {
+                view: if cx.scene().is_some() {
+                    keyboard_editor::SourceView::Configured
+                } else {
+                    keyboard_editor::SourceView::Native
+                },
+                ..Default::default()
+            }),
             osk_always: false,
             document: cx.storage().settings_document().clone(),
         };
