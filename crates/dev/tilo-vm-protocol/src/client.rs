@@ -79,20 +79,35 @@ impl<R: BufRead, W: Write> Client<R, W> {
             id,
             request: params.into(),
         };
-        // Reuse the serialized frame across serial calls instead of allocating
-        // and growing a new base64-sized JSON buffer for every upload chunk.
-        self.request_buffer.clear();
-        serde_json::to_writer(&mut self.request_buffer, &envelope)
-            .map_err(|e| ClientError::Protocol(e.to_string()))?;
-        self.request_buffer.push(b'\n');
-        let sent = self
-            .writer
-            .write_all(&self.request_buffer)
-            .and_then(|()| self.writer.flush());
-        if self.request_buffer.capacity() > MAX_RETAINED_REQUEST_BYTES {
-            self.request_buffer = Vec::new();
+        if matches!(
+            &envelope.request,
+            crate::Request::DeviceActions(_) | crate::Request::DeviceUnlockEnrol(_)
+        ) {
+            // Private frames never enter the retained public upload buffer.
+            let mut line = zeroize::Zeroizing::new(
+                serde_json::to_vec(&envelope).map_err(|e| ClientError::Protocol(e.to_string()))?,
+            );
+            drop(envelope);
+            line.push(b'\n');
+            self.writer.write_all(&line)?;
+            self.writer.flush()?;
+            drop(line);
+        } else {
+            // Reuse the serialized frame across serial calls instead of allocating
+            // and growing a new base64-sized JSON buffer for every upload chunk.
+            self.request_buffer.clear();
+            serde_json::to_writer(&mut self.request_buffer, &envelope)
+                .map_err(|e| ClientError::Protocol(e.to_string()))?;
+            self.request_buffer.push(b'\n');
+            let sent = self
+                .writer
+                .write_all(&self.request_buffer)
+                .and_then(|()| self.writer.flush());
+            if self.request_buffer.capacity() > MAX_RETAINED_REQUEST_BYTES {
+                self.request_buffer = Vec::new();
+            }
+            sent?;
         }
-        sent?;
 
         let mut response = String::new();
         if self.reader.read_line(&mut response)? == 0 {

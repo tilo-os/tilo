@@ -56,7 +56,8 @@ pub mod record_content;
 mod route_keys;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
-    CertifiedEndpointIdentity, HostSessionConnector, speaker_command, wifi_continuity_command,
+    CertifiedEndpointIdentity, HostSessionConnector, display_control, speaker_command,
+    wifi_continuity_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of
@@ -159,6 +160,15 @@ pub fn speaker_command(
     _command: runtime_collab::SpeakerCommand,
 ) -> Result<runtime_collab::SpeakerReply, String> {
     Err("speakers need the certified collaboration service".to_string())
+}
+
+/// The native display control service is unavailable without an admitted broker.
+///
+/// # Errors
+/// Always reports unavailable on this transport.
+#[cfg(not(feature = "broker-transport"))]
+pub fn display_control(_command: Vec<u8>, _origin: DisplayOrigin) -> Result<Vec<u8>, String> {
+    Err("Displays need the certified collaboration service.".into())
 }
 
 pub use crate::host::ContinuationMetadata;
@@ -2168,3 +2178,6 @@ mod portable_transport_tests {
         assert!(manager.poll().is_empty());
     }
 }
+
+/// Original authority retained across display background work.
+pub use runtime_collab::DisplayOrigin;

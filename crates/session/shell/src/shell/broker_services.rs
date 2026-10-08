@@ -1504,6 +1504,21 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
         tilo_identity_host::certificates::authorize_join(&room.to_string(), cert)
     }
 }
+fn native_resource_views(
+    membership: Option<&WorkspaceTreeHandle>,
+    network: Option<&Arc<super::network::ShellNetwork>>,
+) -> Option<Arc<dyn tilo_action_broker::services::NativeResourceViews>> {
+    membership.zip(network).map(|(tree, network)| {
+        Arc::new(resource_views::NativeResourceViews {
+            owner: Arc::new(NativeOwnerCommitService::new(
+                tree.clone(),
+                Some(network.clone()),
+            )),
+            network: network.clone(),
+        }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
+    })
+}
+
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
@@ -1516,18 +1531,7 @@ pub fn native_services(
         Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
             as Arc<dyn tilo_action_broker::services::WorkspaceMemberships>
     });
-    let resource_views = membership
-        .as_ref()
-        .zip(network.as_ref())
-        .map(|(tree, network)| {
-            Arc::new(resource_views::NativeResourceViews {
-                owner: Arc::new(NativeOwnerCommitService::new(
-                    tree.clone(),
-                    Some(network.clone()),
-                )),
-                network: network.clone(),
-            }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
-        });
+    let resource_views = native_resource_views(membership.as_ref(), network.as_ref());
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
             as Arc<dyn WorkspaceGovernanceServices>
@@ -1555,6 +1559,20 @@ pub fn native_services(
         .as_ref()
         .and_then(|tree| managed_tasks::service(tree.clone(), network.clone()));
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
+    let display_control = membership
+        .as_ref()
+        .zip(settings_store::installed_source())
+        .map(|(tree, source)| {
+            Arc::new(super::display_control::NativeDisplayControl {
+                tree: Arc::downgrade(tree),
+                source,
+            }) as Arc<dyn tilo_action_broker::services::DisplayControlServices>
+        });
+    let local_person = membership.as_ref().map(|tree| {
+        Arc::new(super::local_person::NativeLocalPerson {
+            tree: Arc::downgrade(tree),
+        }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
+    });
     HostServices {
         #[cfg(target_os = "linux")]
         managed_tasks,
@@ -1572,6 +1590,7 @@ pub fn native_services(
         resource_views,
         desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
+        local_person,
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),
@@ -1595,6 +1614,7 @@ pub fn native_services(
         launchable_catalogue: launchable_catalogue_path(),
         // The session's records, installed before any broker starts.
         settings: settings_store::installed_source(),
+        display_control,
         live_activities: Some(super::live_activities::board()),
         ..Default::default()
     }

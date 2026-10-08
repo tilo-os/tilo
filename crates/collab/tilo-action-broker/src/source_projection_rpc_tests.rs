@@ -71,6 +71,29 @@ fn projection_descriptors() -> Vec<runtime_collab::ExportedAction> {
     vec![check, read]
 }
 
+struct ProjectionNativePerson(Arc<signed_worker::CurrentHost>);
+impl crate::services::LocalPersonServices for ProjectionNativePerson {
+    fn certificate(
+        &self,
+        room: &str,
+        person: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        let certificate = self
+            .0
+            .certificate
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("native identity retired")?;
+        if room != self.0.route.cluster_id
+            || person != principal_id_for_root(certificate.user_public_key)
+        {
+            return Err("native person mismatch".into());
+        }
+        Ok(certificate)
+    }
+}
+
 fn projection_broker(
     room: &signed_worker::OriginalRoom,
     probe: Arc<ProjectionReadProbe>,
@@ -165,14 +188,14 @@ async fn projection_native_connection(
 }
 
 fn projection_probe(
-    room: &signed_worker::OriginalRoom,
+    route: &CrdtRoute,
     descriptors: &[runtime_collab::ExportedAction],
 ) -> Arc<ProjectionReadProbe> {
     Arc::new(ProjectionReadProbe {
         binding: SourceBinding {
-            app_id: room.route.app_id.clone(),
-            workspace: room.route.cluster_id.clone(),
-            record: room.route.record_id.clone(),
+            app_id: route.app_id.clone(),
+            workspace: route.cluster_id.clone(),
+            record: route.record_id.clone(),
             resource_identity: tilo_actions::ResourceSemanticIdentity {
                 kind: descriptors.get(1).unwrap().resource_kind.clone(),
                 key: "source-file".into(),
@@ -225,24 +248,103 @@ async fn projection_parent(
 
 #[tokio::test(flavor = "current_thread")]
 async fn source_projection_person_reads_through_actual_native_published_dispatch() {
+    projection_read_through_native_dispatch(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn source_projection_native_seat_reads_and_refuses_retired_original_identity() {
+    projection_read_through_native_dispatch(true).await;
+}
+
+async fn projection_read_through_native_dispatch(native_seat: bool) {
     tokio::task::LocalSet::new()
         .run_until(async {
             let room = signed_worker::OriginalRoom::new(
-                tilo_user_identity::DeviceCapabilities::primary(),
-                None,
-                None,
+                tilo_user_identity::DeviceCapabilities::primary(), None, None,
             );
+            let native = native_seat.then(durable_local_matrix::Environment::new);
+            let route = native.as_ref().map_or(&room.route, |env| &env.route);
+            let certificate = native.as_ref().map_or(&room.cert, |env| &env.cert);
+            let authority = native.as_ref().map_or(&room.authority, |env| &env.authority);
+            let peer = if native_seat { 903 } else { 997 };
             let descriptors = projection_descriptors();
-            let probe = projection_probe(&room, &descriptors);
-            let (state, connection, directories) =
-                projection_native_connection(&room, probe.clone())
+            let probe = projection_probe(route, &descriptors);
+            let (state, connection, directories) = if let Some(env) = &native {
+                let mut services = env.membership.services();
+                services.approved_checks = Some(probe.clone());
+                services.local_person = Some(Arc::new(ProjectionNativePerson(env.authority.clone())));
+                let rig = durable_local_matrix::Rig::with_services(env, services).await;
+                (rig.state, rig.worker, rig.directories)
+            } else {
+                projection_native_connection(&room, probe.clone()).await.unwrap()
+            };
+            let (stream, request, parent) = if native_seat {
+                connection
+                    .handle
+                    .publish_actions(&route.app_id, &descriptors)
                     .await
                     .unwrap();
-            let (stream, request, parent) =
-                projection_parent(&connection, &room, &descriptors, 997).await;
+                let stream = connection
+                    .handle
+                    .subscribe_stable_invocations()
+                    .await
+                    .unwrap();
+                let person = tilo_actions::remote::Caller::local_person(principal_id_for_root(
+                    certificate.user_public_key,
+                ))
+                .in_room(route.cluster_id.clone());
+                let invoke = tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    on_behalf_of: None,
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: peer.to_string(),
+                        address: tilo_actions::ActionAddress::new(
+                            "workspace:atlas",
+                            runtime_collab::approved_checks::ACTION_ID,
+                        ),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::Text(
+                        r#"{"check_id":"regression"}"#.into(),
+                    ),
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                };
+                let admission = state.action_invoke_local_person(&person, &invoke);
+                tokio::pin!(admission);
+                let receipt = tilo_test_env::within(
+                    "native seat parent needs the normal directory owner turn",
+                    async {
+                        loop {
+                            state.drain_action_directory_bridge(&directories);
+                            tokio::select! {
+                                result = &mut admission => break result.unwrap().unwrap(),
+                                () = tokio::task::yield_now() => {}
+                            }
+                        }
+                    },
+                )
+                .await;
+                assert!(matches!(
+                    receipt.status,
+                    tilo_actions::remote::ReceiptStatus::Accepted
+                ));
+                let parent = stream.read().await.unwrap();
+                assert_eq!(parent.invocation_uuid, invoke.invocation.0.into_bytes());
+                let request = runtime_collab::approved_checks::Request {
+                    version: 1,
+                    invocation: invoke.invocation.0.to_string(),
+                    check_id: "regression".into(),
+                };
+                (stream, request, parent)
+            } else {
+                projection_parent(&connection, &room, &descriptors, 997).await
+            };
+            let result = {
             let read = async {
                 let child = stream.read().await.unwrap();
                 assert_ne!(child.id, parent.id);
+                assert_ne!(child.invocation_uuid, parent.invocation_uuid);
                 assert_eq!(child.action, descriptors.get(1).unwrap().action);
                 let encoded = child.argument.as_deref().expect("typed source arguments");
                 let json = encoded
@@ -276,11 +378,19 @@ async fn source_projection_person_reads_through_actual_native_published_dispatch
                     .unwrap();
             };
             let execute = connection.handle.approved_check(&request);
-            let (result, ()) = tilo_test_env::within(
+            tokio::pin!(execute, read);
+            tilo_test_env::within(
                 "native source projection must return actual typed read",
-                async { tokio::join!(execute, read) },
+                async {
+                    tokio::select! {
+                        biased;
+                        () = &mut read => execute.await,
+                        result = &mut execute => panic!("check ended before its source child was observed: {result:?}; source observation: {:?}", probe.observed.lock().unwrap().as_ref()),
+                    }
+                },
             )
-            .await;
+            .await
+            };
             assert!(
                 result
                     .unwrap_err()
@@ -288,10 +398,29 @@ async fn source_projection_person_reads_through_actual_native_published_dispatch
                     .contains("source admission only")
             );
             let observed = probe.observed.lock().unwrap().take().unwrap().unwrap();
-            assert_eq!(observed["output"]["text"], "edited source");
-            assert_eq!(observed["parent_invocation"], request.invocation);
-            assert_ne!(observed["invocation"], request.invocation);
-            state.remove_connection(997);
+            assert_eq!(observed.get("output").and_then(|output| output.get("text")).and_then(serde_json::Value::as_str).expect("typed source text"), "edited source");
+            assert_eq!(observed.get("parent_invocation").and_then(serde_json::Value::as_str).expect("typed parent identity"), request.invocation);
+            assert_ne!(observed.get("invocation").and_then(serde_json::Value::as_str).expect("typed child identity"), request.invocation);
+            if native_seat {
+                // Keep the target's existing host certificate admitted while
+                // withdrawing only the native-seat service's current identity.
+                authority.additional_certificates.lock().unwrap().push(certificate.clone());
+                *authority.certificate.lock().unwrap() = None;
+                let retired = connection
+                    .handle
+                    .approved_check(&request)
+                    .await
+                    .unwrap_err();
+                assert!(
+                    retired.to_string().contains("native identity retired"),
+                    "{retired}"
+                );
+                assert!(
+                    probe.observed.lock().unwrap().is_none(),
+                    "retired original identity must not reach the source service"
+                );
+            }
+            state.remove_connection(peer);
             drop(connection);
             drop(directories);
         })
@@ -308,7 +437,7 @@ async fn source_projection_refuses_a_host_without_private_worker_custody() {
                 None,
             );
             let descriptors = projection_descriptors();
-            let probe = projection_probe(&room, &descriptors);
+            let probe = projection_probe(&room.route, &descriptors);
             match projection_native_connection(&room, probe.clone()).await {
                 Ok(_) => panic!(
                     "ordinary native transport must not admit a Host without its private descriptor"
@@ -335,7 +464,7 @@ async fn source_projection_refuses_a_registered_worker_origin_before_dispatching
                 None,
             );
             let descriptors = projection_descriptors();
-            let probe = projection_probe(&room, &descriptors);
+            let probe = projection_probe(&room.route, &descriptors);
             let (state, directories) = projection_broker(&room, probe.clone());
             let (connection, _) = signed_worker::join_worker(
                 &state,

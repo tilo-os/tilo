@@ -4,21 +4,21 @@ mod durable_local_matrix {
         rpc_pair,
     };
     use super::*;
-    struct Environment {
+    pub(super) struct Environment {
         root: tempfile::TempDir,
-        cert: tilo_user_identity::DeviceCert,
+        pub(super) cert: tilo_user_identity::DeviceCert,
         key: SigningKey,
         person: SigningKey,
-        route: CrdtRoute,
-        membership: WorkspaceTreeHandle,
+        pub(super) route: CrdtRoute,
+        pub(super) membership: WorkspaceTreeHandle,
         publisher: Arc<PeerPublisher>,
-        authority: Arc<CurrentHost>,
+        pub(super) authority: Arc<CurrentHost>,
         origin: crate::peer_actions::PolicyOrigin,
         control: crate::peer_actions::PolicyClockTestControl,
         owner_task: tokio::task::JoinHandle<crate::test_owner::SessionOwner>,
     }
     impl Environment {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self::with_owner_initializer(crate::test_owner::SessionOwner::initialize)
         }
         fn with_owner_initializer(
@@ -84,10 +84,10 @@ mod durable_local_matrix {
             self.owner_task.abort();
         }
     }
-    struct Rig {
-        state: Arc<CapnpBrokerState>,
-        directories: Rc<LocalActionDirectoryRegistry>,
-        worker: Connection,
+    pub(super) struct Rig {
+        pub(super) state: Arc<CapnpBrokerState>,
+        pub(super) directories: Rc<LocalActionDirectoryRegistry>,
+        pub(super) worker: Connection,
         stream: Option<runtime_collab::InvocationStream>,
         binding: runtime_collab::PublishedInvocationBinding,
         authorize: ui::invocation_scope::PublishedInvocationAuthorizer,
@@ -96,7 +96,7 @@ mod durable_local_matrix {
         async fn new(env: &Environment) -> Self {
             Self::with_services(env, env.membership.services()).await
         }
-        async fn with_services(env: &Environment, services: HostServices) -> Self {
+        pub(super) async fn with_services(env: &Environment, services: HostServices) -> Self {
             let fanout = Arc::new(FanoutState::new());
             let (state, bridge_rx) = CapnpBrokerState::new_configured(
                 &fanout,
@@ -120,7 +120,7 @@ mod durable_local_matrix {
             let (worker, authorize) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
             let handle = &worker.handle;
-            publish(handle).await;
+            publish_for(handle, &env.route.app_id).await;
             let stream = handle.subscribe_stable_invocations().await.unwrap();
             let (_, binding) = handle
                 .resolve_published_action_for_invocation(
@@ -198,10 +198,16 @@ mod durable_local_matrix {
         }
     }
     async fn publish(handle: &runtime_collab::ChannelHandle) -> Rc<RefCell<TestActionDirectory>> {
+        publish_for(handle, "so.tilo.word-processor").await
+    }
+    async fn publish_for(
+        handle: &runtime_collab::ChannelHandle,
+        app: &str,
+    ) -> Rc<RefCell<TestActionDirectory>> {
         let state = directory_state("original-r1");
         handle
             .publish_action_directory(
-                "so.tilo.word-processor",
+                app,
                 capnp_rpc::new_client(DurableDirectory {
                     state: state.clone(),
                 }),
@@ -1091,6 +1097,7 @@ mod durable_local_matrix {
             .await;
     }
 
+    include!("display_control_tests.rs");
     include!("admitted_local_host_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");

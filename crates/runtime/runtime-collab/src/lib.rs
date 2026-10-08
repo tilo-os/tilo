@@ -68,6 +68,14 @@ pub mod collab_capnp {
 }
 
 pub mod approved_checks;
+/// The host distinguishes local UI intent from continuation of a published action.
+/// A published id is resolved only against broker-retained original custody.
+#[derive(Clone, Copy, Debug)]
+pub enum DisplayOrigin {
+    LocalHost,
+    Published([u8; 16]),
+}
+
 pub mod audio_output;
 pub mod committed_document;
 #[cfg(feature = "client")]
