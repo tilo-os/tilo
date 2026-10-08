@@ -12414,10 +12414,8 @@ pub mod tests {
         }
     }
 
-    #[cfg(test)]
     struct LifecycleSink;
 
-    #[cfg(test)]
     impl crate::collab_outbound::PeerPublishSink for LifecycleSink {
         fn app_document(&self, _: String, _: String, _: String, _: collab_types::SignedOp) {}
 
@@ -12426,10 +12424,8 @@ pub mod tests {
         fn scrollback_request(&self, _: &str, _: ArtifactId, _: u64, _: u16) {}
     }
 
-    #[cfg(test)]
     struct HealthyOwner;
 
-    #[cfg(test)]
     impl tilo_peer_state::owner_commit::OwnerCommitService for HealthyOwner {
         fn commit(
             &self,
@@ -13263,8 +13259,7 @@ pub mod tests {
         }
     }
 
-    #[cfg(test)]
-    mod signed_worker {
+    pub mod signed_worker {
         include!("signed_worker_test_support.rs");
     }
     #[cfg(test)]
@@ -13281,6 +13276,9 @@ pub mod tests {
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
     include!("record_content_tests.rs");
+
+    #[cfg(target_os = "linux")]
+    include!("native_checkout_fixture.rs");
 
     pub struct LocalDirectoryFixture {
         _fanout: Arc<FanoutState>,

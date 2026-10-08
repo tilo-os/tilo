@@ -2,6 +2,9 @@
 // durable invocation tests: a revocable current-host policy, real directory
 // endpoints and actual Unix-socket Cap'n Proto connections.
 use super::*;
+#[cfg(not(test))]
+use ed25519_dalek::Signer as _;
+use ed25519_dalek::SigningKey;
 use std::sync::atomic::AtomicUsize;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -178,7 +181,8 @@ pub fn directory_server(state: &Rc<RefCell<TestActionDirectory>>) -> action_dire
     })
 }
 
-pub fn empty_directories() -> Rc<LocalActionDirectoryRegistry> {
+#[cfg(test)]
+pub(super) fn empty_directories() -> Rc<LocalActionDirectoryRegistry> {
     let (_, rx) = std::sync::mpsc::channel();
     Rc::new(LocalActionDirectoryRegistry::new(rx))
 }
@@ -198,7 +202,7 @@ pub fn presentation(room: &str, cert: &DeviceCert, key: &SigningKey) -> Vec<u8> 
 }
 
 /// Drive the broker side of `server` and bootstrap a real RPC client over `client`.
-pub fn rpc_pair(
+pub(super) fn rpc_pair(
     state: Arc<CapnpBrokerState>,
     peer: u64,
     server: std::os::unix::net::UnixStream,
@@ -256,7 +260,7 @@ impl Drop for Connection {
 
 /// Register a private host worker for `route`, connect it as `peer` and join
 /// with the signed presentation. Returns the connection and its lease authorizer.
-pub async fn join_worker(
+pub(super) async fn join_worker(
     state: &Arc<CapnpBrokerState>,
     directories: &Rc<LocalActionDirectoryRegistry>,
     route: &CrdtRoute,
@@ -328,8 +332,9 @@ pub struct OriginalRoom {
     pub membership: WorkspaceTreeHandle,
     pub state: Arc<CapnpBrokerState>,
     pub authority: Arc<CurrentHost>,
-    pub directories: Rc<LocalActionDirectoryRegistry>,
+    pub(super) directories: Rc<LocalActionDirectoryRegistry>,
     _clock: crate::peer_actions::OwnerPolicyClock,
+    #[cfg(test)]
     _owner_mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
 }
 
@@ -395,10 +400,16 @@ impl OriginalRoom {
         tree.persist_path = persist_path;
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
+        #[cfg(test)]
         let (owner_handle, owner_mailbox) =
             crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
+        #[cfg(test)]
         let publisher =
             PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
+        // Cross-crate projection fixtures perform no document commits.
+        #[cfg(not(test))]
+        let publisher =
+            PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(HealthyOwner));
         let mut services = membership.services();
         services.record_content = record_content;
         let (state, bridge_rx) = CapnpBrokerState::new_configured(
@@ -423,6 +434,7 @@ impl OriginalRoom {
             authority,
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             _clock: clock,
+            #[cfg(test)]
             _owner_mailbox: owner_mailbox,
         }
     }

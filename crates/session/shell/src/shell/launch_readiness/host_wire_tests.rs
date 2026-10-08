@@ -45,6 +45,9 @@ struct Wire {
 }
 impl Wire {
     fn new(room: crate::shell::state::RoomId) -> Self {
+        Self::with_identity(room, "org.gnome.TextEditor.desktop", false)
+    }
+    fn with_identity(room: crate::shell::state::RoomId, package: &str, confined: bool) -> Self {
         let events = EventLoop::try_new().unwrap();
         let display = Display::new().unwrap();
         let state = State::new(events.handle(), display.handle());
@@ -56,7 +59,8 @@ impl Wire {
             .insert_client(
                 server,
                 Arc::new(ClientState {
-                    package_id: Some("org.gnome.TextEditor.desktop".into()),
+                    package_id: Some(package.into()),
+                    enforce_package_id: confined,
                     workspace_id: Some(room.to_string()),
                     pid: Some(pid),
                     pid_start_time: super::super::launcher::proc_stat(pid).map(|(_, start)| start),
@@ -185,3 +189,5 @@ async fn gtk_wire_adoption_proves_original_launch_and_rejects_moved_or_closed_su
     assert!(crate::shell::test_control::Command::StateDump.admin_permitted());
     assert!(!crate::shell::test_control::Command::StateDump.agent_permitted());
 }
+
+include!("checkout_input_tests.rs");
