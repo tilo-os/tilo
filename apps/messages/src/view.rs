@@ -493,22 +493,17 @@ fn register_effects(
         if let MessagesEffect::ReadHistory { choice } = effect {
             return effect_history.read(&effect_sources, &state, &choice, cx);
         }
-        let refresh = matches!(effect, MessagesEffect::SelectRoute { .. });
-        let clear = refresh
-            || matches!(
-                effect,
-                MessagesEffect::OpenPerson { .. } | MessagesEffect::Back
-            );
         let before = state.get();
         let result = answer(&effect_sources, &state, effect)?;
-        let changed = state.get() != before;
-        if clear && changed {
+        let selected = state.get();
+        let changed = selected != before;
+        if changed {
             effect_sending.clear();
             effect_history.clear();
             jobs.cancel("messages.history");
         }
-        if refresh && changed && effect_history.available() {
-            let choice = state.get().choice;
+        if changed && !selected.choice.is_empty() && effect_history.available() {
+            let choice = selected.choice;
             jobs.start::<()>("messages.history", |cx| {
                 effect_history.read(&effect_sources, &state, &choice, cx)
             });
