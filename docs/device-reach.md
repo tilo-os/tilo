@@ -33,12 +33,14 @@ must hold the machine awake explicitly, and that hold must go away by itself.
 What can wake a device depends on its hardware, so the device advertises this
 itself instead of the admin guessing.
 
-- The OS image enables magic-packet Wake-on-LAN on Ethernet. Wi-Fi WoWLAN
-  stays off unless the machine is known to wake from it. On the Lenovo Yoga
-  Slim 7x the chip stays associated through suspend, but the SoC wakes on
-  neither `deep` nor `s2idle`. A machine that cannot be woken over the network
-  says so in its presence, and an admin keeps it awake instead (the leases
-  above). The wake address is the interface's MAC as the network sees it.
+- The OS image enables magic-packet Wake-on-LAN on Ethernet. Lenovo 83ED
+  hardware images default the WCN7850 Wi-Fi driver to `wake-on-wlan=0`:
+  observed deep-sleep WoW resume failed in MHI and left the interface unusable
+  until reboot. This is a targeted NetworkManager default, not a kernel fix or
+  proof that non-WoW deep resume succeeds. Explicit saved profile wake flags
+  override it; see `os/hardware/README.md` for diagnosis. Other hardware's
+  Wi-Fi wake policy is unchanged. The wake address is the interface's MAC as
+  the network sees it.
 - A device publishes its wake routes in its certified presence: MAC, interface
   kind and the subnet it was last seen on. Only same-identity devices receive
   them.
