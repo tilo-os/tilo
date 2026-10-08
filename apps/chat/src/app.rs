@@ -3535,7 +3535,7 @@ impl ChatApp {
             || self
                 .ime_source_agent_surface
                 .as_deref()
-                .is_some_and(|id| self.agent_surface_accepts_input(id))
+                .is_some_and(|id| self.agent_surface_accepts_ime(id))
     }
 
     fn agent_surface_accepts_input(&self, id: &str) -> bool {
@@ -3543,6 +3543,18 @@ impl ChatApp {
             surface.id == id
                 && surface.placement.is_desktop_adopted()
                 && !surface.placement.is_return_pending()
+                && !surface.is_closed()
+        })
+    }
+
+    fn agent_surface_accepts_ime(&self, id: &str) -> bool {
+        self.agent_surfaces.values().any(|surface| {
+            surface.id == id
+                && matches!(
+                    surface.placement.attachment(),
+                    ui::floating_surface::Attachment::Desktop { .. }
+                )
+                && surface.placement.is_desktop_covered()
                 && !surface.is_closed()
         })
     }
@@ -5302,7 +5314,7 @@ impl FloatingSurfaceProvider for ChatApp {
 
     fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
         self.ime_source_agent_surface = id
-            .filter(|id| self.agent_surface_accepts_input(id))
+            .filter(|id| self.agent_surface_accepts_ime(id))
             .map(str::to_owned);
         for surface in self.agent_surfaces.values_mut() {
             let surface_id = Some(surface.id.as_str());

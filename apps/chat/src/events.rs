@@ -4400,9 +4400,10 @@ mod tests {
         );
     }
 
-    fn adopt_agent_surface(app: &mut ChatApp, id: &str, rect: vello::kurbo::Rect) {
-        for message in [
-            ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+    fn prepare_agent_surface(app: &mut ChatApp, id: &str, rect: vello::kurbo::Rect) {
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
                 id: id.into(),
                 token: "0123456789abcdef0123456789abcdef".into(),
                 rect: ui::floating_surface::protocol_rect_array(rect),
@@ -4410,13 +4411,18 @@ mod tests {
                 transfer_covered: true,
                 coordinate_offset: [0.0, 0.0],
             },
-            ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+        );
+    }
+
+    fn adopt_agent_surface(app: &mut ChatApp, id: &str, rect: vello::kurbo::Rect) {
+        prepare_agent_surface(app, id, rect);
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
                 id: id.into(),
                 rect: ui::floating_surface::protocol_rect_array(rect),
             },
-        ] {
-            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(app, &message);
-        }
+        );
     }
 
     #[test]
@@ -5060,6 +5066,46 @@ mod tests {
             .focused
     }
 
+    fn assert_prepared_ime_survives_adoption(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        channel: &str,
+        id: &str,
+        rect: vello::kurbo::Rect,
+    ) {
+        prepare_agent_surface(app, id, rect);
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_ime_source_changed(app, Some(id));
+        assert!(!app.composer_main.is_focused());
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(app, Some(id));
+        feed_root_mods(
+            app,
+            doc,
+            &WindowEvent::Ime(winit::event::Ime::Preedit("東".into(), Some((0, 3)))),
+            Modifiers::default(),
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(app, None);
+        assert!(
+            app.agent_surfaces[channel]
+                .view
+                .composer_main
+                .is_composing()
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: id.into(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+            },
+        );
+        assert!(
+            app.agent_surfaces[channel]
+                .view
+                .composer_main
+                .is_composing()
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_ime_source_changed(app, None);
+    }
+
     #[test]
     fn adopted_agent_surface_is_the_only_logically_focused_editor() {
         let mut doc = AutoCommit::new();
@@ -5087,11 +5133,8 @@ mod tests {
         assert!(app.composer_main.is_focused());
         assert!(app.focused_agent_surface.is_none());
 
-        adopt_agent_surface(
-            &mut app,
-            &id,
-            vello::kurbo::Rect::new(80.0, 60.0, 600.0, 700.0),
-        );
+        let rect = vello::kurbo::Rect::new(80.0, 60.0, 600.0, 700.0);
+        assert_prepared_ime_survives_adoption(&mut app, &mut doc, &channel, &id, rect);
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
             &mut app,
             Some(&id),
@@ -5122,6 +5165,15 @@ mod tests {
             &mut app,
             Some(&id),
         );
+        assert!(!app.composer_main.is_focused());
+        assert!(app.agent_surfaces[&channel].view.composer_main.is_focused());
+        app.agent_surfaces
+            .get_mut(&channel)
+            .unwrap()
+            .placement
+            .request_app_return();
+        assert!(app.agent_surfaces[&channel].placement.is_return_pending());
+        app.set_composer_focus();
         assert!(!app.composer_main.is_focused());
         assert!(app.agent_surfaces[&channel].view.composer_main.is_focused());
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_ime_source_changed(
