@@ -2031,3 +2031,31 @@ First meaningful stable text remained about 5.33 seconds. The sanitized three-ro
 ledger preserves all pressure stops; this one clip does not qualify general names
 or production shared-dictionary integration. Six native stress cases remain pending
 a pressure-safe window.
+
+
+### Prerecorded physical-laptop baseline
+
+The [physical-laptop ledger](dictation-laptop-qualification.json) records the
+exact remotely built worker and public French fixture on the connected ASUS
+Ryzen 9 7940HS laptop with 32 GiB RAM. The hardware-free, network-free review
+namespace exposes no microphone or user home. Two assigned CPUs occupy different
+physical cores; the decoder thread setting and observed process thread peak are
+recorded separately. The 1 GiB worker address-space cap, 960 MiB guard and bounded
+transient service remain unchanged. The collected service is inactive with no PID.
+
+The debug-worker control completed with 7/20 raw word errors, first draft at
+7.953 seconds, 870556 KiB peak virtual space and 868438016 bytes scope peak.
+No high/max/OOM events occurred. This is materially slower than the roughly
+3.1-second builder control and does not meet the intended interaction latency.
+Native inference kernels already use effective `-O3` in this profile. The full
+release worker built successfully via rcargo in 9m19s, with a separately pinned
+binary receipt. Physical comparison stopped before decoding at fresh headroom
+checks of 7667608 and 7291344 KiB, below the unchanged 8388608 KiB requirement. The inherited raw tools label their
+runs as builder experiments; the separate physical receipt corrects environment
+identity without changing binary provenance. Future probe labels require an
+external hardware receipt rather than assuming a host.
+
+This single exposed prerecorded case does not establish natural speech, live
+capture, microphone denial/removal, 4–8 GiB or Arm acceptance. A fresh scope
+requires at least 8 GiB available host memory; insufficient current headroom
+stops comparison before decoding rather than weakening admission.

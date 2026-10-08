@@ -391,7 +391,7 @@ def main():
             'original_pcm_sha256': original_pcm_sha256, 'synthetic_noise': noise,
             'assembled_language_transition': len({case['language'] for case in cases}) > 1,
             'public_vocabulary': args.vocabulary, 'model_sha256': model['sha256'], 'cpu_affinity_count': len(cpus),
-            'profile': 'builder CPU-affinity constraint; not physical older hardware',
+            'profile': 'CPU-affinity constraint; hardware identity requires an external receipt',
             'audio_seconds': len(pcm)/32000, 'cold_ms': cold_ms,
             'first_draft_seconds': first_draft_seconds,
             'draft_interval_ms': draft_interval_seconds * 1000,
