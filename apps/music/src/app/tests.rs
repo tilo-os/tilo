@@ -4851,6 +4851,42 @@ fn live_album_tracks_are_discoverable_and_queue_through_the_resource_door() {
 fn playback_status_reports_observations_without_mutating_the_library() {
     let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
     let before = app.read_document(|doc| doc.clone().get_heads());
+    let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+    app.surface_mut::<MusicApp>()
+        .absorb_album(&crate::backend::AlbumPage {
+            id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
+            tracks: vec![crate::backend::TrackHit {
+                video_id: track.into(),
+                title: "Observed queue fixture".into(),
+                artist: "Fixture artist".into(),
+                artist_id: None,
+                album: Some("Fixture album".into()),
+                album_id: Some("spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into()),
+                duration_s: 213,
+                cover_url: String::new(),
+            }],
+            ..Default::default()
+        });
+    app.settle();
+    app.effect_on(
+        &crate::actions::track_resource_id(track),
+        &crate::actions::MusicEffect::AddToQueue {
+            track: track.into(),
+        },
+    )
+    .unwrap();
+    app.effect(&crate::actions::MusicEffect::SetVolume { volume: 37 })
+        .unwrap();
+    app.effect_on(
+        "music.player:player",
+        &crate::actions::MusicEffect::ToggleShuffle,
+    )
+    .unwrap();
+    app.effect_on(
+        "music.player:player",
+        &crate::actions::MusicEffect::CycleRepeat,
+    )
+    .unwrap();
     let output = app
         .effect_on(
             "music.player:player",
@@ -4864,6 +4900,11 @@ fn playback_status_reports_observations_without_mutating_the_library() {
     assert_eq!(observed["rendered_buffers"], 0);
     assert!(observed["sink"].is_null());
     assert!(observed["spotify_stage"].is_null());
+    assert_eq!(observed["queue"], serde_json::json!([track]));
+    assert_eq!(observed["queue_index"], 0);
+    assert_eq!(observed["volume"], 37);
+    assert_eq!(observed["shuffle"], true);
+    assert_eq!(observed["repeat"], "all");
     assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);
 }
 
