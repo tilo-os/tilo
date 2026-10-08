@@ -44,7 +44,7 @@ fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
     assert!(index.status.success(), "{index:?}");
     let index = document(&index);
     let topics = index["result"]["topics"].as_array().unwrap();
-    assert_eq!(topics.len(), 4);
+    assert_eq!(topics.len(), 5);
     for topic in topics {
         let id = topic["id"].as_str().unwrap();
         let human = run(&["guide", id]);
@@ -65,13 +65,28 @@ fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
         assert!(human.contains("tilo-app "));
         assert!(human.len() < 3500, "one task should stay small: {id}");
     }
+    for alias in ["undo", "history", "sync"] {
+        let output = run(&["guide", alias, "--json"]);
+        assert!(output.status.success(), "{alias}: {output:?}");
+        assert!(output.stderr.is_empty());
+        let guide = document(&output);
+        assert_eq!(guide["result"]["topic"], "collaborate");
+        assert_eq!(
+            guide["result"]["source"],
+            "docs/developers/tasks/collaborate.md"
+        );
+        let content = guide["result"]["content"].as_str().unwrap();
+        assert!(content.contains("--from-example shared-checklist"));
+        assert!(content.contains("undo_takes_back_only_my_own_actions"));
+        assert!(content.contains("host integration tests"));
+    }
     assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
     let invalid = run(&["guide", "unknown", "--json"]);
     assert!(!invalid.status.success());
     let error = document(&invalid);
     assert_eq!(error["ok"], false);
     let message = error["usage"].as_str().unwrap();
-    for topic in ["start", "actions", "verify", "publish"] {
+    for topic in ["start", "actions", "collaborate", "verify", "publish"] {
         assert!(
             message.contains(topic),
             "usage error suggests {topic}: {error}"

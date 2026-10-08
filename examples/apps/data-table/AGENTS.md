@@ -24,6 +24,8 @@ in the resource runtime. Keep edits on that path so they can be attributed,
 merged and replayed. Device sync uses the host's collaboration transport;
 do not invent app-local identities, a second database or a permission bypass.
 An agent is an ordinary collaborator subject to the same roles.
+For a short, offline workflow with runnable peer-edit and undo tests, use
+`tilo-app guide collaborate --json` (also `guide undo`, `history` or `sync`).
 
 ## Work and verify
 
