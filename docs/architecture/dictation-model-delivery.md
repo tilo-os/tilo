@@ -389,3 +389,38 @@ with all six focused runtime tests. Two headless Wayland journeys also pass one
 corrected UTF-8/history commit and cancellation when field identity changes at
 identical geometry. These are hardware-free protocol and actor checks; they do
 not establish physical microphone or full installed browser acceptance.
+
+## Multilingual model-language correction
+
+[Three additional baseline-worker streams](dictation-native-multilingual.json)
+completed the exposed Mandarin at 20/10 dB noise and fixed automatic French→Spanish
+journeys. Mandarin retained 2/23 raw character errors at both noise levels;
+meaningful stable text arrived at 3698/3754 ms. The assembled French→Spanish clip
+returned 2/49 raw word errors, with meaningful stable text at 3638 ms. These are
+pressured-builder synthetic/assembled development results, not natural speech or
+physical microphone acceptance. No character, number or word-order rewrite was used.
+
+Arabic failed before Ready with the typed unsupported-language error. The reviewed
+adapter rewrites `ar` to `ar-EG`, but this exact immutable model declares `ar:7`
+and `ar-AR:7`. Its generic Spanish `es:3` also differs from `es-ES:2`. The prepared
+correction preserves exact model-declared codes before a fixed alias fallback and
+uses the declared Arabic fallback. Unknown languages still fail closed.
+
+The corrected adapter now compiles and passes six bounded actual-worker streams.
+Arabic reaches Ready and recognition at both synthetic noise levels, with 5/15
+and 7/15 raw word errors at 20/10 dB. Explicit Spanish returns 2/29. English
+retains its exact baseline final at 4/19, and German with the original public
+vocabulary retains its exact baseline final at 0/18. A separate empty-vocabulary
+German run scores 1/18; it is not the matched baseline comparison. Cancellation,
+fresh-session empty silence and unsupported-language refusal also pass on the
+corrected library. These results expose remaining quality gaps; they do not
+establish complete multilingual dictation acceptance.
+
+The first build failed the unchanged PSI guard; a later admitted attempt failed
+inside sccache spawning the compiler. Recovery omitted the cache launcher only
+in this owned build's rules, then restored them. That command change rebuilt the
+native target with two jobs, rather than only one object. Exact source/library
+hashes, failures and guarded scope receipts are retained in the evidence ledger.
+All seven qualification units stopped and the private fixture was removed. No
+shared cache was deleted, no installation occurred, and the PR remains draft and
+held while renderer, production model admission and physical-device work continue.
