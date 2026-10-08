@@ -100,6 +100,25 @@ fn serve_native_sessions(mut control: UnixStream) {
     previous.as_mut().unwrap().assert_cancelled();
 }
 
+fn current_inspection_join(app: &mut App) -> String {
+    let public = app
+        .effect(&crate::resource::TerminalEffect::InspectSession)
+        .unwrap()
+        .value
+        .unwrap();
+    let device = on_tab(app, |terminal| {
+        terminal.device_shell_operation(&ui::floating_surface::DeviceShellOperation::Inspect)
+    })
+    .unwrap();
+    assert_eq!(
+        public, device,
+        "both admitted read routes inspect the same live mounted widget"
+    );
+    let session = public["session"].as_str().unwrap();
+    assert!(!uuid::Uuid::parse_str(session).unwrap().is_nil());
+    session.to_owned()
+}
+
 #[test]
 #[serial_test::serial]
 fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connection() {
@@ -120,6 +139,7 @@ fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connec
         OpenState::Open
     );
     assert_eq!(recorded(&app), Some(SessionTarget::default()));
+    let mut local_sessions = std::collections::BTreeSet::from([current_inspection_join(&mut app)]);
     {
         let _agent = ui::invocation_scope::InvokerScope::enter(
             ui::tilo_actions::ActionInvoker::actor("agent:fixture"),
@@ -154,6 +174,10 @@ fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connec
             .unwrap();
         assert_eq!(inspection["lifecycle"], "open");
         assert_eq!(inspection["input_available"], true);
+        assert!(
+            local_sessions.insert(current_inspection_join(&mut app)),
+            "every actual Default/Host PTY replacement must remint the native-local join token"
+        );
     }
     assert_eq!(recorded(&app), Some(SessionTarget::default()));
     drop(app);

@@ -146,10 +146,153 @@ def marker_returned(content, session, marker):
     return len(hits) == 1 and any(re.fullmatch(r"\[Default [^\]]*\]\$\s*", line) for line in lines[hits[0]+1:])
 
 
-def run(args, vm=None):
+DEVICE_PROVIDER = "terminal-device-shell"
+
+
+def local_session(info):
+    require(isinstance(info, dict) and isinstance(info.get("session"), str), "live local session unavailable")
+    require(re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", info["session"]),
+            "live local session identity invalid")
+    parsed = uuid.UUID(info["session"])
+    require(parsed.int != 0 and str(parsed) == info["session"], "live local session identity invalid")
+    return info["session"]
+
+
+def device_rows(vm, operation, connection=None):
+    rows = [row for row in vm.actions(DEVICE_PROVIDER) if row.get("provider") == DEVICE_PROVIDER]
+    require(len(rows) <= 128, "device-shell discovery exceeds bounded connection inventory")
+    found = []
+    for row in rows:
+        match = re.fullmatch(re.escape(operation) + r"@([1-9][0-9]{0,19})", row.get("id", ""))
+        if match and int(match[1]) < 2**64 and (connection is None or match[1] == connection):
+            require(row.get("contract", {}).get("availability", {}).get("state") == "available",
+                    "owner device-shell operation unavailable")
+            found.append(row)
+    require(len({row["id"] for row in found}) == len(found), "ambiguous device-shell descriptors")
+    if connection is not None:
+        require(len(found) == 1, "exact owner device-shell connection disappeared")
+    return found
+
+
+class JoinedDeviceShell:
+    """Join two live native Inspect paths, never the CRDT's session field or a label."""
+    def __init__(self, owned):
+        self.owned, self.vm, self.out = owned, owned.vm, owned.out
+        self.requested = False
+        owned.guard()
+        expected = local_session(owned.door.call("inspect-session"))
+        matches = []
+        for row in device_rows(self.vm, "inspect"):
+            owned.guard()
+            result = invoke(self.vm, row, {}, self.out, "device-inspect-" + row["id"].split("@")[1])
+            owned.guard()
+            require(local_session(owned.door.call("inspect-session")) == expected,
+                    "fresh Terminal session changed during connection discovery")
+            if isinstance(result, dict) and result.get("session") == expected:
+                matches.append(row["id"].split("@")[1])
+        require(len(matches) == 1, "no unique authenticated connection for the fresh native local session")
+        self.connection, self.session = matches[0], expected
+        self.inspect()
+
+    def inspect(self, *, allow_replacement=False):
+        self.owned.guard()
+        row = device_rows(self.vm, "inspect", self.connection)[0]
+        result = invoke(self.vm, row, {}, self.out, "device-inspect-current")
+        self.owned.guard()
+        app = self.owned.door.call("inspect-session")
+        session = local_session(result)
+        require(local_session(app) == session and app.get("target") == result.get("target")
+                and app.get("lifecycle") == result.get("lifecycle"), "live inspection routes disagree")
+        require(allow_replacement or session == self.session, "device-shell session replaced")
+        return result
+
+    def request(self, approve_host=None):
+        require(not self.requested, "device-shell Request cannot be replayed")
+        self.inspect()
+        row = device_rows(self.vm, "request", self.connection)[0]
+        require(row.get("contract", {}).get("confirmation", {}).get("mode") == "confirm",
+                "device-shell Request confirmation contract changed")
+        self.owned.guard()
+        self.requested = True
+        invoke(self.vm, row, {"confirm": True}, self.out, "request-owned-host")
+        current = self.inspect(allow_replacement=True)
+        if current.get("lifecycle") == "awaiting_allow":
+            require(approve_host is not None, "Host awaits explicit owner consent through the existing permission prompt")
+            self.owned.guard()
+            # The operator supplies its EXISTING prompt decision path. The
+            # helper never guesses a prompt ID or grants a capability itself.
+            approve_host(self.connection, dict(current))
+            self.owned.guard()
+        def opened():
+            info = self.inspect(allow_replacement=True)
+            require(info.get("target") == {"kind": "host"}, "device-shell target changed")
+            require(info.get("lifecycle") not in ("failed", "no_runtime"), "device-shell startup refused")
+            if info.get("lifecycle") != "open":
+                return None
+            require(info.get("input_available") is True and info.get("transport_disconnected") is False,
+                    "device shell has no live PTY")
+            require(local_session(info) != self.session, "Host replacement did not remint the local session")
+            return info
+        info = wait_until(opened, 30)
+        require(info is not None, "owner device shell never became ready")
+        self.session = local_session(info)
+        return info
+
+    def call(self, operation, args=None):
+        require(operation in ("run", "read"), "unsupported device-shell continuation")
+        info = self.inspect()
+        require(info.get("target") == {"kind": "host"} and info.get("lifecycle") == "open",
+                "device shell no longer open")
+        row = device_rows(self.vm, operation, self.connection)[0]
+        values = dict(args or {}, session=self.session)
+        if operation == "run":
+            require(row.get("contract", {}).get("confirmation", {}).get("mode") == "confirm",
+                    "device-shell Run confirmation contract changed")
+            values["confirm"] = True
+        self.owned.guard()
+        result = invoke(self.vm, row, values, self.out, "device-" + operation)
+        self.inspect()
+        return result
+
+
+def host_prompt(value, session):
+    require(isinstance(value, dict) and value.get("session") == session
+            and value.get("truncated") is False and isinstance(value.get("text"), str),
+            "device-shell Read session/output unavailable")
+    # Native visible text includes empty padding rows below the cursor.
+    lines = [line for line in value["text"].splitlines() if line.strip()]
+    return lines[-1] if lines and re.fullmatch(r"[^\r\n]*[$#>]\s*", lines[-1]) else None
+
+
+def host_flow(owned, approve_host=None):
+    joined = JoinedDeviceShell(owned)
+    joined.request(approve_host)
+    # Capture an ACTUAL returned login-shell prompt, not a fabricated Host
+    # caption. Customized prompts without a recognizable terminator refuse.
+    def prompt():
+        return host_prompt(joined.call("read"), joined.session)
+    expected_prompt = wait_until(prompt, 30)
+    require(expected_prompt is not None, "actual Host login-shell prompt not observable")
+    marker = "TILO_OWNER_HOST_" + uuid.uuid4().hex.upper()
+    joined.call("run", {"command": "printf '" + marker + "\\n'"})
+    def returned():
+        value = joined.call("read")
+        require(isinstance(value, dict) and value.get("session") == joined.session
+                and value.get("truncated") is False and isinstance(value.get("text"), str),
+                "device-shell Read changed session/output")
+        lines = value["text"].splitlines()
+        hits = [index for index, line in enumerate(lines) if line == marker]
+        require(len(hits) <= 1, "duplicate Host command marker")
+        return True if len(hits) == 1 and expected_prompt in lines[hits[0]+1:] else None
+    require(wait_until(returned, 30), "Host standalone marker and original returned prompt absent")
+    return {"available": True, "connection": joined.connection, "session": joined.session,
+            "marker": marker, "standalone_output_and_returned_prompt": True}
+
+
+def run(args, vm=None, approve_host=None):
     """Root may supply its existing authorized OwnerVm; never relabel an Agent."""
     out = args.out.resolve()
-    out.mkdir(parents=True, exist_ok=False)
+    out.mkdir(parents=True, exist_ok=False, mode=0o700)
     vm = vm or TiloVm(str(args.binary.resolve()), args.vm, args.slot, out / "commands.log")
     receipt, shown, installed = apps.cohort(vm, args, out)
     layer = shown["slot"]["components"]["apps+runtime"]
@@ -176,6 +319,8 @@ def run(args, vm=None):
         while not marker_returned(door.call("read"), session, marker):
             require(time.monotonic() < deadline, "standalone marker plus returned prompt absent")
             time.sleep(0.5)
+        host = host_flow(owned, approve_host) if getattr(args, "host", False) else {
+            "available": False, "reason": "owner Host acceptance not requested"}
         owned.guard()
         require(first_json(vm.run("--json", "slot", "show"))["slot"] == shown["slot"], "cohort changed during proof")
         proof = {"source": receipt["cohort_source"], "layer": layer,
@@ -183,7 +328,7 @@ def run(args, vm=None):
                  "vm": args.vm, "slot": args.slot, "session": session, "binding": door.bound,
                  "tab": owned.tab, "worker": owned.worker, "process": backing["processes"][0], "marker": marker,
                  "standalone_output_and_returned_prompt": True,
-                 "host": {"available": False, "reason": "no public exact worker-to-device-shell connection binding"},
+                 "host": host,
                  "latency_claim": False}
     finally:
         try:
@@ -204,5 +349,6 @@ if __name__ == "__main__":
         parser.add_argument("--" + name, required=True, type=Path)
     for name in ("vm", "slot"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--host", action="store_true", help="require the existing owner-only device-shell path; never grant consent automatically")
     parser.add_argument("--uid", required=True, type=int)
     run(parser.parse_args())

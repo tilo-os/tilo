@@ -62,7 +62,9 @@ ROOM = "5ba25f73-87c5-447f-a5a6-880dc4249a81"
 def mounted(*ids):
     workers = [dict(room=ROOM, tab_id=tab, surface_id=tab + 100, record_instance=tab + 10,
                     package_id=module.APP, peer_pid=tab + 500, peer_start_time_ticks="1234",
-                    adoption_id="4a2b3a5b-96bc-4c4a-985e-c84b12fffbfc") for tab in ids]
+                    adoption_id="4a2b3a5b-96bc-4c4a-985e-c84b12fffbfc",
+                    certified_checkout=dict(application=module.APP, room=ROOM,
+                        record=f"derived:default@tab:{tab+10:016x}")) for tab in ids]
     return {"chrome": {"session_locked": False, "native_window_provenance": {
                 "method": "authenticated-wayland-peer", "omitted": 0, "windows": workers}},
             "workspace_tree": {"local_app_records": {str(tab): dict(room=ROOM, app_id=module.APP,
@@ -185,6 +187,113 @@ class FreshTerminalGuards(unittest.TestCase):
         for rows in ([dict(row, layer="old")], [row, row], [dict(row, link="elsewhere")]):
             with self.assertRaises(VmError):
                 module.executable({"files": rows}, "new")
+
+
+class OwnerConnectionJoin(unittest.TestCase):
+    FIRST = "11111111-1111-4111-8111-111111111111"
+    NEXT = "22222222-2222-4222-8222-222222222222"
+
+    def fixture(self, sessions):
+        info = dict(session=self.FIRST, target={"kind": "environment"}, lifecycle="open",
+                    input_available=True, transport_disconnected=False)
+        owned = Mock()
+        owned.vm.actions.side_effect = lambda query: [self.row(operation, connection) for connection in sessions
+            for operation in ("inspect", "request", "run", "read")]
+        owned.out = Path("unused")
+        owned.door.call.side_effect = lambda operation: dict(info)
+        def operation(vm, row, args, out, name, **kwargs):
+            kind, connection = row["id"].split("@")
+            if kind == "inspect":
+                return dict(info, session=sessions[connection])
+            if kind == "request":
+                sessions[connection] = self.NEXT
+                info.update(session=self.NEXT, target={"kind": "host"})
+                return dict(info)
+            return dict(session=sessions[connection], status="submitted")
+        return owned, info, operation
+
+    def row(self, operation, connection):
+        return dict(provider=module.DEVICE_PROVIDER, id=operation + "@" + connection,
+                    contract={"availability": {"state": "available"}, "confirmation": {"mode": "confirm"}})
+
+    def test_exact_local_token_selects_one_connection_not_catalog_order(self):
+        owned, info, operation = self.fixture({"7": self.NEXT, "9": self.FIRST})
+        with patch.object(module, "invoke", side_effect=operation):
+            joined = module.JoinedDeviceShell(owned)
+            self.assertEqual(joined.connection, "9")
+            joined.request()
+            self.assertEqual(joined.session, self.NEXT)
+            joined.call("run", {"command": "printf marker"})
+            with self.assertRaises(VmError):
+                joined.request()
+
+    def test_continuation_cannot_replay_request(self):
+        owned, info, operation = self.fixture({"9": self.FIRST})
+        with patch.object(module, "invoke", side_effect=operation) as calls:
+            joined = module.JoinedDeviceShell(owned)
+            joined.request()
+            before = calls.call_count
+            with self.assertRaisesRegex(VmError, "unsupported device-shell continuation"):
+                joined.call("request", {"confirm": True})
+            self.assertEqual(calls.call_count, before)
+
+    def test_missing_or_ambiguous_local_token_cannot_request_host(self):
+        for sessions in ({"7": self.NEXT}, {"7": self.FIRST, "9": self.FIRST}, {}):
+            owned, info, operation = self.fixture(sessions)
+            with patch.object(module, "invoke", side_effect=operation) as invocations, self.assertRaises(VmError):
+                module.JoinedDeviceShell(owned)
+            self.assertTrue(all(call.args[1]["id"].startswith("inspect@") for call in invocations.call_args_list))
+
+    def test_replaced_session_or_worker_refuses_before_run(self):
+        sessions = {"9": self.FIRST}
+        owned, info, operation = self.fixture(sessions)
+        with patch.object(module, "invoke", side_effect=operation) as invocations:
+            joined = module.JoinedDeviceShell(owned)
+            joined.request()
+            info["session"] = sessions["9"] = self.FIRST
+            with self.assertRaises(VmError):
+                joined.call("run", {"command": "printf marker"})
+            self.assertFalse(any(call.args[1]["id"].startswith("run@") for call in invocations.call_args_list))
+            owned.guard.side_effect = VmError("native PID/start/adoption changed")
+            with self.assertRaises(VmError):
+                joined.call("run", {"command": "printf marker"})
+
+    def test_awaiting_consent_never_grants_or_runs_without_operator(self):
+        sessions = {"9": self.FIRST}
+        owned, info, operation = self.fixture(sessions)
+        def pending(vm, row, args, out, name, **kwargs):
+            if row["id"] == "request@9":
+                info.update(target={"kind": "host"}, lifecycle="awaiting_allow")
+                return dict(info)
+            return operation(vm, row, args, out, name, **kwargs)
+        with patch.object(module, "invoke", side_effect=pending) as calls:
+            joined = module.JoinedDeviceShell(owned)
+            with self.assertRaisesRegex(VmError, "explicit owner consent"):
+                joined.request()
+            self.assertFalse(any(call.args[1]["id"].startswith("run@") for call in calls.call_args_list))
+            self.assertTrue(all(call.args[1]["provider"] == module.DEVICE_PROVIDER for call in calls.call_args_list))
+
+    def test_actual_host_prompt_ignores_only_empty_terminal_padding(self):
+        value = dict(session=self.FIRST, truncated=False, text="startup\nuser@host ~$ \n\n\n")
+        self.assertEqual(module.host_prompt(value, self.FIRST), "user@host ~$ ")
+        self.assertIsNone(module.host_prompt(dict(value, text="still starting\n\n"), self.FIRST))
+        for invalid in (dict(value, session=self.NEXT), dict(value, truncated=True)):
+            with self.assertRaises(VmError):
+                module.host_prompt(invalid, self.FIRST)
+
+    def test_crdt_or_caption_does_not_supply_native_token(self):
+        for value in ({"local_session": self.FIRST}, {"session": None, "title": self.FIRST}, {"session": "not-a-uuid"},
+                      {"session": "00000000-0000-0000-0000-000000000000"}):
+            with self.assertRaises(VmError):
+                module.local_session(value)
+
+    def test_agent_refusal_is_not_replaced_with_generic_host_action(self):
+        owned, info, operation = self.fixture({"9": self.FIRST})
+        with patch.object(module, "invoke", side_effect=VmError("owner authorization required")) as effects:
+            with self.assertRaises(VmError):
+                module.JoinedDeviceShell(owned)
+        self.assertEqual(effects.call_count, 1)
+        self.assertEqual(effects.call_args.args[1]["provider"], module.DEVICE_PROVIDER)
 
 
 if __name__ == '__main__':
