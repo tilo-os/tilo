@@ -451,6 +451,30 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 })
                 self.assertNotIn(private, path.read_text())
 
+    def test_terminal_refusal_diagnostic_whitelists_codes_not_error_payloads(self):
+        original = "00000000-0000-0000-0000-000000000021"
+        private = "private prompt result error and output"
+        receipt = {"broker_invocation_id": 37, "update": {
+            "invocation": original, "state": "accepted"}}
+        for code in ["unknown_action", "invalid_arguments", "action_failed", private, None]:
+            with tempfile.TemporaryDirectory() as directory:
+                path = pathlib.Path(directory) / "closed.json"
+                with patch.object(PROOF, "wait_for", side_effect=lambda _l, fn, _p: fn()), \
+                        patch.object(PROOF, "call", return_value={"err": {
+                            "code": code, "message": private}}), \
+                        self.assertRaisesRegex(RuntimeError, "terminal observation was refused"):
+                    PROOF.wait_terminal("socket", {"receipt": receipt}, None, diagnostic_path=path)
+                self.assertEqual(json.loads(path.read_text()), {
+                    "original_invocation": original,
+                    "broker_invocation_id": 37,
+                    "states_seen": {"accepted": 1},
+                    "original_unchanged": True,
+                    "status_refusal": code if code in {
+                        "unknown_action", "invalid_arguments", "action_failed"
+                    } else "other",
+                })
+                self.assertNotIn(private, path.read_text())
+
     def test_reply_timeout_captures_fresh_scene_without_masking_failure(self):
         timeout = PROOF.ProofTimeout("original timeout")
         with tempfile.TemporaryDirectory() as directory:

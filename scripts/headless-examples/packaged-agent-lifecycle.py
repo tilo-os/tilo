@@ -2254,9 +2254,10 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
     states = {}
     broker_identity = None
     unchanged = True
+    status_refusal = None
 
     def completed():
-        nonlocal receipt, broker_identity, unchanged
+        nonlocal receipt, broker_identity, unchanged, status_refusal
         update = receipt.get("update")
         if not isinstance(update, dict) or update.get("invocation") != original:
             unchanged = False
@@ -2280,6 +2281,11 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
         broker_identity = broker_id if broker_id <= 2**64 - 1 else None
         response = call(socket, {"op": "actions_status", "invocation_id": broker_id})
         if "err" in response:
+            error = response.get("err")
+            code = error.get("code") if isinstance(error, dict) else None
+            status_refusal = code if code in {
+                "unknown_action", "invalid_arguments", "action_failed"
+            } else "other"
             raise RuntimeError("ordinary action terminal observation was refused")
         receipt = response.get("answer", {}).get("receipt")
         if not isinstance(receipt, dict):
@@ -2288,7 +2294,7 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
 
     try:
         return wait_for("original ordinary action terminal success", completed, process)
-    except ProofTimeout as error:
+    except (ProofTimeout, RuntimeError) as error:
         if diagnostic_path is not None:
             # Whitelist only inert correlation and closed lifecycle counters.
             # Never serialize a receipt, result, error, prompt or action text.
@@ -2296,12 +2302,15 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
                 r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", original
             ) else None
             try:
-                diagnostic_path.write_text(json.dumps({
+                diagnostic = {
                     "original_invocation": safe_original,
                     "broker_invocation_id": broker_identity,
                     "states_seen": dict(sorted(states.items())),
                     "original_unchanged": unchanged,
-                }, indent=2) + "\n")
+                }
+                if status_refusal is not None:
+                    diagnostic["status_refusal"] = status_refusal
+                diagnostic_path.write_text(json.dumps(diagnostic, indent=2) + "\n")
             except OSError:
                 error.add_note("closed terminal diagnostic could not be written")
         raise
@@ -4765,7 +4774,8 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             (output / "agent-conversation-open-ack.json").write_text(json.dumps(open_ack, indent=2) + "\n")
             try:
                 opened = wait_terminal(socket, open_ack, shell,
-                                       public_failure_path=output / "failed-agent-conversation-open-terminal.json")
+                                       public_failure_path=output / "failed-agent-conversation-open-terminal.json",
+                                       diagnostic_path=output / "agent-conversation-open-observation.json")
             except RuntimeError:
                 observed = [public_action_observation(row) for row in actions(socket)
                             if row.get("application") == "so.tilo.chat"
