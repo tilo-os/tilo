@@ -518,6 +518,19 @@ its new timing stream. Inspect returns the current fixed options and their
 scope. Agent-scoped, sandboxed, other-account and locked-session calls cannot
 configure this owner-only surface. No application content or typed keys are
 recorded by these timing options.
+For compositor whole-submission GPU timing, enable `gpu_timestamps` through the
+existing greeter's next-sign-in diagnostics before the compositor creates its
+device. Active-session configure does not renegotiate renderer features. Actual
+`FRAME-GPU-SUBMISSION` rows report complete, incomplete, unsupported, disabled or missing
+coverage, with exact presenter serial/revision and renderer/recording identities.
+The nested output interval includes the actual appended scanout blit; never add it
+to the containing recording envelope. Encoder queries require actual adapter/device
+support. These device-clock intervals exclude pre-execution queue/relay delay and
+query readback copies; CPU fence wait and physical KMS outcome remain separate.
+Frames with a separate backdrop-blur queue submission report incomplete envelope
+coverage. A desktop-only restart preserves the login wrapper environment; configure
+the existing greeter before a normal PAM sign-in to initialize timestamp features.
+
 ### Reviewing a Tilo package in Store
 
 Store accepts `.tapp` files through the normal file-open handoff, its shared

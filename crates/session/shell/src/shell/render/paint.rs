@@ -158,6 +158,63 @@ pub struct BridgeAdapterInfo {
     pub drm_device: Option<ui::dmabuf_import::VulkanDrmDeviceIdentity>,
 }
 
+/// Actual completed recording intervals for this frame; nested output time is not additive.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuSubmissionTiming {
+    pub renderer_generation: Option<u64>,
+    pub encoder_supported: bool,
+    pub encoder_enabled: bool,
+    pub external_queue_work: bool,
+    pub first_recording: Option<u64>,
+    pub last_recording: Option<u64>,
+    pub recordings: u64,
+    pub measured: u64,
+    pub stale: u64,
+    pub recording_ns: u64,
+    pub post_render_ns: u64,
+}
+
+impl GpuSubmissionTiming {
+    fn observe(
+        &mut self,
+        previous: Option<u64>,
+        latest: Option<u64>,
+        sample: Option<vello::GpuTimestampSample>,
+    ) {
+        let low = previous.unwrap_or(0);
+        if let Some(high) = latest.filter(|&high| high > low) {
+            self.first_recording
+                .get_or_insert_with(|| low.saturating_add(1));
+            self.last_recording = Some(high);
+            self.recordings = self.recordings.saturating_add(high.saturating_sub(low));
+            if let Some(sample) = sample {
+                if sample.submission_id > low && sample.submission_id <= high {
+                    if let Some(envelope) = sample.recording_envelope {
+                        self.measured = self.measured.saturating_add(1);
+                        self.recording_ns = self.recording_ns.saturating_add(envelope.recording_ns);
+                        self.post_render_ns =
+                            self.post_render_ns.saturating_add(envelope.post_render_ns);
+                    }
+                } else {
+                    self.stale = self.stale.saturating_add(1);
+                }
+            }
+        } else if sample.is_some() {
+            self.stale = self.stale.saturating_add(1);
+        }
+    }
+
+    pub fn complete(self) -> bool {
+        self.encoder_supported
+            && self.encoder_enabled
+            && self.renderer_generation.is_some()
+            && !self.external_queue_work
+            && self.recordings > 0
+            && self.recordings == self.measured
+            && self.stale == 0
+    }
+}
+
 /// Actual rendering decisions for one completed bridge transaction, not estimates
 /// inferred from the caller's damage request. Available only with phase timing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,6 +237,8 @@ pub struct BridgePhaseTiming {
     pub submit_us: u128,
     /// Optional nested CPU boundaries; never add these again to `total_us`.
     pub submission_cpu: Option<vello::submission_timing::SubmissionTiming>,
+    /// GPU intervals exclude pre-execution queue/relay delay and query readback copies.
+    pub submission_gpu: Option<GpuSubmissionTiming>,
     /// Sparse GPU-only completion marker, outside the existing submit aggregate.
     pub sparse_marker_submit_us: Option<u128>,
     /// Blocking completion time for GPU rendering plus the texture copy, followed by map setup;
@@ -1219,6 +1278,18 @@ impl RetainedGpuTarget {
                 height: self.size.1,
                 antialiasing_method: AaConfig::Area,
             };
+            let previous_gpu_recording = timing
+                .as_ref()
+                .and_then(|_| self.renderer.gpu_timestamp_latest_submission_id());
+            if let Some(timing) = timing.as_deref_mut() {
+                timing
+                    .submission_gpu
+                    .get_or_insert_default()
+                    .external_queue_work |= self
+                    .backdrop
+                    .as_deref()
+                    .is_some_and(|frame| !frame.is_empty());
+            }
             self.prepare_backdrop(timing.as_deref_mut());
             let cpu_scope = vello::submission_timing::Scope::begin(timing.is_some());
             if let Some(pass) = self.hdr_pass.as_ref() {
@@ -1369,6 +1440,16 @@ impl RetainedGpuTarget {
                 timing.completed_readback_map_us = timing
                     .completed_readback_map_us
                     .saturating_add(started.elapsed().as_micros());
+            }
+            if let Some(timing) = timing.as_deref_mut() {
+                let latest = self.renderer.gpu_timestamp_latest_submission_id();
+                let sample = self.renderer.take_gpu_timestamp_sample();
+                let gpu = timing.submission_gpu.get_or_insert_default();
+                gpu.encoder_enabled = self
+                    .device
+                    .features()
+                    .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+                gpu.observe(previous_gpu_recording, latest, sample);
             }
             let settle_started = timing.as_ref().map(|_| Instant::now());
             let settled = self.settle_counters(policy).and_then(|overflowed| {
@@ -2512,10 +2593,15 @@ impl VelloDrmBridge {
                 self.xrgb_history_generation,
             );
         }
+        self.bind_submission_gpu(timing.as_mut());
         self.last_phase_timing = rendered.as_ref().ok().and(timing);
         let (_, admitted) = rendered?;
-        Ok(GpuFrameStats {
-            revision: damage.revision,
+        Ok(self.imported_frame_stats(damage.revision, admitted))
+    }
+
+    fn imported_frame_stats(&self, revision: u64, admitted: bool) -> GpuFrameStats {
+        GpuFrameStats {
+            revision,
             damage_admitted: admitted,
             render_attempts: self.target.last_render_attempts,
             sparse_attempts: self.target.last_sparse_render_attempts,
@@ -2523,7 +2609,19 @@ impl VelloDrmBridge {
             completion_markers: self.target.completion_markers,
             framebuffer_copy_bytes: 0,
             framebuffer_staging_bytes: 0,
-        })
+        }
+    }
+
+    fn bind_submission_gpu(&self, timing: Option<&mut BridgePhaseTiming>) {
+        if let Some(gpu) = timing.and_then(|timing| timing.submission_gpu.as_mut()) {
+            gpu.renderer_generation = self.xrgb_history_generation;
+            gpu.encoder_supported = self.context.devices.get(self.dev_id).is_some_and(|handle| {
+                handle
+                    .adapter
+                    .features()
+                    .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+            });
+        }
     }
 
     fn next_xrgb_history_generation() -> Option<u64> {
@@ -8472,6 +8570,125 @@ mod tests {
             width,
             height,
             stride: width.saturating_mul(4),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn direct_scanout_pixels(
+        bridge: &VelloDrmBridge,
+        target: &ui::dmabuf_import::ImportedRenderTarget,
+    ) -> Vec<u8> {
+        let (buffer, stride) =
+            VelloDrmBridge::allocate_staging(&bridge.target.device, target.width, target.height);
+        let mut encoder = bridge
+            .target
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        VelloDrmBridge::append_full_copy(
+            &mut encoder,
+            &target.texture,
+            &buffer,
+            stride,
+            target.width,
+            target.height,
+        );
+        bridge.target.queue.submit([encoder.finish()]);
+        let mapped = VelloDrmBridge::map_device_readback(&bridge.target.device, &buffer).unwrap();
+        let pixels = mapped
+            .chunks(stride as usize)
+            .take(target.height as usize)
+            .flat_map(|row| {
+                row[..usize::try_from(target.width)
+                    .unwrap()
+                    .checked_mul(4)
+                    .unwrap()]
+                    .iter()
+                    .copied()
+            })
+            .collect();
+        drop(mapped);
+        buffer.unmap();
+        pixels
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_gpu_submission_envelope_covers_real_scanout_blit_and_preserves_pixels() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("VELLO_GPU_TIMESTAMPS", "0");
+        env.set("VELLO_GPU_DISPATCH_TIMESTAMPS", "0");
+        let mut ordinary = required_bridge(128, 96);
+        assert!(
+            !ordinary
+                .target
+                .device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+        );
+        let plain = direct_target(&ordinary, 128, 96);
+        let scene = rect_scene(128, 96, Color::from_rgb8(255, 0, 0));
+        let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+        ordinary
+            .paint_imported_until(
+                &scene,
+                version(1, None, None),
+                &plain,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .unwrap();
+        assert!(ordinary.last_phase_timing().is_none());
+        let expected = direct_scanout_pixels(&ordinary, &plain);
+        assert!(
+            expected
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 255, 255])
+        );
+        drop(ordinary);
+        env.set("VELLO_GPU_TIMESTAMPS", "1");
+        let mut observed = required_bridge(128, 96);
+        assert!(
+            observed
+                .target
+                .device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
+            "qualification requires actual encoder query support"
+        );
+        observed.set_phase_timing_enabled(true);
+        let destination = direct_target(&observed, 128, 96);
+        let mut prior = observed
+            .target
+            .renderer
+            .gpu_timestamp_latest_submission_id()
+            .unwrap_or(0);
+        for revision in 1..=3 {
+            observed
+                .paint_imported_until(
+                    &scene,
+                    version(revision, None, None),
+                    &destination,
+                    tilo_test_env::hang_deadline(),
+                    white,
+                    &[],
+                )
+                .unwrap();
+            let gpu = observed
+                .last_phase_timing()
+                .unwrap()
+                .submission_gpu
+                .unwrap();
+            assert!(
+                gpu.complete(),
+                "actual exact-completion query ownership must be complete: {gpu:?}"
+            );
+            assert_eq!(gpu.renderer_generation, observed.xrgb_history_generation);
+            assert_eq!(gpu.first_recording, Some(prior + 1));
+            assert!(gpu.recording_ns >= gpu.post_render_ns && gpu.post_render_ns > 0);
+            assert_eq!(gpu.recordings, gpu.measured);
+            prior = gpu.last_recording.unwrap();
+            assert_eq!(direct_scanout_pixels(&observed, &destination), expected);
         }
     }
 

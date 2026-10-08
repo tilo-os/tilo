@@ -90,7 +90,8 @@ pub(crate) struct WgpuEngine {
 }
 
 const GPU_TIMESTAMP_PASS_LIMIT: u32 = 64;
-const GPU_TIMESTAMP_QUERY_COUNT: u32 = GPU_TIMESTAMP_PASS_LIMIT * 2;
+const GPU_TIMESTAMP_PASS_QUERY_COUNT: u32 = GPU_TIMESTAMP_PASS_LIMIT * 2;
+const GPU_TIMESTAMP_QUERY_COUNT: u32 = GPU_TIMESTAMP_PASS_QUERY_COUNT + 4;
 const GPU_TIMESTAMP_BYTES: u64 = GPU_TIMESTAMP_QUERY_COUNT as u64 * 8;
 const CPU_PATHTAG_REUSE_SLOT_BYTES: usize = 1 << 20;
 const CPU_PATHTAG_REDUCED_LABEL: &str = "vello.reduced_buf";
@@ -362,6 +363,7 @@ enum TimestampMapState {
     Pending {
         submission_id: u64,
         pass_count: u32,
+        envelope: bool,
         receiver: Receiver<std::result::Result<(), wgpu::BufferAsyncError>>,
     },
     Ready(GpuTimestampSample),
@@ -384,6 +386,8 @@ struct TimestampResources {
     timestamp_period_ns: f32,
     pass_count: u32,
     overflowed: bool,
+    encoder_timestamps: bool,
+    envelope_written: bool,
     next_submission_id: u64,
     latest_submission_id: Option<u64>,
     map_state: TimestampMapState,
@@ -680,6 +684,10 @@ impl GpuTimestampTracker {
                 timestamp_period_ns: 0.0,
                 pass_count: 0,
                 overflowed: false,
+                encoder_timestamps: device
+                    .features()
+                    .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS),
+                envelope_written: false,
                 next_submission_id: 0,
                 latest_submission_id: None,
                 map_state: TimestampMapState::Idle,
@@ -705,7 +713,33 @@ impl GpuTimestampTracker {
         {
             resources.pass_count = 0;
             resources.overflowed = false;
+            resources.envelope_written = false;
             resources.timestamp_period_ns = queue.get_timestamp_period();
+        }
+    }
+
+    fn begin_envelope(&mut self, encoder: &mut CommandEncoder) {
+        if let Self::Active(resources) = self
+            && resources.encoder_timestamps
+            && matches!(resources.map_state, TimestampMapState::Idle)
+        {
+            encoder.write_timestamp(&resources.query_set, GPU_TIMESTAMP_PASS_QUERY_COUNT);
+            resources.envelope_written = true;
+        }
+    }
+
+    fn envelope_boundary(&self, encoder: &mut CommandEncoder, post_render_begin: bool) {
+        if let Self::Active(resources) = self
+            && resources.envelope_written
+            && matches!(resources.map_state, TimestampMapState::Idle)
+        {
+            let base = GPU_TIMESTAMP_PASS_QUERY_COUNT;
+            if post_render_begin {
+                encoder.write_timestamp(&resources.query_set, base + 2);
+            } else {
+                encoder.write_timestamp(&resources.query_set, base + 3);
+                encoder.write_timestamp(&resources.query_set, base + 1);
+            }
         }
     }
 
@@ -746,14 +780,30 @@ impl GpuTimestampTracker {
             };
             return false;
         }
-        let byte_count = u64::from(resources.pass_count).saturating_mul(16);
+        let pass_bytes = u64::from(resources.pass_count).saturating_mul(16);
+
         encoder.resolve_query_set(
             &resources.query_set,
             0..resources.pass_count.saturating_mul(2),
             &resources.resolve,
             0,
         );
-        encoder.copy_buffer_to_buffer(&resources.resolve, 0, &resources.read, 0, byte_count);
+        if resources.envelope_written {
+            encoder.resolve_query_set(
+                &resources.query_set,
+                GPU_TIMESTAMP_PASS_QUERY_COUNT..GPU_TIMESTAMP_QUERY_COUNT,
+                &resources.resolve,
+                u64::from(GPU_TIMESTAMP_PASS_QUERY_COUNT) * 8,
+            );
+            encoder.copy_buffer_to_buffer(
+                &resources.resolve,
+                u64::from(GPU_TIMESTAMP_PASS_QUERY_COUNT) * 8,
+                &resources.read,
+                pass_bytes,
+                32,
+            );
+        }
+        encoder.copy_buffer_to_buffer(&resources.resolve, 0, &resources.read, 0, pass_bytes);
         true
     }
 
@@ -774,13 +824,14 @@ impl GpuTimestampTracker {
         let (sender, receiver) = mpsc::channel();
         resources
             .read
-            .slice(..u64::from(pass_count).saturating_mul(16))
+            .slice(..timestamp_read_bytes(pass_count, resources.envelope_written))
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = sender.send(result);
             });
         resources.map_state = TimestampMapState::Pending {
             submission_id,
             pass_count,
+            envelope: resources.envelope_written,
             receiver,
         };
     }
@@ -792,6 +843,7 @@ impl GpuTimestampTracker {
         let TimestampMapState::Pending {
             submission_id,
             pass_count,
+            envelope,
             ..
         } = &resources.map_state
         else {
@@ -799,6 +851,7 @@ impl GpuTimestampTracker {
         };
         let submission_id = *submission_id;
         let pass_count = *pass_count;
+        let envelope = *envelope;
         let result = match &resources.map_state {
             TimestampMapState::Pending { receiver, .. } => receiver.try_recv(),
             _ => unreachable!(),
@@ -807,15 +860,16 @@ impl GpuTimestampTracker {
             Ok(Ok(())) => {
                 let bytes = resources
                     .read
-                    .slice(..u64::from(pass_count).saturating_mul(16))
+                    .slice(..timestamp_read_bytes(pass_count, envelope))
                     .get_mapped_range()
                     .to_vec();
                 resources.read.unmap();
-                resources.map_state = decode_timestamp_sample(
+                resources.map_state = decode_recording_sample(
                     submission_id,
                     pass_count,
                     resources.timestamp_period_ns,
                     bytes,
+                    envelope,
                 )
                 .map(TimestampMapState::Ready)
                 .unwrap_or(TimestampMapState::Invalid { submission_id });
@@ -1102,6 +1156,53 @@ fn mark_dispatch_timestamp_invalid(resources: &mut DispatchTimestampResources, s
     }
 }
 
+fn timestamp_read_bytes(pass_count: u32, envelope: bool) -> u64 {
+    u64::from(pass_count) * 16 + if envelope { 32 } else { 0 }
+}
+
+fn decode_recording_sample(
+    submission_id: u64,
+    pass_count: u32,
+    period: f32,
+    mut bytes: Vec<u8>,
+    envelope: bool,
+) -> Option<GpuTimestampSample> {
+    if bytes.len() != usize::try_from(timestamp_read_bytes(pass_count, envelope)).ok()? {
+        return None;
+    }
+    let extra = bytes.split_off(pass_count as usize * 16);
+    let mut sample = decode_timestamp_sample(submission_id, pass_count, period, bytes)?;
+    if envelope {
+        let ticks: Vec<_> = extra
+            .chunks_exact(8)
+            .map(|value| u64::from_le_bytes(value.try_into().expect("eight-byte timestamp")))
+            .collect();
+        let [start, end, post_start, post_end] = ticks.as_slice() else {
+            return None;
+        };
+        if start > post_start || post_start > post_end || post_end > end {
+            return None;
+        }
+        sample.recording_envelope = Some(crate::GpuRecordingEnvelope {
+            recording_ns: std::time::Duration::try_from_secs_f64(
+                (end - start) as f64 * f64::from(period) / 1_000_000_000.0,
+            )
+            .ok()?
+            .as_nanos()
+            .try_into()
+            .ok()?,
+            post_render_ns: std::time::Duration::try_from_secs_f64(
+                (post_end - post_start) as f64 * f64::from(period) / 1_000_000_000.0,
+            )
+            .ok()?
+            .as_nanos()
+            .try_into()
+            .ok()?,
+        });
+    }
+    Some(sample)
+}
+
 fn decode_timestamp_sample(
     submission_id: u64,
     pass_count: u32,
@@ -1137,6 +1238,7 @@ fn decode_timestamp_sample(
         span_ns: span_ticks as f64 * f64::from(timestamp_period_ns),
         summed_pass_ns: summed_pass_ticks as f64 * f64::from(timestamp_period_ns),
         timestamp_bytes,
+        recording_envelope: None,
     })
 }
 
@@ -2259,7 +2361,8 @@ impl WgpuEngine {
         F: FnOnce(&mut CommandEncoder),
         G: FnOnce() -> bool,
     {
-        let command_timing = crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Commands);
+        let command_timing =
+            crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Commands);
         let cpu_pathtag_reuse_active = self.cpu_pathtag_reuse_active();
         let cpu_metadata_active = self.cpu_metadata_active();
         let cpu_draw_prefix_active = self.cpu_draw_prefix_active();
@@ -2271,6 +2374,7 @@ impl WgpuEngine {
 
         let mut encoder =
             device.create_command_encoder(&CommandEncoderDescriptor { label: Some(label) });
+        self.gpu_timestamps.begin_envelope(&mut encoder);
         #[cfg(feature = "wgpu-profiler")]
         let query = profiler.begin_query(label, &mut encoder);
         let mut command_index = 0usize;
@@ -2737,14 +2841,17 @@ impl WgpuEngine {
         #[cfg(feature = "wgpu-profiler")]
         profiler.end_query(&mut encoder, query);
         // TODO: This only actually needs to happen once per frame, but run_recording happens two or three times
+        self.gpu_timestamps.envelope_boundary(&mut encoder, true);
+        post_render(&mut encoder);
+        self.gpu_timestamps.envelope_boundary(&mut encoder, false);
         #[cfg(feature = "wgpu-profiler")]
         profiler.resolve_queries(&mut encoder);
         let timestamp_readback = self.gpu_timestamps.finish_recording(&mut encoder);
         let dispatch_timestamp_readback =
             self.gpu_dispatch_timestamps.finish_recording(&mut encoder);
-        post_render(&mut encoder);
         drop(command_timing);
-        let finish_timing = crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Finish);
+        let finish_timing =
+            crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Finish);
         let command_buffer = encoder.finish();
         drop(finish_timing);
         if !before_submit() {
@@ -2756,7 +2863,8 @@ impl WgpuEngine {
             self.gpu_dispatch_timestamps = GpuDispatchTimestampTracker::Disabled;
             return Err(Error::SubmissionAborted);
         }
-        let submit_timing = crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Submit);
+        let submit_timing =
+            crate::submission_timing::Boundary::start(crate::submission_timing::Stage::Submit);
         let submission = queue.submit(Some(command_buffer));
         drop(submit_timing);
         if timestamp_readback {
@@ -4132,6 +4240,26 @@ mod tests {
     }
 
     #[test]
+    fn timestamp_recording_decoder_keeps_output_nested_and_rejects_partial_or_reordered_bounds() {
+        let bytes: Vec<_> = [12u64, 16, 10, 40, 20, 35].into_iter().flat_map(u64::to_le_bytes).collect();
+        let sample = decode_recording_sample(7, 1, 1.0, bytes.clone(), true).unwrap();
+        assert_eq!(sample.submission_id, 7);
+        assert_eq!(sample.summed_pass_ns, 4.0);
+        let envelope = sample.recording_envelope.unwrap();
+        assert_eq!(envelope.recording_ns, 30);
+        assert_eq!(envelope.post_render_ns, 15);
+        assert_eq!(sample.timestamp_bytes.len(), 16, "pass decoder sees no overlapping envelope");
+        let plain = decode_recording_sample(8, 1, 1.0, bytes[..16].to_vec(), false).unwrap();
+        assert!(plain.recording_envelope.is_none());
+        for bad in [[12u64, 16, 10, 19, 20, 35], [12, 16, 21, 40, 20, 35], [12, 16, 10, 40, 35, 20]] {
+            let bad = bad.into_iter().flat_map(u64::to_le_bytes).collect();
+            assert!(decode_recording_sample(7, 1, 1.0, bad, true).is_none());
+        }
+        assert!(decode_recording_sample(7, 1, 1.0, bytes[..47].to_vec(), true).is_none());
+        assert!(decode_recording_sample(7, 1, f32::NAN, bytes, true).is_none());
+    }
+
+    #[test]
     fn timestamp_decoder_reports_span_and_sum_for_complete_monotonic_pairs() {
         let bytes = [10u64, 16, 20, 29]
             .into_iter()
@@ -4158,6 +4286,7 @@ mod tests {
         assert!(!timestamp_slot_available(&TimestampMapState::Pending {
             submission_id: 1,
             pass_count: 1,
+            envelope: false,
             receiver,
         }));
         assert!(timestamp_slot_available(&TimestampMapState::MapFailed {
@@ -4178,6 +4307,7 @@ mod tests {
 
     fn dispatch_timestamp_source(pairs: &[u64]) -> GpuTimestampSample {
         GpuTimestampSample {
+            recording_envelope: None,
             submission_id: 9,
             pass_count: u32::try_from(pairs.len().saturating_div(2)).unwrap_or(0),
             span_ticks: 0,

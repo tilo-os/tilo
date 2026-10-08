@@ -374,12 +374,12 @@ impl Default for PhaseWindow {
 }
 
 impl PhaseWindow {
-    fn record(&mut self, timing: paint::BridgePhaseTiming) {
+    fn record(&mut self, timing: &paint::BridgePhaseTiming) {
         self.frames = self.frames.saturating_add(1);
         self.accumulate(timing);
     }
 
-    fn accumulate(&mut self, timing: paint::BridgePhaseTiming) {
+    fn accumulate(&mut self, timing: &paint::BridgePhaseTiming) {
         self.submit_us = self.submit_us.saturating_add(timing.submit_us);
         self.gpu_readback_map_us = self
             .gpu_readback_map_us
@@ -395,7 +395,7 @@ impl PhaseWindow {
 
     fn record_legacy_attempt(
         &mut self,
-        timing: Option<paint::BridgePhaseTiming>,
+        timing: Option<&paint::BridgePhaseTiming>,
         bridge_us: u128,
         scanout_us: u128,
     ) {
@@ -428,7 +428,7 @@ impl PhaseWindow {
         &mut self,
         render_us: u128,
         sparse: bool,
-        timing: Option<paint::BridgePhaseTiming>,
+        timing: Option<&paint::BridgePhaseTiming>,
     ) {
         if let Some(timing) = timing {
             self.accumulate(timing);
@@ -512,8 +512,8 @@ mod phase_window_tests {
         // Phase `phase_window_accumulates_completed_frame_costs`.
         {
             let mut window = PhaseWindow::default();
-            window.record(timing(2));
-            window.record(timing(3));
+            window.record(&timing(2));
+            window.record(&timing(3));
 
             assert_eq!(window.frames, 2);
             assert_eq!(window.direct_frames, 0);
@@ -534,7 +534,7 @@ mod phase_window_tests {
         {
             let mut window = PhaseWindow::default();
             window.record_legacy_attempt(None, 41, 7);
-            window.record_legacy_attempt(Some(timing(2)), 23, 5);
+            window.record_legacy_attempt(Some(&timing(2)), 23, 5);
 
             assert_eq!(window.frames, 2);
             assert_eq!(window.unprofiled_frames, 1);
@@ -555,7 +555,7 @@ mod phase_window_tests {
             window.record_direct_submit(
                 7_000,
                 false,
-                Some(paint::BridgePhaseTiming {
+                Some(&paint::BridgePhaseTiming {
                     submit_us: 2,
                     completed_readback_map_us: 4,
                     settle_us: 6,
@@ -622,7 +622,7 @@ mod phase_window_tests {
         // Phase `phase_window_reset_discards_the_previous_sample_without_moving_its_clock`.
         {
             let mut window = PhaseWindow::default();
-            window.record(timing(7));
+            window.record(&timing(7));
             let now = Instant::now();
             window.reset(now);
 
@@ -981,8 +981,11 @@ impl DrmPresenter {
                 .paint
                 .as_ref()
                 .and_then(paint::VelloDrmBridge::last_phase_timing);
-            self.phase_window
-                .record_legacy_attempt(timing, sample.bridge_us, sample.scanout_us);
+            self.phase_window.record_legacy_attempt(
+                timing.as_ref(),
+                sample.bridge_us,
+                sample.scanout_us,
+            );
         }
         let now = Instant::now();
         // A production session reports bounded aggregates. Explicit profiling
@@ -1737,7 +1740,7 @@ fn paint_scanouts(
                                                 render_us,
                                                 stats.sparse_attempts > 0
                                                     && stats.full_attempts == 0,
-                                                bridge.last_phase_timing(),
+                                                bridge.last_phase_timing().as_ref(),
                                             );
                                         }
                                         let degradation = if want_hdr {
