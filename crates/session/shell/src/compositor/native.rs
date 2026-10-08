@@ -2822,6 +2822,15 @@ struct FrameBuilderControlState<'a> {
 }
 
 impl FrameBuilderControlState<'_> {
+    fn insert_primary_preedit_route(&self, row: &mut serde_json::Value, surface: u64) {
+        if let Some(child) = self
+            .seat
+            .and_then(|seat| seat.floating_preedit_child_for(surface))
+        {
+            insert_preedit_route(row, "floating-preedit-child", child);
+        }
+    }
+
     /// Which windows each display holds, in the order they are laid out,
     /// and which display has focus: the per-device partition as the person
     /// sees it. Lists every connected display, a single one included.
@@ -3030,12 +3039,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                         // a harness can't tell an empty desktop from one announcing an app is on its way.
                         "opening": store.is_opening(tab.surface_id),
                     });
-                    if let Some(child) = self
-                        .seat
-                        .and_then(|seat| seat.floating_preedit_child_for(tab.surface_id))
-                    {
-                        insert_preedit_route(&mut row, "floating-preedit-child", child);
-                    }
+                    self.insert_primary_preedit_route(&mut row, tab.surface_id);
                     row
                 })
                 .collect();
