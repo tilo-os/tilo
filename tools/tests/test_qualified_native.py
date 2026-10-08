@@ -43,12 +43,21 @@ class QualifiedNativeTests(unittest.TestCase):
                 shutil.copyfile(ROOT / name, destination)
             for name in qualified_native.PACKAGES:
                 shutil.copytree(ROOT / name, root / name)
+            receipt["enabled"] = True
             receipt["input_sha256"] = qualified_native.fingerprint(root)
             (root / "tools/ci/qualified-native.json").write_text(json.dumps(receipt))
             with mock.patch.dict(os.environ, {"HEAD_SHA": "fixture"}), mock.patch.object(
                     qualified_native.subprocess, "check_output", return_value=workflow):
                 self.assertEqual(qualified_native.placement(root, {"collab-types"}, "x86_64"),
                                  {"qualified_runner": "runner-quality", "qualified_builders": receipt["builders"]})
+                receipt["enabled"] = False
+                (root / "tools/ci/qualified-native.json").write_text(json.dumps(receipt))
+                self.assertFalse(qualified_native.placement(root, {"collab-types"}, "x86_64"))
+                del receipt["enabled"]
+                (root / "tools/ci/qualified-native.json").write_text(json.dumps(receipt))
+                self.assertFalse(qualified_native.placement(root, {"collab-types"}, "x86_64"))
+                receipt["enabled"] = True
+                (root / "tools/ci/qualified-native.json").write_text(json.dumps(receipt))
                 for names, arch in (({"collab-types", "tilo-ui"}, "x86_64"), ({"collab-types"}, "aarch64")):
                     self.assertFalse(qualified_native.placement(root, names, arch))
                 with mock.patch.object(qualified_native.subprocess, "check_output", return_value=b"older workflow"):
