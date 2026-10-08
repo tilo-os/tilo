@@ -18265,6 +18265,7 @@ impl Widget for ShellOverlayHost {
                 apps.bind_messaging_network_prompts(prompts.clone());
             }
             apps.pump_messaging_records();
+            apps.pump_feedback();
         }
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
@@ -21018,6 +21019,16 @@ impl ShellOverlayHost {
                     .iter()
                     .filter_map(AccessibleAgentMarker::expiry)
                     .min(),
+            ),
+            (
+                "private-feedback",
+                self.chrome.as_ref().and_then(|chrome| {
+                    chrome
+                        .borrow()
+                        .hosted_inputs
+                        .in_process()
+                        .and_then(|apps| apps.borrow().feedback_deadline())
+                }),
             ),
             (
                 "onboarding",
