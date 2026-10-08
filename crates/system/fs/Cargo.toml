@@ -38,6 +38,7 @@ filesystem = [
     "dep:tilo-thumbnail",
     "dep:tilo-user-identity",
     "dep:tilo-power-mgmt",
+    "dep:tilo-nm",
     "document-media",
     "dep:libc",
     "dep:serde_bytes",
@@ -112,7 +113,6 @@ path = "tests/cloud_mount.rs"
 required-features = ["filesystem"]
 
 [dependencies]
-bounded-command = { version = "0.1.0", path = "../bounded-command" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true
@@ -149,6 +149,9 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity", optional = true }
 # Bus-free, production battery/AC sampling for speculative-hydration policy.
 tilo-power-mgmt = { version = "0.1.0", path = "../power", default-features = false, optional = true }
+# NetworkManager's connectivity and primary-connection metering, followed by
+# signal, for the same policy.
+tilo-nm = { version = "0.1.0", path = "../tilo-nm", optional = true }
 runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
 libc = { workspace = true, optional = true }
 moka.workspace = true
