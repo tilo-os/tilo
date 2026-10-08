@@ -389,12 +389,20 @@ impl<R: Resource> ResourceRoot<R> {
 
     /// Bind the edits surfaces offer on the row `row` names
     /// ([`ResourceSurface::row_declarations`](super::ResourceSurface::row_declarations)).
-    fn bind_row_declarations(&self, row: &mut tilo_actions::Resource) {
-        let mut decls = Vec::new();
-        self.surfaces(&mut |surface| decls.extend(surface.row_declarations(row.id.as_str())));
-        for decl in decls {
-            let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
-            *row = tilo_resource::bind_declaration(bound, &decl);
+    fn bind_row_declarations(&self, rows: &mut [tilo_actions::Resource]) {
+        let mut declarations: Vec<Vec<_>> = rows.iter().map(|_| Vec::new()).collect();
+        // Walk the current hosted tree once, rather than once for each row.
+        // Each row still receives fresh declarations in surface tree order.
+        self.surfaces(&mut |surface| {
+            for (row, decls) in rows.iter().zip(&mut declarations) {
+                decls.extend(surface.row_declarations(row.id.as_str()));
+            }
+        });
+        for (row, decls) in rows.iter_mut().zip(declarations) {
+            for decl in decls {
+                let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
+                *row = tilo_resource::bind_declaration(bound, &decl);
+            }
         }
     }
 
@@ -454,9 +462,7 @@ impl<R: Resource> ResourceRoot<R> {
         {
             #[cfg(feature = "test-support")]
             let _profile = super::profiling::Scope::start("framework.row_declarations");
-            for child in &mut resource.children {
-                self.bind_row_declarations(child);
-            }
+            self.bind_row_declarations(&mut resource.children);
         }
         for spec in &self.presentation {
             if spec.kind == tilo_actions::OperationKind::Document {
@@ -1505,7 +1511,7 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
             }
         });
         if let Some(mut row) = row {
-            self.bind_row_declarations(&mut row);
+            self.bind_row_declarations(std::slice::from_mut(&mut row));
             return Some(row);
         }
         // Last, what the content resolves by id beyond what it publishes (a

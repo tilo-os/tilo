@@ -165,6 +165,7 @@ struct Jobs {
     rect: Rect,
     selected: i64,
     effects: Effects,
+    row_increment: Option<i64>,
 }
 
 fn job(id: u32) -> LiveRow {
@@ -255,6 +256,39 @@ impl ResourceSurface<Tally, JobEffect> for Jobs {
                 Ok(TallyAction::Add { by: 1000 })
             }),
         ]
+    }
+
+    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<Tally>> {
+        let Some(by) = self.row_increment else {
+            return Vec::new();
+        };
+        if !matches!(row, "job:1" | "job:2") {
+            return Vec::new();
+        }
+        let mut declarations = vec![ActionDecl::new(
+            "row-increment",
+            if by == 1 {
+                "First surface"
+            } else {
+                "Second surface"
+            },
+            Vec::new(),
+            move |_, _| Ok(TallyAction::Add { by }),
+        )];
+        if self.selected > 0 {
+            let current = self.selected.saturating_mul(by);
+            declarations.push(ActionDecl::new(
+                if by == 1 {
+                    "first-current"
+                } else {
+                    "second-current"
+                },
+                "Add the current count",
+                Vec::new(),
+                move |_, _| Ok(TallyAction::Add { by: current }),
+            ));
+        }
+        declarations
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
@@ -472,4 +506,61 @@ fn retained_actions_follow_canonical_publication_through_edits_and_undo() {
         actions.binding(conditional).unwrap().address().resource,
         root
     );
+}
+
+struct OrderedRowsApp;
+
+impl ResourceApp for OrderedRowsApp {
+    type Resource = Tally;
+    const ID: &'static str = "so.tilo.test-ordered-rows";
+    const TITLE: &'static str = "Ordered rows";
+
+    fn view(cx: &mut ViewCx<Tally>) -> Element {
+        Box::new(
+            Column::new()
+                .push(cx.surface(Jobs {
+                    row_increment: Some(1),
+                    ..Jobs::default()
+                }))
+                .push(cx.surface(Jobs {
+                    row_increment: Some(10),
+                    ..Jobs::default()
+                })),
+        )
+    }
+}
+
+#[test]
+fn hosted_row_declarations_preserve_surface_order_and_refresh_after_edit_and_undo() {
+    RAW.set(Raw::Nothing);
+    let mut app = TestApp::<OrderedRowsApp>::new().unwrap();
+    let resources = app.harness().resources();
+    for id in ["job:1", "job:2"] {
+        let row = find(&resources, id).unwrap();
+        assert_eq!(action_ids(row), ["stop", "row-increment"]);
+        assert_eq!(row.actions[1].label, "First surface");
+    }
+    app.call_on("job:1", "row-increment", json!({})).unwrap();
+    assert_eq!(app.state(), 1, "the first surface declaration wins");
+    let resources = app.harness().resources();
+    for id in ["job:1", "job:2"] {
+        assert_eq!(
+            action_ids(find(&resources, id).unwrap()),
+            ["stop", "row-increment", "first-current", "second-current"]
+        );
+    }
+    app.call_on("job:2", "second-current", json!({})).unwrap();
+    assert_eq!(app.state(), 11, "the later surface sees the current count");
+    assert!(app.undo());
+    assert_eq!(app.state(), 1);
+    assert!(app.undo());
+    assert_eq!(app.state(), 0);
+    let resources = app.harness().resources();
+    for id in ["job:1", "job:2"] {
+        assert_eq!(
+            action_ids(find(&resources, id).unwrap()),
+            ["stop", "row-increment"]
+        );
+        assert!(app.call_on(id, "second-current", json!({})).is_err());
+    }
 }
