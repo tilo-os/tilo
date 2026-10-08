@@ -493,29 +493,27 @@ impl CollabTransport for BrokerTransport {
         let sender = self.outbound_tx.clone();
         let state = self.state.clone();
         let deadline = crate::time::now() + SHOVEL_INIT_TIMEOUT;
-        thread::Builder::new()
-            .name("ui-collab-retirement".into())
-            .spawn(move || {
-                let result = receipt.wait(Some(deadline));
-                let acknowledgement = match result {
-                    Ok(()) => "acknowledged",
-                    Err(DocumentPublicationError::DeadlineElapsed) => "deadline_elapsed",
-                    Err(_) => "failed",
-                };
-                tracing::warn!(
-                    wire_id = id,
-                    invocation = ?invocation,
-                    acknowledgement,
-                    "original history refusal retired; action outcome unknown"
-                );
-                state.fail_closed("original history refusal retirement; outcome unknown");
-                drop(sender);
-            })
-            .map_err(|_| {
-                self.state
-                    .fail_closed("history refusal retirement observer unavailable");
-                TransportError::Closed
-            })?;
+        tilo_rt::spawn_thread("ui-collab-retirement", move || {
+            let result = receipt.wait(Some(deadline));
+            let acknowledgement = match result {
+                Ok(()) => "acknowledged",
+                Err(DocumentPublicationError::DeadlineElapsed) => "deadline_elapsed",
+                Err(_) => "failed",
+            };
+            tracing::warn!(
+                wire_id = id,
+                invocation = ?invocation,
+                acknowledgement,
+                "original history refusal retired; action outcome unknown"
+            );
+            state.fail_closed("original history refusal retirement; outcome unknown");
+            drop(sender);
+        })
+        .map_err(|_| {
+            self.state
+                .fail_closed("history refusal retirement observer unavailable");
+            TransportError::Closed
+        })?;
         Ok(())
     }
 
