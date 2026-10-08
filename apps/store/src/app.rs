@@ -2598,6 +2598,65 @@ mod tests {
     }
 
     #[test]
+    fn readable_store_failure_and_build_metadata_have_reviewable_layouts() {
+        let output =
+            std::env::var_os("TILO_STORE_PRESENTATION_REVIEW_DIR").map(std::path::PathBuf::from);
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            let mut items = crate::fixture::fixture_catalog();
+            let native = items
+                .iter_mut()
+                .find(|item| matches!(item.source, StoreSource::Tilo { .. }))
+                .unwrap();
+            native.versions[0].version =
+                "0.1.79285+g4b07574f432de8ca4fc7f108e07c0237b75b4b05".into();
+            store.set_items(items);
+            let remote = crate::flathub_client::Remote {
+                name: "fedora".into(),
+                url: "https://example.invalid/fedora".into(),
+                title: "Fedora Flatpaks".into(),
+                disabled: false,
+                user_managed: false,
+            };
+            store.set_worker_busy(false);
+            store.set_operation_error(Some(crate::flathub_client::remote_error(
+                &remote,
+                "Failed: remote exception: remote exception: command timed out after 8000 ms",
+            )));
+        })
+        .unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("high-contrast", Theme::high_contrast().with_text_scale(1.5)),
+        ] {
+            for width in [480, 1280] {
+                app.harness().resize((width, 900)).unwrap();
+                app.harness().set_theme(theme.clone());
+                let targets = app.harness().targets();
+                let retry = targets
+                    .get("store.error.refresh")
+                    .expect("the real source retry control must be observable");
+                assert!(retry.x0 >= 0.0 && retry.x1 <= f64::from(width));
+                assert!(retry.y0 >= 0.0 && retry.y1 <= 900.0);
+                assert!(
+                    app.harness()
+                        .controls()
+                        .iter()
+                        .any(|control| control.name.as_deref() == Some("Refresh apps")
+                            && !control.disabled)
+                );
+                if let Some(directory) = &output {
+                    std::fs::create_dir_all(directory).unwrap();
+                    app.harness()
+                        .render_png(&directory.join(format!("{name}-{width}-source-preview.png")));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ordinary_owner_store_controls_and_optional_offscreen_review() {
         let output = std::env::var_os("TILO_STORE_REVIEW_DIR").map(std::path::PathBuf::from);
         for (scenario, action) in [
@@ -4356,12 +4415,29 @@ mod tests {
 
             app.set_worker_busy(false);
             app.set_operation_error(Some("signature mismatch".into()));
-            let error = app
+            let mut notice = app
                 .operation_notice()
-                .and_then(|notice| notice.accessibility())
                 .expect("failure has a semantic notice");
-            assert_eq!(error.name.as_deref(), Some("The last operation failed"));
+            let error = notice
+                .accessibility()
+                .expect("failure has a semantic notice");
+            assert_eq!(
+                error.name.as_deref(),
+                Some(ui::i18n!("store-operation-failed").as_str())
+            );
             assert_eq!(error.live, Some(Politeness::Assertive));
+            assert_eq!(error.description.as_deref(), Some("signature mismatch"));
+            let mut state = AutoCommit::new();
+            let retry = control_mut(notice.as_mut(), "store.error.refresh")
+                .expect("failure offers the real catalogue refresh control");
+            assert!(retry.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut state),
+                &automerge::ROOT,
+            ));
+            let invoked = ui::widget::controls::take_control_invocation(notice.as_mut())
+                .expect("refresh uses the resource action door");
+            assert_eq!(invoked.address.action, StoreEffect::Refresh.id());
         }
 
         // Case `root_accessibility_is_a_named_window_not_an_empty_generic`.

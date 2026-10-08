@@ -36,7 +36,12 @@
 //!   ([`FramePayload::Planar`]); only a consumer that says it can paint nothing
 //!   else gets the picture forced into system-memory RGBA.
 //! * [`HwReport`] — which decoder element the pipeline plugged and what caps
-//!   the sink negotiated.
+//!   the sink negotiated. [`hw::v4l2`] asks the kernel what its V4L2 codec
+//!   blocks actually take, and [`hw::fallback`] states, once, why a stream
+//!   ran in software.
+//! * [`video_surface`] — the handoff of a dmabuf picture to a display plane:
+//!   per frame, whether it can be scanned out directly (and with which KMS
+//!   source/destination rectangles) or has to be composited, and why.
 //! * [`encode`] — the same discipline for the other direction. Encoding has no
 //!   autoplugger, so a pipeline that names `openh264enc` encodes on the CPU
 //!   forever however capable the GPU is. [`encode::select_video`] walks a
@@ -114,6 +119,7 @@ pub mod session;
 pub mod source;
 pub mod sync_playout;
 pub mod transport;
+pub mod video_surface;
 pub mod voice;
 /// The page backend: the browser's media element decodes and plays.
 #[cfg(web_page)]

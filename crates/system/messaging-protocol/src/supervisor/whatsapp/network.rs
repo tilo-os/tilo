@@ -95,4 +95,4 @@ impl Transport for GuardedTransport {
 
 #[cfg(test)]
 #[path = "network_tests.rs"]
-pub(super) mod tests;
+mod tests;
