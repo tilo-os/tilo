@@ -7,6 +7,22 @@ use collab_types::{FilePropertiesV1, files::FILE_PROPERTIES_VERSION};
 
 pub const MAX_METADATA_SCAN_BYTES: usize = 16 * 1024 * 1024;
 
+/// Extensions [`extract`] reads facts from; keep in step with its match.
+const SCANNED_EXTENSIONS: &[&str] = &["png", "gif", "jpg", "jpeg", "wav", "pdf"];
+
+/// Whether [`extract`] can find anything in a file called `name`, so a
+/// caller can skip reading bytes for it.
+pub fn recognizes(name: &str) -> bool {
+    name.rsplit('.')
+        .next()
+        .filter(|ext| *ext != name)
+        .is_some_and(|ext| {
+            SCANNED_EXTENSIONS
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
+}
+
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::cast_lossless,

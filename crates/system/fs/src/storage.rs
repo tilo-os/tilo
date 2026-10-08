@@ -23,7 +23,7 @@ use crate::{FileHistoryStore, Hydrator, Namespace};
 pub struct StorageAuthority {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    dirty: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
+    dirty: Arc<Mutex<crate::fs::WriteStages>>,
     /// Settings shares the same durable authority as FUSE.  In particular,
     /// it never treats a daemon-lifetime hydration source as durability.
     availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
@@ -89,7 +89,7 @@ impl StorageAuthority {
     pub fn new(
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,
-        dirty: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
+        dirty: Arc<Mutex<crate::fs::WriteStages>>,
         availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
         eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
         history: Option<Arc<FileHistoryStore>>,
@@ -516,9 +516,9 @@ fn snapshot_candidate_ids(
 /// Verify the live namespace token at the destructive authorization boundary,
 /// after all catalog I/O.  Availability/history can lag namespace CRDT
 /// application, so neither is a substitute for this check.
-fn validate_live_eviction_token(
+fn validate_live_eviction_token<Stage>(
     namespace: &mut Namespace,
-    dirty: &HashMap<u64, Vec<u8>>,
+    dirty: &HashMap<u64, Stage>,
     identity: &str,
     inode: u64,
     record_id: collab_types::FileRecordId,
@@ -681,7 +681,7 @@ mod tests {
         // Phase `final_live_token_rejects_a_namespace_or_dirty_change`.
         {
             let namespace = Arc::new(Mutex::new(Namespace::new("storage-token").unwrap()));
-            let dirty = Arc::new(Mutex::new(HashMap::new()));
+            let dirty = Arc::new(Mutex::new(HashMap::<u64, Vec<u8>>::new()));
             let expected = Hash::from([7; 32]);
             let inode = namespace
                 .lock()
@@ -748,7 +748,7 @@ mod tests {
         // Phase `live_authorization_lease_blocks_mutation_after_validation`.
         {
             let namespace = Arc::new(Mutex::new(Namespace::new("storage-lease").unwrap()));
-            let dirty = Arc::new(Mutex::new(HashMap::new()));
+            let dirty = Arc::new(Mutex::new(HashMap::<u64, Vec<u8>>::new()));
             let expected = Hash::from([9; 32]);
             let inode = namespace
                 .lock()
