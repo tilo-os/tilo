@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 [features]
 test-support = []
+# Explicit real Linux process qualification for managed committed reads.
+managed-read-test = ["launcher/managed-tree-test"]
 [dependencies]
 # Kernel-authenticated custody of the executing native service peer.
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }

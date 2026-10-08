@@ -231,6 +231,266 @@ mod owner_commit_tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_launcher_custody_cannot_read_as_a_certified_agent() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let directory = canonical_tempdir();
+                let root = SigningKey::from_bytes(&[68; 32]);
+                let device = SigningKey::from_bytes(&[69; 32]);
+                let principal = principal_id_for_root(root.verifying_key().to_bytes());
+                let mut workspace = crate::test_support::Workspace::new(
+                    crate::test_support::WorkspaceId(68),
+                    "Ordinary custody cannot become an Agent",
+                );
+                workspace.set_owner(&principal);
+                let room = workspace.room.to_string();
+                workspace.grant_capability(CapOverride::membership(
+                    Subject::agent("scribe"),
+                    room.clone(),
+                    Verb::Comment,
+                ));
+                let route = CrdtRoute::record("so.tilo.chat", room.clone(), "");
+                let mut tree = WorkspaceTree::default();
+                tree.workspaces.push(workspace);
+                let membership = tree.shared();
+                let mut admitted = admit_verified_join(
+                    &membership.read(),
+                    &route,
+                    VerifiedJoinIdentity {
+                        user_public_key: root.verifying_key().to_bytes(),
+                        device_public_key: device.verifying_key().to_bytes(),
+                        capped: false,
+                    },
+                )
+                .unwrap();
+                admit_agent_delegation(&membership.read(), &route, &mut admitted, "scribe")
+                    .unwrap();
+                let mut certificate = tilo_user_identity::DeviceCert {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_public_key: device.verifying_key().to_bytes(),
+                    device_label: "Ordinary Agent read refusal".into(),
+                    capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+                    issued_at_ns: 1,
+                    expires_at_ns: None,
+                    signature: [0; 64],
+                };
+                tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+                admitted.certificate = Some(certificate);
+
+                let fanout = Arc::new(FanoutState::new());
+                let config = crate::peer_actions::NativePeerBrokerConfig {
+                    journal_root: directory.path().join("journal"),
+                    certificate_authority: Arc::new(ExplicitAuthority),
+                };
+                let services = HostServices {
+                    committed_documents: Some(Arc::new(RevalidatedAgentRead)),
+                    ..Default::default()
+                };
+                let (state, bridge_rx) = CapnpBrokerState::new_configured(
+                    &fanout,
+                    Arc::new(Mutex::new(BrokerChannels::default())),
+                    PeerPublisher::disabled(),
+                    Some(membership.authority()),
+                    None,
+                    Some(&config),
+                    services,
+                );
+                let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
+                let (stream, _peer) = tokio::net::UnixStream::pair().unwrap();
+                let process = native_media::PeerProcess::from_socket(&stream).unwrap();
+                let connection = native_media::LocalAppConnection::attested(
+                    route.app_id.clone(),
+                    room,
+                    process,
+                    crate::services::AuthenticatedApplicationLaunch {
+                        creation: None,
+                        continuation_instance: None,
+                    },
+                )
+                .unwrap();
+                let peer_id = 1;
+                let handle = CapnpChannelHandle {
+                    committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                    state: Arc::clone(&state),
+                    directories: Rc::clone(&directories),
+                    channel_id: route.channel_key(),
+                    peer_id,
+                    verified_identity: admitted,
+                    record_kind: None,
+                    lease: Some(Rc::new(ConnectionLease {
+                        local_media: Some(connection),
+                        state,
+                        directories,
+                        peer_id,
+                    })),
+                };
+                assert_eq!(
+                    handle
+                        .committed_document_dispatch(
+                            &runtime_collab::committed_document::Request::Open {
+                                known_revision: None,
+                            },
+                        )
+                        .unwrap_err(),
+                    "committed read launcher custody ended",
+                    "an Agent label cannot turn ordinary launcher custody into a managed process"
+                );
+            })
+            .await;
+    }
+
+    #[cfg(all(target_os = "linux", feature = "managed-read-test"))]
+    struct ManagedReadAuthority(launcher::managed::ManagedBinding);
+
+    #[cfg(all(target_os = "linux", feature = "managed-read-test"))]
+    impl launcher::managed::ManagedLaunchAuthority for ManagedReadAuthority {
+        fn claim_launch(&self, binding: &launcher::managed::ManagedBinding) -> Result<(), String> {
+            self.revalidate_launch(binding)
+        }
+
+        fn revalidate_launch(
+            &self,
+            binding: &launcher::managed::ManagedBinding,
+        ) -> Result<(), String> {
+            if binding == &self.0 {
+                Ok(())
+            } else {
+                Err("managed read fixture launch changed".into())
+            }
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "managed-read-test"))]
+    impl launcher::managed::channel::ManagedProcessAuthority for ManagedReadAuthority {
+        fn bind_process(
+            &self,
+            process: &launcher::managed::VerifiedManagedProcess,
+        ) -> Result<(), String> {
+            if process.facts()?.binding == self.0 {
+                Ok(())
+            } else {
+                Err("managed read fixture process changed".into())
+            }
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "managed-read-test"))]
+    struct ManagedReadProcess {
+        launcher: launcher::managed::ManagedLauncher,
+        process: launcher::managed::VerifiedManagedProcess,
+        binding: launcher::managed::ManagedBinding,
+        _model: std::os::unix::net::UnixStream,
+        _identity: std::os::unix::net::UnixStream,
+        _collab: std::os::unix::net::UnixStream,
+    }
+
+    #[cfg(all(target_os = "linux", feature = "managed-read-test"))]
+    fn start_managed_read_process(
+        root: &std::path::Path,
+        room: &str,
+    ) -> Result<ManagedReadProcess, String> {
+        use launcher::managed::{
+            ManagedBinding, ManagedLaunchEvent, ManagedLaunchScope, ManagedLauncher,
+            channel::PendingManagedConnection,
+            test_support::{fixture_package, fixture_runtime},
+        };
+        use launcher::services::{EnrolledServiceContext, ManagedProviderSelection};
+        use std::io::Read as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let executable = std::env::current_exe().unwrap();
+        let binaries = executable.parent().unwrap().parent().unwrap();
+        let managed_root = root.join(format!("managed-read-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&managed_root).unwrap();
+        std::fs::set_permissions(&managed_root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (package, trust) =
+            fixture_package(&managed_root, &binaries.join("managed-tree-fixture")).unwrap();
+        let runtime = fixture_runtime(&managed_root, &binaries.join("tilo-launcher")).unwrap();
+        let binding = ManagedBinding {
+            room: room.into(),
+            app: launcher::managed::WORKSPACE_AGENT_PACKAGE_ID.into(),
+            agent: "scribe".into(),
+            scope: ManagedLaunchScope::AgentSession,
+            launch: uuid::Uuid::new_v4().to_string(),
+            generation: 1,
+        };
+        let authority = Arc::new(ManagedReadAuthority(binding.clone()));
+        let mut launcher =
+            ManagedLauncher::new(package, trust, runtime, authority.clone()).unwrap();
+        let runtime = launcher.runtime_lease().revalidate().unwrap();
+        let mut permit = launcher.authorize(binding.clone()).unwrap();
+        let (pending, collab_child) = PendingManagedConnection::pair(&mut permit).unwrap();
+        let (identity_child, identity) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (model_child, mut model) = std::os::unix::net::UnixStream::pair().unwrap();
+        model
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        let services = EnrolledServiceContext::new(
+            binding.clone(),
+            managed_root,
+            runtime.runtime_epoch,
+            pending.channel_id().to_string(),
+            ManagedProviderSelection {
+                profile_id: "qualification-only".into(),
+                model_id: "no-provider".into(),
+                protocol: "anthropic".into(),
+            },
+            identity_child,
+            collab_child,
+            model_child,
+        )
+        .unwrap();
+        let mut size = [0; 4];
+        model.read_exact(&mut size).unwrap();
+        let mut handoff = vec![0; usize::try_from(u32::from_le_bytes(size)).unwrap()];
+        assert!(handoff.len() <= 4096, "bounded service handoff required");
+        model.read_exact(&mut handoff).unwrap();
+        launcher.launch(permit, services).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        let supervisor = loop {
+            let events = launcher.drain_events().unwrap();
+            if let Some(event) = events.into_iter().next() {
+                if let ManagedLaunchEvent::Started(supervisor) = event {
+                    break supervisor;
+                }
+                return Err("actual managed read fixture did not start".into());
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "managed read launch timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let (process, mut collab) = pending
+            .admit_connection(&supervisor, authority.as_ref())
+            .unwrap()
+            .into_parts();
+        collab
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        let mut ready = [0; 2];
+        collab.read_exact(&mut ready).unwrap();
+        ready.sort_unstable();
+        assert_eq!(
+            ready, *b"PR",
+            "actual managed process and orphan must be ready"
+        );
+        process
+            .facts()
+            .expect("actual kernel process custody is live");
+        Ok(ManagedReadProcess {
+            launcher,
+            process,
+            binding,
+            _model: model,
+            _identity: identity,
+            _collab: collab,
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "managed-read-test"))]
     #[tokio::test(flavor = "current_thread")]
     async fn certified_agent_committed_read_requires_exact_live_custody_and_membership() {
         tokio::task::LocalSet::new()
@@ -250,7 +510,7 @@ mod owner_commit_tests {
                     room.clone(),
                     Verb::Comment,
                 ));
-                let route = CrdtRoute::record("so.tilo.agent", room.clone(), "state");
+                let route = CrdtRoute::record("so.tilo.chat", room.clone(), "");
                 let mut tree = WorkspaceTree::default();
                 tree.workspaces.push(workspace);
                 let membership = tree.shared();
@@ -277,8 +537,10 @@ mod owner_commit_tests {
                 };
                 tilo_user_identity::sign_device_cert(&mut certificate, &root)
                     .expect("the workspace owner signs the fixture device");
-                admitted.certificate = Some(certificate);
+                admitted.certificate = Some(certificate.clone());
                 assert_eq!(admitted.agent_id.as_deref(), Some("scribe"));
+                let ordinary_agent = admitted.clone();
+                let managed = start_managed_read_process(directory.path(), &room).unwrap();
 
                 let fanout = Arc::new(FanoutState::new());
                 let config = crate::peer_actions::NativePeerBrokerConfig {
@@ -298,128 +560,148 @@ mod owner_commit_tests {
                     Some(&config),
                     services,
                 );
+                let managed_peer = 1;
+                state
+                    .managed_workers
+                    .lock()
+                    .unwrap()
+                    .insert(managed_peer, managed.process.clone());
+                admitted.managed_peer = Some(managed_peer);
                 let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
-                let (stream, _peer) = tokio::net::UnixStream::pair().unwrap();
-                let process = native_media::PeerProcess::from_socket(&stream)
-                    .expect("Linux exposes the actual connected process through SO_PEERPIDFD");
-                let connection = native_media::LocalAppConnection::attested(
-                    route.app_id.clone(),
-                    room.clone(),
-                    process.clone(),
-                    None,
-                )
-                .expect("the live process retains exact launcher custody");
-                let handle = |peer_id, local| CapnpChannelHandle {
+                let managed_lease = Rc::new(ConnectionLease {
+                    local_media: None,
+                    state: Arc::clone(&state),
+                    directories: Rc::clone(&directories),
+                    peer_id: managed_peer,
+                });
+                let handle = |identity: AdmittedJoinIdentity, channel: &CrdtRoute| {
+                    CapnpChannelHandle {
                     committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                     state: Arc::clone(&state),
                     directories: Rc::clone(&directories),
-                    channel_id: route.channel_key(),
-                    peer_id,
-                    verified_identity: admitted.clone(),
+                    channel_id: channel.channel_key(),
+                    peer_id: managed_peer,
+                    verified_identity: identity,
                     record_kind: None,
-                    lease: Some(Rc::new(ConnectionLease {
-                        local_media: Some(local),
-                        state: Arc::clone(&state),
-                        directories: Rc::clone(&directories),
-                        peer_id,
-                    })),
+                    lease: Some(Rc::clone(&managed_lease)),
+                }
                 };
                 let request = runtime_collab::committed_document::Request::Open {
                     known_revision: None,
                 };
                 assert_eq!(
-                    handle(1, Arc::clone(&connection))
+                    handle(admitted.clone(), &route)
                         .committed_document_dispatch(&request)
-                        .expect("the exact live certified Agent may read"),
+                        .expect("the exact live managed Agent may read"),
                     runtime_collab::committed_document::Reply::Unchanged { revision: [9; 32] }
                 );
 
-                let documentless_route = CrdtRoute::record("so.tilo.agent", room.clone(), "");
-                let mut documentless_admitted = admitted.clone();
-                admit_agent_delegation(
-                    &membership.read(),
-                    &documentless_route,
-                    &mut documentless_admitted,
-                    "scribe",
-                )
-                .expect("the empty managed route retains the admitted Agent");
-                let documentless = native_media::LocalAppConnection::attested(
-                    documentless_route.app_id.clone(),
+                let (ordinary_stream, _ordinary_peer) = tokio::net::UnixStream::pair().unwrap();
+                let ordinary_process = native_media::PeerProcess::from_socket(&ordinary_stream)
+                    .expect("Linux exposes actual ordinary launcher custody");
+                let ordinary_connection = native_media::LocalAppConnection::attested(
+                    route.app_id.clone(),
                     room.clone(),
-                    process.clone(),
-                    None,
+                    ordinary_process,
+                    crate::services::AuthenticatedApplicationLaunch {
+                        creation: None,
+                        continuation_instance: None,
+                    },
                 )
                 .unwrap();
-                let documentless_peer = 5;
-                let documentless_handle = CapnpChannelHandle {
+                let ordinary_peer = 2;
+                let ordinary_handle = CapnpChannelHandle {
                     committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                     state: Arc::clone(&state),
                     directories: Rc::clone(&directories),
-                    channel_id: documentless_route.channel_key(),
-                    peer_id: documentless_peer,
-                    verified_identity: documentless_admitted,
+                    channel_id: route.channel_key(),
+                    peer_id: ordinary_peer,
+                    verified_identity: ordinary_agent,
                     record_kind: None,
                     lease: Some(Rc::new(ConnectionLease {
-                        local_media: Some(documentless),
+                        local_media: Some(ordinary_connection),
                         state: Arc::clone(&state),
                         directories: Rc::clone(&directories),
-                        peer_id: documentless_peer,
+                        peer_id: ordinary_peer,
                     })),
                 };
                 assert_eq!(
-                    documentless_handle
+                    ordinary_handle
                         .committed_document_dispatch(&request)
-                        .expect("an ordinary Agent app still follows its real document owner"),
-                    runtime_collab::committed_document::Reply::Unchanged { revision: [9; 32] },
-                    "an Agent label plus launcher custody must not manufacture managed-process documentless authority"
+                        .unwrap_err(),
+                    "committed read launcher custody ended",
+                    "an Agent label plus ordinary launcher custody cannot borrow managed read authority"
                 );
 
-                let revoked = native_media::LocalAppConnection::attested(
-                    route.app_id.clone(),
-                    room.clone(),
-                    process.clone(),
-                    None,
-                )
-                .unwrap();
+                let mut foreign_process = admitted.clone();
+                foreign_process.managed_peer = Some(3);
+                assert_eq!(
+                    handle(foreign_process, &route)
+                        .committed_document_dispatch(&request)
+                        .unwrap_err(),
+                    "committed read admission ended",
+                    "another managed peer cannot borrow this process custody"
+                );
 
-                let wrong_route = native_media::LocalAppConnection::attested(
-                    route.app_id.clone(),
+                let wrong_route = CrdtRoute::record(
+                    "so.tilo.chat",
                     uuid::Uuid::new_v4().to_string(),
-                    process.clone(),
-                    None,
-                )
-                .unwrap();
-                assert_eq!(
-                    handle(2, wrong_route)
-                        .committed_document_dispatch(&request)
-                        .unwrap_err(),
-                    "committed read launcher custody ended: workspace changed",
-                    "launcher custody for another room cannot read this Agent channel"
+                    "",
                 );
-
-                let stopped = native_media::LocalAppConnection::attested(
-                    route.app_id.clone(),
-                    room,
-                    process,
-                    None,
-                )
-                .unwrap();
-                stopped.stop();
                 assert_eq!(
-                    handle(3, stopped)
+                    handle(admitted.clone(), &wrong_route)
                         .committed_document_dispatch(&request)
                         .unwrap_err(),
-                    "committed read launcher custody ended: connection ended",
-                    "ended launcher custody cannot read the Agent channel"
+                    "committed read admission ended",
+                    "managed custody for another room cannot read this Agent channel"
                 );
 
                 assert!(membership.write().workspaces[0].revoke_capability(&agent_membership));
                 assert_eq!(
-                    handle(4, revoked)
+                    handle(admitted.clone(), &route)
                         .committed_document_dispatch(&request)
                         .unwrap_err(),
                     "committed read admission ended",
                     "revoked Agent membership invalidates the retained certified session"
+                );
+                membership.write().workspaces[0].grant_capability(CapOverride::membership(
+                    Subject::agent("scribe"),
+                    room,
+                    Verb::Comment,
+                ));
+                let mut readmitted = admit_verified_join(
+                    &membership.read(),
+                    &route,
+                    VerifiedJoinIdentity {
+                        user_public_key: root.verifying_key().to_bytes(),
+                        device_public_key: device.verifying_key().to_bytes(),
+                        capped: false,
+                    },
+                )
+                .expect("the certified workspace owner may rejoin after a new grant");
+                admit_agent_delegation(&membership.read(), &route, &mut readmitted, "scribe")
+                    .expect("the new membership incarnation admits a fresh Agent session");
+                readmitted.certificate = Some(certificate);
+                readmitted.managed_peer = Some(managed_peer);
+                assert_eq!(
+                    handle(readmitted.clone(), &route)
+                        .committed_document_dispatch(&request)
+                        .expect("a fresh admission may use the still-live exact managed process"),
+                    runtime_collab::committed_document::Reply::Unchanged { revision: [9; 32] }
+                );
+
+                managed.launcher.stop(&managed.binding).unwrap();
+                let deadline = tilo_test_env::hang_deadline();
+                while managed.process.facts().is_ok() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                assert!(managed.process.facts().is_err(), "actual managed process must retire");
+                assert_eq!(
+                    handle(readmitted, &route)
+                        .committed_document_dispatch(&request)
+                        .unwrap_err(),
+                    "committed read admission ended",
+                    "dead managed process custody cannot read the Agent channel"
                 );
             })
             .await;
