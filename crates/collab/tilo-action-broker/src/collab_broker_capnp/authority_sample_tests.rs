@@ -51,7 +51,10 @@ impl SampledAuthority {
 
 impl WorkspaceAuthority for SampledAuthority {
     fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
-        let sample = self.samples.fetch_add(1, Ordering::SeqCst) + 1;
+        let sample = self
+            .samples
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
         let mut tree = self.tree.lock().map_err(|_| "authority poisoned")?;
         let mut before = self.before.lock().map_err(|_| "authority poisoned")?;
         if before.as_ref().is_some_and(|(at, _)| *at == sample)
@@ -80,9 +83,11 @@ fn owned_room() -> (DesktopTree, String) {
     let mut workspace = Workspace::new(WorkspaceId(91), "Sampled authority");
     workspace.set_owner(owner());
     let room = workspace.room.to_string();
-    let mut tree = DesktopTree::default();
-    tree.active = WorkspaceId(91);
-    tree.workspaces.push(workspace);
+    let tree = DesktopTree {
+        active: WorkspaceId(91),
+        workspaces: vec![workspace],
+        ..DesktopTree::default()
+    };
     (tree, room)
 }
 
@@ -275,6 +280,10 @@ impl action_directory::Server for WideDirectory {
 }
 
 /// Query one page of the wide directory in `room` as `actor`.
+#[allow(
+    clippy::future_not_send,
+    reason = "the directory registry holds Rc Cap'n Proto clients and is driven on the test's LocalSet, like production"
+)]
 async fn query_wide_page(
     authority: &Arc<SampledAuthority>,
     room: &str,
