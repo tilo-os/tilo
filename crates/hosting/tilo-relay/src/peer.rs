@@ -4888,6 +4888,8 @@ async fn enqueue_state_inner(
                             }
                         }
                     }
+                    #[cfg(test)]
+                    crate::store::test_barrier::signal(runtime.store.root(), "live-publication-complete");
                 }
                 Ok(())
                 }.await;
@@ -8700,6 +8702,8 @@ mod private_transport_tests {
                 .unwrap(),
             };
             let fault = crate::store::test_barrier::fail(store.root(), "live-delivery-budget");
+            let (publication_release, published) =
+                crate::store::test_barrier::install(store.root(), "live-publication-complete");
             let (release, reached) =
                 crate::store::test_barrier::install(store.root(), "live-delivery-budget");
             aw.write_all(
@@ -8707,10 +8711,14 @@ mod private_transport_tests {
             )
             .await
             .unwrap();
-            reached
+            tilo_test_env::within("the retained publication to reach its live budget", reached)
                 .await
                 .expect("ordinary retained publication never reached live budget");
             drop(release);
+            tilo_test_env::within("the missed live publication recipient fan-out", published)
+                .await
+                .expect("missed live publication never completed its recipient fan-out");
+            drop(publication_release);
             let owner = crate::persistence::handle(&workspace).await;
             crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
                 .await
@@ -8755,13 +8763,6 @@ mod private_transport_tests {
                 // A queued hint may outlive the subscription that produced it.
                 // Its ordering is fixed here after the real unsubscribe reply.
                 lag.mark(id);
-            } else {
-                assert!(
-                    workspace.lock().await.state_sessions[&b.device_public_key]
-                        .live
-                        .load(std::sync::atomic::Ordering::SeqCst),
-                    "ordinary byte backpressure must preserve the authorized subscription"
-                );
             }
             // Publication has completed, so the lag marker was made. Wait for
             // its actual consumption rather than guessing the polling interval.
@@ -8793,6 +8794,14 @@ mod private_transport_tests {
                 }
             })
             .await;
+            if !unsubscribed {
+                assert!(
+                    workspace.lock().await.state_sessions[&b.device_public_key]
+                        .live
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    "ordinary byte backpressure must preserve the authorized subscription"
+                );
+            }
             for task in tasks {
                 task.abort();
                 let _ = task.await;
