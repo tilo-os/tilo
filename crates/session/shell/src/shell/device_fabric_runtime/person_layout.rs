@@ -42,10 +42,10 @@ pub(super) fn resolve(
     fabric: &DeviceFabric,
     local: &DeviceId,
     mut arrangement: Arrangement,
+    devices: &[settings_store::person_displays::PersonDevice],
 ) -> PersonLayoutView {
-    let devices = fabric.person_devices(local);
     let mut revisions = Vec::new();
-    for device in &devices {
+    for device in devices {
         if device.outputs.is_empty() {
             continue;
         }
@@ -103,7 +103,7 @@ pub(super) fn resolve(
     PersonLayoutView {
         legacy_targets,
         local: local.clone(),
-        layout: Layout::resolve(&devices, &arrangement),
+        layout: Layout::resolve(devices, &arrangement),
         revisions,
     }
 }
@@ -117,6 +117,7 @@ pub(super) fn refresh(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
                 &network.device_fabric(),
                 &local,
                 Arrangement::load(),
+                &network.person_display_devices(&local),
             ))
         });
     if let Ok(mut cached) = cache().lock() {
