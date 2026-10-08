@@ -60,6 +60,56 @@ fn tree_at(path: &std::path::Path) -> WorkspaceTreeHandle {
     tree.shared()
 }
 
+/// Owner publications and state-file encodes this thread made while `run` ran.
+fn publications_and_encodes<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
+    let publications = PUBLICATIONS_ON_THIS_THREAD.with(std::cell::Cell::get);
+    let encodes = persist::ENCODES_ON_THIS_THREAD.with(std::cell::Cell::get);
+    let value = run();
+    (
+        value,
+        PUBLICATIONS_ON_THIS_THREAD.with(std::cell::Cell::get) - publications,
+        persist::ENCODES_ON_THIS_THREAD.with(std::cell::Cell::get) - encodes,
+    )
+}
+
+#[test]
+fn native_owner_publication_encodes_the_state_file_once_and_keeps_the_live_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let owner = open(tree.clone()).unwrap();
+    let heads_before = tree.write().current_heads();
+    assert!(
+        !heads_before.is_empty(),
+        "the fixture's document has history"
+    );
+    let (intent, bootstrap, _, _, now) = raw_fixture();
+    let (pending, publications, encodes) =
+        publications_and_encodes(|| prepare_enrollment(&owner, &intent, now));
+    let pending = pending.unwrap();
+    assert!(publications > 0, "a pending enrollment is published");
+    assert_eq!(
+        encodes, publications,
+        "each publication encodes the state file once"
+    );
+    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let (installed, publications, encodes) =
+        publications_and_encodes(|| owner.install(&enrollment, now));
+    installed.unwrap();
+    assert!(publications > 0, "an install is published");
+    assert_eq!(
+        encodes, publications,
+        "each publication encodes the state file once"
+    );
+    let tree = tree.read();
+    assert!(
+        heads_before
+            .iter()
+            .all(|head| { automerge::ReadDoc::get_change_by_hash(&tree.doc, head).is_some() }),
+        "the installed tree carries the live document's history, not a fresh one"
+    );
+}
+
 #[test]
 fn native_owner_commits_exact_chat_and_reopens() {
     // Losing the admitted Chat bytes or treating a room-only policy as ready
