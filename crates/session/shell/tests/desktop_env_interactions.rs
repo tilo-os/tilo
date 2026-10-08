@@ -1029,7 +1029,7 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             "the radial workspace switcher must stay while a window is maximized; \
              got {sidebar:?}",
         );
-        let topbar_height = laid_out_topbar_height(chrome);
+        let topbar_height = laid_out_topbar_height(chrome.clone());
         assert_approx_eq!(
             topbar_height,
             f64::from(TOPBAR_HEIGHT_PX),
@@ -1069,11 +1069,65 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let app = group
             .active_host_rect_for_tests()
             .expect("maximized group's active app");
+        // #3512 reserves a compact 34 px control lane at the default theme,
+        // while the hidden tab strip itself still reserves no height.
         assert_eq!(
-            app, maximized,
-            "the hidden tab strip must reserve no space inside the maximized group",
+            app,
+            vello::kurbo::Rect::new(
+                maximized.x0,
+                maximized.y0 + 34.0,
+                maximized.x1,
+                maximized.y1,
+            ),
+            "the client must fill exactly the area below compact system controls",
         );
-        let _ = &layout2;
+        assert_approx_eq!(
+            group.bar_for_tests().get_rect().height(),
+            0.0,
+            "the hidden tab strip must reserve no height",
+        );
+
+        // Reveal through the host's pointer route at the group's actual,
+        // nonzero origin. Painting must produce a usable Restore target.
+        cursor(
+            &mut host,
+            &layout2,
+            Point::new(maximized.center().x, maximized.y0 + 1.0),
+        );
+        let group = host.group_at_for_tests(strip_id, 0).unwrap();
+        group.draw(
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &Theme::dark(),
+            &ui::presence::PresenceCtx::default(),
+        );
+        let restore = group.restore_rect();
+        assert!(
+            restore.area() > 0.0,
+            "Restore must reveal below the OS top bar"
+        );
+        assert!(
+            restore.y0 >= maximized.y0,
+            "Restore must stay below the OS top bar",
+        );
+        assert!(
+            restore.y1 <= app.y0,
+            "Restore must stay clear of the client header",
+        );
+        assert!(
+            restore.x0 >= maximized.x0 && restore.x1 <= maximized.x1,
+            "Restore must stay inside the maximized group",
+        );
+        cursor(&mut host, &layout2, restore.center());
+        press(&mut host, &layout2);
+        release(&mut host, &layout2);
+        host.tick_pending_maximize_harvest_for_tests();
+        assert!(
+            !chrome.borrow().is_fullscreen(),
+            "the painted Restore target must work"
+        );
+        assert!(!host.group_at_for_tests(strip_id, 0).unwrap().maximized);
     }
 
     // Phase `the_workspace_switcher_stays_through_maximize_and_restore`.
