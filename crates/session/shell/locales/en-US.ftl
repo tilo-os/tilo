@@ -2483,3 +2483,8 @@ shell-launch-writer-still-closing = The previous app is still closing. Try openi
 
 shell-window-restore-interrupted = This saved window did not finish reopening.
 shell-window-retry = Reopen window
+
+qs-network-details = Wi-Fi networks
+qs-bluetooth-details = Bluetooth devices
+search-action-quick-settings-network-subtitle = Browse available Wi-Fi networks
+search-action-quick-settings-bluetooth-subtitle = Browse paired Bluetooth devices

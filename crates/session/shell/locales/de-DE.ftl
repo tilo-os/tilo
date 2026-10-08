@@ -2486,3 +2486,8 @@ shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öf
 
 shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
 shell-window-retry = Fenster erneut öffnen
+
+qs-network-details = WLAN-Netzwerke
+qs-bluetooth-details = Bluetooth-Geräte
+search-action-quick-settings-network-subtitle = Verfügbare WLAN-Netzwerke durchsuchen
+search-action-quick-settings-bluetooth-subtitle = Gekoppelte Bluetooth-Geräte durchsuchen

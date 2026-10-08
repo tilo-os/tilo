@@ -159,6 +159,13 @@ fn is_alarm_action(id: &str) -> bool {
         || crate::shell::notification::is_snoozed_alarm_action(id)
 }
 
+fn navigation_view_contract() -> tilo_actions::ActionContract {
+    let mut contract = tilo_actions::ActionContract::view();
+    contract.retry = tilo_actions::RetryPolicy::AtMostOnce;
+    contract.reversible = true;
+    contract
+}
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
@@ -170,9 +177,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     let mut contract = ActionContract::default();
     match id {
         "shortcut-help.toggle" | "overview.toggle" => {
-            contract = ActionContract::view();
-            contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
+            contract = navigation_view_contract();
         }
         "desktop-tour.open"
         | "settings.open"
@@ -182,6 +187,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "quick-settings.open"
         | "quick-settings.clipboard"
         | "quick-settings.devices"
+        | "quick-settings.network"
+        | "quick-settings.bluetooth"
         | "projection.open"
         | "capture.open"
         | "collaborators.open"
@@ -278,6 +285,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "quick-settings.open"
         | "quick-settings.clipboard"
         | "quick-settings.devices"
+        | "quick-settings.network"
+        | "quick-settings.bluetooth"
         | "projection.open"
         | "capture.open"
         | "collaborators.open"
@@ -1308,6 +1317,24 @@ impl Action {
             "search-action-quick-settings-clipboard-subtitle",
             |st, _| {
                 st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+                Ok(())
+            },
+        ),
+        chrome(
+            "quick-settings.network",
+            "qs-network-details",
+            "search-action-quick-settings-network-subtitle",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Wifi);
+                Ok(())
+            },
+        ),
+        chrome(
+            "quick-settings.bluetooth",
+            "qs-bluetooth-details",
+            "search-action-quick-settings-bluetooth-subtitle",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Bluetooth);
                 Ok(())
             },
         ),
@@ -6656,5 +6683,44 @@ mod tests {
             fixture.entered.try_recv().is_err(),
             "revoked authority never reaches the native worker"
         );
+    }
+    #[test]
+    fn radio_details_navigation_actions_are_views_and_do_not_toggle_radios() {
+        for (id, level) in [
+            (
+                "quick-settings.network",
+                crate::shell::quick_settings::QsLevel::Wifi,
+            ),
+            (
+                "quick-settings.bluetooth",
+                crate::shell::quick_settings::QsLevel::Bluetooth,
+            ),
+        ] {
+            let provider = ActionsProvider::new();
+            let chrome = chrome_with_room();
+            let before = (
+                chrome.borrow().quick_settings.wifi,
+                chrome.borrow().quick_settings.bluetooth,
+            );
+            let results = action_results(&provider, &chrome);
+            let result = results
+                .iter()
+                .find(|result| result.id == id)
+                .expect("published view action");
+            assert_eq!(result.operation_kind, tilo_actions::OperationKind::View);
+            for _ in 0..2 {
+                invoke_action(&results, id, &chrome);
+                let state = chrome.borrow();
+                assert!(state.overlays.quick_settings);
+                assert_eq!(
+                    state.quick_settings.nav_stack,
+                    [crate::shell::quick_settings::QsLevel::Root, level.clone()]
+                );
+                assert_eq!(
+                    (state.quick_settings.wifi, state.quick_settings.bluetooth),
+                    before
+                );
+            }
+        }
     }
 }
