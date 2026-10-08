@@ -186,6 +186,8 @@ pub struct ColumnDef<Row> {
     pub key: String,
     pub header: String,
     pub width: ColumnWidth,
+    /// Smallest readable width before optional columns hide or the table scrolls.
+    pub min_width: f32,
     pub sortable: bool,
     /// `None` renders an empty cell.
     pub text_render: Option<CellTextRender<Row>>,
@@ -231,6 +233,7 @@ impl<Row> ColumnDef<Row> {
             key: key.into(),
             header: header.into(),
             width,
+            min_width: 0.0,
             sortable: false,
             text_render: None,
             render_cell: Box::new(|_, _, _, _, _, _| {}),
@@ -282,6 +285,19 @@ impl<Row> ColumnDef<Row> {
     #[must_use]
     pub fn wrapping(mut self, max_lines: usize) -> Self {
         self.max_lines = max_lines.max(1);
+        self
+    }
+
+    /// Keep a readable cell width while flexible columns share extra room.
+    /// If the remaining columns cannot fit their minima, the table scrolls
+    /// horizontally instead of squeezing their text or controls.
+    #[must_use]
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.min_width = if width.is_finite() {
+            width.max(0.0)
+        } else {
+            0.0
+        };
         self
     }
 
@@ -4058,16 +4074,24 @@ fn column_floor<Row>(
     overrides: &HashMap<String, f32>,
     auto: &HashMap<String, f32>,
 ) -> (f32, Option<f32>) {
+    let minimum = column.min_width;
     if let Some(px) = overrides.get(&column.key).copied() {
-        return (px, Some(px));
+        let width = px.max(minimum);
+        return (width, Some(width));
     }
     match column.width {
-        ColumnWidth::Fixed(px) => (px, Some(px)),
-        ColumnWidth::Auto => auto
-            .get(&column.key)
-            .copied()
-            .map_or((DataTable::<Row>::MIN_COL_WIDTH, None), |px| (px, Some(px))),
-        ColumnWidth::Flex(_) => (DataTable::<Row>::MIN_COL_WIDTH, None),
+        ColumnWidth::Fixed(px) => {
+            let width = px.max(minimum);
+            (width, Some(width))
+        }
+        ColumnWidth::Auto => auto.get(&column.key).copied().map_or(
+            (DataTable::<Row>::MIN_COL_WIDTH.max(minimum), None),
+            |px| {
+                let width = px.max(minimum);
+                (width, Some(width))
+            },
+        ),
+        ColumnWidth::Flex(_) => (DataTable::<Row>::MIN_COL_WIDTH.max(minimum), None),
     }
 }
 
@@ -4105,6 +4129,50 @@ fn hidden_for_room<Row>(
         }
     }
     hidden
+}
+
+/// Allocate weighted space without shrinking a readable flexible minimum.
+fn flexible_column_widths<Row>(
+    columns: &[ColumnDef<Row>],
+    floors: &[(f32, Option<f32>)],
+    hidden: &[bool],
+    mut available: f64,
+) -> Vec<f64> {
+    let mut widths = vec![0.0; columns.len()];
+    let mut pending: Vec<usize> = (0..columns.len())
+        .filter(|&i| !hidden.get(i).copied().unwrap_or(false) && floors[i].1.is_none())
+        .collect();
+    let weight = |i: usize| match columns[i].width {
+        ColumnWidth::Flex(w) => f64::from(w.max(0.0)),
+        _ => 1.0,
+    };
+    while !pending.is_empty() {
+        let total: f64 = pending.iter().map(|&i| weight(i)).sum();
+        let share = |i: usize| {
+            if total > 0.0 {
+                available * weight(i) / total
+            } else {
+                0.0
+            }
+        };
+        let constrained: Vec<usize> = pending
+            .iter()
+            .copied()
+            .filter(|&i| share(i) < f64::from(floors[i].0))
+            .collect();
+        if constrained.is_empty() {
+            for i in pending {
+                widths[i] = share(i);
+            }
+            break;
+        }
+        for i in constrained {
+            widths[i] = f64::from(floors[i].0);
+            available = (available - widths[i]).max(0.0);
+            pending.retain(|&candidate| candidate != i);
+        }
+    }
+    widths
 }
 
 /// Lay the columns out in `host`: fixed, resized and measured `Auto` columns
@@ -4148,6 +4216,11 @@ fn compute_column_rects<Row>(
     }
     let leftover = (total_w - sized).max(0.0);
     let overflow = floor_sum > total_w + 0.5;
+    let floors: Vec<_> = columns
+        .iter()
+        .map(|c| column_floor(c, overrides, auto))
+        .collect();
+    let flexible_widths = flexible_column_widths(columns, &floors, hidden, leftover);
     let mut rects = Vec::with_capacity(columns.len());
     let mut x = host.x0;
     let y0 = host.y0;
@@ -4171,17 +4244,7 @@ fn compute_column_rects<Row>(
                     f64::from(w)
                 }
             }
-            None => {
-                let weight = match c.width {
-                    ColumnWidth::Flex(w) => f64::from(w.max(0.0)),
-                    _ => 1.0,
-                };
-                if flex_sum <= 0.0 {
-                    0.0
-                } else {
-                    leftover * (weight / flex_sum)
-                }
-            }
+            None => flexible_widths[i],
         };
         let next = x + w;
         rects.push(Rect::new(x, y0, next, y1));
@@ -7048,6 +7111,48 @@ mod content_edge_tests {
         );
         assert!(table.scroll_x() > before);
         assert!(table.h_track().is_some(), "the bar shows");
+    }
+
+    #[test]
+    fn flexible_minima_keep_identity_readable_before_hiding_or_scrolling() {
+        let mut table = DataTable::new(vec![
+            name_col().min_width(200.0),
+            ColumnDef::new("detail", "Detail", ColumnWidth::Flex(3.0))
+                .min_width(64.0)
+                .priority(1)
+                .with_text(|_: &Item| "detail".to_owned()),
+            ColumnDef::new("action", "Action", ColumnWidth::Fixed(80.0)),
+        ]);
+        table.set_rows(items(3));
+        let _ = settle(&mut table, 600.0, 400.0);
+        assert_eq!(table.hidden, [false, false, false]);
+        assert!(table.col_rects[0].width() >= 200.0);
+        assert!(table.col_rects[1].width() >= 64.0);
+        assert!(
+            table.col_rects[2]
+                .x1
+                .total_cmp(&table.columns_band().x1)
+                .is_eq()
+        );
+        let _ = settle(&mut table, 320.0, 400.0);
+        assert_eq!(table.hidden, [false, true, false]);
+        assert!(table.col_rects[0].width() >= 200.0);
+        assert!(!table.h_overflow());
+        let (tree, node) = settle(&mut table, 240.0, 400.0);
+        assert_eq!(table.hidden, [false, true, false]);
+        assert!(table.col_rects[0].width().total_cmp(&200.0).is_eq());
+        assert!(table.col_rects[2].width().total_cmp(&80.0).is_eq());
+        assert!(table.h_overflow());
+        let before = table.scroll_x();
+        send(&mut table, &tree, node, &at(100.0, 60.0), false);
+        let wheel = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: TouchPhase::Moved,
+        };
+        assert!(send(&mut table, &tree, node, &wheel, true));
+        assert!(table.scroll_x() > before);
+        assert!(table.h_track().is_some());
     }
 
     #[test]
