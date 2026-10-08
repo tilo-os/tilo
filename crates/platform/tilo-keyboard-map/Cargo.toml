@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "Bounded physical key and symbol observations from installed native keyboard metadata."
 
 [dependencies]
-ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+ui = { package = "tilo-app", version = "0.1.0", path = "../../sdk/tilo-app" }
 vello.workspace = true
 winit.workspace = true
 
