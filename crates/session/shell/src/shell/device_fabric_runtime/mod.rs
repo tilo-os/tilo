@@ -6259,9 +6259,12 @@ pub fn move_device_display(
     let fabric = network.device_fabric();
     let (target, expected, rect) = checked_display_move(&fabric, &local, request)
         .map_err(|_| crate::shell::i18n::t("device-fabric-error-layout-changed"))?;
+    let route = network
+        .current_personal_route(&target)
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-layout-changed"))?;
     network
-        .send_personal_fabric_action(
-            &target,
+        .send_personal_fabric_action_on_route(
+            &route,
             PersonalFabricAction::SetDisplayPlacementChecked {
                 expected,
                 rect,
@@ -6490,6 +6493,9 @@ pub fn spatial_pointer_lease(
     target: &crate::shell::personal_continuity::DeviceId,
 ) -> Option<InputLease> {
     require_continuity(ContinuityCapability::DisplayInput).ok()?;
+    if !network.personal_device_is_enrolled(target) {
+        return None;
+    }
     prune_spatial_leases(network);
     let (controller, _) = network.local_device_fabric_identity()?;
     let (lease, route) = {
@@ -6521,6 +6527,11 @@ pub fn send_spatial_input_bound(
     event: FabricInputEvent,
 ) -> Result<(), String> {
     require_continuity(ContinuityCapability::DisplayInput)?;
+    if !network.personal_device_is_enrolled(target) {
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-control-not-granted",
+        ));
+    }
     let (controller, _) = network
         .local_device_fabric_identity()
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
@@ -6743,7 +6754,7 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let snapshot = settings_store::device_displays::DeviceDisplaySnapshot {
+    let mut snapshot = settings_store::device_displays::DeviceDisplaySnapshot {
         publisher_pid,
         publisher_start_ticks,
         displays: if local.is_some() && policy.permits(ContinuityCapability::DisplayInput) {
@@ -6752,6 +6763,17 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
             Vec::new()
         },
     };
+    snapshot.displays.retain(|display| {
+        crate::shell::personal_continuity::DeviceId::new(display.device.clone())
+            .is_ok_and(|owner| network.personal_device_is_enrolled(&owner))
+    });
+    for display in &mut snapshot.displays {
+        if !display.local {
+            display.online &=
+                crate::shell::personal_continuity::DeviceId::new(display.device.clone())
+                    .is_ok_and(|owner| network.current_personal_route(&owner).is_some());
+        }
+    }
     if let Err(error) = snapshot.save() {
         tracing::debug!(%error, "could not publish device display observations");
     }
@@ -6765,9 +6787,7 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
         devices: local
             .as_ref()
             .filter(|_| policy.permits(ContinuityCapability::DisplayInput))
-            .map_or_else(Vec::new, |local| {
-                network.device_fabric().person_devices(local)
-            }),
+            .map_or_else(Vec::new, |local| network.person_display_devices(local)),
     };
     if let Err(error) = view.save() {
         tracing::debug!(%error, "could not publish person display observations");
@@ -7849,7 +7869,12 @@ mod tests {
         use crate::shell::device_fabric::DisplayOutputObservation;
         use settings_store::person_displays::{Arrangement, DeviceOutput};
         let (mut fabric, local, remote, _) = drag_pair();
-        let unknown = person_layout::resolve(&fabric, &local, Arrangement::default());
+        let unknown = person_layout::resolve(
+            &fabric,
+            &local,
+            Arrangement::default(),
+            &fabric.person_devices(&local),
+        );
         assert!(unknown.layout.displays.is_empty());
         assert_eq!(unknown.legacy_targets, vec![remote.clone()]);
         // Negative local output origins must not turn a device bounding box
@@ -7888,7 +7913,12 @@ mod tests {
                 )
                 .unwrap();
         }
-        let view = person_layout::resolve(&fabric, &local, Arrangement::default());
+        let view = person_layout::resolve(
+            &fabric,
+            &local,
+            Arrangement::default(),
+            &fabric.person_devices(&local),
+        );
         assert!(view.legacy_targets.is_empty());
         let local_display = view
             .layout
@@ -7921,7 +7951,12 @@ mod tests {
             !view.is_current(&fabric, &local),
             "a stale pointer layout must stop routing immediately"
         );
-        let moved = person_layout::resolve(&fabric, &local, Arrangement::default());
+        let moved = person_layout::resolve(
+            &fabric,
+            &local,
+            Arrangement::default(),
+            &fabric.person_devices(&local),
+        );
         assert!(moved.is_current(&fabric, &local));
         assert!(!moved.is_current(&fabric, &remote));
         assert_eq!(moved.layout.device_bounds(remote.as_str()).unwrap().x, 1880);
