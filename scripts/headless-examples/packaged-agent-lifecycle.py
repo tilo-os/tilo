@@ -1460,6 +1460,56 @@ def preserve_attached_preedit_refusal(
         pass
 
 
+def preserve_detached_commit_refusal(
+        socket, output, size, access, baseline, expected, frame, fcitx_identity):
+    """Record closed route and fixture-known equality after a failed commit."""
+    evidence_path = output / "ime-detached-commit-refused.json"
+    try:
+        current = current_same_floating_presentation(
+            call(socket, {"op": "foreign_frames"}), frame
+        )
+        direct_latin_space = baseline + "nihao "
+        candidate_prefix = baseline + "你"
+        literal_space = baseline + " "
+        evidence_path.write_text(json.dumps({
+            "phase": "detached_space_commit",
+            "baseline_retained": private_editor_value_matches(access, baseline),
+            "expected_chinese_committed": private_editor_value_matches(access, expected),
+            "direct_latin_space_committed": private_editor_value_matches(
+                access, direct_latin_space
+            ),
+            "candidate_prefix_committed": private_editor_value_matches(
+                access, candidate_prefix
+            ),
+            "literal_space_committed": private_editor_value_matches(access, literal_space),
+            "same_presented_child": current is not None,
+            "keyboard_focused": current is not None
+                and current.get("keyboard_focused") is True,
+            "chat_text_input_active": chat_text_input_active(socket),
+            "input_route_present": current is not None
+                and current.get("input_route") is not None,
+            "input_source_present": current is not None
+                and current.get("input_source_surface_id") is not None,
+            "same_input_method_process": same_fcitx_process(fcitx_identity),
+            "private_content_recorded": False,
+        }, indent=2) + "\n")
+    except Exception:
+        try:
+            evidence_path.write_text(json.dumps({
+                "phase": "detached_space_commit",
+                "diagnostic_unavailable": True,
+                "private_content_recorded": False,
+            }, indent=2) + "\n")
+        except OSError:
+            pass
+    try:
+        require_ok(call(socket, {"op": "snapshot", "path": str(
+            output / f"ime-detached-commit-refused-{size}.png"
+        )}))
+    except Exception:
+        pass
+
+
 def native_ime_float_return(socket, output, size, process, fcitx_identity):
     """Hold a genuine Rime preedit across Float and Return, then commit it."""
     committed_before = "u"
@@ -1592,9 +1642,16 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
         return current if current["keyboard_focused"] is True \
             and chat_text_input_active(socket) else None
 
-    frame = wait_for(
-        "Rime's exact detached commit and child seat", floating_committed_frame, process
-    )
+    try:
+        frame = wait_for(
+            "Rime's exact detached commit and child seat", floating_committed_frame, process
+        )
+    except RuntimeError:
+        preserve_detached_commit_refusal(
+            socket, output, size, detached_access, committed_before,
+            committed_after, frame, fcitx_identity,
+        )
+        raise
     if detached_access["process"] != chat_process or not same_fcitx_process(fcitx_identity):
         raise RuntimeError("detached Rime commit replaced Chat or the compositor input method")
     require_ok(call(socket, {"op": "snapshot", "path": str(

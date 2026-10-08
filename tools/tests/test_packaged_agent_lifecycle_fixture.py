@@ -1597,6 +1597,54 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertNotIn("diagnostic_unavailable", evidence)
         self.assertTrue(evidence["input_method_ready"])
 
+    def test_detached_commit_refusal_records_only_closed_fixture_evidence(self):
+        private = "private editor text"
+        values = {
+            "u": True,
+            "u你好": False,
+            "unihao ": False,
+            "u你": True,
+            "u ": False,
+        }
+        current = {
+            "keyboard_focused": False,
+            "input_route": "closed route value",
+            "input_source_surface_id": 91,
+        }
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", return_value={"ok": {}}), \
+                patch.object(PROOF, "require_ok"), \
+                patch.object(PROOF, "current_same_floating_presentation",
+                             return_value=current), \
+                patch.object(PROOF, "private_editor_value_matches",
+                             side_effect=lambda _access, value: values[value]), \
+                patch.object(PROOF, "chat_text_input_active", return_value=True), \
+                patch.object(PROOF, "same_fcitx_process", return_value=True):
+            output = pathlib.Path(directory)
+            PROOF.preserve_detached_commit_refusal(
+                "socket", output, "1600x900", {"private": private},
+                "u", "u你好", {"surface_id": 91}, {},
+            )
+            evidence = json.loads(
+                (output / "ime-detached-commit-refused.json").read_text()
+            )
+        self.assertTrue(evidence["baseline_retained"])
+        self.assertFalse(evidence["expected_chinese_committed"])
+        self.assertFalse(evidence["direct_latin_space_committed"])
+        self.assertTrue(evidence["candidate_prefix_committed"])
+        self.assertFalse(evidence["literal_space_committed"])
+        self.assertTrue(evidence["same_presented_child"])
+        self.assertFalse(evidence["keyboard_focused"])
+        self.assertTrue(evidence["chat_text_input_active"])
+        self.assertTrue(evidence["input_route_present"])
+        self.assertTrue(evidence["input_source_present"])
+        self.assertTrue(evidence["same_input_method_process"])
+        self.assertFalse(evidence["private_content_recorded"])
+        serialized = json.dumps(evidence)
+        self.assertNotIn(private, serialized)
+        self.assertNotIn("closed route value", serialized)
+        self.assertNotIn("91", serialized)
+
     def test_return_seat_refresh_requires_exact_native_source_without_frame_regression(self):
         previous = {"app_id": "so.tilo.chat", "surface_id": 7, "frame_seq": 10,
                     "keyboard_focused": False}
@@ -1821,6 +1869,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         source = inspect.getsource(PROOF.native_ime_float_return)
         detached_ready = source.index('"detached Tide editor during Rime preedit"')
         floating_commit = source.index('"Rime\'s exact detached commit and child seat"')
+        refusal_capture = source.index("preserve_detached_commit_refusal", floating_commit)
         floating_select = source.index("wait_for_private_selection(", floating_commit)
         floating_undo = source.index('"detached Rime commit undo"', floating_select)
         second_type = source.index('{"op": "type", "text": "nihao"}', floating_undo)
@@ -1828,6 +1877,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
         returned = source.index('"Rime preedit\'s returned primary frame"', second_preedit)
         returned_commit = source.index('"Rime\'s exact post-Return commit and primary seat"', returned)
         self.assertLess(detached_ready, floating_commit)
+        self.assertLess(floating_commit, refusal_capture)
+        self.assertLess(refusal_capture, floating_select)
         self.assertLess(floating_commit, floating_select)
         self.assertLess(floating_select, floating_undo)
         self.assertLess(floating_undo, second_type)
