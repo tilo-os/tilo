@@ -47,3 +47,7 @@ from `5f20a0c8c182323009f7709026e2594b007c09b0`
 (`fix/native-imager-restart-ownership`), including its ownership-release observer.
 This lane does not maintain an independent retry-loop repair. Privileged person
 process tests fail if the required runner account cannot be observed.
+
+Main `ab64378df96da444c32bcf54a0480d8353942d52` is merged before
+publication, preserving its newer shell authority code. It already includes the
+Imager owner's repair, so that repair adds no independent PR delta.

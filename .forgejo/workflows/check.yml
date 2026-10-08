@@ -247,7 +247,7 @@ jobs:
   test:
     if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
     needs: [builder, select, security]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ contains(matrix.qualified_builders, needs.builder.outputs.image) && matrix.qualified_runner || matrix.runner }}
     timeout-minutes: 120
     outputs:
       cleanup-shared-libraries: ${{ steps.cleanup.outputs.shared-libraries }}
@@ -436,7 +436,7 @@ jobs:
       # native audit the nightly runs for every app, so a change that breaks
       # an app's Tilo-native contract fails here, not overnight.
       - name: Certify affected apps of shard ${{ matrix.shard }}
-        if: matrix.test_packages != ''
+        if: matrix.test_packages != '' && matrix.certify == true
         env:
           TILO_REQUIRE_GPU: "1"
         run: >-
@@ -567,7 +567,7 @@ jobs:
   clippy:
     if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.rust_required == 'true' }}
     needs: [builder, select, security]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ contains(matrix.qualified_builders, needs.builder.outputs.image) && matrix.qualified_runner || matrix.runner }}
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: '8'
