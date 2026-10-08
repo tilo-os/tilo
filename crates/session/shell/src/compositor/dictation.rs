@@ -353,7 +353,14 @@ impl State {
                 Some(Progress::Finished | Progress::Failed) => {
                     return Err(DictationError::InputMethodUnavailable);
                 }
-                None => self.dictation_target().is_ok(),
+                None => match self.dictation_target() {
+                    Ok(_) => true,
+                    // The client may still be enabling its original field.
+                    Err(DictationError::NoEditableField) => false,
+                    // An acknowledged preparation cannot turn an explicit
+                    // target refusal into a wait, or authorize a later mode.
+                    Err(error) => return Err(error),
+                },
             };
         self.text_commit.dictation.preparation = Some(preparation);
         if ready {

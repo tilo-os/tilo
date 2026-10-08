@@ -43,6 +43,9 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
 };
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::platform::wayland::private_text_input_protocol::{
+    tilo_text_input_manager_v1, tilo_text_input_v1,
+};
 
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
@@ -61,7 +64,25 @@ struct Peer {
     done: u32,
     keys: Vec<u32>,
     activated: u32,
+    private_operations: Vec<(u32, u32)>,
 }
+
+impl Dispatch<tilo_text_input_v1::TiloTextInputV1, ()> for Peer {
+    fn event(
+        peer: &mut Self,
+        _: &tilo_text_input_v1::TiloTextInputV1,
+        event: tilo_text_input_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let tilo_text_input_v1::Event::Operation { serial, kind, .. } = event else {
+            panic!("unexpected private text input event");
+        };
+        peer.private_operations.push((serial, u32::from(kind)));
+    }
+}
+delegate_noop!(Peer: ignore tilo_text_input_manager_v1::TiloTextInputManagerV1);
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Peer {
     fn event(
@@ -696,6 +717,7 @@ fn dictation_terminal_purpose_requires_a_qualified_inner_editing_target() {
         h.peer(&editable).committed,
         [Some("editable successor".into())]
     );
+    drop(h);
 }
 
 #[test]
@@ -744,6 +766,7 @@ fn dictation_editable_to_terminal_transition_cancels_and_does_not_revive() {
     h.state.finish_dictation(final_id, now).unwrap();
     h.pump();
     assert_eq!(h.peer(&field).committed, [Some("fresh edit".into())]);
+    drop(h);
 }
 
 #[test]
@@ -773,6 +796,60 @@ fn dictation_idle_terminal_activation_refuses_before_recording() {
     );
     h.pump();
     assert!(h.peer(&field).committed.is_empty());
+    drop(h);
+}
+
+#[test]
+fn dictation_private_warm_ack_does_not_mask_a_changed_targets_refusal() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    for (hint, purpose, expected) in [
+        (
+            zwp_text_input_v3::ContentHint::empty(),
+            zwp_text_input_v3::ContentPurpose::Terminal,
+            DictationError::UnsupportedField,
+        ),
+        (
+            zwp_text_input_v3::ContentHint::HiddenText,
+            zwp_text_input_v3::ContentPurpose::Password,
+            DictationError::SensitiveField,
+        ),
+    ] {
+        let field = h.field(None);
+        let client = &h.clients[field.client];
+        let manager = client.bind::<tilo_text_input_manager_v1::TiloTextInputManagerV1>(
+            "tilo_text_input_manager_v1",
+            1,
+        );
+        let private = manager.get_field(&field.objects.0, &client.queue.handle(), ());
+        private.update(vec![7; 32]);
+        h.pump();
+        let now = Instant::now();
+        let id = h.state.prepare_dictation(now).unwrap();
+        h.pump();
+        let (serial, kind) = *h.peer(&field).private_operations.last().unwrap();
+        assert_eq!(kind, u32::from(tilo_text_input_v1::Kind::Prepare));
+        field.text_input().set_content_type(hint, purpose);
+        field.text_input().commit();
+        private.acknowledge(serial, tilo_text_input_v1::Outcome::Accepted);
+        h.pump();
+        assert_eq!(
+            h.state.advance_dictation_preparation(id, now),
+            Err(expected)
+        );
+        assert_eq!(
+            h.state.finish_dictation(id, now),
+            Err(DictationError::StaleSession)
+        );
+        h.pump();
+        assert!(h.peer(&field).committed.is_empty());
+        assert!(h.peer(&field).private_operations.iter().all(|(_, kind)| {
+            *kind != u32::from(tilo_text_input_v1::Kind::Start)
+                && *kind != u32::from(tilo_text_input_v1::Kind::Final)
+        }));
+    }
+    drop(h);
 }
 
 #[test]

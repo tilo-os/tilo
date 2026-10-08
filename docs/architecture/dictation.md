@@ -162,6 +162,12 @@ without changing ordinary keyboard IME, emoji insertion or terminal paste.
 Terminal support requires an explicit inner-field eligibility/privacy contract,
 with edit-mode transitions invalidating the original grant, before live
 qualification can admit it. No clipboard or key-injection fallback is permitted.
+An accepted private warm-up acknowledgement only prepares the original field.
+When an existing input method owns the seat, activation preserves an explicit
+terminal or sensitive-field refusal and drops the preparation rather than waiting
+until timeout. Only a field that is still enabling may remain pending. The wire
+regression changes content purpose while warm-up is outstanding and verifies
+refusal without a Start or Final operation; no microphone or model is involved.
 
 The bookmarks behind this research were identified on 2026-10-07 from the
 owner's X bookmarks (research comment on issue #3543). The candidates below are
