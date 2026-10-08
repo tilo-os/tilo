@@ -319,6 +319,21 @@ private PID-namespace init before collecting the newest bounded working image.
 Forced shutdowns preserve the interrupted marker. Signed-runtime qualification
 remains a separate acceptance requirement.
 
+Managed agent committed reads have a separate real-process qualification. The
+ordinary launcher-custody test proves that an Agent label alone is rejected; it
+does not qualify a certified managed worker. On the remote Linux builder, build
+the signed launcher fixture before running the opt-in positive test:
+
+```sh
+rcargo --no-fallback --no-fetch build --locked -p launcher --features managed-tree-test --bin tilo-launcher --bin managed-tree-fixture
+rcargo --no-fallback test --locked -p tilo-action-broker --features managed-read-test --lib certified_agent_committed_read_requires_exact_live_custody_and_membership
+```
+
+This exercises the actual managed process, kernel/channel custody, live
+membership, revocation and retirement. Missing fixture binaries fail rather than
+skip qualification. Default CI tests do not enable `managed-read-test`; retain
+this explicit result alongside ordinary tests and the packaged desktop proof.
+
 CI's repository policy tests discover the same app-packaging tests, including
 the build-to-collection handoff regression.
 For an actual installer VM cycle with an already prepared medium, continue using
