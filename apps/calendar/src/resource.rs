@@ -931,6 +931,71 @@ mod host_undo_tests {
         assert!(notes.contains("Confirm the launch timeline."), "{notes}");
     }
 
+    #[test]
+    fn painted_view_strip_swipes_invoke_live_navigation_and_preserve_document() {
+        use winit::event::TouchPhase::{Cancelled, Ended, Started};
+        fn control(
+            node: &ui::headless::InspectionNode,
+            target: &str,
+        ) -> Option<ui::a11y::AccessNode> {
+            fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<ui::a11y::AccessNode> {
+                if node.action_target.as_deref() == Some(target) {
+                    return Some(node.clone());
+                }
+                node.children.iter().find_map(|child| find(child, target))
+            }
+            node.semantics
+                .as_ref()
+                .and_then(|node| find(node, target))
+                .or_else(|| {
+                    node.children
+                        .iter()
+                        .find_map(|child| control(child, target))
+                })
+        }
+        let mut app = TestApp::<CalendarShell>::new().unwrap();
+        app.settle();
+        let before = app.peer_document().get_heads();
+        let start = control(&app.harness().inspection().root, "calendar.view:week")
+            .unwrap()
+            .bounds
+            .unwrap()
+            .to_rect()
+            .center();
+        app.harness().touch(1, Started, start.x, start.y);
+        app.harness().touch(1, Ended, start.x - 90.0, start.y);
+        app.settle();
+        assert_eq!(
+            control(&app.harness().inspection().root, "calendar.view:week")
+                .unwrap()
+                .state
+                .checked,
+            Some(true)
+        );
+        app.harness().touch(2, Started, start.x, start.y);
+        app.harness().touch(2, Cancelled, start.x - 90.0, start.y);
+        app.settle();
+        assert_eq!(
+            control(&app.harness().inspection().root, "calendar.view:week")
+                .unwrap()
+                .state
+                .checked,
+            Some(true)
+        );
+        app.harness().touch(3, Started, start.x, start.y);
+        app.harness().touch(3, Ended, start.x + 90.0, start.y);
+        app.settle();
+        assert_eq!(
+            control(&app.harness().inspection().root, "calendar.view:month")
+                .unwrap()
+                .state
+                .checked,
+            Some(true)
+        );
+        assert_eq!(app.peer_document().get_heads(), before);
+        assert!(!app.undo(), "view changes create no document undo step");
+    }
+
     /// Every edit the calendar offers on its items, and its calendars, reach
     /// the palette and agents through the one published tree, and invoking
     /// one edits the calendar.

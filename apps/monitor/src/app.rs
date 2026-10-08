@@ -1320,7 +1320,7 @@ impl MonitorApp {
     /// follow it.
     fn show_header(&mut self) {
         let host = self.model.metrics.host.clone();
-        let shown = (host.clone(), self.tab, self.cadence());
+        let shown = (host, self.tab, self.cadence());
         if self.header_shown.as_ref() == Some(&shown) {
             return;
         }
@@ -1347,14 +1347,18 @@ impl MonitorApp {
         };
         let cadence = {
             let requests = Rc::clone(&self.shared);
-            // A short row shows its icon alone, named for the frequency.
-            Button::new(CADENCE_BUTTON_ID, &self.cadence().short_label())
-                .with_icon(Icon::Timer)
-                .role(ButtonRole::Plain)
-                .control_size(ControlSize::Small)
-                .with_accessible_name(&format!("Update frequency: {}", self.cadence().label()))
-                .tooltip("Update frequency")
-                .on_view(move || requests.borrow_mut().push(Request::ChooseCadence))
+            // The frequency remains the accessible name while its icon
+            // leaves the full mode switcher room on a narrow window.
+            Button::icon_only(
+                CADENCE_BUTTON_ID,
+                Icon::Timer,
+                &self.cadence().short_label(),
+            )
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small)
+            .with_accessible_name(&format!("Update frequency: {}", self.cadence().label()))
+            .tooltip("Update frequency")
+            .on_view(move || requests.borrow_mut().push(Request::ChooseCadence))
         };
         let refresh = {
             let requests = Rc::clone(&self.shared);
@@ -1362,11 +1366,11 @@ impl MonitorApp {
                 .on_view(move || requests.borrow_mut().push(Request::Refresh))
         };
         let actions: Vec<Element> = vec![Box::new(cadence), Box::new(refresh)];
-        // The content is this machine's activity, so the column is titled
-        // with the machine's name and the tabs follow it; the window's
-        // History control follows the actions at the trailing edge. A short
-        // row shows the actions' icons, then moves them into More.
-        self.shell.set_content_header(host, actions);
+        // Modes occupy the header's leading fill at every width. The host
+        // name remains in Resources, where all machine identity is shown.
+        // Keeping these controls retained also preserves their touch/focus
+        // state through resize instead of replacing the whole header.
+        self.shell.set_content_header("", actions);
         self.shell.set_content_header_leading(Some(Box::new(tabs)));
     }
 
@@ -2337,6 +2341,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn narrow_header_keeps_both_modes_readable_and_clickable() {
+        fn named_rect(widget: &dyn Widget, id: &str) -> Option<Rect> {
+            if widget.test_id() == Some(id) {
+                return Some(widget.get_rect());
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| named_rect(child, id))
+        }
+        let mut harness = window(app(), (390, 844));
+        let tabs = named_rect(harness.root::<MonitorApp>(), "monitor.tabs").unwrap();
+        assert!(
+            tabs.width() >= 160.0,
+            "both labels need real room: {tabs:?}"
+        );
+        assert!(tabs.x0 >= 0.0 && tabs.x1 <= 390.0);
+        click(&mut harness, "Resources");
+        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
+        click(&mut harness, "Processes");
+        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
+        click(&mut harness, CADENCE_BUTTON_ID);
+        assert!(harness.root::<MonitorApp>().cadence_menu.is_open());
+    }
+
     /// The window's controls act through the panes: the tabs, a summary
     /// tile, the cadence menu, the row menu, the filter and the tree keys.
     #[test]
@@ -2349,7 +2379,7 @@ mod tests {
         click(&mut harness, "Processes");
         assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
 
-        click(&mut harness, "Every 1.5 s");
+        click(&mut harness, CADENCE_BUTTON_ID);
         assert!(harness.root::<MonitorApp>().cadence_menu.is_open());
         let paused = harness
             .root::<MonitorApp>()
