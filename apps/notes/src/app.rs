@@ -3589,7 +3589,7 @@ mod tests {
                 .expect("a Welcome page resource");
             let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
             let from_palette = match &delete_spec.input {
-                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+                tilo_actions::ActionInput::Immediate(enc) => enc.as_ref().clone(),
                 tilo_actions::ActionInput::Prompted { .. }
                 | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("delete is an immediate action")

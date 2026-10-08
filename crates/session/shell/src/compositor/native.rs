@@ -9608,6 +9608,14 @@ pub fn run() {
                     // lock-chord check above) sees the right Ctrl/Shift/Alt/Super state.
                     test_control_ctx.modifiers = modifiers;
                 }
+                BackendEvent::KeyboardConfiguration { scope, settings } => {
+                    frame_builder.host_mut().set_keyboard_scope(scope.clone());
+                    if let Some(xwayland) = xwayland.as_ref() {
+                        xwayland.apply_keyboard_settings(&settings);
+                    }
+                    state.apply_keyboard_settings(*settings);
+                    input_methods.reload_for_scope(&mut state, &scope);
+                }
                 BackendEvent::InputStateReset => {
                     // A device/VT/keymap boundary can omit releases. Retire
                     // Smithay's actual pressed-key state, never just the
@@ -10444,8 +10452,12 @@ pub fn run() {
                 input_source = chrome.take_input_source_request();
             });
             if let Some(index) = input_source {
+                state.reload_keyboard_settings();
                 state.activate_keyboard_source(index);
                 backend.set_keyboard_source(index);
+                if let Some(xwayland) = xwayland.as_ref() {
+                    xwayland.reload_keyboard_settings();
+                }
                 // The saved choice may be an input-method engine (or leave
                 // one): hand typing to its owner now, not on the next
                 // settings poll.

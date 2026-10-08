@@ -153,6 +153,7 @@ impl CapnpChannelHandle {
             Command::Undo { .. } => "undo",
             Command::Redo { .. } => "redo",
             Command::Recover { .. } => "recover-clipboard-transfers",
+            Command::RestoreTrash { .. } => "restore",
             Command::Paste { .. }
             | Command::Snapshot
             | Command::Observe { .. }

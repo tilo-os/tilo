@@ -1234,6 +1234,7 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "serde_json",
+ "tempfile",
  "workspace-hack",
  "zbus",
 ]
@@ -10587,6 +10588,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-input-context",
+ "tilo-keyboard-map",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -17068,6 +17070,8 @@ dependencies = [
 name = "tilo-keyboard-map"
 version = "0.1.0"
 dependencies = [
+ "tilo-app",
+ "tilo-vello",
  "tilo-winit",
  "workspace-hack",
  "xkbcommon",
