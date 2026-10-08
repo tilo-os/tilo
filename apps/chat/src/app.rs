@@ -3505,22 +3505,46 @@ impl ChatApp {
     /// when no inline editor / rename is capturing input. Idempotent; called
     /// from `reload` and after any focus change.
     pub(crate) fn set_composer_focus(&mut self) {
+        let child_owns_input = self.agent_surface_owns_input();
         let editing = self.editing.is_some() || self.rename.is_some() || !self.host_focused;
         let main = matches!(self.focus, Focus::Main)
             && !editing
-            && self.keyboard_owns_input(&Hit::FocusMain);
+            && self.primary_keyboard_owns_input(&Hit::FocusMain);
         let thread = matches!(self.focus, Focus::Thread)
             && self.thread_open.is_some()
             && !editing
-            && self.keyboard_owns_input(&Hit::FocusThread);
+            && self.primary_keyboard_owns_input(&Hit::FocusThread);
         self.composer_main.set_focus(main);
         self.composer_thread.set_focus(thread);
         self.edit_input
-            .set_focus(self.host_focused && self.editing.is_some());
+            .set_focus(self.host_focused && !child_owns_input && self.editing.is_some());
         ui::Widget::set_focus(
             &mut self.rename_input,
-            self.host_focused && self.rename.is_some(),
+            self.host_focused && !child_owns_input && self.rename.is_some(),
         );
+    }
+
+    pub(crate) fn primary_keyboard_owns_input(&self, hit: &Hit) -> bool {
+        !self.agent_surface_owns_input() && self.keyboard_owns_input(hit)
+    }
+
+    fn agent_surface_owns_input(&self) -> bool {
+        self.focused_agent_surface
+            .as_deref()
+            .is_some_and(|id| self.agent_surface_accepts_input(id))
+            || self
+                .ime_source_agent_surface
+                .as_deref()
+                .is_some_and(|id| self.agent_surface_accepts_input(id))
+    }
+
+    fn agent_surface_accepts_input(&self, id: &str) -> bool {
+        self.agent_surfaces.values().any(|surface| {
+            surface.id == id
+                && surface.placement.is_desktop_adopted()
+                && !surface.placement.is_return_pending()
+                && !surface.is_closed()
+        })
     }
 
     /// Presence scope of a shared composer draft (`drafts[draft_key]`), so
@@ -5260,7 +5284,9 @@ impl FloatingSurfaceProvider for ChatApp {
 
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
         if focused {
-            self.focused_agent_surface = id.map(str::to_owned);
+            self.focused_agent_surface = id
+                .filter(|id| self.agent_surface_accepts_input(id))
+                .map(str::to_owned);
         } else if self.focused_agent_surface.as_deref() == id {
             self.focused_agent_surface = None;
         }
@@ -5271,15 +5297,12 @@ impl FloatingSurfaceProvider for ChatApp {
                     || self.ime_source_agent_surface.as_deref() == surface_id,
             );
         }
+        self.set_composer_focus();
     }
 
     fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
         self.ime_source_agent_surface = id
-            .filter(|id| {
-                self.agent_surfaces
-                    .values()
-                    .any(|surface| surface.id == *id)
-            })
+            .filter(|id| self.agent_surface_accepts_input(id))
             .map(str::to_owned);
         for surface in self.agent_surfaces.values_mut() {
             let surface_id = Some(surface.id.as_str());
@@ -5288,6 +5311,7 @@ impl FloatingSurfaceProvider for ChatApp {
                     || self.ime_source_agent_surface.as_deref() == surface_id,
             );
         }
+        self.set_composer_focus();
     }
 
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {

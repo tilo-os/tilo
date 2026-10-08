@@ -5049,6 +5049,110 @@ mod tests {
         assert!(app.focused_agent_surface.is_none());
     }
 
+    fn main_composer_is_accessibility_focused(app: &ChatApp) -> bool {
+        ui::Widget::accessibility(app)
+            .expect("Chat keeps its accessibility root")
+            .children
+            .into_iter()
+            .find(|node| node.action_target.as_deref() == Some("chat.composer"))
+            .expect("the primary composer remains accessible")
+            .state
+            .focused
+    }
+
+    #[test]
+    fn adopted_agent_surface_is_the_only_logically_focused_editor() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.reload(&doc);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let id = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float publishes the shared-host request")
+            .id;
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+
+        app.set_composer_focus();
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            &mut app,
+            Some(&id),
+            true,
+        );
+        assert!(app.composer_main.is_focused());
+        assert!(app.focused_agent_surface.is_none());
+
+        adopt_agent_surface(
+            &mut app,
+            &id,
+            vello::kurbo::Rect::new(80.0, 60.0, 600.0, 700.0),
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            &mut app,
+            Some(&id),
+            true,
+        );
+        render_frame(&mut app, 1200.0, 800.0);
+        render_detached_surfaces(&mut app);
+        assert!(!main_composer_is_accessibility_focused(&app));
+        assert!(app.agent_surfaces[&channel].view.composer_main.is_focused());
+        let child_target = format!("agent-surface:{id}|chat.composer");
+        let child = ui::widget::FloatingSurfaceWidgetExt::floating_surface_accessibility(&app, &id)
+            .expect("the adopted child has an accessibility tree")
+            .children
+            .into_iter()
+            .find(|node| node.action_target.as_deref() == Some(child_target.as_str()))
+            .expect("the detached composer remains accessible");
+        assert!(child.state.focused);
+
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            &mut app,
+            Some("unknown-surface"),
+            true,
+        );
+        assert!(app.composer_main.is_focused());
+        assert!(!app.agent_surfaces[&channel].view.composer_main.is_focused());
+
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_ime_source_changed(
+            &mut app,
+            Some(&id),
+        );
+        assert!(!app.composer_main.is_focused());
+        assert!(app.agent_surfaces[&channel].view.composer_main.is_focused());
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_ime_source_changed(
+            &mut app, None,
+        );
+        assert!(app.composer_main.is_focused());
+
+        ui::Widget::set_focus(&mut app, false);
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            &mut app,
+            Some(&id),
+            true,
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            &mut app,
+            Some(&id),
+            false,
+        );
+        assert!(!app.composer_main.is_focused());
+
+        ui::Widget::set_focus(&mut app, true);
+        app.agent_surfaces.get_mut(&channel).unwrap().close();
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            &mut app,
+            Some(&id),
+            true,
+        );
+        assert!(app.composer_main.is_focused());
+        assert!(app.focused_agent_surface.is_none());
+    }
+
     #[test]
     fn exact_floating_event_source_routes_local_undo_before_focus_settles() {
         let mut doc = AutoCommit::new();

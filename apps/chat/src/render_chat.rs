@@ -2797,7 +2797,7 @@ impl ChatApp {
             && self.is_focused()
             && matches!(self.focus, crate::app::Focus::Main)
             && self.editing.is_none()
-            && self.keyboard_owns_input(&Hit::FocusMain);
+            && self.primary_keyboard_owns_input(&Hit::FocusMain);
         let draft = self.composer_main.value();
         let input = if self.direct_agent.is_some() {
             let wanted_input_h = self.composer_input_height();
@@ -3377,7 +3377,7 @@ impl ChatApp {
         let focused = self.is_focused()
             && matches!(self.focus, crate::app::Focus::Thread)
             && self.editing.is_none()
-            && self.keyboard_owns_input(&Hit::FocusThread);
+            && self.primary_keyboard_owns_input(&Hit::FocusThread);
         let draft = self.composer_thread.value();
         let send_enabled = !draft.trim().is_empty();
         let inner = self.draw_input_box(
