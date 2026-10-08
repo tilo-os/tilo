@@ -803,6 +803,55 @@ impl LiveAppActionsProvider {
     /// contracts, confirmation handling, and archived-launch behaviour in
     /// precisely one implementation while `query_page` accounts for this
     /// candidate explicitly.
+    /// A disclosed directory descriptor is the canonical route for that
+    /// exact publisher capability. Keep compatibility rows until it arrives.
+    fn has_disclosed_directory_alias(
+        &self,
+        ctx: &SearchContext<'_>,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+    ) -> bool {
+        let root = self
+            .broker
+            .state()
+            .action_directory_root_page(surface.peer_id.checked_sub(1), 1)
+            .roots
+            .into_iter()
+            .find(|root| {
+                root.peer_id == surface.peer_id
+                    && root.app_id == surface.app_id
+                    && root.cluster_id == surface.route.cluster_id
+                    && root.record_id == surface.route.record_id
+            });
+        if root.is_none() {
+            return false;
+        }
+        let actor = ctx
+            .chrome
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
+            .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
+        let Some(actor) = actor else {
+            return false;
+        };
+        let needle = ctx.needle.trim().to_lowercase();
+        self.directory_pages.borrow().iter().any(|(key, page)| {
+            key.0 == surface.peer_id
+                && key.1 == actor
+                && key.2 == needle
+                && page.rows.iter().any(|row| {
+                    row.app_id == surface.app_id
+                        && row.action.as_ref().is_some_and(|descriptor| {
+                            descriptor.address.resource == action.resource
+                                && descriptor.address.action == action.action
+                        })
+                })
+        })
+    }
+
     fn materialize_local_action(
         &self,
         ctx: &SearchContext<'_>,
@@ -3269,6 +3318,9 @@ impl SearchProvider for LiveAppActionsProvider {
         let mut considered = 0usize;
         for candidate in candidates {
             let row = candidate
+                .filter(|(surface, action, _)| {
+                    !self.has_disclosed_directory_alias(&ctx, surface, action)
+                })
                 .and_then(|(surface, action, rank)| {
                     self.materialize_local_action(&ctx, surface, action, rank)
                 })
@@ -4021,6 +4073,96 @@ mod tests {
             view: None,
             input: PublishedInput::None,
         }
+    }
+
+    #[test]
+    fn cached_directory_action_replaces_only_its_exact_local_alias() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let state = chrome.borrow();
+        let cluster_id = state.tree().desktop.workspaces[0].room.to_string();
+        let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room);
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.fixture".into(),
+            route: CrdtRoute::app("so.tilo.fixture", &cluster_id),
+            actions: vec![
+                local_action("Inspect playback", "inspect"),
+                local_action("Inspect playback", "inspect-other"),
+            ],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let root = ActionDirectoryRoot {
+            peer_id: surface.peer_id,
+            app_id: surface.app_id.clone(),
+            cluster_id,
+            record_id: surface.route.record_id.clone(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![root]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let doc = AutoCommit::new();
+        let ctx = context("Inspect playback", &state, &doc);
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let before = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(
+            before.results.len(),
+            2,
+            "cold directories retain the local action"
+        );
+        let row = CatalogueRow {
+            provider: "7".into(),
+            app_id: surface.app_id.clone(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: "resource:inspect".into(),
+                kind: "fixture".into(),
+                label: "Fixture".into(),
+                presentation: None,
+            },
+            action: Some(exported("Inspect playback", "inspect")),
+            has_children: false,
+            visibility: None,
+        };
+        let key = (7, actor, "inspect playback".into(), Vec::new());
+        provider
+            .directory_pages
+            .borrow_mut()
+            .insert(key.clone(), page(vec![row], Vec::new()));
+        provider
+            .directory_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let cached = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(
+            cached.results.len(),
+            2,
+            "replace the exact alias while preserving a different capability with the same label"
+        );
+        assert_eq!(
+            cached
+                .results
+                .iter()
+                .filter(|row| row.id.starts_with("directory\u{1f}"))
+                .count(),
+            1
+        );
+        assert!(cached.results.iter().any(|row| {
+            row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[1])
+        }));
+        provider.directory_pages.borrow_mut().remove(&key);
+        provider
+            .directory_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let restored = provider.query_page(ctx, None, SearchBudget::PALETTE);
+        assert_eq!(restored.results.len(), 2);
+        assert!(restored.results.iter().any(|row| {
+            row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[0])
+        }));
     }
 
     #[test]

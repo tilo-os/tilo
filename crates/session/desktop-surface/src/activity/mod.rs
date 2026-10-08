@@ -23,7 +23,8 @@ mod testing;
 pub use index::*;
 pub use pane::{
     ACTIVITY_ACKNOWLEDGE, ACTIVITY_TASKS, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE,
-    HISTORY_UNDO, Period, RoomActivityOutcome, RoomActivityPane, RoomScope,
+    HISTORY_UNDO, NativeManagedTaskRequest, NativeManualTaskRequest, Period, RoomActivityOutcome,
+    RoomActivityPane, RoomScope,
 };
 
 /// A causal document paired with its admitted desktop projection. Implementors
@@ -41,6 +42,9 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
         None
     }
     fn commit_activity_change(&mut self) {}
+    fn native_manual_tasks(&self, _workspace: WorkspaceId) -> bool {
+        false
+    }
     fn create_workspace_task(
         &mut self,
         _workspace: WorkspaceId,

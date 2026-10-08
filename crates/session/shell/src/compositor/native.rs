@@ -19,7 +19,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
@@ -5466,6 +5466,43 @@ fn dispatch_control_command(
     }
 }
 
+const NATIVE_CONTROL_PROGRESS_TARGET: &str = "tilo_native_governance";
+static NATIVE_CONTROL_PROGRESS_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+struct NativeControlProgress {
+    sequence: u64,
+    class: &'static str,
+    started_at: Instant,
+}
+
+impl NativeControlProgress {
+    fn new(command: &test_control::Command) -> Self {
+        let class = match command {
+            test_control::Command::ActionsEnumerate { .. } => "enumerate",
+            _ => "other",
+        };
+        Self {
+            sequence: NATIVE_CONTROL_PROGRESS_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            class,
+            started_at: ui::time::now(),
+        }
+    }
+
+    fn report(&self, stage: &'static str) {
+        tracing::debug!(
+            target: NATIVE_CONTROL_PROGRESS_TARGET,
+            sequence = self.sequence,
+            class = self.class,
+            stage,
+            elapsed_ms = ui::time::now()
+                .saturating_duration_since(self.started_at)
+                .as_secs_f64()
+                * 1_000.0,
+            "native control request progress"
+        );
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "Connection pumping preserves request order, response framing, and frame-state mutation in one transaction to make test-control behavior deterministic."
@@ -5525,13 +5562,17 @@ fn pump_test_control_conn(
                         Vec::new(),
                     ),
                     Ok(mut request) => {
+                        let control_progress = NativeControlProgress::new(&request.command);
+                        control_progress.report("accepted");
                         // Settle layout before anything reads a rect. The relayout after an action
                         // (below) covers a tree the *socket* changed, not one a **client** changed
                         // — a window map/close/resize rearranges the strip with no command sent,
                         // so a caller asking mid-frame would get a stale rect. So layout is
                         // settled per command, not per action: idempotent, and cheap relative to
                         // the round-trip that asked for it.
+                        control_progress.report("pre_relayout");
                         frame_builder.relayout();
+                        control_progress.report("post_relayout");
                         frame_builder.reconcile_native_focus(&mut ctx.focus);
                         // Everything the agent socket carries acts for some agent.
                         let agent = request.agent.or_else(|| {
@@ -5540,6 +5581,7 @@ fn pump_test_control_conn(
                                 label: None,
                             })
                         });
+                        control_progress.report("pre_dispatch");
                         if conn.admin
                             && agent.is_none()
                             && let Some(response) = super::lock_actions::dispatch(
@@ -5552,6 +5594,7 @@ fn pump_test_control_conn(
                             {
                                 injected_input = true;
                             }
+                            control_progress.report("post_dispatch");
                             let progress = queue_test_control_response(conn, &response);
                             if matches!(
                                 progress,
@@ -5571,6 +5614,7 @@ fn pump_test_control_conn(
                             if let Some(response) =
                                 super::diagnostic_actions::dispatch(&request.command)
                             {
+                                control_progress.report("post_dispatch");
                                 let progress = queue_test_control_response(conn, &response);
                                 if matches!(
                                     progress,
@@ -5582,7 +5626,7 @@ fn pump_test_control_conn(
                                 continue;
                             }
                         }
-                        match agent {
+                        let reply = match agent {
                             Some(_)
                                 if session.is_locked()
                                     && matches!(
@@ -5631,7 +5675,9 @@ fn pump_test_control_conn(
                                 state,
                                 lock,
                             ),
-                        }
+                        };
+                        control_progress.report("post_dispatch");
+                        reply
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
@@ -8833,8 +8879,11 @@ pub fn run() {
         .set_quick_settings_wake(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
         if let Some(apps) = chrome.hosted_inputs.in_process() {
-            apps.borrow_mut()
-                .bind_messaging_record_wake(Arc::clone(&session_wake));
+            let mut apps = apps.borrow_mut();
+            apps.bind_messaging_record_wake(Arc::clone(&session_wake));
+            if let Some(network) = peer_sync.as_ref() {
+                apps.bind_private_messages_network(network);
+            }
         }
     });
     let chooser_attended = Arc::new(AtomicBool::new(false));
@@ -9430,6 +9479,7 @@ pub fn run() {
         if let Some(service) = floating_surface_service.as_ref() {
             window_appearances.publish(
                 |app_id| frame_builder.window_appearance_for_app(app_id),
+                frame_builder.configured_app_theme(),
                 |connection, message| service.send(connection, message),
             );
         }
@@ -11669,6 +11719,11 @@ pub fn run() {
                     ));
                     if let Some(net) = peer_sync.as_ref() {
                         net.set_wake(Arc::clone(&session_wake));
+                        frame_builder.with_chrome(|chrome| {
+                            if let Some(apps) = chrome.hosted_inputs.in_process() {
+                                apps.borrow_mut().bind_private_messages_network(net);
+                            }
+                        });
                     }
                     None
                 }

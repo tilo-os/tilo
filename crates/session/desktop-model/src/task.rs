@@ -72,6 +72,7 @@ mod tests {
         assert_eq!(control.pending_revision, 0);
         assert!(control.instruction.is_none());
         assert!(!control.instruction_required);
+        assert!(control.execution_budget.is_none());
     }
 }
 
@@ -196,16 +197,52 @@ pub struct WorkspaceTaskCancellationRequest {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceTaskMutationResult {
-    Queued { task_id: String },
-    RunStarted { task_id: String, epoch: u64 },
-    DirectionAdded { task_id: String, revision: u64 },
-    DirectionApplied { task_id: String, revision: u64 },
-    Finished { task_id: String },
-    Abandoned { task_id: String },
-    ExecutionReported { task_id: String, sequence: u64 },
-    CancellationRequested { task_id: String, epoch: u64 },
-    PendingAmended { task_id: String, revision: u64 },
-    PendingCancelled { task_id: String, revision: u64 },
+    Queued {
+        task_id: String,
+    },
+    RunStarted {
+        task_id: String,
+        epoch: u64,
+    },
+    DirectionAdded {
+        task_id: String,
+        revision: u64,
+    },
+    DirectionApplied {
+        task_id: String,
+        revision: u64,
+    },
+    Finished {
+        task_id: String,
+    },
+    Abandoned {
+        task_id: String,
+    },
+    ExecutionReported {
+        task_id: String,
+        sequence: u64,
+    },
+    /// Appended to preserve the existing postcard result variant indices.
+    ResourceAttached {
+        task_id: String,
+    },
+    /// Appended to preserve existing encoded result indices.
+    ExecutionBudgetSet {
+        task_id: String,
+    },
+    // New instruction/cancellation results follow the published main indices.
+    CancellationRequested {
+        task_id: String,
+        epoch: u64,
+    },
+    PendingAmended {
+        task_id: String,
+        revision: u64,
+    },
+    PendingCancelled {
+        task_id: String,
+        revision: u64,
+    },
 }
 
 /// The pending frontier a person actually observed. This is correlation, not
@@ -235,6 +272,9 @@ pub struct WorkspaceTaskMutationReceipt {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceTaskControl {
     pub run_epoch: u64,
+    /// Owner-configured policy, frozen into a broker-minted run at dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     /// Revision of pending instruction edits, separate from active-run
     /// directions. Legacy controls start at zero.
     #[serde(default, skip_serializing_if = "pending_revision_is_zero")]

@@ -542,8 +542,9 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 patch.object(PROOF, "quick_composer_targets"), \
                 patch.object(PROOF, "call", side_effect=actual_call):
             output = pathlib.Path(directory)
-            PROOF.capture_steer_receipt_failure("socket", "tide", lambda: {
-                **before, "status": "failed"}, before, output, "1600x900")
+            PROOF.capture_steer_receipt_failure("socket", "tide",
+                PROOF.closed_steer_owner_observation({**before, "status": "failed"}, before),
+                before, output, "1600x900")
             raw = (output / "agent-steer-receipt-failed.json").read_text()
             observed = json.loads(raw)
         self.assertEqual(operations, ["list_targets", "snapshot"])
@@ -557,6 +558,69 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertEqual(observed["physical_send_count"], 1)
         self.assertNotIn("PRIVATE", raw)
         self.assertNotIn("/send", raw)
+
+    def test_steer_both_owner_waits_capture_transport_failure_and_rethrow_original(self):
+        for stage in ("receipt", "applied"):
+            for error in (TimeoutError("PRIVATE-ERROR"), OSError("PRIVATE-ERROR"),
+                          PROOF.ProofTimeout("PRIVATE-ERROR")):
+                captures = []
+                calls = []
+                def owner_read():
+                    calls.append(stage)
+                    raise error
+                def diagnostic():
+                    captures.append(stage)
+                    raise OSError("PRIVATE-DIAGNOSTIC")
+                with self.subTest(stage=stage, kind=type(error)), \
+                        self.assertRaises(type(error)) as caught:
+                    PROOF.wait_steer_owner_observation(stage, owner_read, None, diagnostic)
+                self.assertIs(caught.exception, error)
+                self.assertEqual(calls, [stage])
+                self.assertEqual(captures, [stage])
+        source = inspect.getsource(PROOF.exercise_agent_quick_composer)
+        self.assertIn('lambda: capture_failure("receipt")', source)
+        self.assertIn('lambda: capture_failure("applied")', source)
+        self.assertIn("applied_revision == receipt_revision", source)
+        self.assertNotIn("exact_task", inspect.getsource(PROOF.capture_steer_receipt_failure))
+        with patch.object(PROOF, "wait_for", return_value="actual-result") as wait:
+            capture = unittest.mock.Mock()
+            predicate = lambda: "actual-result"
+            self.assertEqual(PROOF.wait_steer_owner_observation(
+                "applied", predicate, None, capture), "actual-result")
+            wait.assert_called_once_with("applied", predicate, None)
+            capture.assert_not_called()
+
+    def test_steer_applied_stall_receipt_retains_only_cached_closed_owner_evidence(self):
+        before = {"task_id": "PRIVATE-ID", "title": "PRIVATE-TITLE", "run_epoch": 7,
+                  "after_revision": 3}
+        last_owner = PROOF.closed_steer_owner_observation({
+            **before, "status": "in_progress", "after_revision": 4, "applied_revision": 3,
+            "instruction": "PRIVATE-PROMPT"}, before, 4)
+        self.assertTrue(last_owner["revision_advanced"])
+        self.assertTrue(last_owner["revision_matches_receipt"])
+        self.assertFalse(last_owner["applied_matches_receipt"])
+        operations = []
+        def stalled_call(_socket, operation):
+            operations.append(operation["op"])
+            raise TimeoutError("PRIVATE-SOCKET")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_quick_composer_accessibility", return_value=None), \
+                patch.object(PROOF, "call", side_effect=stalled_call):
+            output = pathlib.Path(directory)
+            PROOF.capture_steer_receipt_failure("socket", "tide", last_owner, before,
+                                               output, "1600x900", stage="applied")
+            raw = (output / "agent-steer-receipt-failed.json").read_text()
+            observed = json.loads(raw)
+            with self.assertRaisesRegex(RuntimeError, "malformed"):
+                PROOF.capture_steer_receipt_failure("socket", "tide",
+                    {**last_owner, "private": "PRIVATE-CANARY"}, before, output, "1600x900")
+        self.assertEqual(operations, ["list_targets", "snapshot"])
+        self.assertEqual(observed["failed_stage"], "applied")
+        self.assertTrue(observed["owner_observation_is_cached"])
+        self.assertTrue(observed["revision_advanced"])
+        self.assertFalse(observed["applied_matches_receipt"])
+        self.assertFalse(observed["snapshot_captured"])
+        self.assertNotIn("PRIVATE", raw)
 
     def test_prime_chat_frontier_restarts_only_stale_same_owned_tree_under_original_deadline(self):
         access = {"process": 123, "agent": "Tide", "detached": False,

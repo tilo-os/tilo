@@ -260,6 +260,9 @@ fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String
     {
         return Err("The task envelope has an invalid id, title, or lease".into());
     }
+    if let Some(budget) = run.execution_budget {
+        budget.validate().map_err(str::to_owned)?;
+    }
     let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
         .map_err(|_| "The task has an invalid action context".to_string())?;
     let valid_group = context.group.as_ref().is_some_and(|group| {
@@ -399,6 +402,8 @@ pub struct Session {
     managed_messages: Option<managed_messages::ManagedMessages>,
     enrolled_active: Option<runtime_collab::EnrolledTaskAcceptance>,
     enrolled_sequence: u64,
+    /// Monotonic deadline from an explicit broker-minted owner task policy.
+    task_deadline: Option<Instant>,
     /// When the agent last asked the room for the document. It asks again
     /// until it has one: an app that was still opening its file when the
     /// agent arrived never saw the first ask, and the agent would then wait
@@ -555,6 +560,7 @@ impl Session {
             managed_messages,
             enrolled_active: None,
             enrolled_sequence: 0,
+            task_deadline: None,
             last_route: None,
             asked_at: ui::time::now(),
             broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -806,11 +812,24 @@ impl Session {
         }
     }
 
+    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+        // Direction restarts rebuild model context, not the owner's total
+        // budget. Keep the original deadline through every restart and wait.
+        self.task_deadline = run.execution_budget.map(|budget| {
+            ui::time::now()
+                .checked_add(Duration::from_millis(u64::from(budget.total_ms)))
+                .unwrap_or_else(ui::time::now)
+        });
+        let result = self.run_task_with_deadline(run);
+        self.task_deadline = None;
+        result
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one task run keeps planning, per-step reporting, chunked writing and the terminal update in a single auditable sequence"
     )]
-    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+    fn run_task_with_deadline(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
         let validation = if self.enrolled_active.is_some() {
             validate_enrolled_context(run)
         } else {
@@ -1352,7 +1371,7 @@ impl Session {
         if !self.broker_surfaces.is_empty() {
             return Ok(());
         }
-        let deadline = ui::time::now() + TASK_CATALOGUE_WAIT;
+        let deadline = self.task_wait_deadline(TASK_CATALOGUE_WAIT);
         self.wait_for_task_catalogue_until(deadline)
     }
 
@@ -1374,6 +1393,18 @@ impl Session {
         }
         self.link.defer(deferred);
         Ok(())
+    }
+
+    fn task_wait_deadline(&self, maximum: Duration) -> Instant {
+        let now = ui::time::now();
+        let ordinary = now.checked_add(maximum).unwrap_or(now);
+        self.task_deadline
+            .map_or(ordinary, |task| ordinary.min(task))
+    }
+
+    fn task_budget_expired(&self) -> bool {
+        self.task_deadline
+            .is_some_and(|deadline| ui::time::now() >= deadline)
     }
 
     fn task_cancelled(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<bool> {
@@ -1407,7 +1438,7 @@ impl Session {
     }
 
     fn wait_for_task_control(&mut self, request_id: u64) -> Result<runtime_collab::TaskRunControl> {
-        let deadline = ui::time::now() + Duration::from_secs(5);
+        let deadline = self.task_wait_deadline(Duration::from_secs(5));
         let mut deferred = Vec::new();
         loop {
             let now = ui::time::now();
@@ -1459,6 +1490,11 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
         stepped: &mut bool,
     ) -> Result<Result<Handoff, TaskActionStop>> {
+        if self.task_budget_expired() {
+            return Ok(Err(TaskActionStop::Failed(
+                "Task time budget expired before starting a step".into(),
+            )));
+        }
         let request_id = self.next_request_id();
         // One invocation id for every attempt: a retry is the same request.
         let invocation = tilo_actions::InvocationId::new();
@@ -1473,8 +1509,15 @@ impl Session {
             action: action.action.clone(),
             arguments: arguments.clone(),
         };
-        let deadline = ui::time::now() + TASK_STEP_WAIT;
+        let deadline = self.task_wait_deadline(TASK_STEP_WAIT);
         loop {
+            if self.task_budget_expired() {
+                self.link.send(&CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Cancel { invocation },
+                })?;
+                return Ok(Err(TaskActionStop::Failed(
+                    "Task time budget expired; cancellation requested, step outcome remains unknown".into())));
+            }
             self.link.send(&request)?;
             match self.wait_for_task_action_reply(request_id, TASK_STEP_REPLY_WAIT)? {
                 // No reply or a pending step: the outcome is uncertain, so
@@ -1531,6 +1574,11 @@ impl Session {
         action: &TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
+        if self.task_budget_expired() {
+            return Ok(Err(TaskActionStop::Failed(
+                "Task time budget expired before invoking an action".into(),
+            )));
+        }
         let request_id = self.next_request_id();
         let invocation = tilo_actions::InvocationId::new();
         self.link.send(&CollabRequest::InvokeTaskAction {
@@ -1562,7 +1610,7 @@ impl Session {
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
         let mut interaction_sequence = 0_u64;
         self.publish_task_interaction(run, action, &update, interaction_sequence)?;
-        let deadline = ui::time::now() + TASK_ACTION_WAIT;
+        let deadline = self.task_wait_deadline(TASK_ACTION_WAIT);
         while !update.is_terminal() && ui::time::now() < deadline {
             if self.task_cancelled(run)? {
                 self.link.send(&CollabRequest::RemoteAction {
@@ -1592,6 +1640,15 @@ impl Session {
             };
             interaction_sequence = interaction_sequence.saturating_add(1);
             self.publish_task_interaction(run, action, &update, interaction_sequence)?;
+        }
+        if self.task_budget_expired() && !update.is_terminal() {
+            self.link.send(&CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Cancel { invocation },
+            })?;
+            return Ok(Err(TaskActionStop::Failed(
+                "Task time budget expired; cancellation requested, action outcome remains unknown"
+                    .into(),
+            )));
         }
         match update {
             tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
@@ -1752,7 +1809,7 @@ impl Session {
         request_id: u64,
         wait: Duration,
     ) -> Result<Option<TaskReply>> {
-        let deadline = ui::time::now() + wait;
+        let deadline = self.task_wait_deadline(wait);
         let mut deferred = Vec::new();
         loop {
             // Keep a streaming model turn moving while the step settles.
@@ -2142,7 +2199,7 @@ impl Session {
         }
         // The broker's pushed directory travels on its own stream and may
         // be one frame behind the document that named the action.
-        let deadline = ui::time::now() + TASK_CATALOGUE_WAIT;
+        let deadline = self.task_wait_deadline(TASK_CATALOGUE_WAIT);
         let mut deferred = Vec::new();
         let mut found = None;
         while ui::time::now() < deadline {
@@ -2476,7 +2533,7 @@ impl Session {
         &mut self,
         wanted: impl Fn(&RemoteActionMessage) -> bool,
     ) -> Result<Option<RemoteActionMessage>> {
-        let deadline = ui::time::now() + Duration::from_secs(10);
+        let deadline = self.task_wait_deadline(Duration::from_secs(10));
         let mut deferred = Vec::new();
         loop {
             self.pump_turn();
@@ -3199,6 +3256,9 @@ fn managed_context(cfg: &Config) -> Result<Option<ManagedContext>> {
     }))
 }
 fn validate_enrolled_context(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String> {
+    if let Some(budget) = run.execution_budget {
+        budget.validate().map_err(str::to_owned)?;
+    }
     let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
         .map_err(|_| "invalid enrolled context")?;
     if context.purpose.is_some()
@@ -3382,6 +3442,7 @@ mod tests {
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::RulesOnly,
+            execution_budget: None,
             action_context: serde_json::json!({
                 "purpose": "Review draft",
                 "group": {"id": "task:review", "label": "Review draft", "kind": "task"}
@@ -3449,6 +3510,7 @@ mod tests {
             managed_messages: None,
             enrolled_active: None,
             enrolled_sequence: 0,
+            task_deadline: None,
             asked_at: ui::time::now(),
             last_route: None,
             broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -3682,6 +3744,7 @@ mod tests {
                     managed_messages: None,
                     enrolled_active: managed.then_some(acceptance),
                     enrolled_sequence: 0,
+                    task_deadline: None,
                     asked_at: ui::time::now(),
                     last_route: None,
                     broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -3948,6 +4011,7 @@ mod tests {
                 managed_messages: None,
                 enrolled_active: Some(acceptance),
                 enrolled_sequence: 0,
+                task_deadline: None,
                 asked_at: ui::time::now(),
                 last_route: None,
                 broker_catalogue: tilo_actions::remote::CataloguePage::default(),

@@ -155,6 +155,29 @@ pub enum WorkspaceTaskCommand {
         run_epoch: u64,
         after_revision: u64,
     },
+    /// Person-created coordination work; never mints an agent run lease.
+    /// Appended to preserve every existing postcard command variant index.
+    CreateManual {
+        title: String,
+        #[serde(default, deserialize_with = "deserialize_optional_manual_resource")]
+        resource: Option<Box<WorkspaceTaskResource>>,
+    },
+    /// Replace one attachment only against the person's observed attachment.
+    /// Manual coordination cannot alter a managed task or active run.
+    AttachResource {
+        task_id: String,
+        expected_resource_id: Option<String>,
+        #[serde(deserialize_with = "deserialize_manual_resource")]
+        resource: Box<WorkspaceTaskResource>,
+    },
+    /// Owner-only policy update against the exact observed queued state.
+    /// Appended to preserve all existing encoded command indices.
+    SetExecutionBudget {
+        task_id: String,
+        expected_run_epoch: u64,
+        expected_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
+        budget: Option<collab_types::task_budget::TaskExecutionBudget>,
+    },
     /// Queue a task whose complete instruction is independent of its short
     /// Task Center title. Appended to preserve encoded command indices.
     QueueTask {
@@ -184,6 +207,60 @@ pub enum WorkspaceTaskCommand {
         task_id: String,
         frontier: WorkspaceTaskPendingFrontier,
     },
+}
+
+// Ordinary resources already serialize to these five positional fields when
+// agent_request is absent. Retain those published bytes rather than changing
+// owner-commit digests by adding an Option tag. Only manual commands use this
+// binary shape; their normal admission still validates every resource field.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualResourceWire {
+    app_id: Option<String>,
+    app_label: Option<String>,
+    id: String,
+    kind: String,
+    label: String,
+}
+
+impl From<ManualResourceWire> for WorkspaceTaskResource {
+    fn from(value: ManualResourceWire) -> Self {
+        Self {
+            app_id: value.app_id,
+            app_label: value.app_label,
+            id: value.id,
+            kind: value.kind,
+            label: value.label,
+            agent_request: None,
+        }
+    }
+}
+
+fn deserialize_manual_resource<'de, D>(
+    deserializer: D,
+) -> Result<Box<WorkspaceTaskResource>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    if deserializer.is_human_readable() {
+        Box::<WorkspaceTaskResource>::deserialize(deserializer)
+    } else {
+        ManualResourceWire::deserialize(deserializer).map(|resource| Box::new(resource.into()))
+    }
+}
+
+fn deserialize_optional_manual_resource<'de, D>(
+    deserializer: D,
+) -> Result<Option<Box<WorkspaceTaskResource>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    if deserializer.is_human_readable() {
+        Option::<Box<WorkspaceTaskResource>>::deserialize(deserializer)
+    } else {
+        Option::<ManualResourceWire>::deserialize(deserializer)
+            .map(|resource| resource.map(|resource| Box::new(resource.into())))
+    }
 }
 
 impl WorkspaceTaskCommand {
@@ -292,6 +369,13 @@ fn dispatch(
     command: &WorkspaceTaskCommand,
 ) -> Result<(String, WorkspaceTaskMutationResult), String> {
     match command {
+        command @ (WorkspaceTaskCommand::CreateManual { .. }
+        | WorkspaceTaskCommand::AttachResource { .. }) => {
+            manual_command(tasks, controls, context, command)
+        }
+        command @ WorkspaceTaskCommand::SetExecutionBudget { .. } => {
+            dispatch_budget(tasks, controls, context, command)
+        }
         WorkspaceTaskCommand::Queue { .. } | WorkspaceTaskCommand::QueueTask { .. } => {
             dispatch_queue(tasks, controls, context, command)
         }
@@ -315,34 +399,9 @@ fn dispatch(
         WorkspaceTaskCommand::AppliedAck { .. } | WorkspaceTaskCommand::ExecutionPhase { .. } => {
             dispatch_agent_report(tasks, controls, context, command)
         }
-        WorkspaceTaskCommand::Finish {
-            task_id,
-            run_epoch,
-            outcome,
-            summary,
-        } => finish(
-            tasks,
-            controls,
-            context.actor,
-            task_id,
-            *run_epoch,
-            *outcome,
-            summary,
-            context.now,
-        ),
-        WorkspaceTaskCommand::Abandon {
-            task_id,
-            run_epoch,
-            reason,
-        } => abandon(
-            tasks,
-            controls,
-            context.actor,
-            task_id,
-            *run_epoch,
-            reason,
-            context.now,
-        ),
+        WorkspaceTaskCommand::Finish { .. } | WorkspaceTaskCommand::Abandon { .. } => {
+            dispatch_terminal(tasks, controls, context, command)
+        }
         WorkspaceTaskCommand::DirectionForRun {
             task_id,
             run_epoch,
@@ -385,6 +444,45 @@ fn dispatch(
             task_id,
             (*run_epoch, *after_revision),
         ),
+    }
+}
+
+fn dispatch_terminal(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    match command {
+        WorkspaceTaskCommand::Finish {
+            task_id,
+            run_epoch,
+            outcome,
+            summary,
+        } => finish(
+            tasks,
+            controls,
+            context.actor,
+            task_id,
+            *run_epoch,
+            *outcome,
+            summary,
+            context.now,
+        ),
+        WorkspaceTaskCommand::Abandon {
+            task_id,
+            run_epoch,
+            reason,
+        } => abandon(
+            tasks,
+            controls,
+            context.actor,
+            task_id,
+            *run_epoch,
+            reason,
+            context.now,
+        ),
+        _ => Err("command is not a terminal task update".into()),
     }
 }
 
@@ -529,6 +627,30 @@ fn dispatch_queue(
     )
 }
 
+fn dispatch_budget(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let WorkspaceTaskCommand::SetExecutionBudget {
+        task_id,
+        expected_run_epoch,
+        expected_budget,
+        budget,
+    } = command
+    else {
+        return Err("command is not a task execution budget edit".into());
+    };
+    set_execution_budget(
+        tasks,
+        controls,
+        context,
+        task_id,
+        (*expected_run_epoch, *expected_budget, *budget),
+    )
+}
+
 fn dispatch_agent_report(
     tasks: &mut [WorkspaceTask],
     controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
@@ -581,6 +703,193 @@ fn dispatch_retry(
         run_epoch,
         context.now,
     )
+}
+
+/// Validate an ordinary resource reference, not an agent instruction carrier.
+/// Labels are descriptive metadata; attachments grant no resource authority.
+/// # Errors
+/// Rejects oversized, malformed, path-like or managed-execution attachments.
+pub fn validate_manual_resource(resource: &WorkspaceTaskResource) -> Result<(), String> {
+    for (value, maximum, name) in [
+        (
+            resource.app_id.as_deref().unwrap_or_default(),
+            256,
+            "attachment app",
+        ),
+        (
+            resource.app_label.as_deref().unwrap_or_default(),
+            512,
+            "attachment app label",
+        ),
+        (resource.id.as_str(), 2048, "attachment id"),
+        (resource.kind.as_str(), 128, "attachment kind"),
+        (resource.label.as_str(), 512, "attachment label"),
+    ] {
+        bounded(value, maximum, name)?;
+        if value.chars().any(char::is_control) {
+            return Err("attachment metadata contains control characters".into());
+        }
+    }
+    let app = resource.app_id.as_deref().unwrap_or_default();
+    if !app.contains('.')
+        || !app
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+        || resource.id.starts_with(['/', '\\'])
+        || resource
+            .id
+            .split_once(':')
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("file"))
+        || resource.agent_request.is_some()
+    {
+        return Err("manual attachment is not an ordinary application resource".into());
+    }
+    Ok(())
+}
+
+fn manual_command(
+    tasks: &mut Vec<WorkspaceTask>,
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id: author, device } = context.actor else {
+        return Err("only a person may change manual coordination tasks".into());
+    };
+    match command {
+        WorkspaceTaskCommand::CreateManual { title, resource } => {
+            let title = title.trim();
+            if title.is_empty()
+                || title.chars().count() > MAX_TASK_TITLE_CHARS
+                || title.chars().any(char::is_control)
+                || tasks.len() >= 1024
+            {
+                return Err("manual task title or task capacity is invalid".into());
+            }
+            if let Some(resource) = resource {
+                validate_manual_resource(resource)?;
+            }
+            let task_id = deterministic_task_id(*device, context.invocation);
+            if tasks.iter().any(|task| task.id == task_id) || controls.contains_key(&task_id) {
+                return Err("deterministic task id is already occupied".into());
+            }
+            tasks.push(WorkspaceTask {
+                id: task_id.clone(),
+                title: title.into(),
+                created_by: author.clone(),
+                assigned_agent: None,
+                route: WorkspaceTaskRoute::Manual,
+                status: WorkspaceTaskStatus::Queued,
+                resource: resource.as_deref().cloned(),
+                created_at: context.now,
+                updated_at: context.now,
+                audit: vec![WorkspaceTaskAuditEvent {
+                    at: context.now,
+                    actor: author.clone(),
+                    summary: format!("Created manual task · {title}"),
+                }],
+            });
+            controls.insert(task_id.clone(), WorkspaceTaskControl::default());
+            Ok((
+                task_id.clone(),
+                WorkspaceTaskMutationResult::Queued { task_id },
+            ))
+        }
+        WorkspaceTaskCommand::AttachResource {
+            task_id,
+            expected_resource_id,
+            resource,
+        } => {
+            validate_manual_resource(resource)?;
+            if let Some(observed) = expected_resource_id {
+                bounded(observed, 2048, "observed attachment id")?;
+                if observed.chars().any(char::is_control) {
+                    return Err("observed attachment id contains control characters".into());
+                }
+            }
+            let task = tasks
+                .iter_mut()
+                .find(|task| &task.id == task_id)
+                .ok_or("manual task is absent")?;
+            let control = controls
+                .get(task_id)
+                .ok_or("manual task control is absent")?;
+            if task.route != WorkspaceTaskRoute::Manual
+                || task.assigned_agent.is_some()
+                || task.status.is_finished()
+                || control.active_run.is_some()
+                || control.run_epoch != 0
+            {
+                return Err(
+                    "manual attachment cannot change a managed, leased or finished task".into(),
+                );
+            }
+            if task.resource.as_ref().map(|value| value.id.as_str())
+                != expected_resource_id.as_deref()
+            {
+                return Err("task attachment changed since it was observed".into());
+            }
+            task.resource = Some(resource.as_ref().clone());
+            task.updated_at = context.now;
+            task.audit.push(WorkspaceTaskAuditEvent {
+                at: context.now,
+                actor: author.clone(),
+                summary: format!("Attached resource · {}", resource.label),
+            });
+            Ok((
+                task_id.clone(),
+                WorkspaceTaskMutationResult::ResourceAttached {
+                    task_id: task_id.clone(),
+                },
+            ))
+        }
+        _ => Err("not a manual coordination command".into()),
+    }
+}
+
+fn set_execution_budget(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    observed: (
+        u64,
+        Option<collab_types::task_budget::TaskExecutionBudget>,
+        Option<collab_types::task_budget::TaskExecutionBudget>,
+    ),
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id: actor, .. } = context.actor else {
+        return Err("only the workspace owner may configure task execution budgets".into());
+    };
+    if let Some(budget) = observed.2 {
+        budget.validate()?;
+    }
+    let task = tasks
+        .iter_mut()
+        .find(|task| task.id == task_id)
+        .ok_or("task is absent")?;
+    let control = controls.get_mut(task_id).ok_or("task control is absent")?;
+    if task.route == WorkspaceTaskRoute::Manual
+        || task.status.is_finished()
+        || control.active_run.is_some()
+        || control.run_epoch != observed.0
+        || control.execution_budget != observed.1
+    {
+        return Err("task execution budget changed, task is active, manual or finished".into());
+    }
+    control.execution_budget = observed.2;
+    task.updated_at = context.now;
+    task.audit.push(WorkspaceTaskAuditEvent {
+        at: context.now,
+        actor: actor.clone(),
+        summary: "Configured bounded task execution policy".into(),
+    });
+    Ok((
+        task_id.into(),
+        WorkspaceTaskMutationResult::ExecutionBudgetSet {
+            task_id: task_id.into(),
+        },
+    ))
 }
 
 fn queue(
@@ -1287,6 +1596,9 @@ pub fn controls_of(
         {
             return Err("task queue admission order is zero or duplicated".into());
         }
+        if let Some(budget) = control.execution_budget {
+            budget.validate()?;
+        }
         if let Some(execution) = &control.execution
             && (control
                 .active_run
@@ -1327,6 +1639,232 @@ fn project_controls(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_resource_binary_decode_preserves_published_bytes_and_rejects_truncation() {
+        let resource = WorkspaceTaskResource {
+            app_id: Some("a.b".into()),
+            app_label: Some("A".into()),
+            id: "a:x".into(),
+            kind: "x".into(),
+            label: "X".into(),
+            agent_request: None,
+        };
+        validate_manual_resource(&resource).unwrap();
+        let commands = [
+            (
+                WorkspaceTaskCommand::AttachResource {
+                    task_id: "task:one".into(),
+                    expected_resource_id: None,
+                    resource: Box::new(resource.clone()),
+                },
+                vec![
+                    11, 8, b't', b'a', b's', b'k', b':', b'o', b'n', b'e', 0, 1, 3, b'a', b'.',
+                    b'b', 1, 1, b'A', 3, b'a', b':', b'x', 1, b'x', 1, b'X',
+                ],
+            ),
+            (
+                WorkspaceTaskCommand::CreateManual {
+                    title: "One".into(),
+                    resource: Some(Box::new(resource)),
+                },
+                vec![
+                    10, 3, b'O', b'n', b'e', 1, 1, 3, b'a', b'.', b'b', 1, 1, b'A', 3, b'a', b':',
+                    b'x', 1, b'x', 1, b'X',
+                ],
+            ),
+        ];
+        for (command, published) in commands {
+            assert_eq!(postcard::to_allocvec(&command).unwrap(), published);
+            let decoded =
+                crate::governed_routes::exact::<WorkspaceTaskCommand>(&published).unwrap();
+            assert_eq!(postcard::to_allocvec(&decoded).unwrap(), published);
+            for length in 0..published.len() {
+                assert!(
+                    crate::governed_routes::exact::<WorkspaceTaskCommand>(&published[..length])
+                        .is_none()
+                );
+            }
+            let mut trailing = published.clone();
+            trailing.push(0);
+            assert!(crate::governed_routes::exact::<WorkspaceTaskCommand>(&trailing).is_none());
+        }
+    }
+
+    #[test]
+    fn manual_resource_human_readable_decode_keeps_instruction_evidence_for_admission() {
+        let encoded = serde_json::json!({"AttachResource": {
+            "task_id": "task:one", "expected_resource_id": null,
+            "resource": {"app_id": "a.b", "app_label": "A", "id": "a:x",
+                "kind": "x", "label": "X", "agent_request": {
+                    "chat_record": "record", "channel_id": "channel", "message_id": "message",
+                    "instruction": "Do not omit this evidence",
+                    "invocation": uuid::Uuid::from_u128(1)}}}});
+        assert!(
+            serde_json::from_value::<ManualResourceWire>(
+                encoded["AttachResource"]["resource"].clone()
+            )
+            .is_err(),
+            "the five-field map shape must refuse rather than discard instruction evidence"
+        );
+        let decoded: WorkspaceTaskCommand = serde_json::from_value(encoded).unwrap();
+        let WorkspaceTaskCommand::AttachResource { resource, .. } = decoded else {
+            panic!("manual attachment");
+        };
+        assert!(resource.agent_request.is_some());
+        assert!(validate_manual_resource(&resource).is_err());
+        assert!(matches!(
+            serde_json::from_str::<WorkspaceTaskCommand>(r#"{"CreateManual":{"title":"One"}}"#)
+                .unwrap(),
+            WorkspaceTaskCommand::CreateManual { resource: None, .. }
+        ));
+    }
+
+    #[test]
+    fn native_coordination_wire_positions_remain_before_new_instruction_commands() {
+        let attachment = WorkspaceTaskCommand::AttachResource {
+            task_id: "task:one".into(),
+            expected_resource_id: None,
+            resource: Box::new(WorkspaceTaskResource {
+                app_id: Some("so.tilo.test".into()),
+                app_label: Some("Test".into()),
+                id: "test:one".into(),
+                kind: "test".into(),
+                label: "One".into(),
+                agent_request: None,
+            }),
+        };
+        let budget = WorkspaceTaskCommand::SetExecutionBudget {
+            task_id: "task:one".into(),
+            expected_run_epoch: 0,
+            expected_budget: None,
+            budget: None,
+        };
+        for (command, index) in [(attachment, 11), (budget, 12)] {
+            let encoded = postcard::to_allocvec(&command).unwrap();
+            assert_eq!(encoded[0], index);
+            let decoded = postcard::from_bytes::<WorkspaceTaskCommand>(&encoded).unwrap();
+            assert_eq!(postcard::to_allocvec(&decoded).unwrap(), encoded);
+        }
+        for (result, index) in [
+            (
+                WorkspaceTaskMutationResult::ResourceAttached {
+                    task_id: "t".into(),
+                },
+                7,
+            ),
+            (
+                WorkspaceTaskMutationResult::ExecutionBudgetSet {
+                    task_id: "t".into(),
+                },
+                8,
+            ),
+            (
+                WorkspaceTaskMutationResult::CancellationRequested {
+                    task_id: "t".into(),
+                    epoch: 1,
+                },
+                9,
+            ),
+            (
+                WorkspaceTaskMutationResult::PendingAmended {
+                    task_id: "t".into(),
+                    revision: 1,
+                },
+                10,
+            ),
+            (
+                WorkspaceTaskMutationResult::PendingCancelled {
+                    task_id: "t".into(),
+                    revision: 1,
+                },
+                11,
+            ),
+        ] {
+            let encoded = postcard::to_allocvec(&result).unwrap();
+            assert_eq!(encoded[0], index);
+            assert_eq!(
+                postcard::from_bytes::<WorkspaceTaskMutationResult>(&encoded).unwrap(),
+                result
+            );
+        }
+    }
+
+    #[test]
+    fn manual_commands_append_encoded_positions_and_refuse_malformed_owner_inputs() {
+        assert_eq!(postcard::to_stdvec(&queue_command()).unwrap()[0], 0);
+        assert_eq!(
+            postcard::to_stdvec(&WorkspaceTaskCommand::Retry {
+                task_id: "task:old".into(),
+                run_epoch: 1,
+            })
+            .unwrap()[0],
+            7
+        );
+        let valid = WorkspaceTaskCommand::CreateManual {
+            title: "Review".into(),
+            resource: None,
+        };
+        // Main already shipped cancellation at index 9. New manual commands
+        // append after it; retain both encoding and decoding of that wire form.
+        let cancellation = WorkspaceTaskCommand::CancelForRun {
+            task_id: "t".into(),
+            run_epoch: 1,
+            after_revision: 0,
+        };
+        let cancellation_bytes = [9, 1, b't', 1, 0];
+        assert_eq!(
+            postcard::to_stdvec(&cancellation).unwrap(),
+            cancellation_bytes
+        );
+        assert!(matches!(
+            postcard::from_bytes::<WorkspaceTaskCommand>(&cancellation_bytes).unwrap(),
+            WorkspaceTaskCommand::CancelForRun { task_id, run_epoch: 1, after_revision: 0 }
+                if task_id == "t"
+        ));
+        assert_eq!(postcard::to_stdvec(&valid).unwrap()[0], 10);
+        let mut doc = AutoCommit::new();
+        for (invocation, title) in [
+            (1, " ".to_owned()),
+            (2, "x".repeat(241)),
+            (3, "Review\ncommand".to_owned()),
+        ] {
+            assert!(
+                run(
+                    &mut doc,
+                    invocation,
+                    1,
+                    &person(),
+                    &WorkspaceTaskCommand::CreateManual {
+                        title,
+                        resource: None
+                    }
+                )
+                .is_err()
+            );
+            assert!(snapshot(&doc).unwrap().tasks.is_empty());
+        }
+        let actual = run(&mut doc, 4, 1, &person(), &valid).unwrap();
+        let before = snapshot(&doc).unwrap();
+        assert!(
+            run(
+                &mut doc,
+                4,
+                2,
+                &person(),
+                &WorkspaceTaskCommand::CreateManual {
+                    title: "Changed replay payload".into(),
+                    resource: None,
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(snapshot(&doc).unwrap(), before);
+        assert_eq!(
+            run(&mut doc, 4, 1, &person(), &valid).unwrap().result,
+            actual.result
+        );
+    }
 
     fn person() -> AdmittedTaskActor {
         AdmittedTaskActor::Person {
@@ -2241,9 +2779,9 @@ mod tests {
             route: WorkspaceTaskRoute::Model,
             resource: None,
         };
-        // CancelForRun already occupies index 9 on main; this newer command is
-        // appended rather than changing any previously encoded variant.
-        assert_eq!(postcard::to_allocvec(&command).unwrap()[0], 10);
+        // Main's coordination/budget commands occupy indices 10 through 12;
+        // this newer command follows them without changing published indices.
+        assert_eq!(postcard::to_allocvec(&command).unwrap()[0], 13);
         let mut doc = AutoCommit::new();
         let queued = run(&mut doc, 21, 21, &person(), &command).unwrap();
         let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
@@ -2401,7 +2939,7 @@ mod tests {
             run_epoch: 1,
             after_revision: 0,
         };
-        assert_eq!(postcard::to_allocvec(&request).unwrap()[0], 11);
+        assert_eq!(postcard::to_allocvec(&request).unwrap()[0], 14);
         let result = run(&mut doc, 43, 43, &person(), &request).unwrap();
         assert_eq!(
             result.result,

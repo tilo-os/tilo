@@ -1658,60 +1658,36 @@ impl StatePeer {
                 if received != self.core.room {
                     return Err("room topic mismatch".into());
                 }
-                self.certificate(&source, now)?;
-                if self.core.room_doc.is_some() || source != self.core.authority.device_public_key {
-                    let role = self.role(&source, now)?;
-                    let certificate = self.certificate(&source, now)?;
-                    let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(
-                        certificate.user_public_key,
-                    ));
-                    let (_, _, caps) = room::extract_governed_fields(
-                        self.core
-                            .room_doc
-                            .as_deref()
-                            .ok_or("room governance missing")?,
-                    );
-                    let actor =
-                        Actor::person(Some(role), person.id()).in_room(self.core.room.clone());
-                    if decide_capability(
-                        &actor,
-                        &ResourceRef::Room(self.core.room.clone()),
-                        collab_types::caps::Verb::Write,
-                        &caps,
-                        Some(now_secs(now)),
-                    ) != CapDecision::Allow
-                    {
-                        return Err("room write forbidden".into());
-                    }
-                }
-                let candidate =
-                    room::candidate(self.core.room_doc.as_deref(), &changes).map_err(err)?;
-                if room::declared_room_mismatches(
-                    &candidate,
-                    uuid::Uuid::parse_str(&self.core.room).map_err(err)?,
-                ) {
-                    return Err("declared room mismatch".into());
-                }
+                let person = self.certificate(&source, now)?.user_public_key;
+                // Bootstrap: the invite's authority device supplies the first
+                // governance before any roster exists to resolve it against.
+                let role = if self.core.room_doc.is_some()
+                    || source != self.core.authority.device_public_key
+                {
+                    Some(self.role(&source, now)?)
+                } else {
+                    None
+                };
                 let pinned = hex::encode(self.core.authority.device_public_key);
                 let from = hex::encode(source);
-                if !room::governance_change_allowed(
-                    self.core.room_doc.as_deref(),
-                    &candidate,
-                    false,
-                    Some(&pinned),
-                    &from,
-                ) {
-                    return Err("governance writer is not pinned authority".into());
-                }
-                crate::topology::validate(
-                    self.core.room_doc.as_deref(),
-                    &candidate,
-                    &from,
-                    &pinned,
-                )?;
-                if !room::immutable_receipts(self.core.room_doc.as_deref(), &candidate) {
-                    return Err("effect receipt is immutable".into());
-                }
+                // The one room admission the shell's workspace tree runs too.
+                let room::AdmittedRoom { candidate, media } = room::admit_room_changes(
+                    room::RoomAdmission {
+                        before: self.core.room_doc.as_deref(),
+                        room: &self.core.room,
+                        source: room::Writer {
+                            key: &from,
+                            standing: room::Standing::Member { person, role },
+                        },
+                        authority: room::AuthorityPin::Device(&pinned),
+                        contents: room::ContentOwnership::Registry,
+                        caps_now: now_secs(now),
+                    },
+                    &changes,
+                )
+                .map_err(err)?;
+                // Receipts this peer admitted earlier stay immutable even once
+                // the room document omits them.
                 let mut receipts = self.core.receipts.clone();
                 for (key, value) in room::receipt_values(&candidate) {
                     let bytes = serde_json::to_vec(&value).map_err(err)?;
@@ -1720,19 +1696,11 @@ impl StatePeer {
                     }
                     receipts.insert(key, bytes);
                 }
-                crate::coverage::monotonic(self.core.room_doc.as_deref(), &candidate)?;
-                crate::durability::monotonic(self.core.room_doc.as_deref(), &candidate)?;
                 let changed = self
                     .core
                     .room_doc
                     .as_deref()
                     .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
-                let media = room::media::validate_transition(
-                    self.core.room_doc.as_deref(),
-                    &candidate,
-                    room::media::TransitionMode::Admission,
-                )
-                .map_err(err)?;
                 if let Some(policy) = &media {
                     self.validate_media_bindings(policy, false)?;
                 }

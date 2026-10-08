@@ -486,6 +486,137 @@ impl Assembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn committed_small_captures_share_the_existing_byte_budget() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let budget = ByteBudget::new();
+        let payloads: Vec<_> = (1..=3)
+            .map(|capture| {
+                let mut graph = automerge::AutoCommit::new();
+                graph
+                    .put(automerge::ROOT, "body", format!("capture{capture}"))
+                    .unwrap();
+                graph.commit();
+                graph.save()
+            })
+            .collect();
+        let charged: usize = payloads.iter().map(Vec::len).sum();
+        let mut retained = Vec::new();
+        for (index, payload) in payloads.iter().enumerate() {
+            let capture = u64::try_from(index + 1).unwrap();
+            let result = read_capture_using(
+                Reply::Chunk {
+                    capture,
+                    revision: [7; 32],
+                    total: u32::try_from(payload.len()).unwrap(),
+                    offset: 0,
+                    bytes: payload.clone(),
+                    token: [3; 16],
+                },
+                &budget,
+                async |request| {
+                    assert_eq!(
+                        request,
+                        Request::Cancel {
+                            capture,
+                            token: [3; 16]
+                        }
+                    );
+                    Ok(Reply::Cancelled)
+                },
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "three valid tiny graphs fit the existing byte budget: {:?}",
+                result.as_ref().err()
+            );
+            retained.push(result.unwrap().0);
+        }
+        assert_eq!(retained.len(), 3);
+        for (index, read) in retained.iter().enumerate() {
+            read.with_mutation(|mutation| {
+                assert_eq!(
+                    mutation,
+                    &collab_types::DocumentMutation::Snapshot(payloads[index].clone())
+                );
+                let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+                    panic!("full captured graph required")
+                };
+                let graph = automerge::AutoCommit::load(bytes).unwrap();
+                assert_eq!(
+                    graph
+                        .get(automerge::ROOT, "body")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str(),
+                    Some(format!("capture{}", index + 1).as_str())
+                );
+            })
+            .unwrap();
+        }
+        let limit = MAX_DOCUMENT_BYTES * 2;
+        let remainder = budget.reserve(limit - charged, limit).unwrap();
+        assert!(budget.reserve(1, limit).is_none());
+        let clone = retained[0].clone();
+        retained.remove(0);
+        assert!(
+            budget.reserve(1, limit).is_none(),
+            "the capture clone retains its one lease"
+        );
+        drop(clone);
+        let released = budget
+            .reserve(payloads[0].len(), limit)
+            .expect("the final capture owner releases its payload bytes");
+        assert!(budget.reserve(1, limit).is_none());
+        drop(released);
+        drop(retained);
+        drop(remainder);
+        assert!(budget.reserve(limit, limit).is_some());
+    }
+    #[tokio::test]
+    async fn committed_capture_invalid_totals_acknowledge_without_retaining_a_lease() {
+        for (total, offset, bytes) in [
+            (0, 0, vec![]),
+            (u32::try_from(MAX_DOCUMENT_BYTES).unwrap() + 1, 0, vec![1]),
+            (1, 0, vec![1, 2]),
+            (1, 1, vec![1]),
+        ] {
+            let budget = ByteBudget::new();
+            let mut acknowledged = false;
+            let result = read_capture_using(
+                Reply::Chunk {
+                    capture: 1,
+                    revision: [7; 32],
+                    total,
+                    offset,
+                    bytes,
+                    token: [3; 16],
+                },
+                &budget,
+                async |request| {
+                    assert_eq!(
+                        request,
+                        Request::Cancel {
+                            capture: 1,
+                            token: [3; 16]
+                        }
+                    );
+                    acknowledged = true;
+                    Ok(Reply::Cancelled)
+                },
+            )
+            .await;
+            assert_eq!(result.unwrap_err(), "committed document initial bounds");
+            assert!(acknowledged);
+            assert!(
+                budget
+                    .reserve(MAX_DOCUMENT_BYTES * 2, MAX_DOCUMENT_BYTES * 2)
+                    .is_some()
+            );
+        }
+    }
     #[test]
     fn committed_document_publication_waits_for_owner_and_old_ack_cannot_reopen() {
         let reads = Reads::default();
@@ -711,17 +842,21 @@ pub(super) async fn read_capture_using(
     };
     // Reserve before the full-document destination allocation. Every clone of
     // the event retains this one shared reservation until the last owner drops.
-    let (first_id, first_token) = match &first {
-        Reply::Chunk { capture, token, .. } => (*capture, *token),
+    let (first_id, first_token, total) = match &first {
+        Reply::Chunk {
+            capture,
+            token,
+            total,
+            ..
+        } => (*capture, *token, *total as usize),
         _ => return Err("committed initial capture missing".into()),
     };
     let prepared = (|| {
-        let total = match &first {
-            Reply::Chunk { total, .. } if *total > 0 && *total as usize <= MAX_DOCUMENT_BYTES => {
-                *total as usize
-            }
-            _ => return Err("committed document initial bounds".to_string()),
-        };
+        if total == 0 || total > MAX_DOCUMENT_BYTES {
+            return Err("committed document initial bounds".into());
+        }
+        // Charge the validated raw payload before allocating its destination.
+        // Clones share this one lease; the aggregate limit is unchanged.
         let reservation = budget
             .reserve(total, MAX_DOCUMENT_BYTES * 2)
             .ok_or("SDK committed read capacity")?;

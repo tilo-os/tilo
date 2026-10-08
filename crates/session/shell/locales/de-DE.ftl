@@ -2527,5 +2527,7 @@ task-review-retry = Aufgabe erneut versuchen
 task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
 task-review-provider = Aufgabenprüfung
 
+host-history-task-refused-title = Aufgabe konnte nicht geändert werden
+host-history-task-refused-body = Der Arbeitsbereich hat diese Änderung nicht angenommen. Ihr Entwurf bleibt erhalten. Prüfen Sie vor einem erneuten Versuch Ihre Identität und die Berechtigungen im Arbeitsbereich.
 shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht verfügbar.
 shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.

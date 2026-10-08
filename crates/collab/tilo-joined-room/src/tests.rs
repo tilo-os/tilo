@@ -1081,3 +1081,251 @@ fn person_cancel_is_frontier_fenced_and_durable_after_restart() {
             .is_err()
     );
 }
+
+fn manual_resource(id: &str) -> tilo_desktop_model::WorkspaceTaskResource {
+    tilo_desktop_model::WorkspaceTaskResource {
+        app_id: Some("so.tilo.chip-design".into()),
+        app_label: Some("Chip Design".into()),
+        id: id.into(),
+        kind: "chip_design.verification".into(),
+        label: "Mapped tile evidence".into(),
+        agent_request: None,
+    }
+}
+
+fn manual_request(
+    joined: &Enrolled,
+    invocation: u128,
+    command: WorkspaceTaskCommand,
+) -> OwnerCommitRequest {
+    let caller = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.device().clone()))
+        .unwrap();
+    OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(invocation),
+            authority: WorkspaceTaskAuthority::Person { caller },
+            command,
+        },
+    }
+}
+
+#[test]
+fn manual_task_owner_replay_restart_and_attachment_are_canonical() {
+    let joined = enrolled();
+    let request = manual_request(
+        &joined,
+        701,
+        WorkspaceTaskCommand::CreateManual {
+            title: "Review mapped checkpoint evidence".into(),
+            resource: None,
+        },
+    );
+    let receipt = joined
+        .owner
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    receipt.validate_for(&request).unwrap();
+    let snapshot = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    assert_eq!(snapshot.tasks.len(), 1);
+    let task = &snapshot.tasks[0];
+    let task_id = task.id.clone();
+    assert_eq!(task.route, tilo_desktop_model::WorkspaceTaskRoute::Manual);
+    assert!(task.assigned_agent.is_none());
+    assert_eq!(task.status, tilo_desktop_model::WorkspaceTaskStatus::Queued);
+    assert!(task.resource.is_none());
+    let author = joined
+        .owner
+        .with_current(joined.room, |view| {
+            Ok(view
+                .peer()
+                .permissions(view.device().device_public_key, joined.now)?
+                .2)
+        })
+        .unwrap();
+    assert_eq!(task.created_by, author);
+    assert_eq!(task.audit[0].actor, author);
+    assert_eq!(snapshot.controls[&task_id].run_epoch, 0);
+    assert!(snapshot.controls[&task_id].active_run.is_none());
+    assert_eq!(snapshot.controls[&task_id].receipts.len(), 1);
+    joined
+        .owner
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    assert_eq!(
+        joined.owner.workspace_task_snapshot(joined.room).unwrap(),
+        snapshot
+    );
+    let attach = manual_request(
+        &joined,
+        702,
+        WorkspaceTaskCommand::AttachResource {
+            task_id: task_id.clone(),
+            expected_resource_id: None,
+            resource: Box::new(manual_resource("chip_design.verification:actual-pinned-id")),
+        },
+    );
+    joined
+        .owner
+        .commit_workspace_task_command(attach.clone(), joined.now)
+        .unwrap();
+    let attached = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    assert_eq!(
+        attached.tasks[0].resource.as_ref().unwrap().id,
+        "chip_design.verification:actual-pinned-id"
+    );
+    assert_eq!(attached.tasks[0].audit.len(), 2);
+    assert_eq!(attached.tasks[0].audit[1].actor, author);
+    assert!(attached.controls[&task_id].active_run.is_none());
+    joined
+        .owner
+        .commit_workspace_task_command(attach, joined.now)
+        .unwrap();
+    assert_eq!(
+        joined.owner.workspace_task_snapshot(joined.room).unwrap(),
+        attached
+    );
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    assert_eq!(
+        reopened.workspace_task_snapshot(joined.room).unwrap(),
+        attached
+    );
+    reopened
+        .commit_workspace_task_command(request, joined.now)
+        .unwrap();
+    assert_eq!(
+        reopened.workspace_task_snapshot(joined.room).unwrap(),
+        attached
+    );
+}
+
+#[test]
+fn manual_attachment_cannot_overwrite_unobserved_or_managed_owner_state() {
+    let joined = enrolled();
+    let create = manual_request(
+        &joined,
+        710,
+        WorkspaceTaskCommand::CreateManual {
+            title: "Review mapping".into(),
+            resource: Some(Box::new(manual_resource("chip_design.verification:first"))),
+        },
+    );
+    joined
+        .owner
+        .commit_workspace_task_command(create, joined.now)
+        .unwrap();
+    let before = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    let stale = manual_request(
+        &joined,
+        711,
+        WorkspaceTaskCommand::AttachResource {
+            task_id: before.tasks[0].id.clone(),
+            expected_resource_id: None,
+            resource: Box::new(manual_resource("chip_design.verification:second")),
+        },
+    );
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(stale, joined.now)
+            .unwrap_err()
+            .contains("changed since")
+    );
+    assert_eq!(
+        joined.owner.workspace_task_snapshot(joined.room).unwrap(),
+        before
+    );
+    let exact = manual_request(
+        &joined,
+        712,
+        WorkspaceTaskCommand::AttachResource {
+            task_id: before.tasks[0].id.clone(),
+            expected_resource_id: Some("chip_design.verification:first".into()),
+            resource: Box::new(manual_resource("chip_design.verification:second")),
+        },
+    );
+    joined
+        .owner
+        .commit_workspace_task_command(exact, joined.now)
+        .unwrap();
+    let (managed_id, _) = queued_and_started_task(&joined);
+    let before = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    let managed = manual_request(
+        &joined,
+        713,
+        WorkspaceTaskCommand::AttachResource {
+            task_id: managed_id,
+            expected_resource_id: None,
+            resource: Box::new(manual_resource("chip_design.verification:second")),
+        },
+    );
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(managed, joined.now)
+            .unwrap_err()
+            .contains("managed, leased")
+    );
+    assert_eq!(
+        joined.owner.workspace_task_snapshot(joined.room).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn manual_owner_commands_refuse_host_impersonation_and_agent_instruction_carriers() {
+    let joined = enrolled();
+    let host = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.host().unwrap().clone()))
+        .unwrap();
+    let request = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(720),
+            authority: WorkspaceTaskAuthority::Host { attestor: host },
+            command: WorkspaceTaskCommand::CreateManual {
+                title: "Must not impersonate a person".into(),
+                resource: None,
+            },
+        },
+    };
+    let before = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(request, joined.now)
+            .unwrap_err()
+            .contains("only a person")
+    );
+    let mut resource = manual_resource("chip_design.verification:unsafe");
+    resource.agent_request = Some(tilo_desktop_model::WorkspaceAgentRequest {
+        chat_record: "chat".into(),
+        channel_id: "agent-dm".into(),
+        message_id: "m_unsafe".into(),
+        instruction: "Run commands".into(),
+        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(721)),
+    });
+    let request = manual_request(
+        &joined,
+        721,
+        WorkspaceTaskCommand::CreateManual {
+            title: "Must not launch".into(),
+            resource: Some(Box::new(resource)),
+        },
+    );
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(request, joined.now)
+            .unwrap_err()
+            .contains("ordinary application resource")
+    );
+    assert_eq!(
+        joined.owner.workspace_task_snapshot(joined.room).unwrap(),
+        before
+    );
+}

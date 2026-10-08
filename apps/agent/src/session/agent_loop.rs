@@ -752,6 +752,20 @@ impl Session {
                 )));
             }
         };
+        let (total_budget, turn_budget) = if let Some(budget) = run.execution_budget {
+            if let Err(error) = budget.validate() {
+                return Ok(LoopEnd::Failed(error.into()));
+            }
+            (
+                Duration::from_millis(u64::from(budget.total_ms)),
+                Duration::from_millis(u64::from(budget.turn_ms)),
+            )
+        } else {
+            (
+                MAX_LOOP_TIME,
+                MAX_LOOP_TURN_TIME.min(self.chooser.timeout().max(Duration::from_secs(1))),
+            )
+        };
         let began = ui::time::now();
         self.chooser.begin_trace();
         let catalogue = self.task_catalogue();
@@ -805,15 +819,18 @@ impl Session {
         );
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &user_turn);
         for turn in 0..MAX_LOOP_TURNS {
-            let left = MAX_LOOP_TIME.saturating_sub(began.elapsed());
+            let left = total_budget.saturating_sub(began.elapsed());
+            let left = self.task_deadline.map_or(left, |deadline| {
+                left.min(deadline.saturating_duration_since(ui::time::now()))
+            });
             if left.is_zero() {
                 return Ok(LoopEnd::Failed(
                     "The task ran out of time before it finished".into(),
                 ));
             }
-            let timeout = left
-                .min(MAX_LOOP_TURN_TIME)
-                .min(self.chooser.timeout().max(Duration::from_secs(1)));
+            // This explicit caller budget comes only from the broker-minted
+            // owner policy; the gateway still enforces its selected-model ceiling.
+            let timeout = left.min(turn_budget);
             state.turn = turn;
             if let Some(end) = self.run_turn(run, &mut conversation, state, turn, timeout)? {
                 return Ok(end);
@@ -911,6 +928,12 @@ impl Session {
         let mut stepping = Duration::ZERO;
         let mut cancellation_checked = ui::time::now();
         let body = loop {
+            if self.task_budget_expired() {
+                self.turn = None;
+                return Ok(Some(LoopEnd::Failed(
+                    "The explicit task time budget expired".into(),
+                )));
+            }
             self.pump_turn_waiting(Duration::from_millis(50))?;
             if cancellation_checked.elapsed() >= THINKING_CANCELLATION_POLL {
                 match self.task_control_change(run)? {
@@ -927,6 +950,12 @@ impl Session {
                 cancellation_checked = ui::time::now();
             }
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
+                if self.task_budget_expired() {
+                    self.turn = None;
+                    return Ok(Some(LoopEnd::Failed(
+                        "The explicit task time budget expired".into(),
+                    )));
+                }
                 let handling = ui::time::now();
                 let handled = self.handle_call(run, state, &call, &mut failed)?;
                 stepping += handling.elapsed();
@@ -1940,6 +1969,7 @@ mod tests {
     struct Script {
         turns: Mutex<VecDeque<Vec<TurnEvent>>>,
         bodies: Mutex<Vec<Value>>,
+        timeouts: Mutex<Vec<Duration>>,
         /// Delivered one event per `pace`, like a provider writing tokens.
         pace: Option<Duration>,
         /// Events delivered so far, across turns.
@@ -1950,6 +1980,7 @@ mod tests {
 
     impl TurnTransport for Scripted {
         fn start(&self, request: TurnRequest) -> Receiver<TurnEvent> {
+            self.0.timeouts.lock().unwrap().push(request.timeout);
             self.0.bodies.lock().unwrap().push(request.body);
             let (tx, rx) = std::sync::mpsc::channel();
             let events = self
@@ -2086,6 +2117,7 @@ mod tests {
         cancellation_checks: usize,
         control_epoch: u64,
         control_directions: Vec<runtime_collab::TaskRunDirection>,
+        direction_ack_delay: Duration,
         /// Hold typed phase acknowledgements to prove Stop is not coupled to
         /// optional owner milestone observation.
         delay_phase_ack: bool,
@@ -2357,6 +2389,34 @@ mod tests {
         events: Vec<CollabEvent>,
     }
 
+    impl Broker {
+        fn report_enrolled_task(
+            &mut self,
+            request_id: u64,
+            update: &runtime_collab::TaskRunUpdate,
+        ) {
+            if let runtime_collab::TaskRunUpdate::DirectionApplied { revision } = update {
+                let mut world = self.world.borrow_mut();
+                std::thread::sleep(world.direction_ack_delay);
+                world
+                    .control_directions
+                    .retain(|direction| direction.revision > *revision);
+            }
+            if !self.world.borrow().delay_phase_ack
+                || !matches!(
+                    update,
+                    runtime_collab::TaskRunUpdate::Planning {}
+                        | runtime_collab::TaskRunUpdate::Executing {}
+                )
+            {
+                self.events.push(CollabEvent::EnrolledTaskReply {
+                    request_id,
+                    result: Ok(()),
+                });
+            }
+        }
+    }
+
     impl ui::collaboration::PeerTransport for Broker {
         fn is_connected(&self) -> bool {
             true
@@ -2433,18 +2493,7 @@ mod tests {
                 CollabRequest::ReportEnrolledTask {
                     request_id, update, ..
                 } => {
-                    if !self.world.borrow().delay_phase_ack
-                        || !matches!(
-                            update,
-                            runtime_collab::TaskRunUpdate::Planning {}
-                                | runtime_collab::TaskRunUpdate::Executing {}
-                        )
-                    {
-                        self.events.push(CollabEvent::EnrolledTaskReply {
-                            request_id: *request_id,
-                            result: Ok(()),
-                        });
-                    }
+                    self.report_enrolled_task(*request_id, update);
                 }
                 CollabRequest::AcceptEnrolledTask { request_id, .. } => {
                     self.events.push(CollabEvent::EnrolledTaskReply {
@@ -2707,15 +2756,25 @@ mod tests {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one fixture wires the scripted model, the fake broker peer and the real Session"
-    )]
     fn paced_fixture(
         title: &str,
         world: World,
         turns: Vec<Vec<TurnEvent>>,
         pace: Option<Duration>,
+    ) -> Fixture {
+        execution_fixture(title, world, turns, pace, None)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture wires the scripted model, the fake broker peer and the real Session"
+    )]
+    fn execution_fixture(
+        title: &str,
+        world: World,
+        turns: Vec<Vec<TurnEvent>>,
+        pace: Option<Duration>,
+        budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     ) -> Fixture {
         let emitted = Arc::clone(&world.emitted);
         let world = Rc::new(RefCell::new(world));
@@ -2723,6 +2782,7 @@ mod tests {
         let script = Arc::new(Script {
             turns: Mutex::new(turns.into()),
             bodies: Mutex::new(Vec::new()),
+            timeouts: Mutex::new(Vec::new()),
             pace,
             emitted,
         });
@@ -2739,6 +2799,7 @@ mod tests {
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
+            execution_budget: budget,
             action_context: serde_json::Value::Null,
         };
         run.action_context = serde_json::json!({"purpose": null, "group": {"kind": "task", "id": run.task_id, "label": run.task_id}});
@@ -2799,6 +2860,7 @@ mod tests {
             managed_messages: None,
             enrolled_active: Some(acceptance),
             enrolled_sequence: 0,
+            task_deadline: None,
             asked_at: ui::time::now(),
             last_route: None,
             broker_surfaces: surfaces,
@@ -3205,6 +3267,107 @@ mod tests {
             runtime_collab::TaskRunUpdate::Succeeded {
                 message: "Nothing to do.".into()
             }
+        );
+    }
+
+    #[test]
+    fn explicit_owner_task_budget_reaches_transport_and_preserves_legacy_default() {
+        let turns = vec![turn(&[finish("Done", true)], 64)];
+        let mut legacy = fixture("finish", World::default(), turns.clone());
+        legacy.session.run_task(&legacy.run).unwrap();
+        assert_eq!(
+            legacy.script.timeouts.lock().unwrap()[0],
+            Duration::from_secs(5)
+        );
+        let mut bounded = execution_fixture(
+            "finish",
+            World::default(),
+            turns,
+            None,
+            Some(collab_types::task_budget::TaskExecutionBudget {
+                turn_ms: 20_000,
+                total_ms: 60_000,
+            }),
+        );
+        bounded.session.run_task(&bounded.run).unwrap();
+        assert_eq!(
+            bounded.script.timeouts.lock().unwrap()[0],
+            Duration::from_secs(20)
+        );
+        assert!(bounded.session.task_deadline.is_none());
+    }
+
+    #[test]
+    fn direction_restart_keeps_the_original_total_task_deadline() {
+        let silent = turn(&[finish("Done", true)], 64);
+        let mut f = execution_fixture(
+            "steer bounded task",
+            World {
+                control_directions: vec![runtime_collab::TaskRunDirection {
+                    revision: 7,
+                    text: "Use this saved direction".into(),
+                }],
+                direction_ack_delay: Duration::from_millis(150),
+                ..World::default()
+            },
+            vec![silent.clone(), silent],
+            Some(Duration::from_millis(500)),
+            Some(collab_types::task_budget::TaskExecutionBudget {
+                turn_ms: 400,
+                total_ms: 400,
+            }),
+        );
+
+        f.session.run_task(&f.run).unwrap();
+
+        let timeouts = f.script.timeouts.lock().unwrap();
+        assert_eq!(timeouts.len(), 2);
+        assert!(timeouts[0] <= Duration::from_millis(400));
+        assert!(timeouts[1] <= Duration::from_millis(250));
+        drop(timeouts);
+        assert!(f.sent.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::ReportEnrolledTask {
+                update: runtime_collab::TaskRunUpdate::DirectionApplied { revision: 7 },
+                ..
+            }
+        )));
+        assert!(f.world.borrow().steps.is_empty());
+        assert!(f.session.turn.is_none());
+        assert!(f.session.task_deadline.is_none());
+        assert!(
+            matches!(terminal(&f.sent.borrow()), runtime_collab::TaskRunUpdate::Failed { message }
+            if message.contains("task time budget"))
+        );
+    }
+
+    #[test]
+    fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
+        let mut f = execution_fixture(
+            "write",
+            World::default(),
+            vec![turn(
+                &[
+                    invoke("append-paragraph", &serde_json::json!({"text":"late"})),
+                    finish("Done", true),
+                ],
+                64,
+            )],
+            Some(Duration::from_millis(500)),
+            Some(collab_types::task_budget::TaskExecutionBudget {
+                turn_ms: 100,
+                total_ms: 100,
+            }),
+        );
+        let began = ui::time::now();
+        f.session.run_task(&f.run).unwrap();
+        assert!(began.elapsed() < Duration::from_millis(400));
+        assert!(f.world.borrow().steps.is_empty());
+        assert!(f.session.turn.is_none());
+        assert!(f.session.task_deadline.is_none());
+        assert!(
+            matches!(terminal(&f.sent.borrow()), runtime_collab::TaskRunUpdate::Failed { message }
+            if message.contains("task time budget"))
         );
     }
 

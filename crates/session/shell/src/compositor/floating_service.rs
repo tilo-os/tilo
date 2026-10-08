@@ -329,7 +329,13 @@ fn serve_connection(
 /// when that changes.
 #[derive(Debug, Default)]
 pub struct AppearanceDelivery {
-    told: HashMap<u64, (String, Option<ui::WindowAppearance>)>,
+    told: HashMap<u64, (String, Option<DeliveredAppearance>)>,
+}
+
+#[derive(Debug)]
+struct DeliveredAppearance {
+    window: ui::WindowAppearance,
+    theme: ui::theme::ThemeDocument,
 }
 
 impl AppearanceDelivery {
@@ -347,13 +353,23 @@ impl AppearanceDelivery {
     pub fn publish(
         &mut self,
         appearance_of: impl Fn(&str) -> ui::WindowAppearance,
+        theme: &ui::Theme,
         mut send: impl FnMut(u64, &FloatingSurfaceHostMessage),
     ) {
         for (connection, (app_id, told)) in &mut self.told {
-            let now = appearance_of(app_id);
-            if *told != Some(now) {
-                send(*connection, &FloatingSurfaceHostMessage::appearance(&now));
-                *told = Some(now);
+            let appearance = appearance_of(app_id);
+            if told
+                .as_ref()
+                .is_none_or(|last| last.window != appearance || last.theme != theme.document)
+            {
+                send(
+                    *connection,
+                    &FloatingSurfaceHostMessage::appearance_with_theme(&appearance, theme),
+                );
+                *told = Some(DeliveredAppearance {
+                    window: appearance,
+                    theme: theme.document.clone(),
+                });
             }
         }
     }
@@ -410,20 +426,42 @@ mod tests {
         delivery.connected(1, "so.tilo.notes");
         delivery.connected(2, "so.tilo.files");
         let mut sent = Vec::new();
-        delivery.publish(appearance_of, |connection, message| {
+        delivery.publish(appearance_of, &ui::Theme::dark(), |connection, message| {
             sent.push((connection, message.window_appearance()));
         });
         sent.sort_by_key(|(connection, _)| *connection);
         assert_eq!(sent, vec![(1, Some(warm)), (2, Some(grey))]);
 
+        let mut palettes = Vec::new();
+        delivery.publish(appearance_of, &ui::Theme::light(), |connection, message| {
+            palettes.push((connection, message.configured_theme().unwrap().document));
+        });
+        palettes.sort_by_key(|(connection, _)| *connection);
+        assert_eq!(
+            palettes,
+            vec![
+                (1, ui::Theme::light().document),
+                (2, ui::Theme::light().document)
+            ]
+        );
+        palettes.clear();
+        delivery.publish(appearance_of, &ui::Theme::light(), |connection, message| {
+            palettes.push((connection, message.configured_theme().unwrap().document));
+        });
+        assert!(
+            palettes.is_empty(),
+            "an unchanged palette is not sent every frame"
+        );
+        delivery.publish(appearance_of, &ui::Theme::dark(), |_, _| {});
+
         sent.clear();
-        delivery.publish(appearance_of, |connection, message| {
+        delivery.publish(appearance_of, &ui::Theme::dark(), |connection, message| {
             sent.push((connection, message.window_appearance()));
         });
         assert!(sent.is_empty(), "nothing changed, nothing is said");
 
         rooms.set((grey, grey));
-        delivery.publish(appearance_of, |connection, message| {
+        delivery.publish(appearance_of, &ui::Theme::dark(), |connection, message| {
             sent.push((connection, message.window_appearance()));
         });
         assert_eq!(sent, vec![(1, Some(grey))], "only the window that moved");
@@ -431,7 +469,7 @@ mod tests {
         sent.clear();
         delivery.disconnected(1);
         rooms.set((warm, warm));
-        delivery.publish(appearance_of, |connection, message| {
+        delivery.publish(appearance_of, &ui::Theme::dark(), |connection, message| {
             sent.push((connection, message.window_appearance()));
         });
         assert_eq!(

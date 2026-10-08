@@ -4229,13 +4229,49 @@ def quick_composer_steer_ready(access, expected_status, expected_draft):
         and accessibility_control_enabled(access, access["controls"]["send"])
 
 
-def capture_steer_receipt_failure(socket, agent, exact_task, before, output, size):
+def closed_steer_owner_observation(task, before, receipt_revision=None):
+    """Project only the last successful owner read, never its identifiers/text."""
+    present = isinstance(task, dict)
+    revision = task.get("after_revision") if present else None
+    applied = task.get("applied_revision") if present else None
+    return {
+        "task_observable": present,
+        "task_active": task.get("status") == "in_progress" if present else None,
+        "same_task": task.get("task_id") == before.get("task_id") if present else None,
+        "same_run": task.get("run_epoch") == before.get("run_epoch") if present else None,
+        "revision_equal": revision == before["after_revision"] if type(revision) is int else None,
+        "revision_advanced": revision > before["after_revision"] if type(revision) is int else None,
+        "revision_matches_receipt": revision == receipt_revision
+        if type(revision) is int and receipt_revision is not None else None,
+        "applied_matches_receipt": applied == receipt_revision
+        if type(applied) is int and receipt_revision is not None else None,
+    }
+
+
+def wait_steer_owner_observation(label, predicate, process, failure_capture):
+    """Capture observation failures without retrying or changing their identity."""
+    try:
+        return wait_for(label, predicate, process)
+    except (RuntimeError, OSError):
+        try:
+            failure_capture()
+        except (RuntimeError, OSError, atspi.GateError):
+            pass
+        raise
+
+
+def capture_steer_receipt_failure(socket, agent, last_owner, before, output, size,
+                                  stage="receipt"):
     """Failure-only closed observations; never resubmit or retain private labels."""
+    expected_owner_fields = set(closed_steer_owner_observation(None, before))
+    if stage not in {"receipt", "applied"} or not isinstance(last_owner, dict) \
+            or set(last_owner) != expected_owner_fields \
+            or any(value is not None and type(value) is not bool for value in last_owner.values()):
+        raise RuntimeError("the closed Steer failure observation is malformed")
     observed = {"composer_observable": False, "send_enabled": None,
                 "draft_empty": None, "status": "unobservable",
-                "task_observable": False, "task_active": None,
-                "same_task": None, "same_run": None,
-                "revision_equal": None, "revision_advanced": None,
+                **last_owner, "failed_stage": stage,
+                "owner_observation_is_cached": True,
                 "send_geometry_valid": False, "physical_send_count": 1,
                 "snapshot_captured": False, "private_content_recorded": False}
     labels = {
@@ -4248,38 +4284,31 @@ def capture_steer_receipt_failure(socket, agent, exact_task, before, output, siz
         "The agent applied earlier direction.": "applied",
         "This action is unavailable. Your draft is still here.": "refused",
     }
+    access = None
     try:
         access = agent_quick_composer_accessibility(agent)
-        if access is not None:
-            observed["composer_observable"] = True
-            observed["send_enabled"] = accessibility_control_enabled(access, access["controls"]["send"])
-            observed["draft_empty"] = private_editor_value_matches(access, "")
-            observed["status"] = labels.get(quick_composer_status_at(access, labels), "other")
-    except (RuntimeError, atspi.GateError):
+    except (RuntimeError, OSError, atspi.GateError):
         pass  # Diagnostic failure cannot replace the original strict gate failure.
-    try:
-        task = exact_task()
-        if isinstance(task, dict):
-            observed["task_observable"] = True
-            observed["task_active"] = task.get("status") == "in_progress"
-            observed["same_task"] = task.get("task_id") == before.get("task_id")
-            observed["same_run"] = task.get("run_epoch") == before.get("run_epoch")
-            revision = task.get("after_revision")
-            if type(revision) is int:
-                observed["revision_equal"] = revision == before["after_revision"]
-                observed["revision_advanced"] = revision > before["after_revision"]
-    except (RuntimeError, atspi.GateError):
-        pass
+    if access is not None:
+        observed["composer_observable"] = True
+        for key, sample in (
+                ("send_enabled", lambda: accessibility_control_enabled(access, access["controls"]["send"])),
+                ("draft_empty", lambda: private_editor_value_matches(access, "")),
+                ("status", lambda: labels.get(quick_composer_status_at(access, labels), "other"))):
+            try:
+                observed[key] = sample()
+            except (RuntimeError, OSError, atspi.GateError):
+                pass
     try:
         quick_composer_targets(call(socket, {"op": "list_targets"}))
         observed["send_geometry_valid"] = True
-    except RuntimeError:
+    except (RuntimeError, OSError):
         pass
     try:
         require_ok(call(socket, {"op": "snapshot", "path": str(
             output / f"agent-steer-receipt-failed-{size}.png")}))
         observed["snapshot_captured"] = True
-    except RuntimeError:
+    except (RuntimeError, OSError):
         pass
     (output / "agent-steer-receipt-failed.json").write_text(json.dumps(observed, indent=2))
 
@@ -4353,9 +4382,17 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
                       interactive_steer, process)
 
     require_ok(call(socket, {"op": "click_named", "name": "agent-quick-send"}))
+    last_owner = closed_steer_owner_observation(before, before)
+
+    def capture_failure(stage):
+        if output is not None:
+            capture_steer_receipt_failure(socket, agent, last_owner, before, output, size,
+                                          stage=stage)
 
     def owner_direction_receipt():
+        nonlocal last_owner
         task = exact_task()
+        last_owner = closed_steer_owner_observation(task, before)
         if not isinstance(task, dict):
             return None
         if task.get("run_epoch") != run_epoch:
@@ -4363,20 +4400,16 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
         revision = task.get("after_revision")
         return task if type(revision) is int and revision > before_revision else None
 
-    try:
-        received = wait_for("physical Steer's exact owner frontier receipt",
-                            owner_direction_receipt, process)
-    except RuntimeError:
-        if output is not None:
-            try:
-                capture_steer_receipt_failure(socket, agent, exact_task, before, output, size)
-            except (RuntimeError, OSError, atspi.GateError):
-                pass  # Keep the original receipt refusal even if diagnostics fail.
-        raise
+    received = wait_steer_owner_observation(
+        "physical Steer's exact owner frontier receipt", owner_direction_receipt, process,
+        lambda: capture_failure("receipt"))
     receipt_revision = received["after_revision"]
+    last_owner = closed_steer_owner_observation(received, before, receipt_revision)
 
     def owner_direction_applied():
+        nonlocal last_owner
         task = exact_task()
+        last_owner = closed_steer_owner_observation(task, before, receipt_revision)
         if not isinstance(task, dict):
             return None
         if task.get("run_epoch") != run_epoch:
@@ -4389,8 +4422,9 @@ def exercise_agent_quick_composer(socket, agent, exact_task, process, *,
             raise RuntimeError("physical Steer application no longer names the exact receipt")
         return task if applied_revision == receipt_revision else None
 
-    applied = wait_for("physical Steer's exact owner DirectionApplied frontier",
-                       owner_direction_applied, process)
+    applied = wait_steer_owner_observation(
+        "physical Steer's exact owner DirectionApplied frontier", owner_direction_applied,
+        process, lambda: capture_failure("applied"))
     receipt_label = wait_for(
         "physical Steer's localized visible owner outcome",
         lambda: agent_quick_composer_status(agent, {
