@@ -203,6 +203,10 @@ mod tests {
                 "timeout",
                 crate::shell::i18n::t("host-app-did-not-open-body"),
             ),
+            (
+                "interrupted",
+                crate::shell::i18n::t("shell-window-restore-interrupted"),
+            ),
         ] {
             let tree = tree_with_two_document_tabs();
             {
@@ -213,9 +217,19 @@ mod tests {
                 group.tabs[0].tile = StateTile::LocalApp {
                     app_id: "so.tilo.browser".into(),
                     label: "Browser".into(),
-                    note: detail.clone(),
+                    note: if phase == "interrupted" {
+                        crate::shell::peer_windows::OPENING.into()
+                    } else {
+                        detail.clone()
+                    },
                 };
                 drop(state);
+            }
+            if phase == "opening" {
+                crate::shell::launcher::set_pending_placement(
+                    "so.tilo.browser",
+                    crate::shell::tab_binding::Placement::IntoTab(TAB_A),
+                );
             }
             let store = RecordStore::in_memory();
             let mut frame = crate::shell::frame::FrameBuilder::with_handle_and_records(
@@ -242,6 +256,7 @@ mod tests {
             let mut spoken = Vec::new();
             descriptions(frame.host(), &mut spoken);
             drop(frame);
+            crate::shell::launcher::clear_pending_placements();
             assert!(
                 spoken
                     .iter()
