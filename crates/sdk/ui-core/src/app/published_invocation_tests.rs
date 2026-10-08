@@ -543,11 +543,14 @@ fn published_terminal_busy_retains_deferred_follow_up_original_once() {
     let (_old_app, store, checkout, _temp) = owned_counter(CounterCard::new());
     // Existing ordinary outer effect continuation, beside a real live owned
     // record whose publication must also precede that effect's terminal.
-    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::Notice {
-        title: "Owned record".into(),
-        detail: "Publication obligation".into(),
-    });
+    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+        CounterCard::new(),
+    )));
     tile.bind_record(store, checkout);
+    assert!(
+        crate::widget::Widget::history_owner(&tile).is_some(),
+        "the fixture must retain actual document custody"
+    );
     card.publication_record = Some(tile);
     let mut app = App::new(State::new(), Box::new(card));
     app.action_registry_mut()
@@ -562,6 +565,11 @@ fn published_terminal_busy_retains_deferred_follow_up_original_once() {
         epoch: uuid::Uuid::new_v4(),
     });
     app.publish_owned_documents();
+    assert_eq!(
+        app.document_routes.owners.len(),
+        1,
+        "the deferred effect must have one live publication obligation"
+    );
     deliver_remote(&mut app, &request);
     assert_eq!(
         sent.borrow().iter().find_map(|event| match event {
