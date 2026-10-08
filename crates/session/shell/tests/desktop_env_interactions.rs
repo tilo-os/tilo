@@ -1197,6 +1197,12 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             restore.x0 >= maximized.x0 && restore.x1 <= maximized.x1,
             "Restore must stay inside the maximized group",
         );
+        let client_top = (restore.y1 + ui::widget::tabs::TAB_PILL_INSET_Y).ceil();
+        assert_eq!(
+            app,
+            ui::kurbo::Rect::new(maximized.x0, client_top, maximized.x1, maximized.y1),
+            "the client fills exactly the group below painted system chrome",
+        );
         cursor(&mut host, &layout2, restore.center());
         press(&mut host, &layout2);
         release(&mut host, &layout2);

@@ -100,7 +100,7 @@ impl PlayerApp {
         if let Some(button) = self.history.button_mut() {
             button.apply_layout_external(shown);
         }
-        self.open_button_rect = if self.player.has_media() {
+        self.open_button_rect = if self.player.has_media() || self.formats_visible() {
             let open_w = width(text, Self::open_face(Rect::ZERO, false, false));
             let bx1 = trailing;
             let bx0 = (bx1 - open_w).max(lx1 + margin);
@@ -256,6 +256,13 @@ impl PlayerApp {
         };
         let media_theme = media_theme(theme);
         let mut ctx = PaintCtx::new(scene, transform, text, &media_theme);
+        let missing_title = crate::i18n::t("video-missing-decoder-title");
+        let codec_message = self.missing_codec.as_ref().map(|codec| {
+            crate::i18n::t_args(
+                "video-missing-decoder-message",
+                &[("codec", ui::i18n::ArgValue::from(codec.clone()))],
+            )
+        });
         let content = match status {
             MediaStatus::Idle => EmptyStateContent {
                 icon: Some(Icon::Film),
@@ -265,6 +272,13 @@ impl PlayerApp {
             MediaStatus::Loading => EmptyStateContent {
                 icon: Some(Icon::Film),
                 ..EmptyStateContent::new("Loading video")
+            },
+            MediaStatus::Failed(_) if codec_message.is_some() => EmptyStateContent {
+                icon: Some(Icon::TriangleAlert),
+                message: codec_message.as_deref(),
+                action_label: Some(&self.formats_label),
+                error: true,
+                ..EmptyStateContent::new(&missing_title)
             },
             MediaStatus::Failed(error) => EmptyStateContent {
                 icon: Some(Icon::TriangleAlert),
@@ -276,7 +290,8 @@ impl PlayerApp {
         };
         let cursor: Point = self.last_cursor;
         self.status_action_rect =
-            EmptyState::paint(&mut ctx, self.rect, &content, cursor).unwrap_or(Rect::ZERO);
+            EmptyState::paint_focused(&mut ctx, self.rect, &content, cursor, self.formats_focused)
+                .unwrap_or(Rect::ZERO);
     }
 
     /// The letterbox, for a staged loading state that holds back the picture.
