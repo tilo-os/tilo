@@ -1,8 +1,12 @@
 //! How often one admission or one directory page reads the committed
-//! workspace authority, and that no path asks it for an owned snapshot.
+//! workspace authority, and that neither copies it: no owned snapshot is
+//! requested, and the heap the path asks for does not grow with the
+//! workspace's effect-receipt history.
 use super::*;
 use crate::services::WorkspaceAuthority;
 use crate::test_support::{Workspace, WorkspaceId};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::sync::atomic::AtomicUsize;
 use tilo_actions::remote::{
     Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
@@ -75,6 +79,72 @@ impl WorkspaceAuthority for SampledAuthority {
     }
 }
 
+// Bytes this thread requests from the heap while metering is on. A copy
+// of the tree, wherever it is written (a `snapshot()`, or a `clone()` inside
+// a decide closure), allocates at least its receipt history.
+std::thread_local! {
+    static METERED: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+struct Meter;
+
+#[global_allocator]
+static ALLOCATOR: Meter = Meter;
+
+fn metered(bytes: usize) {
+    let _ = METERED.try_with(|total| {
+        if let Some(sum) = total.get() {
+            total.set(Some(sum.saturating_add(bytes)));
+        }
+    });
+}
+
+// SAFETY: forwards the exact System allocation contracts; the bookkeeping
+// uses a fixed thread-local Cell and never changes pointers or sizes.
+unsafe impl GlobalAlloc for Meter {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        metered(layout.size());
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        metered(layout.size());
+        unsafe { System.alloc_zeroed(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        metered(size);
+        unsafe { System.realloc(ptr, layout, size) }
+    }
+}
+
+/// Start counting this thread's heap requests.
+fn meter_start() {
+    METERED.with(|total| total.set(Some(0)));
+}
+
+/// Stop counting and return the bytes requested since [`meter_start`].
+fn meter_stop() -> usize {
+    METERED.with(|total| total.take()).unwrap_or(0)
+}
+
+/// Effect receipts in the heavy fixture: a long agent history.
+const RECEIPTS: usize = 20_000;
+
+/// The heap a copy of the fixture's receipt history needs at least.
+fn receipt_history_bytes() -> usize {
+    RECEIPTS.saturating_mul(
+        std::mem::size_of::<tilo_desktop_model::WorkspaceEffectReceipt>().saturating_add(64),
+    )
+}
+
+/// The most a path may request on the heavy fixture: a quarter of one
+/// receipt-history copy. A path that copied the tree once would exceed it.
+fn copy_free_budget() -> usize {
+    receipt_history_bytes() / 4
+}
+
 fn owner() -> String {
     "a1".repeat(32)
 }
@@ -82,6 +152,15 @@ fn owner() -> String {
 fn owned_room() -> (DesktopTree, String) {
     let mut workspace = Workspace::new(WorkspaceId(91), "Sampled authority");
     workspace.set_owner(owner());
+    workspace.effect_receipts = (0..RECEIPTS)
+        .map(|index| tilo_desktop_model::WorkspaceEffectReceipt {
+            invocation: tilo_actions::InvocationId::new(),
+            actor: format!("{index:064}"),
+            context: tilo_actions::ActionContext::default(),
+            status: tilo_actions::EffectReceiptStatus::Succeeded,
+            completed_at: 0,
+        })
+        .collect();
     let room = workspace.room.to_string();
     let tree = DesktopTree {
         active: WorkspaceId(91),
@@ -157,14 +236,33 @@ fn invocation_fixture(
 }
 
 #[test]
+fn the_heap_meter_sees_one_copy_of_the_receipt_history() {
+    let (tree, _) = owned_room();
+    meter_start();
+    let copy = tree.clone();
+    let copied = meter_stop();
+    assert_eq!(
+        copy.workspaces[0].effect_receipts.len(),
+        tree.workspaces[0].effect_receipts.len()
+    );
+    assert!(
+        copied >= receipt_history_bytes(),
+        "a tree copy requested {copied} bytes; the meter cannot observe a copy"
+    );
+    assert!(copy_free_budget() < copied, "the budget admits a copy");
+}
+
+#[test]
 fn action_host_invocation_admission_samples_authority_once_without_an_owned_snapshot() {
     let (tree, room) = owned_room();
     let authority = SampledAuthority::new(tree);
     let (state, caller, mut app) = invocation_fixture(&authority, &room);
 
+    meter_start();
     let admitted = state
         .action_invoke(&caller, None, None, &invoke_request())
         .poll_ready();
+    let requested = meter_stop();
 
     assert!(
         matches!(admitted, PendingPoll::Ready(Ok(_))),
@@ -176,6 +274,11 @@ fn action_host_invocation_admission_samples_authority_once_without_an_owned_snap
     // admission itself. Neither asks for an owned snapshot of the tree.
     assert_eq!(authority.samples(), 2);
     assert_eq!(authority.owned_snapshots(), 0);
+    // Nor does anything on the path copy the tree another way.
+    assert!(
+        requested < copy_free_budget(),
+        "admission requested {requested} bytes with {RECEIPTS} receipts"
+    );
 }
 
 #[test]
@@ -288,7 +391,7 @@ async fn query_wide_page(
     authority: &Arc<SampledAuthority>,
     room: &str,
     actor: &BrokerActor,
-) -> runtime_collab::ActionDirectoryPage {
+) -> (runtime_collab::ActionDirectoryPage, usize) {
     let fanout = Arc::new(FanoutState::new());
     let (state, bridge_rx) = CapnpBrokerState::new_configured(
         &fanout,
@@ -311,7 +414,8 @@ async fn query_wide_page(
         },
     );
     authority.reset();
-    state
+    meter_start();
+    let page = state
         .query_action_directory_for_actor(
             &directories,
             actor,
@@ -328,8 +432,9 @@ async fn query_wide_page(
                 max_depth: 1,
             },
         )
-        .await
-        .expect("the directory page is answered")
+        .await;
+    let requested = meter_stop();
+    (page.expect("the directory page is answered"), requested)
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -339,15 +444,22 @@ async fn directory_page_samples_authority_once_regardless_of_rows() {
             let (tree, room) = owned_room();
             let authority = SampledAuthority::new(tree);
 
-            let page = query_wide_page(&authority, &room, &BrokerActor::person(owner())).await;
+            let (page, requested) =
+                query_wide_page(&authority, &room, &BrokerActor::person(owner())).await;
             assert_eq!(page.rows.len(), PAGE_ROWS, "the owner sees every row");
             assert_eq!(authority.samples(), 1);
             assert_eq!(authority.owned_snapshots(), 0);
+            assert!(
+                requested < copy_free_budget(),
+                "a {PAGE_ROWS}-row page requested {requested} bytes with {RECEIPTS} receipts"
+            );
 
-            let page = query_wide_page(&authority, &room, &BrokerActor::person("stranger")).await;
+            let (page, requested) =
+                query_wide_page(&authority, &room, &BrokerActor::person("stranger")).await;
             assert!(page.rows.is_empty(), "a stranger sees no row");
             assert_eq!(authority.samples(), 1);
             assert_eq!(authority.owned_snapshots(), 0);
+            assert!(requested < copy_free_budget(), "{requested} bytes");
         })
         .await;
 }
