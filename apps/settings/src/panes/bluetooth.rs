@@ -936,6 +936,11 @@ mod tests {
         mock: Mock,
         delay: std::time::Duration,
         reader_threads: Mutex<Vec<std::thread::ThreadId>>,
+        held: Option<(
+            std::sync::mpsc::Sender<()>,
+            Mutex<std::sync::mpsc::Receiver<()>>,
+        )>,
+        ui_thread: Option<std::thread::ThreadId>,
     }
     impl BluetoothControl for DelayedRead {
         fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
@@ -943,6 +948,17 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(std::thread::current().id());
+            if self.ui_thread == Some(std::thread::current().id()) {
+                return Err("BlueZ read reached the mounted UI thread".into());
+            }
+            if let Some((entered, release)) = &self.held {
+                entered.send(()).map_err(|error| error.to_string())?;
+                release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .map_err(|error| error.to_string())?;
+            }
             std::thread::sleep(self.delay);
             self.mock.devices()
         }
@@ -1002,6 +1018,8 @@ mod tests {
             },
             delay: std::time::Duration::from_millis(300),
             reader_threads: Mutex::new(vec![]),
+            held: None,
+            ui_thread: Some(std::thread::current().id()),
         });
         let area = BluetoothArea {
             cx: PaneCx::in_file(profile.path().join("settings.json")),
@@ -1048,6 +1066,68 @@ mod tests {
     }
 
     #[test]
+    fn mounted_bluetooth_job_keeps_frames_and_publication_live_while_bluez_is_held() {
+        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        let (entered, entered_read) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let control = Arc::new(DelayedRead {
+            mock: Mock {
+                calls: Mutex::new(vec![]),
+                devices: vec![dev()],
+            },
+            delay: std::time::Duration::ZERO,
+            reader_threads: Mutex::new(vec![]),
+            held: Some((entered, Mutex::new(released))),
+            ui_thread: Some(std::thread::current().id()),
+        });
+        app.surface::<SettingsApp, _>(|surface| {
+            surface.bluetooth().model().borrow_mut().control = control.clone();
+        })
+        .unwrap();
+        let invocation = app
+            .start_effect(&SettingsEffect::from(BluetoothEffect::SetBluetooth {
+                on: false,
+            }))
+            .unwrap();
+        entered_read
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the admitted job must reach its real adapter read");
+        app.settle();
+        assert!(
+            !app.harness()
+                .job_updates(invocation)
+                .iter()
+                .any(tilo_actions::InvocationUpdate::is_terminal),
+            "a held adapter read cannot claim job completion"
+        );
+        assert_eq!(*control.mock.calls.lock().unwrap(), vec!["power:false"]);
+        assert!(app.harness().control_failures().is_empty());
+        release.send(()).unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(3), |harness| harness
+                    .job_updates(invocation)
+                    .iter()
+                    .any(tilo_actions::InvocationUpdate::is_terminal)),
+            "the released worker must complete through the mounted host"
+        );
+        assert!(
+            matches!(app.harness().job_updates(invocation).last(), Some(tilo_actions::InvocationUpdate::Succeeded { invocation: id, .. }) if *id == invocation)
+        );
+        app.surface::<SettingsApp, _>(|surface| {
+            let model = surface.bluetooth().model().borrow();
+            assert_eq!(model.devices, vec![dev()]);
+            assert!(model.loaded() && model.read_error.is_none());
+        })
+        .unwrap();
+        assert_eq!(
+            control.reader_threads.lock().unwrap().len(),
+            1,
+            "completion must adopt the supplied snapshot without a second backend read"
+        );
+    }
+
+    #[test]
     fn mounted_bluetooth_job_adopts_its_worker_read_without_blocking_the_ui() {
         let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
         let control = Arc::new(DelayedRead {
@@ -1057,6 +1137,8 @@ mod tests {
             },
             delay: std::time::Duration::from_millis(300),
             reader_threads: Mutex::new(vec![]),
+            held: None,
+            ui_thread: Some(std::thread::current().id()),
         });
         app.surface::<SettingsApp, _>(|surface| {
             surface.bluetooth().model().borrow_mut().control = control.clone();
@@ -1070,10 +1152,12 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
             let started = std::time::Instant::now();
-            app.settle();
+            let ((), phases) = ui::framework::testing::phases::observe(|| app.settle());
             assert!(
                 started.elapsed() < std::time::Duration::from_millis(150),
-                "an actual mounted job completion must not reread BlueZ on the UI thread"
+                "an actual mounted job completion must not reread BlueZ on the UI thread: {:?}, phases={phases:?}, read_threads={:?}",
+                started.elapsed(),
+                control.reader_threads.lock().unwrap()
             );
             if app
                 .harness()
@@ -1151,6 +1235,8 @@ mod tests {
             },
             delay: std::time::Duration::from_millis(300),
             reader_threads: Mutex::new(vec![]),
+            held: None,
+            ui_thread: Some(std::thread::current().id()),
         });
         app.surface::<SettingsApp, _>(|surface| {
             let area = surface.bluetooth();
