@@ -568,6 +568,8 @@ pub struct InputHardwareSnapshot {
     /// outlive its compositor.
     pub publisher_start_ticks: u64,
     pub devices: Vec<InputDeviceSnapshot>,
+    /// Last typing keyboard; presentation state, never a saved assignment.
+    pub active_keyboard: Option<String>,
 }
 
 impl InputHardwareSnapshot {
@@ -1279,6 +1281,9 @@ pub struct RichInputConfig {
     pub keyboard_layouts: Vec<String>,
     /// Explicit XKB physical model, bounded to the supported PC geometries.
     pub keyboard_model: String,
+    /// Scoped keyboard choices survive device removal; the default retains legacy fields.
+    #[serde(deserialize_with = "crate::keyboard_sources::lenient_profiles")]
+    pub keyboard_assignments: BTreeMap<String, crate::keyboard_sources::KeyboardProfile>,
     pub compose_key: Option<String>,
     /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
     /// `backspace` turn it into that key.
@@ -1317,6 +1322,7 @@ impl Default for RichInputConfig {
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
             keyboard_model: "pc105".into(),
+            keyboard_assignments: BTreeMap::new(),
             compose_key: None,
             caps_lock: None,
             touchpad_gestures: true,
@@ -3339,6 +3345,7 @@ mod tests {
             publisher_pid,
             publisher_start_ticks,
             devices: vec![pen.clone(), pen],
+            active_keyboard: None,
         };
         live.save_at(&path).unwrap();
         let back = InputHardwareSnapshot::load_at(&path).expect("live publisher");

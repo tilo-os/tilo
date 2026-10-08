@@ -1173,7 +1173,7 @@ settings-bluetooth-forgot = { $name } vergessen.
 settings-bluetooth-forget-failed = { $name } konnte nicht vergessen werden: { $error }
 settings-bluetooth-forget-ask = { $name } vergessen? Das entfernt Bindung und Schlüssel.
 input-keyboard-title = Tastatur
-input-keyboard-caption = Passe die Tastenwiederholung, die Compose-Taste und die Feststelltaste an.
+input-keyboard-caption = Wähle, wie schnell gehaltene Tasten wiederholt werden.
 input-active-source = Aktive Eingabequelle
 input-key-repeat = Wiederholgeschwindigkeit
 input-key-repeat-off = Wiederholung ist aus — Schieberegler bewegen, um sie einzuschalten
@@ -2023,6 +2023,48 @@ input-dictionary-remove = Entfernen
 input-dictionary-reset = Alle Wörter entfernen
 input-dictionary-word-placeholder = Ein Wort eingeben
 input-dictionary-all-languages = Alle Sprachen
+
+input-scope-all = Alle Tastaturen
+input-scope-inheritance = Physische Tastaturen nutzen diese Quellen, bis du die eigene Liste einer Tastatur änderst. Die Bildschirmtastatur hat eigene Quellen.
+input-keyboard-scope = Tastatur
+input-source-activate = Aktivieren
+input-sources-selection-description = Wähle eine Quelle zum Ansehen oder Bearbeiten. Ziehe sie, um die Reihenfolge zu ändern.
+input-sources-back = Zurück zu den Eingabequellen
+input-sources-cancel = Abbrechen
+input-sources-unavailable = Die Liste der Eingabequellen konnte nicht angezeigt werden.
+input-osk-qwerty = Englisch (QWERTY)
+input-osk-azerty = Französisch (AZERTY)
+input-osk-preview-description = Die Bildschirmtastatur verwendet diese Buchstabenanordnung. Compose- und Feststelltastenoptionen gelten für physische Tastaturen.
+input-source-options = Layout-Optionen
+input-source-inspection = Tasten untersuchen
+
+input-keyboard-numbered = { $name } ({ $number })
+
+input-source-show = Anzeigen
+input-source-hide = Ausblenden
+
+input-source-add-short = Hinzufügen
+input-source-add-title = Eingabequelle hinzufügen
+
+# Keyboard source editing errors.
+input-error-keyboard-retained = Die Tastatur ist nicht mehr verfügbar; ihre Zuordnung bleibt gespeichert.
+input-error-keyboard-unavailable = Die Tastatur ist derzeit nicht verfügbar.
+input-error-source-unconfigured = Die Quelle ist für diese Tastatur nicht eingerichtet.
+input-error-source-add-unavailable = Die Quelle ist in der Ansicht zum Hinzufügen nicht verfügbar.
+input-error-source-choose = Wähle eine Quelle zum Hinzufügen.
+input-error-source-physical-options = Optionen für physische Tastaturen gelten nicht für die Bildschirmtastatur.
+input-error-source-compose = Ungültige Compose-Taste.
+input-error-source-caps = Ungültiges Verhalten der Feststelltaste.
+input-error-source-option = Ungültige Tastaturoption.
+input-error-source-missing = Die Quelle ist nicht eingerichtet.
+input-error-source-add = Die Quelle kann dieser Tastatur nicht hinzugefügt werden.
+input-error-source-last = Die letzte Quelle kann nicht entfernt werden.
+input-error-source-empty = Es ist keine Quelle mehr vorhanden.
+input-error-source-first = Die Quelle steht bereits an erster Stelle.
+input-error-source-end = Die Quelle steht bereits an letzter Stelle.
+input-error-source-overflow = Die Position der Quelle liegt außerhalb des gültigen Bereichs.
+input-error-source-operation = Dieser Vorgang ist keine Quellenaktion.
+input-error-live-map-physical = Die Live-Ansicht einer physischen Tastatur ist für die Bildschirmtastatur nicht verfügbar.
 
 settings-disk-unlock-title = Entsperren der Festplatte
 settings-disk-unlock-intro = Nach einem Neustart kann eine hier eingerichtete verschlüsselte Festplatte statt mit der Passphrase mit der Zustimmung eines deiner anderen Geräte öffnen.

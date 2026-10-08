@@ -441,6 +441,9 @@ impl Harness {
         toplevel.set_app_id(app_id.into());
         self.pump();
         let _ = self.fb.paint_settled();
+        // Layout sends the opening xdg configure. Acknowledge it before
+        // the caller can attach its first buffer.
+        self.pump();
         let id = self
             .state
             .workspace_tree
@@ -463,7 +466,7 @@ impl Harness {
     }
 
     /// Give `surface` a first buffer, so it is mapped and can take focus.
-    fn map(&mut self, surface: &wl_surface::WlSurface, app: u64) {
+    fn map(&mut self, surface: &wl_surface::WlSurface, surface_id: u64) {
         use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
         // 64×64 ARGB.
         let (width, height, stride, len) = (64, 64, 256, 16_384_usize);
@@ -493,10 +496,14 @@ impl Harness {
         surface.commit();
         self.pump();
         assert!(
-            shell::compositor::foreign::store().is_mapped(app),
+            shell::compositor::foreign::store().is_mapped(surface_id),
             "the committed SHM buffer maps before painting or asynchronous pixel conversion"
         );
         let _ = self.fb.paint_settled();
+        assert!(
+            shell::compositor::foreign::store().is_mapped(surface_id),
+            "the real first-buffer commit maps the configured toplevel"
+        );
     }
 
     /// The centre of the app's tile, where a pen lands on it.

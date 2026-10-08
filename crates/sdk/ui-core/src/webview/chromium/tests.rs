@@ -1916,6 +1916,13 @@ fn owned_navigation_real_transport_ignores_bootstrap_and_keeps_redirect_owner() 
             .iter()
             .any(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
     );
+    // The helper's input recorder and event emitter run independently.
+    // Observe the real command before permitting its canned terminal events.
+    wait_for_command(
+        &profile,
+        "owned navigation recorded on helper wire",
+        |command| command["op"] == "scoped_navigation" && command["request_id"] == 1,
+    );
     std::fs::write(profile.join("emit"), "").unwrap();
     let mut events = Vec::new();
     tilo_test_env::wait_until("owned navigation outcome", || {
