@@ -888,6 +888,43 @@ async fn package_ids_must_lie_in_a_verified_namespace() {
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
+/// An allowlisted publisher whose row names no namespace — a hand-written or
+/// pre-namespace `publishers.toml` row — owns nothing, so it cannot claim Tilo's
+/// own `so.tilo.store`.
+#[tokio::test]
+async fn publisher_without_namespace_cannot_add_so_tilo_entry() {
+    let h = spawn_server(true).await;
+    std::fs::write(
+        h.storage.publishers_path(),
+        format!(
+            "[[publisher]]\npubkey_hex = \"{}\"\ncan_add_new = true\nnote = \"community\"\n",
+            hex::encode(h.publisher.verifying_key().to_bytes())
+        ),
+    )
+    .unwrap();
+    let row = h.storage.load_allowlist().unwrap().publishers[0].clone();
+    assert!(row.can_add_new);
+    assert!(row.namespaces.is_empty());
+
+    let client = tilo_net::http::client().build().expect("http client");
+    let mut store = sample_entry(&h.publisher, 100);
+    store.package_id = "so.tilo.store".into();
+    registry_types::sign_entry(&mut store, &h.publisher);
+    let resp = client
+        .post(url(h.addr, "/entries"))
+        .json(&sign_change_request(EntryAction::Add, store, &h.publisher))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("package id so.tilo.store is outside this publisher's verified namespaces"),
+        "{body}"
+    );
+    assert!(h.storage.load_pending_submissions().unwrap().is_empty());
+}
+
 /// A package signed by `key`, in full.
 fn signed_package(dir: &std::path::Path, key: &SigningKey) -> Vec<u8> {
     let identity = tilo_app_package::SigningIdentity::from_signing_key(key.clone());

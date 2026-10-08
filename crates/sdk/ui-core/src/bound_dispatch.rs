@@ -78,6 +78,8 @@ pub struct BoundActionAddress {
 #[derive(Debug)]
 pub(crate) enum BoundActionError {
     Door(tilo_actions::DoorError),
+    /// The native contract failed after a worker accepted; only cleanup remains.
+    NativeAcceptedRefusal(tilo_actions::DoorError),
     Dispatch(BoundDispatchError),
     AmbiguousTarget {
         address: tilo_actions::ActionAddress,
@@ -86,7 +88,7 @@ pub(crate) enum BoundActionError {
 impl BoundActionError {
     pub(crate) fn into_door(self) -> tilo_actions::DoorError {
         match self {
-            Self::Door(error) => error,
+            Self::Door(error) | Self::NativeAcceptedRefusal(error) => error,
             error => tilo_actions::DoorError::Unavailable {
                 code: error.code().to_owned(),
                 reason: error.to_string(),
@@ -95,7 +97,7 @@ impl BoundActionError {
     }
     pub(crate) fn code(&self) -> &str {
         match self {
-            Self::Door(error) => error.code(),
+            Self::Door(error) | Self::NativeAcceptedRefusal(error) => error.code(),
             Self::Dispatch(BoundDispatchError::CrossRecordReentry) => "cross_record_reentry",
             Self::Dispatch(BoundDispatchError::ClosedLifetime) => "closed_lifetime",
             Self::Dispatch(_) => "record_unavailable",
@@ -106,7 +108,7 @@ impl BoundActionError {
 impl std::fmt::Display for BoundActionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Door(error) => error.fmt(f),
+            Self::Door(error) | Self::NativeAcceptedRefusal(error) => error.fmt(f),
             Self::Dispatch(error) => write!(f, "component dispatch refused: {error:?}"),
             Self::AmbiguousTarget { address } => {
                 write!(
@@ -429,7 +431,7 @@ pub(crate) fn poll_resource_operation(
             .as_ref()
             .and_then(|result| result.as_ref().ok())
             .and_then(|update| update.as_ref())
-            .filter(|update| update.is_terminal())
+            .filter(|update| update.invocation() == invocation && update.is_terminal())
             .map(|_| (invocation, false))
     };
     root.visit_components(&mut ComponentRequest {
@@ -2203,37 +2205,70 @@ pub(crate) fn invoke_resource_action(
                     };
                     let run = |doc: &mut AutoCommit| {
                     let mut operation = BoundOperation::enter(binding, doc, spec.kind)?;
-                    let started = crate::invocation_scope::with_loaned_record(
-                        &binding.records,
-                        &binding.checkout,
-                        &binding.app_id,
-                        route.clone(),
-                        operation.doc,
-                        |doc| execute(widget, doc, path),
-                    );
-                    accepted = matches!(started, Ok(crate::widget::ResourceOperationStart::Accepted));
-                    // Consume the legacy rising edge without widening an exact typed
-                    // span to arbitrary writes elsewhere in the opaque callback.
-                    binding.drain_owned_tree(widget, operation.doc)?;
-                    if operation.finish() {
-                        return Err(BoundActionError::Door(tilo_actions::DoorError::Unavailable {
-                            code: "undeclared_document_mutation".into(),
-                            reason: "callback mutated the document without a declared Document follow-up; bytes were retained".into(),
-                        }));
+                    let execute_and_drain = |doc: &mut AutoCommit| {
+                        let started = crate::invocation_scope::with_loaned_record(
+                            &binding.records, &binding.checkout, &binding.app_id,
+                            route.clone(), doc, |doc| execute(widget, doc, path),
+                        );
+                        accepted = matches!(started, Ok(crate::widget::ResourceOperationStart::Accepted));
+                        binding.drain_owned_tree(widget, doc)?;
+                        started.map_err(BoundActionError::Door)
+                    };
+                    let (started, native_violation) = if let Some(scope) = scope.filter(|scope| scope.is_native_effect()) {
+                        NativeReadLoan::enter(operation.doc, scope)?.run(execute_and_drain)
+                    } else {
+                        (execute_and_drain(operation.doc), false)
+                    };
+                    if native_violation {
+                        if let Some(scope) = scope { scope.cancel(); }
                     }
-                    started.map_err(BoundActionError::Door)
+                    if operation.finish() || native_violation {
+                        let error = tilo_actions::DoorError::Unavailable {
+                            code: "undeclared_document_mutation".into(),
+                            reason: if native_violation {
+                                "native effect attempted to mutate its exclusive read loan; changes were refused".into()
+                            } else {
+                                "callback mutated the document without a declared Document follow-up; bytes were retained".into()
+                            },
+                        };
+                        return Err(BoundActionError::Door(error));
+                    }
+                    started
                     };
                     match scope {
-                        Some(scope) => scope.with_document_mutation(doc, |doc| Ok(run(doc)))
-                            .map_err(|error| BoundActionError::Door(tilo_actions::DoorError::Failed(error)))?,
+                        Some(scope) => scope.with_dispatch_document(doc, run),
                         None => run(doc),
                     }
                 })
                 .map_err(BoundActionError::Dispatch)
                 .and_then(std::convert::identity),
         );
-        // Even a post-delivery contract fault must retain Accepted lifecycle
-        // custody for the component's existing CLOSED cancellation/cleanup path.
+        // Any native post-admission refusal (including drain or final scope
+        // checks) must cancel the exact already-accepted worker. The canonical
+        // refusal remains final while normal lifecycle polling observes cleanup.
+        if accepted
+            && result.as_ref().is_some_and(Result::is_err)
+            && scope.is_some_and(|scope| scope.is_native_effect())
+        {
+            if let Some(scope) = scope {
+                scope.cancel();
+            }
+            accepted = !binding
+                .read_document(document, |doc, path| {
+                    widget.poll_resource_operation(invocation, true, doc, path)
+                })
+                .ok()
+                .flatten()
+                .is_some_and(|update| update.invocation() == invocation && update.is_terminal());
+            if accepted {
+                if let Some(Err(error)) = result.take() {
+                    result = Some(Err(BoundActionError::NativeAcceptedRefusal(
+                        error.into_door(),
+                    )));
+                }
+            }
+        }
+        // Retain component CLOSED custody for pending cleanup as well.
         accepted.then_some((invocation, true))
     };
     root.visit_components(&mut ComponentRequest {
@@ -2450,6 +2485,7 @@ pub enum BoundDispatchError {
 
 /// Logical typing ownership survives physical commits made when an opaque
 /// callback from another instance is admitted. Read-only entry never touches it.
+#[derive(Clone)]
 pub(crate) struct PendingRecordAction {
     instance_id: crate::application::InstanceId,
     owner: Rc<Cell<bool>>,
@@ -2461,17 +2497,20 @@ pub(crate) struct PendingRecordAction {
     inverse: crate::state::CommittedSpanInverse,
 }
 
+#[derive(Clone)]
 struct NativeTextSpan {
     action: tilo_actions::EncodedAction,
     frontier: Vec<ChangeHash>,
 }
 
+#[derive(Clone)]
 struct NativeTextPolicy {
     action: tilo_actions::EncodedAction,
     continues: bool,
     continuable: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct RecordActionState {
     pub(crate) invocation_provenance: Rc<RefCell<crate::invocation_scope::InvocationProvenance>>,
     pending: Option<PendingRecordAction>,
@@ -2547,6 +2586,7 @@ impl RecordActionState {
     }
 }
 
+#[derive(Clone)]
 struct ActiveMutation {
     binding: CallbackBinding,
     /// A foreign segment is compared against this boundary after delivery.
@@ -2555,6 +2595,7 @@ struct ActiveMutation {
     /// Settlement names its owner without closing a draft until an action writes.
     deferred: bool,
 }
+#[derive(Clone)]
 struct ActionFrame {
     history: crate::state::UndoLog,
     state: RecordActionState,
@@ -2569,6 +2610,7 @@ type FrameHandle = Rc<RefCell<Option<ActionFrame>>>;
 /// Owned bookkeeping only; the explicit document loan remains on the stack.
 /// Effect cursors police opaque mutations. View has no cursor until a real
 /// typed producer arrives, so pure navigation never closes pending typing.
+#[derive(Clone)]
 struct OperationSpan {
     binding: CallbackBinding,
     cursor: Option<Vec<ChangeHash>>,
@@ -2980,6 +3022,76 @@ impl<'a> BoundOperation<'a> {
 impl Drop for BoundOperation<'_> {
     fn drop(&mut self) {
         // Preserve canonical bytes and restore bookkeeping on unwind as well.
+        self.finish();
+    }
+}
+
+/// A native Effect receives only a read loan. Capture after operation entry
+/// has settled prior typing, while the actual store exclusively owns this loan.
+/// Queued Document follow-ups execute later through their own broker admission.
+struct NativeReadLoan<'a> {
+    document: &'a mut AutoCommit,
+    frame: FrameHandle,
+    saved: Option<(AutoCommit, ActionFrame)>,
+    scope: crate::invocation_scope::ResourceInvocationScope,
+}
+impl<'a> NativeReadLoan<'a> {
+    fn enter(
+        document: &'a mut AutoCommit,
+        scope: &crate::invocation_scope::ResourceInvocationScope,
+    ) -> Result<Self, BoundDispatchError> {
+        let frame =
+            operation_frame(document).ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+        let saved_frame = frame
+            .borrow()
+            .as_ref()
+            .cloned()
+            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+        if !saved_frame
+            .operations
+            .last()
+            .is_some_and(|operation| operation.effect)
+        {
+            return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+        }
+        let saved = Some((document.clone(), saved_frame));
+        Ok(Self {
+            document,
+            frame,
+            saved,
+            scope: scope.clone(),
+        })
+    }
+    fn run<R>(mut self, callback: impl FnOnce(&mut AutoCommit) -> R) -> (R, bool) {
+        let result = callback(self.document);
+        let refused = self.finish();
+        (result, refused)
+    }
+    fn finish(&mut self) -> bool {
+        let Some((saved_document, saved_frame)) = self.saved.take() else {
+            return false;
+        };
+        // Heads omit queued changes whose dependencies have not arrived. Save
+        // cloned documents to compare every serializable change, including those
+        // orphans, without changing either actual document's save bookkeeping.
+        if self.document.get_actor() == saved_document.get_actor()
+            && self.document.clone().save() == saved_document.clone().save()
+        {
+            return false;
+        }
+        // No other owner can merge or mutate this loan concurrently. Restore
+        // only the post-entry callback boundary and its exact bookkeeping.
+        self.scope.cancel();
+        *self.document = saved_document;
+        *self.frame.borrow_mut() = Some(saved_frame);
+        true
+    }
+}
+impl Drop for NativeReadLoan<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.scope.cancel();
+        }
         self.finish();
     }
 }

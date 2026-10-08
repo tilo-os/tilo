@@ -10,6 +10,8 @@ pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, Gate>>>,
     Arc<std::sync::Mutex<BTreeMap<String, CommittedDocument>>>,
     Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    Arc<std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>>,
+    Arc<std::sync::Mutex<Option<Vec<String>>>>,
 );
 #[derive(Clone)]
 enum Gate {
@@ -17,7 +19,63 @@ enum Gate {
     Legacy,
     Required(Arc<AtomicBool>, Arc<std::sync::atomic::AtomicU64>),
 }
+/// Read-only phase observations for a failed construction barrier. These
+/// independently sampled flags are diagnostic metadata, never admission.
+pub(super) struct ReadinessDiagnostic {
+    pub(super) required: bool,
+    pub(super) staged: bool,
+    pub(super) applied: bool,
+    pub(super) refresh_requested: bool,
+}
 impl Reads {
+    pub(super) fn readiness_diagnostic(&self, key: &str) -> Option<ReadinessDiagnostic> {
+        let required = self
+            .0
+            .lock()
+            .ok()?
+            .get(key)
+            .is_some_and(|gate| matches!(gate, Gate::Required(_, _)));
+        let staged = self
+            .1
+            .lock()
+            .ok()?
+            .get(key)
+            .map(|read| read.merged.load(Ordering::Acquire));
+        let refresh_requested = self.2.lock().ok()?.contains(key);
+        Some(ReadinessDiagnostic {
+            required,
+            staged: staged.is_some(),
+            applied: staged.unwrap_or(false),
+            refresh_requested,
+        })
+    }
+    pub(super) fn delivery_generation(&self, key: &str) -> Option<Arc<AtomicBool>> {
+        let rows = self.0.lock().ok()?;
+        match rows.get(key)? {
+            Gate::Required(ready, _) => Some(ready.clone()),
+            _ => None,
+        }
+    }
+    pub(super) fn delivery_turn(&self, key: &str) -> Result<Arc<tokio::sync::Semaphore>, String> {
+        let mut turns = self.3.lock().map_err(|_| "document turn map poisoned")?;
+        Ok(turns
+            .entry(key.into())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .clone())
+    }
+    pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>) {
+        keys.sort();
+        keys.dedup();
+        if let Ok(mut owners) = self.4.lock() {
+            *owners = Some(keys);
+        }
+    }
+    pub(super) fn document_owner_routes(&self, original: &str) -> Result<Vec<String>, String> {
+        self.4
+            .lock()
+            .map_err(|_| "document owner routes poisoned".into())
+            .map(|owners| owners.clone().unwrap_or_else(|| vec![original.into()]))
+    }
     #[cfg(test)]
     pub(super) fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {
         self.pending(key).unwrap()
@@ -92,6 +150,20 @@ impl Reads {
         }
         None
     }
+    /// The current staged capture still awaiting the canonical owner's merge.
+    /// Unlike `initial`, observing this handoff does not request a refresh.
+    pub(super) fn unapplied(&self, key: &str) -> Option<CommittedDocument> {
+        let gates = self.0.lock().ok()?;
+        if !matches!(gates.get(key), Some(Gate::Required(_, _))) {
+            return None;
+        }
+        self.1
+            .lock()
+            .ok()?
+            .get(key)
+            .filter(|read| read.is_current() && !read.merged.load(Ordering::Acquire))
+            .cloned()
+    }
     fn stage(
         &self,
         key: &str,
@@ -122,7 +194,7 @@ impl Reads {
             rows.remove(key);
         }
     }
-    fn current(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
+    pub(super) fn current(&self, key: &str, ready: &Arc<AtomicBool>) -> bool {
         self.0.lock().is_ok_and(|rows|matches!(rows.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready)))
     }
     fn discard_stage(&self, key: &str) {
@@ -322,6 +394,224 @@ impl Assembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn committed_document_downgrade_excludes_unapplied_owner_handoff() {
+        use automerge::transaction::Transactable;
+        let mut graph = automerge::AutoCommit::new();
+        graph
+            .put(automerge::ROOT, "body", "retained owner graph")
+            .unwrap();
+        graph.commit();
+        let bytes = graph.save();
+        let budget = ByteBudget::new();
+        let (read, _) = read_capture_using(
+            Reply::Chunk {
+                capture: 1,
+                revision: [7; 32],
+                total: u32::try_from(bytes.len()).unwrap(),
+                offset: 0,
+                bytes,
+                token: [3; 16],
+            },
+            &budget,
+            async |_| Ok(Reply::Cancelled),
+        )
+        .await
+        .unwrap();
+        let reads = Reads::default();
+        let ready = reads.pending("route").unwrap();
+        reads.stage("route", &ready, read.clone()).unwrap();
+        assert!(reads.unapplied("route").is_some());
+        reads.legacy("route").unwrap();
+        assert!(
+            reads.publishable("route"),
+            "existing legacy publication semantics remain unchanged"
+        );
+        assert!(
+            reads.unapplied("route").is_none(),
+            "a downgraded gate cannot hand retained bytes to a new owner"
+        );
+        assert!(
+            !read.merged.load(Ordering::Acquire),
+            "observing a downgrade cannot acknowledge the capture"
+        );
+    }
+
+    #[tokio::test]
+    async fn construction_diagnostic_does_not_request_or_consume_owner_refresh() {
+        let reads = Reads::default();
+        let ready = reads.pending("route").unwrap();
+        let (read, _) = read_capture_using(
+            Reply::Chunk {
+                capture: 1,
+                revision: [3; 32],
+                total: 1,
+                offset: 0,
+                bytes: vec![1],
+                token: [4; 16],
+            },
+            &ByteBudget::new(),
+            async |request| {
+                assert!(matches!(request, Request::Cancel { capture: 1, .. }));
+                Ok(Reply::Cancelled)
+            },
+        )
+        .await
+        .unwrap();
+        reads.stage("route", &ready, read.clone()).unwrap();
+        let phase = reads.readiness_diagnostic("route").unwrap();
+        assert!(phase.required && phase.staged && !phase.applied);
+        assert!(!phase.refresh_requested && !reads.publishable("route"));
+        read.applied();
+        assert!(reads.readiness_diagnostic("route").unwrap().applied);
+        reads.clear_stage("route", &read.merged);
+        ready.store(true, Ordering::Release);
+        let phase = reads.readiness_diagnostic("route").unwrap();
+        assert!(!phase.staged && !phase.refresh_requested);
+        assert!(reads.publishable("route"));
+        assert!(!reads.refresh_requested("route"));
+        assert!(reads.initial("route").is_none());
+        assert!(
+            reads
+                .readiness_diagnostic("route")
+                .unwrap()
+                .refresh_requested
+        );
+        assert!(reads.refresh_requested("route"));
+        assert!(!reads.refresh_requested("route"));
+    }
+
+    #[tokio::test]
+    async fn committed_small_captures_share_the_existing_byte_budget() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let budget = ByteBudget::new();
+        let payloads: Vec<_> = (1..=3)
+            .map(|capture| {
+                let mut graph = automerge::AutoCommit::new();
+                graph
+                    .put(automerge::ROOT, "body", format!("capture{capture}"))
+                    .unwrap();
+                graph.commit();
+                graph.save()
+            })
+            .collect();
+        let charged: usize = payloads.iter().map(Vec::len).sum();
+        let mut retained = Vec::new();
+        for (index, payload) in payloads.iter().enumerate() {
+            let capture = u64::try_from(index + 1).unwrap();
+            let result = read_capture_using(
+                Reply::Chunk {
+                    capture,
+                    revision: [7; 32],
+                    total: u32::try_from(payload.len()).unwrap(),
+                    offset: 0,
+                    bytes: payload.clone(),
+                    token: [3; 16],
+                },
+                &budget,
+                async |request| {
+                    assert_eq!(
+                        request,
+                        Request::Cancel {
+                            capture,
+                            token: [3; 16]
+                        }
+                    );
+                    Ok(Reply::Cancelled)
+                },
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "three valid tiny graphs fit the existing byte budget: {:?}",
+                result.as_ref().err()
+            );
+            retained.push(result.unwrap().0);
+        }
+        assert_eq!(retained.len(), 3);
+        for (index, read) in retained.iter().enumerate() {
+            read.with_mutation(|mutation| {
+                assert_eq!(
+                    mutation,
+                    &collab_types::DocumentMutation::Snapshot(payloads[index].clone())
+                );
+                let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+                    panic!("full captured graph required")
+                };
+                let graph = automerge::AutoCommit::load(bytes).unwrap();
+                assert_eq!(
+                    graph
+                        .get(automerge::ROOT, "body")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str(),
+                    Some(format!("capture{}", index + 1).as_str())
+                );
+            })
+            .unwrap();
+        }
+        let limit = MAX_DOCUMENT_BYTES * 2;
+        let remainder = budget.reserve(limit - charged, limit).unwrap();
+        assert!(budget.reserve(1, limit).is_none());
+        let clone = retained[0].clone();
+        retained.remove(0);
+        assert!(
+            budget.reserve(1, limit).is_none(),
+            "the capture clone retains its one lease"
+        );
+        drop(clone);
+        let released = budget
+            .reserve(payloads[0].len(), limit)
+            .expect("the final capture owner releases its payload bytes");
+        assert!(budget.reserve(1, limit).is_none());
+        drop(released);
+        drop(retained);
+        drop(remainder);
+        assert!(budget.reserve(limit, limit).is_some());
+    }
+    #[tokio::test]
+    async fn committed_capture_invalid_totals_acknowledge_without_retaining_a_lease() {
+        for (total, offset, bytes) in [
+            (0, 0, vec![]),
+            (u32::try_from(MAX_DOCUMENT_BYTES).unwrap() + 1, 0, vec![1]),
+            (1, 0, vec![1, 2]),
+            (1, 1, vec![1]),
+        ] {
+            let budget = ByteBudget::new();
+            let mut acknowledged = false;
+            let result = read_capture_using(
+                Reply::Chunk {
+                    capture: 1,
+                    revision: [7; 32],
+                    total,
+                    offset,
+                    bytes,
+                    token: [3; 16],
+                },
+                &budget,
+                async |request| {
+                    assert_eq!(
+                        request,
+                        Request::Cancel {
+                            capture: 1,
+                            token: [3; 16]
+                        }
+                    );
+                    acknowledged = true;
+                    Ok(Reply::Cancelled)
+                },
+            )
+            .await;
+            assert_eq!(result.unwrap_err(), "committed document initial bounds");
+            assert!(acknowledged);
+            assert!(
+                budget
+                    .reserve(MAX_DOCUMENT_BYTES * 2, MAX_DOCUMENT_BYTES * 2)
+                    .is_some()
+            );
+        }
+    }
     #[test]
     fn committed_document_publication_waits_for_owner_and_old_ack_cannot_reopen() {
         let reads = Reads::default();
@@ -384,7 +674,18 @@ mod tests {
             initialized: Arc::new(AtomicBool::new(false)),
         };
         reads.stage("route", &ready, read.clone()).unwrap();
+        assert!(reads.unapplied("route").is_some());
+        read.applied();
+        assert!(
+            reads.unapplied("route").is_none(),
+            "acknowledged capture must not merge again"
+        );
+        read.merged.store(false, Ordering::Release);
         reads.pending("route").unwrap();
+        assert!(
+            reads.unapplied("route").is_none(),
+            "replaced capture must not reach the owner"
+        );
         assert!(
             reads.initial("route").is_none(),
             "old generation must not hydrate the replacement"
@@ -479,13 +780,23 @@ pub(super) async fn read_capture_using(
     };
     // Reserve before the full-document destination allocation. Every clone of
     // the event retains this one shared reservation until the last owner drops.
-    let (first_id, first_token) = match &first {
-        Reply::Chunk { capture, token, .. } => (*capture, *token),
+    let (first_id, first_token, total) = match &first {
+        Reply::Chunk {
+            capture,
+            token,
+            total,
+            ..
+        } => (*capture, *token, *total as usize),
         _ => return Err("committed initial capture missing".into()),
     };
     let prepared = (|| {
+        if total == 0 || total > MAX_DOCUMENT_BYTES {
+            return Err("committed document initial bounds".into());
+        }
+        // Charge the validated raw payload before allocating its destination.
+        // Clones share this one lease; the aggregate limit is unchanged.
         let reservation = budget
-            .reserve(MAX_DOCUMENT_BYTES, MAX_DOCUMENT_BYTES * 2)
+            .reserve(total, MAX_DOCUMENT_BYTES * 2)
             .ok_or("SDK committed read capacity")?;
         Ok::<_, String>((reservation, Assembly::start(first)?))
     })();
@@ -606,6 +917,18 @@ pub(super) async fn install(
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
                 break;
             }
+            // A queued native invocation retains this existing transport turn
+            // through the owner's dispatch batch. A refresh cannot withdraw its
+            // applied capture between admission delivery and the unchanged guard.
+            let Ok(semaphore) = inbound.state.document_reads.delivery_turn(&key) else {
+                break;
+            };
+            let Ok(turn) = semaphore.acquire_owned().await else {
+                break;
+            };
+            if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
+                break;
+            }
             if let Some(read) = current.take() {
                 let merged = read.merged.clone();
                 if inbound
@@ -672,6 +995,7 @@ pub(super) async fn install(
                     break;
                 }
             }
+            drop(turn);
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         set_read_ready(&inbound, &ready, false);

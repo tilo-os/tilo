@@ -163,12 +163,23 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                 "page_body_resource",
                 "page_body_publish",
                 "page_body_continuations",
+                "duplicate_sources",
+                "page_preview",
+                "continuation_stamp",
+                "publication_backlinks",
+                "page_decoration",
+                "projection_bodies",
+                "projection_rich_states",
             ] {
                 assert!(rows.iter().any(|row| row.phase == phase));
             }
             assert!(rows.iter().any(|row| row.phase == "tree_metadata_plan"));
             if pages > 1 {
-                for phase in ["tree_metadata_delta", "tree_metadata_encode"] {
+                for phase in [
+                    "tree_metadata_delta",
+                    "tree_metadata_encode",
+                    "tree_metadata_spec",
+                ] {
                     assert!(rows.iter().any(|row| row.phase == phase));
                 }
             }

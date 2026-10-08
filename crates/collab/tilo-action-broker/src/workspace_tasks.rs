@@ -459,6 +459,7 @@ mod tests {
             )),
             actor: "supplied-actor-is-not-authority".into(),
             context: None,
+            admission_json: String::new(),
         }
     }
 

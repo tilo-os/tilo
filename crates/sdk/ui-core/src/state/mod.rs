@@ -219,7 +219,7 @@ fn push_history(stack: &mut Vec<UndoEntry>, entry: UndoEntry) {
 /// Separated from [`State`] because a history belongs to a *document*, not a
 /// process — a stack shared between two documents would revert against the
 /// wrong one, as a second tab sharing the first tab's undo stack would.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct UndoLog {
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,

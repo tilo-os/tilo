@@ -811,3 +811,53 @@ fn chunked_upload_preserves_verified_layer_and_cache() {
     assert_eq!(retained.len(), 1, "rejected imports cannot publish a layer");
     assert_eq!(retained[0].hash, hash);
 }
+
+#[test]
+fn verified_layer_cache_refuses_corruption_and_missing_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(root.path());
+    daemon.client.hello("cache-fixture").unwrap();
+    let bytes = tarball("usr/bin/shell", b"source-pinned payload");
+    let hash = import(&mut daemon.client, "shell", &bytes);
+    let verified = daemon
+        .client
+        .call(tilo_vm_protocol::LayerVerify { hash: hash.clone() })
+        .unwrap();
+    assert_eq!(verified.hash, hash);
+    assert_eq!(verified.provenance.component, "shell");
+    let missing = daemon.client.call(tilo_vm_protocol::LayerVerify {
+        hash: "f".repeat(64),
+    });
+    assert!(missing.is_err());
+    std::fs::write(
+        root.path().join("layers").join(&hash).join("usr/bin/shell"),
+        b"damaged cache",
+    )
+    .unwrap();
+    assert!(
+        daemon
+            .client
+            .call(tilo_vm_protocol::LayerVerify { hash: hash.clone() })
+            .is_err()
+    );
+    // A normal reupload must not silently return the corrupt existing directory.
+    let upload = daemon.client.upload(bytes.as_slice()).unwrap();
+    assert!(
+        daemon
+            .client
+            .call(LayerImport {
+                source: LayerSource::Upload(upload),
+                provenance: Box::new(Provenance::local("shell")),
+            })
+            .is_err()
+    );
+    std::fs::remove_dir_all(root.path().join("layers").join(&hash)).unwrap();
+    let replaced = import(&mut daemon.client, "shell", &bytes);
+    assert_eq!(replaced, hash);
+    assert!(
+        daemon
+            .client
+            .call(tilo_vm_protocol::LayerVerify { hash })
+            .is_ok()
+    );
+}

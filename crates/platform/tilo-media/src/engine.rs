@@ -201,8 +201,9 @@ pub struct MediaEngine {
 
 enum Backend {
     Synth(SynthState),
+    /// Boxed: the pipeline state is far larger than the other backends.
     #[cfg(gst_decode)]
-    Gst(crate::gst_backend::GstState),
+    Gst(Box<crate::gst_backend::GstState>),
     #[cfg(web_page)]
     Web(crate::web::WebState),
 }
@@ -281,7 +282,7 @@ impl MediaEngine {
                 return Self {
                     handoff_id: Self::next_handoff_id(),
                     handoff_controller_bus_name: None,
-                    backend: Backend::Gst(gst),
+                    backend: Backend::Gst(Box::new(gst)),
                     source: None,
                     volume: config.volume,
                     muted: false,

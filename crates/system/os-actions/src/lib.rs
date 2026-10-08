@@ -46,6 +46,7 @@ pub mod brightness;
 pub mod codec_pack;
 pub mod ddc;
 pub mod display;
+pub mod extension;
 pub mod firmware;
 pub mod keyboard_backlight;
 #[cfg(target_os = "linux")]
@@ -114,6 +115,7 @@ pub use network::{
     list_hotspot_clients, list_saved_network_profiles, list_vpn_connections, list_wifi_networks,
     portable_wifi_profile_secret, set_airplane_mode, set_hotspot, set_mobile_broadband,
     set_network_autoconnect, set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
+    wifi_from_radios,
 };
 pub use orientation::{
     AccelSample, DeviceOrientation, OrientationTracker, RotationControl, has_accelerometer,

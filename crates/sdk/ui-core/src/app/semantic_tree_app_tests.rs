@@ -1093,6 +1093,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             action: "bump".into(),
             argument: None,
             actor: "agent:Scribe".into(),
+            native_delivery: None,
             context: None,
         });
 
@@ -1131,6 +1132,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             action: "async-bump".into(),
             argument: None,
             actor: "agent:Scribe".into(),
+            native_delivery: None,
             context: None,
         });
         assert_eq!(counter(&app), 0, "admission alone does not mutate");

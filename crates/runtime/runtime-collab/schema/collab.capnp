@@ -623,7 +623,7 @@ interface InvocationStream {
   # local completion/cancellation handle.
   read @0 () -> (id :UInt64, resource :Text, action :Text,
                  argument :Text, hasArgument :Bool, actor :Text,
-                 contextJson :Text, invocationUuid :Data);
+                 contextJson :Text, invocationUuid :Data, admissionJson :Text);
 }
 
 # Agent-only task work sent by the broker after live-session admission.

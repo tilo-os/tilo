@@ -1631,6 +1631,8 @@ fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(unix, feature = "broker-transport"))]
+    include!("launch/native_construction_owner_tests.rs");
     use super::*;
 
     /// The launcher's environment contract, pointed at a scratch data home.

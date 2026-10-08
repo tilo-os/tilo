@@ -270,6 +270,7 @@ fn a_broker_delivered_restore_runs_and_is_attributed_to_the_invoker() {
         action: RESTORE.into(),
         argument: Some(argument),
         actor: "agent:Scribe".into(),
+        native_delivery: None,
         context: None,
     });
     assert_eq!(title(&app).as_deref(), Some("v1"));

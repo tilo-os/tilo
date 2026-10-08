@@ -13,7 +13,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join::{self, MemberRole};
-use tilo_relay::rooms::{CancelInvitationRequest, IssueInvitationRequest, RoomCommand, RoomReply};
+use tilo_relay_session::rooms::{
+    CancelInvitationRequest, IssueInvitationRequest, RoomCommand, RoomReply,
+};
 use tilo_user_identity::DeviceCert;
 
 /// How long one exchange with a relay's room authority may take.
@@ -393,7 +395,7 @@ impl ShellNetwork {
         &self,
         relay: &iroh::EndpointAddr,
         certificate: &DeviceCert,
-        summary: &tilo_relay::rooms::RoomSummary,
+        summary: &tilo_relay_session::rooms::RoomSummary,
     ) -> Result<(), String> {
         let room = RoomId::parse(&summary.room).ok_or("the host named an invalid room")?;
         let tree = self

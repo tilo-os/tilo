@@ -366,7 +366,13 @@ pub fn get_wifi() -> Result<bool, String> {
     wifi_from_radios(&get_radio_state()?)
 }
 
-fn wifi_from_radios(radios: &RadioState) -> Result<bool, String> {
+/// Whether Wi-Fi is on, read from a radio snapshot already taken — so a
+/// caller holding one does not fork `nmcli` a second time for the same answer.
+///
+/// # Errors
+///
+/// Returns an error message when the snapshot shows no Wi-Fi adapter.
+pub fn wifi_from_radios(radios: &RadioState) -> Result<bool, String> {
     if !radios.wifi_available {
         return Err("no Wi-Fi adapter on this machine".into());
     }

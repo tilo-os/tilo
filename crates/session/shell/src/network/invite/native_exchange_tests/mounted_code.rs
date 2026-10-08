@@ -5,13 +5,15 @@ use crate::shell::network::ShellNetwork;
 use cold_code::{APP, BODY, FILE, LocalSurface, MountedCode};
 use sha2::{Digest as _, Sha256};
 
-#[tokio::test]
+// The mounted UI stays on the caller thread while Iroh and persistence can
+// progress independently, as on ShellNetwork's two-worker runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_mounted_code_resource_edit_reaches_another_mounted_app() {
     trace_publication_hops();
     Box::pin(super::actual_exchange(false, true, Some(Journey::Document))).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_mounted_code_has_acknowledged_private_continuity() {
     trace_publication_hops();
     Box::pin(super::actual_exchange(
@@ -24,7 +26,7 @@ async fn native_mounted_code_has_acknowledged_private_continuity() {
 
 fn trace_publication_hops() {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,tilo_joined_room::session::cursor=debug,tilo_joined_room::testing::governor=debug")
+        .with_env_filter("warn,tilo_joined_room::session::cursor=debug,tilo_joined_room::testing::governor=debug,tilo_relay::native_publication=debug")
         .try_init();
 }
 
@@ -214,6 +216,7 @@ pub(super) async fn run(
         2,
     )
     .await;
+    inspect_while_ui_caller_is_blocked(&context, &authority);
     let edited = format!("{BODY}// edited through a mounted resource action\n");
     mounted[0].invoke("replace-text", Some(&edited));
     drive(
@@ -339,6 +342,36 @@ async fn enroll_second(
         identity,
         endpoint,
     }
+}
+
+fn inspect_while_ui_caller_is_blocked(context: &Context<'_>, authority: &ActualAuthority) {
+    let invitation = {
+        let mut state = authority.lock().unwrap();
+        let state = state.as_mut().unwrap();
+        state.issue(
+            vec![state.hint(context.server.clone())],
+            MemberRole::Viewer,
+            None,
+            None,
+            now_ns(SystemTime::now())
+                .unwrap()
+                .checked_add(60_000_000_000)
+                .unwrap(),
+        )
+    };
+    let client = WorkspaceJoinClient::new(context.endpoint.clone());
+    let server = context.server.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    tokio::spawn(async move {
+        let result = client.inspect(server, invitation).await;
+        let _ = sender.send(result);
+    });
+    // Rendering and CRDT work occupy the UI caller synchronously. A real
+    // invitation inspection must still complete on the network workers.
+    let inspection = tilo_test_env::recv("join inspection while mounted UI is blocked", &receiver)
+        .expect("the actual workspace join service must answer independently of UI frames");
+    assert_eq!(inspection.grant.room, tilo_joined_room::testing::ROOM);
+    assert_eq!(inspection.grant.role, MemberRole::Viewer);
 }
 
 fn publish(authority: &ActualAuthority, publisher: &tilo_relay::RelayCoeditSession) {

@@ -90,6 +90,20 @@ impl ContinuationParent {
     }
 }
 impl OriginalInvocationData {
+    pub(super) fn admission_json(&self) -> Result<String, String> {
+        let admission = ui::invocation_scope::PublishedInvocationAdmission {
+            version: ui::invocation_scope::PublishedInvocationAdmission::VERSION,
+            wire_id: self.request.wire_id,
+            invocation: self.request.invocation,
+            spec: self.spec.clone(),
+        };
+        let bytes = serde_json::to_string(&admission).map_err(|error| error.to_string())?;
+        if bytes.len() > ui::invocation_scope::PublishedInvocationAdmission::MAX_BYTES {
+            return Err("original invocation admission declaration exceeds bound".into());
+        }
+        Ok(bytes)
+    }
+
     pub(super) fn display_caller(
         self: &Arc<Self>,
         state: &Arc<CapnpBrokerState>,
@@ -145,10 +159,13 @@ impl OriginalInvocationData {
             Command::Paste { .. } => {
                 self.spec.kind == tilo_actions::OperationKind::Effect && action == "paste"
             }
+            Command::RestoreTrash { .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect && action == "restore"
+            }
             Command::Observe { .. } | Command::Cancel { .. } => {
                 matches!(
                     action,
-                    "paste" | "undo" | "redo" | "recover-clipboard-transfers"
+                    "paste" | "restore" | "undo" | "redo" | "recover-clipboard-transfers"
                 )
             }
             Command::Undo { .. } => self.clipboard_compensation() && action == "undo",
@@ -637,7 +654,7 @@ impl OriginalInvocation {
                     caller
                         .network
                         .as_ref()
-                        .map(tilo_relay::client::CertifiedAction::certificate)
+                        .map(tilo_relay_session::client::CertifiedAction::certificate)
                 })
             }
             InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),
