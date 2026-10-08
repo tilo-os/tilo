@@ -8009,6 +8009,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
+    fn approved_check_reported_progress(
+        self: Rc<Self>,
+        params: channel_handle::ApprovedCheckReportedProgressParams,
+        mut results: channel_handle::ApprovedCheckReportedProgressResults,
+    ) -> Promise<(), capnp::Error> {
+        let request = params
+            .get()
+            .and_then(channel_handle::approved_check_reported_progress_params::Reader::get_request)
+            .map_err(|error| error.to_string())
+            .and_then(runtime_collab::approved_checks::Request::decode);
+        let stream = request
+            .and_then(|request| approved_checks::context(&self, request))
+            .and_then(approved_checks::reported_progress);
+        match stream {
+            Ok(stream) => {
+                results.get().set_stream(stream);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
     fn approved_check(
         self: Rc<Self>,
         params: channel_handle::ApprovedCheckParams,
@@ -14220,6 +14241,10 @@ pub mod tests {
     include!("resolved_invocation_tests.rs");
     #[cfg(test)]
     include!("approved_check_rpc_tests.rs");
+    #[cfg(test)]
+    include!("approved_check_progress_fixture.rs");
+    #[cfg(test)]
+    include!("approved_check_progress_rpc_tests.rs");
     #[cfg(test)]
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]

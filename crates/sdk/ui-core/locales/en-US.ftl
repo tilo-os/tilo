@@ -494,3 +494,5 @@ search-apps-group-media = Media
 search-apps-group-system-tools = System tools
 search-apps-group-more-apps = More apps
 search-apps-group-developer-tools = Developer tools
+
+approved-check-reports-disabled = Phase reports unavailable

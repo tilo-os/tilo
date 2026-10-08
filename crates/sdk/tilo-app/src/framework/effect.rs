@@ -44,6 +44,33 @@ use ui_core::portal::{ContentsOutcome, PickRequest, PickedContents, PortalOutcom
 use super::dispatch::Dispatcher;
 use super::live::Live;
 
+fn attach_approved_check_reporter(
+    checked: ui_core::invocation_scope::ApprovedCheckReportedWork,
+    progress: Progress,
+) -> ui_core::invocation_scope::ApprovedCheckFuture {
+    checked(Box::new(move |observation| {
+        progress.with_effect(|| {
+            match observation {
+                ui_core::invocation_scope::ApprovedCheckReportObservation::Reported {
+                    phase,
+                    completed,
+                    total,
+                } => {
+                    progress.report(phase, completed, total);
+                }
+                ui_core::invocation_scope::ApprovedCheckReportObservation::Disabled { .. } => {
+                    progress.report(
+                        ui_core::i18n::I18nManager::lookup_plain("approved-check-reports-disabled"),
+                        None,
+                        None,
+                    );
+                }
+            }
+            Ok(())
+        })
+    }))
+}
+
 /// A file the person chose with the host's chooser
 /// ([`EffectCx::choose_file`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -725,6 +752,40 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
                 .ok_or("approved checks require a dispatched invocation")?,
             check_id,
         )
+    }
+
+    /// Attach approved-check reports to this action's existing job progress.
+    /// The app remains the sole publisher of invocation-update sequences.
+    ///
+    /// # Errors
+    /// Refuses absent dispatch custody or unavailable approved transport.
+    pub fn approved_check_reported(
+        &self,
+        check_id: &str,
+    ) -> Result<
+        impl FnOnce(Progress) -> ui_core::invocation_scope::ApprovedCheckFuture
+        + Send
+        + 'static
+        + use<R, H>,
+        String,
+    > {
+        let checked = if let Some(custody) = &self.custody {
+            custody.approved_check_reported(check_id)?
+        } else {
+            let target = self
+                .target
+                .as_ref()
+                .ok_or("approved checks require an exact dispatched record target")?;
+            if target.route().app_id != self.env.dispatch.app_id() {
+                return Err("approved check dispatch app changed".into());
+            }
+            target.approved_check_reported(
+                self.invocation
+                    .ok_or("approved checks require a dispatched invocation")?,
+                check_id,
+            )?
+        };
+        Ok(move |progress: Progress| attach_approved_check_reporter(checked, progress))
     }
 
     /// Wakes the app from another thread, to draw what a worker changed.
@@ -2443,6 +2504,68 @@ mod tests {
             .build_json(&effect.arguments())
             .unwrap()
             .payload
+    }
+
+    #[test]
+    fn approved_check_reports_use_original_effect_progress_and_freeze_after_cancel() {
+        let mut runner = runner();
+        let invocation = InvocationId::new();
+        let payload = payload(&Work::Count);
+        let op = ResourceOperation::local(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            Work::OPERATION,
+            &payload,
+        );
+        let (forward, reports) = channel();
+        let checked: ui_core::invocation_scope::ApprovedCheckReportedWork =
+            Box::new(move |report| {
+                forward.send(report).unwrap();
+                Box::pin(std::future::pending())
+            });
+        let started = runner
+            .start(&op, &mut (), None, |(), _, cx| {
+                Ok(cx.spawn(
+                    move |progress| attach_approved_check_reporter(checked, progress),
+                    |(), _receipt, _| Ok(Effected::Done(ActionOutput::default())),
+                ))
+            })
+            .unwrap();
+        assert!(matches!(started, Some(ResourceOperationStart::Accepted)));
+        let report = reports
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        for (sequence, phase) in [(1, "Synthesis"), (2, "Routing")] {
+            report(
+                ui_core::invocation_scope::ApprovedCheckReportObservation::Reported {
+                    phase: phase.into(),
+                    completed: Some(sequence),
+                    total: Some(2),
+                },
+            )
+            .unwrap();
+            assert!(matches!(runner.poll(invocation, false, &mut ()),
+                Some(InvocationUpdate::Progress { invocation: actual, sequence: observed,
+                    phase: actual_phase, completed: Some(done), total: Some(2), message: None })
+                if actual == invocation && observed == sequence && actual_phase == phase && done == sequence));
+            assert!(runner.poll(invocation, false, &mut ()).is_none());
+        }
+        assert!(matches!(runner.poll(invocation, true, &mut ()),
+            Some(InvocationUpdate::Cancelled { invocation: actual, .. }) if actual == invocation));
+        assert!(
+            report(
+                ui_core::invocation_scope::ApprovedCheckReportObservation::Reported {
+                    phase: "Late".into(),
+                    completed: None,
+                    total: None,
+                }
+            )
+            .is_err()
+        );
+        assert!(runner.poll(invocation, false, &mut ()).is_none());
+        drop(report);
+        drop(reports);
+        drop(runner);
     }
 
     #[test]
