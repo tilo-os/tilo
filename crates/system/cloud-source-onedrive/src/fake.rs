@@ -67,6 +67,9 @@ pub enum FakeFault {
     ServerError,
     /// The next download declares its full length but sends half the body.
     TruncatedBody,
+    /// The next download sends half the body, declares no length and closes
+    /// the connection.
+    ClosedEarly,
     /// 401 once, as for an expired access token.
     ExpiredCredential,
 }
@@ -792,7 +795,7 @@ impl State {
             return Some(error(404, "itemNotFound"));
         };
         self.stats.graph_requests = self.stats.graph_requests.saturating_add(1);
-        match self.take_fault(|f| f != FakeFault::TruncatedBody) {
+        match self.take_fault(|f| !matches!(f, FakeFault::TruncatedBody | FakeFault::ClosedEarly)) {
             Some(FakeFault::RateLimited) => {
                 return Some(error(429, "activityLimitReached").header("Retry-After", "1"));
             }
@@ -1351,7 +1354,7 @@ impl State {
         self.stats.fragments = self.stats.fragments.saturating_add(1);
         let Some((range, Some(total))) = request
             .header("content-range")
-            .and_then(crate::paths::parse_content_range)
+            .and_then(cloud_source::http::parse_content_range)
         else {
             return error(400, "invalidRequest");
         };
@@ -1416,7 +1419,10 @@ impl State {
         let fault = self.take_fault(|f| {
             matches!(
                 f,
-                FakeFault::RateLimited | FakeFault::ServerError | FakeFault::TruncatedBody
+                FakeFault::RateLimited
+                    | FakeFault::ServerError
+                    | FakeFault::TruncatedBody
+                    | FakeFault::ClosedEarly
             )
         });
         match fault {
@@ -1456,15 +1462,11 @@ impl State {
         if let Some(content_range) = content_range {
             reply = reply.header("Content-Range", &content_range);
         }
-        if fault == Some(FakeFault::TruncatedBody) {
-            let declared = body.len();
-            let half = body.get(..declared / 2).unwrap_or_default().to_vec();
-            return reply
-                .header("Content-Length", &declared.to_string())
-                .body(half)
-                .without_content_length();
+        match fault {
+            Some(FakeFault::TruncatedBody) => reply.body(body).cut_short(true),
+            Some(FakeFault::ClosedEarly) => reply.body(body).cut_short(false),
+            _ => reply.body(body),
         }
-        reply.body(body)
     }
 }
 
