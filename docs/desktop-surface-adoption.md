@@ -143,3 +143,13 @@ results; protected landing and exact merged-main checks remain pending.
 Remaining primary-bar work is separate: collisions at 320 px, retained shared
 overflow controls and status/offline states. The qualified top-bar editor
 increment remains frozen while the Files CI prerequisite is resolved.
+
+## People Follow identity follow-up
+
+People Follow now resolves the painted participant identity against the live roster.
+Keyboard focus follows a surviving person across reordering and clears when that
+person departs or becomes unavailable; the Follow button uses shared ButtonFace
+focus painting. [Qualification](evidence/roster-follow-identity/README.md) covers
+stale pointer/keyboard activation, accessible focus, repeated Follow/Stop and
+Escape/reopen. Broader People text scaling, status-entry controls, paging and
+installed-device acceptance remain in the inventory.

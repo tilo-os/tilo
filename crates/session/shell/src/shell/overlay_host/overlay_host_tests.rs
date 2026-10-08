@@ -2824,3 +2824,139 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
     assert_eq!(home.role_of_at(&"tester".to_string(), 0), None);
     assert_eq!(state.local_user_id, principal);
 }
+
+fn roster_follow_fixture() -> Harness {
+    let mut h = build_harness();
+    {
+        let mut chrome = h.chrome.borrow_mut();
+        chrome.overlays.collaborators = true;
+        chrome
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture workspace")
+            .collaborators = vec![
+            crate::shell::state::Collaborator::new("ada", "Ada"),
+            crate::shell::state::Collaborator::new("bob", "Bob"),
+        ];
+    }
+    paint(&mut h);
+    h
+}
+
+#[test]
+fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
+    let mut h = roster_follow_fixture();
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    let target = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[5])
+        .expect("painted Ada Follow");
+    {
+        let chrome = h.chrome.borrow_mut();
+        chrome
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture workspace")
+            .collaborators
+            .swap(0, 1);
+    }
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
+    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert_eq!(
+        h.host.followed_peer.as_deref(),
+        Some("ada"),
+        "the painted Ada control must not follow Bob's replacement index"
+    );
+}
+
+#[test]
+fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
+    let mut h = roster_follow_fixture();
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    {
+        let chrome = h.chrome.borrow_mut();
+        chrome
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture workspace")
+            .collaborators
+            .remove(0);
+    }
+    let mut handled = false;
+    assert!(h.host.handle_collaborators_keyboard(
+        &Key::Named(NamedKey::Enter),
+        false,
+        &mut handled
+    ));
+    assert!(handled);
+    assert!(
+        h.host.followed_peer.is_none(),
+        "a stale Ada control must never follow Bob"
+    );
+}
+
+#[test]
+fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
+    let mut h = roster_follow_fixture();
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    {
+        let chrome = h.chrome.borrow_mut();
+        chrome
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture workspace")
+            .collaborators
+            .swap(0, 1);
+    }
+    paint(&mut h);
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), mods));
+    assert!(
+        h.host.followed_peer.is_none(),
+        "a second explicit activation stops Ada"
+    );
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+    paint(&mut h);
+    assert!(
+        h.host
+            .collaborators_overlay
+            .accessibility_rect_for_path(&[5])
+            .is_none()
+    );
+
+    h.chrome.borrow_mut().overlays.collaborators = true;
+    paint(&mut h);
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(
+        h.host.followed_peer.is_none(),
+        "reopening must not resurrect old focus"
+    );
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    let target = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[5])
+        .expect("Bob Follow after reordering");
+    assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
+    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert_eq!(h.host.followed_peer.as_deref(), Some("bob"));
+    let _ = pump(&mut h, &left_button_released(), mods);
+    paint(&mut h);
+    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(
+        h.host.followed_peer.is_none(),
+        "a repeated completed click stops Bob"
+    );
+    let _ = pump(&mut h, &left_button_released(), mods);
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+}

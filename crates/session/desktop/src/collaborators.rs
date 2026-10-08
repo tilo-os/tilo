@@ -244,6 +244,21 @@ impl CollaboratorsOverlay {
         model: &CollaboratorsModel<'_>,
         cursor: Option<Point>,
     ) {
+        // Focus names the person the user selected, not their changing
+        // position in the live roster.
+        let focus = match self.keyboard_focus {
+            Some(CollaboratorsHit::ToggleFollow(index)) => self
+                .accessibility_rows
+                .get(index)
+                .and_then(|selected| {
+                    model
+                        .rows
+                        .iter()
+                        .position(|row| row.id == selected.id && row.followable)
+                })
+                .map(CollaboratorsHit::ToggleFollow),
+            other => other,
+        };
         self.layout(
             model.host,
             model.rows.len(),
@@ -264,6 +279,7 @@ impl CollaboratorsOverlay {
                 *target = Rect::ZERO;
             }
         }
+        self.keyboard_focus = focus.filter(|hit| self.rect_for_hit(*hit).is_some());
         let rect = self.panel;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -440,7 +456,10 @@ impl CollaboratorsOverlay {
             cursor,
         );
         self.draw_footer(scene, transform, text_renderer, theme, cursor);
-        if let Some(rect) = self.focused_rect() {
+        if let Some(rect) = self
+            .focused_rect()
+            .filter(|_| !matches!(self.keyboard_focus, Some(CollaboratorsHit::ToggleFollow(_))))
+        {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
@@ -474,6 +493,17 @@ impl CollaboratorsOverlay {
 
     pub fn contains(&self, point: Point) -> bool {
         self.panel.area() > 0.0 && self.panel.contains(point)
+    }
+
+    /// The stable person behind a painted Follow button. The host must
+    /// revalidate that person against its live roster before applying Follow.
+    pub fn follow_target(&self, index: usize) -> Option<&str> {
+        self.row_actions
+            .get(index)
+            .filter(|rect| rect.area() > 0.0)
+            .and_then(|_| self.accessibility_rows.get(index))
+            .filter(|row| row.followable)
+            .map(|row| row.id.as_str())
     }
 
     pub fn hit_test(&self, point: Point) -> CollaboratorsHit {
@@ -1626,6 +1656,11 @@ impl CollaboratorsOverlay {
             });
             let face = ButtonFace::new(action, &label)
                 .control_size(ui::widget::ControlSize::Large)
+                .focused(matches!(
+                    self.keyboard_focus,
+                    Some(CollaboratorsHit::ToggleFollow(index))
+                        if self.follow_target(index) == Some(row.id.as_str())
+                ))
                 .hovered(frame.cursor.is_some_and(|point| action.contains(point)));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
@@ -2238,5 +2273,151 @@ mod tests {
         clearing_drops_every_invisible_hit_target();
         own_status_and_privacy_modes_are_first_class_hit_targets();
         keyboard_reaches_status_privacy_follow_and_activity_without_pointer_input();
+    }
+
+    fn roster_focus_rows() -> Vec<RosterRow> {
+        ["Ada", "Bob"]
+            .into_iter()
+            .map(|name| RosterRow {
+                id: name.to_ascii_lowercase(),
+                label: name.into(),
+                initial: name.chars().next().expect("fixture name"),
+                color: Color::from_rgb8(114, 139, 180),
+                is_agent: false,
+                role: None,
+                invited: false,
+                activity: None,
+                status: None,
+                followable: true,
+            })
+            .collect()
+    }
+
+    fn paint_roster_focus(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow]) {
+        paint_roster_focus_in(overlay, rows, Rect::new(0.0, 0.0, 800.0, 600.0));
+    }
+
+    fn paint_roster_focus_in(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow], host: Rect) {
+        overlay.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &CollaboratorsModel {
+                host,
+                rows,
+                own_initial: 'Q',
+                own_color: Color::from_rgb8(170, 120, 130),
+                unavailable: None,
+                may_invite: false,
+                followed_id: None,
+                following_pairs: &[],
+                own_status: None,
+                own_activity: None,
+                own_status_automatic: false,
+                status_sharing: ui::StatusSharing::Automatic,
+                status_editing: false,
+                screen_exposure: None,
+            },
+            None,
+        );
+    }
+
+    #[test]
+    fn roster_follow_focus_tracks_a_person_across_painted_reordering() {
+        let mut overlay = CollaboratorsOverlay::default();
+        let mut people = roster_focus_rows();
+        paint_roster_focus(&mut overlay, &people);
+        assert!(overlay.focus_accessibility_path(&[5]));
+        people.swap(0, 1);
+        paint_roster_focus(&mut overlay, &people);
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Enter), false),
+            Some(CollaboratorsHit::ToggleFollow(1)),
+            "Ada survives at the new index"
+        );
+        let snapshot = overlay.accessibility_snapshot();
+        let focused = snapshot
+            .children
+            .iter()
+            .find(|node| node.state.focused)
+            .expect("surviving Ada control retains focus");
+        assert_eq!(focused.name.as_deref(), Some("Follow Ada"));
+    }
+
+    #[test]
+    fn roster_follow_focus_does_not_jump_to_a_replacement_person() {
+        let mut overlay = CollaboratorsOverlay::default();
+        let mut people = roster_focus_rows();
+        paint_roster_focus(&mut overlay, &people);
+        assert!(overlay.focus_accessibility_path(&[5]));
+        people.remove(0);
+        paint_roster_focus(&mut overlay, &people);
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Tab), false), None);
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Enter), false),
+            Some(CollaboratorsHit::EditStatus),
+            "navigation explicitly selects a new control"
+        );
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Escape), false),
+            Some(CollaboratorsHit::Dismiss)
+        );
+    }
+
+    #[test]
+    fn roster_follow_focus_clears_when_the_person_is_no_longer_followable() {
+        let mut overlay = CollaboratorsOverlay::default();
+        let mut people = roster_focus_rows();
+        paint_roster_focus(&mut overlay, &people);
+        assert!(overlay.focus_accessibility_path(&[5]));
+        people.first_mut().expect("Ada").followable = false;
+        paint_roster_focus(&mut overlay, &people);
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
+        assert!(
+            !overlay
+                .accessibility_snapshot()
+                .children
+                .iter()
+                .any(|node| node.state.focused)
+        );
+    }
+
+    #[test]
+    fn roster_follow_focus_survives_resize_and_clears_on_page_change() {
+        let mut overlay = CollaboratorsOverlay::default();
+        let mut people = roster_focus_rows();
+        paint_roster_focus(&mut overlay, &people);
+        assert!(overlay.focus_accessibility_path(&[5]));
+        let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
+        paint_roster_focus_in(&mut overlay, &people, viewport);
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Enter), false),
+            Some(CollaboratorsHit::ToggleFollow(0))
+        );
+        let focus = overlay
+            .accessibility_rect_for_path(&[5])
+            .expect("Ada after resize");
+        assert!(
+            viewport.contains(focus.origin()) && viewport.contains(Point::new(focus.x1, focus.y1))
+        );
+        for name in ["Carol", "Dana"] {
+            let mut row = people.first().expect("fixture Ada").clone();
+            row.id = name.to_ascii_lowercase();
+            row.label = name.into();
+            people.push(row);
+        }
+        overlay.change_people_page(true, people.len());
+        paint_roster_focus_in(&mut overlay, &people, viewport);
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
+        overlay.change_people_page(false, people.len());
+        paint_roster_focus_in(&mut overlay, &people, viewport);
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
+        assert!(overlay.focus_accessibility_path(&[5]));
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Enter), false),
+            Some(CollaboratorsHit::ToggleFollow(0))
+        );
     }
 }
