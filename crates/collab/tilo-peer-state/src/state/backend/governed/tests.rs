@@ -482,6 +482,66 @@ fn governed_import_keeps_verified_earliest_revocations_and_refuses_bad_root_or_s
 }
 
 #[test]
+fn governed_revocation_batch_refusal_preserves_durable_state_and_writer_authority() {
+    let (peer, writer, member_key, member, now) = crate::admission_tests::seeded();
+    let owner = SigningKey::from_bytes(&[1; 32]);
+    let outsider = SigningKey::from_bytes(&[91; 32]);
+    let revoke = |signer: &SigningKey| {
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: signer.verifying_key().to_bytes(),
+            revoked_device_public_key: member.device_public_key,
+            revoked_at_ns: 10,
+            reason: tilo_user_identity::RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, signer).unwrap();
+        entry
+    };
+    let valid = revoke(&owner);
+    let mut forged = valid.clone();
+    forged.signature[0] ^= 1;
+    let before = peer.durable().unwrap();
+    for (label, invalid) in [("forged", forged), ("nonmember", revoke(&outsider))] {
+        let mut candidate = peer.clone();
+        assert!(
+            candidate
+                .publish_governed_revocations(&[valid.clone(), invalid], &writer, now)
+                .is_err(),
+            "{label} second entry refuses the entire batch"
+        );
+        assert_eq!(candidate.durable().unwrap(), before, "{label}");
+        assert!(candidate.governance_revocations().is_empty(), "{label}");
+        assert!(candidate.permissions(member.device_public_key, now).is_ok());
+    }
+    let mut candidate = peer;
+    assert!(
+        candidate
+            .publish_governed_revocations(std::slice::from_ref(&valid), &member_key, now)
+            .is_err(),
+        "a member device cannot publish governance"
+    );
+    assert_eq!(candidate.durable().unwrap(), before);
+    assert!(
+        candidate
+            .publish_governed_revocations(std::slice::from_ref(&valid), &writer, now)
+            .unwrap()
+    );
+    assert_eq!(candidate.governance_revocations(), vec![valid.clone()]);
+    assert!(
+        candidate
+            .permissions(member.device_public_key, now)
+            .is_err()
+    );
+    let committed = candidate.durable().unwrap();
+    assert!(
+        !candidate
+            .publish_governed_revocations(&[valid], &writer, now)
+            .unwrap()
+    );
+    assert_eq!(candidate.durable().unwrap(), committed);
+}
+
+#[test]
 fn governed_import_refuses_collection_and_certificate_limits() {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
     let certificates =
