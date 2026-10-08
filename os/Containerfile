@@ -1009,6 +1009,7 @@ RUN --mount=type=secret,id=browser_runtime_identity \
 RUN export TILO_IMAGE_BUILD=1 \
     && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
+    COHORT_TAPP_DIR=/usr/share/tilo-apps/cohort \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/tilo-app-package \
     INSTALL_BIN=/out/tilo-install \

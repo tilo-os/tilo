@@ -17,6 +17,8 @@
 #   BIN_DIR        directory of built release binaries      [default: /out]
 #   TAPP_DIR       install these already-verified release tapps instead of
 #                  packing BIN_DIR (optional)
+#   COHORT_TAPP_DIR retain each installed signed archive by application id
+#                  for verified image-cohort selection (optional)
 #   EXPECTED_PUBKEY require every prebuilt tapp to use this publisher (64 hex)
 #   STORE          app store root; becomes TILO_APPS_DATA_DIR
 #                                          [default: /usr/share/tilo-apps]
@@ -154,7 +156,8 @@ if [ "$prebuilt" = 1 ]; then
             failed+=("$(basename "$tapp"): signature or content verification failed")
             continue
         fi
-        package_pubkey=$("$PKG_BIN" inspect "$tapp" \
+        package_details=$("$PKG_BIN" inspect "$tapp")
+        package_pubkey=$(printf '%s\n' "$package_details" \
             | sed -n 's/^identity  *= *"ed25519:\([0-9a-fA-F]\{64\}\)".*/\1/p' \
             | head -1)
         [ -n "$package_pubkey" ] \
@@ -165,10 +168,20 @@ if [ "$prebuilt" = 1 ]; then
             failed+=("$(basename "$tapp"): collection mixes publisher identities")
             continue
         fi
+        if [ -n "${COHORT_TAPP_DIR:-}" ]; then
+            package_id=$(printf '%s\n' "$package_details" \
+                | sed -n 's/^id  *= *"\([^"]*\)".*/\1/p' | head -1)
+            [[ "$package_id" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] \
+                || { failed+=("$(basename "$tapp"): unsafe or missing application id"); continue; }
+        fi
         if ! "$INSTALL_BIN" install "$tapp" --allow-self-signed \
                 >"$STAGE/$(basename "$tapp").install.log" 2>&1; then
             failed+=("$(basename "$tapp"): install failed")
             continue
+        fi
+        if [ -n "${COHORT_TAPP_DIR:-}" ]; then
+            mkdir -p "$COHORT_TAPP_DIR"
+            cp "$tapp" "$COHORT_TAPP_DIR/$package_id.tapp"
         fi
         shipped+=("$(basename "$tapp")")
     done
