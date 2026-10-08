@@ -41,3 +41,8 @@ store-catalogue-refreshed = Store refreshed.
 store-app-installed = App installed.
 store-app-updated = App updated.
 store-app-removed = App removed.
+
+store-operation-failed = Could not complete the operation
+store-error-refresh = Refresh apps
+store-repository-timeout = { $name } did not respond. Other apps remain available. Refresh apps to try again.
+store-build-version = Full build version
