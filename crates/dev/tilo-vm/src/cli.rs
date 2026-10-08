@@ -16,6 +16,9 @@ pub struct Cli {
     /// Print one JSON object instead of text (errors too: {"error","hint","see"}).
     #[arg(long, global = true)]
     pub json: bool,
+    /// Registered development target; overrides `TILO_VM`, `.tilo-vm` and the default.
+    #[arg(long, global = true)]
+    pub target: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -246,6 +249,22 @@ pub enum Command {
         /// Extra cargo features, comma separated.
         #[arg(long, value_delimiter = ',')]
         features: Vec<String>,
+        /// Attested source inventory used to verify the builder inputs.
+        #[arg(long)]
+        source_inventory: Option<PathBuf>,
+    },
+    /// Package one app on the architecture-configured remote builder.
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm app-pack --app so.tilo.notes --source-inventory target/source-inventory.json   # on the architecture-configured builder"
+    )]
+    AppPack {
+        /// App id to package from the attested source inventory.
+        #[arg(long)]
+        app: String,
+        /// Attested source inventory used to verify the builder inputs.
+        #[arg(long)]
+        source_inventory: PathBuf,
     },
     /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
     #[command(
@@ -378,6 +397,7 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
         None | Some(
             Command::Status { .. }
                 | Command::LayerPack { .. }
+                | Command::AppPack { .. }
                 | Command::Doctor
                 | Command::Guide { .. }
                 | Command::Logs { .. }
@@ -1104,6 +1124,17 @@ pub enum SeatCommand {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn target_flag_works_before_and_after_swap() {
+        use clap::Parser as _;
+        for args in [
+            vec!["tilo-vm", "--target", "review", "swap", "shell"],
+            vec!["tilo-vm", "swap", "shell", "--target", "review"],
+        ] {
+            let cli = super::Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.target.as_deref(), Some("review"));
+        }
+    }
     use clap::CommandFactory;
 
     use super::*;

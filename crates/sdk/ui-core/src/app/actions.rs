@@ -3405,6 +3405,16 @@ impl App {
         if self.framework_input.get() {
             return 0;
         }
+        // A committed refresh temporarily closes the original native history
+        // gate. Keep control/causal intents with their existing producers until
+        // the owner applies that capture and its worker rechecks the route.
+        // Nothing has crossed the action door yet; accepted deliveries retain
+        // the separate fail-closed guard in invoke_published_action.
+        if self.collaboration.manager.has_native_committed_primary()
+            && !self.published_action_history_ready()
+        {
+            return 0;
+        }
         crate::history_mode::embedded::discard_active_output(self.root_widget.as_mut());
         let mut registered = self.control_domain.drain_partitioned();
         let mut dispatched = self.dispatch_history_controls();

@@ -127,7 +127,7 @@ static SAMPLE_MEDIA: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// The stand-ins for the demo project's sources bundled with the crate
 /// (`sample-media/`).
 pub fn bundled_sample_media() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("sample-media")
+    Path::new(env!("OUT_DIR")).join("sample-media")
 }
 
 /// Resolve relative media under `dir` before anywhere else: a capture of the

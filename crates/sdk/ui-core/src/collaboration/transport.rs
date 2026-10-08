@@ -162,6 +162,13 @@ pub trait CollabTransport: Send {
     /// The remote end's decision about the latest primary `Hello`, once.
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>>;
 
+    /// Native private window identity acknowledged by the original broker.
+    /// Unsupported transports and ordinary document/identity markers grant none.
+    fn private_window_binding(&self, route: &RouteSpec) -> Option<u64> {
+        let _ = route;
+        None
+    }
+
     /// Like [`Self::take_primary_route_result`], but a transport that can
     /// block its caller may wait up to `timeout` for the result. A transport
     /// that timed the `Hello` from a deadline it shares with its remote end

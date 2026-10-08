@@ -1,6 +1,82 @@
 // Collaboration transport, presence, permissions, and document integration.
 
 impl App {
+    /// Prepare and mount an application on its already admitted collaboration manager.
+    /// Host preparation runs inside the existing native read custody. The original
+    /// record binding is checked before the component factory runs, and the same
+    /// manager and wake scope transfer into the mounted application exactly once.
+    /// Construct the host and its record owners inside `prepare_host`, where
+    /// they retain this construction's native read bridge. Only an existing
+    /// record target is accepted; absence cannot become a default new document.
+    ///
+    /// # Errors
+    /// Returns preparation, current-read, binding, factory or mount failures.
+    /// Binding failures preserve the original record store for recovery.
+    pub fn from_prepared_component_with_collaboration(
+        collaboration: CollaborationManager,
+        prepare_host: impl FnOnce() -> Result<
+            crate::application::PreparedComponentInputs,
+            crate::launch::LaunchError,
+        >,
+        instantiate: impl FnOnce(
+            crate::application::HostContext,
+            crate::application::LaunchTarget,
+            crate::application::RestoreInput,
+        )
+            -> Result<crate::application::AppComponent, crate::launch::LaunchError>,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        use crate::collaboration::native_initial::{self, NativeConstruction};
+        use crate::launch::{LaunchError, LaunchRecovery};
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let construction = NativeConstruction::enter_component(collaboration, scope)
+            .map_err(LaunchError::Operation)?;
+        let prepared = prepare_host()?;
+        let binding = prepared.context.callback_binding();
+        if !matches!(
+            prepared.target,
+            crate::application::LaunchTarget::Record { .. }
+        ) {
+            return Err(LaunchError::ComponentSetup {
+                source: Box::new(LaunchError::Operation(
+                    "cold component construction requires an existing record".into(),
+                )),
+                record: Box::new(binding.checkout),
+                recovery: LaunchRecovery::records(binding.records),
+            });
+        }
+        if let Err(error) = construction.bind_component(&binding) {
+            return Err(LaunchError::ComponentSetup {
+                source: Box::new(LaunchError::Operation(error)),
+                record: Box::new(binding.checkout),
+                recovery: LaunchRecovery::records(binding.records),
+            });
+        }
+        let component = instantiate(prepared.context, prepared.target, prepared.restore)?;
+        let mut app = native_initial::transfer_to_app(|| {
+            Self::from_component_using(component, prepared.runner_inputs, |inputs, binding| {
+                let mut inputs = AppConstructionInputs::component(inputs, binding);
+                // The transfer guard above retains the original worker. This
+                // callback runs after App assembly takes the original wake scope.
+                inputs.collab_manager =
+                    native_initial::take_manager().unwrap_or_else(CollaborationManager::disabled);
+                inputs
+            })
+        })
+        .map_err(LaunchError::Operation)??;
+        if let Err(error) = native_initial::check_current() {
+            app.close_components();
+            return Err(LaunchError::ComponentSetup {
+                source: Box::new(LaunchError::Operation(error)),
+                record: Box::new(binding.checkout),
+                recovery: LaunchRecovery::new(
+                    Some(binding.records),
+                    app.take_component_close_reports(),
+                ),
+            });
+        }
+        Ok(app)
+    }
     /// Called once per event-loop wakeup, so it must be cheap and
     /// non-blocking.
     pub fn set_frame_tick<F>(&mut self, tick: F)
@@ -1222,3 +1298,7 @@ impl App {
         &self.collaboration.local_author
     }
 }
+
+#[cfg(test)]
+#[path = "cold_construction_tests.rs"]
+mod cold_construction_tests;

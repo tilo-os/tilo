@@ -8010,6 +8010,19 @@ pub(crate) fn shell_network_for_test(
     (net, cmd_rx)
 }
 
+/// Read-service custody fixture; transport is proved by the real native actor separately.
+#[cfg(test)]
+pub(crate) fn native_read_network_for_test(
+    tree: WorkspaceTreeHandle,
+    identity: HostIdentity,
+) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
+    let (mut network, commands) = shell_network_for_test(tree, 1);
+    network.keypair = iroh::SecretKey::from_bytes(&identity.device_signing_key.to_bytes());
+    network.local_peer_id = network.keypair.public();
+    network.host_identity = Some(identity);
+    (network, commands)
+}
+
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
     fn request(
         &self,

@@ -1112,14 +1112,19 @@ impl WindowGroup {
     /// gestures cannot race; this matters especially for a one-group strip,
     /// where this grip is the only resize affordance.
     pub fn resize_grab_hit(&self, p: Point) -> bool {
-        !self.maximized
-            && Rect::new(
+        self.resize_grab_rect().is_some_and(|rect| rect.contains(p))
+    }
+
+    /// Painted trailing-edge grip, shared with compositor input admission.
+    pub fn resize_grab_rect(&self) -> Option<Rect> {
+        (!self.maximized).then(|| {
+            Rect::new(
                 self.rect.x1 - RESIZE_HANDLE_PX,
                 self.rect.y0,
                 self.rect.x1,
                 self.rect.y1,
             )
-            .contains(p)
+        })
     }
 
     pub fn drop_index_for(&self, release_point: Point) -> usize {
@@ -1246,6 +1251,15 @@ impl WindowGroup {
                 .or_insert_with(crate::time::now);
         }
         true
+    }
+
+    /// Retain the native client while its host awaits actual close admission.
+    /// The live host and tab metadata survive the provisional close animation.
+    pub fn cancel_tab_close(&mut self, tab_id: u64) -> bool {
+        let restored = self.bar.cancel_close(tab_id);
+        self.closing_hosts.remove(&tab_id);
+        self.pending_close_commit.retain(|id| *id != tab_id);
+        restored
     }
 
     pub fn drag_in_flight(&self) -> bool {
@@ -2914,6 +2928,33 @@ mod tests {
             at(&idle, x, y),
             "the grip shows while resizing"
         );
+    }
+
+    #[test]
+    fn deferred_close_retains_host_pill_order_and_focus() {
+        let mut group = make_group();
+        assert!(group.request_close_tab(1));
+        assert!(group.has_closing_host(1));
+        assert!(group.cancel_tab_close(1));
+        group.sweep_expired_closing_hosts();
+        assert_eq!(
+            group
+                .bar
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(group.active_tab_id(), 1);
+        assert!(group.has_host(1));
+        assert!(!group.has_closing_host(1));
+        assert!(!group.bar.is_closing(1));
+        assert!(
+            !group.cancel_tab_close(1),
+            "restoring twice must not duplicate the pill"
+        );
+        assert_eq!(group.tab_count(), 2);
     }
 
     fn make_group() -> WindowGroup {

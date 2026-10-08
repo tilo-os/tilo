@@ -936,9 +936,11 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
           --identity /out/runtime-bundle-identity.json \
           --out-root /usr/lib/tilo-runtime \
           --version-out /out/runtime-version); \
+        report="$(LD_LIBRARY_PATH=/out ldd /out/libruntime_dylib.so /out/thin-apps/*)"; \
+        if grep -Fq "not found" <<<"$report"; then printf "%s\n" "$report" >&2; exit 1; fi; \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done \
-          < <(ldd /out/libruntime_dylib.so \
-              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
+          < <(printf "%s\n" "$report" \
+              | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\// && $i !~ /:$/) print $i }'\'' \
               | sort -u); \
         "${args[@]}"' bundle "${RUST_LIBSTD}" \
       && /out/tilo-runtime-bundle key pubkey \
@@ -1082,6 +1084,7 @@ RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
 FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
+COPY os/usr/libexec/tilo-session /tilo-components/usr/libexec/
 COPY os/usr/lib/systemd/user/tilo-ush.service \
     os/usr/lib/systemd/user/tilo-app-host.service \
     /tilo-components/usr/lib/systemd/user/
@@ -2114,7 +2117,6 @@ COPY os/etc/gitconfig /etc/gitconfig
 # absent from this image.
 COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
-    os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
     os/usr/libexec/tilo-firstboot-user \
     os/usr/libexec/tilo-firstboot-autologin-cleanup \

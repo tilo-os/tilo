@@ -7418,7 +7418,7 @@ mod tests {
         assert!(state.adopt_doc(doc));
         let mut driver = FrameHarness::for_root(state, app, (960, 720), ui::Theme::dark());
         assert!(!driver.root::<ChatApp>().left_overlay());
-        driver.resize((880, 720)).expect("normal narrow layout");
+        driver.resize((700, 720)).expect("normal narrow layout");
         assert!(driver.root::<ChatApp>().left_overlay());
         driver.resize((960, 720)).expect("normal wide layout");
         assert!(!driver.root::<ChatApp>().left_overlay());
@@ -7479,21 +7479,35 @@ mod tests {
     }
 
     #[test]
-    fn navigation_remains_docked_while_the_shared_content_minimum_fits() {
+    fn navigation_remains_docked_while_the_shared_conversation_detail_minimum_fits() {
         let (mut app, _doc) = app_with_doc();
-        render_frame(&mut app, 960.0, 720.0);
+        render_frame(&mut app, 760.0, 720.0);
         assert!(
             !app.left_overlay(),
-            "rail + sidebar + content minimum fit at this width"
+            "rail + sidebar + conversation detail fit at this width"
         );
         assert!(
             app.left_flap.content_rect().width()
-                >= f64::from(ui::tokens::Metrics::BASE.content_min_width)
+                >= f64::from(ui::tokens::Metrics::BASE.detail_min_width)
         );
-        render_frame(&mut app, 880.0, 720.0);
+        let content = app.content_rect();
+        for control in [Hit::FocusMain, Hit::Send, Hit::Attach] {
+            let rect = app
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| {
+                    (hit.semantic_id() == control.semantic_id()).then_some(*rect)
+                })
+                .expect("the actual conversation paints every composer control");
+            assert!(
+                content.contains_rect(rect),
+                "composer controls fit beside navigation"
+            );
+        }
+        render_frame(&mut app, 700.0, 720.0);
         assert!(
             app.left_overlay(),
-            "the navigation must become a drawer when content actually no longer fits"
+            "navigation becomes a drawer when conversation detail no longer fits"
         );
     }
 

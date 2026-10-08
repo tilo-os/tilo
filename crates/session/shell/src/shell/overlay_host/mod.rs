@@ -5218,6 +5218,12 @@ impl ShellOverlayHost {
                 {
                     return false;
                 }
+                // A foreign client's close request can be refused. Keep its
+                // live tab visible until the compositor sees destruction.
+                if Self::tab_still_present(&chrome, tab_id) {
+                    g.cancel_tab_close(tab_id);
+                    return true;
+                }
                 // The durable tree/document mutation must succeed before the
                 // widget begins its close animation. A visual-only close is
                 // precisely what allowed the next resync to restore a window.
@@ -5230,6 +5236,19 @@ impl ShellOverlayHost {
             }
         }
         false
+    }
+
+    fn tab_still_present(chrome: &Chrome, tab_id: u64) -> bool {
+        chrome
+            .borrow()
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .any(|tab| tab.id == tab_id)
     }
 
     /// Drain close buttons from the rendered rows into the same lifecycle
@@ -5255,7 +5274,29 @@ impl ShellOverlayHost {
                 );
             }
         }
-        Self::dispatch_desktop_intents(&chrome, intents) > 0
+        let changed = Self::dispatch_desktop_intents(&chrome, intents) > 0;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: the pointers belong to this exclusively borrowed host.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                let retained: Vec<_> = chrome
+                    .borrow()
+                    .tree()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .filter(|model| model.id == group.id)
+                    .flat_map(|model| model.tabs.iter())
+                    .map(|tab| tab.id)
+                    .collect();
+                for tab in retained {
+                    group.cancel_tab_close(tab);
+                }
+            }
+        }
+        changed
     }
 
     fn harvest_pending_width_changes(&self) {
@@ -7453,6 +7494,22 @@ impl ShellOverlayHost {
             }
         }
         None
+    }
+
+    /// The shared window grip overlays client content. Resolve it in laid-out
+    /// screen coordinates, after strip panning, before forwarding client input.
+    pub fn group_resize_hit(&self, group_id: u64, point: (f64, f64)) -> bool {
+        self.group_resize_rect(group_id)
+            .is_some_and(|rect| rect.contains(Point::new(point.0, point.1)))
+    }
+
+    /// Visible grip geometry shared by local routing and remote admission.
+    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+        self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.group_resize_rect(group_id)
+        })
     }
 
     /// Every tile laid out on this device, with the tab it shows, in
@@ -18185,6 +18242,7 @@ impl Widget for ShellOverlayHost {
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
+        let display_storage_dirty = self.projection_overlay.poll_storage();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -18407,6 +18465,7 @@ impl Widget for ShellOverlayHost {
         content_dirty
             || quick_settings_dirty
             || radio_dirty
+            || display_storage_dirty
             || pairing_dirty
             || close_dirty
             || palette_dirty

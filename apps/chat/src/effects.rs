@@ -377,18 +377,25 @@ impl ChatApp {
             VIDEO_CALL_UNAVAILABLE,
             video_call_unavailable_reason(),
         );
-        if self.external_services {
-            return vec![video];
+        let mut unavailable = vec![video];
+        if !self.external_services {
+            unavailable.push(EffectStatus::unavailable(
+                ChatEffect::ATTACH_FILE,
+                "no_services",
+                crate::i18n::t("chat-attachment-import-unavailable"),
+            ));
         }
-        let reason = "this host has no attachment store or voice service";
-        vec![
-            video,
-            EffectStatus::unavailable(ChatEffect::START_CALL, "no_services", reason),
-            EffectStatus::unavailable(ChatEffect::ATTACH_FILE, "no_services", reason),
-            EffectStatus::unavailable(ChatEffect::JOIN_CALL, "no_services", reason),
-            EffectStatus::unavailable(ChatEffect::UNMUTE, "no_services", reason),
-            EffectStatus::unavailable(ChatEffect::SELECT_INPUT, "no_services", reason),
-        ]
+        if !self.voice_service_available() {
+            let reason = crate::i18n::t("chat-voice-unavailable");
+            let reason = reason.as_str();
+            unavailable.extend([
+                EffectStatus::unavailable(ChatEffect::START_CALL, "no_services", reason),
+                EffectStatus::unavailable(ChatEffect::JOIN_CALL, "no_services", reason),
+                EffectStatus::unavailable(ChatEffect::UNMUTE, "no_services", reason),
+                EffectStatus::unavailable(ChatEffect::SELECT_INPUT, "no_services", reason),
+            ]);
+        }
+        unavailable
     }
 
     fn open_channel(&mut self, channel: &str) -> Result<(), String> {

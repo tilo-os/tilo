@@ -500,3 +500,22 @@ Default environments retain their normal app actions. Closed connections,
 changed sessions, missing acknowledgement and unavailable PTYs fail visibly.
 The matched Shell, SDK runtime and Terminal versions are required for this
 owner lifecycle operation; unsupported workers do not report success.
+
+### Timing diagnostics in an active owner session
+
+The authenticated local owner socket publishes `session-diagnostics` with
+`configure@session-diagnostics` and `inspect@session-diagnostics`. Configure
+requires exactly four booleans: `presentation`, `gpu_stages`, `gpu_timestamps`,
+and `gpu_dispatch_timestamps`. Dispatch timestamps require GPU timestamps.
+Use the ordinary `tilo-control actions invoke` argument JSON; no environment
+names or output paths are accepted.
+
+The setting is ephemeral to this desktop session. It sets or removes only the
+four existing diagnostic variables for subsequently launched children.
+Presentation also controls the compositor's existing physical input delivery
+observer immediately. Existing applications and the compositor's initialized
+GPU renderer retain their configuration; reopen the application to collect
+its new timing stream. Inspect returns the current fixed options and their
+scope. Agent-scoped, sandboxed, other-account and locked-session calls cannot
+configure this owner-only surface. No application content or typed keys are
+recorded by these timing options.

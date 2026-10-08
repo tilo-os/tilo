@@ -112,7 +112,7 @@ pub struct ActionParam {
     /// ranges, lengths, patterns, formats, item/object schemas, and defaults
     /// without growing a second incompatible validation vocabulary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema: Option<serde_json::Value>,
+    pub schema: Option<std::sync::Arc<serde_json::Value>>,
     /// Explicitly permits JSON null. Optional means omitted; nullable means
     /// present with no value, and callers need to distinguish the two.
     #[serde(default)]
@@ -190,6 +190,14 @@ impl ActionParam {
 
     #[must_use]
     pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
+        self.schema = Some(std::sync::Arc::new(schema));
+        self
+    }
+
+    /// Retain an immutable schema already shared by the current type generation.
+    /// Wire serialization and strict argument validation are unchanged.
+    #[must_use]
+    pub fn with_shared_schema(mut self, schema: std::sync::Arc<serde_json::Value>) -> Self {
         self.schema = Some(schema);
         self
     }
@@ -201,14 +209,17 @@ impl ActionParam {
     #[must_use]
     pub fn of_resource_kind(mut self, kind: impl Into<String>) -> Self {
         let mut schema = match self.schema.take() {
-            Some(serde_json::Value::Object(schema)) => schema,
+            Some(schema) => match std::sync::Arc::unwrap_or_clone(schema) {
+                serde_json::Value::Object(schema) => schema,
+                _ => serde_json::Map::new(),
+            },
             _ => serde_json::Map::new(),
         };
         schema.insert(
             RESOURCE_KIND_ANNOTATION.into(),
             serde_json::Value::String(kind.into()),
         );
-        self.schema = Some(serde_json::Value::Object(schema));
+        self.schema = Some(std::sync::Arc::new(serde_json::Value::Object(schema)));
         self
     }
 
@@ -1215,6 +1226,73 @@ mod rich_schema_tests {
         resource_datetime_secret_and_nullable_values_round_trip();
         malformed_schema_is_rejected_before_it_describes_values();
         unique_array_items_are_published_and_enforced();
+    }
+
+    #[test]
+    fn shared_schema_preserves_wire_binding_and_copy_on_write() {
+        use crate::{ActionInput, ActionSpec, EncodedAction, ExecutionLocus};
+        use std::sync::Arc;
+
+        let schema = serde_json::json!({"type": "integer", "minimum": 1});
+        let original =
+            ActionParam::required("count", ParamType::Integer, "Count").with_schema(schema.clone());
+        let clone = original.clone();
+        assert!(Arc::ptr_eq(
+            original.schema.as_ref().unwrap(),
+            clone.schema.as_ref().unwrap()
+        ));
+        let expected = serde_json::json!({
+            "name":"count", "ty":"integer", "required":true,
+            "description":"Count", "schema":schema, "nullable":false
+        });
+        assert_eq!(serde_json::to_value(&clone).unwrap(), expected);
+        let decoded: ActionParam = serde_json::from_value(expected).unwrap();
+        assert_eq!(decoded, original);
+        let spec = ActionSpec::typed(
+            "count",
+            "Count",
+            "Count",
+            ExecutionLocus::ClientLocal,
+            vec![clone],
+            |args| EncodedAction {
+                type_id: "test.count".into(),
+                payload: serde_json::to_vec(&args.to_json()).unwrap(),
+            },
+        );
+        let valid = serde_json::json!({"count":2});
+        let encoded = spec.build_json(valid.as_object().unwrap()).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&encoded.payload).unwrap(),
+            valid
+        );
+        assert!(
+            spec.build_json(serde_json::json!({"count":0}).as_object().unwrap())
+                .is_err()
+        );
+        let ActionInput::Prompted { build, .. } = &spec.input else {
+            panic!("typed palette input");
+        };
+        assert_eq!(build("2"), encoded);
+        assert_eq!(build("0").type_id, crate::resource::INVALID_ARGUMENTS_TYPE);
+        let mut edited = original.clone();
+        Arc::make_mut(edited.schema.as_mut().unwrap())["minimum"] = serde_json::json!(3);
+        assert_eq!(original.schema.as_ref().unwrap()["minimum"], 1);
+        assert!(ActionArgs::bind_json(&[edited], valid.as_object().unwrap()).is_err());
+        assert!(spec.build_json(valid.as_object().unwrap()).is_ok());
+
+        let resource = ActionParam::required("target", ParamType::Resource, "Target")
+            .with_schema(serde_json::json!({"type":"string"}));
+        let annotated = resource.clone().of_resource_kind("test.page");
+        assert_eq!(resource.resource_kind(), None);
+        assert_eq!(annotated.resource_kind(), Some("test.page"));
+        assert_eq!(
+            resource
+                .schema
+                .as_ref()
+                .unwrap()
+                .get(RESOURCE_KIND_ANNOTATION),
+            None
+        );
     }
 
     #[test]

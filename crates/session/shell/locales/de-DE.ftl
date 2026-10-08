@@ -2504,6 +2504,19 @@ agent-quick-work-refused = Diese Aktion ist nicht verfügbar. Dein Entwurf bleib
 agent-quick-shots-draft = Prüfe Änderungen und markiere offene Entscheidungen.
 agent-marker-a11y-name = Agentenaktion: { $agent }
 agent-marker-a11y-description = { $action } für { $resource }
+display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
+display-confirm-answer-failed = Die Antwort zur Anzeige konnte nicht gespeichert werden: { $reason }
+
+display-sheet-saving-layout = Anordnung wird gespeichert…
+
+session-diagnostics-title = Zeitdiagnose der Sitzung
+session-diagnostics-configure = Zeitdiagnose für folgende App-Starts konfigurieren
+session-diagnostics-inspect = Zeitdiagnose der Sitzung ansehen
+session-diagnostics-presentation = Inhaltsfreie Eingabe- und Präsentationszeiten erfassen
+session-diagnostics-gpu_stages = Zeiten der GPU-Verarbeitungsschritte erfassen
+session-diagnostics-gpu_timestamps = GPU-Zeitstempel aktivieren
+session-diagnostics-gpu_dispatch_timestamps = Zeitstempel der GPU-Aufträge aktivieren
+session-diagnostics-dispatch-requires-timestamps = Die Zeitdiagnose der GPU-Aufträge benötigt GPU-Zeitstempel.
 
 device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
 search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen

@@ -39,6 +39,7 @@ pub mod standalone;
 pub mod targets;
 pub mod web;
 
+const APP_AGENT_GUIDE: &str = include_str!("../templates/AGENTS.md");
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
 const COLLECTION_APP_TEMPLATE: &str = include_str!("../templates/collection.rs");
@@ -9704,6 +9705,7 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
         ),
         (PathBuf::from("tilo-app.toml"), app_manifest(spec)),
         (PathBuf::from("README.md"), app_readme(spec)),
+        (PathBuf::from("AGENTS.md"), APP_AGENT_GUIDE.to_owned()),
         (PathBuf::from("locales/en-US.ftl"), app_catalog(spec)),
     ];
     if spec.template == Template::Graph {

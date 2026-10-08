@@ -1300,10 +1300,9 @@ impl CollaborationManager {
     }
 }
 
-/// Launcher-issued instance identity for an app window. It deliberately rides
-/// in the existing record component of the authenticated CRDT route so the
-/// broker can retain multiple Browser windows in one workspace without
-/// conflating their continuation metadata.
+/// Compatibility route marker for a launcher-issued app window. Native
+/// document routes obtain their separate window binding from original broker
+/// custody; this environment value cannot authorize native private control.
 fn continuation_instance_env() -> Option<String> {
     let environment = crate::host::environment();
     let value = environment.identity.continuity_instance.as_deref()?.trim();
@@ -1434,6 +1433,23 @@ impl CollaborationManager {
     /// event loop to keep ticking so the stream drains promptly.
     pub(crate) fn primary_route(&self) -> Option<&PrimaryRouteWitness> {
         self.primary_route.current(self.is_connected())
+    }
+
+    pub(crate) fn private_window_instance(&self) -> Option<u64> {
+        let witness = self.primary_route()?;
+        let Backend::Transport(transport) = &self.backend else {
+            return None;
+        };
+        if transport.committed_document_required(&witness.route.channel_id()) {
+            return transport.private_window_binding(&witness.route);
+        }
+        witness
+            .route
+            .record
+            .as_deref()?
+            .strip_prefix("continuation:")?
+            .parse::<u64>()
+            .ok()
     }
 
     /// Whether requests currently reach peers: [`Self::state`] is

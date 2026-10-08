@@ -31,7 +31,7 @@ fn require_raster_worker(path: &std::path::Path) {
 
 #[test]
 fn capture_waits_for_production_visual_work() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.pdf");
+    let path = std::path::Path::new(env!("OUT_DIR")).join("sample.pdf");
     require_raster_worker(&path);
     let profile = tempfile::tempdir().expect("profile");
     let mut app = TestApp::<PdfViewerShell>::open_data_dir(profile.path())
@@ -60,11 +60,8 @@ fn capture_waits_for_production_visual_work() {
     // Arrival of an imported payload must invalidate the materialised plan,
     // even though the CRDT plan itself does not change. (The opened file is
     // itself pinned in the store, so the import is a different PDF.)
-    let bytes = std::fs::read(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"),
-    )
-    .expect("fixture bytes");
+    let bytes = std::fs::read(std::path::Path::new(env!("OUT_DIR")).join("latin.pdf"))
+        .expect("fixture bytes");
     let hash = tilo_content::hash_bytes(&bytes);
     assert!(
         !content.has(&hash),

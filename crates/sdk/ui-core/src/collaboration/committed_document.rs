@@ -6,7 +6,7 @@ use super::{
 use crate::collaboration::transport::DocumentRouteState;
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 use std::collections::BTreeMap;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicU8, AtomicU64};
 
 const APPLYING: u8 = 0;
 const READY: u8 = 1;
@@ -24,6 +24,7 @@ enum Gate {
     Required {
         ready: Arc<AtomicBool>,
         state: Arc<AtomicU8>,
+        private_window: Arc<AtomicU64>,
     },
 }
 impl Reads {
@@ -70,6 +71,35 @@ impl Reads {
             .lock()
             .is_ok_and(|rows| matches!(rows.get(key), Some(Gate::Required { .. })))
     }
+    pub(super) fn bind_private_window(
+        &self,
+        key: &str,
+        instance: Option<u64>,
+    ) -> Result<(), String> {
+        let rows = self.0.lock().map_err(|_| "document reads poisoned")?;
+        let Some(Gate::Required {
+            private_window: bound,
+            ..
+        }) = rows.get(key)
+        else {
+            return Err("private binding requires admitted native document custody".into());
+        };
+        bound.store(instance.unwrap_or(0), Ordering::Release);
+        Ok(())
+    }
+    pub(super) fn private_window(&self, key: &str) -> Option<u64> {
+        let rows = self.0.lock().ok()?;
+        let Gate::Required {
+            private_window: instance,
+            ..
+        } = rows.get(key)?
+        else {
+            return None;
+        };
+        let instance = instance.load(Ordering::Acquire);
+        (instance != 0).then_some(instance)
+    }
+
     pub(super) fn joining(&self, key: &str) -> bool {
         let Ok(mut rows) = self.0.lock() else {
             return false;
@@ -92,7 +122,7 @@ impl Reads {
         let Ok(rows) = self.0.lock() else {
             return;
         };
-        let Some(Gate::Required { ready, state }) = rows.get(key) else {
+        let Some(Gate::Required { ready, state, .. }) = rows.get(key) else {
             return;
         };
         if state.load(Ordering::Acquire) != READY {
@@ -168,11 +198,16 @@ impl Reads {
             return Err("committed document route capacity".into());
         }
         let ready = Arc::new(AtomicBool::new(false));
+        let private_window = match rows.get(key) {
+            Some(Gate::Required { private_window, .. }) => private_window.clone(),
+            _ => Arc::new(AtomicU64::new(0)),
+        };
         rows.insert(
             key.into(),
             Gate::Required {
                 ready: ready.clone(),
                 state: Arc::new(AtomicU8::new(APPLYING)),
+                private_window,
             },
         );
         Ok(ready)
@@ -185,6 +220,7 @@ impl Reads {
         let Some(Gate::Required {
             ready: current,
             state: current_state,
+            ..
         }) = rows.get(key)
         else {
             return false;
@@ -208,6 +244,7 @@ impl Reads {
         let Some(Gate::Required {
             ready: current,
             state,
+            ..
         }) = rows.get(key)
         else {
             return false;
@@ -227,6 +264,7 @@ impl Reads {
         let Some(Gate::Required {
             ready: current,
             state,
+            ..
         }) = rows.get(key)
         else {
             return false;
@@ -459,6 +497,41 @@ mod tests {
             "a replaced generation cannot reopen the route"
         );
     }
+    #[test]
+    fn native_private_binding_cannot_open_document_or_survive_route_downgrade() {
+        let reads = Reads::default();
+        assert!(reads.bind_private_window("route", Some(42)).is_err());
+        assert!(reads.joining("route"));
+        assert!(reads.bind_private_window("route", Some(42)).is_err());
+        let old = reads.pending("route").unwrap();
+        reads.bind_private_window("route", Some(42)).unwrap();
+        assert_eq!(reads.private_window("route"), Some(42));
+        assert!(
+            !reads.publishable("route"),
+            "a window binding cannot acknowledge a document"
+        );
+        let current = reads.pending("route").unwrap();
+        assert_eq!(
+            reads.private_window("route"),
+            Some(42),
+            "document refresh retains the original launch binding"
+        );
+        old.store(true, Ordering::Release);
+        assert!(!reads.publishable("route"));
+        current.store(true, Ordering::Release);
+        assert!(
+            !reads.publishable("route"),
+            "only a current typed owner acknowledgement can open publication"
+        );
+        assert!(reads.ready("route", &current));
+        assert!(reads.publishable("route"));
+        reads.bind_private_window("route", None).unwrap();
+        assert_eq!(reads.private_window("route"), None);
+        reads.legacy("route").unwrap();
+        assert!(reads.bind_private_window("route", Some(42)).is_err());
+        assert_eq!(reads.private_window("route"), None);
+    }
+
     #[test]
     fn committed_document_replacing_route_discards_staged_capture() {
         let reads = Reads::default();

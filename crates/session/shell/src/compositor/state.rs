@@ -1172,13 +1172,11 @@ impl State {
         fired
     }
 
-    /// The user or the shell closed the window showing `surface_id`: its tab
-    /// goes, and the client and every sheet over it are asked to close.
+    /// Ask the client showing `surface_id` to close. Its tab remains available
+    /// for a deferred save decision until actual destruction removes it.
     pub fn close_surface_on_request(&mut self, surface_id: u64) {
-        let _ = {
-            let mut tree = self.workspace_tree.write();
-            tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id)
-        };
+        // xdg close is a request, not admission. Destruction owns durable
+        // removal so a client's save/refusal decision stays visible.
         if let Some(toplevel) = self
             .xdg_shell_state
             .toplevel_surfaces()
@@ -1595,6 +1593,7 @@ impl State {
         let repeat_rate_hz = i32::try_from(repeat_rate).unwrap_or(i32::MAX);
         match seat.add_keyboard(
             XkbConfig {
+                model: &keyboard_settings.model,
                 layout: &keyboard_settings.layouts,
                 variant: &keyboard_settings.variants,
                 options: keyboard_settings.options.clone(),
@@ -1645,7 +1644,8 @@ impl State {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
-        let same_keymap = self.applied_keyboard.layouts == settings.layouts
+        let same_keymap = self.applied_keyboard.model == settings.model
+            && self.applied_keyboard.layouts == settings.layouts
             && self.applied_keyboard.variants == settings.variants
             && self.applied_keyboard.options == settings.options;
         let compiled = if same_keymap {
@@ -1655,6 +1655,7 @@ impl State {
             keyboard.set_xkb_config(
                 self,
                 XkbConfig {
+                    model: &settings.model,
                     layout: &settings.layouts,
                     variant: &settings.variants,
                     options: settings.options.clone(),
@@ -8043,6 +8044,37 @@ mod keycap_layout_tests {
             "input": {"keyboard_layout": active, "keyboard_layouts": ["us", "de"]},
         });
         std::fs::write(settings, document.to_string()).expect("settings");
+    }
+
+    #[test]
+    fn model_only_reload_preserves_the_declared_physical_model() {
+        let temp = tempfile::tempdir().expect("temp");
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("XDG_CONFIG_HOME", temp.path());
+        let settings = settings_store::settings_path().expect("settings path");
+        std::fs::create_dir_all(settings.parent().expect("config dir")).expect("config dir");
+        write_input(&settings, "us");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        for model in ["jp106", "kr106", "pc104", "pc105"] {
+            settings_store::update_section(
+                "input",
+                serde_json::json!({"keyboard_model": model})
+                    .as_object()
+                    .expect("input section")
+                    .clone(),
+            )
+            .expect("persist model");
+            state.reload_keyboard_settings();
+            assert_eq!(state.applied_keyboard.model, model);
+            assert_eq!(state.applied_keyboard.layouts, "us,de");
+            assert_eq!(state.applied_keyboard.active_index, 0);
+        }
+        // The installed PC models have distinct geometry. Their evdev keymap
+        // bytes may be identical, so Smithay correctly suppresses duplicate
+        // keymap FDs. Geometry is tested against native compiled model data
+        // in Settings; actual symbol/mask ownership has its own Winit wire test.
     }
 
     #[test]

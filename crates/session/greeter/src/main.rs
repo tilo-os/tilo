@@ -77,6 +77,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Configure the kiosk output before winit observes its logical size.
+    // Session and sign-in use the same physical panel-DPI policy.
+    if let Err(error) = greeter::output_scale::configure() {
+        tracing::warn!(%error, "greeter output scale remains compositor-controlled");
+    }
+
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
     // Slot the event loop populates once it starts; the greeter reads it to

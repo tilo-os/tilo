@@ -169,3 +169,9 @@ chat-agent-open-task = Open { $title } in Task Center
 chat-agent-open-current-task = Open current task in Task Center
 chat-agent-open-task-center = Open Task Center
 chat-agent-stop = Stop
+chat-voice-unavailable = Voice calls are unavailable until a media service is connected.
+chat-attachment-import-unavailable = Attachment import is unavailable on this host.
+
+# "You" belongs to the current reader; shared/legacy names identify their person.
+chat-person-unnamed = Someone ({ $tag })
+chat-person-relative-name = { $name } ({ $tag })

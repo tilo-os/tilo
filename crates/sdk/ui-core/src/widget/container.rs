@@ -633,6 +633,22 @@ impl Widget for Container {
             .collect()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // Bound containers paint their own hover and press surface. Preserve
+        // its conservative bounds; a passive layout wrapper only carries
+        // damage from its child, including any scrollbar animation.
+        if self.activation.is_bound()
+            || self.permission_scope.is_some()
+            || !self.presence_path.is_empty()
+        {
+            if self.needs_redraw() {
+                regions.push(self.rect);
+            }
+        } else if let Some(child) = &self.child {
+            child.collect_damage(regions);
+        }
+    }
+
     fn mark_drawn(&mut self) {
         if let Some(child) = &mut self.child {
             child.mark_drawn();

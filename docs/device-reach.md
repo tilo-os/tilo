@@ -99,8 +99,13 @@ rolled back, and the next boot either keeps or drops it on purpose.
 - **Session binaries on a dev device** are tilo-vm layers. Each one is a
   system-extension directory with recorded provenance (CI digest, or the
   commit built locally), applied to that device's session:
-  - On a board, the `device` slot's session units take the layers as
-    `ExtensionDirectories=`.
+  - Stand-in session units bind a readonly combined `/usr` and `/opt` view.
+    The daemon retains the immutable boot root in a private mount, then
+    combines the global layers and that slot's layers once, avoiding another
+    overlay over the host's system-extension view. Later system-extension
+    refreshes cannot propagate into the retained boot root. An older shared
+    retained mount is disconnected before its propagated children are removed,
+    leaving the host's active mounts intact.
   - On a laptop whose owner logs in through greetd, the `device` slot is the
     owner's session on seat0. Its layers merge system-wide with
     `systemd-sysext`, because greetd starts that session in the host's mount

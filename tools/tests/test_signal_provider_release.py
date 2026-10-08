@@ -1,5 +1,6 @@
 """Protect explicit release admission and refusal before signing or upload."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,12 +40,33 @@ class SignalProviderRelease(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'headless service kind'):
                 release.provenance(release.release.head())
 
+    def test_jit_profile_is_refused_without_using_signing_authority(self):
+        with patch.object(release.tomllib, 'loads', return_value={
+            'package': {'runtime': release.RUNTIME, 'kind': 'service'},
+            'sandbox': {'seccomp': 'tilo-jit'},
+        }):
+            with self.assertRaisesRegex(ValueError, 'retain its strict sandbox'):
+                release.provenance(release.release.head())
+
     def compiled(self, root):
         (root / 'bin').mkdir()
         (root / 'bin/tool').write_bytes(b'compiled release tool')
         (root / 'signal-provider').mkdir()
         (root / 'signal-provider/provider').write_bytes(b'compiled pinned provider')
         proof = release.provenance(release.release.head())
+        java = root / 'signal-provider/java'
+        (java / 'lib/server').mkdir(parents=True)
+        (java / 'lib/server/libjvm.so').write_bytes(b'synthetic Zero VM')
+        (java / 'release').write_text('JVM_VARIANT="Zero"\n')
+        modified = root / 'signal-provider/java-zero-source' / release.zero.RESERVER
+        modified.parent.mkdir(parents=True)
+        modified.write_text(release.zero.ZERO_RESERVATION)
+        (root / 'signal-provider/java-zero.json').write_text(json.dumps({
+            'source': proof['pin']['java_zero_source'], 'variant': 'zero',
+            'java_version': proof['pin']['java_version'],
+            'vm_sha256': hashlib.sha256(b'synthetic Zero VM').hexdigest(),
+            'data_only_cache_source_sha256': hashlib.sha256(modified.read_bytes()).hexdigest(),
+        }))
         proof['compiled'] = {'bin': release.inventory(root / 'bin'),
                              'payload': release.inventory(root / 'signal-provider')}
         (root / 'build.json').write_text(json.dumps(proof))
@@ -122,6 +144,7 @@ class SignalProviderRelease(unittest.TestCase):
                      'type = "cli"\n'
                      'splash-segments = []\n'
                      'splash-budget = 100\n')
+        runtime_entrypoint = canonical.replace('bin/tilo-signal-provider', release.RUNTIME_ENTRYPOINT)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             proof = release.provenance(source)
@@ -143,7 +166,7 @@ class SignalProviderRelease(unittest.TestCase):
                 return ('--- manifest.toml ---\n[package]\n' + declaration
                         + ' = "' + declared_runtime + '"\nversion = "' + version + '"\n'
                         + '[sandbox.net]\nmode = "off"\n'
-                        + ('' if runtime else '[entrypoint]\n' + entrypoint)
+                        + '[entrypoint]\n' + (runtime_entrypoint if runtime else entrypoint)
                         + '--- payload (0 files) ---\n')
 
             declared_runtime = runtime_build
@@ -170,6 +193,20 @@ class SignalProviderRelease(unittest.TestCase):
                         self.assertEqual(call.args[0][1:4], ['verify', '--trusted-key', trusted_key])
 
             entrypoint = canonical
+            for invalid in ('', runtime_entrypoint.replace(release.RUNTIME_ENTRYPOINT, 'lib/other'),
+                            runtime_entrypoint + 'cli-bin = "lib/other"\n'):
+                with self.subTest(runtime_entrypoint=invalid), \
+                        patch.object(release.release, 'head', return_value=source), \
+                        patch.object(release.subprocess, 'run'), \
+                        patch.object(release.subprocess, 'check_output', side_effect=inspected):
+                    saved = runtime_entrypoint
+                    runtime_entrypoint = invalid
+                    try:
+                        with self.assertRaisesRegex(ValueError, 'executable declaration differs'):
+                            release.verify(root, source, '1', trusted_key)
+                    finally:
+                        runtime_entrypoint = saved
+
             for declared_runtime in (release.RUNTIME,
                                      release.RUNTIME + '+native.' + 'b' * 32):
                 with self.subTest(declared_runtime=declared_runtime), \

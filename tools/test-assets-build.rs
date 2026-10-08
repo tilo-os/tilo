@@ -2,10 +2,14 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-fn prepare_fixture_assets(manifest: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn prepare_fixture_assets(
+    repository: &str,
+    manifest: &str,
+    filename: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let package =
         PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or("missing package root")?);
-    let tool = package.join("../../tools/test-assets.py");
+    let tool = package.join(repository).join("tools/test-assets.py");
     let manifest = package.join(manifest);
     println!("cargo::rerun-if-changed={}", tool.display());
     println!("cargo::rerun-if-changed={}", manifest.display());
@@ -21,13 +25,16 @@ fn prepare_fixture_assets(manifest: &str) -> Result<(), Box<dyn std::error::Erro
         .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
     let mut command = Command::new(python);
     command.arg(tool).arg(manifest);
+    if let Some(filename) = filename {
+        command.args(["--file", filename]);
+    }
     if std::env::var("CARGO_NET_OFFLINE").is_ok_and(|value| value == "true") {
         command.arg("--offline");
     }
     let output = command.output()?;
     if !output.status.success() {
         return Err(format!(
-            "image fixture preparation failed: {}",
+            "fixture preparation failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )
         .into());

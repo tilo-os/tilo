@@ -317,6 +317,32 @@ pub fn spawn_native_harness(
     )
 }
 
+/// Production owner/read pipeline with explicitly authorized synthetic devices.
+/// No enrollment or input grant is created by this test-only constructor.
+#[cfg(test)]
+pub(crate) fn spawn_native_owner_harness(
+    socket: PathBuf,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    trusted_devices: Vec<[u8; 32]>,
+    network: &Arc<ShellNetwork>,
+) -> std::io::Result<BrokerHandle> {
+    let publisher = PeerPublisher::with_optional_owner_commit(
+        Some(network.clone()),
+        Arc::new(super::broker_services::NativeOwnerCommitService::new(
+            membership.clone(),
+            Some(network.clone()),
+        )),
+    );
+    spawn_inner(
+        socket,
+        Some(network),
+        &publisher,
+        Some(membership),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        None,
+    )
+}
+
 /// Start the ordinary native service inside an independently owned peer.
 /// No global identity registry, Secret Service store or desktop network actor
 /// is opened. The explicit authority, journal and real signed-document publisher

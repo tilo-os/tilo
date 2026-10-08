@@ -686,14 +686,20 @@ fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
             input,
         });
     }
-    Ok((
-        serde_json::json!({
-            "role": "assistant",
-            "content": message.get("content").cloned().unwrap_or(Value::Null),
-            "tool_calls": tool_calls,
-        }),
-        calls,
-    ))
+    let mut assistant = serde_json::json!({
+        "role": "assistant",
+        "content": message.get("content").cloned().unwrap_or(Value::Null),
+        "tool_calls": tool_calls,
+    });
+    if let Some(reasoning) = tilo_model_gateway::openai::reasoning_content(message)?
+        && let Some(object) = assistant.as_object_mut()
+    {
+        object.insert(
+            "reasoning_content".into(),
+            Value::String(reasoning.to_owned()),
+        );
+    }
+    Ok((assistant, calls))
 }
 
 /// The rule shared by both dialects: `plan` is the final answer and must be
@@ -1288,6 +1294,49 @@ mod tests {
                 confirmation: crate::plan::ConfirmationEvidence::None,
             }
         );
+    }
+
+    #[test]
+    fn reasoning_history_stays_in_the_original_coding_conversation() {
+        let protocol = agent_provider_config::ProviderProtocol::OpenAiCompatible;
+        let mut conversation = Conversation::new(protocol, "pinned-qwen", "system", "task");
+        let body = serde_json::json!({"choices":[{"message":{
+            "content":null,"reasoning_content":"provider-authored thought",
+            "tool_calls":[{"id":"call_1","type":"function","function":{"name":"list_operations","arguments":"{}"}}]
+        }}]}).to_string();
+        let (assistant, calls) = conversation.calls(&body).unwrap();
+        assert_eq!(calls.len(), 1);
+        conversation.push(assistant, vec![("call_1".into(), "observed result".into())]);
+        let next = conversation.body(&serde_json::json!([]));
+        assert_eq!(
+            next["messages"][2]["reasoning_content"],
+            "provider-authored thought"
+        );
+        assert_eq!(next["messages"][2]["content"], Value::Null);
+        assert_eq!(next["messages"][3]["tool_call_id"], "call_1");
+        let fresh = Conversation::new(protocol, "different-model", "system", "new task");
+        assert!(
+            !fresh
+                .body(&serde_json::json!([]))
+                .to_string()
+                .contains("provider-authored thought")
+        );
+        let other_dialect = Conversation::new(
+            agent_provider_config::ProviderProtocol::Anthropic,
+            "other-provider",
+            "system",
+            "new task",
+        );
+        assert!(
+            !other_dialect
+                .body(&serde_json::json!([]))
+                .to_string()
+                .contains("reasoning_content")
+        );
+        let mut malformed: Value = serde_json::from_str(&body).unwrap();
+        malformed["choices"][0]["message"]["reasoning_content"] =
+            serde_json::json!({"wrong":"type"});
+        assert!(conversation.calls(&malformed.to_string()).is_err());
     }
 
     #[test]

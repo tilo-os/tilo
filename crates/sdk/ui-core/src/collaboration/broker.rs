@@ -466,6 +466,17 @@ impl CollabTransport for BrokerTransport {
         self.state.fail_closed(reason);
     }
 
+    fn private_window_binding(&self, route: &RouteSpec) -> Option<u64> {
+        self.state
+            .is_healthy()
+            .then(|| {
+                self.state
+                    .document_reads
+                    .private_window(&route.channel_id())
+            })
+            .flatten()
+    }
+
     fn committed_document_required(&self, channel: &str) -> bool {
         self.state.document_reads.required(channel)
     }
@@ -3936,6 +3947,24 @@ async fn ensure_sdk_route(
             "native-delivery:source_owner:disabled"
         );
     }
+    if committed && inbound_tx.state.document_reads.required(&channel_id) {
+        // This reply contains only the original host-retained launch instance;
+        // a record label or app environment never becomes private authority.
+        let instance = match channel
+            .committed_document(&runtime_collab::committed_document::Request::PrivateWindowBinding)
+            .await
+        {
+            Ok(runtime_collab::committed_document::Reply::PrivateWindowBinding { instance }) => {
+                instance
+            }
+            _ => None,
+        };
+        inbound_tx
+            .state
+            .document_reads
+            .bind_private_window(&channel_id, instance)?;
+    }
+
     // A committed route's owner admits and applies each edit itself, and a
     // committing host holds no channel keys: it could neither open a sealed
     // edit nor accept cleartext on the route after one. Committed routes
@@ -11610,7 +11639,10 @@ mod tests {
             "resource": format!("notes.page:{index:032x}"),
             "action": "open", "resource_kind": "note",
             "resource_label": format!("Notebook page {index}"),
-            "action_label": "Open page", "description": "Open this page in its notebook",
+            "action_label": "Open page",
+            // Keep realistic full action metadata in this transport fixture: the
+            // initial/watch and oversized tests assert the retained-byte bounds.
+            "description": "Open this page in its notebook. Keep its notebook context, identify the original page, and show the existing page through the ordinary local reader. This catalogue description represents a full app-provided action explanation, including its expected navigation result.",
             "operation_kind": tilo_actions::OperationKind::View,
             "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
             "contract": tilo_actions::ActionContract::view(),

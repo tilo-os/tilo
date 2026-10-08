@@ -457,6 +457,13 @@ impl ObservedApplicationLaunch {
     }
 }
 
+/// Original host-retained facts for one authenticated live launch.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedApplicationLaunch {
+    pub creation: Option<ApplicationCreationEvidence>,
+    pub continuation_instance: Option<u64>,
+}
+
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// Launches `app` into `workspace`.
@@ -521,6 +528,26 @@ pub trait LauncherServices: Send + Sync {
         }
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// Snapshot the original launch facts while admitting this connection.
+    /// Unsupported launchers retain no private window-instance authority.
+    ///
+    /// # Errors
+    /// The original launch facts changed or cannot be read.
+    fn authenticated_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        if !self.attest_process(pid, app, room) {
+            return Ok(None);
+        }
+        Ok(Some(AuthenticatedApplicationLaunch {
+            creation: self.application_creation_evidence(pid, app, room)?,
+            continuation_instance: None,
+        }))
+    }
+
     /// Admit kernel-attested executing custody only beneath this exact launch.
     /// This grants no new identity or filesystem permissions.
     #[cfg(target_os = "linux")]

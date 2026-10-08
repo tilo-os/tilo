@@ -71,6 +71,8 @@ impl LayoutRuntime {
 )]
 pub(super) struct InputRuntime {
     pub(super) modifiers: winit::event::Modifiers,
+    /// Focused native configuration only; no logical key, compose or press history.
+    pub(super) keyboard_layout: Option<std::sync::Arc<winit::keyboard::KeyboardLayout>>,
     pub(super) interaction: crate::interaction::InteractionEnvironment,
     pub(super) platform: crate::platform::PlatformConventions,
     pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
@@ -102,6 +104,7 @@ impl InputRuntime {
     pub(super) fn new() -> Self {
         Self {
             modifiers: winit::event::Modifiers::default(),
+            keyboard_layout: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
@@ -310,12 +313,15 @@ impl PersistenceRuntime {
 pub(super) struct ContinuationRuntime {
     pub(super) owner_view: crate::collaboration::owner_view::OwnerViewRuntime,
     pub(super) last_published: Option<crate::collaboration::ContinuationMetadata>,
+    /// Distinguish a queued clear from an unknown prior projection.
+    pub(super) publication_initialized: bool,
     pub(super) pending_restore: Option<crate::collaboration::ContinuationMetadata>,
     /// Generic view restoration waits until layout has built the focus order.
     pub(super) pending_view: Option<crate::view::View>,
     /// Route epoch for private continuity. A new acknowledged route must
     /// republish unchanged metadata and playback through that route only.
     pub(super) last_private_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    pub(super) private_instance: Option<u64>,
     /// The document this window shows has left its workspace, and the
     /// window knows: it stopped editing and told its desktop once.
     pub(super) retired: bool,
@@ -326,9 +332,11 @@ impl ContinuationRuntime {
         Self {
             owner_view: Default::default(),
             last_published: None,
+            publication_initialized: false,
             pending_restore,
             pending_view: None,
             last_private_route: None,
+            private_instance: None,
             retired: false,
         }
     }

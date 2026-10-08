@@ -2502,6 +2502,19 @@ agent-quick-work-refused = This action is unavailable. Your draft is still here.
 agent-quick-shots-draft = Review changes and flag open decisions.
 agent-marker-a11y-name = Agent action: { $agent }
 agent-marker-a11y-description = { $action } on { $resource }
+display-confirm-answer-pending = Saving the display answer…
+display-confirm-answer-failed = Could not save the display answer: { $reason }
+
+display-sheet-saving-layout = Saving display layout…
+
+session-diagnostics-title = Session timing diagnostics
+session-diagnostics-configure = Configure timing for subsequent app launches
+session-diagnostics-inspect = Inspect session timing diagnostics
+session-diagnostics-presentation = Record content-free input and presentation timing
+session-diagnostics-gpu_stages = Record GPU stage timing
+session-diagnostics-gpu_timestamps = Enable GPU timestamps
+session-diagnostics-gpu_dispatch_timestamps = Enable GPU dispatch timestamps
+session-diagnostics-dispatch-requires-timestamps = GPU dispatch timing requires GPU timestamps.
 
 device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
 search-action-activity-acknowledge = Acknowledge viewed activity
