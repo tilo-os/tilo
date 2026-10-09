@@ -222,7 +222,7 @@ impl Widget for ResizeHandle {
             reason = "HANDLE_SLOT_PX is a small compile-time pixel constant (8.0), exact in f32"
         )]
         let handle_slot_px = HANDLE_SLOT_PX as f32;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(handle_slot_px),
                 height: Dimension::percent(1.0),
@@ -230,9 +230,8 @@ impl Widget for ResizeHandle {
             flex_grow: 0.0,
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {

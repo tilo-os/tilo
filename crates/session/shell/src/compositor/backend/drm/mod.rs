@@ -2043,6 +2043,32 @@ impl DirectFrame {
     }
 }
 
+/// Whether a direct output keeps the image KMS shows for `frame`: no render, no copy into a
+/// scanout slot, no flip. Its targets must have been `shown` and its retained pixels must hold
+/// the previous revision with no skipped frame's damage owed (`keep_unchanged_output`), which
+/// it then advances to this revision.
+///
+/// An output whose pixels are its own (`own_pixels`) keeps any frame whose damage falls
+/// elsewhere. An output sharing the bridge's target with the scene as a whole (the lone
+/// output) keeps only a frame proven identical to the previous one (empty damage): nothing
+/// in the scene moved, so no other reader of that target can be owed pixels either.
+fn keeps_shown_image(
+    bridge: &mut paint::VelloDrmBridge,
+    view: &paint::OutputView,
+    frame: &ScanoutFrame<'_>,
+    shown: bool,
+    own_pixels: bool,
+) -> bool {
+    let Some(damage) = frame.damage else {
+        return false;
+    };
+    let unchanged = damage.regions.is_some_and(<[_]>::is_empty);
+    (own_pixels || unchanged)
+        && frame.hdr_layers.is_empty()
+        && shown
+        && bridge.keep_unchanged_output(view, damage)
+}
+
 /// Render one output straight into its own direct scanout target and hand it to KMS.
 ///
 /// The direct path stays narrow until every transformed, colour-managed and software-cursor
@@ -2168,17 +2194,9 @@ fn present_direct(
         };
     }
     // The output's retained pixels are its own: a surface of its own, or the bridge's target
-    // while no other output or readback shares it (`per_output`). A lone output's frames
-    // always render, as they did before outputs were judged apart.
+    // while no other output or readback shares it (`per_output`).
     let own_pixels = per_output || !bridge.view_is_whole_scene(view);
-    // No damage falls on this output: its retained surface and front slot already
-    // hold this revision.
-    if own_pixels
-        && frame.hdr_layers.is_empty()
-        && targets.presented()
-        && let Some(damage) = frame.damage
-        && bridge.keep_unchanged_output(view, damage)
-    {
+    if keeps_shown_image(bridge, view, frame, targets.presented(), own_pixels) {
         return DirectOutcome::Kept;
     }
     // A queued imported-buffer flip retires before a new render target is selected. With
@@ -2259,10 +2277,8 @@ fn present_direct(
                 window.record_direct_drop();
             }
             // The surface is ahead of the image KMS shows: the next frame must not
-            // count this output as unchanged. A lone output is never kept unchanged.
-            if own_pixels {
-                bridge.invalidate_output_view(view);
-            }
+            // count this output as unchanged, a lone output's unchanged frame included.
+            bridge.invalidate_output_view(view);
             DirectOutcome::Dropped
         }
         scanout::DirectSubmit::Failed(error) => {
@@ -4015,5 +4031,222 @@ mod per_output_presentation_tests {
         // Without known rates every output paces the loop, as all did before.
         assert_eq!(flip_wait(None, fastest, quick), FlipWait::Await);
         assert_eq!(flip_wait(Some(60_000), None, quick), FlipWait::Await);
+    }
+}
+
+#[cfg(test)]
+mod lone_output_tests {
+    use super::*;
+    use vello::FineDamageRect;
+    use vello::kurbo::{Affine, Rect};
+    use vello::peniko::{Color, Fill};
+
+    const SIZE: (u32, u32) = (64, 48);
+
+    /// One display at the origin: its view is the whole scene, so it renders straight into the
+    /// bridge's own target and shares it with nothing else (`per_output` is false).
+    fn lone_output() -> (paint::VelloDrmBridge, paint::OutputView) {
+        let mut bridge = paint::VelloDrmBridge::new(SIZE.0, SIZE.1)
+            .expect("renderer gate requires a real wgpu adapter");
+        bridge.warm_renderer_for_test();
+        let view = view_of(OutputId(0), (0, 0), SIZE, &[]);
+        assert!(
+            bridge.view_is_whole_scene(&view),
+            "a lone output renders into the bridge's target"
+        );
+        (bridge, view)
+    }
+
+    fn grey_scene() -> Scene {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0x40, 0x40, 0x40),
+            None,
+            &Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1)),
+        );
+        scene
+    }
+
+    fn frame<'a>(scene: &'a Scene, damage: SceneDamage<'a>) -> ScanoutFrame<'a> {
+        ScanoutFrame {
+            scene,
+            damage: Some(damage),
+            hdr_layers: &[],
+            overview: None,
+            workspace_id: None,
+            workspace_hold: false,
+            workspace_clip: None,
+            backdrop: None,
+        }
+    }
+
+    /// Revision `revision`, relative to the one before it.
+    fn damage(revision: u64, regions: Option<&[FineDamageRect]>) -> SceneDamage<'_> {
+        SceneDamage {
+            revision,
+            previous_revision: revision.checked_sub(1).filter(|previous| *previous > 0),
+            regions,
+        }
+    }
+
+    /// Whether the lone output keeps what it shows for `damage`, its targets shown.
+    fn kept(
+        bridge: &mut paint::VelloDrmBridge,
+        view: &paint::OutputView,
+        scene: &Scene,
+        damage: SceneDamage<'_>,
+    ) -> bool {
+        keeps_shown_image(bridge, view, &frame(scene, damage), true, false)
+    }
+
+    /// The production final pass, into an offscreen stand-in for the output's scanout slot.
+    fn render(
+        bridge: &mut paint::VelloDrmBridge,
+        view: &paint::OutputView,
+        scene: &Scene,
+        damage: SceneDamage<'_>,
+    ) -> paint::GpuFrameStats {
+        let (device, _) = bridge.gpu();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("lone-output-test-scanout"),
+            size: wgpu::Extent3d {
+                width: SIZE.0,
+                height: SIZE.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        bridge
+            .paint_output_into(
+                scene,
+                view,
+                damage,
+                paint::OutputTarget {
+                    view: &target,
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    size: SIZE,
+                },
+                Instant::now()
+                    .checked_add(tilo_test_env::hang_bound())
+                    .expect("the hang bound fits in an Instant"),
+                paint::OutputSignal {
+                    sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                    hdr_layers: &[],
+                },
+            )
+            .expect("the output's frame renders")
+    }
+
+    #[test]
+    fn lone_output_keeps_an_unchanged_frame_without_render_or_flip() {
+        let (mut bridge, view) = lone_output();
+        let grey = grey_scene();
+        let first = render(&mut bridge, &view, &grey, damage(1, None));
+        assert_eq!(first.full_attempts, 1, "the first frame renders in full");
+
+        // Pointer motion over a static desktop: the producer proves the frame identical.
+        assert!(
+            kept(&mut bridge, &view, &grey, damage(2, Some(&[]))),
+            "a lone output keeps the image it shows for a frame proven unchanged"
+        );
+        assert!(
+            kept(&mut bridge, &view, &grey, damage(3, Some(&[]))),
+            "and keeps it for every further unchanged frame"
+        );
+
+        // The kept frames advanced the retained revision, so the next change still repairs
+        // only its damage rather than rendering the output in full.
+        let rect = [FineDamageRect {
+            x: 8,
+            y: 8,
+            width: 16,
+            height: 16,
+        }];
+        assert!(
+            !kept(&mut bridge, &view, &grey, damage(4, Some(&rect))),
+            "a lone output renders every frame whose content changed"
+        );
+        let mut red = Scene::new();
+        red.append(&grey, None);
+        red.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0xff, 0, 0),
+            None,
+            &Rect::new(8.0, 8.0, 24.0, 24.0),
+        );
+        let next = render(&mut bridge, &view, &red, damage(4, Some(&rect)));
+        assert_eq!(
+            (next.sparse_attempts, next.full_attempts),
+            (1, 0),
+            "the change after kept frames is repaired sparsely"
+        );
+    }
+
+    #[test]
+    fn lone_output_renders_unless_its_shown_pixels_are_proven_current() {
+        let (mut bridge, view) = lone_output();
+        let grey = grey_scene();
+        render(&mut bridge, &view, &grey, damage(1, None));
+
+        assert!(
+            !keeps_shown_image(
+                &mut bridge,
+                &view,
+                &frame(&grey, damage(2, Some(&[]))),
+                false,
+                false
+            ),
+            "targets KMS has never shown leave the dumb front up: the frame renders"
+        );
+        assert!(
+            !kept(&mut bridge, &view, &grey, damage(2, None)),
+            "a frame without damage authority renders"
+        );
+        let gap = SceneDamage {
+            revision: 3,
+            previous_revision: Some(2),
+            regions: Some(&[]),
+        };
+        assert!(
+            !kept(&mut bridge, &view, &grey, gap),
+            "an unchanged frame relative to a revision the output never held renders"
+        );
+    }
+
+    #[test]
+    fn busy_lone_output_is_not_kept_on_the_next_unchanged_frame() {
+        let (mut bridge, view) = lone_output();
+        let grey = grey_scene();
+        render(&mut bridge, &view, &grey, damage(1, None));
+        let rect = [FineDamageRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        }];
+        // Revision 2 renders, but KMS refuses its flip as busy (`DirectSubmit::Busy`): the
+        // retained target is ahead of the image KMS shows, and `present_direct` invalidates
+        // it, for a lone output as for any other.
+        render(&mut bridge, &view, &grey, damage(2, Some(&rect)));
+        bridge.invalidate_output_view(&view);
+        assert!(
+            !kept(&mut bridge, &view, &grey, damage(3, Some(&[]))),
+            "after a dropped flip the unchanged frame must render, or KMS would keep revision 1"
+        );
+        let repaired = render(&mut bridge, &view, &grey, damage(3, Some(&[])));
+        assert_eq!(repaired.full_attempts, 1, "the repair renders in full");
+        assert!(
+            kept(&mut bridge, &view, &grey, damage(4, Some(&[]))),
+            "once repaired, unchanged frames are kept again"
+        );
     }
 }

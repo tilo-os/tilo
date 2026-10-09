@@ -221,7 +221,13 @@ straight into it, and the others render into their own surfaces, so the
 space between outputs of different shapes is never rasterised and two 4K
 heads side by side render without banding (banding remains for a single
 output past Vello's bin limit). Damage is routed per output: an output none
-of the frame's damage falls on is neither rendered nor flipped.
+of the frame's damage falls on is neither rendered nor flipped. A lone
+output shares the bridge's target with the scene as a whole, so it keeps
+only a frame proven identical to the previous one (empty damage); that
+case is pointer motion or typing over an unchanged desktop, and it costs no
+GPU work, copy or flip (`keeps_shown_image`). A frame dropped because KMS
+reported the flip busy invalidates the output's retained pixels, so the
+next frame renders and KMS never keeps showing an older image.
 
 Outputs are paced apart. A frame retires when the flips of the outputs at
 the fastest refresh have (`DrmPresenter::retire_direct_flips`), so the loop

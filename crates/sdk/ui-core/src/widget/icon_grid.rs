@@ -295,9 +295,7 @@ impl Widget for IconGrid {
                 2.0 * f64::from(tokens.spacing.s3),
             );
         }
-        let node = taffy.leaf_node(Style::default());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
 
     fn measure(
