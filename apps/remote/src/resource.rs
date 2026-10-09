@@ -396,7 +396,6 @@ mod tests {
 
     /// Adding validates the profile and mints its id.
     #[test]
-    #[ignore = "enum verb parameters publish as objects (GAPS: rav-b2 → core, enum parameters)"]
     fn an_agent_adds_a_connection_in_one_call() {
         let mut app = TestApp::<RemoteShell>::new().unwrap();
         app.call(
