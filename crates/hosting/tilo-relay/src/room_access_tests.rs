@@ -152,12 +152,15 @@ fn room(root: &std::path::Path) -> WorkspaceRuntime {
     WorkspaceRuntime::open(root, id, false, Membership::default()).unwrap()
 }
 
+/// How a case puts its principal into the room and the relay.
+type Setup = Box<dyn Fn(&mut WorkspaceRuntime, &Relay)>;
+
 /// One principal: how the room and the relay know it, and the expected
-/// letters per mode (Explicit, SameOwner, Governed) over [`OPS`].
+/// letters per mode (`Explicit`, `SameOwner`, `Governed`) over [`OPS`].
 struct Case {
     name: &'static str,
     peer: AuthenticatedPeer,
-    setup: Box<dyn Fn(&mut WorkspaceRuntime, &Relay)>,
+    setup: Setup,
     expected: [&'static str; 3],
 }
 
@@ -169,10 +172,10 @@ struct Case {
 fn decide_matrix() {
     let relay = Relay::new();
     let (owner, bob, carol) = (relay.owner, relay.bob, [3; 32]);
-    let listed = |device: [u8; 32]| -> Box<dyn Fn(&mut WorkspaceRuntime, &Relay)> {
+    let listed = |device: [u8; 32]| -> Setup {
         Box::new(move |runtime, _| runtime.membership.devices.push(device))
     };
-    let none = || -> Box<dyn Fn(&mut WorkspaceRuntime, &Relay)> { Box::new(|_, _| {}) };
+    let none = || -> Setup { Box::new(|_, _| {}) };
     //                 Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction
     let cases = vec![
         Case {

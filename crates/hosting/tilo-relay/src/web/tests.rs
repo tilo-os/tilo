@@ -433,26 +433,29 @@ async fn expired_cert_gets_no_live_grant() {
     let (host_key, host) = device(&root, 92, DeviceCapabilities::host());
     let (_, cert) = device(&root, 93, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start_with_relay_mode(
-        RelayConfig {
-            state_root: state.path().into(),
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host,
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
-    relay
-        .set_workspace_membership(91, true, vec![cert.device_public_key], state.path().into())
+    let (relay, sessions) = {
+        let relay = Relay::start_with_relay_mode(
+            RelayConfig {
+                state_root: state.path().into(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: host.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host,
+                revocations: RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        )
         .await
         .unwrap();
-    let sessions = Sessions::new(relay.web_context().clone());
+        relay
+            .set_workspace_membership(91, true, vec![cert.device_public_key], state.path().into())
+            .await
+            .unwrap();
+        let sessions = Sessions::new(relay.web_context().clone());
+        (relay, sessions)
+    };
     let grants = live::LiveGrants::new();
     let peer = |expires_at_ns| crate::auth::AuthenticatedPeer {
         user_public_key: cert.user_public_key,
