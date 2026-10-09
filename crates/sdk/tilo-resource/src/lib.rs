@@ -449,7 +449,7 @@ pub mod __private {
     /// Why the arguments do not decode as the action's parameters.
     pub fn build_stamped<O: serde::de::DeserializeOwned>(
         id: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
+        arguments: &serde_json::Map<String, serde_json::Value>,
         now_ms: i64,
     ) -> Result<crate::Stamped<O>, String> {
         let wire = serde_json::json!({

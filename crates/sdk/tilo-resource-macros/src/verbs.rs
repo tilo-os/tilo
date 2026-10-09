@@ -1103,7 +1103,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         // action does: one shared decoder per resource, not one per verb.
         let build_body = match &prepare {
             None => {
-                quote!(#krate::__private::build_stamped::<#action_enum>(#id, arguments, now_ms))
+                quote!(#krate::__private::build_stamped::<#action_enum>(#id, &arguments, now_ms))
             }
             Some(prepare) => quote! {
                 let mut params: #params_mod::#variant = #krate::__private::serde_json::from_value(

@@ -1014,11 +1014,12 @@ impl<R> Serialize for Edit<R> {
 
 #[inline(never)]
 fn edit_to_json(path: &[Segment], op: &EditOp) -> serde_json::Value {
-    let mut form = serde_json::to_value(op).expect("an edit op is JSON");
+    // Both are plain data: their JSON never fails to build.
+    let mut form = serde_json::to_value(op).unwrap_or_default();
     if let serde_json::Value::Object(map) = &mut form {
         map.insert(
             "path".into(),
-            serde_json::to_value(path).expect("a path is JSON"),
+            serde_json::to_value(path).unwrap_or_default(),
         );
     }
     form

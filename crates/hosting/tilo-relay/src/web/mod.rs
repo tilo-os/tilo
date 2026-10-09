@@ -402,7 +402,7 @@ async fn maintain_legacy(legacy: Arc<legacy::LegacyWindows>, context: crate::dae
                     Some(rooms) => rooms
                         .legacy_writer_role(authority.room(), device)
                         .await
-                        .is_some_and(|role| crate::room_access::role_writes(role)),
+                        .is_some_and(crate::room_access::role_writes),
                     None => false,
                 },
                 None => true,
@@ -467,7 +467,7 @@ async fn legacy_input(
         Some((rooms, room)) => rooms
             .legacy_writer_role(&room, member.device_public_key)
             .await
-            .is_some_and(|role| crate::room_access::role_writes(role)),
+            .is_some_and(crate::room_access::role_writes),
         None => member.user_public_key == publisher_user,
     };
     if !may {

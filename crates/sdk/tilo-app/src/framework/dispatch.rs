@@ -910,7 +910,10 @@ impl<R: Resource> Dispatcher<R> {
     /// [`Self::apply_now`] of an action the person already confirmed, as
     /// the host applies it once they agreed: what a test resolving the
     /// queue as confirmed applies.
-    pub(crate) fn apply_confirmed(
+    ///
+    /// # Errors
+    /// As [`apply_now`](Self::apply_now).
+    pub fn apply_confirmed(
         &self,
         edits: &mut Edits<'_>,
         action: &R::Action,

@@ -464,7 +464,7 @@ pub(crate) fn store_in_order<T: Model>(
 /// The positions of entries in stored order: by order key, ties by id.
 /// Sorting positions rather than entries compiles one sort for every item
 /// type.
-fn stored_order(keys: Vec<(Option<&str>, &Id)>) -> Vec<usize> {
+fn stored_order(keys: &[(Option<&str>, &Id)]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..keys.len()).collect();
     order.sort_by(|&a, &b| keys.get(a).cmp(&keys.get(b)));
     order
@@ -792,10 +792,11 @@ impl<T: Model> Model for Collection<T> {
         }
         if reorder {
             let order = stored_order(
-                self.items
+                &self
+                    .items
                     .iter()
                     .map(|entry| (entry.key.as_deref(), &entry.id))
-                    .collect(),
+                    .collect::<Vec<_>>(),
             );
             let mut slots: Vec<Option<Entry<T>>> = self.items.drain(..).map(Some).collect();
             self.items = order

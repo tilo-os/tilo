@@ -23,7 +23,7 @@ use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::time::Instant;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
-use tilo_app::winit::event::DeviceId;
+use tilo_app::winit::event::{DeviceId, WindowEvent};
 use tilo_app::winit::window::CursorIcon;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
@@ -108,7 +108,7 @@ impl ResourceApp for Scaling {
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
         let draft = cx
-            .input(|list| list.draft.clone(), Checklist::DRAFT)
+            .input_with(|list| list.draft.clone(), Checklist::DRAFT)
             .with_id("draft");
         let rows = cx.each(
             |list| &list.tasks,
@@ -118,7 +118,7 @@ impl ResourceApp for Scaling {
                 };
                 Box::new(tilo_app::row![
                     row.text(|task| task.title.clone()),
-                    row.checkbox(
+                    row.checkbox_with(
                         "scaling-done",
                         |task| task.done,
                         Checklist::SET_DONE.map(move |done| (id.clone(), done))

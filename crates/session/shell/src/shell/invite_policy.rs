@@ -18,8 +18,6 @@ use crate::shell::chrome_state::ChromeState;
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
 use crate::shell::state::{RoomId, UserId, Workspace, WorkspaceTree, person_id_of};
 
-/// The shell action whose capability gates every invitation.
-
 /// How this device may issue an invitation into one workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InviteRoute {
