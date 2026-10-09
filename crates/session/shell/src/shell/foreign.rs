@@ -2086,7 +2086,8 @@ impl ForeignFrameStore {
 
     /// Exercise the identical capture publication/history seam from pixel
     /// oracles. Production damage provenance is independently wire-tested.
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn publish_damaged_rgba_for_test(
         &self,
         id: SurfaceId,

@@ -765,7 +765,8 @@ impl AudioEngine {
     }
 
     /// Where a source stands on its way to audio, for a test's failure message.
-    #[cfg(all(test, feature = "audio"))]
+    #[cfg(test)]
+    #[cfg(feature = "audio")]
     pub fn diagnostics(&self) -> String {
         use gstreamer::prelude::*;
         let pipeline = self.backend.as_ref().map(|backend| {
@@ -1743,7 +1744,8 @@ impl AudioBackend {
     /// Block until the pipeline reaches `PLAYING` (or `timeout` elapses),
     /// returning whether it got there. Used by the audio-pipeline test to prove
     /// real decode reaches the sink; never called on the live UI thread.
-    #[cfg(all(test, feature = "audio"))]
+    #[cfg(test)]
+    #[cfg(feature = "audio")]
     pub fn wait_until_playing(&self, timeout: std::time::Duration) -> bool {
         use gstreamer::prelude::*;
         let deadline = ui::time::now() + timeout;

@@ -371,7 +371,8 @@ impl ContentStore {
         &self.files
     }
 
-    #[cfg(all(test, feature = "filesystem"))]
+    #[cfg(test)]
+    #[cfg(feature = "filesystem")]
     #[allow(clippy::unwrap_used, reason = "test fixture")]
     fn memory_with_gc_interval(gc_interval: Duration) -> Self {
         let scratch = tempfile::tempdir().unwrap();
