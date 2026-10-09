@@ -114,7 +114,13 @@ fn saved_and_captured_history_deny_only_live_composition_nodes() {
         .copied()
         .find(|&node| root.history.owns_node(node, &tree))
         .unwrap();
-    let allows = |root: &FocusHistoryRoot, node| super::embedded::allows_focus(root, node, &tree);
+    let allows = |root: &FocusHistoryRoot, node| {
+        let restrictions = super::embedded::FocusRestrictions::collect(root, &tree);
+        assert!(restrictions.has_surfaces());
+        let allowed = restrictions.allows(node);
+        assert_eq!(allowed, super::embedded::allows_focus(root, node, &tree));
+        allowed
+    };
     assert!(allows(&root, row));
     root.live.children_mut()[0].set_focus(true);
     root.history.preserve_captured_focus(Some(
@@ -178,7 +184,15 @@ fn nested_history_ownership_does_not_escape_outer_focus_denial() {
         }
         index += 1;
     });
-    let allows = |node| super::embedded::allows_focus(&root, node, &tree);
+    let restrictions = super::embedded::FocusRestrictions::collect(&root, &tree);
+    for node in nodes.keys().copied().chain([outside]) {
+        assert_eq!(
+            restrictions.allows(node),
+            super::embedded::allows_focus(&root, node, &tree),
+            "snapshot preserves per-surface ownership for {node:?}"
+        );
+    }
+    let allows = |node| restrictions.allows(node);
     assert!(
         allows(owned_and_live[0].0),
         "outer retains its own controls"
