@@ -143,3 +143,58 @@ fn a_change_names_the_units_it_touched_from_the_documents_index() {
         ["summary"]
     );
 }
+
+#[test]
+fn a_receiver_reads_kinds_edits_and_footprints_from_the_surface() {
+    use tilo_actions::PathStep;
+    let surface = Review::surface();
+    assert!(surface.verb("reply").is_some());
+    assert!(surface.verb("nothing").is_none());
+    assert!(surface.editable(&[PathStep::Field("title".into())]));
+    assert!(surface.editable(&[
+        PathStep::Field("threads".into()),
+        PathStep::Item("t1".into()),
+        PathStep::Field("replies".into()),
+    ]));
+    assert!(!surface.editable(&[PathStep::Field("nothing".into())]));
+    assert_eq!(
+        surface.edit_unit(&[
+            PathStep::Field("threads".into()),
+            PathStep::Item("t1".into()),
+            PathStep::Field("replies".into()),
+        ]),
+        [
+            PathStep::Field("threads".into()),
+            PathStep::Item("t1".into())
+        ]
+    );
+    assert_eq!(
+        surface.edit_unit(&[PathStep::Field("summary".into())]),
+        [PathStep::Field("summary".into())]
+    );
+    assert!(
+        surface
+            .edit_unit(&[PathStep::Field("title".into())])
+            .is_empty()
+    );
+    assert_eq!(
+        surface.footprint("start-thread", None),
+        [
+            vec![],
+            vec![
+                PathStep::Field("threads".into()),
+                PathStep::Item("*".into())
+            ]
+        ]
+    );
+    assert_eq!(
+        surface.footprint("reply", Some("t1")),
+        [
+            vec![],
+            vec![
+                PathStep::Field("threads".into()),
+                PathStep::Item("t1".into())
+            ]
+        ]
+    );
+}

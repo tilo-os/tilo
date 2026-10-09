@@ -26,6 +26,13 @@ pub struct Board {
     pub drafts: Collection<String>,
 }
 
+/// The title as the origin resolves it: upper case.
+#[allow(clippy::unnecessary_wraps, reason = "a prepare hook may refuse")]
+fn shouted(params: &mut board::Shout) -> Result<(), String> {
+    params.title = params.title.to_uppercase();
+    Ok(())
+}
+
 /// How the board looks.
 #[derive(
     Default,
@@ -79,6 +86,12 @@ impl Board {
         if let Some(cards) = style.cards {
             self.cards = cards;
         }
+    }
+
+    /// Retitle the board loudly: the title is resolved once, where invoked.
+    #[action(prepare = shouted)]
+    pub fn shout(&mut self, title: String) {
+        self.title = title;
     }
 
     /// Retitle the board, with an optional suffix.
@@ -727,4 +740,29 @@ fn a_search_entry_lies_in_a_scope_it_names() {
         .anchored("feeds.library/articles/a1")
         .inside("feeds.library/feeds/f1");
     assert_eq!(entry.within.as_deref(), Some("feeds.library/feeds/f1"));
+}
+
+#[test]
+fn a_verb_prepares_its_arguments_once_where_it_is_invoked() {
+    let mut origin = Replica::<Board>::new();
+    let mut peer = origin.fork();
+    origin.apply(Board::SHOUT.with("sprint")).unwrap();
+    assert_eq!(origin.state().unwrap().title, "SPRINT");
+    for envelope in origin.log().to_vec() {
+        peer.replay(&envelope).unwrap();
+    }
+    assert_eq!(
+        peer.state().unwrap().title,
+        "SPRINT",
+        "the action carries what was prepared"
+    );
+
+    // A flattened struct's absent options are left out.
+    origin
+        .apply(Board::RESTYLE.with(BoardStyle {
+            title: "Plain".into(),
+            cards: None,
+        }))
+        .unwrap();
+    assert_eq!(origin.state().unwrap().title, "Plain");
 }

@@ -152,6 +152,8 @@ struct ActionOptions {
     /// consequence on undo.
     undo: Option<syn::ExprPath>,
     writes: Vec<syn::Ident>,
+    /// Resolves arguments from outside once, where the verb is invoked.
+    prepare: Option<syn::Path>,
 }
 
 fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
@@ -167,6 +169,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         within: Vec::new(),
         undo: None,
         writes: Vec::new(),
+        prepare: None,
     };
     if matches!(attr.meta, Meta::Path(_)) {
         return Ok(options);
@@ -197,11 +200,13 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.undo = Some(meta.value()?.parse::<syn::ExprPath>()?);
         } else if meta.path.is_ident("answers") {
             options.answers = true;
+        } else if meta.path.is_ident("prepare") {
+            options.prepare = Some(meta.value()?.parse::<syn::Path>()?);
         } else if meta.path.is_ident("writes") {
             options.writes.push(meta.value()?.parse::<syn::Ident>()?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `field`, `destructive`, `housekeeping`, `external`, `answers`, `writes = field`, `item = field` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `field`, `destructive`, `housekeeping`, `external`, `answers`, `writes = field`, `prepare = path`, `item = field` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -1056,6 +1061,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         });
         let destructive = verb.options.destructive.then(|| quote!(.destructive()));
         let answering = verb.options.answers.then(|| quote!(.answering()));
+        // Run where the verb is built from its arguments (the origin), never
+        // when its recorded action replays: the action carries the result.
+        let prepare = verb
+            .options
+            .prepare
+            .as_ref()
+            .map(|path| quote!(#path(&mut params)?;));
         let (collects, prompted) = match verb.params.iter().find(|param| param.content) {
             Some(param) => {
                 let description = &param.description;
@@ -1097,10 +1109,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     let mut arguments = args.to_json();
                     let _ = &mut arguments;
                     #prompted
-                    let params: #params_mod::#variant = #krate::__private::serde_json::from_value(
+                    #[allow(unused_mut, reason = "a verb with a `prepare` hook resolves its arguments")]
+                    let mut params: #params_mod::#variant = #krate::__private::serde_json::from_value(
                         #krate::__private::serde_json::Value::Object(arguments),
                     )
                     .map_err(|error| ::std::string::ToString::to_string(&error))?;
+                    #prepare
                     ::core::result::Result::Ok(#krate::Stamped {
                         operation: #action_enum::#variant(params),
                         now_ms,

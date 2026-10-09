@@ -763,7 +763,11 @@ impl<R, A: Serialize> ActionRef<R, A> {
         let id = self.id;
         let value = serde_json::to_value(input).map_err(|error| format!("`{id}`: {error}"))?;
         match (self.params, value) {
-            ([], serde_json::Value::Object(fields)) => Ok(fields),
+            // An absent option is left out, as a parameter not given.
+            ([], serde_json::Value::Object(fields)) => Ok(fields
+                .into_iter()
+                .filter(|(_, value)| !value.is_null())
+                .collect()),
             ([], serde_json::Value::Null) => Ok(serde_json::Map::new()),
             ([], other) => Err(format!("`{id}` takes named arguments, not `{other}`")),
             ([single], value) => Ok(serde_json::Map::from_iter([((*single).to_owned(), value)])),

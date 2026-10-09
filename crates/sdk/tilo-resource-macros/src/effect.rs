@@ -443,7 +443,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     if let ::core::result::Result::Ok(#krate::__private::serde_json::Value::Object(fields)) =
                         #krate::__private::serde_json::to_value(#field)
                     {
-                        arguments.extend(fields);
+                        // An absent option is left out, as an argument not given.
+                        arguments.extend(fields.into_iter().filter(|(_, value)| !value.is_null()));
                     }
                 },
                 quote!(Self::#ident {
