@@ -487,6 +487,41 @@ impl NeighbourMsg {
             | Self::RecordContentPiece { .. } => false,
         }
     }
+
+    /// The variant's name, for diagnostics and traffic tallies. Never a
+    /// wire value: the postcard discriminant is.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::SyncReq { .. } => "SyncReq",
+            Self::SyncResp { .. } => "SyncResp",
+            Self::PresenceMoved { .. } => "PresenceMoved",
+            Self::PresenceCleared { .. } => "PresenceCleared",
+            Self::SurfaceFrame { .. } => "SurfaceFrame",
+            Self::SurfaceStreamStart { .. } => "SurfaceStreamStart",
+            Self::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
+            Self::RemoteInput { .. } => "RemoteInput",
+            Self::PermissionRequest { .. } => "PermissionRequest",
+            Self::PermissionGrant { .. } => "PermissionGrant",
+            Self::Heartbeat { .. } => "Heartbeat",
+            Self::IdentityHello { .. } => "IdentityHello",
+            Self::AppDocument { .. } => "AppDocument",
+            Self::AppPresenceV2 { .. } => "AppPresenceV2",
+            Self::ScrollbackRequest { .. } => "ScrollbackRequest",
+            Self::ScrollbackResponse { .. } => "ScrollbackResponse",
+            Self::IdentityAnnouncement { .. } => "IdentityAnnouncement",
+            Self::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
+            Self::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
+            Self::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
+            Self::RemoteAction { .. } => "RemoteAction",
+            Self::MediaCapabilities { .. } => "MediaCapabilities",
+            Self::MlsGovernance { .. } => "MlsGovernance",
+            Self::MlsAccessRequest { .. } => "MlsAccessRequest",
+            Self::MlsGovernanceAck { .. } => "MlsGovernanceAck",
+            Self::PersonalWorkspaces { .. } => "PersonalWorkspaces",
+            Self::RecordContentWant { .. } => "RecordContentWant",
+            Self::RecordContentPiece { .. } => "RecordContentPiece",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -928,36 +963,7 @@ mod tests {
     /// Names every variant through an exhaustive match, so adding a variant
     /// fails to compile until it has a fixture and a golden encoding.
     fn variant(message: &NeighbourMsg) -> &'static str {
-        match message {
-            NeighbourMsg::SyncReq { .. } => "SyncReq",
-            NeighbourMsg::SyncResp { .. } => "SyncResp",
-            NeighbourMsg::PresenceMoved { .. } => "PresenceMoved",
-            NeighbourMsg::PresenceCleared { .. } => "PresenceCleared",
-            NeighbourMsg::SurfaceFrame { .. } => "SurfaceFrame",
-            NeighbourMsg::SurfaceStreamStart { .. } => "SurfaceStreamStart",
-            NeighbourMsg::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
-            NeighbourMsg::RemoteInput { .. } => "RemoteInput",
-            NeighbourMsg::PermissionRequest { .. } => "PermissionRequest",
-            NeighbourMsg::PermissionGrant { .. } => "PermissionGrant",
-            NeighbourMsg::Heartbeat { .. } => "Heartbeat",
-            NeighbourMsg::IdentityHello { .. } => "IdentityHello",
-            NeighbourMsg::AppDocument { .. } => "AppDocument",
-            NeighbourMsg::AppPresenceV2 { .. } => "AppPresenceV2",
-            NeighbourMsg::ScrollbackRequest { .. } => "ScrollbackRequest",
-            NeighbourMsg::ScrollbackResponse { .. } => "ScrollbackResponse",
-            NeighbourMsg::IdentityAnnouncement { .. } => "IdentityAnnouncement",
-            NeighbourMsg::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
-            NeighbourMsg::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
-            NeighbourMsg::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
-            NeighbourMsg::RemoteAction { .. } => "RemoteAction",
-            NeighbourMsg::MediaCapabilities { .. } => "MediaCapabilities",
-            NeighbourMsg::MlsGovernance { .. } => "MlsGovernance",
-            NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
-            NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
-            NeighbourMsg::PersonalWorkspaces { .. } => "PersonalWorkspaces",
-            NeighbourMsg::RecordContentWant { .. } => "RecordContentWant",
-            NeighbourMsg::RecordContentPiece { .. } => "RecordContentPiece",
-        }
+        message.kind()
     }
 
     const VARIANT_COUNT: usize = 28;

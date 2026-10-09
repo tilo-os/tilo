@@ -11,6 +11,8 @@ mod display_input_tests;
 mod display_observations;
 mod governor_actions;
 mod hosted_topology;
+#[cfg(test)]
+mod idle_quiet_tests;
 mod input_declines;
 #[cfg(test)]
 mod live_identity_tests;
@@ -3886,6 +3888,15 @@ impl ShellNetwork {
     pub fn dial_addr(&self) -> Option<iroh::EndpointAddr> {
         let addrs = self.listen_addrs.lock().ok()?;
         addrs.first().cloned()
+    }
+
+    /// The tally of every application message this device's peers and
+    /// hosts delivered to it. Blocks until the actor answers, so it must
+    /// not be called from inside the network's runtime.
+    pub fn wire_tally(&self) -> Option<Arc<crate::network::actor::WireTally>> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.cmd_tx.try_send(NetCmd::WireTally(reply)).ok()?;
+        answer.blocking_recv().ok()
     }
 
     /// Invitations this authority can still resend or cancel. Expired
