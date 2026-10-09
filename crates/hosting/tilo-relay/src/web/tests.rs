@@ -192,7 +192,7 @@ fn start(cert: &DeviceCert, surface: u64) -> NeighbourMsg {
 async fn live_observation_preserves_grants_issued_after_its_snapshot() {
     use std::future::{Future as _, poll_fn};
     use std::task::Poll;
-    use tilo_moq::live::{Admission, AuthorizationStatus, LiveAuthority as _};
+    use tilo_moq::live::{AuthorizationStatus, Denied, LiveAuthority as _};
 
     let root = SigningKey::from_bytes(&[71; 32]);
     let (host_key, host) = device(&root, 72, DeviceCapabilities::host());
@@ -301,10 +301,7 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         matches!(second_live.status(), AuthorizationStatus::Denied),
         "second_live must remain Denied"
     );
-    assert!(matches!(
-        authority.try_admit(&second.token),
-        Err(Admission::Denied)
-    ));
+    assert!(matches!(authority.try_admit(&second.token), Err(Denied)));
     assert!(issue(72).await.is_none());
     assert!(
         matches!(first_live.status(), AuthorizationStatus::Current),
@@ -328,10 +325,7 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         .unwrap();
     grants.observe(&sessions).await;
     assert!(matches!(first_live.status(), AuthorizationStatus::Denied));
-    assert!(matches!(
-        authority.try_admit(&first.token),
-        Err(Admission::Denied)
-    ));
+    assert!(matches!(authority.try_admit(&first.token), Err(Denied)));
     assert!(issue(71).await.is_none());
     drop(sessions);
     crate::daemon::Relay::shutdown(relay).await;

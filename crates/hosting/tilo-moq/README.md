@@ -56,10 +56,13 @@ publisher, 512 KiB shared).
 
 Exact subscription scopes are fixed at admission; a prefix-scoped subscriber
 (`subscription_prefix`) is offered every publisher of its call and observed
-against exactly those namespaces every 100 ms. Established sessions tolerate
-`Unavailable` for at most 900 ms since the last confirmed observation, capped
-by the verified grant deadline; explicit denial ends the session on the next
-observation. On revocation the relay stops forwarding the session's
+against exactly those namespaces every 100 ms. An observation is `Current` or
+`Denied`; there is no "cannot tell" state, so an authority that cannot observe
+current permission answers `Denied` and the session ends on that observation.
+Voice, live and the live HTTPS fallback share this one lifecycle
+(`src/session_authority.rs`). An offered namespace whose publisher lapsed is
+closed at once; its subscriber fails closed only if it stays offered for
+900 ms. On revocation the relay stops forwarding the session's
 publication at once, sends the revocation notice, and closes the transport
 when the client has closed or after `GOAWAY_GRACE` (1 s).
 

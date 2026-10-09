@@ -31,7 +31,7 @@ workspace-hack = { version = "0.1" }
 # Only for examples/wt_stream_signal_repro.rs (Chromium WebTransport crash reproducer).
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
 rustls.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 tilo-test-env = { path = "../../dev/test-env" }
 
 [[bin]]
