@@ -311,6 +311,15 @@ renders on demand. A viewer that streams frames attaches with
 `{"op":"watch","watching":true}` (`tilo-control watch on`), or starts the
 session with `TILO_HEADLESS_WATCH=1`.
 
+While watched, headless requests the producer's retained-damage proof. A matching
+empty damage list first validates the previous image with the existing bounded
+screenshot renderer; later unchanged frames reuse that completed RGBA buffer
+without a render or readback. First and changed frames keep the dense path.
+Missing predecessors, unversioned scene edits, viewer detach/reattach and material
+or HDR frames redraw. A replacement backend starts uncached at its new size.
+Presentation remains synchronous; snapshots cannot race queued renderer work.
+This reduces watched headless work, not physical display input-to-photon latency.
+
 ## End-to-end recipe — "click, snapshot, look"
 
 **The fastest path: run the example script.**
