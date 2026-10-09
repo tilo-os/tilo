@@ -17504,6 +17504,9 @@ dependencies = [
 [[package]]
 name = "tilo-platform-caps"
 version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
 
 [[package]]
 name = "tilo-power-mgmt"
