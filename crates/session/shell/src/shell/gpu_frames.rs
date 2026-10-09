@@ -429,10 +429,11 @@ impl Registry {
 
     /// The live frame image `id` draws, and its crop.
     fn frame(&self, id: u64) -> Option<(Arc<GpuFrame>, Crop)> {
-        let images = self.images.lock().unwrap_or_else(PoisonError::into_inner);
-        let entry = images.get(&id)?;
-        let frame = entry.frame.upgrade()?;
-        Some((frame, entry.crop))
+        self.images
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .and_then(|entry| Some((entry.frame.upgrade()?, entry.crop)))
     }
 }
 
@@ -1174,11 +1175,11 @@ mod tests {
             eprintln!("no wgpu adapter; skipping");
             return;
         };
-        let (released, releases) = std::sync::mpsc::channel::<&'static str>();
+        let (on_release, given_back) = std::sync::mpsc::channel::<&'static str>();
         let lease = |name: &'static str| {
-            let released = released.clone();
+            let on_release = on_release.clone();
             BufferLease::new(move || {
-                let _ = released.send(name);
+                let _ = on_release.send(name);
             })
         };
         let frame = client_frame(
@@ -1207,17 +1208,17 @@ mod tests {
         frame.note_superseded();
         drop(frame);
         assert!(
-            releases.recv_timeout(Duration::from_millis(200)).is_err(),
+            given_back.recv_timeout(Duration::from_millis(200)).is_err(),
             "the buffer stays held while a queued frame can still draw it"
         );
         // Phase `presenting_the_frame_gives_the_buffer_back_once`.
         drop(pins);
         assert_eq!(
-            releases.recv_timeout(GPU_WAIT.saturating_mul(2)),
+            given_back.recv_timeout(GPU_WAIT.saturating_mul(2)),
             Ok("first"),
             "the buffer goes back once the frame drawing it is done"
         );
-        assert!(releases.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(given_back.recv_timeout(Duration::from_millis(50)).is_err());
         assert!(release_latency().releases > releases_before);
         // Phase `a_readback_holds_its_frame`.
         let frame = client_frame(
@@ -1230,10 +1231,10 @@ mod tests {
         let reader = Arc::clone(&frame);
         drop(frame);
         assert_eq!(&reader.rgba().expect("readback")[..4], &[4, 5, 6, 255]);
-        assert!(releases.recv_timeout(Duration::from_millis(100)).is_err());
+        assert!(given_back.recv_timeout(Duration::from_millis(100)).is_err());
         drop(reader);
         assert_eq!(
-            releases.recv_timeout(GPU_WAIT.saturating_mul(2)),
+            given_back.recv_timeout(GPU_WAIT.saturating_mul(2)),
             Ok("second")
         );
     }

@@ -4143,29 +4143,24 @@ impl State {
             return;
         };
         let buffer = wl_compositor::with_states(surface, |states| {
-            let mut attrs = states
-                .cached_state
-                .get::<wl_compositor::SurfaceAttributes>();
-            let current = attrs.current();
-            match current.buffer.take() {
-                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => Some(buffer),
-                other => {
-                    current.buffer = other;
-                    None
-                }
-            }
+            take_new_buffer(
+                &mut states
+                    .cached_state
+                    .get::<wl_compositor::SurfaceAttributes>()
+                    .current()
+                    .buffer,
+            )
         });
-        match buffer {
-            Some(buffer) => crate::compositor::foreign::hold_buffer(buffer, &frame),
-            None => {
-                // Never draw from a buffer the client may reuse.
-                tracing::warn!(
-                    target: "shell::compositor::foreign",
-                    surface_id,
-                    "a client frame's buffer was not current when its commit applied; not drawing it"
-                );
-                store.withdraw_unheld_frame(surface_id, &frame);
-            }
+        if let Some(buffer) = buffer {
+            crate::compositor::foreign::hold_buffer(buffer, &frame);
+        } else {
+            // Never draw from a buffer the client may reuse.
+            tracing::warn!(
+                target: "shell::compositor::foreign",
+                surface_id,
+                "a client frame's buffer was not current when its commit applied; not drawing it"
+            );
+            store.withdraw_unheld_frame(surface_id, &frame);
         }
     }
 
@@ -4458,6 +4453,20 @@ fn authenticated_toplevel_identity(
         return Err("Wayland app id does not match the authenticated package");
     }
     Ok((Some(package_id.to_string()), Some(room)))
+}
+
+/// Take the buffer out of `slot` when it holds a newly attached one, leaving
+/// any other assignment in place.
+fn take_new_buffer(
+    slot: &mut Option<wl_compositor::BufferAssignment>,
+) -> Option<smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer> {
+    match slot.take() {
+        Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => Some(buffer),
+        other => {
+            *slot = other;
+            None
+        }
+    }
 }
 
 // Handler trait impls.
