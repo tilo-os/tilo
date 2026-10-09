@@ -47,6 +47,14 @@ executable stand-alone; the higher-level flow is described below.
 - `compare.sh <base.json> <cur.json>` — diff two runs (either output
   format) and print a percentage-change table.
 
+- `agent_rtt.py (--socket PATH | --spawn SHELL)` — the agent round trip:
+  actions list, state dump, a no-op invoke (accepted, and completed through
+  `wait_ms`), throughput under eight clients and the no-op through the MCP
+  server. Each is timed from the client's side of the control socket, after
+  100 warm-up calls, with 1,000 samples. `--app PROVIDER:ID` adds an app
+  action. With `--env-json` it writes `tools/perf/record.py` records.
+  **Perf / scheduled** runs it nightly as the `agent` group.
+
 ## Optimise (three-step PGO + optional BOLT)
 
 1. `pgo-instrument.sh` — build shell + terminal + file-explorer +
