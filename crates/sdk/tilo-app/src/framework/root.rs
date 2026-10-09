@@ -1645,11 +1645,18 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
         // arbitrary ids, including records removed since submission. Repair
         // this owner's projection without inferring custody from an id prefix
         // or retaining requests that History may capture or discard.
-        if let Err(error) = result {
-            if !matches!(error, tilo_actions::DoorError::ConfirmationRequired) {
-                self.dispatch.refuse(&address.action, error.to_string());
+        match result {
+            Err(error) => {
+                if !matches!(error, tilo_actions::DoorError::ConfirmationRequired) {
+                    self.dispatch.refuse(&address.action, error.to_string());
+                }
+                self.live.represent();
             }
-            self.live.represent();
+            Ok(ui_core::host_operation::ResourceOperationStart::Completed(output)) => {
+                self.dispatch
+                    .note_landed(&address.action, output.value.clone());
+            }
+            Ok(_) => {}
         }
         ui_core::widget::controls::on_control_invocation_result(
             self.content.as_mut(),

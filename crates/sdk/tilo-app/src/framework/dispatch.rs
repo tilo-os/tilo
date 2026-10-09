@@ -137,6 +137,8 @@ pub struct Dispatcher<R: Resource> {
     /// [`Resource::permission`], or for a child its parent's action's.
     permission_of: PermissionOf<R>,
     refused: LocalState<Option<Refused>>,
+    /// The last submission of this view the door applied.
+    landed: LocalState<Option<Landed>>,
     /// Why the record does not read as the resource, while it does not:
     /// nothing is submitted against a state nobody can see.
     unreadable: Rc<RefCell<Option<String>>>,
@@ -204,6 +206,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             permission_states: Rc::clone(&self.permission_states),
             permission_of: Rc::clone(&self.permission_of),
             refused: self.refused.clone(),
+            landed: self.landed.clone(),
             unreadable: Rc::clone(&self.unreadable),
             host: Rc::clone(&self.host),
             submit_now: Rc::clone(&self.submit_now),
@@ -271,6 +274,7 @@ impl<R: Resource> Dispatcher<R> {
             permission_states: Rc::default(),
             permission_of: Rc::new(R::permission),
             refused: LocalState::new(None),
+            landed: LocalState::new(None),
             unreadable: Rc::default(),
             host: Rc::default(),
             submit_now: Rc::new(|host, edits, action, context| {
@@ -432,6 +436,20 @@ impl<R: Resource> Dispatcher<R> {
     /// edit waiting for the user's confirmation is not refused.
     pub fn refused(&self) -> LocalState<Option<Refused>> {
         self.refused.clone()
+    }
+
+    /// The last submission of this view the door applied, with what it
+    /// answered: the ids a "new" verb minted ([`Landed::minted`]), for a
+    /// surface that opens what it just created.
+    pub fn landed(&self) -> LocalState<Option<Landed>> {
+        self.landed.clone()
+    }
+
+    pub(crate) fn note_landed(&self, action: &str, answer: Option<serde_json::Value>) {
+        self.landed.set(Some(Landed {
+            action: action.to_owned(),
+            answer,
+        }));
     }
 
     fn view_only() -> String {
@@ -792,6 +810,7 @@ impl<R: Resource> Dispatcher<R> {
                 parent_permission(&wrap_for_permission(action.clone()))
             }),
             refused: self.refused.clone(),
+            landed: self.landed.clone(),
             unreadable: Rc::clone(&self.unreadable),
             host: Rc::clone(&self.host),
             // History names the child and its edit; what applies is the
@@ -875,6 +894,34 @@ pub struct Refused {
     pub action: String,
     /// Why, for a person.
     pub reason: String,
+}
+
+/// A submission the door applied ([`Dispatcher::landed`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Landed {
+    /// The id of the applied action.
+    pub action: String,
+    /// What it answered, if anything.
+    pub answer: Option<serde_json::Value>,
+}
+
+impl Landed {
+    /// The ids the action minted, in the order it minted them: the item a
+    /// "new" verb created first.
+    #[must_use]
+    pub fn minted(&self) -> Vec<tilo_resource::Id> {
+        self.answer
+            .as_ref()
+            .and_then(|answer| answer.get("minted"))
+            .and_then(serde_json::Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(tilo_resource::Id::from_raw)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// An open [`Dispatcher::begin_group`]: every edit submitted until it drops

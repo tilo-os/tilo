@@ -32,12 +32,18 @@ impl Bookmarks {
 
 struct BookmarksApp;
 
+thread_local! {
+    static LANDED: std::cell::RefCell<Option<LocalState<Option<tilo_app::framework::Landed>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl ResourceApp for BookmarksApp {
     type Resource = Bookmarks;
     const ID: &'static str = "so.tilo.test-bookmarks";
     const TITLE: &'static str = "Bookmarks";
 
     fn view(cx: &mut ViewCx<Bookmarks>) -> Element {
+        LANDED.with(|landed| *landed.borrow_mut() = Some(cx.dispatcher().landed()));
         let form = cx.form::<bookmarks::Add>();
         let p = form.paths();
         Box::new(tilo_app::column![
@@ -77,6 +83,12 @@ fn typing_into_a_form_changes_no_document_and_submitting_invokes_the_verb_once()
         }]
     );
     assert_eq!(app.versions().len(), versions + 1, "one invocation");
+    let landed = LANDED.with(|landed| landed.borrow().as_ref().map(LocalState::get));
+    assert_eq!(
+        landed.flatten().map(|landed| landed.action),
+        Some("add".to_owned()),
+        "the view learns that its submission landed"
+    );
 
     // The form empties once sent; an empty one is refused by the verb.
     let shown = app.harness().inspection_json().unwrap();

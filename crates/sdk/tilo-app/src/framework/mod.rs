@@ -347,7 +347,7 @@ pub use app::{FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_he
 pub use attached::AttachedView;
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;
-pub use dispatch::{DispatchGroup, Dispatcher, Refused, Submit};
+pub use dispatch::{DispatchGroup, Dispatcher, Landed, Refused, Submit};
 pub use each::Each;
 pub use effect::{
     ChosenFile, DocumentVersion, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected,
