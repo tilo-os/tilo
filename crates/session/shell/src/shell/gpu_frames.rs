@@ -1065,7 +1065,6 @@ mod tests {
         cache.forget_surface(12);
         assert!(cache.entries.iter().all(|entry| entry.surface != 12));
         assert_eq!(cache.entries.len(), 1, "another surface's import stays");
-        drop(import);
         assert_eq!(made, buffers.len().saturating_add(4));
     }
 }
