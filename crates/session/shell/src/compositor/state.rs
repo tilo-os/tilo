@@ -22,12 +22,88 @@ enum ForeignCommitCapture {
 #[derive(Default)]
 struct ForeignCommitCaptures(Mutex<VecDeque<ForeignCommitCapture>>);
 
+/// Set once the surface queued an SHM capture, which may have left a base in
+/// the frame store for its next commit's damage. A commit the capture does
+/// not see clears that base only while this is set, so the many surfaces
+/// never captured do not take the frame store's lock on every commit.
+#[derive(Default)]
+struct ShmCaptureBase(std::sync::atomic::AtomicBool);
+
+/// Record that the surface queued an SHM capture.
+fn mark_shm_capture_base(states: &wl_compositor::SurfaceData) {
+    states
+        .data_map
+        .insert_if_missing_threadsafe(ShmCaptureBase::default);
+    if let Some(base) = states.data_map.get::<ShmCaptureBase>() {
+        base.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A commit the capture never sees still changes the surface: a later SHM
+/// commit's damage is relative to it, not to the last one captured.
+fn forget_uncaptured_shm_base(surface: &WlSurface, surface_id: u64) {
+    let had_base = wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<ShmCaptureBase>()
+            .is_some_and(|base| base.0.swap(false, std::sync::atomic::Ordering::Relaxed))
+    });
+    if had_base {
+        crate::compositor::foreign::store().reset_shm_base(surface_id);
+    }
+}
+
+/// After any captured commit but an SHM buffer (or a commit that changes
+/// nothing), the next SHM commit's damage is not relative to the frame the
+/// SHM capture built: it copies whole.
+fn settle_shm_base(surface_id: u64, association: &ForeignCommitCapture) {
+    if !matches!(
+        association,
+        ForeignCommitCapture::Shm(_) | ForeignCommitCapture::NoBuffer
+    ) {
+        crate::compositor::foreign::store().reset_shm_base(surface_id);
+    }
+}
+
+/// Buffer damage as the frame store records it.
+fn buffer_damage(rects: &[BufferRect]) -> Vec<vello::kurbo::Rect> {
+    rects
+        .iter()
+        .map(|rect| {
+            vello::kurbo::Rect::from_origin_size(
+                (f64::from(rect.loc.x), f64::from(rect.loc.y)),
+                (f64::from(rect.size.w), f64::from(rect.size.h)),
+            )
+        })
+        .collect()
+}
+
+/// Buffer damage as the whole pixels an SHM capture copies, clipped to the
+/// buffer's non-negative quadrant.
+fn shm_regions(rects: &[BufferRect]) -> Vec<crate::compositor::surface_readback::ShmRegion> {
+    rects
+        .iter()
+        .filter_map(|rect| {
+            let x = rect.loc.x.max(0);
+            let y = rect.loc.y.max(0);
+            let right = rect.loc.x.saturating_add(rect.size.w);
+            let bottom = rect.loc.y.saturating_add(rect.size.h);
+            Some(crate::compositor::surface_readback::ShmRegion {
+                x: usize::try_from(x).ok()?,
+                y: usize::try_from(y).ok()?,
+                width: usize::try_from(right.saturating_sub(x)).ok()?,
+                height: usize::try_from(bottom.saturating_sub(y)).ok()?,
+            })
+        })
+        .collect()
+}
+
+type BufferRect = smithay::utils::Rectangle<i32, smithay::utils::Buffer>;
+
 /// Keep only unambiguous buffer-coordinate damage. Surface-coordinate
 /// rectangles require viewport/scale conversion; absent or transformed hints
 /// remain whole-buffer damage rather than guessing that conversion.
-fn pending_buffer_damage(
-    attrs: &wl_compositor::SurfaceAttributes,
-) -> Option<Vec<vello::kurbo::Rect>> {
+fn pending_buffer_rects(attrs: &wl_compositor::SurfaceAttributes) -> Option<Vec<BufferRect>> {
     if attrs.buffer_transform
         != smithay::reexports::wayland_server::protocol::wl_output::Transform::Normal
         || attrs
@@ -45,13 +121,7 @@ fn pending_buffer_damage(
             let wl_compositor::Damage::Buffer(rect) = damage else {
                 return None;
             };
-            if rect.size.w <= 0 || rect.size.h <= 0 {
-                return None;
-            }
-            Some(vello::kurbo::Rect::from_origin_size(
-                (f64::from(rect.loc.x), f64::from(rect.loc.y)),
-                (f64::from(rect.size.w), f64::from(rect.size.h)),
-            ))
+            (rect.size.w > 0 && rect.size.h > 0).then_some(*rect)
         })
         .collect()
 }
@@ -4031,6 +4101,7 @@ impl State {
             || self.is_output_presentation_surface(surface_id)
             || self.is_transient_surface(surface_id);
         if !captured_here {
+            forget_uncaptured_shm_base(surface, surface_id);
             return;
         }
         let (association, capture) = wl_compositor::with_states(surface, |states| {
@@ -4054,8 +4125,10 @@ impl State {
                     return (association, None);
                 }
             };
-            let damage = pending_buffer_damage(attrs.pending());
+            let rects = pending_buffer_rects(attrs.pending());
             drop(attrs);
+            let damage = rects.as_deref().map(buffer_damage);
+            let regions = rects.as_deref().map(shm_regions);
             let Some(client) = surface.client() else {
                 return (ForeignCommitCapture::Failed, None);
             };
@@ -4083,22 +4156,17 @@ impl State {
                 }
                 return (ForeignCommitCapture::Failed, None);
             }
-            match crate::compositor::surface_readback::copy_shm_frame(&buffer) {
-                Ok(frame) => {
-                    if let Some(generation) = crate::compositor::foreign::store()
-                        .prepare_shm_capture_with_damage(surface_id, frame, damage)
-                    {
-                        (ForeignCommitCapture::Shm(generation), None)
-                    } else {
-                        (ForeignCommitCapture::Failed, None)
-                    }
-                }
-                Err(error) => {
-                    crate::compositor::foreign::store().note_failure(surface_id, error.to_string());
-                    (ForeignCommitCapture::Failed, None)
-                }
+            match crate::compositor::foreign::store().capture_shm_commit(
+                surface_id,
+                &buffer,
+                damage,
+                regions.as_deref(),
+            ) {
+                Some(generation) => (ForeignCommitCapture::Shm(generation), None),
+                None => (ForeignCommitCapture::Failed, None),
             }
         });
+        settle_shm_base(surface_id, &association);
         if let Some(capture) = capture {
             wl_compositor::add_blocker(surface, capture.barrier);
             if let Some(fence) = capture.fence {
@@ -4130,6 +4198,9 @@ impl State {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push_back(association);
+            }
+            if matches!(association, ForeignCommitCapture::Shm(_)) {
+                mark_shm_capture_base(states);
             }
         });
     }
