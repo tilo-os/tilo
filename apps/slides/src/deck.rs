@@ -795,15 +795,9 @@ pub fn body_object(
     slide: &str,
     element: &str,
 ) -> Option<automerge::ObjId> {
-    let deck = <Deck as tilo_resource::Resource>::read(doc).ok()?;
-    let body = deck
-        .slides
-        .get(&Id::from(slide))?
-        .elements
-        .get(&Id::from(element))?
+    crate::actions::element_paths(slide, element)
         .body
-        .state()?;
-    Some(body.containers().root.clone())
+        .object(doc)
 }
 
 /// The rich-text op setting or clearing `mark` over every word of a text

@@ -774,9 +774,11 @@ pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
 /// The object note `page`'s body is kept in, in `doc`.
 #[must_use]
 pub fn body_object(doc: &tilo_resource::Doc, page: PageId) -> Option<automerge::ObjId> {
-    let notebook = <Notebook as tilo_resource::Resource>::read(doc).ok()?;
-    let body = notebook.pages.get(&page_id(page))?.body.state()?;
-    Some(body.containers().root.clone())
+    Notebook::paths()
+        .pages
+        .item(&page_id(page))
+        .body
+        .object(doc)
 }
 
 /// The content store of the window whose code is running. Outside a window
