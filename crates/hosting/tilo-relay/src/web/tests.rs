@@ -347,28 +347,36 @@ async fn live_grants_follow_announced_changes() {
     let (host_key, host) = device(&root, 82, DeviceCapabilities::host());
     let (key, cert) = device(&root, 83, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start_with_relay_mode(
-        RelayConfig {
-            state_root: state.path().into(),
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host,
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
-    for id in [81, 82] {
-        relay
-            .set_workspace_membership(id, true, vec![cert.device_public_key], state.path().into())
-            .await
-            .unwrap();
-    }
-    let sessions = Sessions::new(relay.web_context().clone());
+    let (relay, sessions) = {
+        let relay = Relay::start_with_relay_mode(
+            RelayConfig {
+                state_root: state.path().into(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: host.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host,
+                revocations: RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        )
+        .await
+        .unwrap();
+        for id in [81, 82] {
+            relay
+                .set_workspace_membership(
+                    id,
+                    true,
+                    vec![cert.device_public_key],
+                    state.path().into(),
+                )
+                .await
+                .unwrap();
+        }
+        let sessions = Sessions::new(relay.web_context().clone());
+        (relay, sessions)
+    };
     let challenge = sessions
         .hello(&crate::auth::Hello {
             cert: cert.clone(),
@@ -403,24 +411,20 @@ async fn live_grants_follow_announced_changes() {
             .unwrap();
         held.push(authority.try_admit(&grant.token).unwrap());
     }
-    let denied_within = |live: Arc<dyn tilo_moq::live::LiveSession>, bound: Duration| async move {
-        tokio::time::timeout(bound, async {
-            while matches!(live.status(), AuthorizationStatus::Current) {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .is_ok()
-    };
-
     // Removal announces itself; the observer runs well before its old 50 ms
     // tick plus the carrier's 100 ms recheck.
     relay
         .set_workspace_membership(81, true, vec![], state.path().into())
         .await
         .unwrap();
+    let denied = tokio::time::timeout(Duration::from_millis(150), async {
+        while matches!(held[0].status(), AuthorizationStatus::Current) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
     assert!(
-        denied_within(held[0].clone(), Duration::from_millis(150)).await,
+        denied.is_ok(),
         "a removed member's live grant is withdrawn on the announcement"
     );
     assert!(

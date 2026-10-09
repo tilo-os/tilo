@@ -48,7 +48,7 @@ impl AccessAudit {
     /// audit has looked, nothing is known about its rooms.
     pub(super) fn new() -> Self {
         Self {
-            due: Instant::now() + UNWATCHED_AUDIT,
+            due: after(Instant::now(), UNWATCHED_AUDIT),
             watched: Vec::new(),
         }
     }
@@ -60,13 +60,13 @@ impl AccessAudit {
 
     /// Something an audit reads announced a change.
     pub(super) fn changed(&mut self) {
-        self.due = self.due.min(Instant::now() + AUDIT_SETTLE);
+        self.due = self.due.min(after(Instant::now(), AUDIT_SETTLE));
     }
 
     /// A room subscribed since the last audit is not known to be watched.
     pub(super) fn cover(&mut self, subscribed: &[u64]) {
         if subscribed.iter().any(|room| !self.watched.contains(room)) {
-            self.due = self.due.min(Instant::now() + UNWATCHED_AUDIT);
+            self.due = self.due.min(after(Instant::now(), UNWATCHED_AUDIT));
         }
     }
 
@@ -80,12 +80,14 @@ impl AccessAudit {
         watched: bool,
     ) {
         let now = Instant::now();
-        let mut due = now
-            + if watched {
+        let mut due = after(
+            now,
+            if watched {
                 AUDIT_BACKSTOP
             } else {
                 UNWATCHED_AUDIT
-            };
+            },
+        );
         let delegation_expiry = agents
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -100,7 +102,10 @@ impl AccessAudit {
             .flatten()
             .filter(|expiry| *expiry > now_ns)
         {
-            due = due.min(now + Duration::from_nanos(expiry - now_ns));
+            due = due.min(after(
+                now,
+                Duration::from_nanos(expiry.saturating_sub(now_ns)),
+            ));
         }
         self.due = due;
         self.watched = if watched {
@@ -111,7 +116,17 @@ impl AccessAudit {
     }
 }
 
+/// `delay` after `now`; `now` itself should the clock overflow, which audits
+/// at once rather than never.
+fn after(now: Instant, delay: Duration) -> Instant {
+    now.checked_add(delay).unwrap_or(now)
+}
+
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "the assertions add fixed durations to a paused clock"
+)]
 mod tests {
     use tilo_relay_protocol::agents::{AgentDelegation, AgentScope};
     use tilo_user_identity::UserIdentity;

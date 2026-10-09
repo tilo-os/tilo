@@ -72,17 +72,14 @@ impl LiveGrants {
         loop {
             // A session that runs out is no longer open, and nothing
             // announces it.
-            let expiry = sessions.next_expiry().map_or_else(
-                || tokio::time::Instant::now() + SWEEP,
-                tokio::time::Instant::from_std,
-            );
+            let expiry = sessions.next_expiry().map(tokio::time::Instant::from_std);
             tokio::select! {
                 // The epoch's sender is a process-wide static and never
                 // closes, so this cannot spin on an error.
                 _ = authority.changed() => {}
                 () = sessions.ended() => {}
                 () = self.issued.notified() => {}
-                () = tokio::time::sleep_until(expiry) => {}
+                () = tokio::time::sleep_until(expiry.unwrap_or_else(tokio::time::Instant::now)), if expiry.is_some() => {}
                 _ = sweep.tick() => sessions.sweep(),
             }
             self.observe(&sessions).await;
