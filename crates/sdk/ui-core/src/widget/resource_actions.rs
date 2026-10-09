@@ -444,6 +444,10 @@ impl Widget for ResourceActionHost {
         self.root.ime_purpose()
     }
 
+    fn ime_multiline(&self) -> bool {
+        self.root.ime_multiline()
+    }
+
     fn traps_focus(&self) -> bool {
         self.root.traps_focus()
     }

@@ -1,0 +1,301 @@
+{
+  "schema": 1,
+  "candidate_only": true,
+  "installed": false,
+  "signed": false,
+  "published": false,
+  "production_admission": false,
+  "source": {
+    "bytes": 5680,
+    "sha256": "5fda2db9a215fdc2de04b3d896743233985a8c6028a83e90609476f653668589"
+  },
+  "manifest": {
+    "schema": 1,
+    "candidate_only": true,
+    "installed": false,
+    "target": "x86-64-v3",
+    "runtime_source_commit": "3c8a3e79aa3188a1a12b3aebbaa097abccceac92",
+    "runtime_version": "49.0.2",
+    "module_sha256": "c43f48e11f302087250d1e406024956781cd2f02595a5e343b3d7ddd5ef707fa",
+    "model_sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+    "model_included": false,
+    "files": {
+      "libwasmtime.so": {
+        "size_bytes": 17465504,
+        "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+      },
+      "aot-bridge.so": {
+        "size_bytes": 36544,
+        "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+      },
+      "needle.aot": {
+        "size_bytes": 3437656,
+        "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+      }
+    },
+    "notices": {
+      "Wasmtime": {
+        "size_bytes": 12243,
+        "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5"
+      },
+      "Whistle": {
+        "size_bytes": 11358,
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      }
+    },
+    "source_build": {
+      "source_commit": "3c8a3e79aa3188a1a12b3aebbaa097abccceac92",
+      "version": "49.0.2",
+      "runtime_build": "${CARGO_DROP_IN}_IMAGE=${QUALIFIED_CONTAINER_IMAGE} ${CARGO_DROP_IN} --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
+      "source_lock_sha256": "8d101c4b678ed2a178820a60be3726fcd15de1351b3320ce7f1e59266004521b",
+      "compiler": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
+      "native_commands": [
+        [
+          "g++",
+          "-std=c++20",
+          "-O2",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-isystem",
+          "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
+          "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+          "-lwasmtime",
+          "-Wl,-rpath,$ORIGIN",
+          "-o",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
+        ],
+        [
+          "g++",
+          "-std=c++20",
+          "-O2",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-fPIC",
+          "-shared",
+          "-isystem",
+          "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
+          "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+          "-lwasmtime",
+          "-Wl,-rpath,$ORIGIN",
+          "-o",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
+        ]
+      ],
+      "files": {
+        "whistle_aot_config.hpp": {
+          "bytes": 1310,
+          "sha256": "0e07e122bc9115ffd445c5ea074461c629e0a785457c859c181a11471399d0f4"
+        },
+        "whistle_aot_factory.cpp": {
+          "bytes": 1763,
+          "sha256": "e97a9d00691abcbb8fc16ffdcc9654bc830545288663e81ed2b48cf91e788884"
+        },
+        "whistle_aot_review.cpp": {
+          "bytes": 13133,
+          "sha256": "cc9233abc521cdf39fd9a5646183f0cec9d962aa81daa967c3cc67f808352952"
+        },
+        "libwasmtime.so": {
+          "bytes": 17465504,
+          "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+        },
+        "aot-factory": {
+          "bytes": 21240,
+          "sha256": "98e0aaa690ab3fe1e3155a10e2fdba63f90e1a5e6434fc5492290e6b426a1d15"
+        },
+        "aot-bridge.so": {
+          "bytes": 36544,
+          "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+        },
+        "aot-review": {
+          "bytes": 9959512,
+          "sha256": "843068b2598d35dd1cd211aec49f777976dff2ea0a3bed148ee77e7f129cac23"
+        },
+        "aot-worker": {
+          "bytes": 9948744,
+          "sha256": "39e5a874ab5bfe9892ef93a596bdf74edaea108969020ba16d8a024bd3f84373"
+        }
+      },
+      "installed": false,
+      "signals_and_spectre_defaults": true,
+      "target": "x86-64-v3",
+      "rust_sources": {
+        "crates/agent/local-model-service/examples/whistle_aot_review.rs": "3b3017be074cede5da9bf9e4c28b9efa4e7415ad5d87faee2393becef8bc8faa",
+        "crates/agent/local-model-service/examples/whistle_aot_worker_review.rs": "9674b5e6474fbde81cd31486030cc1e4629d4cbf7becb35bd3dc7716a9dc1177",
+        "crates/agent/local-model-service/examples/whistle_v8_worker_review/bridge.rs": "706552d4f09ce97a80bfe3ac53b49ff1f68b97c85a9145e10e6251573c2ae6f6",
+        "crates/agent/local-model-service/examples/whistle_v8_worker_review/custody.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7",
+        "crates/agent/local-model-service/examples/whistle_aot_review/artifact.rs": "55fbe43cd3ef970637a83049429b9359117d59a34fed6d774366103a7b07c59c"
+      }
+    },
+    "factory": {
+      "source_build": {
+        "source_commit": "3c8a3e79aa3188a1a12b3aebbaa097abccceac92",
+        "version": "49.0.2",
+        "runtime_build": "${CARGO_DROP_IN}_IMAGE=${QUALIFIED_CONTAINER_IMAGE} ${CARGO_DROP_IN} --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
+        "source_lock_sha256": "8d101c4b678ed2a178820a60be3726fcd15de1351b3320ce7f1e59266004521b",
+        "compiler": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
+        "native_commands": [
+          [
+            "g++",
+            "-std=c++20",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-isystem",
+            "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+            "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
+            "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+            "-lwasmtime",
+            "-Wl,-rpath,$ORIGIN",
+            "-o",
+            "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
+          ],
+          [
+            "g++",
+            "-std=c++20",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-fPIC",
+            "-shared",
+            "-isystem",
+            "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+            "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
+            "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+            "-lwasmtime",
+            "-Wl,-rpath,$ORIGIN",
+            "-o",
+            "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
+          ]
+        ],
+        "files": {
+          "whistle_aot_config.hpp": {
+            "bytes": 1310,
+            "sha256": "0e07e122bc9115ffd445c5ea074461c629e0a785457c859c181a11471399d0f4"
+          },
+          "whistle_aot_factory.cpp": {
+            "bytes": 1763,
+            "sha256": "e97a9d00691abcbb8fc16ffdcc9654bc830545288663e81ed2b48cf91e788884"
+          },
+          "whistle_aot_review.cpp": {
+            "bytes": 10849,
+            "sha256": "29d811581731efa98e0494c98569c0db9da89e6fa50ae04383fa6d8a2b6b798d"
+          },
+          "libwasmtime.so": {
+            "bytes": 17465504,
+            "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+          },
+          "aot-factory": {
+            "bytes": 21240,
+            "sha256": "98e0aaa690ab3fe1e3155a10e2fdba63f90e1a5e6434fc5492290e6b426a1d15"
+          },
+          "aot-bridge.so": {
+            "bytes": 27840,
+            "sha256": "f5e9de54d46eb58c4d396cc39430cfdaff198670bc91637bd478973dec2fe5cb"
+          },
+          "aot-review": {
+            "bytes": 9948848,
+            "sha256": "0fe2e9e2eb3499dde308eb4f9d53759a90611c165109076a0027966fcc2ea9e5"
+          }
+        },
+        "installed": false,
+        "signals_and_spectre_defaults": true,
+        "target": "x86-64-v3",
+        "rust_sources": {
+          "crates/agent/local-model-service/examples/whistle_aot_review.rs": "c8433300bbfed3aa898f8442da4464796ed85512bfecf137702af2f53d2fcec6",
+          "crates/agent/local-model-service/examples/whistle_v8_worker_review/bridge.rs": "706552d4f09ce97a80bfe3ac53b49ff1f68b97c85a9145e10e6251573c2ae6f6",
+          "crates/agent/local-model-service/examples/whistle_v8_worker_review/custody.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7"
+        }
+      },
+      "artifact": {
+        "bytes": 3437656,
+        "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+      },
+      "compile": {
+        "seconds": 1.16509,
+        "bytes": 3437656,
+        "target": "x86-64-v3",
+        "signal_and_spectre_defaults": true
+      },
+      "review_only_not_catalogue_authority": true
+    },
+    "admission_required": "Existing immutable image provenance; root-owned package files; exact native pins; compatible CPU; signed model catalogue and participant licence acceptance. This candidate grants none."
+  },
+  "files": {
+    "usr/share/tilo-speech/whistle/whistle_aot_config.hpp": {
+      "bytes": 1310,
+      "sha256": "0e07e122bc9115ffd445c5ea074461c629e0a785457c859c181a11471399d0f4"
+    },
+    "usr/share/tilo-speech/whistle/whistle_aot_factory.cpp": {
+      "bytes": 1763,
+      "sha256": "e97a9d00691abcbb8fc16ffdcc9654bc830545288663e81ed2b48cf91e788884"
+    },
+    "usr/share/tilo-speech/whistle/whistle_aot_review.cpp": {
+      "bytes": 13133,
+      "sha256": "cc9233abc521cdf39fd9a5646183f0cec9d962aa81daa967c3cc67f808352952"
+    },
+    "usr/share/tilo-speech/whistle/manifest.json": {
+      "bytes": 9488,
+      "sha256": "e67009169e3796a5881cde99dbd119cc547298212e7c99de02aedadf93961119"
+    },
+    "usr/share/licenses/tilo-speech-whistle/Wasmtime.LICENSE": {
+      "bytes": 12243,
+      "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5"
+    },
+    "usr/share/licenses/tilo-speech-whistle/Whistle.LICENSE": {
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "usr/lib64/tilo-speech/whistle/x86-64-v3/libwasmtime.so": {
+      "bytes": 17465504,
+      "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+    },
+    "usr/lib64/tilo-speech/whistle/x86-64-v3/aot-bridge.so": {
+      "bytes": 36544,
+      "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+    },
+    "usr/lib64/tilo-speech/whistle/x86-64-v3/needle.aot": {
+      "bytes": 3437656,
+      "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+    }
+  },
+  "forged_native_rejected": true,
+  "forged_native_diagnostic": {
+    "bytes": 1158,
+    "sha256": "9aed9bd992da7bf707a5f54ab615b2abf6cd8c0ec30d077969db0ceb474ab6cf"
+  },
+  "raw_directory": "${BUILD_ROOT}/target/dictation-whistle-aot-package-public-20261009-403f",
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "3491acc1c232876288e611dd58c01feb50725f12",
+    "original_sha256": "7b29426ad6dbabe8a66ca99c9153063c4258d54cc64d96a87added5475b96839",
+    "original_path": "docs/architecture/dictation-whistle-aot-package.json",
+    "normalized_string_fields": [
+      "$.manifest.source_build.runtime_build",
+      "$.manifest.source_build.native_commands[0][7]",
+      "$.manifest.source_build.native_commands[0][8]",
+      "$.manifest.source_build.native_commands[0][9]",
+      "$.manifest.source_build.native_commands[0][13]",
+      "$.manifest.source_build.native_commands[1][9]",
+      "$.manifest.source_build.native_commands[1][10]",
+      "$.manifest.source_build.native_commands[1][11]",
+      "$.manifest.source_build.native_commands[1][15]",
+      "$.manifest.factory.source_build.runtime_build",
+      "$.manifest.factory.source_build.native_commands[0][7]",
+      "$.manifest.factory.source_build.native_commands[0][8]",
+      "$.manifest.factory.source_build.native_commands[0][9]",
+      "$.manifest.factory.source_build.native_commands[0][13]",
+      "$.manifest.factory.source_build.native_commands[1][9]",
+      "$.manifest.factory.source_build.native_commands[1][10]",
+      "$.manifest.factory.source_build.native_commands[1][11]",
+      "$.manifest.factory.source_build.native_commands[1][15]",
+      "$.raw_directory"
+    ]
+  }
+}

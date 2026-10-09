@@ -13,12 +13,13 @@ fallback, so there it is unobservable; `run.py --gl` boots the VM with virgl, wh
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import shlex
 import time
 
-from .. import gpu
+from .. import app_startup, core, gpu, records
 from ..core import CheckFailed, Unobservable, check
 from ..vm import wait_until
 from .apps import _close, _lifecycle
@@ -165,14 +166,16 @@ def _first_int(text: str) -> int | None:
     return next((int(w) for w in text.split() if w.isdigit()), None)
 
 
-def _marks(ctx, since_ms: int):
-    script = (f'for f in "${{XDG_DATA_HOME:-$HOME/.local/share}}"/tilo-rooms/*/{FILES}/.local/state/startup-*.json; '
+def _marks(ctx, since_ms: int, app: str = FILES, wait_s: float = MARKS_WAIT_S):
+    """The startup marks of `app`'s first launch since `since_ms`, once they hold its
+    first presented frame (or whatever they hold after `wait_s`)."""
+    script = (f'for f in "${{XDG_DATA_HOME:-$HOME/.local/share}}"/tilo-rooms/*/{app}/.local/state/startup-*.json; '
               'do [ -f "$f" ] || continue; printf "%s\\t" "$f"; tr -d "\\n" < "$f"; echo; done')
 
     def probe():
         m = parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
         return m if m and "first-frame-presented" in m["events"] else None
-    return wait_until(probe, MARKS_WAIT_S, 1.0) or parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
+    return wait_until(probe, wait_s, 1.0) or parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
 
 
 @check("A14", "apps", "Files draws its first frame within budget and lists the folder it opens on")
@@ -213,6 +216,8 @@ def files_start(ctx, res):
     else:
         first = marks["events"]["first-frame-presented"]
         res.metrics.update(process_start_to_first_frame_s=first, startup_marks=marks["events"])
+        ctx.record(f"app.startup_ms.{_short(FILES)}.first_in_session", "ms", [first * 1000],
+                   clock="process start to first presented frame (the app's startup marks)")
         if first > budget:
             problems.append(f"Files took {first} s from process start to its first frame, "
                             f"over the {budget} s budget for {applies}")
@@ -261,3 +266,119 @@ def gpu_adapters(ctx, res):
     if verdict == "unobservable":
         raise Unobservable(why)
     res.detail = why
+
+
+# -- warm opens and every launch of the run (the installed-desktop startup gate) ----
+
+WARM_APPS = ("so.tilo.file-explorer", "so.tilo.notes", "so.tilo.settings")
+WARM_LAUNCHES = 10
+OPEN_WAIT_S = 30
+EXIT_WAIT_S = 15
+_NUDGE = itertools.cycle((8, 12))
+
+
+def _short(app: str) -> str:
+    return app.rsplit(".", 1)[-1]
+
+
+def open_times(t0_ms: int, marks: dict | None) -> tuple[float, float] | None:
+    """(request to first presented frame, process start to first presented frame), in
+    ms, for a launch requested at guest time `t0_ms` whose startup marks are `marks`.
+    The request is stamped in the session just before `tilo-control` asks the
+    compositor to open the app, so the first number holds the compositor's dispatch,
+    the launcher and the sandbox setup as well as the app's own start."""
+    if not marks or "first-frame-presented" not in marks["events"]:
+        return None
+    first_ms = marks["events"]["first-frame-presented"] * 1000
+    return round(marks["origin_epoch_ms"] + first_ms - t0_ms, 1), round(first_ms, 1)
+
+
+def median(values: list[float]) -> float:
+    """The lower median, a value that was measured."""
+    return sorted(values)[(len(values) - 1) // 2]
+
+
+def _app_gone(ctx, app: str) -> bool:
+    return wait_until(lambda: not [p for p in core.processes(ctx)["procs"].values() if p["app"] == app],
+                      EXIT_WAIT_S, 1.0) is not None
+
+
+def _timed_open(ctx, app: str) -> tuple[float, float] | None:
+    """Open `app` from the slot's session as a person's request does, wait for its first
+    frame, close every window and wait until its processes are gone."""
+    out = ctx.vm.exec(f"date +%s%3N; tilo-control actions invoke applications {shlex.quote(app)} >/dev/null",
+                      timeout=60)
+    t0 = _first_int(out)
+    times = open_times(t0, _marks(ctx, t0, app, OPEN_WAIT_S)) if t0 is not None else None
+    ctx.reset()
+    # Opens through the control socket are no user activity: without a real input the
+    # session locks itself on idle a few minutes into the series, as a person's would.
+    # The pointer moves between launches, never inside a measured one.
+    ctx.vm.input("move", str(next(_NUDGE)), "300")
+    if not _app_gone(ctx, app):
+        raise CheckFailed(f"{app}'s processes were still running {EXIT_WAIT_S} s after its window closed, "
+                          "so the next open would not start it afresh")
+    return times
+
+
+@check("A15", "apps", "Warm opens of Files, Notes and Settings reach their first frame within budget")
+def warm_opens(ctx, res):
+    """Each app is opened and closed once unmeasured, so its files are in the page cache,
+    then ten times measured. The budget is the app's (acceptance/app_startup.py) on the
+    session's renderer, held by the median; every launch is recorded."""
+    software = records.renderer(ctx.facts.get("renderer"), ctx.facts.get("display")) == "lavapipe"
+    kind = "cpu" if software else "gpu"
+    launches = WARM_LAUNCHES
+    ctx.reset()
+    ctx.vm.input("move", str(next(_NUDGE)), "300")
+    problems, unobserved, summary = [], [], {}
+    for app in WARM_APPS:
+        _timed_open(ctx, app)
+        opens, starts = [], []
+        for _ in range(launches):
+            times = _timed_open(ctx, app)
+            if times is not None:
+                opens.append(times[0])
+                starts.append(times[1])
+        short = _short(app)
+        ctx.record(f"app.open.warm_ms.{short}", "ms", opens, app=app,
+                   what="open request to the app's first presented frame, launcher and sandbox included",
+                   clock="guest wall clock; the request is stamped in the session before tilo-control")
+        ctx.record(f"app.startup_ms.{short}", "ms", starts, app=app,
+                   what="process start to the app's first presented frame")
+        budget = app_startup.budget_ms(app, kind)
+        summary[app] = {"open_ms": opens, "startup_ms": starts, "budget_ms": budget}
+        if len(opens) < launches:
+            unobserved.append(f"{app}: {launches - len(opens)} of {launches} opens wrote no first-frame "
+                              f"startup mark within {OPEN_WAIT_S} s")
+        if opens and median(opens) > budget:
+            problems.append(f"{app} took {median(opens)} ms (median of {len(opens)}) from the open request "
+                            f"to its first frame, over its {budget} ms budget on {kind} rendering "
+                            f"(process start to first frame: median {median(starts)} ms)")
+    res.metrics.update(warm_opens=summary, renderer=ctx.facts.get("renderer"))
+    ctx.write("A15-warm-opens.json", json.dumps(summary, indent=1))
+    if problems:
+        raise CheckFailed("; ".join(problems + unobserved))
+    if unobserved:
+        raise Unobservable("; ".join(unobserved))
+
+
+@check("A16", "apps", "Every Tilo app the run launched drew its first frame within its budget")
+def every_launch(ctx, res):
+    """The installed-desktop gate's judgement (app_startup_check.py) over this session:
+    each `APP-STARTUP` line against its app's budget on the renderer its window used,
+    History opens within 1 s, and Notes among the launches."""
+    log = ctx.vm.exec(app_startup.PROBE, timeout=90, check=False)
+    startups = app_startup.parse_startups(log)
+    opens = app_startup.parse_history_opens(log)
+    ctx.write("A16-app-startup.txt", "\n".join(app_startup.table(startups) + [s["line"] for s in startups]))
+    apps = sorted({s["app"] for s in startups})
+    res.metrics.update(launches=len(startups), apps=apps, history_opens=opens)
+    if not startups:
+        raise Unobservable("no app logged an APP-STARTUP line in the session's logs")
+    problems = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
+    if "so.tilo.notes" not in apps:
+        problems.append("so.tilo.notes logged no APP-STARTUP line")
+    if problems:
+        raise CheckFailed("; ".join(problems))
+    res.detail = f"{len(startups)} launches of {len(apps)} apps within budget"

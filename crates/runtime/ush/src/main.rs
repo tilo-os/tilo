@@ -152,6 +152,19 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
                 opts.host_root = PathBuf::from(value()?);
                 i = i.saturating_add(2);
             }
+            "--editor-fd" => {
+                use std::os::fd::{FromRawFd, OwnedFd};
+                let fd: i32 = value()?.parse()?;
+                // SAFETY: fcntl only probes the supplied integer; ownership begins below.
+                if fd < 3 || opts.editor.is_some() || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0
+                {
+                    anyhow::bail!("invalid inherited editor descriptor");
+                }
+                // SAFETY: this explicit startup argument transfers one inherited FD.
+                let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+                opts.editor = Some(Arc::new(runtime_portal::editor::Socket::adopt(fd)?));
+                i = i.saturating_add(2);
+            }
             "--" => {
                 // A program, as the supervisor passes one for a served session.
                 opts.command = args.get(i.saturating_add(1)..).unwrap_or(&[]).to_vec();

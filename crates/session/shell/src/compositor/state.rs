@@ -824,6 +824,7 @@ pub struct State {
     /// Every text input's declared content type, for telling a secret
     /// field from an ordinary one.
     pub(crate) text_fields: crate::compositor::text_commit::TextFields,
+    pub(crate) private_text_input: crate::compositor::private_text_input::PrivateTextInput,
     /// Text the shell is committing into the focused field.
     pub(crate) text_commit: crate::compositor::text_commit::TextCommit,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
@@ -1286,6 +1287,7 @@ impl State {
         // dedicated socket acceptor, and only the kind that currently owns
         // the seat (see `compositor::input_method`) sees them at all.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
+        crate::compositor::private_text_input::PrivateTextInput::register(&display_handle);
         let seat_input_method = crate::compositor::input_method::SeatInputMethod::default();
         let input_method_manager_state =
             InputMethodManagerState::new::<Self, _>(&display_handle, {
@@ -1420,6 +1422,7 @@ impl State {
             seat_input_method,
             trusted_input_method_clients: Vec::new(),
             text_fields: crate::compositor::text_commit::TextFields::default(),
+            private_text_input: crate::compositor::private_text_input::PrivateTextInput::default(),
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
             osk_commits: 0,
@@ -2870,11 +2873,12 @@ impl State {
                         ForeignCommitCapture::Dmabuf(token) => {
                             store().capture_commit_associated(surface_id, buffer, Some(token))
                         }
-                        ForeignCommitCapture::Shm(_) => {
-                            // SHM conversion is asynchronous, but this applied
-                            // non-null commit already maps the surface for input.
-                            store().note_buffer_committed(surface_id);
-                            CaptureOutcome::Queued
+                        ForeignCommitCapture::Shm(generation) => {
+                            if store().note_shm_committed(surface_id, generation) {
+                                CaptureOutcome::Queued
+                            } else {
+                                CaptureOutcome::Failed("SHM commit generation is not queued".into())
+                            }
                         }
                         ForeignCommitCapture::NoBuffer
                         | ForeignCommitCapture::Failed

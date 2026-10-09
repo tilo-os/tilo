@@ -2087,6 +2087,19 @@ impl ForeignFrameStore {
         self.prepare_shm_capture_with_damage(id, frame, None)
     }
 
+    /// A validated SHM buffer commit maps the protocol surface immediately.
+    /// Pixel conversion may finish later; it must not decide input eligibility.
+    #[cfg(target_os = "linux")]
+    pub fn note_shm_committed(&self, id: SurfaceId, generation: u64) -> bool {
+        self.with_entry(id, |entry| {
+            if generation == 0 || generation > entry.shm_queued {
+                return false;
+            }
+            entry.mapped = true;
+            true
+        })
+    }
+
     #[cfg(target_os = "linux")]
     pub fn prepare_shm_capture_with_damage(
         &self,
@@ -2337,7 +2350,8 @@ impl ForeignFrameStore {
         generation: u64,
     ) {
         self.with_entry(id, |entry| {
-            entry.mapped = true;
+            // Protocol commit/unmap owns mapping. A late worker completion
+            // cannot map a pending buffer early or remap a detached surface.
             entry.hdr = None;
             entry.set_gpu(None);
             entry.rgba.clear();
@@ -2565,12 +2579,6 @@ impl ForeignFrameStore {
             seq = seq.wrapping_add(guard.get(&child.surface).map_or(0, |entry| entry.seq));
         }
         seq
-    }
-
-    /// Record a non-null buffer at the applied Wayland commit, independently
-    /// of asynchronous pixel capture and the visual presentation gate.
-    pub(crate) fn note_buffer_committed(&self, id: SurfaceId) {
-        self.with_entry(id, |entry| entry.mapped = true);
     }
 
     /// Whether `id` has committed a non-null buffer and is therefore eligible
@@ -5444,6 +5452,52 @@ mod tests {
         }
         assert_ne!(store().frame_seq(id), 0, "reported only once published");
         assert!(!take_published_shm_frames(), "reported once");
+        store().forget(id);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shm_readback_cannot_map_a_pending_or_detached_surface() {
+        let id = sid(73);
+        store().forget(id);
+        let first = store()
+            .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+            .expect("queue the first SHM readback");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store().frame_seq(id) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the actual SHM worker must publish"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!store().is_mapped(id), "readback is not a protocol commit");
+        assert!(!store().note_shm_committed(id, first + 1));
+        assert!(!store().is_mapped(id), "a generation not queued cannot map");
+        assert!(store().note_shm_committed(id, first));
+        assert!(store().is_mapped(id));
+        store().clear_frame(id);
+        let sequence = store().frame_seq(id);
+        let second = store()
+            .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![255, 0, 0, 255], 1, 1))
+            .expect("queue readback while the surface is detached");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store().frame_seq(id) == sequence {
+            assert!(
+                Instant::now() < deadline,
+                "the second actual SHM readback must publish"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !store().is_mapped(id),
+            "worker completion cannot remap a detached surface"
+        );
+        assert!(store().note_shm_committed(id, second));
+        assert!(
+            store().is_mapped(id),
+            "only the new buffer commit remaps it"
+        );
         store().forget(id);
     }
 

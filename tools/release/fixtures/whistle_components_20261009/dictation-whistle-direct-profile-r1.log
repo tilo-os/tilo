@@ -1,0 +1,13 @@
+{"complete": true, "exit": 0, "elapsed_seconds": 12.72664094400534}
+CPU_AFFINITY [0, 1]
+OUTER_PRIVATE_CAPABILITIES CapEff:	00000000800405fb
+PRIVATE_IMAGE_USER_MAP          0          0          1
+     65534      65534          1
+
+DIRECT_PROFILE {"case": "de_de-0", "language": "auto", "ready_seconds": 1.7292078099999344, "final_seconds": 3.856407362007303, "audio_bytes": 574080, "reply": {"kind": "done", "sequence": 11, "text": "F\u00fcr die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegen\u00fcberle in den Ufer von Corlum Faren."}, "worker_sampled_status_peak_bytes": {"VmHWM": 158609408, "VmRSS": 144486400, "RssAnon": 132980736, "RssFile": 11784192, "RssShmem": 0}, "sampling_errors": [], "model_runtime_same_process": true}
+DIRECT_PROFILE {"case": "de_de-0", "language": "de", "ready_seconds": 1.6627337460085982, "final_seconds": 3.5986369390011532, "audio_bytes": 574080, "reply": {"kind": "done", "sequence": 11, "text": "F\u00fcr die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegen\u00fcberle in den Ufer von Corlum Faren."}, "worker_sampled_status_peak_bytes": {"VmHWM": 157941760, "VmRSS": 121004032, "RssAnon": 109568000, "RssFile": 11501568, "RssShmem": 0}, "sampling_errors": [], "model_runtime_same_process": true}
+DIRECT_PROFILE_COMPLETE
+OUTER_JOURNEY {"exit": 0, "elapsed_seconds": 11.172, "model_sha256": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb", "audio_sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630", "ephemeral": true}
+PASS ephemeral model witness removed; no installed store/catalogue changed
+PASS private mapped-image namespace keeper reaped
+

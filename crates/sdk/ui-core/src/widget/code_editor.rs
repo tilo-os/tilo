@@ -738,13 +738,19 @@ impl Widget for CodeEditor {
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(winit::window::ImePurpose::Terminal)
+        if self.read_only || !self.inner.is_focused() {
+            return None;
+        }
+        // Source text uses the shared input contract; no bytes go to a process.
+        self.inner.ime_purpose()
+    }
+
+    fn ime_multiline(&self) -> bool {
+        self.ime_purpose().is_some() && self.inner.ime_multiline()
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        if self.read_only {
-            return None;
-        }
+        self.ime_purpose()?;
         self.inner.ime_edit_fingerprint(key)
     }
 
@@ -1612,6 +1618,40 @@ mod tests {
 #[cfg(test)]
 mod document_tests {
     use super::*;
+    #[test]
+    fn dictation_target_is_editable_source_and_refuses_read_only_or_blurred_input() {
+        let mut editor = CodeEditor::local();
+        editor.set_text("replace me");
+        editor.set_focused(true);
+        editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        assert_eq!(
+            Widget::ime_purpose(&editor),
+            Some(winit::window::ImePurpose::Normal)
+        );
+        let key = [19; 32];
+        let stamp = Widget::ime_edit_fingerprint(&editor, &key).unwrap();
+        editor.select_all();
+        assert_ne!(Widget::ime_edit_fingerprint(&editor, &key), Some(stamp));
+        send(
+            &mut editor,
+            &WindowEvent::Ime(winit::event::Ime::Commit("日本語 café".into())),
+        );
+        assert_eq!(editor.value(), "日本語 café");
+        editor.set_read_only(true);
+        assert!(Widget::ime_purpose(&editor).is_none());
+        assert!(Widget::ime_edit_fingerprint(&editor, &key).is_none());
+        send(
+            &mut editor,
+            &WindowEvent::Ime(winit::event::Ime::Commit("refused".into())),
+        );
+        assert_eq!(editor.value(), "日本語 café");
+        editor.set_read_only(false);
+        assert!(Widget::ime_edit_fingerprint(&editor, &key).is_some());
+        editor.set_focused(false);
+        assert!(Widget::ime_purpose(&editor).is_none());
+        assert!(Widget::ime_edit_fingerprint(&editor, &key).is_none());
+    }
+
     use winit::event::ElementState;
     use winit::keyboard::{Key, NamedKey};
 
