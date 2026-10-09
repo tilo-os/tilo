@@ -11,7 +11,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use ui::tilo_actions::ActionAddress;
 use ui::tilo_resource::SearchEntry;
 
 use crate::StoreItem;
@@ -117,7 +116,7 @@ impl StoreDirectory {
 /// `item` as a search hit opening its details.
 fn app_entry(item: &StoreItem) -> SearchEntry {
     SearchEntry::new(item.name.clone(), searchable_text(item))
-        .invoking(ActionAddress::new(resource_id(item), "show-details"))
+        .anchored(resource_id(item))
         .grouped("Apps")
         .subtitled(format!(
             "Version {2} from {0}. Trust: {1}.",
@@ -130,6 +129,23 @@ fn app_entry(item: &StoreItem) -> SearchEntry {
 
 fn resource_id(item: &StoreItem) -> String {
     format!("app:{}", item.id)
+}
+
+/// What showing the search anchor `anchor` is: the details of the app it
+/// names.
+///
+/// # Errors
+/// Refuses an anchor that names no app.
+pub(crate) fn opened(
+    anchor: &str,
+) -> Result<crate::resource::StoreEffect, ui::tilo_resource::Refusal> {
+    anchor
+        .strip_prefix("app:")
+        .filter(|app| !app.is_empty())
+        .map(|app| crate::resource::StoreEffect::ShowDetails {
+            app: app.to_owned(),
+        })
+        .ok_or_else(|| ui::tilo_resource::Refusal::new(format!("`{anchor}` is no app")))
 }
 
 fn searchable_text(item: &StoreItem) -> String {
@@ -212,9 +228,11 @@ mod tests {
             assert!(first.next.is_some());
             let hit = &first.results[0];
             assert_eq!(hit.kind, "Apps");
-            let address = hit.action_address().unwrap();
-            assert_eq!(address.action, "show-details");
-            let app = address.resource.strip_prefix("app:").unwrap();
+            let anchor = hit.anchor();
+            let crate::resource::StoreEffect::ShowDetails { app } = opened(&anchor).unwrap() else {
+                panic!("a hit opens details");
+            };
+            let app = app.as_str();
             assert!(
                 directory.app(app).is_some(),
                 "the hit resolves in the directory"
@@ -226,9 +244,9 @@ mod tests {
             let directory = StoreDirectory::default();
             directory.sync(&[item(7)]);
             let hit = source(&directory).search_limited("app 7", 1).pop().unwrap();
-            let address = hit.action_address().unwrap();
+            let anchor = hit.anchor();
             directory.sync(&[]);
-            let app = address.resource.strip_prefix("app:").unwrap();
+            let app = anchor.strip_prefix("app:").unwrap();
             assert!(directory.app(app).is_none());
             assert!(source(&directory).search_limited("app 7", 1).is_empty());
         }
@@ -249,9 +267,13 @@ mod tests {
             .search_limited("tools repository", 1)
             .pop()
             .expect("the configured repository's application is discoverable");
-        let address = hit.action_address().unwrap();
-        assert_eq!(address.resource, "app:dev.example.app7");
-        assert_eq!(address.action, "show-details");
+        assert_eq!(hit.anchor(), "app:dev.example.app7");
+        assert_eq!(
+            opened(&hit.anchor()).unwrap(),
+            crate::resource::StoreEffect::ShowDetails {
+                app: "dev.example.app7".into()
+            }
+        );
         assert!(directory.app("dev.example.app7").is_some());
     }
 
@@ -271,10 +293,7 @@ mod tests {
             .search_limited("a1b2c3d4e5f6", 1)
             .pop()
             .unwrap();
-        assert_eq!(
-            hit.action_address().unwrap().resource,
-            "app:dev.example.app7"
-        );
+        assert_eq!(hit.anchor(), "app:dev.example.app7");
     }
 
     /// Malformed rebuilds withdraw and older stages never publish after newer ones.

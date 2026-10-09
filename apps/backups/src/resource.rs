@@ -73,6 +73,14 @@ impl ResourceApp for BackupsShell {
     const ICON: Option<&'static str> = Some("backups");
 
     fn view(cx: &mut ViewCx<Backups>) -> Element {
+        // A search hit, or an agent's `open`, shows the snapshot it names.
+        let dispatcher = cx.dispatcher();
+        cx.on_open(
+            move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
+                dispatcher.effect(&opened(anchor)?);
+                Ok(())
+            },
+        );
         cx.surface(BackupsApp::new())
     }
 
@@ -148,4 +156,18 @@ impl ResourceSurface<Backups, BackupsEffect> for BackupsApp {
     fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         crate::search::snapshot_entries(self.resource_catalog())
     }
+}
+
+/// What showing the search anchor `anchor` is: the snapshot it names.
+///
+/// # Errors
+/// Refuses an anchor that names no snapshot.
+pub(crate) fn opened(anchor: &str) -> Result<BackupsEffect, ui::tilo_resource::Refusal> {
+    anchor
+        .strip_prefix("backups.snapshot:")
+        .filter(|id| !id.is_empty())
+        .map(|id| BackupsEffect::ShowSnapshot {
+            snapshot_id: id.to_owned(),
+        })
+        .ok_or_else(|| ui::tilo_resource::Refusal::new(format!("`{anchor}` is no backup snapshot")))
 }

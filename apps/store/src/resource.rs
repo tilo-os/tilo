@@ -411,6 +411,14 @@ impl ResourceApp for StoreShell {
     }
 
     fn view(cx: &mut ViewCx<Reports>) -> Element {
+        // A search hit, or an agent's `open`, shows the app it names.
+        let dispatcher = cx.dispatcher();
+        cx.on_open(
+            move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
+                dispatcher.effect(&crate::search::opened(anchor)?);
+                Ok(())
+            },
+        );
         cx.surface(StoreApp::new())
     }
 

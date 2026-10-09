@@ -113,6 +113,18 @@ impl ResourceApp for MapsShell {
             ),
             RunMode::Past => MapsApp::past(),
         };
+        // A search hit, or an agent's `open`, opens the place, point of
+        // interest or recent search it names.
+        let dispatcher = cx.dispatcher();
+        cx.on_open(
+            move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
+                let effect = crate::place_search::PlaceHit::opened(anchor).ok_or_else(|| {
+                    ui::tilo_resource::Refusal::new(format!("`{anchor}` is nothing on the map"))
+                })?;
+                dispatcher.effect(&effect);
+                Ok(())
+            },
+        );
         cx.surface(app)
     }
 }

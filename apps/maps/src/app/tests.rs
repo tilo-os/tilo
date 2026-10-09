@@ -900,25 +900,21 @@ fn platform_search_opens_finds_and_activates_places() {
                 .any(|scope| scope.label == "Saved places")
         );
 
-        // A hit invokes the published effect that opens the place exactly
-        // as a click in the panel.
-        let address = coffee
+        // A hit opens the place exactly as a click in the panel: the
+        // window's opener runs the effect for its anchor.
+        let anchor = coffee
             .results
             .iter()
             .find(|hit| hit.title == "Café Glück")
             .expect("café hit")
-            .action_address()
-            .expect("a hit invokes a published action");
-        let row = provider
-            .resolve_action_resource(&address)
-            .expect("the hit's row resolves");
-        assert_eq!(row.id.as_str(), "maps.place:cafe-glueck");
-        assert!(row.actions.iter().any(|action| action.id == address.action));
+            .action_id
+            .clone();
+        assert_eq!(anchor, "maps.place:cafe-glueck");
         assert_eq!(
-            crate::place_search::PlaceHit::Place("cafe-glueck".into()).effect(),
-            crate::resource::MapsEffect::OpenPlace {
+            crate::place_search::PlaceHit::opened(&anchor),
+            Some(crate::resource::MapsEffect::OpenPlace {
                 place: "cafe-glueck".into()
-            }
+            })
         );
         a.open_place("cafe-glueck").expect("the café opens");
         assert_eq!(a.model.selected.as_deref(), Some("cafe-glueck"));
