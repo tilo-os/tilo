@@ -60,9 +60,44 @@ def lines(records):
             for prefix, row in records]
 
 
-def report(records, mode='hover'):
+def report(records, mode='hover', settings_target=None):
     return summarize_palette_latency(lines(records), mode=mode, process_id=42,
-        observer_session=SESSION, expected_query_hash=QUERY, target_provider=PROVIDER, target_action=ACTION)
+        observer_session=SESSION, expected_query_hash=QUERY, target_provider=PROVIDER, target_action=ACTION,
+        settings_target=settings_target)
+
+
+SETTINGS_SESSION = 'abcdef12-1234-4567-8234-123456789abc'
+INVOCATION = '12345678-1234-4567-8234-123456789abc'
+
+
+def click_fixture():
+    records = fixture()
+    records.pop(1)  # Closing palette is not a native app/Wayland draw witness.
+    event = records[0][1]
+    event.update(kind='physical_pointer_button', before=state(hovered_entry_id='bluetooth'),
+                 after=state(visible=False, mounted=False, rows=[], selected_entry_id=None))
+    event['before']['rows'][0]['hovered'] = True
+    def navigation(pane):
+        nav = dict(selected_pane=pane, requested_pane=pane, path='settings://' + pane,
+                   ready=True, pending=False, content_visible=True)
+        return dict(app='so.tilo.settings', navigation=nav, rendered_navigation=nav.copy())
+    owner = dict(process_id=2, observer_session=SETTINGS_SESSION)
+    records.extend([
+        ('tilo-action-submission ', dict(invocation=INVOCATION, application='so.tilo.settings',
+            process_id=42, source='physical_pointer_button', clock_id=1, input_time_ns=1000000,
+            activation_dispatch_ns=2000000, submission_time_ns=2500000,
+            palette_input_id=1, palette_observer_session=SESSION,
+            palette_target_provider=PROVIDER, palette_target_action=ACTION)),
+        ('tilo-broker-input ', dict(owner, invocation=INVOCATION, clock='clock_monotonic_seconds',
+            handler_returned_ok=True, handler_dispatch_lo_s=.0031, handler_dispatch_hi_s=.0032,
+            handler_return_lo_s=.0034, handler_return_hi_s=.0035,
+            before=navigation('network'), after=navigation('bluetooth'))),
+        ('tilo-broker-frame ', dict(owner, invocations=[INVOCATION], cpu_frame_id=17,
+            state=navigation('bluetooth'))),
+        ('tilo-display-frame ', dict(owner, backend='wayland', cpu_frame_id=17,
+            clock_id=1, discarded=False, flags=7, presented_time_ns=6000000, sequence=5)),
+    ])
+    return records
 
 
 class PaletteLatency(unittest.TestCase):
@@ -214,6 +249,44 @@ class PaletteLatency(unittest.TestCase):
                          activation_dispatch_ns=2000000, source='semantic')
         with self.assertRaisesRegex(ValueError, 'original physical button'):
             report(records + [('tilo-action-submission ', submitted)], 'click')
+
+    def test_complete_physical_click_reaches_actual_settings_draw_and_kms(self):
+        result = report(click_fixture(), 'click', ('bluetooth', 2, SETTINGS_SESSION))
+        self.assertEqual(result['latency']['p50_ms'], 5)
+        self.assertEqual(result['stages']['dispatch_end_to_settings_kms_ns']['p50_ms'], 3)
+        sample = result['frames'][0]
+        self.assertEqual(sample['invocation'], INVOCATION)
+        self.assertEqual(sample['activation']['pane'], 'bluetooth')
+        self.assertEqual(sample['activation']['cpu_frame_id'], 17)
+        self.assertTrue(sample['activation']['physical_activation_available'])
+        self.assertEqual(sample['activation']['physical_activation_to_kms_ms'], 5)
+        self.assertEqual(sample['compositor']['physical_outcome'], (6000000, 5))
+        self.assertEqual(result['compositor_gpu']['recording_ns']['p50_ms'], 2)
+
+    def test_click_exact_target_origin_worker_draw_and_kms_cannot_be_substituted(self):
+        submission_index = 4
+        for key, value in (
+                ('palette_target_provider', 'foreign'), ('palette_target_action', 'other-pane'),
+                ('palette_input_id', 2), ('palette_input_id', True), ('palette_observer_session', SETTINGS_SESSION),
+                ('input_time_ns', 1000001), ('activation_dispatch_ns', 2000001),
+                ('process_id', 43), ('source', 'physical_key'), ('source', 'controlled_input')):
+            records = click_fixture()
+            records[submission_index][1][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                report(records, 'click', ('bluetooth', 2, SETTINGS_SESSION))
+        for index, key, value in ((5, 'process_id', 3), (6, 'invocations', [INVOCATION, SESSION]),
+                                  (7, 'discarded', True), (7, 'sequence', 6), (7, 'flags', 3)):
+            records = click_fixture()
+            records[index][1][key] = value
+            with self.subTest(index=index, key=key), self.assertRaises(ValueError):
+                report(records, 'click', ('bluetooth', 2, SETTINGS_SESSION))
+        for index in range(4, 8):
+            records = click_fixture()
+            del records[index]
+            with self.subTest(missing=index), self.assertRaises(ValueError):
+                report(records, 'click', ('bluetooth', 2, SETTINGS_SESSION))
+        with self.assertRaises(ValueError):
+            report(click_fixture(), 'click', ('network', 2, SETTINGS_SESSION))
 
     def test_cli_exclusive_private_output_and_failure_does_not_write(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -192,6 +192,27 @@ class ActivationTests(unittest.TestCase):
         rows=self.fixture();rows[0][1].update(source='physical_key',input_time_ns=90_000_000)
         self.assertEqual(self.report(rows)['physical_activation_to_kms_ms'],30)
 
+    def test_physical_button_preserves_original_origin_and_same_draw_proof(self):
+        rows = self.fixture()
+        rows[0][1].update(source='physical_pointer_button', input_time_ns=90_000_000)
+        result = self.report(rows)
+        self.assertTrue(result['physical_activation_available'])
+        self.assertEqual(result['source'], 'physical_pointer_button')
+        self.assertEqual(result['physical_activation_to_kms_ms'], 30)
+        self.assertEqual(result['cpu_frame_id'], 17)
+        for key, value in (('input_time_ns', None), ('input_time_ns', 0),
+                           ('input_time_ns', True), ('input_time_ns', 100_000_001),
+                           ('activation_dispatch_ns', None), ('activation_dispatch_ns', 101_000_001),
+                           ('clock_id', True), ('clock_id', 0)):
+            changed = copy.deepcopy(rows)
+            changed[0][1][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                self.report(changed)
+        changed = copy.deepcopy(rows)
+        changed[0][1]['source'] = 'controlled_input'
+        with self.assertRaises(ValueError):
+            self.report(changed)
+
     def test_all_exact_links_and_positive_feedback_are_required(self):
         for index in range(4):
             rows=self.fixture();del rows[index]

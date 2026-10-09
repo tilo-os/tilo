@@ -275,7 +275,8 @@ def summarize_settings_activation(lines, invocation, pane, process_id, observer_
     owner = (process_id, observer_session)
     def owned(row):
         return (row.get('process_id'), row.get('observer_session')) == owner
-    if (submitted.get('application') != 'so.tilo.settings' or submitted.get('clock_id') != 1
+    if (submitted.get('application') != 'so.tilo.settings'
+            or type(submitted.get('clock_id')) is not int or submitted.get('clock_id') != 1
             or not owned(event) or event.get('handler_returned_ok') is not True
             or event.get('clock') != 'clock_monotonic_seconds'):
         raise ValueError('Settings invocation was not handled by the exact worker')
@@ -347,11 +348,12 @@ def summarize_settings_activation(lines, invocation, pane, process_id, observer_
     if end < times[-1] * 1e9:
         raise ValueError('KMS outcome precedes handler completion')
     source, original = submitted.get('source'), submitted.get('input_time_ns')
-    physical = source == 'physical_key'
+    physical = source in ('physical_key', 'physical_pointer_button')
     dispatch = submitted.get('activation_dispatch_ns')
     if physical:
         if (type(original) is not int or type(dispatch) is not int
-                or not 0 <= original <= dispatch <= start):
+                or not 0 <= original <= dispatch <= start
+                or (source == 'physical_pointer_button' and original == 0)):
             raise ValueError('Missing trusted original physical activation time')
     elif source not in ('semantic', 'controlled_input', 'native_unstamped') or original is not None:
         raise ValueError('Unsupported or forged physical activation origin')

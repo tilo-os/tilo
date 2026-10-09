@@ -199,13 +199,17 @@ def summarize_palette_latency(lines, *, mode, process_id, observer_session,
         if mode == 'click':
             row = target_row(before, target_provider, target_action)
             if (not before['visible'] or not before['mounted'] or not before['query_current']
-                    or before['query_hash'] != expected_query_hash or not row['hovered']):
+                    or before['query_hash'] != expected_query_hash
+                    or before['published_revision_hash'] is None or not row['hovered']):
                 raise ValueError('Click did not target the actual published hovered result')
             submission = [r for r in json_rows(lines, PREFIXES[2])
                           if r.get('palette_input_id') == input_id
                           and r.get('palette_observer_session') == observer_session]
-            if (len(submission) != 1 or submission[0].get('source') != 'physical_pointer_button'
+            if (len(submission) != 1 or type(submission[0].get('palette_input_id')) is not int
+                    or submission[0].get('source') != 'physical_pointer_button'
                     or submission[0].get('process_id') != producer
+                    or submission[0].get('palette_target_provider') != target_provider
+                    or submission[0].get('palette_target_action') != target_action
                     or submission[0].get('input_time_ns') != start
                     or submission[0].get('activation_dispatch_ns') != dispatch):
                 raise ValueError('Missing original physical button/broker invocation join')
