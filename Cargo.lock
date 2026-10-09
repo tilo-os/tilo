@@ -18450,6 +18450,7 @@ name = "tilo-vmd"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "blake3",
  "chrono",
  "clap",
  "console-control",
@@ -18469,6 +18470,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-app-package",
  "tilo-clock",
+ "tilo-control",
  "tilo-files",
  "tilo-identity-host",
  "tilo-test-env",

@@ -34,12 +34,29 @@ impl ControlClient {
     /// Refuses oversized/multiline requests, oversized/truncated/invalid replies,
     /// or a socket that does not complete within the deadline.
     pub fn exchange(&mut self, request: &str) -> io::Result<serde_json::Value> {
+        let deadline = Instant::now()
+            .checked_add(self.timeout)
+            .ok_or_else(|| invalid("control deadline overflow"))?;
+        self.exchange_before(request, deadline)
+    }
+
+    /// Exchange using a caller's whole-operation deadline as well as the
+    /// ordinary per-round-trip limit. This keeps multi-call semantic actions
+    /// bounded without extending the CLI's existing timeout.
+    /// # Errors
+    /// Returns the same framing, transport and timeout failures as exchange.
+    pub fn exchange_before(
+        &mut self,
+        request: &str,
+        deadline: Instant,
+    ) -> io::Result<serde_json::Value> {
         if request.len() > MAX_REQUEST_BYTES || request.contains(['\n', '\r']) {
             return Err(invalid("control request exceeds its line bound"));
         }
         let deadline = Instant::now()
             .checked_add(self.timeout)
-            .ok_or_else(|| invalid("control deadline overflow"))?;
+            .ok_or_else(|| invalid("control deadline overflow"))?
+            .min(deadline);
         let mut line = request.as_bytes().to_vec();
         line.push(b'\n');
         while !line.is_empty() {
@@ -288,9 +305,9 @@ mod tests {
             }
         });
         let mut client = ControlClient::connect(&path).unwrap();
-        client.timeout = Duration::from_millis(20);
         let start = Instant::now();
-        let error = client.exchange("{}").unwrap_err();
+        let deadline = start.checked_add(Duration::from_millis(20)).unwrap();
+        let error = client.exchange_before("{}", deadline).unwrap_err();
         assert!(matches!(
             error.kind(),
             io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock

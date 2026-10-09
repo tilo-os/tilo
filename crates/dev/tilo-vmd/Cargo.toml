@@ -23,6 +23,8 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 base64.workspace = true
+blake3.workspace = true
+tilo-control = { path = "../../session/control-cli" }
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
 hex.workspace = true
