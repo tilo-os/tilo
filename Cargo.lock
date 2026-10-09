@@ -1533,6 +1533,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-history",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",

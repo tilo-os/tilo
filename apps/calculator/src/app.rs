@@ -27,15 +27,16 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{ControlSize, SegmentedFace, SegmentedStyle, ToggleGroup};
 
-use crate::actions::{self, CalculatorAction, GraphKind};
+use crate::actions::{self, GraphKind};
 use crate::chrome::Header;
 use crate::engine;
 use crate::graph2d::{Graph2dScreen, Pointer};
 use crate::graph3d::Graph3dScreen;
 use crate::keypad::{CalcScreen, MEM_KEYS};
 use crate::model::{self, CalcModel, Mode, PlotFn};
-use crate::resource::{Calculator, CalculatorState};
+use crate::resource::Calculator;
 use ui::chrome::HeaderRowMetrics;
+use ui::tilo_resource::Id;
 
 /// The labels of the angle-unit strip, and the condensed forms for a narrow
 /// header.
@@ -125,14 +126,14 @@ pub struct CalculatorApp {
     pending_effect: Option<actions::CalculatorEffect>,
     node: Option<NodeId>,
 
-    /// The resource's door: every on-screen affordance submits its
-    /// [`CalculatorAction`] here. `None` until the framework attaches the
-    /// surface, and for a bare widget in a layout test.
+    /// The resource's door: every on-screen affordance submits its field
+    /// edit or verb here. `None` until the framework attaches the surface,
+    /// and for a bare widget in a layout test.
     dispatch: Option<Dispatcher<Calculator>>,
     /// The durable rows last presented, with their stable ids.
-    rows: Rc<CalculatorState>,
+    rows: Rc<Calculator>,
     /// A graph row this window just added, to select once it is presented.
-    select: Option<(GraphKind, String)>,
+    select: Option<(GraphKind, Id)>,
 }
 
 impl CalculatorApp {
@@ -190,13 +191,13 @@ impl CalculatorApp {
     }
 
     /// Adopt durable history and graph rows from the framework resource state.
-    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<CalculatorState>) {
-        self.model.history = state.history.iter().map(|(_, e)| e.clone()).collect();
-        self.model.funcs = state.funcs.iter().map(|(_, f)| f.clone()).collect();
-        self.model.surfaces = state.surfaces.iter().map(|(_, f)| f.clone()).collect();
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<Calculator>) {
+        self.model.history = state.history.values().cloned().collect();
+        self.model.funcs = state.funcs.values().cloned().collect();
+        self.model.surfaces = state.surfaces.values().cloned().collect();
         self.rows = Rc::clone(state);
         if let Some((kind, id)) = self.select.take() {
-            match state.graphs(kind).iter().position(|(row, _)| *row == id) {
+            match state.graphs(kind).position(&id) {
                 Some(index) => match kind {
                     GraphKind::Curve2d => self.model.active_fn = index,
                     GraphKind::Surface3d => self.model.active_surface = index,
@@ -408,7 +409,7 @@ impl CalculatorApp {
         changed
     }
 
-    /// Submit one [`CalculatorAction`] through the resource's door — the one
+    /// Submit one field edit or verb through the resource's door — the one
     /// way this window changes the document, shared with the palette, agents
     /// and scripts. It applies now, inside the event, so a formula's next
     /// keystroke builds on this one; the rows it changed are presented back
@@ -418,11 +419,15 @@ impl CalculatorApp {
     /// Only ever call this for an action that genuinely mutates the document —
     /// the affordances gate on a real change (a non-empty history to clear, an
     /// existing row to toggle/delete).
-    fn submit(&self, doc: &mut ui::widget::Edits<'_>, action: &CalculatorAction) {
+    fn submit(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        submit: impl ui::framework::Submit<Calculator>,
+    ) {
         if let Some(dispatch) = &self.dispatch {
             // A refusal (a participant who may only view) writes nothing, and
             // the stored rows are presented again.
-            let _ = dispatch.apply_now(doc, action);
+            let _ = dispatch.submit_now(doc, submit);
         }
     }
 
@@ -438,14 +443,15 @@ impl CalculatorApp {
     /// its `AddGraph`.
     fn add_graph(&mut self, kind: GraphKind, expr: &str, doc: &mut ui::widget::Edits<'_>) {
         self.settle_edit();
-        let action = actions::add_graph_action(kind, expr);
-        if let CalculatorAction::AddGraph { id, .. } = &action {
-            self.select = Some((kind, id.clone()));
-        }
+        let id = actions::new_row_id(kind);
+        self.select = Some((kind, id.clone()));
         let row = PlotFn {
             expr: expr.to_owned(),
             visible: true,
         };
+        let added = kind
+            .rows()
+            .insert_as(&id, self.rows.graphs(kind).len(), &row);
         match kind {
             GraphKind::Curve2d => {
                 self.model.funcs.push(row);
@@ -456,7 +462,7 @@ impl CalculatorApp {
                 self.model.active_surface = self.model.surfaces.len() - 1;
             }
         }
-        self.submit(doc, &action);
+        self.submit(doc, added);
         self.model_dirty = true;
     }
 
@@ -475,9 +481,10 @@ impl CalculatorApp {
             return false;
         };
         row.visible = !row.visible;
+        let shown = row.visible;
         if let Some(id) = self.rows.graph_id(kind, index) {
-            let action = actions::toggle_graph_visible_action(kind, id);
-            self.submit(doc, &action);
+            let edit = kind.rows().item(id).visible.set(shown);
+            self.submit(doc, edit);
         }
         self.model_dirty = true;
         true
@@ -499,8 +506,8 @@ impl CalculatorApp {
             expr.clone_into(&mut row.expr);
         }
         if let Some(id) = self.rows.graph_id(kind, index) {
-            let action = actions::set_graph_expr_action(kind, id, expr);
-            self.submit(doc, &action);
+            let edit = kind.rows().item(id).expr.replace(expr);
+            self.submit(doc, edit);
         }
         self.model_dirty = true;
     }
@@ -512,8 +519,7 @@ impl CalculatorApp {
             return;
         }
         self.model.history.clear();
-        let ids = self.rows.history.iter().map(|(id, _)| id.clone()).collect();
-        self.submit(doc, &actions::clear_history_ids_action(ids));
+        self.submit(doc, Calculator::CLEAR_HISTORY.with(()));
         self.model_dirty = true;
     }
 
@@ -526,7 +532,7 @@ impl CalculatorApp {
         if let Some(entry) = self.model.commit_equals() {
             self.submit(
                 doc,
-                &actions::commit_history_action(&entry.expr, &entry.result),
+                Calculator::COMMIT_HISTORY.with((entry.expr, entry.result)),
             );
         }
         self.model_dirty = true;
@@ -807,9 +813,11 @@ impl CalculatorApp {
     /// the presented rows are the exact merged list a collaborator sees, and
     /// keep active-row clamping in one place (`adopt_resource_state`).
     fn delete_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut ui::widget::Edits<'_>) {
-        if let Some(id) = self.rows.graph_id(kind, index) {
-            let action = actions::delete_graph_action(kind, id);
-            self.submit(doc, &action);
+        if let Some(id) = self.rows.graph_id(kind, index).cloned() {
+            match kind {
+                GraphKind::Curve2d => self.submit(doc, Calculator::DELETE_FUNCTION.with(id)),
+                GraphKind::Surface3d => self.submit(doc, Calculator::DELETE_SURFACE.with(id)),
+            }
             self.model_dirty = true;
         }
     }
@@ -1214,11 +1222,24 @@ fn key_accessible_name(key: &model::Key) -> String {
 }
 
 impl CalculatorApp {
+    /// Each presented history entry as its live row: recalling it.
+    pub(crate) fn history_rows(&self) -> Vec<ui::framework::LiveRow> {
+        self.rows
+            .history
+            .iter()
+            .map(|(id, entry)| crate::resource::history_row(id, entry))
+            .collect()
+    }
+
     /// Take `effect` on the next sync, where the document is: showing a graph
     /// for the first time adds its starter row.
     pub(crate) fn queue_effect(&mut self, effect: actions::CalculatorEffect) -> Result<(), String> {
         if let actions::CalculatorEffect::Open { entry } = &effect
-            && !self.rows.history.iter().any(|(row, _)| row == entry)
+            && self
+                .rows
+                .history
+                .get(&Id::from_raw(entry.as_str()))
+                .is_none()
         {
             return Err("Calculation no longer exists".into());
         }
@@ -1234,7 +1255,7 @@ impl CalculatorApp {
     ) {
         let mode = match effect {
             actions::CalculatorEffect::Open { entry } => {
-                if let Some((_, past)) = self.rows.history.iter().find(|(row, _)| *row == entry) {
+                if let Some(past) = self.rows.history.get(&Id::from_raw(entry.as_str())) {
                     self.model.expr.clone_from(&past.expr);
                     self.model.after_equals = false;
                     self.model_dirty = true;
@@ -2415,10 +2436,13 @@ mod tests {
             app.invoke(invoke).unwrap();
         }
         app.settle();
-        let (id, expression) = app.state().history[1].clone();
-        let expression = expression.expr;
+        let (id, expression) = {
+            let state = app.state();
+            let (id, entry) = state.history.iter().nth(1).unwrap();
+            (id.clone(), entry.expr.clone())
+        };
         // A new calculation moves every positional index.
-        app.invoke(Invoke::apply(&actions::commit_history_action("999+1", "1000")).unwrap())
+        app.invoke(Calculator::COMMIT_HISTORY.with(("999+1".to_owned(), "1000".to_owned())))
             .unwrap();
         let heads = app.read_document(|doc| doc.clone().get_heads());
         app.call_on(&history_entry_id(&id), "open", serde_json::json!({}))
@@ -2439,7 +2463,7 @@ mod tests {
             "recall shows the calculator"
         );
 
-        app.invoke_confirmed(Invoke::apply(&actions::delete_history_entry_action(&id)).unwrap())
+        app.invoke_confirmed(Calculator::DELETE_HISTORY_ENTRY.with(id.clone()))
             .unwrap();
         assert!(
             app.call_on(&history_entry_id(&id), "open", serde_json::json!({}))
@@ -2462,15 +2486,18 @@ mod tests {
         assert_eq!(app.model.ans, 0.0, "live launch: ans is 0");
 
         let mut app = hosted();
-        assert_eq!(app.state(), CalculatorState::default());
+        assert_eq!(app.state(), Calculator::default());
         click(&mut app, "calculator.mode:1");
         let state = app.state();
         assert_eq!(state.funcs.len(), 1, "Graph 2D adds one empty row");
-        assert!(state.funcs[0].1.expr.is_empty());
+        assert!(state.funcs.values().next().unwrap().expr.is_empty());
         click(&mut app, "calculator.mode:2");
         let state = app.state();
         assert_eq!(state.surfaces.len(), 1, "Graph 3D adds one starter surface");
-        assert_eq!(state.surfaces[0].1.expr, model::DEFAULT_SURFACE);
+        assert_eq!(
+            state.surfaces.values().next().unwrap().expr,
+            model::DEFAULT_SURFACE
+        );
         // A second visit adds nothing.
         click(&mut app, "calculator.mode:1");
         assert_eq!(app.state().funcs.len(), 1);
@@ -2997,8 +3024,7 @@ mod tests {
     #[test]
     fn formula_keystrokes_are_one_undo_step_and_peer_edits_are_presented() {
         let mut app = hosted();
-        app.invoke(Invoke::apply(&actions::add_graph_action(GraphKind::Curve2d, "")).unwrap())
-            .unwrap();
+        app.invoke(Calculator::ADD_FUNCTION.with("")).unwrap();
         click(&mut app, "calculator.mode:1");
         click(&mut app, "calculator.graph.field:2d:0");
         // Keyboard input goes to the focused calculator: Tab to it.
@@ -3015,7 +3041,7 @@ mod tests {
         app.harness().type_text("2*x");
         app.settle();
         assert_eq!(
-            app.state().funcs[0].1.expr,
+            app.state().funcs.values().next().unwrap().expr,
             "2*x",
             "every keystroke is written"
         );
@@ -3028,19 +3054,21 @@ mod tests {
         assert_eq!(app.state().funcs.len(), 1);
         assert!(app.undo(), "undo the typing");
         assert_eq!(
-            app.state().funcs[0].1.expr,
+            app.state().funcs.values().next().unwrap().expr,
             "",
             "one undo takes back the whole typed formula"
         );
         assert!(app.redo());
-        assert_eq!(app.state().funcs[0].1.expr, "2*x");
+        assert_eq!(app.state().funcs.values().next().unwrap().expr, "2*x");
 
-        let id = app.state().funcs[0].0.clone();
+        let id = app.state().funcs.ids().next().cloned().unwrap();
         app.merge_peer_edit(|doc| {
-            use tilo_actions::Action as _;
-            actions::set_graph_expr_action(GraphKind::Curve2d, id.as_str(), "x*x+1")
-                .apply(doc)
-                .unwrap();
+            let mut peer = ui::tilo_resource::Replica::<Calculator>::from_doc(doc.clone());
+            peer.apply(
+                Invoke::edit(&GraphKind::Curve2d.rows().item(&id).expr.replace("x*x+1")).unwrap(),
+            )
+            .unwrap();
+            *doc = peer.doc().clone();
         });
         app.settle();
         assert_eq!(
@@ -3434,7 +3462,7 @@ mod tests {
             let after = app.state().funcs;
             assert_eq!(after.len(), before.len() - 1, "one row removed");
             assert!(
-                after.iter().all(|(id, _)| *id != before[0].0),
+                after.ids().all(|id| Some(id) != before.ids().next()),
                 "the clicked stable row is tombstoned rather than a neighbouring index"
             );
         }

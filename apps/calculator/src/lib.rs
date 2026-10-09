@@ -37,7 +37,6 @@
 pub mod actions;
 pub mod app;
 pub mod chrome;
-pub mod doc;
 pub mod draw;
 pub mod engine;
 pub mod graph2d;
