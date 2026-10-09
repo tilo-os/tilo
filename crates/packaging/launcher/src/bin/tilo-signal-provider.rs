@@ -20,12 +20,11 @@ extern "C" fn stop(_: libc::c_int) {
 }
 fn install_stop() -> io::Result<&'static bounded_command::WakeFd> {
     // Created before the handler, so no SIGTERM finds it missing.
-    let wake = match STOP_WAKE.get() {
-        Some(wake) => wake,
-        None => {
-            let created = bounded_command::WakeFd::new()?;
-            STOP_WAKE.get_or_init(|| created)
-        }
+    let wake = if let Some(wake) = STOP_WAKE.get() {
+        wake
+    } else {
+        let created = bounded_command::WakeFd::new()?;
+        STOP_WAKE.get_or_init(|| created)
     };
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
     action.sa_sigaction = stop as *const () as usize;
