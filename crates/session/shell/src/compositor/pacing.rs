@@ -918,7 +918,9 @@ mod tests {
         clock.note_submitted(late_build);
         assert_eq!(
             clock.next_deadline(),
-            t0 + 2 * interval - Duration::from_millis(4)
+            (t0 + 2 * interval)
+                .checked_sub(Duration::from_millis(4))
+                .unwrap()
         );
         // The flip missed the vblank after t0 and landed one interval later.
         // The grid keys off that vblank, not off the late build.
@@ -926,7 +928,9 @@ mod tests {
         clock.note_retirement(landed + Duration::from_micros(300), paced(Some(landed)));
         assert_eq!(
             clock.next_deadline(),
-            landed + interval - Duration::from_millis(4),
+            (landed + interval)
+                .checked_sub(Duration::from_millis(4))
+                .unwrap(),
             "no drift: the next deadline is one lead before the vblank after the one shown"
         );
 
@@ -941,7 +945,10 @@ mod tests {
 
         // Changing the lead moves the pending deadline with it.
         clock.set_lead(Duration::from_millis(6));
-        assert_eq!(clock.next_deadline(), stepped - Duration::from_millis(2));
+        assert_eq!(
+            clock.next_deadline(),
+            stepped.checked_sub(Duration::from_millis(2)).unwrap()
+        );
         // A lead of a whole interval or more is due at the vblank itself.
         clock.set_lead(Duration::from_secs(1));
         assert_eq!(clock.lead(), interval);
@@ -1021,7 +1028,10 @@ mod tests {
         // 4 ms from the build to the flip, less the 50 µs it was queued.
         let lead = Duration::from_micros(3_950) + LEAD_MARGIN;
         assert_eq!(clock.lead(), lead);
-        assert_eq!(clock.next_deadline(), v1 + interval - lead);
+        assert_eq!(
+            clock.next_deadline(),
+            (v1 + interval).checked_sub(lead).unwrap()
+        );
 
         // Frame 2 is built on that deadline and shown at the next vblank.
         let d2 = clock.next_deadline();
@@ -1039,7 +1049,10 @@ mod tests {
             lead,
             "the worst cost in the window still sets the lead"
         );
-        assert_eq!(clock.next_deadline(), v2 + interval - lead);
+        assert_eq!(
+            clock.next_deadline(),
+            (v2 + interval).checked_sub(lead).unwrap()
+        );
 
         // A frame that takes longer than an interval needs overlap again.
         let d3 = clock.next_deadline();
