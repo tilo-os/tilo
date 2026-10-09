@@ -189,6 +189,24 @@ impl StatusBridge {
         }
     }
 
+    /// Follow an owned source in compile-time native acceptance fixtures.
+    /// Native production still acquires only the system `NetworkManager` client.
+    /// No control socket, environment override or runtime injection is added.
+    ///
+    /// # Errors
+    /// Returns the source subscription error.
+    #[cfg(feature = "test-support")]
+    pub async fn follow_owned_network_for_test(
+        &self,
+        client: tilo_nm::NmClient,
+    ) -> Result<(), tilo_nm::NmError> {
+        let watch = client.watch().await?;
+        let (wake, poller_keepalive) = mpsc::channel();
+        follow_network_readings(&NetworkSlot::default(), &wake, &self.network, watch).await;
+        drop(poller_keepalive);
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> SystemStatus {
         self.inner.lock().map(|g| g.clone()).unwrap_or_default()
     }
@@ -350,14 +368,9 @@ fn spawn_network_follower(slot: NetworkSlot, wake: Sender<()>, status: Arc<Netwo
 async fn follow_network(slot: NetworkSlot, wake: Sender<()>, status: Arc<NetworkStatusSource>) {
     loop {
         match tilo_nm::watch().await {
-            Ok(mut watch) => {
-                if !publish_network(&slot, &wake, &status, Some(watch.current())) {
+            Ok(watch) => {
+                if !follow_network_readings(&slot, &wake, &status, watch).await {
                     return;
-                }
-                while let Some(state) = watch.changed().await {
-                    if !publish_network(&slot, &wake, &status, Some(state)) {
-                        return;
-                    }
                 }
             }
             Err(error) => {
@@ -370,6 +383,25 @@ async fn follow_network(slot: NetworkSlot, wake: Sender<()>, status: Arc<Network
         }
         tokio::time::sleep(FALLBACK_INTERVAL).await;
     }
+}
+
+/// The system-bus follower and owned acceptance source share consumption,
+/// loss handling and projection; only connection acquisition differs.
+async fn follow_network_readings(
+    slot: &NetworkSlot,
+    wake: &Sender<()>,
+    status: &NetworkStatusSource,
+    mut watch: tilo_nm::NmWatch,
+) -> bool {
+    if !publish_network(slot, wake, status, Some(watch.current())) {
+        return false;
+    }
+    while let Some(state) = watch.changed().await {
+        if !publish_network(slot, wake, status, Some(state)) {
+            return false;
+        }
+    }
+    publish_network(slot, wake, status, None)
 }
 
 /// Store a reading and wake the poller. `false` once the poller is gone.

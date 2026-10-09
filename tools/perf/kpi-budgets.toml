@@ -1,0 +1,106 @@
+# Budgets and comparison settings per KPI, read by tools/perf/compare.py.
+#
+# [defaults] are the KPI document's regression rule ("Performance and cost
+# KPIs — what we market and how we measure it", Linear af384e878293): fail on
+# a p50 more than 10 % or a p99 more than 20 % above the median of the last
+# five comparable runs, sustained over two runs.
+#
+# [kpi."<id>"] entries:
+#   unit                     the record's unit; a mismatch fails
+#   p50, p95, p99, max       ceilings on that percentile of the record
+#   enforce                  true: a ceiling miss fails the run at once;
+#                            false (default): it is reported as a target not
+#                            yet met (marketing targets that are not true yet)
+#   p50_tolerance, p99_tolerance, baseline_runs, min_delta
+#                            override [defaults]; min_delta is the absolute
+#                            change (in the unit) below which a ratio never
+#                            counts as a regression
+#   source                   where the number comes from
+#
+# A KPI with a budget whose group ran but produced no record fails the run, so
+# list every KPI a benchmark is expected to report.
+
+[defaults]
+p50_tolerance = 1.10
+p99_tolerance = 1.20
+baseline_runs = 5
+min_delta = 0.0
+
+# tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs), a
+# debug build on the shared `runner` class. The ceilings are the gate's own
+# SLO constants (tools/perf/test_adapters.py keeps them equal; TIL-595
+# tightens both). Tolerances are wider than the default because single runs
+# of this gate on the shared runner have spread up to 1.8x between nights
+# (KPI document inventory: run 85201 against the maximum of eight runs); five
+# repetitions per night and a two-run rule absorb the rest.
+
+[kpi."fs.metadata-cold-open-and-1000-list"]
+unit = "ms"
+max = 2000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "COLD_METADATA_SLO"
+
+[kpi."fs.metadata-warm-8x-1000-list"]
+unit = "ms"
+max = 4000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "WARM_DIRECTORY_SLO"
+
+[kpi."fs.local-chunked-64x256k-ranged-read"]
+unit = "ms"
+max = 4000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "RANGED_READ_SLO"
+
+[kpi."fs.mount-64x256k-ranged-read-under-remote-apply"]
+unit = "ms"
+max = 4000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "RANGED_READ_SLO"
+
+[kpi."fs.thumbnail-cold-decode-scale-encode-cache"]
+unit = "ms"
+max = 3000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "COLD_THUMBNAIL_SLO"
+
+[kpi."fs.thumbnail-warm-1000-cache-lookups"]
+unit = "ms"
+max = 500.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "WARM_THUMBNAIL_SLO"
+
+# App package size: bytes of the newest signed tapp per app in the public
+# registry index. Targets from the KPI document (median <= 2 MB, max <= 6 MB,
+# decimal megabytes); reported, not enforced, until TIL-590's per-app ratchet
+# owns the gate. The default relative rule already fails sustained growth.
+
+[kpi."footprint.tapp.bytes.x86_64"]
+unit = "bytes"
+p50 = 2000000.0
+max = 6000000.0
+source = "KPI document: App package size"
+
+[kpi."footprint.tapp.bytes.aarch64"]
+unit = "bytes"
+p50 = 2000000.0
+max = 6000000.0
+source = "KPI document: App package size"

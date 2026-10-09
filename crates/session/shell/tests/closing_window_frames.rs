@@ -21,20 +21,20 @@
 )]
 
 use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 
-use shell::compositor::state::{ClientState, State};
+use shell::compositor::state::State;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_subcompositor,
-    wl_subsurface, wl_surface,
+    wl_buffer, wl_callback, wl_compositor, wl_shm, wl_shm_pool, wl_subcompositor, wl_subsurface,
+    wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
+
+use crate::support::wayland::{self, Globals as _, foreign_id};
 
 pub(crate) const APP_ID: &str = "org.example.Closing";
 const SIZE: i32 = 64;
@@ -52,25 +52,7 @@ pub(crate) struct Client {
     busy: bool,
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Client {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
-    }
-}
+crate::support::wayland::test_client!(Client: registry);
 
 impl Dispatch<wl_callback::WlCallback, u32> for Client {
     fn event(
@@ -164,13 +146,7 @@ impl Harness {
             (1920, 1080),
             1.0,
         )]);
-        let (server, client) = UnixStream::pair().expect("socket pair");
-        display
-            .handle()
-            .insert_client(server, Arc::new(ClientState::default()))
-            .expect("client insert");
-        client.set_nonblocking(true).expect("nonblocking");
-        let conn = Connection::from_socket(client).expect("client connection");
+        let conn = wayland::connect(&display);
         let queue = conn.new_event_queue::<Client>();
         let _registry = conn.display().get_registry(&queue.handle(), ());
         let mut harness = Self {
@@ -189,15 +165,12 @@ impl Harness {
     where
         Client: Dispatch<I, ()>,
     {
-        let (name, _, advertised) = self
+        let (name, version) = self
             .client
-            .globals
-            .iter()
-            .find(|(_, name, _)| name == interface)
-            .cloned()
+            .global(interface, version)
             .unwrap_or_else(|| panic!("{interface} is advertised"));
         let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        registry.bind(name, version.min(advertised), &self.queue.handle(), ())
+        registry.bind(name, version, &self.queue.handle(), ())
     }
 
     /// Exchange messages both ways until neither side has anything queued.
@@ -268,27 +241,6 @@ fn shm_buffer(h: &Harness) -> wl_buffer::WlBuffer {
     pool.create_buffer(0, SIZE, SIZE, stride, wl_shm::Format::Argb8888, &qh, ())
 }
 
-fn adopted_surface(state: &State) -> u64 {
-    state
-        .workspace_tree
-        .read()
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .find_map(|tab| match &tab.tile {
-            shell::shell::state::TileContent::Foreign { app_id, surface_id }
-                if app_id == APP_ID =>
-            {
-                Some(*surface_id)
-            }
-            _ => None,
-        })
-        .expect("the toplevel was adopted as a tab")
-}
-
 #[test]
 fn a_closed_window_gets_the_frame_callbacks_its_last_frames_wait_on() {
     let mut h = Harness::new();
@@ -301,7 +253,7 @@ fn a_closed_window_gets_the_frame_callbacks_its_last_frames_wait_on() {
     toplevel.set_app_id(APP_ID.into());
     surface.commit();
     h.pump();
-    let id = adopted_surface(&h.state);
+    let id = foreign_id(&h.state, APP_ID);
     // What the paint pass does once layout has placed the new tile.
     shell::compositor::foreign::store()
         .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
@@ -362,7 +314,7 @@ fn a_frame_asked_for_without_a_buffer_does_not_need_a_paint() {
     toplevel.set_app_id(APP_ID.into());
     surface.commit();
     h.pump();
-    let id = adopted_surface(&h.state);
+    let id = foreign_id(&h.state, APP_ID);
     shell::compositor::foreign::store()
         .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
     shell::shell::foreign::flush_configures(&mut h.state);
@@ -418,7 +370,7 @@ pub(crate) fn shown_window(
     toplevel.set_app_id(APP_ID.into());
     surface.commit();
     h.pump();
-    let id = adopted_surface(&h.state);
+    let id = foreign_id(&h.state, APP_ID);
     shell::compositor::foreign::store()
         .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
     shell::shell::foreign::flush_configures(&mut h.state);
@@ -509,7 +461,7 @@ fn a_window_has_answered_input_after_two_pings_and_a_captured_frame() {
     let mut h = Harness::new();
     let qh = h.queue.handle();
     let (_compositor, _wm, surface, _xdg, buffer) = shown_window(&mut h);
-    let id = adopted_surface(&h.state);
+    let id = foreign_id(&h.state, APP_ID);
 
     // An idle window: nothing to draw, two round trips and it is settled.
     let server_surface =
@@ -613,7 +565,7 @@ fn launched_window(
     toplevel.set_app_id(APP_ID.into());
     surface.commit();
     h.pump();
-    let id = adopted_surface(&h.state);
+    let id = foreign_id(&h.state, APP_ID);
     shell::shell::launcher::attribute_surface_launch(id, key);
     shell::compositor::foreign::store()
         .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
@@ -689,7 +641,7 @@ fn a_deferred_client_close_keeps_its_tab_until_surface_destruction() {
     toplevel.set_app_id(APP_ID.into());
     surface.commit();
     h.pump();
-    let id = adopted_surface(&h.state);
+    let id = foreign_id(&h.state, APP_ID);
     let chrome =
         shell::shell::chrome_state::ChromeState::new_with_handle(h.state.workspace_tree.clone());
     let tab_id = chrome.borrow().tree().desktop.workspaces.iter()
@@ -704,7 +656,7 @@ fn a_deferred_client_close_keeps_its_tab_until_surface_destruction() {
     }
     h.pump_until("the close request", |client| client.close_requested);
     assert_eq!(
-        adopted_surface(&h.state),
+        foreign_id(&h.state, APP_ID),
         id,
         "the client can still show its close decision"
     );
@@ -715,7 +667,7 @@ fn a_deferred_client_close_keeps_its_tab_until_surface_destruction() {
     // A refusing client can commit a decision frame and remains discoverable.
     surface.commit();
     h.pump();
-    assert_eq!(adopted_surface(&h.state), id);
+    assert_eq!(foreign_id(&h.state, APP_ID), id);
     toplevel.destroy();
     xdg.destroy();
     surface.destroy();

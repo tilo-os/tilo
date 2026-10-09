@@ -72,6 +72,7 @@
     )
 )]
 
+pub mod approved_checks;
 pub mod audit;
 pub mod broker;
 pub mod fleet;

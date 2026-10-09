@@ -16,6 +16,7 @@
 
 pub mod offscreen;
 pub mod snapshot;
+pub mod wayland;
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang
 /// reaches it, however loaded the test machine is.
