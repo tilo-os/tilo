@@ -653,6 +653,10 @@ pub(crate) struct RetainBuild {
     selected_read: Option<super::shell_selection::SelectedRead>,
     selection: Option<super::shell_selection::Selection>,
     publication: Option<super::shell_selection::Publication>,
+    /// A plain route tail the in-process tail cache can publish without a
+    /// selection; `fast_admitted` once the selected snapshot found it safe.
+    fast: Option<super::shell_selection::tail_cache::FastTail>,
+    fast_admitted: bool,
     selected_obsolete: bool,
     staged_only: bool,
     continuity: Option<super::continuity::Receipt>,
@@ -906,6 +910,27 @@ impl RetainBuild {
     ) -> Result<super::bounded::Step<super::shell_selection::RetainOutcome>, StoreError> {
         use super::bounded::{Meta, Step, increment, read_meta};
         let limit = limit.checked()?;
+        if let Some(fast) = &self.fast
+            && !self.fast_admitted
+        {
+            use super::shell_selection::tail_cache::Admission;
+            match fast.admission(&self.bytes, self.workspace) {
+                Admission::Obsolete => {
+                    self.publication = Some(super::shell_selection::Publication::Suppress);
+                    self.phase = RetainPhase::Done;
+                    self.selected_obsolete = true;
+                    let fast = self.fast.take().invariant("fast tail missing")?;
+                    self.store.tail_cache.finish(fast);
+                }
+                Admission::Tail => self.fast_admitted = true,
+                Admission::Select => {
+                    self.fast = None;
+                    self.store.tail_cache.invalidate();
+                    self.selected_read = super::shell_selection::SelectedRead::new(&self.store)?;
+                }
+            }
+            return Ok(Step::More);
+        }
         if let Some(reader) = &mut self.selected_read {
             if let Step::Done(()) = reader.step()? {
                 if reader.obsolete(&self.bytes)? {
@@ -1114,6 +1139,16 @@ impl RetainBuild {
                 }
             }
             RetainPhase::Done => {
+                if self.publication.is_none()
+                    && let Some(mut fast) = self.fast.take()
+                    && !self.duplicate
+                    && fast.append(&self.bytes, self.workspace)
+                {
+                    // The selection this skips would publish this tail as an
+                    // original and change nothing but its listed tails.
+                    self.store.tail_cache.finish(fast);
+                    self.publication = Some(super::shell_selection::Publication::Original);
+                }
                 if self.publication.is_none() {
                     if let Some(store) = &self.shell_store {
                         if self.selection.is_none() {
@@ -1121,11 +1156,21 @@ impl RetainBuild {
                                 &self.bytes,
                                 self.workspace,
                             );
-                            self.selection = Some(super::shell_selection::Selection::new(
+                            let mut selection = super::shell_selection::Selection::new(
                                 store,
                                 self.scratch.clone(),
                                 incoming,
-                            )?);
+                            )?;
+                            if !self.checkpoint
+                                && let Some(key) =
+                                    super::shell_selection::tail_cache::incoming_route(
+                                        &self.bytes,
+                                        self.workspace,
+                                    )
+                            {
+                                selection.want_route(key);
+                            }
+                            self.selection = Some(selection);
                         }
                         match self.selection.as_mut().invariant("selection missing")?.step(limit)? {
                             Step::More => return Ok(Step::More),
@@ -1231,6 +1276,16 @@ impl WorkspaceStore {
         if actual_channel != *channel || checkpoint != seq.is_none() {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
+        let fast = if checkpoint {
+            None
+        } else {
+            super::shell_selection::tail_cache::checkout(self, &bytes)?
+        };
+        if fast.is_none() {
+            // Every other write changes retained history the cached cursors
+            // were computed from; the next clean selection seeds them again.
+            self.tail_cache.invalidate();
+        }
         for directory in self.root.ancestors().take(3) {
             sync_dir_once(directory)?;
         }
@@ -1274,9 +1329,15 @@ impl WorkspaceStore {
             survivors: 0,
             written: 0,
             shell_store: self.shell_authority().map(|_| self.clone()),
-            selected_read: super::shell_selection::SelectedRead::new(self)?,
+            selected_read: if fast.is_some() {
+                None
+            } else {
+                super::shell_selection::SelectedRead::new(self)?
+            },
             selection: None,
             publication: None,
+            fast,
+            fast_admitted: false,
             selected_obsolete: false,
             staged_only: false,
             continuity: None,
