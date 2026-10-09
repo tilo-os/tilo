@@ -4522,3 +4522,139 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
         );
     }
 }
+
+/// One host frame of a multiline field: Taffy's sizing queries at the
+/// widths a Scrollable's grid asks for (zero, min/max-content, final), then
+/// placement and paint against a window-sized viewport.
+fn typing_frame(input: &mut TextInput, tr: &mut TextRenderer, theme: &Theme) {
+    let mut height = 0.0f32;
+    for (known, available) in [
+        (Some(0.0), taffy::AvailableSpace::Definite(0.0)),
+        (None, taffy::AvailableSpace::MinContent),
+        (None, taffy::AvailableSpace::MaxContent),
+        (Some(600.0), taffy::AvailableSpace::Definite(600.0)),
+    ] {
+        height = Widget::measure(
+            input,
+            taffy::Size {
+                width: known,
+                height: None,
+            },
+            taffy::Size {
+                width: available,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            tr,
+        )
+        .height;
+    }
+    input.apply_layout_external(Rect::new(0.0, 0.0, 600.0, f64::from(height)));
+    let presence = crate::presence::PresenceCtx::empty();
+    presence.push_viewport(Rect::new(0.0, 0.0, 600.0, 400.0));
+    let mut scene = Scene::new();
+    Widget::draw(input, &mut scene, Affine::IDENTITY, tr, theme, &presence);
+}
+
+fn typing_field(text: &str, tr: &mut TextRenderer, theme: &Theme) -> TextInput {
+    let mut input = TextInput::local()
+        .multiline(true)
+        .with_spell_language("en_US")
+        .with_initial_value(text);
+    input.set_focus(true);
+    let mut taffy = TaffyTree::new();
+    let mut nodes = std::collections::HashMap::new();
+    Widget::build_layout(&mut input, &mut taffy, theme, &mut nodes);
+    typing_frame(&mut input, tr, theme);
+    input
+}
+
+#[test]
+fn multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width() {
+    let mut tr = crate::font_catalog::fixture_renderer();
+    let theme = Theme::dark();
+    tr.set_text_scale(theme.text_scale);
+    let text = (0..200)
+        .map(|index| format!("Paragraph {index} of a long note, with enough words to wrap."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut input = typing_field(&text, &mut tr, &theme);
+    let at = text.find("Paragraph 100 ").unwrap() + "Paragraph 100".len();
+    input.set_cursor_pos(at);
+    typing_frame(&mut input, &mut tr, &theme);
+    crate::richtext::take_prepared_paragraphs();
+    let mut doc = AutoCommit::new();
+    for (step, key) in ["x", "y", " ", "z"].into_iter().enumerate() {
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &char_key_event(key),
+            Modifiers::default()
+        ));
+        typing_frame(&mut input, &mut tr, &theme);
+        assert_eq!(
+            crate::richtext::take_prepared_paragraphs(),
+            1,
+            "keystroke {step}: one paragraph prepared and shaped for every width"
+        );
+    }
+    // The paragraph measured and painted is the one a fresh field builds.
+    let fresh = typing_field(input.value(), &mut tr, &theme);
+    let (typed, fresh) = (
+        input.single_layout.as_ref().unwrap(),
+        fresh.single_layout.as_ref().unwrap(),
+    );
+    assert_eq!(typed.height(), fresh.height());
+    assert_eq!(typed.logical_line_origins(), fresh.logical_line_origins());
+    for byte in (0..=input.value().len()).filter(|byte| input.value().is_char_boundary(*byte)) {
+        assert_eq!(
+            typed.caret_geometry(byte),
+            fresh.caret_geometry(byte),
+            "byte {byte}"
+        );
+    }
+    for (a, b) in typed.buffer.lines.iter().zip(&fresh.buffer.lines) {
+        assert_eq!(
+            format!("{:?}", a.layout_opt()),
+            format!("{:?}", b.layout_opt())
+        );
+    }
+}
+
+#[test]
+fn spelling_marks_follow_edits_like_a_full_check() {
+    let text = "teh first paragraph\n\nsecond wrold here\nthird is fine\n\nlast lnie";
+    let mut input = TextInput::local()
+        .with_spell_language("en_US")
+        .with_initial_value(text);
+    input.set_focus(true);
+    input.refresh_spelling();
+    let edits: [(&str, usize); 6] = [
+        ("x", 4),
+        (" mispeled", 19),
+        ("\nnew paragrph\n", 21),
+        ("", 0),
+        ("Teh", 0),
+        ("ok", 10),
+    ];
+    for (insert, at) in edits {
+        let mut edited = input.value().to_owned();
+        let at = at.min(edited.len());
+        if insert.is_empty() {
+            // Join the first two lines.
+            if let Some(newline) = edited.find('\n') {
+                edited.remove(newline);
+            }
+        } else {
+            edited.insert_str(at, insert);
+        }
+        input.text.clone_from(&edited);
+        input.refresh_spelling();
+        let mut fresh = TextInput::local()
+            .with_spell_language("en_US")
+            .with_initial_value(&edited);
+        fresh.set_focus(true);
+        fresh.refresh_spelling();
+        assert_eq!(input.spell_spans, fresh.spell_spans, "{edited:?}");
+        assert!(!input.spell_spans.is_empty(), "{edited:?}");
+    }
+}
