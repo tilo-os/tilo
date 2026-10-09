@@ -308,7 +308,7 @@ fn plan(
         None => return Ok(Some(Plan::Claim)),
     }
     #[cfg(test)]
-    PROJECTIONS.with(|count| count.set(count.get() + 1));
+    PROJECTIONS.with(|count| count.set(count.get().saturating_add(1)));
     let mut doc = admitted.clone();
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(device.to_vec()));
@@ -574,7 +574,7 @@ mod tests {
         // the changes: one more look finds nothing, and every look after
         // it copies nothing while neither side moved.
         for change in &changes {
-            room.load_incremental(change)
+            tilo_automerge::ApplyIncoming::load_incoming(&mut room, change)
                 .expect("the governor admits them");
         }
         assert!(matches!(
@@ -669,7 +669,7 @@ mod tests {
             panic!("the window is published once");
         };
         for change in &changes {
-            room.load_incremental(change).expect("admitted");
+            tilo_automerge::ApplyIncoming::load_incoming(&mut room, change).expect("admitted");
         }
 
         let started = Instant::now();

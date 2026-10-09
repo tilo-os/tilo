@@ -2845,8 +2845,10 @@ mod two_sessions {
                 .recv()
                 .expect("the other thread holds the replica");
             let answer = frames();
+            // Read before letting go: once told, the other thread releases.
+            let held_throughout = !released.load(Ordering::SeqCst);
             let _ = done.send(());
-            (!released.load(Ordering::SeqCst)).then_some(answer)
+            held_throughout.then_some(answer)
         })
     }
 

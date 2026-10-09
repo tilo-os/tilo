@@ -271,7 +271,7 @@ impl LegacySharePlan {
         });
         #[cfg(test)]
         {
-            self.derivations += 1;
+            self.derivations = self.derivations.saturating_add(1);
         }
         true
     }
