@@ -701,3 +701,67 @@ fn replaying_the_log_reproduces_the_record() {
     assert_eq!(left, right);
     assert_eq!(right.message_rows("c_general").len(), 2);
 }
+
+#[test]
+fn the_record_offers_each_item_its_views_with_no_window_open() {
+    let mut ada = room();
+    ada.apply(post("the deck is up")).unwrap();
+    let message = said(&ada, "the deck is up");
+    let children = <Chat as ui::tilo_resource::Resource>::children(&ada.state().unwrap());
+    let item = |field: &str, raw: &Id| {
+        let wanted = ui::tilo_resource::items::item_resource_id::<Chat>(field, raw);
+        children
+            .iter()
+            .find(|child| child.id.as_str() == wanted)
+            .unwrap_or_else(|| panic!("{wanted} is published"))
+            .clone()
+    };
+    let actions = |resource: &ui::tilo_actions::Resource| {
+        resource
+            .actions
+            .iter()
+            .map(|action| action.id.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let said = item("messages", &message);
+    for effect in ["reveal-message", "reveal-message-range", "read-message"] {
+        assert!(
+            actions(&said).iter().any(|id| id == effect),
+            "{effect}: {:?}",
+            actions(&said)
+        );
+    }
+    let range = said
+        .actions
+        .iter()
+        .find(|action| action.id == "reveal-message-range")
+        .unwrap();
+    assert_eq!(
+        range
+            .params()
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect::<Vec<_>>(),
+        ["start", "end", "unit"],
+        "the message is the item; only the range is asked"
+    );
+    let view = said.views.iter().find(|view| view.id == "message").unwrap();
+    assert!(view.primary && view.range.is_some(), "{view:?}");
+
+    let general = item("channels", &id("c_general"));
+    assert!(actions(&general).iter().any(|id| id == "open-channel"));
+    let workspace = ada
+        .state()
+        .unwrap()
+        .workspaces
+        .ids()
+        .next()
+        .cloned()
+        .unwrap();
+    let workspace = item("workspaces", &workspace);
+    assert!(actions(&workspace).iter().any(|id| id == "open-workspace"));
+    assert!(workspace.views.iter().any(|view| view.id == "workspace"));
+    let person = item("people", &id(BO));
+    assert!(actions(&person).iter().any(|id| id == "open-person"));
+}

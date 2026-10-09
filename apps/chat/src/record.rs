@@ -784,6 +784,8 @@ impl Chat {
     params = chat,
     search = Chat::search,
     read_content = Chat::content,
+    effects = crate::effects::ChatEffect,
+    item_views = crate::effects::item_views,
 )]
 impl Chat {
     /// Start the chat.

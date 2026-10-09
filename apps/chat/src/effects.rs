@@ -28,6 +28,26 @@ fn item_row_id(field: &str, id: &str) -> String {
     tilo_resource::items::item_resource_id::<Chat>(field, &tilo_resource::Id::from_raw(id))
 }
 
+/// The views an item of the chat opens in, each opened by the item's own
+/// view effect: a workspace, and a message (to a range of its text). A
+/// conversation's view depends on its kind and is offered by its row.
+pub(crate) fn item_views(field: &str, _item: &tilo_resource::Id) -> Vec<ResourceViewSpec> {
+    match field {
+        "workspaces" => vec![
+            ResourceViewSpec::new("workspace", "Workspace", ChatEffect::OPEN_WORKSPACE.id)
+                .with_primary(true),
+        ],
+        "messages" => vec![
+            ResourceViewSpec::new("message", "Message", ChatEffect::REVEAL_MESSAGE.id)
+                .with_primary(true)
+                .with_range(ResourceViewRangeSpec::new(
+                    ChatEffect::REVEAL_MESSAGE_RANGE.id,
+                )),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// Why `start-video-call` is unavailable and refused: calls carry
 /// microphone audio only.
 pub(crate) const VIDEO_CALL_UNAVAILABLE: &str = "voice_only";
@@ -41,24 +61,24 @@ pub(crate) fn video_call_unavailable_reason() -> String {
 #[effect(operation = "chat.effects")]
 pub enum ChatEffect {
     /// Open workspace
-    #[effect(view, row)]
+    #[effect(view, row, item = workspaces)]
     OpenWorkspace { workspace: String },
     /// Open conversation
-    #[effect(view, row)]
+    #[effect(view, row, item = channels)]
     OpenChannel { channel: String },
     /// Open category
-    #[effect(view, row)]
+    #[effect(view, row, item = categories)]
     OpenCategory { category: String },
     /// Fold or unfold category
     ///
     /// Hides or shows the category's channels in this person's sidebar.
-    #[effect(view, row)]
+    #[effect(view, row, item = categories)]
     ToggleCategory { category: String },
     /// Reveal message
-    #[effect(view, row)]
+    #[effect(view, row, item = messages)]
     RevealMessage { message: String },
     /// Reveal message range
-    #[effect(view, row, returns)]
+    #[effect(view, row, returns, item = messages)]
     RevealMessageRange {
         message: String,
         #[param("Start offset in the declared unit")]
@@ -69,13 +89,13 @@ pub enum ChatEffect {
         unit: String,
     },
     /// Open person
-    #[effect(view, row)]
+    #[effect(view, row, item = people)]
     OpenPerson { user: String },
     /// Read message
     ///
     /// The message as a value: who wrote it, whether that is an agent, its
     /// whole text and the agent's record of its work.
-    #[effect(view, row, returns)]
+    #[effect(view, row, returns, item = messages)]
     ReadMessage { message: String },
     /// Copy resource link
     #[effect(job, device_only, returns)]
@@ -613,38 +633,20 @@ impl ChatApp {
 
     fn workspace_row(&self, id: &str) -> Option<LiveRow> {
         let workspace = self.workspaces.iter().find(|item| item.id == id)?;
-        Some(
-            LiveRow::new(
-                item_row_id("workspaces", id),
-                "chat.workspace.workspaces",
-                &workspace.name,
-            )
-            .effect(&ChatEffect::OpenWorkspace {
-                workspace: id.to_owned(),
-            })
-            .view(
-                ResourceViewSpec::new("workspace", "Workspace", ChatEffect::OPEN_WORKSPACE.id)
-                    .with_primary(true),
-            ),
-        )
+        Some(LiveRow::new(
+            item_row_id("workspaces", id),
+            "chat.workspace.workspaces",
+            &workspace.name,
+        ))
     }
 
     fn category_row(&self, id: &str) -> Option<LiveRow> {
         let category = self.categories.iter().find(|item| item.id == id)?;
-        let category_id = || id.to_owned();
-        Some(
-            LiveRow::new(
-                item_row_id("categories", id),
-                "chat.workspace.categories",
-                &category.name,
-            )
-            .effect(&ChatEffect::OpenCategory {
-                category: category_id(),
-            })
-            .effect(&ChatEffect::ToggleCategory {
-                category: category_id(),
-            }),
-        )
+        Some(LiveRow::new(
+            item_row_id("categories", id),
+            "chat.workspace.categories",
+            &category.name,
+        ))
     }
 
     fn channel_row(&self, id: &str) -> Option<LiveRow> {
@@ -654,10 +656,8 @@ impl ChatApp {
             item_row_id("channels", id),
             "chat.workspace.channels",
             &channel.name,
-        )
-        .effect(&ChatEffect::OpenChannel {
-            channel: channel_id(),
-        });
+        );
+        // A voice channel is a call, not a conversation to read.
         let row = if channel.kind == ChannelKind::Voice {
             row
         } else {
@@ -718,28 +718,6 @@ impl ChatApp {
             detail: Some(author.chars().take(80).collect()),
             badge: agent.then(|| "agent".to_owned()),
             preview: None,
-        })
-        .effect(&ChatEffect::RevealMessage {
-            message: message_id(),
-        })
-        .view(
-            ResourceViewSpec::new("message", "Message", ChatEffect::REVEAL_MESSAGE.id)
-                .with_primary(true)
-                .with_range(ResourceViewRangeSpec::new(
-                    ChatEffect::REVEAL_MESSAGE_RANGE.id,
-                )),
-        )
-        .operation(
-            ChatEffect::RevealMessageRange {
-                message: message_id(),
-                start: 0,
-                end: 0,
-                unit: "Chars".into(),
-            }
-            .bound_asking(&["start", "end", "unit"]),
-        )
-        .effect(&ChatEffect::ReadMessage {
-            message: message_id(),
         });
         if message.reference.is_some() && message.source_provider.is_some() {
             row = row
@@ -755,16 +733,11 @@ impl ChatApp {
 
     fn person_row(&self, id: &str) -> Option<LiveRow> {
         let user = self.search_users.iter().find(|item| item.id == id)?;
-        Some(
-            LiveRow::new(
-                item_row_id("people", id),
-                "chat.workspace.people",
-                crate::identity::shared_name_label(&user.id, &user.name),
-            )
-            .effect(&ChatEffect::OpenPerson {
-                user: id.to_owned(),
-            }),
-        )
+        Some(LiveRow::new(
+            item_row_id("people", id),
+            "chat.workspace.people",
+            crate::identity::shared_name_label(&user.id, &user.name),
+        ))
     }
 
     fn report_row(&self, id: &str) -> Option<LiveRow> {
