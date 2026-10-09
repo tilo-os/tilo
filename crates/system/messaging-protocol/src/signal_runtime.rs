@@ -95,7 +95,12 @@ impl SignalRuntime {
             .arm(timeout)
             .map_err(|_| Error::InvalidRequest)?;
         let result = self.session.probe("listAccounts", &serde_json::json!({}))?;
-        let account = crate::signal_setup::account(&result, self.session.signal_account())?;
+        let selected = self.session.signal_account().to_owned();
+        let identities = self.session.probe(
+            "listIdentities",
+            &serde_json::json!({"account":selected,"number":selected}),
+        )?;
+        let account = crate::signal_setup::account(&result, &identities, &selected)?;
         self.session
             .bind_number(account.number.as_deref().ok_or(Error::InvalidIdentity)?)?;
         Ok(account)
@@ -275,7 +280,13 @@ impl SignalReceiver {
         let result = session
             .probe("listAccounts", &serde_json::json!({}))
             .map_err(|_| OpenError::TransportUnavailable)?;
-        let account = crate::signal_setup::account(&result, &signal_account)
+        let identities = session
+            .probe(
+                "listIdentities",
+                &serde_json::json!({"account":signal_account,"number":signal_account}),
+            )
+            .map_err(|_| OpenError::TransportUnavailable)?;
+        let account = crate::signal_setup::account(&result, &identities, &signal_account)
             .map_err(|_| OpenError::WrongOwner)?;
         session
             .bind_number(account.number.as_deref().ok_or(OpenError::WrongOwner)?)

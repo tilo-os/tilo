@@ -154,7 +154,19 @@ fn account_probe(reader: &mut BufReader<UnixStream>, peer: &mut UnixStream) {
     reader.read_line(&mut probe).expect("account probe");
     let probe: serde_json::Value = serde_json::from_str(&probe).expect("account request");
     assert_eq!(field(&probe, "/method"), "listAccounts");
-    writeln!(peer,"{}",serde_json::json!({"jsonrpc":"2.0","id":field(&probe,"/id"),"result":[{"aci":OWN_ACI,"number":"+15555550101"}]})).expect("account evidence");
+    writeln!(peer,"{}",serde_json::json!({"jsonrpc":"2.0","id":field(&probe,"/id"),"result":[{"number":"+15555550101"}]})).expect("account evidence");
+    let mut own_line = String::new();
+    reader
+        .read_line(&mut own_line)
+        .expect("local own-identity probe");
+    let own_probe: serde_json::Value =
+        serde_json::from_str(&own_line).expect("local own-identity request");
+    assert_eq!(field(&own_probe, "/method"), "listIdentities");
+    assert_eq!(
+        field(&own_probe, "/params/number"),
+        field(&own_probe, "/params/account")
+    );
+    writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":field(&own_probe, "/id"),"result":serde_json::json!([{"uuid":OWN_ACI,"number":"+15555550101","trustLevel":"TRUSTED_VERIFIED","fingerprint":format!("05 {}", ["aa"; 32].join(" "))}])})).expect("local own-identity evidence");
 }
 fn subscribe(reader: &mut BufReader<UnixStream>, peer: &mut UnixStream) {
     let mut line = String::new();

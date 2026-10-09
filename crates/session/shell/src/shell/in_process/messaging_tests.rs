@@ -260,7 +260,16 @@ fn daemon(mut peer: UnixStream, probes: Arc<AtomicUsize>) -> std::thread::JoinHa
         let probe: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(probe["method"], "listAccounts");
         probes.fetch_add(1, Ordering::SeqCst);
-        writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0", "id":probe["id"], "result":[{"aci":"11111111-1111-4111-8111-111111111111", "number":"+15555550101"}]})).unwrap();
+        writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0", "id":probe["id"], "result":[{ "number":"+15555550101"}]})).unwrap();
+        let mut own_line = String::new();
+        reader.read_line(&mut own_line).unwrap();
+        let own_probe: serde_json::Value = serde_json::from_str(&own_line).unwrap();
+        assert_eq!(own_probe["method"], "listIdentities");
+        assert_eq!(
+            own_probe["params"]["number"],
+            own_probe["params"]["account"]
+        );
+        writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":own_probe["id"],"result":serde_json::json!([{"uuid":"11111111-1111-4111-8111-111111111111","number":"+15555550101","trustLevel":"TRUSTED_VERIFIED","fingerprint":format!("05 {}", vec!["aa"; 32].join(" "))}])})).unwrap();
         line.clear();
         if reader.read_line(&mut line).unwrap() != 0 {
             let subscription: serde_json::Value = serde_json::from_str(&line).unwrap();
