@@ -106,6 +106,82 @@ class WriteRecords(unittest.TestCase):
             self.assertEqual(path.read_text(), "")
 
 
+# resources.SAMPLE's output for a 10 s window at HZ 100: the compositor (100) with a
+# network worker, two llvmpipe threads, one thread that exits and one that starts in the
+# window; its busier shader-seed child (200, also `shell`); Terminal's tilo-ush (300).
+IDLE_SAMPLE = """\
+@@0
+U 40.00
+P 100 shell 200 100 1 1000
+H 100 100 shell 50 100
+H 100 101 tilo-net-0 10 50
+H 100 102 llvmpipe-0 5 10
+H 100 103 llvmpipe-1 5 10
+H 100 104 tilo-files-index 120 30
+P 200 shell 0 0 100 3000
+H 200 200 shell 0 0
+P 300 tilo-ush 0 0 1 2000
+H 300 300 tilo-ush 0 0
+H 300 301 broker 0 0
+T 10000 9000
+@@1
+U 50.05
+P 100 shell 245 105 1 1000
+H 100 100 shell 52 105
+H 100 101 tilo-net-0 30 150
+H 100 102 llvmpipe-0 15 30
+H 100 103 llvmpipe-1 10 20
+H 100 105 tilo-present 3 4
+P 200 shell 300 2 100 3000
+H 200 200 shell 300 2
+P 300 tilo-ush 100 630 1 2000
+H 300 300 tilo-ush 20 30
+H 300 301 broker 80 600
+T 16000 14000
+HZ 100
+"""
+
+
+class IdleThreads(unittest.TestCase):
+    def summary(self, text=IDLE_SAMPLE):
+        return resources.summarize(resources._parse_sample(text), 10)
+
+    def test_the_compositor_is_the_shell_with_no_shell_above_it_not_the_busiest(self):
+        m = self.summary()
+        self.assertEqual(m["compositor_pid"], 100)
+        self.assertEqual((m["shell_cpu_pct"], m["shell_wakeups_per_s"]), (4.5, 0.5))
+        self.assertEqual(m["top"][0]["pid"], 200)
+        two = IDLE_SAMPLE.replace("P 200 shell 0 0 100 3000", "P 200 shell 0 0 1 3000")
+        with self.assertRaises(resources.core.Unobservable):
+            self.summary(two)
+
+    def test_names_the_threads_that_spent_the_compositors_cpu(self):
+        m = self.summary()
+        self.assertEqual(m["session_age_s"], 30.0)
+        self.assertEqual([(t["tid"], t["cpu_pct"]) for t in m["shell_threads"]],
+                         [(101, 2.0), (102, 1.0), (103, 0.5), (105, 0.3), (100, 0.2)])
+        self.assertTrue(next(t for t in m["shell_threads"] if t["tid"] == 105)["new"])
+        groups = [(g["name"], g["threads"], g["cpu_pct"]) for g in m["shell_thread_groups"]]
+        self.assertEqual(groups[:2], [("tilo-net", 1, 2.0), ("llvmpipe", 2, 1.5)])
+        # 0.5 + 10 + 2 + 1 + 0.4 context switches per second, the main thread's 0.5 among them.
+        self.assertEqual(m["shell_threads_wakeups_per_s"], 13.9)
+        # tilo-files-index ended inside the window: its 0.5% is the process's, not a thread's.
+        self.assertEqual(m["shell_exited_threads_cpu_pct"], 0.5)
+
+    def test_a_busy_session_process_carries_its_own_threads(self):
+        ush = next(p for p in self.summary()["top"] if p["comm"] == "tilo-ush")
+        self.assertEqual((ush["cpu_pct"], ush["threads"][0]["name"], ush["threads"][0]["cpu_pct"]),
+                         (10.0, "broker", 8.0))
+
+    def test_an_over_budget_compositor_names_its_busiest_threads_and_age(self):
+        m = {**self.summary(), "frames_painted": 0, "shell_loop_ticks_per_s": 0.0}
+        budgets = {"idle_shell_cpu_pct": 1.0, "idle_frames": 2, "idle_loop_ticks_per_s": 2.0,
+                   "idle_user_cpu_pct": 100.0}
+        [problem] = resources._budget_problems(m, budgets, "idle")
+        self.assertEqual(problem, "compositor CPU 4.5% > 1.0% (tilo-net 2.0%, llvmpipe×2 1.5%, "
+                                  "tilo-present 0.3%, shell 0.2%, exited threads 0.5%; session age 30.0 s)")
+
+
 class Gates(unittest.TestCase):
     def test_boot_gate_total_and_phases(self):
         gate = resources.parse_boot_gate(BOOT_PASS)
