@@ -28,6 +28,9 @@ pub(crate) struct GatedHost {
     /// Refuse an invocation naming no revision as an app built before
     /// revisionless resolution does: as a moved revision.
     stale_without_revision: bool,
+    /// Refuse an invocation naming no revision as the broker refuses a
+    /// directory action that asks for confirmation without one.
+    confirmed_needs_revision: bool,
     queries: Arc<StdMutex<Vec<CatalogueQuery>>>,
 }
 
@@ -77,6 +80,11 @@ impl ActionHost for GatedHost {
         if self.stale_without_revision && request.revision.is_none() {
             return Pending::ready(Err(ActionHostError::InvalidRequest {
                 reason: "the action changed since that revision; list it again".into(),
+            }));
+        }
+        if self.confirmed_needs_revision && request.revision.is_none() {
+            return Pending::ready(Err(ActionHostError::InvalidRequest {
+                reason: tilo_actions::remote::CONFIRMED_ACTION_NEEDS_REVISION.into(),
             }));
         }
         self.owner.lock().unwrap().replace(caller.clone());
@@ -664,4 +672,67 @@ pub(crate) fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::U
     assert_eq!(state(&done), "succeeded", "{done}");
     client.shutdown(std::net::Shutdown::Write).unwrap();
     assert!(lines.next().is_none(), "no reply is left over");
+}
+
+/// A directory action asking for confirmation needs the revision it is
+/// confirmed at; the bridge, which confirms on its client's policy, reads
+/// the revision it is at and starts the action once with it.
+#[test]
+fn a_confirmed_action_is_given_the_revision_it_is_confirmed_at() {
+    let host = GatedHost {
+        at_once: true,
+        confirmed_needs_revision: true,
+        ..GatedHost::default()
+    };
+    let endpoint = gated_endpoint(host.clone());
+    run(async {
+        let session = gated_session(&endpoint).await;
+        let reply = call(&endpoint, &session, "tilo_invoke", current_invoke()).await;
+        assert_eq!(
+            reply["structuredContent"]["update"]["state"], "succeeded",
+            "{reply}"
+        );
+    });
+    assert_eq!(
+        revisions_and_reads(&host),
+        (vec![Some("1".to_owned())], 1),
+        "one read of the revision, one start with it"
+    );
+}
+
+/// An exact-phrase contract is answered with the phrase the bridge read at
+/// a revision, and the retry names that revision, so a contract that moved
+/// on since is refused rather than answered with a stale phrase.
+#[test]
+fn phrase_retry_names_the_revision_it_read() {
+    let host = GatedHost {
+        at_once: true,
+        stub: StubHost {
+            confirmation: tilo_actions::ConfirmationPolicy::Phrase {
+                phrase: "ERASE".into(),
+            },
+            ..StubHost::default()
+        },
+        ..GatedHost::default()
+    };
+    let endpoint = gated_endpoint(host.clone());
+    run(async {
+        let session = gated_session(&endpoint).await;
+        let reply = call(&endpoint, &session, "tilo_invoke", current_invoke()).await;
+        assert_eq!(
+            reply["structuredContent"]["update"]["state"], "succeeded",
+            "{reply}"
+        );
+    });
+    let started = host.stub.invoked.lock().unwrap().clone();
+    assert_eq!(started.len(), 1, "{started:?}");
+    assert_eq!(
+        started[0].confirmation,
+        Some(tilo_actions::remote::Confirmation::Phrase("ERASE".into()))
+    );
+    assert_eq!(
+        started[0].revision.as_deref(),
+        Some("1"),
+        "the phrase retry is bound to the revision its phrase was read at"
+    );
 }

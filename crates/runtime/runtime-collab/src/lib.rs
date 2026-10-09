@@ -4770,7 +4770,7 @@ mod reliable_invocation_tests {
         over_wire(s, |c| async move {
             assert!(matches!(
                 c.resolve_published_action(9, "v", "r", "a").await.unwrap(),
-                ActionDirectoryResolution::Found(_)
+                ActionDirectoryResolution::Found { .. }
             ));
             assert!(
                 c.resolve_published_action_for_invocation(9, "v", "r", "a")
