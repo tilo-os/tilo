@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint, agent, latency, render, wakeups); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint, agent, latency, render, wakeups, hosting); empty runs all."
         required: false
         default: ""
       accept:
@@ -58,6 +58,7 @@ jobs:
       latency: ${{ steps.select.outputs.latency }}
       render: ${{ steps.select.outputs.render }}
       wakeups: ${{ steps.select.outputs.wakeups }}
+      hosting: ${{ steps.select.outputs.hosting }}
     steps:
       - name: Select KPI groups
         id: select
@@ -65,7 +66,7 @@ jobs:
           KPIS: ${{ github.event.inputs.kpis }}
         run: |
           set -euo pipefail
-          known=(fs footprint agent latency render wakeups)
+          known=(fs footprint agent latency render wakeups hosting)
           IFS=, read -r -a selected <<< "${KPIS:-$(IFS=,; echo "${known[*]}")}"
           for group in "${selected[@]}"; do
             [[ " ${known[*]} " == *" $group "* ]] || { echo "::error::unknown KPI group '$group' (known: ${known[*]})"; exit 1; }
@@ -424,8 +425,62 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # What an active collaborator costs a relay (TIL-592): 100 collaborators in
+  # rooms of four type, point and idle through one relay process for ten
+  # measured minutes, with authentication and the production co-edit path on
+  # (crates/hosting/tilo-relay/examples/relay_load). Records CPU-seconds,
+  # resident MiB and egress bytes per collaborator-hour and fan-out latency;
+  # adapters.py prices them with tools/perf/prices.toml. Release build made
+  # once here, with the agent and render jobs' Cargo environment.
+  hosting:
+    needs: [plan, builder]
+    if: needs.plan.outputs.hosting == 'true'
+    runs-on: runner
+    timeout-minutes: 75
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the load bench
+        run: >-
+          bash scripts/ci-run.sh "relay load bench release build" --
+          cargo build --locked --release -p tilo-relay --example relay_load
+
+      - name: Load the relay and record
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer none \
+            --virtualization kvm --runner runner > perf/env.json
+          target/release/examples/relay_load --collaborators 100 --minutes 10 --out perf/run \
+            | tee perf/hosting-load.log
+          python3 tools/perf/adapters.py hosting-load --env-json perf/env.json \
+            perf/run/hosting-load.json > perf/hosting.jsonl
+          cat perf/hosting.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-hosting
+          path: perf/
+          if-no-files-found: warn
+
   compare:
-    needs: [plan, fs, footprint, agent, latency, render, wakeups]
+    needs: [plan, fs, footprint, agent, latency, render, wakeups, hosting]
     if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -456,13 +511,14 @@ jobs:
           LATENCY_RESULT: ${{ needs.latency.result }}
           RENDER_RESULT: ${{ needs.render.result }}
           WAKEUPS_RESULT: ${{ needs.wakeups.result }}
+          HOSTING_RESULT: ${{ needs.hosting.result }}
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -uo pipefail
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "hosting:$HOSTING_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;

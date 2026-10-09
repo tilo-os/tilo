@@ -239,6 +239,17 @@ fn footprint(root: &Path) -> Footprint {
     out
 }
 
+/// Bytes the relay has written to `device`'s connected session.
+fn session_bytes(metrics: &tilo_relay::metrics::Metrics, device: [u8; 32]) -> u64 {
+    let sessions: Vec<_> = metrics
+        .session_egress()
+        .into_iter()
+        .filter(|session| session.device_public_key == device)
+        .collect();
+    assert_eq!(sessions.len(), 1, "one live session per subscriber");
+    sessions[0].bytes_sent
+}
+
 fn percentile(sorted: &[u64], p: usize) -> u64 {
     let rank = (sorted.len() * p).div_ceil(100).max(1);
     sorted[rank - 1]
@@ -339,6 +350,9 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         .state_root
         .join("workspaces")
         .join(WORKSPACE.to_string());
+    let metrics = relay.relay.handle().metrics;
+    let egress_before = metrics.snapshot();
+    let session_bytes_before = session_bytes(&metrics, current.device_pubkey());
     let mut change_bytes = Vec::with_capacity(KEYSTROKES);
     let mut message_bytes = Vec::with_capacity(KEYSTROKES);
     let mut payload_bytes = Vec::with_capacity(KEYSTROKES);
@@ -410,6 +424,39 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     }
     let after = footprint(&store);
     let warm = warm.unwrap();
+
+    // The relay's egress counters account for exactly the frames the two
+    // subscribers read: live fan-out in total and for this room, and the
+    // compact subscriber's own session.
+    let egress_after = metrics.snapshot();
+    let wire_bytes: u64 = old_frame_bytes.iter().chain(&new_frame_bytes).sum();
+    assert_eq!(
+        egress_after.bytes_sent_live - egress_before.bytes_sent_live,
+        wire_bytes,
+        "live egress must count every fanned-out keystroke frame, once",
+    );
+    let room_live = |snapshot: &tilo_relay::metrics::MetricsSnapshot| {
+        snapshot
+            .rooms
+            .get(&WORKSPACE)
+            .map_or(0, |room| room.bytes_sent_live)
+    };
+    assert_eq!(
+        room_live(&egress_after) - room_live(&egress_before),
+        wire_bytes,
+        "the room's live egress is the same frames",
+    );
+    let compact_session = session_bytes(&metrics, current.device_pubkey()) - session_bytes_before;
+    let compact_frames: u64 = new_frame_bytes.iter().sum();
+    assert!(
+        compact_session >= compact_frames,
+        "the tilo-relay/5 session wrote {compact_session} B, less than the \
+         {compact_frames} B of keystroke frames its subscriber read",
+    );
+    assert!(
+        egress_after.bytes_sent - egress_before.bytes_sent >= wire_bytes,
+        "total egress is at least the live frames",
+    );
 
     // No file outside retained history grows with the number of edits: the
     // per-delta `log.jsonl` is gone, and nothing replaced it.
