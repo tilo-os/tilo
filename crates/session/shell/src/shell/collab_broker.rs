@@ -748,6 +748,13 @@ fn spawn_inner(
         tilo_action_broker::services::HostServices::default()
     };
     services.record_content = record_content;
+    // The same service the identity broker answers key requests from: its
+    // changes tell each route's endpoint when to ask again.
+    services.channel_keys = channel_encryption.clone().map(|access| {
+        let keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
+        keys.set(Some(access));
+        keys
+    });
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));
