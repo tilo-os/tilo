@@ -96,6 +96,8 @@ struct NameIndex {
 
 impl NameIndex {
     fn from_entries(mut entries: Vec<NameEntry>, generation: u64) -> Self {
+        #[cfg(test)]
+        tests::NAME_INDEX_BUILDS.with(|count| count.set(count.get() + 1));
         entries.sort_by(|a, b| {
             path_depth(&a.facts.lower)
                 .cmp(&path_depth(&b.facts.lower))
@@ -1121,6 +1123,165 @@ fn display_path(home: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static NAME_INDEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn set_modified(path: &Path, modified: SystemTime) {
+        std::fs::File::open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    }
+
+    fn watched_provider(home: &Path) -> FilesProvider {
+        let provider = FilesProvider::with_home(home.to_owned());
+        provider.ready.set(()).unwrap();
+        assert!(provider.tantivy.set(None).is_ok());
+        walk_home(home, &provider.name_index);
+        provider
+    }
+
+    #[test]
+    fn unchanged_watched_paths_keep_the_index_and_cursor() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        let file = home.join("a-needle.md");
+        let folder = home.join("b-needle");
+        std::fs::write(&file, b"first content").unwrap();
+        std::fs::create_dir(&folder).unwrap();
+        let now = SystemTime::now();
+        let first_time = now - Duration::from_secs(2 * 86_400);
+        let second_time = now - Duration::from_secs(3 * 86_400);
+        set_modified(&file, first_time);
+        set_modified(&folder, first_time);
+        let provider = watched_provider(home);
+        let before = provider.published().unwrap();
+        let builds = NAME_INDEX_BUILDS.get();
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let wanted = [ResourceKind::File, ResourceKind::Folder];
+        let budget = SearchBudget {
+            max_results: 1,
+            max_bytes: 8_192,
+            max_work: 1,
+        };
+        let first = provider.query_page(ctx_for("needle", &wanted, &st, &doc), None, budget);
+        let cursor = first.next_cursor.unwrap();
+        let expected =
+            provider.query_page(ctx_for("needle", &wanted, &st, &doc), Some(&cursor), budget);
+        // A content write changes mtime but leaves both timestamps inside the
+        // 1..=6 day ranking band. Names search must retain its publication.
+        std::fs::write(&file, b"different content and length").unwrap();
+        set_modified(&file, second_time);
+        set_modified(&folder, second_time);
+        assert_ne!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            first_time
+        );
+        for _ in 0..2 {
+            apply_watched_paths(home, &provider.name_index, &[file.clone(), folder.clone()]);
+            let after = provider.published().unwrap();
+            assert_eq!(
+                after.generation, before.generation,
+                "unchanged name publication"
+            );
+            assert_eq!(NAME_INDEX_BUILDS.get(), builds, "no Tantivy rebuild");
+            assert!(Arc::ptr_eq(&before, &after));
+            let next =
+                provider.query_page(ctx_for("needle", &wanted, &st, &doc), Some(&cursor), budget);
+            assert!(!next.stale_cursor);
+            assert_eq!(next.results.len(), 1);
+            assert_eq!(next.results[0].id, expected.results[0].id);
+            assert_eq!(next.results[0].score, expected.results[0].score);
+        }
+    }
+
+    #[test]
+    fn watched_changes_publish_ranking_kind_rename_and_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        let file = home.join("a-needle.md");
+        let peer = home.join("b-needle.md");
+        std::fs::write(&file, b"content").unwrap();
+        std::fs::write(&peer, b"peer").unwrap();
+        let now = SystemTime::now();
+        set_modified(&file, now - Duration::from_secs(400 * 86_400));
+        set_modified(&peer, now - Duration::from_secs(2 * 86_400));
+        let provider = watched_provider(home);
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let wanted = [ResourceKind::File, ResourceKind::Folder];
+        let budget = SearchBudget {
+            max_results: 1,
+            max_bytes: 8_192,
+            max_work: 1,
+        };
+        let first = provider.query_page(ctx_for("needle", &wanted, &st, &doc), None, budget);
+        assert_eq!(first.results[0].id, peer.display().to_string());
+        let cursor = first.next_cursor.unwrap();
+        let before = provider.published().unwrap();
+        let builds = NAME_INDEX_BUILDS.get();
+        set_modified(&file, now);
+        // An unchanged path in the same batch must not suppress a real change.
+        apply_watched_paths(home, &provider.name_index, &[peer.clone(), file.clone()]);
+        assert_ne!(provider.published().unwrap().generation, before.generation);
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds + 1);
+        let ranked = provider.query_page(ctx_for("needle", &wanted, &st, &doc), None, budget);
+        assert_eq!(ranked.results[0].id, file.display().to_string());
+        assert!(
+            provider
+                .query_page(ctx_for("needle", &wanted, &st, &doc), Some(&cursor), budget,)
+                .stale_cursor
+        );
+
+        // Change only the kind: preserve the fresh ranking band and path.
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        set_modified(&file, now);
+        apply_watched_paths(home, &provider.name_index, std::slice::from_ref(&file));
+        let folders = provider.query_page(
+            ctx_for("needle", &[ResourceKind::Folder], &st, &doc),
+            None,
+            SearchBudget::PALETTE,
+        );
+        assert_eq!(folders.results.len(), 1);
+        assert_eq!(folders.results[0].id, file.display().to_string());
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds + 2);
+
+        let renamed = home.join("renamed.md");
+        std::fs::rename(&peer, &renamed).unwrap();
+        apply_watched_paths(home, &provider.name_index, &[peer, renamed.clone()]);
+        let found = provider.query_page(
+            ctx_for("renamed", &[ResourceKind::File], &st, &doc),
+            None,
+            SearchBudget::PALETTE,
+        );
+        assert_eq!(found.results.len(), 1);
+        assert_eq!(found.results[0].id, renamed.display().to_string());
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds + 3);
+
+        std::fs::write(file.join("child.md"), b"child").unwrap();
+        apply_watched_paths(home, &provider.name_index, &[file.join("child.md")]);
+        std::fs::remove_dir_all(&file).unwrap();
+        apply_watched_paths(home, &provider.name_index, std::slice::from_ref(&file));
+        assert!(
+            provider
+                .published()
+                .unwrap()
+                .entries
+                .iter()
+                .all(|entry| !entry.path.starts_with(&file))
+        );
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds + 5);
+        let retained = provider.published().unwrap();
+        apply_watched_paths(home, &provider.name_index, &[file]);
+        assert!(Arc::ptr_eq(&retained, &provider.published().unwrap()));
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds + 5);
+    }
 
     /// Case-insensitive-by-construction extension check for test assertions,
     /// via `Path::extension` rather than a raw `ends_with(".ext")`.
