@@ -244,9 +244,9 @@ fn the_agents_catalogue_breakpoint_leaves_the_tail_and_the_tools_theirs() {
     // A first turn that is only the marked catalogue: that marker already
     // ends the conversation, so nothing is stacked on it and the slot it
     // would have taken stays free.
-    let catalogue_only = json!([catalogue_first_turn()[0].clone()]);
+    let catalogue_only = json!([catalogue_first_turn()[0]]);
     let mut body = loop_turn();
-    body["messages"] = json!([{"role": "user", "content": catalogue_only.clone()}]);
+    body["messages"] = json!([{"role": "user", "content": catalogue_only}]);
     let alone = sent(&anthropic(), body);
     assert_eq!(alone["messages"][0]["content"], catalogue_only);
     assert_eq!(alone["system"][0]["cache_control"]["type"], EPHEMERAL);
