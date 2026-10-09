@@ -6341,7 +6341,9 @@ mod tests {
     /// Wait until the SHM worker is done with every commit queued for `id`.
     #[cfg(target_os = "linux")]
     fn wait_shm_done(id: SurfaceId) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(5))
+            .expect("a deadline five seconds out");
         while store().with_entry(id, |entry| entry.shm_queued > entry.shm_done) {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -6411,7 +6413,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = sid(590);
         for reset in [(|id| store().clear_frame(id)) as fn(SurfaceId), |id| {
-            store().note_failure(id, "test failure".into())
+            store().note_failure(id, "test failure".into());
         }] {
             store().forget(id);
             store()

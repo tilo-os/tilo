@@ -29,6 +29,42 @@ struct ForeignCommitCaptures(Mutex<VecDeque<ForeignCommitCapture>>);
 #[derive(Default)]
 struct ShmCaptureBase(std::sync::atomic::AtomicBool);
 
+/// Record that the surface queued an SHM capture.
+fn mark_shm_capture_base(states: &wl_compositor::SurfaceData) {
+    states
+        .data_map
+        .insert_if_missing_threadsafe(ShmCaptureBase::default);
+    if let Some(base) = states.data_map.get::<ShmCaptureBase>() {
+        base.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A commit the capture never sees still changes the surface: a later SHM
+/// commit's damage is relative to it, not to the last one captured.
+fn forget_uncaptured_shm_base(surface: &WlSurface, surface_id: u64) {
+    let had_base = wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<ShmCaptureBase>()
+            .is_some_and(|base| base.0.swap(false, std::sync::atomic::Ordering::Relaxed))
+    });
+    if had_base {
+        crate::compositor::foreign::store().reset_shm_base(surface_id);
+    }
+}
+
+/// After any captured commit but an SHM buffer (or a commit that changes
+/// nothing), the next SHM commit's damage is not relative to the frame the
+/// SHM capture built: it copies whole.
+fn settle_shm_base(surface_id: u64, association: &ForeignCommitCapture) {
+    if !matches!(
+        association,
+        ForeignCommitCapture::Shm(_) | ForeignCommitCapture::NoBuffer
+    ) {
+        crate::compositor::foreign::store().reset_shm_base(surface_id);
+    }
+}
+
 /// Buffer damage as the frame store records it.
 fn buffer_damage(rects: &[BufferRect]) -> Vec<vello::kurbo::Rect> {
     rects
@@ -4065,18 +4101,7 @@ impl State {
             || self.is_output_presentation_surface(surface_id)
             || self.is_transient_surface(surface_id);
         if !captured_here {
-            // A commit this capture never sees still changes the surface: a
-            // later SHM commit's damage is relative to it, not to the last
-            // one captured.
-            let had_base = wl_compositor::with_states(surface, |states| {
-                states
-                    .data_map
-                    .get::<ShmCaptureBase>()
-                    .is_some_and(|base| base.0.swap(false, std::sync::atomic::Ordering::Relaxed))
-            });
-            if had_base {
-                crate::compositor::foreign::store().reset_shm_base(surface_id);
-            }
+            forget_uncaptured_shm_base(surface, surface_id);
             return;
         }
         let (association, capture) = wl_compositor::with_states(surface, |states| {
@@ -4141,14 +4166,7 @@ impl State {
                 None => (ForeignCommitCapture::Failed, None),
             }
         });
-        if !matches!(
-            association,
-            ForeignCommitCapture::Shm(_) | ForeignCommitCapture::NoBuffer
-        ) {
-            // What the next SHM commit's damage is measured against is not
-            // the frame the SHM capture built: it copies whole.
-            crate::compositor::foreign::store().reset_shm_base(surface_id);
-        }
+        settle_shm_base(surface_id, &association);
         if let Some(capture) = capture {
             wl_compositor::add_blocker(surface, capture.barrier);
             if let Some(fence) = capture.fence {
@@ -4182,12 +4200,7 @@ impl State {
                     .push_back(association);
             }
             if matches!(association, ForeignCommitCapture::Shm(_)) {
-                states
-                    .data_map
-                    .insert_if_missing_threadsafe(ShmCaptureBase::default);
-                if let Some(base) = states.data_map.get::<ShmCaptureBase>() {
-                    base.0.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+                mark_shm_capture_base(states);
             }
         });
     }
