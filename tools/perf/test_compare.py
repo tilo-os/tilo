@@ -111,6 +111,22 @@ class Relative(unittest.TestCase):
         [row] = compare.compare([make(12.5, 2)], history(10), NO_BUDGETS, set(), set())
         self.assertEqual((row.status, row.record.verdict["baseline_n"]), ("regression-pending", 1))
 
+    def test_dropped_frames_do_not_absorb_sustained_growth_from_zero(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        past: list[record.Record] = []
+        observed = []
+        for day, value in enumerate((0, 3, 3, 3, 3), 1):
+            item = record.from_samples("latency.workspace_switch.dropped_frames", "count", [value],
+                                       started_at=f"2026-10-{day:02d}T01:15:00Z", **ENV)
+            [row] = compare.compare([item], past, budgets, set(), set())
+            observed.append((row.status, row.failing))
+            past.append(row.record)
+            if day >= 3:
+                self.assertEqual(row.record.verdict["baseline_p99"], 0)
+        self.assertEqual(observed, [("new", False), ("regression-pending", False),
+                                    ("regression", True), ("regression", True),
+                                    ("regression", True)])
+
     def test_a_unit_change_fails(self):
         past = [record.from_samples("render.frame_ms.4k", "us", [1], started_at="2026-10-01T00:00:00Z", **ENV)]
         [row] = compare.compare([make(1, 6)], past, NO_BUDGETS, set(), set())
@@ -177,7 +193,7 @@ class Budgets(unittest.TestCase):
         self.assertEqual(budgets.defaults["p50_tolerance"], 1.10)
         self.assertEqual(budgets.defaults["p99_tolerance"], 1.20)
         self.assertEqual(budgets.defaults["baseline_min_runs"], 1)
-        self.assertEqual(budgets.setting("latency.workspace_switch.dropped_frames", "baseline_min_runs"), 3)
+        self.assertEqual(budgets.setting("latency.workspace_switch.dropped_frames", "baseline_min_runs"), 1)
         self.assertIn("footprint.tapp.bytes.x86_64", budgets.kpis)
 
 

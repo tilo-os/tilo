@@ -224,9 +224,10 @@ records of the same KPI and environment, and fails the run on
 
 - a p50 more than 10 % or a p99 more than 20 % above the median of the last five
   comparable runs, on two consecutive runs (one bad night is reported as
-  `regression-pending`). A noisy KPI sets `baseline_min_runs` (the latency
-  lane: 3) and is compared once that many comparable runs, or one accepted
-  run, are stored; until then a run is `new` and joins the baseline;
+  `regression-pending`). A noisy KPI sets `baseline_min_runs` (three for latency
+  timing KPIs; one for dropped frames) and is compared once that many
+  comparable runs, or one accepted run, are stored; until then a run is `new`
+  and joins the baseline;
 - an enforced ceiling in `tools/perf/kpi-budgets.toml` (non-enforced ceilings
   are marketing targets and are only reported);
 - a selected benchmark that produced no record.
