@@ -29,11 +29,13 @@ use wgpu::util::TextureBlitter;
 
 use super::hdr_composite::{HdrCompositor, HdrPass};
 use super::hdr_encode::HdrEncodePipeline;
+use super::orientation::OrientedCopy;
 use super::xrgb_history::XrgbWritePlan;
 pub use super::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbHistoryTransaction, XrgbTargetHistory,
 };
 use crate::shell::hdr_surface::HdrLayer;
+use settings_store::hardware::OutputTransform;
 
 mod output_view;
 use output_view::OutputSurface;
@@ -1974,6 +1976,8 @@ pub struct VelloDrmBridge {
     dispatch_stage_observer: Option<DispatchStageObserver>,
     /// SDR → PQ encode passes, one per HDR scanout format in use.
     hdr_encoders: Vec<HdrEncodePipeline>,
+    /// The SDR final pass of rotated outputs; built with the first one.
+    oriented_copy: Option<OrientedCopy>,
     /// Composites HDR layers; built with the first frame that has any.
     hdr_compositor: Option<HdrCompositor>,
     dev_id: usize,
@@ -2081,6 +2085,7 @@ impl VelloDrmBridge {
                 .is_some_and(|value| value == "1")
                 .then(DispatchStageObserver::default),
             hdr_encoders: Vec::new(),
+            oriented_copy: None,
             hdr_compositor: None,
             dev_id,
 
@@ -2537,8 +2542,14 @@ impl VelloDrmBridge {
         )
     }
 
-    /// The PQ encode pipeline for `format` exists and encodes SDR white at `sdr_white_nits`.
-    fn prepare_hdr_encoder(&mut self, format: wgpu::TextureFormat, sdr_white_nits: f32) {
+    /// The PQ encode pipeline for `format` exists and encodes SDR white at `sdr_white_nits`
+    /// into a target turned by `orientation`.
+    fn prepare_hdr_encoder(
+        &mut self,
+        format: wgpu::TextureFormat,
+        sdr_white_nits: f32,
+        orientation: OutputTransform,
+    ) {
         if !self
             .hdr_encoders
             .iter()
@@ -2552,13 +2563,36 @@ impl VelloDrmBridge {
             .iter()
             .find(|pipeline| pipeline.format() == format)
         {
-            pipeline.set_sdr_white(&self.target.queue, sdr_white_nits);
+            pipeline.set_params(&self.target.queue, sdr_white_nits, orientation);
         }
+    }
+
+    /// The final pass `output` needs exists and writes its orientation with the next
+    /// submission: the PQ encode for an HDR target, the oriented copy for a rotated SDR one.
+    fn prepare_final_pass(&mut self, output: OutputTarget<'_>, hdr: bool, sdr_white_nits: f32) {
+        if hdr {
+            self.prepare_hdr_encoder(output.format, sdr_white_nits, output.orientation);
+        } else {
+            self.prepare_oriented_copy(output.orientation);
+        }
+    }
+
+    /// The SDR final pass of a rotated output exists and writes `orientation` with the next
+    /// submission. An unrotated output keeps the plain blit.
+    fn prepare_oriented_copy(&mut self, orientation: OutputTransform) {
+        if orientation == OutputTransform::Normal {
+            return;
+        }
+        let device = &self.target.device;
+        self.oriented_copy
+            .get_or_insert_with(|| OrientedCopy::new(device))
+            .set_orientation(&self.target.queue, orientation);
     }
 
     /// Render `scene` into the target currently swapped into `self.target`, then run the
     /// final pass into `output`: a copy for `Bgra8Unorm`, the PQ encode (and the HDR
-    /// composite when there are layers) otherwise. Waits for the completion marker.
+    /// composite when there are layers) otherwise, each turned by `output.orientation`.
+    /// Waits for the completion marker.
     fn paint_final_pass(
         &mut self,
         scene: &Scene,
@@ -2581,12 +2615,7 @@ impl VelloDrmBridge {
             let (width, height) = self.target.size;
             self.reconstruct_target(width, height)?;
         }
-        if output.size != self.target.size {
-            return Err(BridgeError::InvalidSize(format!(
-                "imported scanout target is {}x{}, expected {}x{}",
-                output.size.0, output.size.1, self.target.size.0, self.target.size.1
-            )));
-        }
+        output.check_shows(self.target.size)?;
         // Frames this output skipped while its flip was pending left their damage owed: the
         // retained pixels already claim those revisions, so this render repairs it too.
         let repaired = self.target.take_owed_damage(damage.regions);
@@ -2603,6 +2632,7 @@ impl VelloDrmBridge {
                 hdr_layers,
                 Some((output.format, sdr_white_nits)),
             ));
+            compositor.set_orientation(output.orientation);
         }
         // The substituted layer images are not what the retained target holds
         // from an earlier frame, so a composited frame renders densely.
@@ -2615,13 +2645,15 @@ impl VelloDrmBridge {
         } else {
             damage
         };
-        if hdr {
-            self.prepare_hdr_encoder(output.format, sdr_white_nits);
-        }
+        self.prepare_final_pass(output, hdr, sdr_white_nits);
         let encode = self
             .hdr_encoders
             .iter()
             .find(|pipeline| hdr && pipeline.format() == output.format);
+        let oriented = self
+            .oriented_copy
+            .as_ref()
+            .filter(|_| !hdr && output.orientation != OutputTransform::Normal);
         let blitter = &self.bgra_blitter;
         let view = output.view;
         let format = output.format;
@@ -2638,10 +2670,11 @@ impl VelloDrmBridge {
             FrameOutput::GpuOnly,
             CompletionPolicy::Absolute(deadline),
             timing.as_mut(),
-            |device, encoder, source| match (compositor, encode) {
-                (Some(compositor), _) => compositor.encode(encoder, source, view, format),
-                (None, Some(pipeline)) => pipeline.encode(device, encoder, source, view),
-                (None, None) => blitter.copy(device, encoder, source, view),
+            |device, encoder, source| match (compositor, encode, oriented) {
+                (Some(compositor), _, _) => compositor.encode(encoder, source, view, format),
+                (None, Some(pipeline), _) => pipeline.encode(device, encoder, source, view),
+                (None, None, Some(copy)) => copy.copy(device, encoder, source, view),
+                (None, None, None) => blitter.copy(device, encoder, source, view),
             },
         );
         self.target.hdr_pass = None;
@@ -5457,13 +5490,18 @@ mod tests {
         view: &OutputView,
         damage: SceneDamage<'_>,
     ) -> (GpuFrameStats, Vec<u8>) {
-        let (width, height) = view.size;
+        let (texture, stats) = paint_output_offscreen(bridge, scene, view, damage);
+        (stats, read_target(bridge, &texture))
+    }
+
+    /// The bytes of a 4-byte-per-pixel scanout stand-in, rows tight.
+    fn read_target(bridge: &VelloDrmBridge, texture: &wgpu::Texture) -> Vec<u8> {
+        let (width, height) = (texture.width(), texture.height());
         let (device, queue) = bridge.gpu();
         let (device, queue) = (device.clone(), queue.clone());
-        let (texture, stats) = paint_output_offscreen(bridge, scene, view, damage);
         let (buffer, stride) = VelloDrmBridge::allocate_staging(&device, width, height);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        VelloDrmBridge::append_full_copy(&mut encoder, &texture, &buffer, stride, width, height);
+        VelloDrmBridge::append_full_copy(&mut encoder, texture, &buffer, stride, width, height);
         queue.submit([encoder.finish()]);
         let mapped =
             VelloDrmBridge::map_device_readback(&device, &buffer).expect("scanout stand-in maps");
@@ -5473,7 +5511,7 @@ mod tests {
         }
         drop(mapped);
         buffer.unmap();
-        (stats, pixels)
+        pixels
     }
 
     /// One output's frame through the production per-output path into an offscreen
@@ -5484,7 +5522,19 @@ mod tests {
         view: &OutputView,
         damage: SceneDamage<'_>,
     ) -> (wgpu::Texture, GpuFrameStats) {
-        let (width, height) = view.size;
+        paint_output_offscreen_as(bridge, scene, view, damage, wgpu::TextureFormat::Bgra8Unorm)
+    }
+
+    /// [`paint_output_offscreen`] into a stand-in of `format`: `Bgra8Unorm` for an SDR
+    /// scanout, `Rgb10a2Unorm` for an `XBGR2101010` HDR one.
+    fn paint_output_offscreen_as(
+        bridge: &mut VelloDrmBridge,
+        scene: &Scene,
+        view: &OutputView,
+        damage: SceneDamage<'_>,
+        format: wgpu::TextureFormat,
+    ) -> (wgpu::Texture, GpuFrameStats) {
+        let (width, height) = view.target_size();
         let (device, _) = bridge.gpu();
         let device = device.clone();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -5497,7 +5547,7 @@ mod tests {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8Unorm,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -5509,8 +5559,9 @@ mod tests {
                 damage,
                 OutputTarget {
                     view: &target_view,
-                    format: wgpu::TextureFormat::Bgra8Unorm,
-                    size: view.size,
+                    format,
+                    size: (width, height),
+                    orientation: view.orientation,
                 },
                 Instant::now()
                     .checked_add(tilo_test_env::hang_bound())
@@ -5546,6 +5597,7 @@ mod tests {
             id: crate::shell::render::OutputId(1),
             transform: Affine::translate((-100.0, 0.0)),
             size: (100, 100),
+            orientation: OutputTransform::Normal,
         };
         let left = OutputView::at(crate::shell::render::OutputId(0), (0, 0), (100, 100));
         // The scanout stand-in is BGRA.
@@ -5573,6 +5625,237 @@ mod tests {
             (200, 100),
             "the scene's own target is untouched by the outputs"
         );
+    }
+
+    const ORIENTATIONS: [OutputTransform; 4] = [
+        OutputTransform::Normal,
+        OutputTransform::Rotate90,
+        OutputTransform::Rotate180,
+        OutputTransform::Rotate270,
+    ];
+
+    /// A desktop of `size` in which every turn of a pixel shows: a distinct colour in two
+    /// corners, an anti-aliased diagonal, a translucent circle and a scaled image.
+    fn asymmetric_scene(size: (u32, u32)) -> Scene {
+        use vello::kurbo::{BezPath, Circle, Rect};
+        use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+        let (w, h) = (f64::from(size.0), f64::from(size.1));
+        let mut scene = Scene::new();
+        for (color, rect) in [
+            (Color::from_rgb8(30, 60, 90), Rect::new(0.0, 0.0, w, h)),
+            (
+                Color::from_rgb8(230, 20, 40),
+                Rect::new(0.0, 0.0, w / 3.0, h / 4.0),
+            ),
+            (
+                Color::from_rgb8(20, 210, 70),
+                Rect::new(w * 0.6, h * 0.7, w, h),
+            ),
+        ] {
+            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+        }
+        let mut wedge = BezPath::new();
+        wedge.move_to((0.0, h));
+        wedge.line_to((w * 0.8, 0.0));
+        wedge.line_to((w, h * 0.2));
+        wedge.close_path();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(250, 200, 20, 180),
+            None,
+            &wedge,
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(120, 80, 250, 200),
+            None,
+            &Circle::new((w * 0.3, h * 0.6), h * 0.21),
+        );
+        let texels: Vec<u8> = (0_u8..12)
+            .flat_map(|i| {
+                [
+                    i.wrapping_mul(21),
+                    255_u8.wrapping_sub(i.wrapping_mul(19)),
+                    i.wrapping_mul(7),
+                    255,
+                ]
+            })
+            .collect();
+        let image = ImageData {
+            data: Blob::new(std::sync::Arc::new(texels)),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width: 4,
+            height: 3,
+        };
+        scene.fill(
+            Fill::NonZero,
+            // Five times its size, at (w/2, h/10).
+            Affine::new([5.0, 0.0, 0.0, 5.0, w * 0.5, h * 0.1]),
+            &ImageBrush::new(image),
+            None,
+            &Rect::new(0.0, 0.0, 4.0, 3.0),
+        );
+        scene
+    }
+
+    /// BGRA scanout bytes as the RGBA source the readback kernels take.
+    fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
+        bgra.chunks_exact(4)
+            .flat_map(|pixel| [pixel[2], pixel[1], pixel[0], pixel[3]])
+            .collect()
+    }
+
+    /// Pixels whose colour channels differ between a GPU `Bgra8Unorm` target and the CPU
+    /// kernel's `XRGB8888` bytes. The X byte is padding KMS ignores.
+    fn differing_pixels(gpu: &[u8], cpu: &[u8]) -> usize {
+        assert_eq!(gpu.len(), cpu.len());
+        gpu.chunks_exact(4)
+            .zip(cpu.chunks_exact(4))
+            .filter(|(g, c)| g[..3] != c[..3])
+            .count()
+    }
+
+    #[test]
+    fn a_rotated_lone_output_matches_the_readback_byte_for_byte() {
+        // The output is the desktop: the direct path renders into the bridge's own target,
+        // which is what the readback presenter renders too, and turns it on the GPU. The
+        // readback turns the same render on the CPU (`paint_one_scanout` without ICC or HDR).
+        let size = (90, 52);
+        let mut bridge = required_bridge(size.0, size.1);
+        let scene = asymmetric_scene(size);
+        let rgba = bridge.paint(&scene).expect("the dense render").to_vec();
+        for (revision, transform) in (1..).zip(ORIENTATIONS) {
+            let view =
+                OutputView::at(crate::shell::render::OutputId(0), (0, 0), size).oriented(transform);
+            assert!(bridge.view_is_whole_scene(&view));
+            let gpu = paint_output_pixels(&mut bridge, &scene, &view, revision);
+            let (pw, ph) = view.target_size();
+            let mut cpu = vec![0_u8; (pw * ph * 4) as usize];
+            swizzle_subrect_rgba_to_xrgb8888_composited(
+                SubrectSource {
+                    src_rgba: &rgba,
+                    src_w: size.0 as usize,
+                    src_h: size.1 as usize,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut cpu,
+                (pw * 4) as usize,
+                (pw as usize, ph as usize),
+                transform,
+                None,
+            );
+            assert_eq!(
+                differing_pixels(&gpu, &cpu),
+                0,
+                "{transform:?}: the GPU turn is the readback's, byte for byte"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rotated_output_beside_another_turns_its_own_surface() {
+        // Two 90x52 outputs side by side; the right one is rotated and renders into its own
+        // surface. Its scanout must be its unrotated image turned exactly as the readback
+        // kernel turns it.
+        let output = (90, 52);
+        let mut bridge = required_bridge(output.0 * 2, output.1);
+        let scene = asymmetric_scene((output.0 * 2, output.1));
+        let id = crate::shell::render::OutputId(1);
+        let upright = OutputView::at(id, (90, 0), output);
+        let unrotated = bgra_to_rgba(&paint_output_pixels(&mut bridge, &scene, &upright, 1));
+        for (revision, transform) in (2..).zip(ORIENTATIONS) {
+            let view = upright.oriented(transform);
+            assert!(!bridge.view_is_whole_scene(&view));
+            let gpu = paint_output_pixels(&mut bridge, &scene, &view, revision);
+            let (pw, ph) = view.target_size();
+            let mut cpu = vec![0_u8; (pw * ph * 4) as usize];
+            swizzle_subrect_rgba_to_xrgb8888_transformed(
+                SubrectSource {
+                    src_rgba: &unrotated,
+                    src_w: output.0 as usize,
+                    src_h: output.1 as usize,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut cpu,
+                (pw * 4) as usize,
+                pw as usize,
+                ph as usize,
+                transform,
+            );
+            assert_eq!(
+                differing_pixels(&gpu, &cpu),
+                0,
+                "{transform:?}: the surface is turned on the GPU exactly as on the CPU"
+            );
+        }
+        assert_eq!(
+            bridge.output_surfaces.len(),
+            1,
+            "the rotated output keeps one surface in scene orientation, whatever its turn"
+        );
+    }
+
+    #[test]
+    fn a_rotated_hdr_output_matches_the_readback_pq_encode() {
+        // The readback encodes and turns on the CPU (`SdrToPqEncoder`); the direct path on the
+        // GPU. The encodes differ by at most 2 of 1023 code values
+        // (`gpu_encode_matches_the_cpu_reference`); the turn must add nothing to that.
+        let size = (90, 52);
+        let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+        let mut bridge = required_bridge(size.0, size.1);
+        let scene = asymmetric_scene(size);
+        let rgba = bridge.paint(&scene).expect("the dense render").to_vec();
+        let encoder = crate::shell::color_pipeline::SdrToPqEncoder::new(white);
+        for (revision, transform) in (1..).zip(ORIENTATIONS) {
+            let view =
+                OutputView::at(crate::shell::render::OutputId(0), (0, 0), size).oriented(transform);
+            let (texture, _) = paint_output_offscreen_as(
+                &mut bridge,
+                &scene,
+                &view,
+                full_frame(revision),
+                wgpu::TextureFormat::Rgb10a2Unorm,
+            );
+            let gpu = read_target(&bridge, &texture);
+            let (pw, ph) = view.target_size();
+            let mut cpu = vec![0_u8; (pw * ph * 4) as usize];
+            encode_subrect_rgba_to_xbgr2101010_transformed(
+                SubrectSource {
+                    src_rgba: &rgba,
+                    src_w: size.0 as usize,
+                    src_h: size.1 as usize,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut cpu,
+                (pw * 4) as usize,
+                (pw as usize, ph as usize),
+                transform,
+                &encoder,
+                None,
+            );
+            let word = |bytes: &[u8]| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let max_delta = gpu
+                .chunks_exact(4)
+                .zip(cpu.chunks_exact(4))
+                .flat_map(|(g, c)| {
+                    let (g, c) = (word(g), word(c));
+                    [0, 10, 20].map(|shift| {
+                        (i64::from((g >> shift) & 0x3FF) - i64::from((c >> shift) & 0x3FF)).abs()
+                    })
+                })
+                .max()
+                .unwrap_or(0);
+            assert!(
+                max_delta <= 2,
+                "{transform:?}: the GPU PQ encode differs from the readback's by {max_delta} code values"
+            );
+        }
     }
 
     #[test]
