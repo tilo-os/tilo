@@ -49,17 +49,21 @@ impl Default for Ground {
 )]
 #[derive(Clone, Debug, Default, PartialEq, Model)]
 pub struct Layer {
+    #[model(atom)]
     pub id: String,
     /// Name
     #[model(label)]
     pub name: String,
     /// Organisational folder; empty for an ungrouped layer. It does not
     /// change stacking, clipping or how the layers composite.
+    #[model(atom)]
     pub group: String,
     /// Fractional position among layers; later is on top.
+    #[model(atom)]
     pub order: String,
     /// The medium preset that paints this layer's marks, or empty for plain
     /// vector art.
+    #[model(atom)]
     pub medium: String,
     pub opacity: f64,
     pub visible: bool,
@@ -73,6 +77,7 @@ pub struct Layer {
     /// The layer this layer masks, or empty for an ordinary layer. A mask's
     /// marks are drawn in greys: where it is light that layer shows, where
     /// it is dark it is hidden. Hiding the mask turns it off.
+    #[model(atom)]
     pub mask_of: String,
     /// A mask's grey before any mark, `0..=1`: 1 shows all of its layer,
     /// 0 hides all of it.
@@ -448,9 +453,12 @@ impl Style {
 /// A mark as stored: its geometry, style and placement.
 #[derive(Clone, Debug, Default, PartialEq, Model)]
 pub struct Mark {
+    #[model(atom)]
     pub id: String,
+    #[model(atom)]
     pub layer: String,
     /// Fractional position within its layer; later is on top.
+    #[model(atom)]
     pub order: String,
     /// Name
     #[model(label)]
@@ -460,12 +468,15 @@ pub struct Mark {
     /// An affine transform `[a, b, c, d, e, f]` applied to the geometry.
     pub transform: Option<[f64; 6]>,
     /// The group the mark belongs to, or empty.
+    #[model(atom)]
     pub group: String,
     /// The mark whose shape this mark is cut to, or empty.
+    #[model(atom)]
     pub clip: String,
     /// SVG path data of the area the mark is kept inside (the selection's
     /// shape when it was laid), in the units of its geometry so it travels
     /// with it, or empty.
+    #[model(atom)]
     pub area: String,
 }
 
