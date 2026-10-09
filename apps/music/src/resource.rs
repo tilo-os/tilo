@@ -371,6 +371,13 @@ impl ResourceSurface<Library, MusicEffect> for MusicApp {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.device_row(id)
     }
+
+    /// The library's field edits bound to the row they act on: saving an
+    /// album, following an artist, taking a song out of a playlist or
+    /// moving it, and the recommendations' switches and feedback.
+    fn row_declarations(&self, row: &str) -> Vec<tilo_resource::ActionDecl<Library>> {
+        self.row_edits(row)
+    }
 }
 
 #[cfg(test)]
@@ -580,6 +587,80 @@ mod tests {
         assert!(
             app.call("open", serde_json::json!({ "anchor": "music.nothing:x" }))
                 .is_err()
+        );
+    }
+
+    /// Rows offer the library's edits bound to what they show: an album
+    /// is saved, an artist followed, a recommendation input switched, a
+    /// suggestion hidden and shown again, an artist preferred; a song in a
+    /// playlist is moved and taken out.
+    #[test]
+    fn rows_offer_their_bound_field_edits() {
+        let mut app = TestApp::<MusicShell>::capture(Some("sidebar")).unwrap();
+        let offered = |app: &mut TestApp<MusicShell>, row: &str, id: &str| {
+            app.call_on(row, id, serde_json::json!({})).map(drop)
+        };
+        let album = crate::actions::album_resource_id("al_strata");
+        let saved = app.state().is_album_saved("al_strata");
+        offered(&mut app, &album, "toggle-save").unwrap();
+        assert_eq!(app.state().is_album_saved("al_strata"), !saved);
+        assert!(app.undo(), "a bound edit is an undo step");
+        assert_eq!(app.state().is_album_saved("al_strata"), saved);
+
+        let artist = crate::actions::artist_resource_id("ar_kavi");
+        let followed = app.state().is_artist_followed("ar_kavi");
+        offered(&mut app, &artist, "toggle-follow").unwrap();
+        assert_eq!(app.state().is_artist_followed("ar_kavi"), !followed);
+
+        offered(&mut app, "music.recommendation:tk_g2", "dismiss").unwrap();
+        assert!(app.state().recommendations.is_dismissed("tk_g2"));
+        offered(&mut app, "music.recommendation:tk_g2", "restore").unwrap();
+        assert!(!app.state().recommendations.is_dismissed("tk_g2"));
+        offered(
+            &mut app,
+            "music.recommendation-artist:ar_kavi",
+            "set-preferred",
+        )
+        .unwrap();
+        assert!(app.state().recommendations.prefers("ar_kavi"));
+
+        let playlist = app.state().playlist("pl_morning").cloned().unwrap();
+        let ids = playlist.track_ids();
+        let surface = app.surface_mut::<MusicApp>();
+        // Rows nested in another row (an input under the recommendations'
+        // settings, a song in a playlist) are bound when resolved by id.
+        let inputs: Vec<&str> = surface
+            .row_edits("music.recommendation-input:likes")
+            .iter()
+            .map(|decl| decl.id)
+            .collect();
+        assert_eq!(inputs, ["set-input"]);
+        let first = crate::actions::playlist_track_resource_id("pl_morning", &ids[0]);
+        let edits: Vec<&str> = surface
+            .row_edits(&first)
+            .iter()
+            .map(|decl| decl.id)
+            .collect();
+        assert_eq!(
+            edits,
+            ["remove", "move-down"],
+            "the first song moves only down"
+        );
+        let last = crate::actions::playlist_track_resource_id("pl_morning", &ids[ids.len() - 1]);
+        let edits: Vec<&str> = surface
+            .row_edits(&last)
+            .iter()
+            .map(|decl| decl.id)
+            .collect();
+        assert_eq!(edits, ["remove", "move-up"]);
+        assert!(
+            surface
+                .row_edits(&crate::actions::playlist_track_resource_id(
+                    "pl_morning",
+                    "tk_gone"
+                ))
+                .is_empty(),
+            "a song the playlist does not hold offers nothing"
         );
     }
 

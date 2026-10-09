@@ -5410,3 +5410,154 @@ impl MusicApp {
         }
     }
 }
+
+impl MusicApp {
+    /// The library's field edits bound to the row `row`, as the document
+    /// holds it now: an album is saved or unsaved, an artist followed or
+    /// unfollowed (a Spotify artist through its provider effect), a song
+    /// taken out of a playlist or moved one place, a recommendation input
+    /// switched, a suggestion hidden or shown again, an artist preferred.
+    pub(crate) fn row_edits(&self, row: &str) -> Vec<ui::tilo_resource::ActionDecl<Library>> {
+        use ui::tilo_resource::ActionDecl;
+        let lib = &self.stored_library;
+        if let Some(album) = row.strip_prefix("music.album:") {
+            if !lib.albums.contains_key(album) {
+                return Vec::new();
+            }
+            let saved = lib.is_album_saved(album);
+            return vec![ActionDecl::edit(
+                "toggle-save",
+                if saved {
+                    "Remove album from library"
+                } else {
+                    "Save album to library"
+                },
+                Library::save_album(album, !saved),
+            )];
+        }
+        if let Some(artist) = row.strip_prefix("music.artist:") {
+            if !lib.artists.contains_key(artist) || artist.starts_with("spotify:artist:") {
+                return Vec::new();
+            }
+            let followed = lib.is_artist_followed(artist);
+            return vec![ActionDecl::edit(
+                "toggle-follow",
+                if followed {
+                    "Unfollow artist"
+                } else {
+                    "Follow artist"
+                },
+                Library::follow_artist(artist, !followed),
+            )];
+        }
+        if let Some((playlist, track)) = crate::actions::parse_playlist_track_resource_id(row) {
+            return membership_edits(lib, &playlist, &track);
+        }
+        recommendation_edits(lib, row)
+    }
+}
+
+/// Taking `track` out of `playlist` and moving it one place, while the
+/// playlist holds it.
+fn membership_edits(
+    lib: &Library,
+    playlist: &str,
+    track: &str,
+) -> Vec<ui::tilo_resource::ActionDecl<Library>> {
+    use ui::tilo_resource::ActionDecl;
+    let Some(list) = lib.playlist(playlist) else {
+        return Vec::new();
+    };
+    let Some(index) = list
+        .tracks
+        .position(&ui::tilo_resource::Id::from_raw(track))
+    else {
+        return Vec::new();
+    };
+    let mut edits = vec![ActionDecl::edit(
+        "remove",
+        "Remove from playlist",
+        Library::remove_from_playlist(playlist, track),
+    )];
+    if index > 0 {
+        edits.push(ActionDecl::edit(
+            "move-up",
+            "Move track up",
+            Library::move_in_playlist(playlist, track, index - 1),
+        ));
+    }
+    if index + 1 < list.len() {
+        edits.push(ActionDecl::edit(
+            "move-down",
+            "Move track down",
+            Library::move_in_playlist(playlist, track, index + 1),
+        ));
+    }
+    edits
+}
+
+/// The recommendations' switch on an input row, hiding or showing again a
+/// suggestion, and preferring an artist.
+fn recommendation_edits(lib: &Library, row: &str) -> Vec<ui::tilo_resource::ActionDecl<Library>> {
+    use ui::tilo_resource::ActionDecl;
+    let recommendations = Library::paths().recommendations;
+    if let Some(key) = row.strip_prefix("music.recommendation-input:") {
+        let Some(input) = crate::recommendations::Input::ALL
+            .into_iter()
+            .find(|input| input.key() == key)
+        else {
+            return Vec::new();
+        };
+        let enabled = lib.recommendations.enabled(input);
+        return vec![ActionDecl::edit(
+            "set-input",
+            ui::i18n!(if enabled {
+                "music-recommendations-disable"
+            } else {
+                "music-recommendations-enable"
+            }),
+            crate::recommendations::Preferences::input_path(input).set(!enabled),
+        )];
+    }
+    if let Some(artist) = row.strip_prefix("music.recommendation-artist:") {
+        let preferred = lib.recommendations.prefers(artist);
+        if !preferred && !lib.artists.contains_key(artist) {
+            return Vec::new();
+        }
+        let artist = artist.to_owned();
+        return vec![ActionDecl::edit(
+            "set-preferred",
+            ui::i18n!(if preferred {
+                "music-recommendations-unprefer"
+            } else {
+                "music-recommendations-prefer"
+            }),
+            if preferred {
+                recommendations.preferred_artists.remove(&artist)
+            } else {
+                recommendations.preferred_artists.insert(&artist)
+            },
+        )];
+    }
+    if let Some(track) = row.strip_prefix("music.recommendation:") {
+        let dismissed = lib.recommendations.is_dismissed(track);
+        if !dismissed && !lib.tracks.contains_key(track) {
+            return Vec::new();
+        }
+        let track = track.to_owned();
+        return vec![if dismissed {
+            ActionDecl::edit(
+                "restore",
+                ui::i18n!("music-recommendations-restore"),
+                recommendations.dismissed.remove(&track),
+            )
+        } else {
+            ActionDecl::edit(
+                "dismiss",
+                ui::i18n!("music-recommendations-dismiss"),
+                recommendations.dismissed.insert(&track),
+            )
+        }];
+    }
+    Vec::new()
+}
