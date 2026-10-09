@@ -18,6 +18,8 @@ whisper = []
 nemo-review = []
 # Isolated public-module interpretation; never selected by the speech worker.
 whistle-wasm-review = []
+# Explicit private-pipe qualification; no production worker or catalogue admission.
+whistle-v8-review = []
 
 [[bin]]
 name = "tilo-speech-worker"
@@ -39,6 +41,10 @@ required-features = ["nemo-review"]
 [[example]]
 name = "whistle_wasm_review"
 required-features = ["whistle-wasm-review"]
+
+[[example]]
+name = "whistle_v8_worker_review"
+required-features = ["whistle-v8-review"]
 
 [lib]
 name = "local_model_service"
