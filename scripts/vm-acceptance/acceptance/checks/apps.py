@@ -7,7 +7,6 @@ from dataclasses import dataclass
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
-from ..action_jobs import invoke
 from ..vm import VmError, wait_until
 
 AREA = "apps"
@@ -269,54 +268,26 @@ def _app_check(app_id, label, foreign=True):
     return body
 
 
-# How long Terminal may take, from its window, to a shell ready for input. A
-# guest's first start builds its root from the environment's images.
-SHELL_READY_S = 60
-
-
-def _inspect_terminal(ctx) -> dict | None:
-    """Terminal's own account of its session (the `inspect-session` action): its
-    lifecycle, whether input reaches a process, and why not."""
-    rows = [r for r in ctx.vm.actions()
-            if r.get("application") == "so.tilo.terminal" and r.get("operation") == "inspect-session"]
-    if not rows:
-        return None
-    out = ctx.out / "data"
-    out.mkdir(parents=True, exist_ok=True)
-    try:
-        return invoke(ctx.vm, rows[0], None, out, "A01-inspect", require_job=False)
-    except VmError as exc:
-        return {"error": str(exc)[:300]}
+SHELL_READY_S = core.TERMINAL_SHELL_S
 
 
 @check("A01", AREA, "Terminal opens with a live shell and closes cleanly")
 def terminal(ctx, res):
+    shells = core.terminal_shells(ctx)
     gid, procs, toasts0 = _lifecycle(ctx, res, "so.tilo.terminal", "applications", "A01-terminal", False)
-    started = time.monotonic()
-    timeline = []
-
-    def ready():
-        info = _inspect_terminal(ctx) or {}
-        seen = {k: info.get(k) for k in ("lifecycle", "input_available", "startup_reason",
-                                         "transport_reason", "error")}
-        if not timeline or timeline[-1][1] != seen:
-            timeline.append((round(time.monotonic() - started, 1), seen))
-        return info.get("lifecycle") == "open" and info.get("input_available") is True or None
-
-    live = wait_until(ready, SHELL_READY_S, 1.0)
-    res.metrics["seconds_to_live_shell"] = round(time.monotonic() - started, 1) if live else None
-    res.metrics["session_timeline"] = timeline
+    ready = core.wait_new_terminal_shell(ctx, shells, SHELL_READY_S)
+    res.metrics["seconds_to_shell"] = ready
     probe = f"acc-term-{int(time.time())}"
     ctx.vm.control("type", f"echo ok > ~/{probe}")
     ctx.vm.control("key", "Enter")
     found = wait_until(lambda: core.terminal_probe(ctx, probe), 8, 1)
     ctx.shot("A01-terminal-command")
     res.metrics["shell_ran_command"] = bool(found)
-    if not (live and found):
+    if ready is None or not found:
         ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
-    expect(live, f"Terminal's session never became live within {SHELL_READY_S} s "
-                 f"(its own account over time: {timeline})")
-    expect(found, "a command typed into a live Terminal (control-socket type + Enter) never ran")
+    expect(ready is not None, f"no shell ran in Terminal's environment within {SHELL_READY_S} s "
+                              "of its window opening (A01-ush.txt shows the shell runtime)")
+    expect(found, "a command typed into Terminal (control-socket type + Enter) never ran")
     _close(ctx, res, "A01-terminal", gid, procs, toasts0)
 
 

@@ -57,14 +57,47 @@ impl Content<'_> {
                 .block_on(self.store.ingest(bytes::Bytes::from(bytes)))
                 .map_err(content_error)?
         } else {
+            // The store copies the staged bytes in and the file is gone
+            // right after, so it needs no durability of its own.
             let staged = tempfile::NamedTempFile::new_in(self.staging)?;
             std::io::copy(&mut reader.take(len), &mut staged.as_file())?;
-            staged.as_file().sync_data()?;
             self.runtime
                 .block_on(self.store.ingest_file(staged.path()))
                 .map_err(content_error)?
         };
         Ok(BlobHash(*stored.as_bytes()))
+    }
+
+    /// [`Self::ingest`] for the regular file at `path`, `len` bytes long. A
+    /// large file is imported straight from its path rather than through a
+    /// staged copy.
+    pub(crate) fn ingest_path(&self, len: u64, path: &Path) -> Result<BlobHash, StoreError> {
+        if len <= SMALL_BLOB || !path.is_absolute() {
+            return self.ingest(len, &mut std::fs::File::open(path)?);
+        }
+        let stored = self
+            .runtime
+            .block_on(self.store.ingest_file(path))
+            .map_err(content_error)?;
+        Ok(BlobHash(*stored.as_bytes()))
+    }
+
+    /// Run `work`, a batch of ingests, with one database sync at its end
+    /// instead of one per blob. The sync runs whatever `work` returned;
+    /// nothing the batch wrote counts as stored until this returns `Ok`.
+    pub(crate) fn deferred<R>(
+        &self,
+        work: impl FnOnce() -> Result<R, StoreError>,
+    ) -> Result<R, StoreError> {
+        self.store.defer_sync();
+        let result = work();
+        let synced = self
+            .runtime
+            .block_on(self.store.end_deferred_sync())
+            .map_err(content_error);
+        let value = result?;
+        synced?;
+        Ok(value)
     }
 
     /// Write `blob` to the new file `target`, sharing extents with the

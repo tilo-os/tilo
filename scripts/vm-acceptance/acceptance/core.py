@@ -8,7 +8,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .vm import VmError
+from .vm import VmError, wait_until
 
 # Who fixes what: each area's failures are routed to its owner.
 AREAS = {
@@ -651,6 +651,35 @@ def terminal_probe(ctx, name: str) -> list[str]:
     out = ctx.vm.exec(f"for h in {_TERMINAL_HOMES}; do [ -e \"$h/{name}\" ] && echo \"$h/{name}\"; "
                       "done; true")
     return [l.strip() for l in out.splitlines() if l.strip() and not l.startswith("receipt:")]
+
+
+# How long a new Terminal window may stand before its shell runs. The first
+# session of an account also imports the environment's runtime into the user's
+# package store (TIL-708).
+TERMINAL_SHELL_S = 60
+
+# Terminal's shells are not the app's processes: each runs in a guest the
+# `tilo-ush` user service starts, so they are found in its cgroup.
+_USH_SHELLS = ('cg=$(systemctl --user show -p ControlGroup --value tilo-ush.service 2>/dev/null); '
+               '[ -n "$cg" ] || exit 0; '
+               'for p in $(cat $(find "/sys/fs/cgroup$cg" -name cgroup.procs 2>/dev/null) 2>/dev/null); do '
+               '[ "$(cat /proc/$p/comm 2>/dev/null)" = bash ] && echo "$p"; done; true')
+
+
+def terminal_shells(ctx) -> set[int]:
+    """Pids of the shells running in Terminal's ush guests."""
+    out = ctx.vm.exec(_USH_SHELLS)
+    return {int(l) for l in out.split() if l.isdigit()}
+
+
+def wait_new_terminal_shell(ctx, before: set[int], timeout: float) -> float | None:
+    """Seconds until a shell not in `before` runs in a ush guest, or None after `timeout`.
+    A Terminal shows its pane and echoes keys before its guest exists; only a running
+    shell reads what is typed."""
+    started = time.monotonic()
+    if wait_until(lambda: terminal_shells(ctx) - before, timeout, 0.5):
+        return round(time.monotonic() - started, 1)
+    return None
 
 
 _USH_DIAGNOSTICS = r'''set +e
