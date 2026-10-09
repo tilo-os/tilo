@@ -124,3 +124,10 @@ certify performance.
 Measurements are workload- and host-dependent. Record the image revision,
 CPU/memory/KVM settings, adapter, and `TILO_DISTROBOX` value with each result;
 do not treat an old run as a repository baseline.
+
+`tools/perf/record.py` writes that environment into every result as a record.
+`tools/perf/compare.py` compares a record only with stored records from the same
+environment. Scheduled results and their baselines are kept in the
+`tilo-perf-results` package; see
+[Performance results](../../DEVELOPMENT.md#performance-results). Use
+`compare.sh` for a one-off diff of two local runs.
