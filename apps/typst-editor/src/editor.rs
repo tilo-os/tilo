@@ -31,21 +31,13 @@ use crate::resource::Workspace;
 /// Tab expands to this many spaces (soft tabs).
 const TAB_WIDTH: usize = 2;
 
-/// The shared code-editing widget — caret, selection, clipboard, undo,
-/// gutter, and Typst syntax highlighting all live here.
-enum Code {
-    /// Showing a source no dispatcher edits: every edit is taken back.
-    Shown {
-        control: Box<CodeEditor>,
-        text: String,
-    },
-    /// Over the open file's source: every edit a splice there.
-    Bound(Box<TextControl<CodeEditor, Workspace>>),
-}
-
 pub struct SourceEditor {
-    /// The code editor over the open file's source.
-    code: Code,
+    /// The shared code-editing widget — caret, selection, clipboard, undo,
+    /// gutter, and Typst syntax highlighting all live here — over the open
+    /// file's source.
+    code: TextControl<CodeEditor, Workspace>,
+    /// Where the edits go, once the window is attached.
+    dispatcher: Option<Dispatcher<Workspace>>,
     /// Whether the source pane holds keyboard focus. Mirrored onto `code` each
     /// frame so its caret paints and its key routing engages.
     pub focused: bool,
@@ -58,14 +50,16 @@ pub struct SourceEditor {
 }
 
 impl SourceEditor {
-    /// An editor showing no source, read only until it is
-    /// [bound](Self::bind) to one.
+    /// An editor over no source, read only until a dispatcher is
+    /// [attached](Self::attach).
     pub fn new() -> Self {
+        let nowhere = Workspace::paths()
+            .files
+            .item(&ui::tilo_resource::Id::from_raw(""))
+            .source;
         Self {
-            code: Code::Shown {
-                control: Box::new(Self::control_new()),
-                text: String::new(),
-            },
+            code: TextControl::view_only_at(Self::control_new(), nowhere),
+            dispatcher: None,
             focused: true,
             rect: Rect::ZERO,
             drag_anchor: None,
@@ -88,17 +82,11 @@ impl SourceEditor {
     }
 
     fn control(&self) -> &CodeEditor {
-        match &self.code {
-            Code::Shown { control, .. } => control,
-            Code::Bound(bound) => bound.control(),
-        }
+        self.code.control()
     }
 
     fn control_mut(&mut self) -> &mut CodeEditor {
-        match &mut self.code {
-            Code::Shown { control, .. } => control,
-            Code::Bound(bound) => bound.control_mut(),
-        }
+        self.code.control_mut()
     }
 
     pub fn set_rect(&mut self, rect: Rect) {
@@ -114,46 +102,33 @@ impl SourceEditor {
         self.control().line_height()
     }
 
-    /// Edit the source at `path` through `dispatcher` from now on.
-    pub fn bind(&mut self, dispatcher: Dispatcher<Workspace>, path: Path<Workspace, String>) {
+    /// Show the source at `path`, each edit a splice there once a
+    /// dispatcher is attached.
+    pub fn follow(&mut self, path: Path<Workspace, String>) {
         let mut control = Self::control_new();
         control.set_rect(self.rect);
-        self.code = Code::Bound(Box::new(TextControl::at(control, dispatcher, path)));
+        self.code = TextControl::view_only_at(control, path);
+        if let Some(dispatcher) = &self.dispatcher {
+            self.code.attach(dispatcher.clone());
+        }
     }
 
-    /// Show `text` while no dispatcher edits it; a bound editor shows what
-    /// the document holds instead ([`Self::pull`]).
-    pub fn show(&mut self, text: &str) {
-        if let Code::Shown {
-            control,
-            text: shown,
-        } = &mut self.code
-            && shown != text
-        {
-            text.clone_into(shown);
-            control.set_text(text);
-        }
+    /// Submit the edits of the source shown through `dispatcher`.
+    pub fn attach(&mut self, dispatcher: Dispatcher<Workspace>) {
+        self.code.attach(dispatcher.clone());
+        self.dispatcher = Some(dispatcher);
     }
 
     /// Show the open file's source as `doc` holds it. Called from the app's
     /// `sync`.
     pub fn pull(&mut self, doc: &AutoCommit) {
-        if let Code::Bound(bound) = &mut self.code {
-            bound.pull(doc);
-        }
+        self.code.pull(doc);
     }
 
     /// Submit what the control edited since the last call: a splice of the
-    /// bound source, or taken back when nothing edits it.
+    /// source, or taken back while no dispatcher is attached.
     fn submit(&mut self, edits: &mut ui::widget::Edits<'_>) {
-        match &mut self.code {
-            Code::Shown { control, text } => {
-                if control.take_dirty().is_some() {
-                    control.set_text(text);
-                }
-            }
-            Code::Bound(bound) => bound.submit(edits),
-        }
+        self.code.submit(edits);
     }
 
     /// The caret's byte offset in the source.
@@ -396,21 +371,36 @@ fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable;
-    use automerge::{ObjType, ROOT, ReadDoc};
+    use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
 
-    fn doc_with(text: &str) -> (AutoCommit, automerge::ObjId) {
-        let mut doc = AutoCommit::new();
-        let id = doc.put_object(&ROOT, "source", ObjType::Text).unwrap();
-        doc.splice_text(&id, 0, 0, text).unwrap();
-        (doc, id)
+    /// A workspace whose one file holds `text`, and an editor showing it
+    /// that nothing edits.
+    fn showing(text: &str) -> (AutoCommit, SourceEditor) {
+        let mut workspace = Replica::<Workspace>::new();
+        let id = Id::from_raw("file");
+        let file = crate::resource::TypstFile {
+            source: text.to_owned(),
+            ..crate::resource::TypstFile::default()
+        };
+        workspace
+            .apply(Invoke::edit(&Workspace::paths().files.insert_as(&id, 0, &file)).unwrap())
+            .unwrap();
+        let doc = AutoCommit::load(&workspace.save()).unwrap();
+        let mut editor = SourceEditor::new();
+        editor.follow(Workspace::paths().files.item(&id).source);
+        editor.pull(&doc);
+        (doc, editor)
     }
 
-    /// An editor showing `text`, which nothing edits.
-    fn editor_showing(text: &str) -> SourceEditor {
-        let mut editor = SourceEditor::new();
-        editor.show(text);
-        editor
+    fn source(doc: &AutoCommit) -> String {
+        Workspace::read(doc)
+            .unwrap()
+            .files
+            .values()
+            .next()
+            .unwrap()
+            .source
+            .clone()
     }
 
     #[test]
@@ -509,10 +499,8 @@ mod tests {
         {
             use winit::event::ElementState;
             use winit::keyboard::{Key, SmolStr};
-            let (mut doc, id) = doc_with("");
-            let mut ed = editor_showing("");
+            let (mut doc, mut ed) = showing("");
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-            ed.pull(&doc);
             ed.focused = true;
             for ch in ["h", "i"] {
                 let ev = ui::synthetic_input::key_event(
@@ -531,12 +519,12 @@ mod tests {
                     &mut ui::widget::Edits::lend(&mut doc)
                 ));
             }
-            assert_eq!(doc.text(&id).unwrap(), "");
+            assert_eq!(source(&doc), "");
             assert_eq!(ed.text(), "");
         }
         // Case `goto_line_moves_the_caret_to_the_line_start`.
         {
-            let mut ed = editor_showing("one\ntwo\nthree");
+            let (_doc, mut ed) = showing("one\ntwo\nthree");
             ed.goto_line("", 2);
             assert_eq!(ed.caret(), 4, "line 2 starts just after the first newline");
         }

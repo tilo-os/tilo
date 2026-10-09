@@ -338,6 +338,7 @@ impl TypstApp {
     ) {
         self.chrome.attach_actions(&cx.actions());
         self.actions = Some(cx.dispatcher());
+        self.editor.attach(cx.dispatcher());
         if let Some(file) = cx.fixture::<crate::resource::CaptureFile>() {
             self.current = Some(file.0.clone());
         }
@@ -361,10 +362,6 @@ impl TypstApp {
             self.current = first;
             self.follow_current();
         }
-        let shown = self.current_file().map(|file| file.source.clone());
-        if let Some(source) = shown {
-            self.editor.show(&source);
-        }
         self.dirty = true;
     }
 
@@ -379,13 +376,12 @@ impl TypstApp {
         Some(crate::resource::Workspace::paths().files.item(id))
     }
 
-    /// Bind the editor to the source of the file shown: each keystroke is a
+    /// Show the source of the file shown in the editor: each keystroke is a
     /// splice there.
     fn follow_current(&mut self) {
-        let (Some(actions), Some(paths)) = (&self.actions, self.current_paths()) else {
-            return;
-        };
-        self.editor.bind(actions.clone(), paths.source);
+        if let Some(paths) = self.current_paths() {
+            self.editor.follow(paths.source);
+        }
     }
 
     /// Show file `id`, with the caret at its start.

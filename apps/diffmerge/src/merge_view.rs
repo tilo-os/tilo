@@ -239,69 +239,7 @@ pub struct MergeView {
     /// The merged result, edited through the same caret/selection/IME/
     /// clipboard implementation as every code surface, every edit a splice
     /// of the document's text.
-    merged_editor: MergedEditor,
-}
-
-/// The merged result's editor: showing the stored text until a dispatcher
-/// is attached, then every edit a splice of the `merged` field.
-enum MergedEditor {
-    Shown {
-        control: Box<CodeEditor>,
-        text: String,
-    },
-    Bound(Box<TextControl<CodeEditor, Session>>),
-}
-
-impl MergedEditor {
-    fn control_new() -> CodeEditor {
-        CodeEditor::new(Vec::new())
-            .with_language(Language::PlainText)
-            .with_id("diffmerge_merged_editor")
-    }
-
-    fn control(&self) -> &CodeEditor {
-        match self {
-            Self::Shown { control, .. } => control,
-            Self::Bound(bound) => bound.control(),
-        }
-    }
-
-    fn control_mut(&mut self) -> &mut CodeEditor {
-        match self {
-            Self::Shown { control, .. } => control,
-            Self::Bound(bound) => bound.control_mut(),
-        }
-    }
-
-    /// Show `text`, which nothing edits yet.
-    fn show(&mut self, text: &str) {
-        if let Self::Shown {
-            control,
-            text: shown,
-        } = self
-            && shown != text
-        {
-            text.clone_into(shown);
-            control.set_text(text);
-        }
-    }
-
-    fn pull(&mut self, doc: &ui::tilo_resource::Doc) {
-        if let Self::Bound(bound) = self {
-            bound.pull(doc);
-        }
-    }
-
-    fn submit(&mut self, edits: &mut ui::widget::Edits<'_>) {
-        match self {
-            Self::Shown { control, text } => {
-                if control.take_dirty().is_some() {
-                    control.set_text(text);
-                }
-            }
-            Self::Bound(bound) => bound.submit(edits),
-        }
-    }
+    merged_editor: TextControl<CodeEditor, Session>,
 }
 
 impl Default for MergeView {
@@ -336,22 +274,18 @@ impl MergeView {
             dirty: true,
             pending_action: None,
             metrics: Metrics::unmeasured(&Theme::dark()),
-            merged_editor: MergedEditor::Shown {
-                control: Box::new(MergedEditor::control_new()),
-                text: String::new(),
-            },
+            merged_editor: TextControl::view_only_at(
+                CodeEditor::new(Vec::new())
+                    .with_language(Language::PlainText)
+                    .with_id("diffmerge_merged_editor"),
+                Session::paths().merged,
+            ),
         }
     }
 
     /// Submit edits of the merged result through `dispatcher`.
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Session>) {
-        let mut control = MergedEditor::control_new();
-        control.set_rect(self.merged_editor.control().rect());
-        self.merged_editor = MergedEditor::Bound(Box::new(TextControl::at(
-            control,
-            dispatcher,
-            Session::paths().merged,
-        )));
+        self.merged_editor.attach(dispatcher);
     }
 
     /// The participant may only view: no side can be taken.
@@ -381,7 +315,6 @@ impl MergeView {
             self.model = model;
             self.recompute_spans();
         }
-        self.merged_editor.show(&state.merged);
         self.pending_action = None;
         self.dirty = true;
     }

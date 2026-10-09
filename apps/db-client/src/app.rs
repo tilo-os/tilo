@@ -1004,7 +1004,6 @@ mod editor_sql_tests {
     }
 
     #[test]
-    #[ignore = "Edit::coalesces ends a word step before a space instead of after it"]
     fn typing_sql_is_a_splice_of_the_sql_field_undone_a_word_at_a_time() {
         let mut app = workspace();
         app.harness().type_text("select name");
