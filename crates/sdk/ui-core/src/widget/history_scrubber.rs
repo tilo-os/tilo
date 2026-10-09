@@ -1593,8 +1593,7 @@ mod tests {
     use crate::time::Duration;
     use crate::widget::EntryKind;
     use crate::widget::history::HistoryAuthor;
-    use automerge::AutoCommit;
-    use collab_types::{ArtifactKind, OpClass};
+    use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1776,8 +1775,7 @@ mod version_tests {
     use crate::time::Duration;
     use crate::widget::EntryKind;
     use crate::widget::history::HistoryAuthor;
-    use automerge::AutoCommit;
-    use collab_types::{ArtifactKind, OpClass};
+    use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
 

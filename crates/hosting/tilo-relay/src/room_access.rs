@@ -22,7 +22,6 @@
 
 use std::sync::RwLock;
 
-use collab_types::caps::{Verb, role_caps};
 use tilo_user_identity::RevocationList;
 
 use crate::auth::{AuthenticatedPeer, PeerRole};
@@ -366,9 +365,11 @@ pub(crate) fn decide_in(
     Decision::Deny(DenyReason::NotAMember)
 }
 
-/// Whether `role` carries at least `verb` in a governed room.
-pub(crate) fn role_grants(role: collab_types::Role, verb: Verb) -> bool {
-    role_caps(role).is_some_and(|ceiling| ceiling.implies(verb))
+/// Whether `role`'s preset lets its members make undoable changes across a
+/// governed room ([`tilo_action_policy::roles::role_rules`]): the roles that
+/// write records.
+pub(crate) fn role_writes(role: collab_types::Role) -> bool {
+    matches!(role, collab_types::Role::Owner | collab_types::Role::Editor)
 }
 
 #[cfg(test)]

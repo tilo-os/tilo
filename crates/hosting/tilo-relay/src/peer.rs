@@ -5813,9 +5813,7 @@ async fn handle_presence(
                     Some(rooms) => rooms
                         .legacy_writer_role(authority.room(), peer.device_public_key)
                         .await
-                        .is_some_and(|role| {
-                            room_access::role_grants(role, collab_types::caps::Verb::Write)
-                        }),
+                        .is_some_and(|role| room_access::role_writes(role)),
                     None => false,
                 };
             }

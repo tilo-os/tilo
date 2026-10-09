@@ -16,15 +16,9 @@
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
-use crate::shell::search::ResourceKind;
-use crate::shell::search::action_api::{ActionVisibility as _, ResourceRef};
-use crate::shell::search::visibility::CapabilityVisibility;
-use crate::shell::state::{
-    RoomId, UserId, Workspace, WorkspaceAuthority as _, WorkspaceTree, person_id_of,
-};
+use crate::shell::state::{RoomId, UserId, Workspace, WorkspaceTree, person_id_of};
 
 /// The shell action whose capability gates every invitation.
-pub(crate) const INVITE_ACTION: &str = "peer.invite.named";
 
 /// How this device may issue an invitation into one workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,10 +145,26 @@ pub(crate) fn active_invite_route(state: &ChromeState) -> Option<InviteRoute> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{InviteRoute, may_issue_invitation, native_governor};
     use crate::shell::native_workspace_owner::{test_enrolled_owner, test_tree_of};
-    use crate::shell::state::{CapOverride, Scope, Subject, Verb, person_id_of};
+    use crate::shell::state::person_id_of;
+
+    /// Grant `person` the room's invite governance action in `workspace`.
+    pub(crate) fn grant_invite(workspace: &mut crate::shell::state::Workspace, person: &str) {
+        let node = tilo_action_policy::roles::governance_action(
+            &workspace.policy.room,
+            tilo_action_policy::roles::governance::INVITE,
+        );
+        workspace.grant(tilo_action_policy::Grant::new(
+            format!("invite:{person}"),
+            tilo_action_policy::Subject::person(person),
+            node,
+            tilo_action_policy::KindSet::of(tilo_action_policy::roles::GOVERNANCE_KIND),
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::person("room-owner"),
+        ));
+    }
 
     /// A person who governs a relay room under a workspace-specific identity
     /// issues through that relay, whatever the device's default person is:
@@ -173,24 +183,19 @@ mod tests {
         )
         .expect("person id");
         let handle = test_tree_of(&owner);
-        let grants = [&workspace_identity, &member].map(|person| {
-            CapOverride::grant(
-                Subject::person(person.clone()),
-                Scope::Workspace,
-                Verb::Invite,
-            )
-        });
         let mut tree = handle.write();
         // The device's default person is somebody other than the identity
         // this workspace selects.
         tree.local_person = Some([0x35; 32]);
-        tree.desktop
+        let workspace = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|workspace| workspace.room == room)
-            .expect("the enrolled room's workspace")
-            .capabilities
-            .extend(grants);
+            .expect("the enrolled room's workspace");
+        for person in [&workspace_identity, &member] {
+            grant_invite(workspace, person);
+        }
         drop(tree);
 
         let tree = handle.read();
