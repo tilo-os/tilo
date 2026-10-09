@@ -412,6 +412,14 @@ impl<R: Resource> ResourceRoot<R> {
         if !self.live.follows(doc)
             && let Ok(current) = R::read(doc)
         {
+            // Publication can run after an edit and before the view syncs.
+            // Validate its nested views against this same state, rather than
+            // withdrawing the new resource tree using the previous frame's
+            // handler table. The next live revision replaces this cache.
+            *self.nested_views.borrow_mut() = Some((
+                self.live.revision(),
+                Rc::new(nested_view_types(&R::children(&current))),
+            ));
             return self.publication_of(&current);
         }
         self.publication()
@@ -521,26 +529,12 @@ impl<R: Resource> ResourceRoot<R> {
     /// publish (the editor of a note's rich-text body): presentations of the
     /// resource this root has mounted, answered like its own.
     fn nested_views(&self) -> Rc<HashSet<String>> {
-        fn collect(resources: &[tilo_actions::Resource], views: &mut HashSet<String>) {
-            for resource in resources {
-                views.extend(
-                    resource
-                        .actions
-                        .iter()
-                        .filter(|spec| spec.kind == tilo_actions::OperationKind::View)
-                        .filter_map(|spec| spec.operation_type.clone()),
-                );
-                collect(&resource.children, views);
-            }
-        }
         let revision = self.live.revision();
         let mut cached = self.nested_views.borrow_mut();
         match cached.as_ref() {
             Some((at, views)) if *at == revision => Rc::clone(views),
             _ => {
-                let mut views = HashSet::new();
-                collect(&R::children(&self.live.get()), &mut views);
-                let views = Rc::new(views);
+                let views = Rc::new(nested_view_types(&R::children(&self.live.get())));
                 *cached = Some((revision, Rc::clone(&views)));
                 views
             }
@@ -677,6 +671,24 @@ impl<R: Resource> ResourceRoot<R> {
             .with(|state| self.effects.drain_projections(state, revision));
         self.effects.poll_jobs();
     }
+}
+
+fn nested_view_types(resources: &[tilo_actions::Resource]) -> HashSet<String> {
+    fn collect(resources: &[tilo_actions::Resource], views: &mut HashSet<String>) {
+        for resource in resources {
+            views.extend(
+                resource
+                    .actions
+                    .iter()
+                    .filter(|spec| spec.kind == tilo_actions::OperationKind::View)
+                    .filter_map(|spec| spec.operation_type.clone()),
+            );
+            collect(&resource.children, views);
+        }
+    }
+    let mut views = HashSet::new();
+    collect(resources, &mut views);
+    views
 }
 
 fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
