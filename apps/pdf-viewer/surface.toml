@@ -361,6 +361,10 @@ description = "Take over the PDF's own markup.  The highlights, notes and their 
 id = "adopt-existing"
 kind = "undoable"
 label = "Take over the PDF's own markup"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "source"
@@ -684,6 +688,10 @@ description = "Import pages.  Pages of other PDFs or pictures, by content, after
 id = "import-pages"
 kind = "undoable"
 label = "Import pages"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "after"
@@ -844,6 +852,10 @@ description = "Add annotation.  Text markup, ink, a note or free text on a page,
 id = "add-annotation"
 kind = "undoable"
 label = "Add annotation"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "annotation"
@@ -1051,6 +1063,10 @@ description = "Delete annotation.  The comments pinned to it go with it, so a de
 id = "delete-annotation"
 kind = "undoable"
 label = "Delete annotation"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "annotation"
@@ -1065,6 +1081,10 @@ description = "Add note.  A sticky note on a page and the comment thread pinned 
 id = "create-note"
 kind = "undoable"
 label = "Add note"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "note"
@@ -1124,6 +1144,10 @@ description = "Add a note at the top of a page.  A sticky note with this text, w
 id = "add-note"
 kind = "undoable"
 label = "Add a note at the top of a page"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "text"
@@ -1147,9 +1171,14 @@ type = [
 
 [[resources.verbs]]
 description = "Add comment.  Free on a page, or about an annotation, signed by whoever writes it."
+field = "comments"
 id = "add-comment"
 kind = "undoable"
 label = "Add comment"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "comment"
@@ -1282,9 +1311,14 @@ type = "string"
 
 [[resources.verbs]]
 description = "Reply.  Adds an answer to the thread, signed by whoever writes it."
+field = "comments"
 id = "reply"
 kind = "undoable"
 label = "Reply"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "comment"
@@ -1419,6 +1453,10 @@ description = "Delete comment.  A comment pinning a sticky note takes the note w
 id = "delete-comment"
 kind = "undoable"
 label = "Delete comment"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "comment"
@@ -1570,6 +1608,10 @@ description = "Delete signature."
 id = "delete-signature"
 kind = "undoable"
 label = "Delete signature"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "signature"
@@ -1578,3 +1620,58 @@ required = true
 [resources.verbs.params.schema]
 description = "Signature"
 type = "string"
+
+[[resources]]
+kind = "pdf.signature-profile"
+label = "Signature"
+version = 1
+
+[[resources.fields]]
+owner = "signature-profile"
+path = "signer"
+stored = "value"
+title = "The name typed signatures carry; empty until the person sets one"
+type = "String"
+
+[[resources.fields]]
+owner = "signature-profile"
+path = "strokes"
+stored = "value"
+title = "The drawn signature, polylines in normalised `[0,1]²` pad space;"
+type = "Json<Vec<Vec<(f64, f64)>>>"
+
+[[resources.verbs]]
+description = "Sign as  Signs as `name` from now on."
+id = "set-signer"
+kind = "undoable"
+label = "Sign as"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "The name to sign as"
+type = "string"
+
+[[resources.verbs]]
+description = "Draw signature  Replaces the drawn signature; no strokes clears it."
+id = "set-strokes"
+kind = "undoable"
+label = "Draw signature"
+
+[[resources.verbs.params]]
+name = "strokes"
+required = true
+
+[resources.verbs.params.schema]
+description = "Polylines in the unit square, each a list of x, y points"
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "array"
+
+[resources.verbs.params.schema.items.items]
+maxItems = 2
+minItems = 2
+type = "array"
