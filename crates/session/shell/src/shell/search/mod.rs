@@ -1316,10 +1316,8 @@ mod tests {
 
     use super::*;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
-    use parking_lot::RwLock;
     use std::fmt::Write as _;
     use std::rc::Rc;
-    use std::sync::Arc as StdArc;
 
     struct FakeProvider {
         id: String,
@@ -1362,7 +1360,8 @@ mod tests {
     }
 
     fn mk_chrome() -> crate::shell::chrome_state::Chrome {
-        let handle: WorkspaceTreeHandle = StdArc::new(RwLock::new(WorkspaceTree::default()));
+        let handle: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
     }
 

@@ -324,9 +324,9 @@ fn the_view_map_is_bounded_expires_and_caps_find() {
     let (_wp, state, ids) = widget_with(&["abc"]);
     let doc = &state.doc;
     let mut views = ParticipantViews::default();
-    let start = ui::clock::Instant::now();
+    let start = ui::time::Instant::now();
     for i in 0..=MAX_PARTICIPANT_VIEWS {
-        let at = start + ui::clock::Duration::from_millis(u64::try_from(i).unwrap());
+        let at = start + ui::time::Duration::from_millis(u64::try_from(i).unwrap());
         views.set(&pid(&format!("p{i}")), &caret(&ids[0], 1), doc, at);
     }
     assert_eq!(views.len(), MAX_PARTICIPANT_VIEWS);
@@ -336,7 +336,7 @@ fn the_view_map_is_bounded_expires_and_caps_find() {
     );
     assert!(views.contains(&pid(&format!("p{MAX_PARTICIPANT_VIEWS}"))));
 
-    let later = start + PARTICIPANT_VIEW_TTL + ui::clock::Duration::from_secs(1);
+    let later = start + PARTICIPANT_VIEW_TTL + ui::time::Duration::from_secs(1);
     views.touch(&pid("p5"), later);
     views.expire(later);
     assert_eq!(views.len(), 1);

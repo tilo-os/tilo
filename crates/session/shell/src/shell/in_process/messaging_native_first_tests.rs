@@ -23,7 +23,7 @@ impl Peer {
                 device_seed,
             );
         rig.owner.principal = rig.admission.context.principal().into();
-        let _profile = xdg_paths::scope_profile(rig.root.path().join("native-owner"));
+        let _profile = tilo_paths::scope_profile(rig.root.path().join("native-owner"));
         let lifecycle = LocalSessionAuthority::new();
         lifecycle.lifecycle().publish_native_state(false, false);
         let socket = rig.root.path().join("native-first.sock");
@@ -39,7 +39,7 @@ impl Peer {
         let profile = rig.root.path().join("native-owner");
         let vault =
             accounts::CredentialOwner::deferred(&rig.owner.principal, &apps.device_id, move || {
-                let _profile = xdg_paths::scope_profile(profile.clone());
+                let _profile = tilo_paths::scope_profile(profile.clone());
                 SecretStore::open()
             })
             .unwrap();

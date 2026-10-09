@@ -71,10 +71,11 @@ name = "tilo-model-manager"
 path = "src/main.rs"
 
 [dependencies]
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 agent-provider-config = { path = "../provider-config" }
 system-extension = { path = "../../system/system-extension" }
 tilo-files = { path = "../../platform/tilo-files" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 bounded-command = { path = "../../system/bounded-command" }
 serde.workspace = true
 serde_json.workspace = true

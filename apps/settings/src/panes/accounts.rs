@@ -1940,9 +1940,7 @@ impl PaneModel for AccountsPane {
 }
 
 fn relative_sync_time(unix: i64) -> String {
-    let now = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64);
+    let now = ui::time::unix_now_i64();
     let age = now.saturating_sub(unix).max(0);
     match age {
         0..=59 => t("accounts-just-now"),

@@ -3,7 +3,7 @@
 //! invitation, admits whoever redeems one and publishes the room's
 //! governance; this device holds the room like any member does.
 use super::{
-    NetCmd, PendingInvitation, ShellNetwork, now_unix_seconds, persist_pending_invitations,
+    NetCmd, PendingInvitation, ShellNetwork, persist_pending_invitations,
     registered_home_peer_addrs, room_topic_id,
 };
 use crate::network::invite::InviteRole;
@@ -177,7 +177,7 @@ impl ShellNetwork {
         invitee: Option<&str>,
         expiry_seconds_from_now: u64,
     ) -> Result<(String, [u8; 32], u64), String> {
-        let expiry = now_unix_seconds().saturating_add(expiry_seconds_from_now);
+        let expiry = tilo_clock::unix_now().saturating_add(expiry_seconds_from_now);
         let reply = self.room_admin(
             target.relay.clone(),
             target.certificate.clone(),

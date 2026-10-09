@@ -74,7 +74,7 @@ pub use tilo_app_package::PackageId;
 /// `None` without a runtime directory. Never the shared temp directory, where
 /// any local user could bind the name first.
 pub fn default_socket_path() -> Option<PathBuf> {
-    xdg_paths::xdg::runtime_dir()
+    tilo_paths::xdg::runtime_dir()
         .map(|base| base.join("tilo").join("services").join("app-host.sock"))
 }
 

@@ -325,10 +325,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         child_plan(&child_case);
         return None;
     }
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let nonce = tilo_clock::try_unix_now_ns().unwrap();
     let temp = TemporaryConfig(std::env::temp_dir().join(format!(
         "tilo-plan-{test}-{case}-{}-{nonce}",
         std::process::id()

@@ -171,10 +171,27 @@ protected signing session through `tilo-relay-admin publish-authority --acl`;
 concurrent revision conflicts fail and retry rather than overwriting newer
 signed policy.
 
-This slice does not provide a new recovery/join controller: the read-only
-candidate probe still discards returned tickets. Restoring a remote-only
-namespace remains a separate authorized operation. It also does not provide
-new sync or cache eviction mechanisms: native CRDT namespaces/resources,
+The read-only candidate probe still discards returned tickets. A separate
+`tilo-relay-admin files-workspace-join` source path restores an explicitly
+selected existing namespace into an absent absolute cache directory. It requires
+the existing certified person/device, the exact enrolled host/service/room,
+`--files-workspace-id` and `--confirm-existing-files-access`, and both the existing
+local Files read/write policy and the peer's current governor-signed Files
+authority. Identity enrollment alone does not authorize Files access. This is
+a separate product operation; development of this path does not authorize
+live discovery, ticket persistence or joining.
+
+The join uses the native authenticated authority and namespace protocols,
+retains the actual Automerge history, and checks authority again before saving.
+Changed or revoked authority, another workspace, missing credentials and invalid
+namespace bytes fail without initializing replacement state. The enrolled
+replica endpoint may differ from the originating ticket endpoint. A successful
+join saves the native binding and signed authority privately (directory0700,
+files0600), with namespace readiness last. It does not fetch file payloads or
+establish recovery of historical populated data. An existing destination,
+including an empty saved namespace, must be preserved.
+
+This does not provide new sync or cache eviction mechanisms: native CRDT namespaces/resources,
 Iroh content fetch and existing cache policy continue to own those behaviors.
 Device identities, mountpoints, sockets and rendering remain device-local. The
 Settings Storage pane still selects the image storage socket in this slice;

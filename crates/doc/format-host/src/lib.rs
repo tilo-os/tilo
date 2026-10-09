@@ -45,7 +45,7 @@ use std::path::PathBuf;
 /// or `None` without a config directory. Never a shared directory: whoever can
 /// write the registry chooses which providers parse this user's files.
 pub fn default_registry_path() -> Option<PathBuf> {
-    xdg_paths::config_dir().map(|base| {
+    tilo_paths::config_dir().map(|base| {
         base.join("tilo")
             .join("extensions")
             .join("format-providers.toml")

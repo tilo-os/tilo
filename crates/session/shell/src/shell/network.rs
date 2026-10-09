@@ -24,6 +24,9 @@ pub use record_content::InboundRecordContent;
 #[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
+mod room_gate;
+#[cfg(test)]
+mod room_gate_tests;
 #[cfg(test)]
 mod same_person_room_tests;
 
@@ -262,7 +265,7 @@ fn portable_media_file_name(name: &str) -> Option<String> {
 }
 
 fn personal_media_cache_root() -> Option<PathBuf> {
-    let root = xdg_paths::cache_dir()?.join("tilo/personal-media");
+    let root = tilo_paths::cache_dir()?.join("tilo/personal-media");
     // A partial stream is never useful after restart and can never become
     // authorized again because transfer ids/actions are session-local.
     let incoming = root.join("incoming");
@@ -761,7 +764,7 @@ pub fn peer_key_path() -> std::path::PathBuf {
 ///
 /// When the session has no per-user state directory.
 pub fn peer_state_dir() -> std::io::Result<std::path::PathBuf> {
-    xdg_paths::state_dir()
+    tilo_paths::state_dir()
         .map(|state| state.join("tilo").join("peer-sync"))
         .ok_or_else(|| {
             std::io::Error::new(
@@ -1097,16 +1100,10 @@ impl PendingInvitation {
     }
 }
 
-fn now_unix_seconds() -> u64 {
-    tilo_clock::unix_now()
-}
-
+/// Nanoseconds since the Unix epoch, failing closed to `u64::MAX` (every
+/// certificate expired) when the clock precedes the epoch.
 fn now_unix_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
-        .unwrap_or(u64::MAX)
+    tilo_clock::try_unix_now_ns().unwrap_or(u64::MAX)
 }
 
 fn pending_invites_path(state_dir: &Path) -> PathBuf {
@@ -1916,7 +1913,7 @@ impl ShellNetwork {
         };
         let device_fabric_path = device_fabric_path(state_dir);
         let device_fabric = load_device_fabric(&device_fabric_path);
-        let now = now_unix_seconds();
+        let now = tilo_clock::unix_now();
         let pending_identity_admissions: std::collections::HashMap<_, _> =
             load_pending_invitations(&pending_invitations_path)
                 .into_iter()
@@ -2284,6 +2281,17 @@ impl ShellNetwork {
         let _ = self
             .cmd_tx
             .try_send(NetCmd::SetWake(crate::network::actor::LoopWake(wake)));
+    }
+
+    /// Wake the compositor loop from any thread, once [`Self::set_wake`]
+    /// has supplied the loop's wake; a no-op before that.
+    pub(crate) fn loop_waker(&self) -> crate::session_runtime::Wake {
+        let wake = Arc::clone(&self.event_wake);
+        Arc::new(move || {
+            if let Some(wake) = wake.get() {
+                wake();
+            }
+        })
     }
 
     pub fn active_ws_for_publish(&self) -> u64 {
@@ -3896,7 +3904,7 @@ impl ShellNetwork {
             return Vec::new();
         };
         let before = pending.len();
-        let now = now_unix_seconds();
+        let now = tilo_clock::unix_now();
         pending.retain(|_, invite| !invite.is_expired(now));
         if pending.len() != before
             && let Some(path) = self.pending_invitations_path.as_deref()
@@ -3924,7 +3932,7 @@ impl ShellNetwork {
             .lock()
             .map_err(|_| "invite admission state is unavailable".to_string())?
             .get(id)
-            .filter(|invite| !invite.is_expired(now_unix_seconds()))
+            .filter(|invite| !invite.is_expired(tilo_clock::unix_now()))
             .map(|invite| invite.token.clone())
             .ok_or_else(|| "invitation is no longer pending".to_string())
     }
@@ -5525,7 +5533,7 @@ impl ShellNetwork {
         };
         update(&mut snapshot.unlock, &stamp);
         snapshot.presence.stamp = stamp;
-        snapshot.presence.last_seen_unix_ms = now_unix_seconds().saturating_mul(1000);
+        snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
         self.upsert_local_device_fabric(snapshot)
             .map(|_| ())
             .map_err(|error| error.to_string())
@@ -5591,7 +5599,7 @@ impl ShellNetwork {
             .retain(|saved| saved.network_id != credential.network_id);
         snapshot.wifi.push(credential);
         snapshot.presence.stamp = stamp;
-        snapshot.presence.last_seen_unix_ms = now_unix_seconds().saturating_mul(1000);
+        snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
         self.upsert_local_device_fabric(snapshot)
             .map(|_| ())
             .map_err(|error| error.to_string())
@@ -6934,6 +6942,12 @@ impl ShellNetwork {
         replayed: bool,
         msg: NeighbourMsg,
     ) {
+        // The one boundary for retired wire generations: no build produces
+        // them, so nothing past this point handles or authorizes them.
+        if msg.is_retired() {
+            tracing::debug!(%peer, ws, "dropping a retired collaboration message");
+            return;
+        }
         // A record of the person's own room arrives from another of their
         // devices over the personal fabric, or kept by their always-on host
         // on their continuity topic; never as room traffic.
@@ -6959,7 +6973,6 @@ impl ShellNetwork {
                 NeighbourMsg::SyncReq { .. }
                     | NeighbourMsg::SyncResp { .. }
                     | NeighbourMsg::AppDocument { .. }
-                    | NeighbourMsg::IdentityAnnouncement { .. }
                     | NeighbourMsg::IdentityAnnouncementV2 { .. }
             )
         {
@@ -7106,13 +7119,12 @@ impl ShellNetwork {
         {
             self.redeem_invited_identity(ws, *invite_id, &peer, &identity.device_cert);
         }
-        if self.require_peer_identity
-            && !governed_action
-            && !matches!(&msg, NeighbourMsg::IdentityHello { .. })
-        {
+        if self.require_peer_identity && !governed_action {
             let required = Self::required_room_verb(&msg);
             let pinned_authority_may_bootstrap = matches!(&msg, NeighbourMsg::SyncResp { .. });
-            if !self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap) {
+            if !required.is_some_and(|required| {
+                self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap)
+            }) {
                 tracing::warn!(
                     peer = %peer,
                     workspace_topic = ws,
@@ -7129,9 +7141,6 @@ impl ShellNetwork {
             pending.remove(&room);
         }
         match msg {
-            NeighbourMsg::IdentityAnnouncement { room, device_cert } => {
-                self.handle_identity_announcement(&peer, &room, &device_cert, &[]);
-            }
             NeighbourMsg::IdentityAnnouncementV2 {
                 room,
                 device_cert,
@@ -7471,21 +7480,6 @@ impl ShellNetwork {
         }
     }
 
-    /// Workspace capability required before variant-specific validation.
-    /// Publishing media, injecting input, granting control, and changing room
-    /// state are active collaboration actions and never ride on read access.
-    fn required_room_verb(msg: &NeighbourMsg) -> crate::shell::state::Verb {
-        match msg {
-            NeighbourMsg::SyncResp { .. }
-            | NeighbourMsg::SurfaceFrame { .. }
-            | NeighbourMsg::SurfaceStreamStart { .. }
-            | NeighbourMsg::SurfaceStreamEnd { .. }
-            | NeighbourMsg::RemoteInput { .. }
-            | NeighbourMsg::PermissionGrant { .. } => crate::shell::state::Verb::Write,
-            _ => crate::shell::state::Verb::Read,
-        }
-    }
-
     /// Resolve a transport shard to exactly one local room. Although a room
     /// topic is derived from a UUID, it is only 64 bits; an ambiguous collision
     /// must not let membership in one room authorize traffic for another.
@@ -7679,11 +7673,7 @@ impl ShellNetwork {
         self.peer_identities
             .set_revocations(cert.user_public_key, &list);
         let was_known = self.peer_identities.get(origin).is_some();
-        let now_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
-            .unwrap_or(u64::MAX);
+        let now_ns = now_unix_nanos();
         if self
             .peer_identities
             .insert(origin.clone(), cert.clone(), now_ns)
@@ -11960,14 +11950,15 @@ mod tests {
                     surface: 7,
                     event: Vec::new(),
                 }),
-                crate::shell::state::Verb::Write,
+                Some(crate::shell::state::Verb::Write),
             );
+            // Retired: never admitted as room traffic, not even on read.
             assert_eq!(
                 ShellNetwork::required_room_verb(&NeighbourMsg::PermissionRequest {
                     peer: 42,
                     capability: "remote-input".into(),
                 }),
-                crate::shell::state::Verb::Read,
+                None,
             );
             assert_eq!(
                 ShellNetwork::claimed_publisher(&NeighbourMsg::RemoteInput {
@@ -13204,11 +13195,7 @@ mod tests {
             };
             sign_device_cert(&mut cert, &authority_key).expect("certificate");
             let origin = crate::shell::state::PeerOrigin::peer(&peer);
-            let now_ns = SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
-                .unwrap_or(u64::MAX);
+            let now_ns = now_unix_nanos();
             net.peer_identities
                 .insert(origin.clone(), cert.clone(), now_ns)
                 .expect("admitted peer identity");

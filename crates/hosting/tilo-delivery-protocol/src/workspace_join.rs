@@ -103,7 +103,7 @@ impl InteractiveOwnerTrust {
                 "interactive owner room/workspace binding is invalid".into(),
             ));
         }
-        tilo_user_identity::verify_device_cert_at(&authority, crate::clock::now_ns())
+        tilo_user_identity::verify_device_cert_at(&authority, tilo_clock::unix_now_ns())
             .map_err(|error| WorkspaceJoinError::Protocol(error.to_string()))?;
         if !authority.capabilities.can_own_workspaces {
             return Err(WorkspaceJoinError::Protocol(
@@ -300,7 +300,7 @@ impl IrohWorkspaceHostHintV1 {
                 "workspace-host transport hint identity is inconsistent".into(),
             ));
         }
-        let now_ns = crate::clock::now_ns();
+        let now_ns = tilo_clock::unix_now_ns();
         tilo_user_identity::verify_device_cert_at(&self.host_device_certificate, now_ns)
             .map_err(|error| WorkspaceJoinError::Protocol(error.to_string()))?;
         tilo_user_identity::verify_device_cert_at(&self.governing_authority, now_ns)

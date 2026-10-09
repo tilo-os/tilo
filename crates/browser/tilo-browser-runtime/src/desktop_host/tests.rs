@@ -1150,7 +1150,7 @@ fn assert_external_frame_idle(frame: &mut ui::headless::FrameHarness, context: &
     assert!(
         output
             .next_wake_deadline
-            .is_none_or(|deadline| deadline > ui::clock::Instant::now()),
+            .is_none_or(|deadline| deadline > ui::time::Instant::now()),
         "{context}: settled presentation retained a due wake deadline"
     );
     assert!(
@@ -1162,7 +1162,7 @@ fn assert_external_frame_idle(frame: &mut ui::headless::FrameHarness, context: &
 fn settle_external_navigation(root: *mut DesktopRoot, frame: &mut ui::headless::FrameHarness) {
     // Initial group framing is a legitimate finite animation. Advance its
     // real clock seam, then run the ordinary frame pipeline once more.
-    let settled_at = ui::clock::Instant::now() + ui::clock::Duration::from_secs(1);
+    let settled_at = ui::time::Instant::now() + ui::time::Duration::from_secs(1);
     // SAFETY: `frame` retains this boxed root and no harness method runs
     // while the temporary exclusive references are alive.
     unsafe {
@@ -1183,7 +1183,7 @@ fn settle_notes_status_bubble(frame: &mut ui::headless::FrameHarness) {
         frame.frame_output().needs_animation_frame,
         "selecting Notes must preserve its finite visible status animation"
     );
-    std::thread::sleep(ui::status_bubble::DEFAULT_LINGER + ui::clock::Duration::from_millis(10));
+    std::thread::sleep(ui::status_bubble::DEFAULT_LINGER + ui::time::Duration::from_millis(10));
     frame.relayout();
 }
 
@@ -3084,7 +3084,7 @@ fn desktop_cold_keyboard_focus_reveals_chat_without_prior_writer_focus() {
             .surface
             .row_mut(StripId(2))
             .unwrap()
-            .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+            .tick_snap_at(ui::time::Instant::now() + ui::time::Duration::from_secs(1));
     }
     frame.relayout();
     let row = unsafe { (&*root_ptr).surface.row(StripId(2)).unwrap() };
@@ -3330,7 +3330,7 @@ fn desktop_cold_chat_pointer_and_explicit_focus_own_first_key_and_ime() {
                 .surface
                 .row_mut(StripId(2))
                 .unwrap()
-                .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+                .tick_snap_at(ui::time::Instant::now() + ui::time::Duration::from_secs(1));
         }
         frame.relayout();
     }
@@ -3403,7 +3403,7 @@ fn desktop_navigation_reveals_real_chat_and_preserves_local_records_and_return_f
                 .surface
                 .row_mut(StripId(2))
                 .unwrap()
-                .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+                .tick_snap_at(ui::time::Instant::now() + ui::time::Duration::from_secs(1));
         }
         frame.relayout();
     };
@@ -4159,9 +4159,7 @@ fn pointer_motion_over_each_app_body_is_inert_once_settled() {
         );
         // Selection animations (group framing, the Notes status bubble)
         // are finite; let them run out before judging idleness.
-        std::thread::sleep(
-            ui::status_bubble::DEFAULT_LINGER + ui::clock::Duration::from_millis(10),
-        );
+        std::thread::sleep(ui::status_bubble::DEFAULT_LINGER + ui::time::Duration::from_millis(10));
         for _ in 0..4 {
             frame.relayout();
         }
@@ -6021,7 +6019,7 @@ fn semantics_serialization_cost_per_typed_key() {
         let _ = structure_signature(snapshot);
         structure.push(ms(start));
         let start = std::time::Instant::now();
-        let decision = gate.decide(snapshot, output.ime.as_ref(), ui::clock::Instant::now());
+        let decision = gate.decide(snapshot, output.ime.as_ref(), ui::time::Instant::now());
         decide.push(ms(start));
         match decision {
             SemanticsDecision::Deliver { .. } => delivered += 1,

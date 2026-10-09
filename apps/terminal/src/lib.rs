@@ -97,7 +97,7 @@ pub struct HostedProcessServices {
 #[cfg(unix)]
 impl Default for HostedProcessServices {
     fn default() -> Self {
-        let ush = xdg_paths::xdg::runtime_dir()
+        let ush = tilo_paths::xdg::runtime_dir()
             .and_then(|runtime| Self::discover_from_runtime_dir(&runtime).ush);
         Self { ush }
     }

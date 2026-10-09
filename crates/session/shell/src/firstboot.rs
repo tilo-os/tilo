@@ -451,7 +451,7 @@ pub fn run_with_env(
 /// Compute the tilo-desktop config dir (`<config-base>/tilo-desktop`) following the same XDG fallback rules the peer-sync marker uses.
 fn resolve_config_dir(xdg_config_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
     Some(
-        xdg_paths::xdg::Base::Config
+        tilo_paths::xdg::Base::Config
             .resolve_from(xdg_config_home, home)?
             .join("tilo-desktop"),
     )

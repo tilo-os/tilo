@@ -7,10 +7,7 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
         let temporary = std::env::temp_dir().canonicalize().unwrap();
-        let unique = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let unique = ui::time::try_unix_now_ns().unwrap();
         let root = temporary.join(format!(
             "wp-headless-launch-{}-{unique}",
             std::process::id()

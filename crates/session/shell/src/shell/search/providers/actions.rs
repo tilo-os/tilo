@@ -771,21 +771,6 @@ fn name_invited_peer(state: &ChromeState, args: &ActionArgs) -> Result<String, A
     Ok(name)
 }
 
-/// Current wall-clock time as nanoseconds since the epoch, clamped to
-/// `u64::MAX` rather than truncated — a value that large is centuries past
-/// any real expiry/enrollment window this crate computes against.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "clamped to 0..=u64::MAX immediately above, so it always fits u64"
-)]
-fn now_ns_u64() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .min(u128::from(u64::MAX)) as u64
-}
-
 fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
     let value = value.trim();
     if value.len() != 64 {
@@ -1205,7 +1190,7 @@ impl Action {
             "search-action-identity-device-enroll-subtitle",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
-                let now = now_ns_u64();
+                let now = tilo_clock::unix_now_ns();
                 let expires = now.saturating_add(5 * 60 * 1_000_000_000);
                 let token = crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| {
@@ -1231,7 +1216,7 @@ impl Action {
             "search-action-identity-home-peer-enroll-subtitle",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
-                let now = now_ns_u64();
+                let now = tilo_clock::unix_now_ns();
                 let expires = now.saturating_add(5 * 60 * 1_000_000_000);
                 let token = crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| {
@@ -1281,7 +1266,7 @@ impl Action {
                         ));
                     }
                 };
-                let now = now_ns_u64();
+                let now = tilo_clock::unix_now_ns();
                 crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| store.revoke(&profile.id, key, reason, now))
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
@@ -3688,11 +3673,11 @@ mod tests {
     use crate::shell::state::FreshId as _;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
     use std::sync::Arc;
 
     fn chrome_rc() -> crate::shell::chrome_state::Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
+        let handle: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
     }
 
@@ -3707,7 +3692,7 @@ mod tests {
         ws.set_owner("shell-fixture");
         tree.desktop.workspaces.push(ws);
         tree.desktop.active = id;
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_fixture_handle(
             handle,
             crate::shell::hosted_inputs::HostedTileInputs::default(),
@@ -4219,9 +4204,10 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "tab.duplicate")
                 .expect("duplicate action is registered");
-            let chrome = ChromeState::new_with_handle(std::sync::Arc::new(
-                parking_lot::RwLock::new(crate::shell::state::WorkspaceTree::default()),
-            ));
+            let chrome =
+                ChromeState::new_with_handle(crate::shell::state::WorkspaceTreeHandle::new(
+                    crate::shell::state::WorkspaceTree::default(),
+                ));
             let args = ActionArgs::bind(action.params, []).expect("duplicate is nullary");
             let error = (action.apply)(&mut chrome.borrow_mut(), &args)
                 .expect_err("no active tab must be a machine-readable failure");
@@ -4722,7 +4708,7 @@ mod tests {
             tree.desktop.active = workspace_id;
             tree.desktop.external_revision = chrome.borrow().tree().desktop.external_revision;
             ChromeState::new_with_fixture_handle(
-                Arc::new(RwLock::new(tree)),
+                crate::shell::state::WorkspaceTreeHandle::new(tree),
                 crate::shell::hosted_inputs::HostedTileInputs::default(),
             )
         };
@@ -5691,7 +5677,8 @@ mod tests {
             workspace.set_owner("a-different-person");
             tree.desktop.workspaces.push(workspace);
             tree.desktop.active = id;
-            let chrome = ChromeState::new_with_handle(Arc::new(RwLock::new(tree)));
+            let chrome =
+                ChromeState::new_with_handle(crate::shell::state::WorkspaceTreeHandle::new(tree));
 
             for action_id in [
                 "identity.devices.copy",

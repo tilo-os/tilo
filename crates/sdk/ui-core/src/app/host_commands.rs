@@ -244,9 +244,7 @@ impl App {
                 self.actions.resource_generation.get(),
                 self.actions.permission_generation.get(),
             ),
-            minute: crate::time::wall()
-                .duration_since(crate::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_secs() / 60),
+            minute: crate::time::unix_now() / 60,
         }
     }
 

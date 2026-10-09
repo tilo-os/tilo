@@ -552,10 +552,7 @@ mod tests {
         let p = std::env::temp_dir().join(format!(
             "tilo-settings-store-{}-{:?}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
+            tilo_clock::try_unix_now_ns().unwrap(),
             TMPDIR_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&p).unwrap();

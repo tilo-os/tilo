@@ -38,8 +38,6 @@
 pub mod certify;
 #[cfg(feature = "iroh")]
 pub mod client;
-#[cfg(feature = "iroh")]
-mod clock;
 pub mod coedit;
 #[cfg(feature = "iroh")]
 pub mod environment;

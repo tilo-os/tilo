@@ -1,7 +1,7 @@
 //! Display intent admitted through the exact private Settings connection.
 //! KMS stays in the compositor; this service writes its existing bounded
 //! preview transaction through the session-owned settings source.
-use super::state::{RoomId, WorkspaceTree};
+use super::state::{RoomId, WeakWorkspaceTreeHandle};
 use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_actor, role_caps};
 use settings_store::{
     SettingsSource,
@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tilo_action_broker::services::{DisplayControlContext, DisplayControlServices};
 
 pub(crate) struct NativeDisplayControl {
-    pub tree: std::sync::Weak<parking_lot::RwLock<WorkspaceTree>>,
+    pub tree: WeakWorkspaceTreeHandle,
     pub source: Arc<dyn SettingsSource>,
 }
 

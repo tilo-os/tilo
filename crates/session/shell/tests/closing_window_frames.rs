@@ -36,11 +36,11 @@ use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 
-const APP_ID: &str = "org.example.Closing";
+pub(crate) const APP_ID: &str = "org.example.Closing";
 const SIZE: i32 = 64;
 
 #[derive(Default)]
-struct Client {
+pub(crate) struct Client {
     globals: Vec<(u32, String, u32)>,
     configured: bool,
     close_requested: bool,
@@ -145,17 +145,17 @@ delegate_noop!(Client: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(Client: ignore xdg_positioner::XdgPositioner);
 delegate_noop!(Client: ignore xdg_popup::XdgPopup);
 
-struct Harness {
+pub(crate) struct Harness {
     display: Display<State>,
-    state: State,
+    pub(crate) state: State,
     conn: Connection,
-    queue: EventQueue<Client>,
+    pub(crate) queue: EventQueue<Client>,
     client: Client,
     _event_loop: EventLoop<'static, State>,
 }
 
 impl Harness {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let event_loop = EventLoop::try_new().expect("calloop");
         let display = Display::new().expect("display");
         let mut state = State::new(event_loop.handle(), display.handle());
@@ -203,7 +203,7 @@ impl Harness {
     /// Exchange messages both ways until neither side has anything queued.
     /// Never runs a paint pass: whatever the client sees here, it saw without
     /// the compositor drawing a frame.
-    fn pump(&mut self) {
+    pub(crate) fn pump(&mut self) {
         for _ in 0..8 {
             let _ = self.queue.flush();
             let _ = self.display.dispatch_clients(&mut self.state);
@@ -400,7 +400,7 @@ fn a_frame_asked_for_without_a_buffer_does_not_need_a_paint() {
 
 /// A mapped toplevel of [`APP_ID`], placed and configured, with a buffer to
 /// draw with.
-fn shown_window(
+pub(crate) fn shown_window(
     h: &mut Harness,
 ) -> (
     wl_compositor::WlCompositor,

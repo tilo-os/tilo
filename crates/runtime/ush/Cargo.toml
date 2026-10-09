@@ -53,7 +53,7 @@ tilo-egress = { path = "../egress" }
 legacy-vm = { path = "../legacy-vm", default-features = false }
 
 anyhow.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 landlock.workspace = true
 libc.workspace = true
 seccompiler.workspace = true

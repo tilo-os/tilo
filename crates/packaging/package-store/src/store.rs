@@ -14,7 +14,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tilo_clock::unix_now;
 
 use tilo_app_package::{
@@ -241,9 +240,7 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
 
 /// Unique name for a staging path under `tmp/`.
 fn staging_name(id: PackageId, what: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    let nanos = tilo_clock::unix_now_ns() % 1_000_000_000;
     format!("{}.{what}.{}.{nanos}", id.to_hex(), std::process::id())
 }
 
