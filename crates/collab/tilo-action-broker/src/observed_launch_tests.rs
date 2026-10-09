@@ -98,6 +98,7 @@ impl crate::services::LauncherServices for ObservedLauncher {
         &self,
         _: &str,
         _: &tilo_desktop_model::Workspace,
+        _: Option<&str>,
         _: &crate::services::LaunchPlace,
     ) -> Result<(), String> {
         Err("unobserved launches are not a readiness receipt".into())

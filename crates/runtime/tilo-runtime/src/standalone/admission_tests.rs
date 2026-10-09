@@ -50,6 +50,7 @@ impl LauncherServices for RecordingLauncher {
         &self,
         app: &str,
         workspace: &Workspace,
+        _: Option<&str>,
         _: &tilo_action_broker::services::LaunchPlace,
     ) -> Result<(), String> {
         self.0

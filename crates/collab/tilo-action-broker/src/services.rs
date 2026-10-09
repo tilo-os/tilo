@@ -339,12 +339,19 @@ pub struct AuthenticatedApplicationLaunch {
 
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
-    /// Launches `app` into `workspace`, its view opening at `place`.
+    /// Launches `app` into `workspace`, its view of `record` (else the
+    /// record it opens by default) opening at `place`.
     ///
     /// # Errors
     ///
     /// Returns a message when the host cannot launch the application.
-    fn launch(&self, app: &str, workspace: &Workspace, place: &LaunchPlace) -> Result<(), String>;
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &Workspace,
+        record: Option<&str>,
+        place: &LaunchPlace,
+    ) -> Result<(), String>;
     /// Launch an exact installed package, or an ordinary host application,
     /// and observe its real startup in the authenticated workspace.
     ///
@@ -396,7 +403,7 @@ pub trait LauncherServices: Send + Sync {
         place: &LaunchPlace,
     ) -> Result<(), String> {
         if content.hash.is_empty() {
-            self.launch(app, workspace, place)
+            self.launch(app, workspace, None, place)
         } else {
             Err("opening launch content is unsupported on this host".into())
         }

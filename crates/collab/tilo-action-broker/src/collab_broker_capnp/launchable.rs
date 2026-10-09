@@ -58,7 +58,9 @@ type SurfaceKey = (String, String, String);
 /// Starts `app_id` in a workspace in place of the host's launcher. Tests
 /// stand in for launching the installed app with one.
 pub(super) type AppLauncher = Arc<
-    dyn Fn(&str, &tilo_desktop_model::Workspace, &LaunchPlace) -> Result<(), String> + Send + Sync,
+    dyn Fn(&str, &tilo_desktop_model::Workspace, Option<&str>, &LaunchPlace) -> Result<(), String>
+        + Send
+        + Sync,
 >;
 
 /// How many actors' views [`ActorViews`] remembers.
@@ -497,10 +499,12 @@ mod tests {
         (streams, launches)
     }
 
-    /// Where each launch was placed.
-    type Places = Arc<Mutex<Vec<LaunchPlace>>>;
+    /// The record each launch opened, and where it was placed.
+    type Places = Arc<Mutex<Vec<(Option<String>, LaunchPlace)>>>;
 
-    /// [`app_comes_up_as`], also recording where each launch was placed.
+    /// [`app_comes_up_as`], also recording which record each launch opened
+    /// and where it was placed. The app comes up on the record it was asked
+    /// for, else its room record.
     fn app_comes_up_placed(
         state: &Arc<CapnpBrokerState>,
         peer_id: u64,
@@ -512,9 +516,12 @@ mod tests {
         let noted = Arc::clone(&places);
         let weak: Weak<CapnpBrokerState> = Arc::downgrade(state);
         state.launchable.replace_launcher_for_test(
-            Arc::new(move |app_id, workspace, place| {
+            Arc::new(move |app_id, workspace, record, place| {
                 recorded.lock().expect("launches").push(app_id.to_string());
-                noted.lock().expect("places").push(place.clone());
+                noted
+                    .lock()
+                    .expect("places")
+                    .push((record.map(str::to_owned), place.clone()));
                 let state = weak.upgrade().ok_or("the broker is gone")?;
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 state
@@ -522,11 +529,11 @@ mod tests {
                     .lock()
                     .expect("subscribers")
                     .insert(peer_id, tx);
-                state
-                    .surfaces
-                    .lock()
-                    .expect("surfaces")
-                    .insert(peer_id, surface(peer_id, &workspace.room.to_string()));
+                let mut up = surface(peer_id, &workspace.room.to_string());
+                if let Some(record) = record {
+                    up.route.record_id = record.to_owned();
+                }
+                state.surfaces.lock().expect("surfaces").insert(peer_id, up);
                 streams.send(rx).map_err(|error| error.to_string())
             }),
             Duration::from_secs(5),
@@ -657,9 +664,12 @@ mod tests {
         assert_eq!(*launches.lock().expect("launches"), [APP]);
         assert_eq!(
             *places.lock().expect("places"),
-            [LaunchPlace::Beside {
-                app_id: NOTES.into()
-            }],
+            [(
+                None,
+                LaunchPlace::Beside {
+                    app_id: NOTES.into()
+                }
+            )],
             "the agent's view opens beside the one it works in"
         );
         let mut stream = streams.try_recv().expect("the app came up");
@@ -672,9 +682,30 @@ mod tests {
         invoke(&state, &owner, &provider, "new-window", None).expect("admitted once launched");
         assert_eq!(
             places.lock().expect("places").last(),
-            Some(&LaunchPlace::Focus),
+            Some(&(None, LaunchPlace::Focus)),
             "a person's own invocation opens where they are"
         );
+    }
+
+    /// An action of a record the app does not open by default launches the
+    /// app on that record, and runs in its view.
+    #[test]
+    fn a_closed_records_action_launches_the_app_on_that_record() {
+        let (state, room) = broker(&workspace());
+        let mut draft = surface(7, &room);
+        draft.route.record_id = "draft-record".into();
+        state.launchable.retain(&draft);
+        let (streams, _, places) = app_comes_up_placed(&state, 8);
+        let owner = Caller::local_person("owner").in_room(&room);
+        let provider = offered_provider(&state, &owner, "new-window")
+            .expect("the closed record's action is offered");
+        invoke(&state, &owner, &provider, "new-window", None).expect("admitted once launched");
+        assert_eq!(
+            *places.lock().expect("places"),
+            [(Some("draft-record".to_owned()), LaunchPlace::Focus)]
+        );
+        let mut stream = streams.try_recv().expect("the app came up on the record");
+        assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
     }
 
     /// An agent's action shows in the view it runs in, named with the
@@ -901,7 +932,7 @@ mod tests {
         state.launchable.retain(&surface(7, &room));
         state
             .launchable
-            .replace_launcher_for_test(Arc::new(|_, _, _| Ok(())), Duration::from_millis(200));
+            .replace_launcher_for_test(Arc::new(|_, _, _, _| Ok(())), Duration::from_millis(200));
         let owner = Caller::local_person("owner").in_room(&room);
         let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
@@ -920,7 +951,7 @@ mod tests {
         let launches = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&launches);
         state.launchable.replace_launcher_for_test(
-            Arc::new(move |app_id, _, _| {
+            Arc::new(move |app_id, _, _, _| {
                 recorded.lock().expect("launches").push(app_id.to_string());
                 Ok(())
             }),

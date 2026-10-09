@@ -643,6 +643,7 @@ impl LauncherServices for NativeLauncher {
         &self,
         app: &str,
         workspace: &tilo_desktop_model::Workspace,
+        record: Option<&str>,
         place: &LaunchPlace,
     ) -> Result<(), String> {
         if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
@@ -666,9 +667,20 @@ impl LauncherServices for NativeLauncher {
         let mut workspace = workspace.clone();
         let person = super::state::local_user_id_for_room(&workspace.room);
         self.grant_authorship(&person, app, &mut workspace);
-        super::launcher::launch_in_workspace(app, &workspace)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        let launched = match record {
+            Some(record) => {
+                let record = ui::record::RecordId::parse(record)
+                    .ok_or_else(|| format!("{record} is not a record of {app}"))?;
+                super::launcher::launch_uri_in_room(
+                    app,
+                    workspace.room,
+                    workspace.capabilities.clone(),
+                    &record.uri(),
+                )
+            }
+            None => super::launcher::launch_in_workspace(app, &workspace),
+        };
+        launched.map(|_| ()).map_err(|e| e.to_string())
     }
     fn begin_launch(
         &self,

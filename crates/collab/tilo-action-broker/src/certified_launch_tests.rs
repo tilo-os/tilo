@@ -69,7 +69,7 @@ fn certified_launch_gate(
     let launches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = launches.clone();
     rig.state.launchable.replace_launcher_for_test(
-        Arc::new(move |app, workspace, _| {
+        Arc::new(move |app, workspace, _, _| {
             assert_eq!(app, "so.tilo.word-processor");
             assert!(!workspace.room.is_nil());
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

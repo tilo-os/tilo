@@ -87,6 +87,12 @@ pub mod space;
 pub mod task_budget;
 pub mod validator;
 
+/// The URI scheme that asks an app to open one of its own records
+/// (`tilo-record:<record id>`): how a launch delivers an invocation to the
+/// view of the record it addresses. Every app accepts it; it names a record
+/// in the app's own store and grants nothing.
+pub const RECORD_URI_SCHEME: &str = "tilo-record";
+
 // Convenience re-exports so downstream callers can do
 // `use collab_types::{SignedOp, Role, OpClass, ArtifactKind, ...}`
 // without reaching into individual modules.

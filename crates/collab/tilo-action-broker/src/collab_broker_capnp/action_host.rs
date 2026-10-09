@@ -1292,8 +1292,13 @@ impl CapnpBrokerState {
                 let state = Arc::clone(self);
                 let app = app_id.clone();
                 let place = self.launch_place(caller, &room, None);
+                // The package's room record is what a plain launch opens.
+                let record = destination
+                    .record
+                    .clone()
+                    .filter(|record| !record.is_empty());
                 tokio::task::spawn_blocking(move || {
-                    state.launch_retained(&app, &current.workspace, &place)
+                    state.launch_retained(&app, &current.workspace, record.as_deref(), &place)
                 })
                 .await
                 .unwrap_or_else(|error| Err(error.to_string()))
@@ -1383,22 +1388,23 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    /// Start `app_id` in `workspace` at `place` through the host's
-    /// launcher, or the one a test installed in its place.
+    /// Start `app_id` in `workspace` on `record` at `place` through the
+    /// host's launcher, or the one a test installed in its place.
     fn launch_retained(
         &self,
         app_id: &str,
         workspace: &Workspace,
+        record: Option<&str>,
         place: &LaunchPlace,
     ) -> Result<(), String> {
         if let Some(launcher) = self.launchable.launcher() {
-            return launcher(app_id, workspace, place);
+            return launcher(app_id, workspace, record, place);
         }
         self.services
             .launcher
             .as_ref()
             .ok_or_else(|| "application launch unsupported".to_string())?
-            .launch(app_id, workspace, place)
+            .launch(app_id, workspace, record, place)
     }
 
     /// Where a view `caller`'s action needs opens in `room`: beside the
@@ -2765,6 +2771,7 @@ mod app_close_tests {
             &self,
             _: &str,
             _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
             _: &crate::services::LaunchPlace,
         ) -> Result<(), String> {
             Ok(())

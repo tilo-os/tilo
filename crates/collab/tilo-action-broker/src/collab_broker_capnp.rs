@@ -12376,6 +12376,7 @@ pub mod tests {
                 &self,
                 _: &str,
                 _: &tilo_desktop_model::Workspace,
+                _: Option<&str>,
                 _: &crate::services::LaunchPlace,
             ) -> Result<(), String> {
                 Err("this broker launches nothing".into())
@@ -12498,6 +12499,7 @@ pub mod tests {
             &self,
             _: &str,
             _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
             _: &crate::services::LaunchPlace,
         ) -> Result<(), String> {
             Err("this broker launches nothing".into())
@@ -15819,6 +15821,7 @@ pub mod tests {
                 &self,
                 _: &str,
                 _: &tilo_desktop_model::Workspace,
+                _: Option<&str>,
                 _: &crate::services::LaunchPlace,
             ) -> Result<(), String> {
                 unreachable!("catalogue projection never launches")
@@ -17185,6 +17188,7 @@ pub mod tests {
                     &self,
                     _: &str,
                     _: &tilo_desktop_model::Workspace,
+                    _: Option<&str>,
                     _: &crate::services::LaunchPlace,
                 ) -> Result<(), String> {
                     Err("this host launches nothing".into())

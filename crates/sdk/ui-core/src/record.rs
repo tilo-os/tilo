@@ -190,6 +190,21 @@ impl RecordId {
         valid_record_id(s, 0).then(|| Self(s.to_string()))
     }
 
+    /// The URI asking an app to open this record
+    /// ([`collab_types::RECORD_URI_SCHEME`]).
+    #[must_use]
+    pub fn uri(&self) -> String {
+        format!("{}:{}", collab_types::RECORD_URI_SCHEME, self.0)
+    }
+
+    /// The record a [`Self::uri`] names.
+    #[must_use]
+    pub fn from_uri(uri: &str) -> Option<Self> {
+        uri.strip_prefix(collab_types::RECORD_URI_SCHEME)?
+            .strip_prefix(':')
+            .and_then(Self::parse)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

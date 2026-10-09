@@ -759,9 +759,10 @@ fn prepare_app<A: ResourceApp>(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    let arguments = args.positionals();
+    let (record, arguments) = record_argument(args.positionals());
     let options = launch_options::<A>(args);
-    let named = A::launch_record(&LaunchInput::new(arguments, None).with_options(&options));
+    let named = record
+        .or_else(|| A::launch_record(&LaunchInput::new(arguments, None).with_options(&options)));
     let private = A::PRIVATE_WINDOWS && args.has(PRIVATE_FLAG);
     let mut prepared = prepare_named(definition, args, named, private)?;
     hand_launch(definition, arguments, &mut prepared)?;
@@ -918,7 +919,40 @@ fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    prepare_named(definition, args, None, false)
+    let (record, _) = record_argument(args.positionals());
+    prepare_named(definition, args, record, false)
+}
+
+/// The record a launch names with a first argument
+/// `tilo-record:<id>` ([`RecordId::uri`]), as the session launches an app to
+/// run an action on one of its records, and the arguments after it.
+#[cfg(tilo_native_runner)]
+fn record_argument(arguments: &[String]) -> (Option<RecordId>, &[String]) {
+    match arguments.split_first() {
+        Some((first, rest)) => match RecordId::from_uri(first) {
+            Some(record) => (Some(record), rest),
+            None => (None, arguments),
+        },
+        None => (None, arguments),
+    }
+}
+
+#[cfg(all(test, tilo_native_runner))]
+mod record_argument_tests {
+    use super::*;
+
+    #[test]
+    fn a_record_uri_names_the_record_and_is_not_handed_to_the_app() {
+        let record = RecordId::minted();
+        let arguments = vec![record.uri(), "--then".to_owned()];
+        let (named, rest) = record_argument(&arguments);
+        assert_eq!(named, Some(record));
+        assert_eq!(rest, ["--then".to_owned()]);
+
+        let plain = vec!["notes.md".to_owned()];
+        assert_eq!(record_argument(&plain), (None, plain.as_slice()));
+        assert_eq!(record_argument(&[]), (None, [].as_slice()));
+    }
 }
 
 #[cfg(tilo_native_runner)]

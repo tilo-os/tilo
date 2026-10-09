@@ -235,11 +235,13 @@ impl LauncherServices for Apps {
             .collect()
     }
 
-    /// A standalone runtime draws no desk, so there is no place to open at.
+    /// A standalone runtime draws no desk, so there is no place to open at;
+    /// it opens the app's default record.
     fn launch(
         &self,
         app: &str,
         workspace: &tilo_desktop_model::Workspace,
+        _: Option<&str>,
         _: &tilo_action_broker::services::LaunchPlace,
     ) -> Result<(), String> {
         let launch = self.start(app, &workspace.room.to_string())?;
