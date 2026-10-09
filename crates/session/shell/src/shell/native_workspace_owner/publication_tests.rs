@@ -6,8 +6,7 @@ use super::tests::tree_of;
 use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
-use parking_lot::RwLock;
-use std::{sync::Arc, time::SystemTime};
+use std::time::SystemTime;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_joined_room::testing as internals;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
@@ -91,7 +90,7 @@ fn native_outgoing_offline_commit_preserves_exact_bytes_and_retry_across_restart
     drop(owner);
     let mut tree = persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
-    let owner = open(Arc::new(RwLock::new(tree))).unwrap();
+    let owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
     let bytes = owner
         .with_outgoing(room, now, |_, outgoing| {
             Ok(outgoing
@@ -389,7 +388,7 @@ fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
         let path = directory.path().join("state.json");
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path);
-        let owner = open(Arc::new(RwLock::new(tree))).unwrap();
+        let owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
         assert_eq!(
             owner
                 .with_outgoing(room, now, |_, outgoing| Ok(outgoing
@@ -516,7 +515,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
         drop(owner);
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path.clone());
-        owner = open(Arc::new(RwLock::new(tree))).unwrap();
+        owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
         owner
             .with_current(room, |view| {
                 // Durable watermarks originate in a HashMap. Restoring may
@@ -704,7 +703,7 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
         .unwrap();
         let projection = published.projection[0].clone();
         tree.persist_path = Some(path.clone());
-        let owner = open(Arc::new(RwLock::new(tree))).unwrap();
+        let owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
         assert!(
             visible(&owner, room, later).is_empty(),
             "uncertain publication preserves custody, not transient governor freshness"
@@ -744,7 +743,7 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path);
         assert!(
-            open(Arc::new(RwLock::new(tree))).is_err(),
+            open(crate::shell::state::WorkspaceTreeHandle::new(tree)).is_err(),
             "restore must derive capacity proof from actual obligations"
         );
     }
@@ -792,7 +791,7 @@ fn native_outgoing_projection_history_substitution_cannot_restore() {
     let mut tree = persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
     assert!(
-        open(Arc::new(RwLock::new(tree))).is_err(),
+        open(crate::shell::state::WorkspaceTreeHandle::new(tree)).is_err(),
         "valid local signature and reserved sequence cannot substitute uncommitted history"
     );
 }

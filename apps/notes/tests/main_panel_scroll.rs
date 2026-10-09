@@ -82,6 +82,54 @@ fn semantic(app: &mut TestApp<NotesShell>, target: &str, action: &ui::a11y::Acti
     })
 }
 
+#[test]
+fn long_note_thumb_drag_survives_host_routing_and_intermediate_frames() {
+    use winit::event::ElementState::{Pressed, Released};
+
+    let mut markdown = String::new();
+    let paragraph = "Orange Pi real display scrolling workload. ".repeat(6);
+    for index in 0..180 {
+        writeln!(markdown, "## Paragraph {index}\n\n{paragraph}\n").unwrap();
+    }
+    let mut app = note_at(&markdown, 1051, 952, 1.0);
+    let original = panel(&mut app, |panel| panel.editor().to_markdown());
+    app.harness().send(&pointer(Point::new(600.0, 300.0)));
+    app.harness().scroll(0.0, -10.0);
+    let start = scroll_y(&mut app);
+    assert!(start > 0.0, "host-routed wheel must move the document");
+    let thumb = scroll_control(&mut app).bounds.unwrap().to_rect();
+    app.harness().send(&pointer(thumb.center()));
+    app.harness().send(&mouse(Pressed));
+    let mut previous = start;
+    let mut previous_top = panel(&mut app, |panel| panel.editor().get_rect().y0);
+    for step in 1..=24 {
+        app.harness().send(&pointer(Point::new(
+            thumb.center().x,
+            thumb.center().y + f64::from(step) * 8.0,
+        )));
+        let current = scroll_y(&mut app);
+        assert!(
+            current > previous,
+            "drag step {step} must advance: {previous} -> {current}"
+        );
+        let top = panel(&mut app, |panel| panel.editor().get_rect().y0);
+        assert!(
+            top < previous_top,
+            "drag step {step} must move content geometry"
+        );
+        previous = current;
+        previous_top = top;
+    }
+    app.harness().send(&mouse(Released));
+    app.harness()
+        .send(&pointer(Point::new(thumb.center().x, 800.0)));
+    assert_eq!(scroll_y(&mut app), previous, "release ends the drag");
+    assert_eq!(
+        panel(&mut app, |panel| panel.editor().to_markdown()),
+        original
+    );
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one end-to-end scrollbar test verifies pointer, keyboard, semantic, and reload paths"

@@ -76,17 +76,17 @@ pub fn args(netns: &Netns, pid_file: &Path, map_host_loopback: Option<IpAddr>) -
     args
 }
 
-/// Where `pasta` writes its pid once the namespace is configured. Under
-/// `$XDG_RUNTIME_DIR` where there is one: `SELinux` lets `pasta` write pid
-/// files there and not in a home directory or `/tmp`.
-fn pid_file() -> PathBuf {
+/// Where `pasta` writes its pid once the namespace is configured: under
+/// `$XDG_RUNTIME_DIR`, the one place `SELinux` lets it write pid files and no
+/// other user can replace the pid this process later reads.
+fn pid_file() -> Result<PathBuf, String> {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|d| d.is_dir())
-        .unwrap_or_else(std::env::temp_dir);
+        .ok_or("pasta needs XDG_RUNTIME_DIR for its pid file")?;
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    dir.join(format!("tilo-egress-{}-{n}.pasta.pid", std::process::id()))
+    Ok(dir.join(format!("tilo-egress-{}-{n}.pasta.pid", std::process::id())))
 }
 
 fn cstring(bytes: &[u8]) -> Result<CString, String> {
@@ -110,7 +110,7 @@ impl Pasta {
                 binary.display()
             ));
         }
-        let pid_file = pid_file();
+        let pid_file = pid_file()?;
         let _ = std::fs::remove_file(&pid_file);
         // Everything the children use is prepared before the fork.
         let program = cstring(binary.as_os_str().as_bytes())?;

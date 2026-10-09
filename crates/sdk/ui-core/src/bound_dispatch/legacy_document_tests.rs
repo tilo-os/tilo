@@ -379,11 +379,7 @@ fn retained_policy_time_document_door_denies_delayed_grant_without_mutation() {
         Arc,
         atomic::{AtomicU64, Ordering},
     };
-    let expiry = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + 3600;
+    let expiry = crate::time::try_unix_now().unwrap() + 3600;
     let time = Arc::new(AtomicU64::new(expiry - 1));
     let clock = time.clone();
     let authority = PermissionContext::from_capabilities(

@@ -5,8 +5,6 @@
 //! methods; this crate enforces that every operation targets the one Tilo
 //! domain and that internet access is a short-lived, purpose-bound lease.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use thiserror::Error;
 
 use crate::{
@@ -119,10 +117,7 @@ impl<B: VmBackend> WindowsVmService<B> {
         if state.phase != AppliancePhase::Ready {
             return Err(LifecycleError::NotReady);
         }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| LifecycleError::Clock)?
-            .as_secs();
+        let now = tilo_clock::try_unix_now().ok_or(LifecycleError::Clock)?;
         Ok(self
             .backend
             .open_egress(&self.config, purpose, now, ttl_seconds)?)

@@ -318,7 +318,7 @@ pub fn bundle_root_from(root_override: Option<std::ffi::OsString>) -> Result<Pat
     {
         return Ok(PathBuf::from(dir));
     }
-    Ok(xdg_paths::data_dir()
+    Ok(tilo_paths::data_dir()
         .ok_or(BundleError::NoDataDir)?
         .join("tilo-runtime"))
 }
@@ -1112,6 +1112,61 @@ fn produced_at_from(value: Result<String, std::env::VarError>) -> Result<u64, Bu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sdk_font_catalog_is_signed_and_corruption_does_not_change_a_retained_sdk() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let work = tempfile::tempdir().unwrap();
+        let fonts = work.path().join("fonts");
+        let prepared = std::process::Command::new("python3")
+            .arg(repo.join("tools/font-catalog.py"))
+            .arg("prepare")
+            .arg(repo.join("crates/sdk/ui-core/assets/fonts"))
+            .arg(&fonts)
+            .args(["--scope", "product"])
+            .output()
+            .unwrap();
+        assert!(
+            prepared.status.success(),
+            "{}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+        let identity = Identity::generate();
+        let identity_path = work.path().join("identity.json");
+        fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+        let bundles = work.path().join("bundles");
+        let includes = [fonts];
+        let options = BuildOptions {
+            identity: Some(&identity_path),
+            extra_libs: &includes,
+            ..Default::default()
+        };
+        let (_, held) = build_abi_bundle(&bundles, "held", &options).unwrap();
+        let (_, current) = build_abi_bundle(&bundles, "current", &options).unwrap();
+        let verification = VerifyOptions {
+            require_publisher: Some(identity.public_key_hex()),
+            require_signature: true,
+            require_arch: None,
+        };
+        let manifest = verify_bundle_with(&current, &verification).unwrap();
+        assert!(
+            manifest
+                .files
+                .iter()
+                .any(|file| file.path == "lib/fonts/manifest.toml")
+        );
+        let original = fs::read(held.join("lib/fonts/NotoSansMath-Regular.ttf")).unwrap();
+        let changed = current.join("lib/fonts/NotoSansMath-Regular.ttf");
+        let mut bytes = fs::read(&changed).unwrap();
+        bytes[0] ^= 1;
+        fs::write(changed, bytes).unwrap();
+        assert!(verify_bundle_with(&current, &verification).is_err());
+        verify_bundle_with(&held, &verification).unwrap();
+        assert_eq!(
+            fs::read(held.join("lib/fonts/NotoSansMath-Regular.ttf")).unwrap(),
+            original
+        );
+    }
 
     #[test]
     fn an_abi_bundle_is_named_by_its_payload_and_cannot_claim_another_build() {

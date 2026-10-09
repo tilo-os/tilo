@@ -25,12 +25,23 @@ class CompositorTraceCompletenessTests(unittest.TestCase):
             return module.read_trace(trace)
 
     def test_valid_optional_latency_is_preserved(self):
-        header, rows = self.parse("start_us,input_latency_us\n1,\n2,14\n")
-        self.assertEqual(header, ["start_us", "input_latency_us"])
-        self.assertEqual(rows, [
-            {"start_us": 1, "input_latency_us": None},
-            {"start_us": 2, "input_latency_us": 14},
+        required = {
+            "period_us": 16, "input_us": 0, "pump_us": 0, "layout_us": 0,
+            "scene_us": 0, "submit_us": 0, "clients_us": 0, "sleep_us": 0,
+            "painted": 1, "present_async": 0,
+        }
+        header = ["start_us", *required, "input_latency_us"]
+        first = {"start_us": 1, **required, "input_latency_us": None}
+        second = {"start_us": 2, **required, "input_latency_us": 14}
+        contents = "\n".join([
+            ",".join(header),
+            ",".join("" if first[key] is None else str(first[key]) for key in header),
+            ",".join(str(second[key]) for key in header),
+            "",
         ])
+        parsed_header, rows = self.parse(contents)
+        self.assertEqual(parsed_header, header)
+        self.assertEqual(rows, [first, second])
 
     def test_truncated_or_extra_rows_cannot_disappear_from_tail_statistics(self):
         for contents in [

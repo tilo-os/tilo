@@ -1,8 +1,10 @@
-[shell]
-top_bar_color = "#1e1e1e"
-dock_opacity = 0.9
-corner_radius = 12.0
+# The compositor's image-wide settings; a person's own
+# ~/.config/tilo-desktop/desktop.toml replaces this file entirely.
+# `tilo-recovery` recognises an installed root by this file, so it ships even
+# with every setting at its default.
 
-[collaboration]
-enabled = true
-auto_share_new_windows = false
+# Video for shared legacy (X11/Wayland) application windows.
+[flatpak_share]
+# max_bitrate_kbps = 8000
+# target_fps = 60
+# encoder = "auto"   # "software", "vaapi", "nvenc" or "v4l2"

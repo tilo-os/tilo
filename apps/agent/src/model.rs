@@ -10,7 +10,8 @@
 //!
 //! Two shapes of conversation live here:
 //!
-//! * [`Chooser::choose_actions`] — discovery, then one `plan` naming the
+//! * [`Chooser::choose_actions`] — the published operations up front,
+//!   discovery only for what they leave out, then one `plan` naming the
 //!   steps (the local document and Chat runners).
 //! * [`TurnRequest`] / [`TurnEvent`] — one streamed model turn of the
 //!   discover → invoke → observe loop that enrolled tasks run
@@ -47,7 +48,8 @@ const MAX_ACTION_TURNS: usize = 12;
 /// one stalled call still leaves room for another turn.
 const MAX_TURN_TIME: Duration = Duration::from_secs(20);
 /// The system prompt of the action-discovery conversation, in both dialects.
-const ACTION_SYSTEM: &str = "Drive Tilo exclusively through the resource/action tools. Discover before planning. Preserve every argument's declared JSON type. Never invent an operation id or parameter.";
+/// Constant, like the tools, so the provider's prompt cache keeps it.
+const ACTION_SYSTEM: &str = "Drive Tilo exclusively through the resource/action tools. The request lists the operations published right now with their parameters: when one of them does what is asked, call `plan` with it straight away. Use the listing tools only for what that list leaves out, and `describe_operation` only when an operation's arguments are unclear from its signature. Preserve every argument's declared JSON type. Never invent an operation id or parameter.";
 
 /// Which path reached the decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -243,9 +245,11 @@ impl Chooser {
     }
 
     /// Decide through the live resource/action catalogue. There is no
-    /// compiled-in application vocabulary: the model must
-    /// discover operation ids through read-only tools, and can finish only by
-    /// submitting `plan` with native JSON argument values.
+    /// compiled-in application vocabulary: the first turn carries a compact
+    /// summary of the published operations, so a simple request is planned
+    /// in one model turn; the read-only discovery tools reach what the
+    /// summary leaves out. The model can finish only by submitting `plan`
+    /// with native JSON argument values, naming only ids it was shown.
     ///
     /// # Errors
     ///
@@ -344,31 +348,95 @@ impl Chooser {
         let remaining = || self.timeout.checked_sub(began.elapsed());
         let trace_id = uuid::Uuid::new_v4().as_u64_pair().0.max(1);
         self.trace.store(trace_id, Ordering::Relaxed);
+        let decision = ActionDecision {
+            selection: &provider.selection,
+            rest,
+            blocks,
+            catalogue,
+            most_steps,
+        };
+        decision.run(
+            trace_id,
+            &mut |body, trace, live| {
+                post_action_turn(provider, dialect, body, &remaining, trace, live)
+            },
+            live,
+        )
+    }
+}
+
+/// Sends one turn's request body and answers the provider's response body:
+/// the gateway in production, a script in tests.
+type PostTurn<'a> = dyn FnMut(
+        Value,
+        tilo_model_gateway::PlanTrace,
+        &mut dyn FnMut(StreamSignal<'_>),
+    ) -> Result<String, AskError>
+    + 'a;
+
+/// One action decision's conversation, whatever carries its turns.
+struct ActionDecision<'a> {
+    selection: &'a ProviderSelection,
+    rest: &'a str,
+    blocks: &'a [Block],
+    catalogue: &'a Catalogue,
+    most_steps: usize,
+}
+
+impl ActionDecision<'_> {
+    /// Run the conversation to a plan. The first turn already shows the
+    /// published operations (and reveals them), and the system prompt and
+    /// tools are the same bytes on every turn, so the provider's prompt cache
+    /// keeps everything up to the newest messages.
+    fn run(
+        &self,
+        trace_id: u64,
+        post: &mut PostTurn<'_>,
+        live: &mut dyn FnMut(StreamSignal<'_>),
+    ) -> Result<tools::Answer, AskError> {
+        let dialect = Dialect::of(self.selection.protocol);
+        let began = ui::time::now();
         let mut revealed = Revealed::new();
-        let mut messages = dialect.first_messages(&action_user_turn(rest, blocks));
+        let user_turn = action_user_turn(self.rest, self.blocks, self.catalogue, &mut revealed);
+        let mut messages = dialect.first_messages(&user_turn);
+        let mut refused = None;
         for turn in 0..MAX_ACTION_TURNS {
-            let body = dialect.body(&provider.selection, &messages, &revealed, most_steps);
+            let body = dialect.body(self.selection, &messages, self.most_steps);
             let turn_began = ui::time::now();
             let trace = tilo_model_gateway::PlanTrace {
                 id: trace_id,
                 turn: u32::try_from(turn).unwrap_or(u32::MAX),
             };
             live(StreamSignal::Turn(turn));
-            let raw = post_action_turn(provider, dialect, body, &remaining, trace, live);
+            let raw = post(body, trace, live);
             tracing::info!(
                 trace = format!("{trace_id:016x}"),
                 turn,
-                protocol = ?provider.selection.protocol,
+                protocol = ?self.selection.protocol,
                 turn_ms = turn_began.elapsed().as_millis() as u64,
                 total_ms = began.elapsed().as_millis() as u64,
                 ok = raw.is_ok(),
                 "model turn"
             );
             match dialect.parse(&raw?).map_err(AskError::Failed)? {
-                ActionTurn::Plan { input } => {
-                    return tools::read_plan(&input, &revealed, most_steps)
-                        .map_err(AskError::Failed);
-                }
+                ActionTurn::Plan {
+                    assistant,
+                    id,
+                    input,
+                } => match tools::read_plan(&input, &revealed, self.most_steps) {
+                    Ok(answer) => return Ok(answer),
+                    // Refused before anything ran. The model is told why —
+                    // with the shown ids it may have meant — and may plan
+                    // again, as a refused `invoke` is answered in the loop.
+                    Err(error) => {
+                        messages.push(assistant);
+                        messages.push(dialect.tool_result(&id, &tools::plan_refused(&error)));
+                        if dialect == Dialect::Anthropic {
+                            fold_anthropic_results(&mut messages);
+                        }
+                        refused = Some(error);
+                    }
+                },
                 ActionTurn::Tools { assistant, calls } => {
                     messages.push(assistant);
                     if dialect == Dialect::Anthropic {
@@ -379,7 +447,7 @@ impl Chooser {
                     }
                     for call in calls {
                         let answer =
-                            tools::answer(&call.name, &call.input, catalogue, &mut revealed);
+                            tools::answer(&call.name, &call.input, self.catalogue, &mut revealed);
                         messages.push(dialect.tool_result(&call.id, &answer));
                     }
                     if dialect == Dialect::Anthropic {
@@ -388,9 +456,10 @@ impl Chooser {
                 }
             }
         }
-        Err(AskError::Failed(
-            "the model exhausted the action-discovery turn limit".into(),
-        ))
+        Err(AskError::Failed(refused.map_or_else(
+            || "the model exhausted the action-discovery turn limit".into(),
+            |error| format!("the model exhausted the action-discovery turn limit: {error}"),
+        )))
     }
 }
 
@@ -408,6 +477,9 @@ enum ActionTurn {
         calls: Vec<ToolCall>,
     },
     Plan {
+        /// The assistant turn and the call's id, to answer a refused plan.
+        assistant: Value,
+        id: String,
         input: Value,
     },
 }
@@ -443,16 +515,10 @@ impl Dialect {
         }
     }
 
-    fn body(
-        self,
-        selection: &ProviderSelection,
-        messages: &[Value],
-        revealed: &Revealed,
-        most_steps: usize,
-    ) -> Value {
+    fn body(self, selection: &ProviderSelection, messages: &[Value], most_steps: usize) -> Value {
         match self {
-            Self::Anthropic => action_request_body_for(selection, messages, revealed, most_steps),
-            Self::OpenAi => openai_action_request_body(selection, messages, revealed, most_steps),
+            Self::Anthropic => action_request_body_for(selection, messages, most_steps),
+            Self::OpenAi => openai_action_request_body(selection, messages, most_steps),
         }
     }
 
@@ -489,14 +555,13 @@ fn fold_anthropic_results(messages: &mut Vec<Value>) {
 fn action_request_body_for(
     selection: &ProviderSelection,
     messages: &[Value],
-    revealed: &Revealed,
     most_steps: usize,
 ) -> Value {
     serde_json::json!({
         "model": selection.model.id,
         "max_tokens": 4096,
         "system": ACTION_SYSTEM,
-        "tools": tools::definitions(revealed, most_steps),
+        "tools": tools::definitions(most_steps),
         "messages": messages,
     })
 }
@@ -509,14 +574,13 @@ fn action_request_body_for(
 fn openai_action_request_body(
     selection: &ProviderSelection,
     messages: &[Value],
-    revealed: &Revealed,
     most_steps: usize,
 ) -> Value {
     serde_json::json!({
         "model": selection.model.id,
         "max_completion_tokens": 4096,
         "messages": messages,
-        "tools": openai_tools(&tools::definitions(revealed, most_steps)),
+        "tools": openai_tools(&tools::definitions(most_steps)),
         "tool_choice": "required",
     })
 }
@@ -668,14 +732,15 @@ fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
 /// The rule shared by both dialects: `plan` is the final answer and must be
 /// the only call of its turn; otherwise the turn must call discovery tools.
 fn settle_turn(assistant: Value, calls: Vec<ToolCall>) -> Result<ActionTurn, String> {
-    let plans = calls.iter().filter(|call| call.name == tools::PLAN).count();
-    if plans > 0 {
-        if plans > 1 || calls.len() > 1 {
+    if calls.iter().any(|call| call.name == tools::PLAN) {
+        let mut calls = calls.into_iter();
+        let (Some(call), None) = (calls.next(), calls.next()) else {
             return Err("plan must be the only tool call in its turn".into());
-        }
-        let input = calls.into_iter().next().map(|call| call.input);
+        };
         return Ok(ActionTurn::Plan {
-            input: input.unwrap_or_else(|| serde_json::json!({})),
+            assistant,
+            id: call.id,
+            input: call.input,
         });
     }
     if calls.is_empty() {
@@ -684,18 +749,34 @@ fn settle_turn(assistant: Value, calls: Vec<ToolCall>) -> Result<ActionTurn, Str
     Ok(ActionTurn::Tools { assistant, calls })
 }
 
-fn action_user_turn(rest: &str, blocks: &[Block]) -> String {
-    let mut text = String::from("The shared document as it stands:\n\n");
-    for (index, block) in blocks.iter().take(MAX_BLOCKS).enumerate() {
-        let _ = writeln!(
-            text,
-            "{}. {}: {}",
-            index + 1,
-            block.kind,
-            first_chars(block.text.trim(), MAX_BLOCK_CHARS)
-        );
+/// The first user turn of an action decision: the operations published
+/// right now ([`tools::catalogue_summary`], capped as the task loop caps it,
+/// each id shown revealed so `plan` may name it at once), then the document,
+/// then the instruction. Stable first, volatile last: the provider caches
+/// the longest byte-identical prefix, and the summary changes only when the
+/// applications republish.
+pub fn action_user_turn(
+    rest: &str,
+    blocks: &[Block],
+    catalogue: &Catalogue,
+    revealed: &mut Revealed,
+) -> String {
+    let summary = tools::catalogue_summary(catalogue, revealed, tools::MOST_SUMMARISED);
+    let mut text = format!("Operations published right now:\n\n{summary}\n");
+    if !blocks.is_empty() {
+        text.push_str("The shared document as it stands:\n\n");
+        for (index, block) in blocks.iter().take(MAX_BLOCKS).enumerate() {
+            let _ = writeln!(
+                text,
+                "{}. {}: {}",
+                index + 1,
+                block.kind,
+                first_chars(block.text.trim(), MAX_BLOCK_CHARS)
+            );
+        }
+        text.push('\n');
     }
-    let _ = write!(text, "\nThe instruction asks for:\n\n{}\n", rest.trim());
+    let _ = write!(text, "The instruction asks for:\n\n{}\n", rest.trim());
     text
 }
 
@@ -826,11 +907,7 @@ impl MarkGate {
         };
         if state.busy {
             if state.pending.len() < 256 {
-                let at = ui::time::wall()
-                    .duration_since(ui::time::UNIX_EPOCH)
-                    .map_or(0, |elapsed| {
-                        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-                    });
+                let at = ui::time::unix_now_ms();
                 state.pending.push((trace, event, at));
             }
             return;
@@ -1167,7 +1244,7 @@ mod tests {
             held: vec!["calculator"],
         };
         let mut revealed = Revealed::new();
-        let encoded = serde_json::to_string(&tools::definitions(&revealed, 4)).unwrap();
+        let encoded = serde_json::to_string(&tools::definitions(4)).unwrap();
         assert!(encoded.contains(tools::LIST_OPERATIONS));
         assert!(!encoded.contains("turn the bullets into a table"));
 
@@ -1204,7 +1281,7 @@ mod tests {
             }]
         })
         .to_string();
-        let ActionTurn::Plan { input } = parse_action_turn(&final_turn).unwrap() else {
+        let ActionTurn::Plan { input, .. } = parse_action_turn(&final_turn).unwrap() else {
             panic!("the second turn must be the final plan");
         };
         let answer = tools::read_plan(&input, &revealed, 4).unwrap();
@@ -1282,9 +1359,8 @@ mod tests {
         let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
         let dialect = Dialect::of(selection.protocol);
         assert_eq!(dialect, Dialect::OpenAi);
-        let revealed = Revealed::new();
         let mut messages = dialect.first_messages("turn the bullets into a table");
-        let body = dialect.body(&selection, &messages, &revealed, 4);
+        let body = dialect.body(&selection, &messages, 4);
 
         // The request is Chat Completions shaped: no Anthropic keys at all.
         assert_eq!(body["model"], "gpt-5.4-nano");
@@ -1296,7 +1372,7 @@ mod tests {
         assert_eq!(body["messages"][0]["content"], ACTION_SYSTEM);
         assert_eq!(body["messages"][1]["role"], "user");
         let tools = body["tools"].as_array().unwrap();
-        let definitions = tools::definitions(&revealed, 4);
+        let definitions = tools::definitions(4);
         assert_eq!(tools.len(), definitions.as_array().unwrap().len());
         for (tool, definition) in tools.iter().zip(definitions.as_array().unwrap()) {
             assert_eq!(tool["type"], "function");
@@ -1347,7 +1423,7 @@ mod tests {
             ]}}]
         })
         .to_string();
-        let ActionTurn::Plan { input } = dialect.parse(&plan_turn).unwrap() else {
+        let ActionTurn::Plan { input, .. } = dialect.parse(&plan_turn).unwrap() else {
             panic!("the final plan");
         };
         assert_eq!(input["why"], "x");
@@ -1370,8 +1446,10 @@ mod tests {
         let messages = Dialect::OpenAi.first_messages(&action_user_turn(
             "make the second paragraph bold",
             &[block("paragraph", "Intro"), block("paragraph", "Details")],
+            &Catalogue::default(),
+            &mut Revealed::new(),
         ));
-        let body = Dialect::OpenAi.body(&selection, &messages, &Revealed::new(), 8);
+        let body = Dialect::OpenAi.body(&selection, &messages, 8);
         std::fs::write(path, serde_json::to_vec_pretty(&body).unwrap()).unwrap();
     }
 
@@ -1422,7 +1500,7 @@ mod tests {
         );
         let dialect = Dialect::of(selection.protocol);
         let mut messages = dialect.first_messages("do it");
-        let body = dialect.body(&selection, &messages, &Revealed::new(), 4);
+        let body = dialect.body(&selection, &messages, 4);
         assert_eq!(body["system"], ACTION_SYSTEM);
         assert_eq!(body["max_tokens"], 4096);
         assert_eq!(body["messages"].as_array().unwrap().len(), 1);
@@ -1434,6 +1512,273 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["role"], "user");
         assert_eq!(messages[2]["content"][1]["tool_use_id"], "t2");
+    }
+
+    const PROTOCOLS: [agent_provider_config::ProviderProtocol; 2] = [
+        agent_provider_config::ProviderProtocol::Anthropic,
+        agent_provider_config::ProviderProtocol::OpenAiCompatible,
+    ];
+    const SAMPLE: &str = "calculator.range:main#sample";
+
+    /// A room whose calculator publishes one typed operation.
+    fn calculator() -> Catalogue {
+        Catalogue {
+            offers: vec![Offer {
+                app: "calculator".to_string(),
+                broker_peer_id: None,
+                descriptor: ActionDescriptor {
+                    semantic_identity: None,
+                    address: ActionAddress::new("calculator.range:main", "sample"),
+                    resource_kind: "calculator.range".into(),
+                    resource_label: "Main range".into(),
+                    action_label: "Sample values".into(),
+                    description: Some("Generate a bounded sample".into()),
+                    locus: ExecutionLocus::ClientLocal,
+                    kind: OperationKind::Document,
+                    contract: ActionContract::default(),
+                    input: InputSpec::None,
+                    params: vec![
+                        ActionParam::required("count", ParamType::Integer, "Number of values"),
+                        ActionParam::required("normalise", ParamType::Boolean, "Normalise output"),
+                    ],
+                    view: None,
+                },
+            }],
+            facts: Vec::new(),
+            held: vec!["calculator"],
+        }
+    }
+
+    /// One provider response calling `name` with `input`, in `protocol`'s
+    /// dialect.
+    fn call(
+        protocol: agent_provider_config::ProviderProtocol,
+        id: &str,
+        name: &str,
+        input: &Value,
+    ) -> String {
+        match Dialect::of(protocol) {
+            Dialect::Anthropic => serde_json::json!({
+                "stop_reason": "tool_use",
+                "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]
+            }),
+            Dialect::OpenAi => serde_json::json!({
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {"role": "assistant", "content": null, "tool_calls": [
+                        {"id": id, "type": "function", "function": {"name": name, "arguments": input.to_string()}}
+                    ]}
+                }]
+            }),
+        }
+        .to_string()
+    }
+
+    fn plan_of(operation: &str) -> Value {
+        serde_json::json!({
+            "steps": [{"operation": operation, "arguments": {"count": 12, "normalise": true}}],
+            "why": "the calculator publishes the sampler",
+            "then": null
+        })
+    }
+
+    /// Run one action decision over the production conversation, the
+    /// provider answering `answers` in order. The decision and every request
+    /// body sent.
+    fn decide(
+        protocol: agent_provider_config::ProviderProtocol,
+        answers: Vec<String>,
+    ) -> (Result<tools::Answer, String>, Vec<Value>) {
+        let mut profile = agent_provider_config::ProviderProfile::hosted(protocol);
+        profile
+            .models
+            .push(agent_provider_config::ModelDescriptor::new("scripted"));
+        let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
+        let catalogue = calculator();
+        let blocks = [block("paragraph", "sample twelve values, normalised")];
+        let decision = ActionDecision {
+            selection: &selection,
+            rest: "sample twelve values, normalised",
+            blocks: &blocks,
+            catalogue: &catalogue,
+            most_steps: 4,
+        };
+        let mut answers = answers.into_iter();
+        let mut sent = Vec::new();
+        let decided = decision.run(
+            7,
+            &mut |body, _, _| {
+                sent.push(body);
+                answers
+                    .next()
+                    .ok_or_else(|| AskError::Failed("the script ran out of turns".into()))
+            },
+            &mut |_| {},
+        );
+        (decided.map_err(|AskError::Failed(error)| error), sent)
+    }
+
+    /// The text of the first user turn of a request.
+    fn first_user_turn(body: &Value) -> String {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "user")
+            .and_then(|message| message["content"].as_str())
+            .unwrap()
+            .to_owned()
+    }
+
+    /// The first turn already shows the published operations with their
+    /// parameters (and reveals them), so a request the summary answers is
+    /// planned in ONE provider call — no `list_*`/`describe_operation`
+    /// round trips.
+    #[test]
+    fn a_request_the_summary_answers_is_planned_in_one_model_turn() {
+        for protocol in PROTOCOLS {
+            let (decided, sent) = decide(
+                protocol,
+                vec![call(protocol, "p1", tools::PLAN, &plan_of(SAMPLE))],
+            );
+            let answer = decided.unwrap_or_else(|error| panic!("{protocol:?}: {error}"));
+            assert_eq!(sent.len(), 1, "{protocol:?}: one provider call");
+            assert_eq!(answer.actions, [SAMPLE]);
+            assert_eq!(answer.arguments[0]["count"], 12);
+            assert_eq!(answer.arguments[0]["normalise"], true);
+            let user = first_user_turn(&sent[0]);
+            assert!(
+                user.contains(&format!(
+                    "{SAMPLE} — Sample values {{count: integer, normalise: boolean}}"
+                )),
+                "{protocol:?}: {user}"
+            );
+            // Stable first, volatile last: the operations, then the
+            // document, then the instruction.
+            let operations = user.find(SAMPLE).unwrap();
+            let document = user.find("The shared document as it stands").unwrap();
+            let instruction = user.find("The instruction asks for").unwrap();
+            assert!(operations < document && document < instruction, "{user}");
+        }
+    }
+
+    /// With no enum to enforce it, the check behind `plan` is `read_plan`:
+    /// an id nothing showed is refused back to the model with the ids it may
+    /// have meant, the model may plan again, and a model that never names a
+    /// shown id still ends within the turn limit with the reason.
+    #[test]
+    fn a_plan_naming_an_unshown_operation_is_refused_back_to_the_model() {
+        for protocol in PROTOCOLS {
+            let invented = "calculator.range:other#sample";
+            let (decided, sent) = decide(
+                protocol,
+                vec![
+                    call(protocol, "p1", tools::PLAN, &plan_of(invented)),
+                    call(protocol, "p2", tools::PLAN, &plan_of(SAMPLE)),
+                ],
+            );
+            let answer = decided.unwrap_or_else(|error| panic!("{protocol:?}: {error}"));
+            assert_eq!(answer.actions, [SAMPLE]);
+            assert_eq!(sent.len(), 2);
+            let messages = sent[1]["messages"].as_array().unwrap();
+            let refusal = messages.last().unwrap();
+            let (call_id, text) = match Dialect::of(protocol) {
+                Dialect::Anthropic => {
+                    assert_eq!(refusal["role"], "user");
+                    (
+                        refusal["content"][0]["tool_use_id"].as_str(),
+                        refusal["content"][0]["content"].as_str().unwrap(),
+                    )
+                }
+                Dialect::OpenAi => {
+                    assert_eq!(refusal["role"], "tool");
+                    (
+                        refusal["tool_call_id"].as_str(),
+                        refusal["content"].as_str().unwrap(),
+                    )
+                }
+            };
+            assert_eq!(
+                call_id,
+                Some("p1"),
+                "{protocol:?}: answers the refused call"
+            );
+            assert!(text.contains("nothing was performed"), "{text}");
+            assert!(text.contains(invented), "{text}");
+            assert!(
+                text.contains(&format!("Listed ids for that action: {SAMPLE}")),
+                "{protocol:?}: suggests the shown id: {text}"
+            );
+            assert!(text.contains(tools::LIST_OPERATIONS), "{text}");
+
+            let stubborn =
+                vec![call(protocol, "p", tools::PLAN, &plan_of(invented)); MAX_ACTION_TURNS];
+            let (decided, sent) = decide(protocol, stubborn);
+            let error = decided.expect_err("never shown, never planned");
+            assert_eq!(sent.len(), MAX_ACTION_TURNS);
+            assert!(
+                error.contains("no listing in this conversation returned"),
+                "{protocol:?}: {error}"
+            );
+        }
+    }
+
+    /// Everything before the newest messages is the same bytes on every turn
+    /// of one decision — system prompt, tools, and each earlier message — so
+    /// the provider's prompt cache (`OpenAI`'s automatic one too) hits the
+    /// whole prefix. Revealing operations no longer rewrites `plan`.
+    #[test]
+    fn the_system_prompt_and_tools_are_the_same_bytes_on_every_turn() {
+        for protocol in PROTOCOLS {
+            let (decided, sent) = decide(
+                protocol,
+                vec![
+                    call(
+                        protocol,
+                        "l1",
+                        tools::LIST_OPERATIONS,
+                        &serde_json::json!({"application": "calculator"}),
+                    ),
+                    call(
+                        protocol,
+                        "d1",
+                        tools::DESCRIBE_OPERATION,
+                        &serde_json::json!({"operation": SAMPLE}),
+                    ),
+                    call(protocol, "p1", tools::PLAN, &plan_of(SAMPLE)),
+                ],
+            );
+            assert_eq!(decided.unwrap().actions, [SAMPLE]);
+            assert_eq!(sent.len(), 3);
+            let tool_bytes = |body: &Value| serde_json::to_string(&body["tools"]).unwrap();
+            let system = |body: &Value| match Dialect::of(protocol) {
+                Dialect::Anthropic => serde_json::to_string(&body["system"]).unwrap(),
+                Dialect::OpenAi => serde_json::to_string(&body["messages"][0]).unwrap(),
+            };
+            for later in &sent[1..] {
+                assert_eq!(
+                    tool_bytes(later),
+                    tool_bytes(&sent[0]),
+                    "{protocol:?}: tools"
+                );
+                assert_eq!(system(later), system(&sent[0]), "{protocol:?}: system");
+            }
+            assert!(
+                !tool_bytes(&sent[0]).contains("\"enum\""),
+                "{}",
+                tool_bytes(&sent[0])
+            );
+            for pair in sent.windows(2) {
+                let earlier = pair[0]["messages"].as_array().unwrap();
+                let later = pair[1]["messages"].as_array().unwrap();
+                assert!(later.len() > earlier.len());
+                assert_eq!(
+                    serde_json::to_string(&later[..earlier.len()]).unwrap(),
+                    serde_json::to_string(earlier).unwrap(),
+                    "{protocol:?}: earlier messages are replayed unchanged"
+                );
+            }
+        }
     }
 }
 

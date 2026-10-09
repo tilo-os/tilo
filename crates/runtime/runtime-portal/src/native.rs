@@ -136,6 +136,22 @@ mod unix {
 
     pub(super) fn ensure_attached(app_id: &str) -> io::Result<()> {
         if inherited()? {
+            if let Some(raw) = env::var_os("TILO_RUNTIME_LAUNCH_GUARD_FD") {
+                let fd = raw
+                    .to_str()
+                    .and_then(|raw| raw.parse::<i32>().ok())
+                    .filter(|fd| *fd >= 3)
+                    .ok_or_else(|| invalid("invalid native launch guard"))?;
+                // SAFETY: this changes only descriptor flags on the inherited
+                // lifetime guard. Keep its lock, but never pass it to an exec child.
+                let changed = unsafe {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    flags >= 0 && libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) >= 0
+                };
+                if !changed {
+                    return Err(io::Error::last_os_error());
+                }
+            }
             return Ok(());
         }
         if env::var_os("TILO_RUNTIME_STANDALONE").as_deref() == Some(OsStr::new("1")) {
@@ -208,6 +224,27 @@ mod unix {
                 }
             }
         }
+        if let Some(target) = checkout_target(app) {
+            for name in names {
+                for profile in ["debug", "thin-app", "release"] {
+                    let candidate = target.join(profile).join(name);
+                    if executable(&candidate) {
+                        return candidate.canonicalize();
+                    }
+                }
+            }
+            let build = if names == ["tilo-runtime-mcp"] {
+                "cargo build --locked -p shell --bin tilo-runtime-mcp --no-default-features"
+            } else {
+                "cargo build --locked -p tilo-runtime --bin tilo-runtime"
+            };
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "no runtime host found; in this checkout run `{build}` once, then rerun the app"
+                ),
+            ));
+        }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
@@ -215,5 +252,19 @@ mod unix {
                 names.join(" or ")
             ),
         ))
+    }
+
+    /// A source app may use the host built by Cargo's default profile even
+    /// when the app itself uses thin-app. Installed apps never search another
+    /// profile or another checkout, and desktop host selection stays intact.
+    fn checkout_target(app: &Path) -> Option<PathBuf> {
+        let target = app.parent()?.parent()?;
+        let root = target.parent()?;
+        (target.file_name() == Some(OsStr::new("target"))
+            && root.join("Cargo.toml").is_file()
+            && root
+                .join("crates/runtime/tilo-runtime/Cargo.toml")
+                .is_file())
+        .then(|| target.to_path_buf())
     }
 }

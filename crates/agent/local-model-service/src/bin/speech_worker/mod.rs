@@ -43,7 +43,8 @@ fn run(args: &Cli, input: &mut impl Read, output: &mut impl Write) -> Result<(),
     let root = args
         .root
         .clone()
-        .unwrap_or_else(local_model_service::user_model_root);
+        .or_else(local_model_service::user_model_root)
+        .ok_or(SpeechError::ModelUnavailable)?;
     let catalogue = args
         .catalog
         .as_deref()

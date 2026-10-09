@@ -98,8 +98,9 @@ struct Inner {
 }
 
 /// A retained document delta, as [`Compactor::note`] counts it.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Observed {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct Observed {
     channel: [u8; 32],
     len: usize,
 }
@@ -167,14 +168,15 @@ impl Compactor {
 
     /// The document channel a delta retains to, and its size, before it is
     /// admitted.
-    pub(crate) fn observe(delta: &[u8]) -> Option<Observed> {
-        let (CoeditPayload::Checkpoint { channel, body }
-        | CoeditPayload::RetainedDelta { channel, body }) = CoeditPayload::decode(delta)?;
-        matches!(
-            postcard::from_bytes::<NeighbourMsg>(&body),
-            Ok(NeighbourMsg::AppDocument { .. })
-        )
-        .then_some(Observed {
+    ///
+    /// Runs for every delta on the session task, so it borrows the payload
+    /// body and reads only the `NeighbourMsg` variant tag: no allocation or
+    /// copy proportional to the delta. Public only so an allocation test with
+    /// its own counting allocator can measure it.
+    #[doc(hidden)]
+    pub fn observe(delta: &[u8]) -> Option<Observed> {
+        let (channel, _, body) = crate::coedit::retention_view(delta)?;
+        NeighbourMsg::is_app_document(body).then_some(Observed {
             channel,
             len: delta.len(),
         })

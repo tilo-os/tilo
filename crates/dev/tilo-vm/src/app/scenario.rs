@@ -984,7 +984,7 @@ impl App {
         // Exactly the runtime directory vm.sh derives for a named cycle;
         // init-cycle refuses to clear any other.
         #[cfg(not(windows))]
-        let runtime = xdg_paths::xdg::runtime_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+        let runtime = tilo_paths::xdg::runtime_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         #[cfg(windows)]
         let runtime = out.clone();
         let plan = Plan {

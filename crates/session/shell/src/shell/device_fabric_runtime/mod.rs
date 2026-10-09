@@ -284,7 +284,7 @@ fn nearby_drop_state() -> &'static Mutex<NearbyDropState> {
 }
 
 fn nearby_transfer_root() -> Option<PathBuf> {
-    xdg_paths::state_dir().map(|root| root.join("tilo").join("nearby-transfers"))
+    tilo_paths::state_dir().map(|root| root.join("tilo").join("nearby-transfers"))
 }
 
 fn nearby_store_cell() -> &'static Mutex<Option<crate::shell::nearby_transfer::NearbyTransferStore>>
@@ -866,6 +866,30 @@ fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
     STATE.get_or_init(|| Mutex::new(SpatialInputState::default()))
 }
 
+/// This device's power source and whether energy saver is on.
+type LocalPower = (crate::shell::spatial_calibration::DevicePower, bool);
+
+/// A peer's health report, addressed.
+type HealthReply = (
+    crate::shell::personal_continuity::DeviceId,
+    crate::shell::spatial_calibration::DeviceHealthReport,
+);
+
+/// Probes answered once the in-flight power sample lands; older ones are
+/// dropped first.
+const MAX_PENDING_HEALTH_PROBES: usize = 32;
+
+/// A probe older than a fabric action may be is not worth answering.
+const PENDING_HEALTH_PROBE_TTL: Duration =
+    Duration::from_millis(crate::shell::device_fabric::MAX_FABRIC_ACTION_AGE_MS);
+
+/// A peer's probe waiting for the power sample.
+struct PendingHealthProbe {
+    peer: crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    received: Instant,
+}
+
 #[derive(Default)]
 struct DeviceHealthRuntimeState {
     tracker: crate::shell::spatial_calibration::DeviceHealthTracker,
@@ -875,6 +899,9 @@ struct DeviceHealthRuntimeState {
         crate::shell::spatial_calibration::DevicePower,
         bool,
     )>,
+    /// The power sample running on its own thread, if one is.
+    power_sample: Option<mpsc::Receiver<LocalPower>>,
+    pending_probes: VecDeque<PendingHealthProbe>,
 }
 
 fn device_health_state() -> &'static Mutex<DeviceHealthRuntimeState> {
@@ -967,17 +994,20 @@ fn spatial_calibration_state()
     })
 }
 
-fn local_device_power(
-    state: &mut DeviceHealthRuntimeState,
-    now: Instant,
-) -> (crate::shell::spatial_calibration::DevicePower, bool) {
-    if let Some((sampled, power, saver)) = state.local_power
-        && now
-            .checked_duration_since(sampled)
-            .is_some_and(|age| age < DEVICE_HEALTH_SAMPLE_TTL)
-    {
-        return (power, saver);
-    }
+/// The cached power sample, while it is fresh enough to report.
+fn fresh_local_power(state: &DeviceHealthRuntimeState, now: Instant) -> Option<LocalPower> {
+    state
+        .local_power
+        .filter(|(sampled, _, _)| {
+            now.checked_duration_since(*sampled)
+                .is_some_and(|age| age < DEVICE_HEALTH_SAMPLE_TTL)
+        })
+        .map(|(_, power, saver)| (power, saver))
+}
+
+/// Read this device's power source and profile. `powerprofilesctl` is a
+/// subprocess bounded at 2.5 s, so this runs only on a sampling thread.
+fn sample_local_power() -> LocalPower {
     let battery = os_actions::BatteryInfo::from_system();
     let power = if !battery.present {
         crate::shell::spatial_calibration::DevicePower::External
@@ -994,8 +1024,84 @@ fn local_device_power(
         os_actions::get_power_profile(),
         Ok(os_actions::PowerProfile::Saver)
     );
-    state.local_power = Some((now, power, saver));
     (power, saver)
+}
+
+fn health_report(
+    nonce: [u8; 16],
+    (power, energy_saver): LocalPower,
+) -> crate::shell::spatial_calibration::DeviceHealthReport {
+    crate::shell::spatial_calibration::DeviceHealthReport {
+        probe_nonce: nonce,
+        power,
+        energy_saver,
+    }
+}
+
+/// Answer `peer`'s probe from a fresh sample, or queue it behind a sample
+/// taken by `sample` on its own thread. A peer decides when its probes
+/// arrive, so nothing here may wait on the power daemon.
+fn answer_health_probe(
+    state: &mut DeviceHealthRuntimeState,
+    peer: crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    now: Instant,
+    sample: impl FnOnce() -> LocalPower + Send + 'static,
+) -> Option<HealthReply> {
+    if let Some(local) = fresh_local_power(state, now) {
+        return Some((peer, health_report(nonce, local)));
+    }
+    if state.pending_probes.len() >= MAX_PENDING_HEALTH_PROBES {
+        state.pending_probes.pop_front();
+    }
+    state.pending_probes.push_back(PendingHealthProbe {
+        peer,
+        nonce,
+        received: now,
+    });
+    if state.power_sample.is_none() {
+        let (sampled, receiver) = mpsc::sync_channel(1);
+        let spawned = std::thread::Builder::new()
+            .name("tilo-health-sample".into())
+            .spawn(move || {
+                let _ = sampled.send(sample());
+            });
+        match spawned {
+            Ok(_) => state.power_sample = Some(receiver),
+            Err(error) => {
+                tracing::warn!(%error, "could not sample local power for a health probe");
+                state.pending_probes.clear();
+            }
+        }
+    }
+    None
+}
+
+/// Take a finished power sample and the replies to every probe that waited
+/// for it and is still recent.
+fn finish_power_sample(state: &mut DeviceHealthRuntimeState, now: Instant) -> Vec<HealthReply> {
+    let Some(receiver) = state.power_sample.as_ref() else {
+        return Vec::new();
+    };
+    let local = match receiver.try_recv() {
+        Ok(local) => local,
+        Err(mpsc::TryRecvError::Empty) => return Vec::new(),
+        Err(mpsc::TryRecvError::Disconnected) => {
+            state.power_sample = None;
+            state.pending_probes.clear();
+            return Vec::new();
+        }
+    };
+    state.power_sample = None;
+    state.local_power = Some((now, local.0, local.1));
+    std::mem::take(&mut state.pending_probes)
+        .into_iter()
+        .filter(|probe| {
+            now.checked_duration_since(probe.received)
+                .is_none_or(|age| age < PENDING_HEALTH_PROBE_TTL)
+        })
+        .map(|probe| (probe.peer, health_report(probe.nonce, local)))
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3327,23 +3433,21 @@ fn handle_device_health_action(
     let now = Instant::now();
     match &envelope.action {
         PersonalFabricAction::DeviceHealthProbe { nonce } => {
-            let Some((power, energy_saver)) = device_health_state()
-                .lock()
-                .ok()
-                .map(|mut state| local_device_power(&mut state, now))
-            else {
-                return true;
-            };
-            let _ = network.send_personal_fabric_action(
-                &envelope.source,
-                PersonalFabricAction::DeviceHealthReport {
-                    report: crate::shell::spatial_calibration::DeviceHealthReport {
-                        probe_nonce: *nonce,
-                        power,
-                        energy_saver,
-                    },
-                },
-            );
+            let reply = device_health_state().lock().ok().and_then(|mut state| {
+                answer_health_probe(
+                    &mut state,
+                    envelope.source.clone(),
+                    *nonce,
+                    now,
+                    sample_local_power,
+                )
+            });
+            if let Some((peer, report)) = reply {
+                let _ = network.send_personal_fabric_action(
+                    &peer,
+                    PersonalFabricAction::DeviceHealthReport { report },
+                );
+            }
             true
         }
         PersonalFabricAction::DeviceHealthReport { report } => {
@@ -3461,10 +3565,20 @@ fn pump_fabric_clock(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
 }
 
 fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    let now = Instant::now();
+    let replies = device_health_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| finish_power_sample(&mut state, now),
+    );
     if !policy.permits(ContinuityCapability::DisplayInput) {
         return;
     }
-    let now = Instant::now();
+    for (peer, report) in replies {
+        let _ = network.send_personal_fabric_action(
+            &peer,
+            PersonalFabricAction::DeviceHealthReport { report },
+        );
+    }
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
@@ -5724,11 +5838,18 @@ impl crate::shell::automation_triggers::DeviceDirectory for FabricDeviceDirector
 /// Build the bounded presentation model for Quick Settings. Every remote row
 /// comes from a snapshot authored by that certified device; local `PipeWire`
 /// outputs are deliberately kept separate from personal-fabric identities.
+///
+/// The local outputs and inputs come from `graph`, which the caller keeps
+/// cached: enumerating `PipeWire` is a subprocess, and this view is rebuilt
+/// on the compositor thread.
 #[expect(
     clippy::too_many_lines,
     reason = "one projection builds every Quick Settings fabric row from the same snapshot"
 )]
-pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host::DeviceFabricView {
+pub fn device_fabric_view(
+    network: &ShellNetwork,
+    graph: media::audio::AudioGraph,
+) -> crate::shell::overlay_host::DeviceFabricView {
     use crate::shell::overlay_host::{
         DeviceFabricView, FabricDeviceView, FabricMediaView, LocalMediaInputView,
         LocalMediaOutputView,
@@ -5800,7 +5921,6 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         Vec::new()
     };
 
-    let graph = media::audio::enumerate();
     let mut local_inputs = graph
         .sources
         .iter()
@@ -8298,6 +8418,78 @@ mod tests {
         assert_eq!(
             health_probe_targets(&mut state, online(), at(10_000)),
             online()
+        );
+    }
+
+    #[test]
+    fn health_probe_never_samples_power_inline() {
+        use crate::shell::spatial_calibration::DevicePower;
+        let peer = DeviceId::new("health-probe-peer").unwrap();
+        let start = Instant::now();
+        let mut state = DeviceHealthRuntimeState::default();
+        let (release, gate) = mpsc::channel::<()>();
+        let (entered, sampling) = mpsc::channel::<()>();
+        let blocked_sampler = move || {
+            entered.send(()).unwrap();
+            gate.recv().unwrap();
+            (DevicePower::Battery(40), true)
+        };
+
+        assert!(
+            answer_health_probe(&mut state, peer.clone(), [3; 16], start, blocked_sampler)
+                .is_none(),
+            "an uncached probe waits for a background sample"
+        );
+        sampling
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the sample runs on its own thread");
+        assert!(
+            answer_health_probe(&mut state, peer.clone(), [4; 16], start, || {
+                panic!("one power sample at a time")
+            })
+            .is_none()
+        );
+        assert!(
+            finish_power_sample(&mut state, start).is_empty(),
+            "the sampler is still blocked, and so is nothing else"
+        );
+
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let replies = loop {
+            let replies = finish_power_sample(&mut state, start);
+            if !replies.is_empty() || Instant::now() > deadline {
+                break replies;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(
+            replies
+                .iter()
+                .map(|(to, report)| (
+                    to.clone(),
+                    report.probe_nonce,
+                    report.power,
+                    report.energy_saver
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (peer.clone(), [3; 16], DevicePower::Battery(40), true),
+                (peer.clone(), [4; 16], DevicePower::Battery(40), true),
+            ],
+            "both waiting probes are answered from the one sample"
+        );
+
+        let cached = answer_health_probe(
+            &mut state,
+            peer.clone(),
+            [5; 16],
+            start + Duration::from_secs(1),
+            || panic!("a fresh sample is answered from the cache"),
+        );
+        assert_eq!(
+            cached.map(|(to, report)| (to, report.probe_nonce)),
+            Some((peer, [5; 16]))
         );
     }
 

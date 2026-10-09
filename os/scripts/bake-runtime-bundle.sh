@@ -41,6 +41,8 @@
 #                       must exist -- a typo is an error, not a silent skip,
 #                       because a bundle missing the toolkit produces a thin
 #                       app that dies at exec with an unresolved soname.
+#   FONT_CATALOG_ROOT   verified product catalog directory to include as
+#                       lib/fonts in this signed SDK (optional).
 #
 # Called from os/build.sh via `--bake-runtime` before the container build.
 # Callable stand-alone during dev — the output tree can then be COPYied
@@ -60,6 +62,7 @@ IDENTITY_JSON="${IDENTITY_JSON:-}"
 TRUST_LIST="${TRUST_LIST:-}"
 BUNDLE_BIN="${BUNDLE_BIN:-}"
 EXTRA_LIBS="${EXTRA_LIBS:-}"
+FONT_CATALOG_ROOT="${FONT_CATALOG_ROOT:-}"
 VERSION_OUT="${VERSION_OUT:-$OUT_DIR/runtime-version}"
 
 msg() { printf '[bake-runtime-bundle] %s\n' "$*" >&2; }
@@ -98,11 +101,32 @@ msg "baking runtime $RUNTIME_RELEASE under $OUT_DIR/tilo-runtime (arch=$ARCH, fr
 # Shared objects to fold in beside the loader/libc set. Checked before the
 # bake so a missing toolkit is reported here rather than at an app's exec.
 INCLUDE_ARGS=()
+if [ -n "$FONT_CATALOG_ROOT" ]; then
+    python3 "$REPO_DIR/tools/font-catalog.py" verify "$FONT_CATALOG_ROOT" --scope product \
+        || die "cannot sign an invalid product font catalog"
+    [ "$(basename "$FONT_CATALOG_ROOT")" = fonts ] \
+        || die "FONT_CATALOG_ROOT must be a fonts directory"
+    INCLUDE_ARGS+=(--include "$FONT_CATALOG_ROOT")
+fi
+dependency_objects=()
+dependency_dirs=()
 for lib in $EXTRA_LIBS; do
     [ -f "$lib" ] || die "EXTRA_LIBS entry does not exist: $lib"
     INCLUDE_ARGS+=(--include "$lib")
+    dependency_objects+=("$lib")
+    dependency_dirs+=(--library-dir "$(dirname "$lib")")
     msg "including shared object: $lib"
 done
+if [ "${#dependency_objects[@]}" -gt 0 ]; then
+    # Capture the exit status before consuming output: process substitution
+    # would hide an ldd failure and let an incomplete runtime be signed.
+    dependencies=$(python3 "$SCRIPT_DIR/collect-runtime-dependencies.py" \
+        "${dependency_dirs[@]}" "${dependency_objects[@]}") \
+        || die "cannot sign an incomplete native dependency closure"
+    while IFS= read -r dependency; do
+        INCLUDE_ARGS+=(--include "$dependency")
+    done <<< "$dependencies"
+fi
 
 rm -rf "$OUT_DIR/tilo-runtime"
 "$BUNDLE_BIN" build \
@@ -114,6 +138,10 @@ rm -rf "$OUT_DIR/tilo-runtime"
     --out-root "$OUT_DIR/tilo-runtime" \
     --version-out "$VERSION_OUT"
 BUNDLE_DIR="$OUT_DIR/tilo-runtime/$(cat "$VERSION_OUT")"
+if [ -n "$FONT_CATALOG_ROOT" ]; then
+    python3 "$REPO_DIR/tools/font-catalog.py" verify "$BUNDLE_DIR/lib/fonts" --scope product \
+        || die "signed SDK is missing its verified product font catalog"
+fi
 msg "baked runtime $(cat "$VERSION_OUT")"
 
 # 4. Extract + record the pubkey.

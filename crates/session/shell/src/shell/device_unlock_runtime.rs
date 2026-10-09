@@ -188,14 +188,6 @@ fn with_service<R>(f: impl FnOnce(&mut Service) -> R) -> Option<R> {
     Some(result)
 }
 
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
-        })
-}
-
 fn key_of(device: &DeviceId) -> Option<[u8; 32]> {
     let mut key = [0_u8; 32];
     hex::decode_to_slice(device.as_str(), &mut key).ok()?;
@@ -289,7 +281,7 @@ pub fn refresh(network: &ShellNetwork) {
     let Some(user) = network.personal_user_public_key() else {
         return;
     };
-    let now = now_ns();
+    let now = tilo_clock::unix_now_ns();
     let stale = with_service(|service| {
         service.custody.as_ref().is_none_or(|custody| {
             custody
@@ -387,7 +379,7 @@ pub fn decide_device_unlock(request_digest: [u8; 32], approved: bool) -> Result<
         } else {
             UnlockDecision::Deny { approver: local }
         };
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         let mut sibling = service.sibling.take()?;
         let frame = service
             .view(secret_sync.as_ref())
@@ -429,7 +421,7 @@ pub fn remove_device(device: [u8; 32]) -> Result<(), String> {
                 &identity_id,
                 device,
                 tilo_user_identity::RevocationReason::Retired,
-                now_ns(),
+                tilo_clock::unix_now_ns(),
             )
         })
         .map_err(|error| error.to_string())?;
@@ -462,7 +454,12 @@ pub fn set_auto_approval(
     })
     .flatten()
     .ok_or_else(|| crate::shell::i18n::t("device-unlock-error-no-identity"))?;
-    let mut setting = AutoApproval::unsigned(user, device, accepted_boot_chains, now_ns());
+    let mut setting = AutoApproval::unsigned(
+        user,
+        device,
+        accepted_boot_chains,
+        tilo_clock::unix_now_ns(),
+    );
     let digest = setting
         .digest()
         .ok_or_else(|| crate::shell::i18n::t("device-unlock-error-no-identity"))?;
@@ -506,7 +503,7 @@ fn try_enrol(request: &EnrolRequest) -> Result<EnrolResponse, String> {
         boot_public_key: request.boot_public_key,
         slot: request.slot,
         attestation_key: request.attestation_key.clone(),
-        issued_at_ns: now_ns(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
         signature: [0; 64],
     };
     store
@@ -518,7 +515,7 @@ fn try_enrol(request: &EnrolRequest) -> Result<EnrolResponse, String> {
         .map_err(|error| error.to_string())?;
     let sealed_half = seal_sibling_half(&secret_sync, &cert, &request.sibling_half)
         .map_err(|error| error.to_string())?;
-    let now = now_ns();
+    let now = tilo_clock::unix_now_ns();
     let siblings = labels
         .iter()
         .filter(|(key, _)| {
@@ -651,7 +648,7 @@ pub async fn serve_connection(connection: iroh::endpoint::Connection) {
         .flatten();
     let Some((frame, waiter)) = with_service(|service| {
         let mut sibling = service.sibling.take()?;
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         let frame = service
             .view(secret_sync.as_ref())
             .map(|view| sibling.request(&request, &hello, &nonce, &view, now));
@@ -703,7 +700,7 @@ fn answer_hello(hello: &UnlockHello, nonce: [u8; 32]) -> Option<SiblingFrame> {
         let mut sibling = service.sibling.take()?;
         let frame = service
             .view(None)
-            .map(|view| sibling.hello(hello, &view, nonce, now_ns()));
+            .map(|view| sibling.hello(hello, &view, nonce, tilo_clock::unix_now_ns()));
         service.sibling = Some(sibling);
         service.drain_history();
         frame

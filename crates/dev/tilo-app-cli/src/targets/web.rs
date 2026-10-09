@@ -57,31 +57,15 @@ pub(super) fn build(project: &Project, request: &TargetRequest) -> Result<BuildO
     let bundle = project.output_dir(Target::Web).join("bundle");
     std::fs::create_dir_all(bundle.join("pkg"))
         .with_context(|| format!("creating {}", bundle.display()))?;
-    // Cargo leaves an up-to-date module untouched; so does this step, so an
-    // unchanged rebuild writes nothing.
-    let stamp = bundle.join(".wasm-input");
-    let input = wasm_stamp(&wasm, request.release)?;
-    let output = bundle.join("pkg/tilo_browser_runtime_bg.wasm");
-    if !output.is_file() || std::fs::read_to_string(&stamp).ok().as_deref() != Some(&input) {
-        run(
-            ProcessCommand::new(&bindgen)
-                .arg(&wasm)
-                .args([
-                    "--target",
-                    "web",
-                    "--out-name",
-                    "tilo_browser_runtime",
-                    "--out-dir",
-                ])
-                .arg(bundle.join("pkg")),
-            "wasm-bindgen",
-        )?;
-        if request.release {
-            optimize(&output)?;
-        }
-        std::fs::write(&stamp, &input).context("recording the bundled module")?;
-    }
-    let compute = build_compute(project, request, &bindgen, &bundle)?;
+    let optimizer = Optimizer::discover(request.release);
+    bundle_runtime(
+        &wasm,
+        request.release,
+        &bindgen,
+        &bundle,
+        optimizer.as_ref(),
+    )?;
+    let compute = build_compute(project, request, &bindgen, &bundle, optimizer.as_ref())?;
     copy_page_host(&project.sdk_root, &bundle)?;
     bundle_moq_library(&project.sdk_root, &bundle)?;
     copy_fonts(&project.sdk_root, &bundle)?;
@@ -130,6 +114,85 @@ const WASM_OPT_FLAGS: [&str; 4] = [
     // bottom of the stack, reached only by a stack about to overflow.
     "--low-memory-unused",
 ];
+
+/// The optimizer identity and arguments are shared by the cache and invocation.
+struct Optimizer {
+    program: PathBuf,
+    version: String,
+    flags: &'static [&'static str],
+}
+
+impl Optimizer {
+    fn discover(release: bool) -> Option<Self> {
+        let program =
+            PathBuf::from(std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into()));
+        Self::probe(program, release)
+    }
+
+    fn probe(program: PathBuf, release: bool) -> Option<Self> {
+        release
+            .then(|| tool_version(&program).ok())
+            .flatten()
+            .map(|version| Self {
+                program,
+                version,
+                flags: &WASM_OPT_FLAGS,
+            })
+    }
+
+    fn input(&self) -> serde_json::Value {
+        serde_json::json!({"program":self.program,"version":self.version,"flags":self.flags})
+    }
+
+    fn optimize(&self, wasm: &Path) -> Result<()> {
+        run(
+            ProcessCommand::new(&self.program)
+                .args(self.flags)
+                .arg(wasm)
+                .arg("-o")
+                .arg(wasm),
+            "wasm-opt",
+        )
+    }
+}
+
+fn bundle_runtime(
+    wasm: &Path,
+    release: bool,
+    bindgen: &Path,
+    bundle: &Path,
+    optimizer: Option<&Optimizer>,
+) -> Result<()> {
+    // Cargo leaves an up-to-date module untouched; so does this step.
+    let stamp = bundle.join(".wasm-input");
+    let input = serde_json::to_string(&serde_json::json!({
+        "wasm":wasm_stamp(wasm, release)?,
+        "optimizer":optimizer.map(Optimizer::input),
+    }))?;
+    let output = bundle.join("pkg/tilo_browser_runtime_bg.wasm");
+    if !output.is_file() || std::fs::read_to_string(&stamp).ok().as_deref() != Some(&input) {
+        run(
+            ProcessCommand::new(bindgen)
+                .arg(wasm)
+                .args([
+                    "--target",
+                    "web",
+                    "--out-name",
+                    "tilo_browser_runtime",
+                    "--out-dir",
+                ])
+                .arg(bundle.join("pkg")),
+            "wasm-bindgen",
+        )?;
+        if let Some(optimizer) = optimizer {
+            optimizer.optimize(&output)?;
+        } else if release {
+            eprintln!("[tilo-app] wasm-opt not found; the release bundle is not size-optimized");
+        }
+        std::fs::write(&stamp, input).context("recording the bundled module")?;
+    }
+    Ok(())
+}
 
 fn compute_memory(wasm: &[u8], release: bool) -> Result<serde_json::Value> {
     if release && wasm.len() > 1024 * 1024 {
@@ -270,18 +333,12 @@ fn build_compute(
     request: &TargetRequest,
     bindgen: &Path,
     bundle: &Path,
+    optimizer: Option<&Optimizer>,
 ) -> Result<serde_json::Value> {
     let mut sdk = project.clone();
     sdk.workspace_root.clone_from(&project.sdk_root);
     let profile = web_profile(&sdk, request.release)?;
     let wasm = cargo_build_wasm(&sdk, &compute_crate(&project.sdk_root), &profile, request)?;
-    let optimizer =
-        PathBuf::from(std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into()));
-    let optimizer_version = if request.release {
-        tool_version(&optimizer).ok()
-    } else {
-        None
-    };
     let modules: serde_json::Map<String, serde_json::Value> = COMPUTE_ASSETS[..3]
         .iter()
         .map(|name| {
@@ -297,7 +354,7 @@ fn build_compute(
     let input = serde_json::json!({"schema":1,"profile":profile,"release":request.release,
         "wasmSha256":hex_digest(&std::fs::read(&wasm)?),
         "bindgen":{"program":bindgen,"version":tool_version(bindgen)?},
-        "optimizer":optimizer_version.as_ref().map(|version| serde_json::json!({"program":optimizer,"version":version,"flags":WASM_OPT_FLAGS})),
+        "optimizer":optimizer.map(Optimizer::input),
         "modules":modules});
     if !compute_cache_valid(bundle, &input) {
         let staging = tempfile::tempdir_in(bundle).context("staging compute assets")?;
@@ -317,15 +374,8 @@ fn build_compute(
             "compute wasm-bindgen",
         )?;
         let emitted = output.join("tilo_browser_compute_bg.wasm");
-        if optimizer_version.is_some() {
-            run(
-                ProcessCommand::new(&optimizer)
-                    .args(WASM_OPT_FLAGS)
-                    .arg(&emitted)
-                    .arg("-o")
-                    .arg(&emitted),
-                "compute wasm-opt",
-            )?;
+        if let Some(optimizer) = optimizer {
+            optimizer.optimize(&emitted)?;
         }
         compute_memory(&std::fs::read(&emitted)?, request.release)?;
         // Validate all five assets before replacing the prior output or stamping success.
@@ -848,27 +898,6 @@ fn cargo_build_wasm(
         );
     }
     wasm.with_context(|| format!("cargo reported no .wasm for {}", web_crate.package))
-}
-
-fn optimize(wasm: &Path) -> Result<()> {
-    let program = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
-    let available = ProcessCommand::new(&program)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if !available {
-        eprintln!("[tilo-app] wasm-opt not found; the release bundle is not size-optimized");
-        return Ok(());
-    }
-    run(
-        ProcessCommand::new(&program)
-            .args(WASM_OPT_FLAGS)
-            .arg(wasm)
-            .arg("-o")
-            .arg(wasm),
-        "wasm-opt",
-    )
 }
 
 fn copy_page_host(sdk_root: &Path, bundle: &Path) -> Result<()> {
@@ -1589,6 +1618,114 @@ mod tests {
             accepted.is_empty(),
             "accepted malformed modules {accepted:?}"
         );
+    }
+
+    #[cfg(unix)]
+    fn executable(path: &Path, script: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_bundle_invalidates_optimizer_changes_and_preserves_no_op_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let wasm = root.join("input.wasm");
+        std::fs::write(&wasm, b"unoptimized").unwrap();
+        let bundle = root.join("bundle");
+        std::fs::create_dir_all(bundle.join("pkg")).unwrap();
+        let bindgen = root.join("bindgen");
+        executable(
+            &bindgen,
+            r#"#!/bin/sh
+set -eu
+input=$1
+for output; do :; done
+cp "$input" "$output/tilo_browser_runtime_bg.wasm"
+printf 'bindgen\n' >> "$output/../calls"
+"#,
+        );
+        let program = root.join("optimizer");
+        let version = root.join("version");
+        std::fs::write(&version, "optimizer 1").unwrap();
+        let script = r#"#!/bin/sh
+set -eu
+if [ "$1" = --version ]; then
+    cat "$(dirname "$0")/version"
+    exit 0
+fi
+for output; do :; done
+printf 'optimized %s\n' "$*" >> "$output"
+printf 'optimizer\n' >> "$(dirname "$output")/../calls"
+"#;
+        let calls = bundle.join("calls");
+        let output = bundle.join("pkg/tilo_browser_runtime_bg.wasm");
+        let stamp = bundle.join(".wasm-input");
+        // A release built before the optimizer is installed must be revisited.
+        assert!(Optimizer::probe(program.clone(), true).is_none());
+        bundle_runtime(&wasm, true, &bindgen, &bundle, None).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"unoptimized");
+        executable(&program, script);
+        let mut optimizer = Optimizer::probe(program.clone(), true).unwrap();
+        assert!(Optimizer::probe(program.clone(), false).is_none());
+        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap(),
+            "bindgen\nbindgen\noptimizer\n"
+        );
+        assert!(
+            std::fs::read_to_string(&output)
+                .unwrap()
+                .starts_with("unoptimizedoptimized -Oz")
+        );
+        let unchanged_stamp = std::fs::metadata(&stamp).unwrap().modified().unwrap();
+        let unchanged_output = std::fs::metadata(&output).unwrap().modified().unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap(),
+            "bindgen\nbindgen\noptimizer\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&stamp).unwrap().modified().unwrap(),
+            unchanged_stamp
+        );
+        assert_eq!(
+            std::fs::metadata(&output).unwrap().modified().unwrap(),
+            unchanged_output
+        );
+
+        std::fs::write(&version, "optimizer 2").unwrap();
+        optimizer = Optimizer::probe(program.clone(), true).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer)).unwrap();
+        let other_program = root.join("other-optimizer");
+        executable(&other_program, script);
+        optimizer = Optimizer::probe(other_program, true).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer)).unwrap();
+        optimizer.flags = &["-O2"];
+        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer)).unwrap();
+        assert!(
+            std::fs::read_to_string(&output)
+                .unwrap()
+                .contains("optimized -O2")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap(),
+            "bindgen\nbindgen\noptimizer\nbindgen\noptimizer\nbindgen\noptimizer\nbindgen\noptimizer\n"
+        );
+        // Removing the optimizer restores bindgen output, not stale optimized bytes.
+        std::fs::remove_file(program).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, None).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"unoptimized");
+        let absent_calls = std::fs::read(&calls).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, None).unwrap();
+        assert_eq!(std::fs::read(&calls).unwrap(), absent_calls);
+        // A missing output must rebuild even with a matching input stamp.
+        std::fs::remove_file(&output).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, None).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"unoptimized");
+        assert_ne!(std::fs::read(&calls).unwrap(), absent_calls);
     }
 
     #[test]
