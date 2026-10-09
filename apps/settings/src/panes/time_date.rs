@@ -737,9 +737,6 @@ pub enum TimeDateEffect {
         #[param("An IANA time zone, such as `Europe/Amsterdam`")]
         zone: String,
     },
-    /// Show times on a 24-hour clock, or a 12-hour one.
-    #[effect(idempotent, label = "Use a 24-hour clock")]
-    SetTwentyFourHourClock { on: bool },
 }
 
 /// What the Time & Date area keeps for the window: the device's clock, and
@@ -770,17 +767,15 @@ impl TimeDateArea {
 
 /// Answer `effect`. Device changes run off the UI thread: timedated may ask
 /// for authorisation.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "every area of Settings answers its effects with one signature"
+)]
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: TimeDateEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
-    if let TimeDateEffect::SetTwentyFourHourClock { on } = effect {
-        let style = if on { TimeStyle::H24 } else { TimeStyle::H12 };
-        return app
-            .host()
-            .update(|locale: &mut Locale| locale.time_format = style);
-    }
     let clock = Arc::clone(&app.time_date().clock);
     Ok(cx.thread(
         move |_| match effect {
@@ -798,7 +793,6 @@ pub(crate) fn answer(
                     .set_timezone(&zone)
                     .map_err(|error| format!("time zone could not be changed: {error}"))
             }
-            TimeDateEffect::SetTwentyFourHourClock { .. } => Ok(()),
         },
         |app: &mut SettingsApp, outcome: Result<(), String>, _| {
             let area = app.time_date();
@@ -1003,9 +997,10 @@ impl TimeDatePane {
                 auto_row,
                 setting_row(
                     &t("time-24h"),
-                    Box::new(self.cx.bind(
+                    Box::new(self.cx.bind_field_with(
                         Toggle::from_state(&LocalState::new(self.h24)).with_id("time.h24"),
-                        effect(TimeDateEffect::SET_TWENTY_FOUR_HOUR_CLOCK),
+                        Locale::paths().time_format,
+                        |on: bool| Ok(if on { TimeStyle::H24 } else { TimeStyle::H12 }),
                     )),
                 ),
                 zone_row,
@@ -1347,10 +1342,8 @@ mod tests {
             .is_err()
         );
 
-        app.effect(&SettingsEffect::from(
-            TimeDateEffect::SetTwentyFourHourClock { on: false },
-        ))
-        .expect("the clock format is the locale's");
+        crate::host::testing::edit_field(&mut app, "settings.locale", "time_format", "H12")
+            .expect("the clock format is the locale's");
         assert_eq!(app.settings::<Locale>().get().time_format, TimeStyle::H12);
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("2:05 PM"), "{frame}");

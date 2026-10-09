@@ -703,6 +703,7 @@ version = 1
 [[resources.fields]]
 owner = "update-prefs"
 path = "auto"
+readonly = true
 stored = "value"
 title = "Auto"
 type = "bool"
@@ -1212,8 +1213,9 @@ version = 1
 [[resources.fields]]
 owner = "automatic-display-prefs"
 path = "automatic_display_input"
+readonly = true
 stored = "value"
-title = "Automatic display input"
+title = "A device administrator's choice: changed only through its effect"
 type = "bool"
 
 [[resources]]

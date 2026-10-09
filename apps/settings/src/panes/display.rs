@@ -63,18 +63,6 @@ pub enum DisplayEffect {
     /// Follow the ambient light.
     #[effect(returns, idempotent)]
     SetAutomaticBrightness { on: bool },
-    /// How warm Night Light makes the screen.
-    #[effect(returns, idempotent)]
-    SetNightLightWarmth {
-        #[param("The warmth, as the list names it")]
-        warmth: String,
-    },
-    /// The scale apps prefer for their interface.
-    #[effect(returns, idempotent)]
-    SetDisplayScale {
-        #[param("100%, 125%, 150%, 175% or 200%")]
-        scale: String,
-    },
     /// An external monitor's brightness, from 0 to 1.
     #[effect(returns, row, idempotent)]
     SetMonitorBrightness { display: String, brightness: f64 },
@@ -103,10 +91,6 @@ pub enum DisplayEffect {
         x: i32,
         y: i32,
     },
-    /// Opt this device into automatic grants to its enrolled online input devices.
-    /// The separate Continuity master and Display/input switches must also be on.
-    #[effect(returns, idempotent)]
-    SetAutomaticDisplayInput { on: bool },
     /// Inspect the observed displays and their shared arrangement, including offline devices.
     #[effect(view, returns, kind = "read", label = "Inspect shared displays")]
     InspectSharedDisplays,
@@ -170,6 +154,10 @@ pub enum DisplayEffect {
         #[param("The tool's executable")]
         tool: String,
     },
+    /// Opt this device into automatic grants to its enrolled online input devices.
+    /// The separate Continuity master and Display/input switches must also be on.
+    #[effect(returns, idempotent)]
+    SetAutomaticDisplayInput { on: bool },
 }
 
 /// Answer `effect` on the area's model.
@@ -1514,18 +1502,6 @@ impl DisplayModel {
                     "Automatic brightness disabled.".into()
                 })
             }
-            DisplayEffect::SetNightLightWarmth { warmth } => {
-                let kelvin = temperature_from_label(warmth)
-                    .ok_or_else(|| format!("`{warmth}` is not a Night Light warmth"))?;
-                self.save(|prefs| prefs.night_light_temperature = kelvin)?;
-                Ok(String::new())
-            }
-            DisplayEffect::SetDisplayScale { scale } => {
-                let factor =
-                    scale_factor_of(scale).ok_or_else(|| format!("`{scale}` is not a scale"))?;
-                self.save(|prefs| prefs.scale = factor)?;
-                Ok(format!("Display scale set to {scale}."))
-            }
             DisplayEffect::SetMonitorBrightness {
                 display,
                 brightness,
@@ -2246,14 +2222,18 @@ impl DisplayModel {
                 choice_row(
                     &t("display-night-light-warmth"),
                     Box::new(
-                        self.cx.bind(
+                        self.cx.bind_field_with(
                             Dropdown::from_state(
                                 temperature_options(),
                                 &LocalState::new(temperature_label(prefs.night_light_temperature)),
                             )
                             .with_id("display.night_light_temperature")
                             .with_placeholder(&temperature_label(prefs.night_light_temperature)),
-                            effect(DisplayEffect::SET_NIGHT_LIGHT_WARMTH),
+                            crate::prefs::DisplayPrefs::paths().night_light_temperature,
+                            |label: String| {
+                                temperature_from_label(&label)
+                                    .ok_or_else(|| format!("`{label}` is not a Night Light warmth"))
+                            },
                         ),
                     ),
                 ),
@@ -3772,10 +3752,10 @@ mod tests {
 
         let _guard = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = model(vec![panel()]);
-        pane.apply(&DisplayEffect::SetDisplayScale {
-            scale: "150%".into(),
-        })
-        .unwrap();
+        pane.cx
+            .settings::<DisplayPrefs>()
+            .update(|prefs| prefs.scale = 1.5)
+            .unwrap();
         assert!((pane.cx.settings::<DisplayPrefs>().get().scale - 1.5).abs() < 1e-9);
 
         let mut committed = DisplayConfig::default();

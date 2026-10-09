@@ -66,6 +66,21 @@ const HOTPLUG_INTERVAL: Duration = Duration::from_millis(1_500);
 /// Choosing it clears the stream's `target.object` metadata.
 pub(crate) const FOLLOW_DEFAULT: &str = "Default";
 
+/// Whether `event` makes a sound, as the sound section holds it.
+fn event_sound(event: SystemSoundEvent) -> ui::tilo_resource::Path<AudioPrefs, bool> {
+    let events = AudioPrefs::paths().system_sounds.events;
+    match event {
+        SystemSoundEvent::Notification => events.notification,
+        SystemSoundEvent::Message => events.message,
+        SystemSoundEvent::VolumeChange => events.volume_change,
+        SystemSoundEvent::Screenshot => events.screenshot,
+        SystemSoundEvent::DeviceConnected => events.device_connected,
+        SystemSoundEvent::DeviceDisconnected => events.device_disconnected,
+        SystemSoundEvent::LowBattery => events.low_battery,
+        SystemSoundEvent::Error => events.error,
+    }
+}
+
 impl ui::storage::SettingsSchema for AudioPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio");
 }
@@ -99,30 +114,17 @@ pub enum AudioEffect {
         #[param("The input device's name")]
         device: String,
     },
-    /// Move the sound between left and right: 0 left, 0.5 centred, 1 right.
-    #[effect(idempotent)]
-    SetBalance { balance: f64 },
     /// Play both channels in each ear.
     #[effect(idempotent)]
     SetMonoOutput { on: bool },
     /// Give calls an echo-cancelled microphone.
     #[effect(idempotent)]
     SetEchoCancellation { on: bool },
-    /// How loud system sounds are, from 0 to 1.
-    #[effect(idempotent)]
-    SetSystemSoundVolume { volume: f64 },
     /// The sound theme system events play from.
     #[effect(idempotent)]
     SetSoundTheme {
         #[param("The theme's name")]
         theme: String,
-    },
-    /// Whether one kind of system event makes a sound.
-    #[effect(idempotent)]
-    SetEventSound {
-        #[param("The event, by its key")]
-        event: String,
-        on: bool,
     },
     /// Use another profile of an audio device (high fidelity, headset…).
     #[effect(row, idempotent)]
@@ -864,14 +866,6 @@ impl AudioModel {
                 self.save(|prefs| prefs.input_device = Some(name))?;
                 Ok(t("sound-notice-in-device"))
             }
-            AudioEffect::SetBalance { balance } => {
-                let balance = balance.clamp(0.0, 1.0) as f32;
-                self.save(|prefs| prefs.balance = balance)?;
-                Ok(t_args(
-                    "sound-notice-balance",
-                    &[("percent", percent(f64::from(balance)).into())],
-                ))
-            }
             AudioEffect::SetMonoOutput { on } => {
                 let on = *on;
                 self.save(|prefs| prefs.mono_output = on)?;
@@ -895,10 +889,6 @@ impl AudioModel {
                     "sound-notice-echo-off"
                 }))
             }
-            AudioEffect::SetSystemSoundVolume { volume } => {
-                let volume = volume.clamp(0.0, 1.0);
-                self.save_sounds(|sounds| sounds.volume = volume)
-            }
             AudioEffect::SetSoundTheme { theme } => {
                 let id = self
                     .sound_themes
@@ -907,14 +897,6 @@ impl AudioModel {
                     .map(|known| known.id.clone())
                     .ok_or_else(|| t("sound-notice-theme-missing"))?;
                 self.save_sounds(|sounds| sounds.theme = Some(id))
-            }
-            AudioEffect::SetEventSound { event, on } => {
-                let event = SystemSoundEvent::ALL
-                    .into_iter()
-                    .find(|known| known.key() == event)
-                    .ok_or_else(|| t("sound-notice-event-missing"))?;
-                let on = *on;
-                self.save_sounds(|sounds| sounds.events.set(event, on))
             }
             AudioEffect::SetDeviceProfile { device, profile } => {
                 let index = self
@@ -1201,12 +1183,17 @@ impl AudioModel {
             output_rows.push(setting_row(
                 &t("sound-balance"),
                 Box::new(
-                    self.cx.bind(
+                    self.cx.bind_field_with(
                         Slider::from_state(&LocalState::new(f64::from(
                             self.prefs.get().balance.clamp(0.0, 1.0),
                         )))
                         .with_id("audio.balance"),
-                        effect(AudioEffect::SET_BALANCE),
+                        AudioPrefs::paths().balance,
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "a balance between 0 and 1 is stored as f32"
+                        )]
+                        |balance: f64| Ok(balance as f32),
                     ),
                 ),
             ));
@@ -1500,10 +1487,10 @@ impl AudioModel {
         sound_rows.push(setting_row(
             &t("sound-volume"),
             Box::new(
-                self.cx.bind(
+                self.cx.bind_field(
                     Slider::from_state(&LocalState::new(sounds.volume))
                         .with_id("audio.system_sound_volume"),
-                    effect(AudioEffect::SET_SYSTEM_SOUND_VOLUME),
+                    AudioPrefs::paths().system_sounds.volume,
                 ),
             ),
         ));
@@ -1531,14 +1518,13 @@ impl AudioModel {
             ));
         }
         for event in SystemSoundEvent::ALL {
-            let key = event.key().to_owned();
             sound_rows.push(setting_row(
                 &event_shown(event),
                 Box::new(
-                    self.cx.bind(
+                    self.cx.bind_field(
                         Toggle::from_state(&LocalState::new(sounds.events.get(event)))
                             .with_id(&format!("audio.event_sound.{}", event.key())),
-                        effect(AudioEffect::SET_EVENT_SOUND).map(move |on: bool| (key.clone(), on)),
+                        event_sound(event),
                     ),
                 ),
             ));
@@ -2097,7 +2083,9 @@ Video
             model.runtime_caps = runtime.capabilities();
             model.runtime = runtime.clone();
             model
-                .apply(&AudioEffect::SetBalance { balance: 0.75 })
+                .cx
+                .settings::<AudioPrefs>()
+                .update(|prefs| prefs.balance = 0.75)
                 .unwrap();
             model
                 .apply(&AudioEffect::SetMonoOutput { on: true })
@@ -2241,7 +2229,9 @@ Video
         ];
         model.event_sounds_available = true;
         model
-            .apply(&AudioEffect::SetSystemSoundVolume { volume: 0.3 })
+            .cx
+            .settings::<AudioPrefs>()
+            .update(|prefs| prefs.system_sounds.volume = 0.3)
             .unwrap();
         model
             .apply(&AudioEffect::SetSoundTheme {
@@ -2249,10 +2239,9 @@ Video
             })
             .unwrap();
         model
-            .apply(&AudioEffect::SetEventSound {
-                event: SystemSoundEvent::VolumeChange.key().into(),
-                on: false,
-            })
+            .cx
+            .settings::<AudioPrefs>()
+            .update(|prefs| prefs.system_sounds.events.volume_change = false)
             .unwrap();
         let saved = model.cx.settings::<AudioPrefs>().get().system_sounds;
         assert!((saved.volume - 0.3).abs() < 0.001);

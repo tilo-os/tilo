@@ -2231,10 +2231,6 @@ settings-power-prefs-auto-suspend = { $new ->
     [true] Turned on automatic suspend
    *[false] Turned off automatic suspend
 }
-settings-update-prefs-auto = { $new ->
-    [true] Turned on automatic updates
-   *[false] Turned off automatic updates
-}
 settings-notification-prefs-do-not-disturb = { $new ->
     [true] Turned on Do Not Disturb
    *[false] Turned off Do Not Disturb
@@ -2326,10 +2322,6 @@ settings-display-prefs-night-light-schedule = { $new ->
 settings-desktop-controls-vim-mode = { $new ->
     [true] Turned on Vim keys for the desktop
    *[false] Turned off Vim keys for the desktop
-}
-settings-automatic-display-prefs-automatic-display-input = { $new ->
-    [true] Turned on automatic display input
-   *[false] Turned off automatic display input
 }
 settings-appearance-prefs-theme = Chose the theme { $new }
 settings-appearance-prefs-mode = Set the appearance to { $new }

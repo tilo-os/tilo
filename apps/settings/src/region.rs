@@ -36,14 +36,23 @@ use ui::tilo_resource;
 /// name, which equals the ISO code — matching Sheets' `Currency`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 pub enum Currency {
+    #[model(rename = "USD")]
     USD,
+    #[model(rename = "EUR")]
     EUR,
+    #[model(rename = "GBP")]
     GBP,
+    #[model(rename = "JPY")]
     JPY,
+    #[model(rename = "CHF")]
     CHF,
+    #[model(rename = "CAD")]
     CAD,
+    #[model(rename = "AUD")]
     AUD,
+    #[model(rename = "CNY")]
     CNY,
+    #[model(rename = "INR")]
     INR,
 }
 
@@ -111,15 +120,19 @@ impl Currency {
 pub enum DateStyle {
     /// `2023-03-15`
     #[serde(rename = "ISO")]
+    #[model(rename = "ISO")]
     Iso,
     /// `03/15/2023`
     #[serde(rename = "US")]
+    #[model(rename = "US")]
     Us,
     /// `15/03/2023`
     #[serde(rename = "EU")]
+    #[model(rename = "EU")]
     Eu,
     /// `15 Mar 2023`
     #[serde(rename = "Long")]
+    #[model(rename = "Long")]
     Long,
 }
 
@@ -168,8 +181,10 @@ impl DateStyle {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 pub enum TimeStyle {
     /// `14:05`
+    #[model(rename = "H24")]
     H24,
     /// `2:05 PM`
+    #[model(rename = "H12")]
     H12,
 }
 

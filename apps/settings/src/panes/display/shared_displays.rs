@@ -27,6 +27,8 @@ impl SharedDisplayPrefs {}
 )]
 #[serde(default)]
 pub struct AutomaticDisplayPrefs {
+    /// A device administrator's choice: changed only through its effect.
+    #[model(readonly)]
     pub automatic_display_input: bool,
 }
 

@@ -504,6 +504,7 @@ impl Default for PowerPrefs {
 /// System-update policy the update timer/service reads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 pub struct UpdatePrefs {
+    #[model(readonly)]
     pub auto: bool,
     /// Legacy serialized field. The actual image reference is managed by
     /// bootc; Settings never treats this string as an actionable channel.

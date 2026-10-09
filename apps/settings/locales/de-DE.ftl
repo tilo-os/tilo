@@ -2231,10 +2231,6 @@ settings-power-prefs-auto-suspend = { $new ->
     [true] Automatischen Ruhezustand eingeschaltet
    *[false] Automatischen Ruhezustand ausgeschaltet
 }
-settings-update-prefs-auto = { $new ->
-    [true] Automatische Updates eingeschaltet
-   *[false] Automatische Updates ausgeschaltet
-}
 settings-notification-prefs-do-not-disturb = { $new ->
     [true] „Nicht stören“ eingeschaltet
    *[false] „Nicht stören“ ausgeschaltet
@@ -2326,10 +2322,6 @@ settings-display-prefs-night-light-schedule = { $new ->
 settings-desktop-controls-vim-mode = { $new ->
     [true] Vim-Tasten für den Desktop eingeschaltet
    *[false] Vim-Tasten für den Desktop ausgeschaltet
-}
-settings-automatic-display-prefs-automatic-display-input = { $new ->
-    [true] Automatische Bildschirmeingabe eingeschaltet
-   *[false] Automatische Bildschirmeingabe ausgeschaltet
 }
 settings-appearance-prefs-theme = Design { $new } gewählt
 settings-appearance-prefs-mode = Erscheinungsbild auf { $new } gestellt
