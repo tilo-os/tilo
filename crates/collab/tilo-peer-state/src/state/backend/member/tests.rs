@@ -1,9 +1,10 @@
 use super::*;
+use crate::PeerLimits;
 use crate::StatePeer;
+use crate::state::backend::restore::tests::restore_bounded;
 use crate::state::err;
 use crate::state::now_ns;
 use crate::verified_certificate::VerifiedCertificate;
-use crate::{BoundedStatePeer, PeerLimits};
 use automerge::ObjType;
 use automerge::ROOT;
 use automerge::ReadDoc;
@@ -13,7 +14,6 @@ use collab_types::Ed25519PublicKey;
 use collab_types::caps::Verb;
 use ed25519_dalek::SigningKey;
 use tilo_automerge::ApplyIncoming;
-use tilo_user_identity::RevocationList;
 use web_time::Duration;
 
 fn fixture() -> (StatePeer, [u8; 32], SystemTime) {
@@ -36,25 +36,13 @@ fn fixture() -> (StatePeer, [u8; 32], SystemTime) {
     room.commit();
     (peer, cert.device_public_key, now)
 }
-fn restore(peer: &StatePeer, now: SystemTime, limits: &PeerLimits) -> BoundedStatePeer {
-    BoundedStatePeer::restore(
-        &peer.durable().unwrap(),
-        peer.room(),
-        peer.authority(),
-        &[],
-        &RevocationList::new(),
-        now,
-        limits,
-    )
-    .unwrap()
-}
 #[test]
 fn bounded_current_member_matches_actual_legacy_membership_and_rechecks_expiry() {
     let (peer, source, now) = fixture();
     let bytes = peer.durable().unwrap();
     let expected = peer.permissions(source, now).unwrap();
     assert_eq!(expected.0, Role::Editor);
-    let restored = restore(&peer, now, &PeerLimits::default());
+    let restored = restore_bounded(&peer, now, &PeerLimits::default());
     let read = restored.read();
     let member = read.member(source, now).unwrap();
     assert_eq!(member.role(), expected.0);
@@ -114,7 +102,7 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
 fn compare_native(peer: &StatePeer, source: [u8; 32], now: SystemTime) {
     assert_eq!(peer.role(&source, now), original_role(peer, &source, now));
     let expected = peer.permissions(source, now);
-    let restored = restore(peer, now, &PeerLimits::default());
+    let restored = restore_bounded(peer, now, &PeerLimits::default());
     let view = restored.read();
     let actual = view.member(source, now);
     match (expected, actual) {
@@ -399,12 +387,12 @@ fn bounded_current_member_refuses_a_small_governance_limit_without_changing_peer
         governance_collection_bytes: 1,
         ..PeerLimits::default()
     };
-    let restored = restore(&peer, now, &limits);
+    let restored = restore_bounded(&peer, now, &limits);
     assert!(matches!(
         restored.read().member(source, now),
         Err(BoundedPeerError::Capacity)
     ));
-    let restored = restore(&peer, now, &PeerLimits::default());
+    let restored = restore_bounded(&peer, now, &PeerLimits::default());
     assert_eq!(
         restored.read().member(source, now).unwrap().role(),
         Role::Editor
@@ -447,7 +435,7 @@ fn assert_member(peer: &StatePeer, source: [u8; 32], now: SystemTime, role: Role
     let (legacy_role, legacy_caps, _) = peer.permissions(source, now).unwrap();
     assert_eq!(legacy_role, role);
     assert_eq!(legacy_caps.last(), Some(&restriction));
-    let restored = restore(peer, now, &PeerLimits::default());
+    let restored = restore_bounded(peer, now, &PeerLimits::default());
     let read = restored.read();
     let member = read.member(source, now).unwrap();
     assert_eq!(member.role(), role);
@@ -493,7 +481,7 @@ fn a_foreign_device_is_not_capped_in_the_room_it_governs() {
         caps.iter()
             .all(|cap| cap.effect != collab_types::caps::Effect::Restrict)
     );
-    let restored = restore(&peer, now, &PeerLimits::default());
+    let restored = restore_bounded(&peer, now, &PeerLimits::default());
     assert_eq!(
         restored.read().member(source, now).unwrap().role(),
         Role::Owner
