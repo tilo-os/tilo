@@ -45,6 +45,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -699,42 +700,32 @@ impl Widget for Card {
         // `new_with_children` only errors for a child `NodeId` from a
         // different tree, which never happens here since every id in
         // `child_nodes` was just built in this same tree by the calls above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just built in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    align_items: Some(AlignItems::Stretch),
-                    gap: Size {
-                        width: length(0.0_f32),
-                        height: length(CARD_GAP),
-                    },
-                    padding: taffy::Rect {
-                        left: length(CARD_PADDING),
-                        right: length(CARD_PADDING),
-                        top: length(CARD_PADDING),
-                        bottom: length(CARD_PADDING),
-                    },
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: Dimension::auto(),
-                    },
-                    max_size: Size {
-                        width: length(CARD_WIDTH),
-                        height: Dimension::auto(),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: Some(AlignItems::Stretch),
+            gap: Size {
+                width: length(0.0_f32),
+                height: length(CARD_GAP),
+            },
+            padding: taffy::Rect {
+                left: length(CARD_PADDING),
+                right: length(CARD_PADDING),
+                top: length(CARD_PADDING),
+                bottom: length(CARD_PADDING),
+            },
+            size: Size {
+                width: percent(1.0_f32),
+                height: Dimension::auto(),
+            },
+            max_size: Size {
+                width: length(CARD_WIDTH),
+                height: Dimension::auto(),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -882,43 +873,33 @@ impl Widget for ViewportStage {
             .iter_mut()
             .map(|child| child.build_layout(taffy, theme, node_map))
             .collect();
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    align_items: Some(AlignItems::Center),
-                    padding: taffy::Rect {
-                        left: length(VIEWPORT_PADDING),
-                        right: length(VIEWPORT_PADDING),
-                        top: length(VIEWPORT_PADDING),
-                        bottom: length(VIEWPORT_PADDING),
-                    },
-                    size: Size {
-                        width: percent(1.0_f32),
-                        // The scrollable measures this node for its scroll
-                        // extent. A fixed viewport height hid the overflowing
-                        // Review controls from the scrollbar.
-                        height: Dimension::auto(),
-                    },
-                    min_size: Size {
-                        width: Dimension::auto(),
-                        // Short steps still fill the viewport so the two
-                        // flexible spacers can centre the card.
-                        height: percent(1.0_f32),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: Some(AlignItems::Center),
+            padding: taffy::Rect {
+                left: length(VIEWPORT_PADDING),
+                right: length(VIEWPORT_PADDING),
+                top: length(VIEWPORT_PADDING),
+                bottom: length(VIEWPORT_PADDING),
+            },
+            size: Size {
+                width: percent(1.0_f32),
+                // The scrollable measures this node for its scroll
+                // extent. A fixed viewport height hid the overflowing
+                // Review controls from the scrollbar.
+                height: Dimension::auto(),
+            },
+            min_size: Size {
+                width: Dimension::auto(),
+                // Short steps still fill the viewport so the two
+                // flexible spacers can centre the card.
+                height: percent(1.0_f32),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -3767,29 +3748,18 @@ impl Widget for InstallerApp {
         // `new_with_children` only errors for a child `NodeId` from a
         // different tree, which never happens here since `card_node` was
         // just built in this same tree by the call above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "card_node was just built in this same tree"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    justify_content: Some(JustifyContent::Center),
-                    align_items: Some(AlignItems::Center),
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &[card_node],
-            )
-            .unwrap();
-
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            justify_content: Some(JustifyContent::Center),
+            align_items: Some(AlignItems::Center),
+            size: Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[card_node], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

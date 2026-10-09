@@ -17,6 +17,7 @@
 use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
+use ui::widget::TaffyTreeExt;
 
 use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, PowerProfile};
 use taffy::{NodeId, TaffyTree};
@@ -1098,9 +1099,7 @@ impl Widget for PowerPane {
         // cannot fail in practice; falling back to the child node itself
         // (skipping the wrapper style) is a real degraded behaviour rather
         // than a panic if that invariant is ever broken.
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, EmptyState, EmptyStateContent, ModelPath};
 
 use taffy::prelude::*;
@@ -784,26 +785,16 @@ impl Widget for DiffMergeApp {
             )
             .unwrap();
 
-        #[allow(
-            clippy::unwrap_used,
-            reason = "content was just created in this same tree"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[content],
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[content], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

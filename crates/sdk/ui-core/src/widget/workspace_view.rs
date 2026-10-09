@@ -113,16 +113,15 @@ impl Widget for WorkspaceView {
     ) -> NodeId {
         // Zero-height: this is a keyboard-handler + animation driver, not a
         // visible rect. Workspace chrome lives in the top bar.
-        let n = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(0.0),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-        n
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, n: NodeId, origin: Point) {
         let l = taffy.layout(n).copied().unwrap_or_default();

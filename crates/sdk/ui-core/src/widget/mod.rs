@@ -2531,6 +2531,20 @@ pub trait TaffyTreeExt {
         node_map.insert(node, std::ptr::from_mut(widget));
         node
     }
+
+    /// Insert a parent node over `children` for `widget` and register it in
+    /// `node_map`: how a container's `build_layout` ends.
+    fn widget_node(
+        &mut self,
+        style: taffy::Style,
+        children: &[NodeId],
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        widget: &mut (dyn Widget + 'static),
+    ) -> NodeId {
+        let node = self.parent_node(style, children);
+        node_map.insert(node, std::ptr::from_mut(widget));
+        node
+    }
 }
 
 impl TaffyTreeExt for TaffyTree<()> {
