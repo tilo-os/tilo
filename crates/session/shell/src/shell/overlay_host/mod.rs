@@ -15,6 +15,7 @@ mod axis_navigation;
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -966,6 +967,7 @@ pub struct ShellSceneSections {
 /// sections are composed in this order, so a floating surface's layer names
 /// which of them lie below it.
 mod backdrop_layer {
+
     pub const BACKDROP: u32 = 0;
     pub const WORKSPACE: u32 = 1;
     pub const WORKSPACE_OVERLAYS: u32 = 2;
@@ -18046,20 +18048,14 @@ impl Widget for ShellOverlayHost {
         // this same tree — but rather than assert that, fall back to the
         // content node alone: a host that (impossibly) can't wrap its
         // overlays still shows the desktop instead of dying.
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &children,
-            )
-            .unwrap_or(content_node);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     #[allow(

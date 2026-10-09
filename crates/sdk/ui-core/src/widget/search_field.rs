@@ -562,31 +562,27 @@ impl Widget for SearchField {
         // A fluid control: it asks for the row's width and, when the row
         // overflows, it is the item that gives — never the fixed targets
         // beside it. At its narrowest it is the magnifier icon button.
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                align_items: Some(taffy::AlignItems::Center),
-                flex_shrink: 1.0,
-                min_size: taffy::Size {
-                    width: length(height as f32),
-                    height: taffy::Dimension::auto(),
-                },
-                padding: taffy::Rect {
-                    left: length(ICON_GUTTER as f32),
-                    right: length(self.trailing_gutter() as f32),
-                    top: length(0.0_f32),
-                    bottom: length(0.0_f32),
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: length(height as f32),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            align_items: Some(taffy::AlignItems::Center),
+            flex_shrink: 1.0,
+            min_size: taffy::Size {
+                width: length(height as f32),
+                height: taffy::Dimension::auto(),
             },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            padding: taffy::Rect {
+                left: length(ICON_GUTTER as f32),
+                right: length(self.trailing_gutter() as f32),
+                top: length(0.0_f32),
+                bottom: length(0.0_f32),
+            },
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(height as f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -956,21 +952,17 @@ impl Widget for Filtered {
         }
         self.field_node = Some(field);
         self.content_node = Some(content);
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                flex_grow: 1.0,
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            flex_grow: 1.0,
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
             },
-            &[band, content],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[band, content], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

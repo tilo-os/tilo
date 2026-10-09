@@ -34,9 +34,10 @@
 //! no EGL device) — together covering the whole advertised set
 //! (single-plane RGBA under `Modifier::Linear`); anything else is **rejected with a visible on-tile message**, never silently blank.
 
-#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use ui::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
 #[cfg(any(test, target_os = "linux"))]
@@ -3254,17 +3255,14 @@ impl Widget for ForeignSurfaceWidget {
         // `new_leaf` can't fail in practice for a single-node insert; a
         // dummy id here just means the fallback is unreachable by real
         // traversal instead of panicking.
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap_or(NodeId::new(0));
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

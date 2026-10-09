@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use tilo_ui::widget::TaffyTreeExt;
 
 use automerge::AutoCommit;
 use chrono::NaiveDate;
@@ -139,21 +140,14 @@ impl Widget for TinyText {
         // `new_leaf` only fails for a child `NodeId` belonging to a
         // different tree, which can't happen for a freshly created leaf
         // with no children.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_leaf cannot fail for a childless leaf node"
-        )]
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = taffy::Style {
+            size: Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
     fn measure(
         &mut self,

@@ -370,20 +370,21 @@ impl Widget for BrowserWindow {
                 (widget.test_id() == Some("browser.url_input")).then_some(*id)
             });
         }
-        let root = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
-                ..full
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::length(0.0),
             },
+            ..full
+        };
+        taffy.widget_node(
+            style,
             &panel.map_or_else(|| vec![page], |panel| vec![panel, page]),
-        );
-        nodes.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+            nodes,
+            self,
+        )
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let Ok(layout) = taffy.layout(node) else {

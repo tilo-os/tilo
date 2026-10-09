@@ -3251,9 +3251,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -4483,9 +4481,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -4539,9 +4535,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(

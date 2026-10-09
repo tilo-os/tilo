@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use ui::time::Duration;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
@@ -11394,27 +11395,21 @@ impl Widget for PhotosApp {
         let canvas = self.build_canvas_node(taffy, theme, node_map);
         let status = self.build_status_node(taffy, theme);
 
-        let root = taffy
-            .new_with_children(
-                Style {
-                    flex_direction: FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    padding: taffy::Rect {
-                        left: LengthPercentage::length(sidebar_inset as f32),
-                        right: LengthPercentage::length(inspector_inset as f32),
-                        top: LengthPercentage::length(0.0),
-                        bottom: LengthPercentage::length(0.0),
-                    },
-                    ..Default::default()
-                },
-                &[header, canvas, status],
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            flex_direction: FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            padding: taffy::Rect {
+                left: LengthPercentage::length(sidebar_inset as f32),
+                right: LengthPercentage::length(inspector_inset as f32),
+                top: LengthPercentage::length(0.0),
+                bottom: LengthPercentage::length(0.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[header, canvas, status], node_map, self)
     }
 
     #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]

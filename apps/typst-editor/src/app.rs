@@ -37,6 +37,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 #[cfg(test)]
@@ -1102,24 +1103,14 @@ impl Widget for TypstApp {
             .collect();
         // `new_with_children` only fails when a child belongs to a different
         // tree; every entry in `child_nodes` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
