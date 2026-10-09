@@ -10,14 +10,59 @@
 #     container's headers. Presents as a cache miss, not an error.
 #   - derives job count and cache ceiling from the hardware
 #
-# Every failure path falls through to plain cargo. QCARGO_BYPASS=1 skips it,
-# QCARGO_DEBUG=1 prints the routing decision.
+# Agent compilation requires rcargo and fails closed before any local bypass.
+# Human development retains QCARGO_BYPASS=1; QCARGO_DEBUG=1 reports routing.
 #
 # Environment values are an API: nested builders deliberately use a disk-backed
 # TMPDIR/CARGO_TARGET_DIR and sometimes set RUSTC_WRAPPER to the empty string.
 # Defaults below must never replace those caller choices.
 
 set -uo pipefail
+
+# Agent builds are remote-only on this laptop. This runs before container routing
+# and every local bypass, since RCARGO=0 previously entered a local distrobox build.
+# Human shells retain their explicit local-development controls.
+agent_remote_only=0
+if [ -n "${CODEX_THREAD_ID:-}" ] || [ -n "${CODEX_SESSION_ID:-}" ] || [ -n "${CLAUDECODE:-}" ]; then
+  agent_remote_only=1
+fi
+case "$PWD" in
+  */.claude/worktrees/codex-onboarding-semantic-first-use|*/.claude/worktrees/codex-onboarding-semantic-first-use/*|*/.claude/worktrees/codex-prepared-userspace-delivery|*/.claude/worktrees/codex-prepared-userspace-delivery/*)
+    if [ ! -t 0 ] || [ ! -t 1 ]; then agent_remote_only=1; fi ;;
+esac
+cargo_does_not_compile() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      +*|--locked|--frozen|--offline|-q|--quiet|-v|-vv|--verbose) continue ;;
+      metadata|tree|fmt|fetch|update|generate-lockfile|locate-project|pkgid|verify-project|help|version|-h|--help|-V|--version) return 0 ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+if [ "$agent_remote_only" = 1 ] && ! cargo_does_not_compile "$@"; then
+  if [ -n "${RCARGO_ACTIVE:-}" ]; then
+    echo "cargo: refusing a local compilation returned by rcargo in an agent session; use remote validation and fix the builder error" >&2
+    exit 2
+  fi
+  for arg in "$@"; do
+    [ "$arg" = -- ] && break
+    if [ "$arg" = --fallback ]; then
+      echo "cargo: local fallback is disabled for agent builds" >&2
+      exit 2
+    fi
+  done
+  if ! command -v rcargo >/dev/null 2>&1; then
+    echo "cargo: rcargo is unavailable; agent compilation is refused instead of running locally" >&2
+    exit 127
+  fi
+  unset RCARGO_VIA_SHIM
+  export RCARGO_FALLBACK=0
+  exec rcargo --no-fallback "$@"
+fi
+
+
 
 real_cargo="${CARGO_HOME:-${HOME}/.cargo}/bin/cargo"
 
