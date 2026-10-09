@@ -93,9 +93,17 @@ pub(super) fn phase(target: &Mounted) -> serde_json::Value {
 }
 
 pub(super) fn commit_edit(device: &Device, owner: &NativeWorkspaceOwner, expected: &str) {
-    owner
-        .commit_document(prepare_edit(device, owner, expected), SystemTime::now())
-        .unwrap();
+    // An authenticated update can advance this author's replay floor after
+    // this edit is signed. Require a fresh signature and exact owner receipt.
+    for attempt in 0..3 {
+        let request = prepare_edit(device, owner, expected);
+        match owner.commit_document(request, SystemTime::now()) {
+            Ok(_) => return,
+            Err(error)
+                if error == "native local document signed sequence is stale" && attempt < 2 => {}
+            Err(error) => panic!("native mounted edit requires an exact owner receipt: {error}"),
+        }
+    }
 }
 
 fn prepare_edit(
