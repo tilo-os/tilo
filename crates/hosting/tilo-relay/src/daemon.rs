@@ -139,7 +139,7 @@ impl GovernedAccessWriter {
             self.state_root.clone(),
             workspace_id,
             pinned,
-            false,
+            crate::room_access::AdmissionMode::Explicit,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
@@ -723,8 +723,7 @@ impl Relay {
                 let mut runtime = runtime.lock().await;
                 runtime.membership_ceiling = Some(HashSet::new());
                 runtime.governed_user_roots.clear();
-                runtime.governed_access = true;
-                runtime.admit_authenticated = false;
+                runtime.admission = crate::room_access::AdmissionMode::Governed;
             }
         }
         let metrics = Arc::new(Metrics::default());
@@ -776,6 +775,7 @@ impl Relay {
             .then(|| WorkspaceAutobind {
                 state_root: cfg.state_root.clone(),
             }),
+            agents: handler.agents.clone(),
         };
         let management = ManagementProtocol {
             endpoint: endpoint.clone(),
@@ -796,8 +796,11 @@ impl Relay {
                 cert: identity.device_cert.clone(),
                 signing_key: identity.device_signing_key.clone(),
             },
-            revocations.clone(),
-            live_trust_policy.clone(),
+            crate::compute_session::ComputeTrust {
+                revocations: revocations.clone(),
+                trust_policy: live_trust_policy.clone(),
+                agents: handler.agents.clone(),
+            },
             Arc::new(crate::environment_host::TracingMetering),
         );
         let certification = crate::certification::CertificationProtocol::new(
@@ -1147,7 +1150,7 @@ impl Relay {
             state_root,
             workspace_id,
             pinned,
-            false,
+            crate::room_access::AdmissionMode::Explicit,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
@@ -1533,8 +1536,13 @@ fn open_bound_workspace(
         rt.store.bind_shell_authority(authority.clone())?;
     }
     rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
-    rt.admit_authenticated =
-        matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser) && !rt.governed_access;
+    rt.admission = rt.admission.rebind(
+        if matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser) {
+            crate::room_access::AdmissionMode::SameOwner
+        } else {
+            crate::room_access::AdmissionMode::Explicit
+        },
+    );
     rt.admitted_users = binding
         .admitted_users
         .iter()
@@ -2147,6 +2155,17 @@ impl RelayProtocol {
         }
     }
 
+    /// This relay's certificate and agent trust.
+    #[cfg(feature = "web")]
+    pub(crate) fn trust(&self) -> crate::room_access::RelayTrust<'_> {
+        crate::room_access::RelayTrust {
+            revocations: &self.revocations,
+            policy: &self.trust_policy,
+            own_user: &self.own_user_pk,
+            agents: &self.agents,
+        }
+    }
+
     /// The peer context a session of this relay runs with.
     pub(crate) fn peer_context(&self) -> PeerContext {
         PeerContext {
@@ -2182,6 +2201,18 @@ struct DiscoveryProtocol {
     compute_ready: Arc<AtomicBool>,
     home_peer_bundle: PathBuf,
     autobind: Option<WorkspaceAutobind>,
+    agents: crate::peer::AgentRegistry,
+}
+
+impl DiscoveryProtocol {
+    fn trust(&self) -> crate::room_access::RelayTrust<'_> {
+        crate::room_access::RelayTrust {
+            revocations: &self.revocations,
+            policy: &self.trust_policy,
+            own_user: &self.own_user_pk,
+            agents: &self.agents,
+        }
+    }
 }
 
 /// What this relay's workers run for environments, across its workspaces.
@@ -2435,9 +2466,13 @@ impl ProtocolHandler for DiscoveryProtocol {
         let permitted = match workspace {
             Some(workspace) => {
                 let workspace = workspace.lock().await;
-                workspace.admit_authenticated
-                    || workspace.admitted_users.contains(&peer.user_public_key)
-                    || workspace.membership.contains(&peer.device_public_key)
+                crate::room_access::decide(
+                    &workspace,
+                    &self.trust(),
+                    &peer,
+                    crate::room_access::RoomOperation::ContentDiscovery,
+                )
+                .admitted()
             }
             None => false,
         };

@@ -93,10 +93,10 @@ pub struct WorkspaceRuntime {
     /// The watched generation `membership` was last loaded at. `None` until a
     /// live watch vouched for a load, so every read goes to the disk.
     pub(crate) loaded_generation: Option<u64>,
-    /// Whether any connection already admitted by the relay's trust policy may
-    /// join this workspace. Enabled automatically for matching-user home hosts;
-    /// shared/multi-tenant hosts use an explicit membership list.
-    pub admit_authenticated: bool,
+    /// How the room admits devices beyond its exact membership: explicitly,
+    /// the relay owner's devices on a same-owner home host, or under native
+    /// governance. Read only through [`crate::room_access::decide`].
+    pub(crate) admission: crate::room_access::AdmissionMode,
     /// Cross-user roots admitted by the signed authority for this exact room.
     pub admitted_users: HashSet<[u8; 32]>,
     /// User roots needed only to pass the relay-wide handshake for devices in
@@ -104,9 +104,6 @@ pub struct WorkspaceRuntime {
     /// `membership`; keeping this separate from `admitted_users` prevents an
     /// ungoverned sibling device under the same root from joining.
     pub governed_user_roots: HashSet<[u8; 32]>,
-    /// Whether native governance owns this room's admission. Once set, the
-    /// same-owner autobind path must not auto-enrol handshake-admitted devices.
-    pub governed_access: bool,
     pub(crate) checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
@@ -287,7 +284,11 @@ impl WorkspaceRuntime {
     ) -> Result<Self, crate::store::StoreError> {
         let store = WorkspaceStore::open(state_root, workspace_id, pinned)?;
         let governed_access_record = store.load_governed_access()?;
-        let governed_access = governed_access_record.is_some();
+        let admission = if governed_access_record.is_some() {
+            crate::room_access::AdmissionMode::Governed
+        } else {
+            crate::room_access::AdmissionMode::Explicit
+        };
         let governed_user_roots = governed_access_record.map_or_else(HashSet::new, |access| {
             access.member_user_roots.into_iter().collect()
         });
@@ -329,10 +330,9 @@ impl WorkspaceRuntime {
             membership_revision: 0,
             disk_generation: None,
             loaded_generation: None,
-            admit_authenticated: false,
+            admission,
             admitted_users: HashSet::new(),
             governed_user_roots,
-            governed_access,
             checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
