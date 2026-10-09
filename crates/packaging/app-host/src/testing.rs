@@ -80,6 +80,9 @@ where
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
+    // Shutdown the owned socket, then keep driving RPC long enough to retire
+    // its pending server calls. Dropping RpcSystem alone can retain call cycles.
+    let disconnect = connection.try_clone().map_err(|error| error.to_string())?;
     tokio::task::LocalSet::new().block_on(&runtime, async move {
         let connection =
             tokio::net::UnixStream::from_std(connection).map_err(|error| error.to_string())?;
@@ -96,12 +99,16 @@ where
         tokio::select! {
             biased;
             result = &mut rpc => driver_result(result),
-            // Explicit fixture shutdown cancels its owned driver. Running a
-            // second disconnect future while a peer closes can release the
-            // connection state before the driver's message loop observes EOF.
-            // Drop the RPC future and transport together on this thread;
-            // ConnectedService::stop still joins and reports driver panics.
-            _ = &mut shutdown => Ok(()),
+            _ = &mut shutdown => {
+                // EOF takes the ordinary connection-disconnect path, canceling
+                // pending server calls before we join. A separate Capnp
+                // disconnector can release state ahead of the message loop.
+                disconnect.shutdown(std::net::Shutdown::Both)
+                    .map_err(|error| error.to_string())?;
+                let result = tokio::time::timeout(std::time::Duration::from_secs(2), &mut rpc)
+                    .await.map_err(|_| "app-host test transport did not disconnect".to_owned())?;
+                driver_result(result)
+            },
         }
     })
 }
@@ -197,6 +204,73 @@ mod tests {
         assert_eq!(
             service.shutdown(),
             Err("app-host test service panicked".into())
+        );
+    }
+
+    struct PendingCall(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for PendingCall {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    struct PendingHost {
+        entered: std::sync::mpsc::SyncSender<()>,
+        canceled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        waiter: std::sync::Arc<std::sync::Mutex<Option<std::task::Waker>>>,
+    }
+
+    impl app_host::Server for PendingHost {
+        fn list(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::ListParams,
+            _results: app_host::ListResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let pending = PendingCall(std::sync::Arc::clone(&self.canceled));
+            let entered = self.entered.clone();
+            let waiter = std::sync::Arc::clone(&self.waiter);
+            async move {
+                let _pending = pending;
+                entered.send(()).unwrap();
+                std::future::poll_fn(|cx| {
+                    *waiter.lock().unwrap() = Some(cx.waker().clone());
+                    std::task::Poll::<()>::Pending
+                })
+                .await;
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn connected_service_shutdown_cancels_an_entered_server_call() {
+        let (entered, observed) = std::sync::mpsc::sync_channel(1);
+        let canceled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waiter = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (service, fd) = ConnectedService::start(PendingHost {
+            entered,
+            canceled: std::sync::Arc::clone(&canceled),
+            waiter: std::sync::Arc::clone(&waiter),
+        })
+        .unwrap();
+        let client = std::thread::spawn(move || {
+            crate::client::BlockingClient::from_connected_fd(fd)
+                .unwrap()
+                .list()
+        });
+        observed
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(service.shutdown(), Ok(()));
+        // Like the Store fixture, release the saved task waker after joining.
+        drop(waiter.lock().unwrap().take());
+        assert!(
+            client.join().unwrap().is_err(),
+            "pending RPC reports disconnect"
+        );
+        assert!(
+            canceled.load(std::sync::atomic::Ordering::SeqCst),
+            "the real entered service future is retired by shutdown"
         );
     }
 }
