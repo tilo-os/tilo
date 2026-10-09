@@ -1099,8 +1099,8 @@ impl NativeNotes {
         }
         self.records
             .read(&self.checkout.id, |doc| {
-                notes::notebook::validate(doc).unwrap();
-                let blocks = notes::doc::NotesDoc::page_block_snapshots(doc, page);
+                notes::read::validate(doc).unwrap();
+                let blocks = notes::read::page_block_snapshots(doc, page);
                 let actual = blocks
                     .iter()
                     .map(|(_, body)| body.as_str())
