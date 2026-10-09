@@ -30,7 +30,8 @@ class AppArtifactHandoffTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         for relative in (
             "dist/apps/package-apps.sh", "dist/apps/assemble-collection.sh",
-            "os/scripts/bake-runtime-bundle.sh", "tools/apps/app_release.py",
+            "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py",
+            "os/scripts/verify-runtime-bundle-closure.sh", "tools/apps/app_release.py",
             "os/scripts/stamp-runtime.sh", "tools/apps/pack-runtime-package.sh",
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
             "tools/apps/assemble_app_collection.py",
@@ -52,7 +53,11 @@ with open(os.environ['FIXTURE_CARGO_LOG'], 'a') as log:
 """)
         self.write("bin/rustc", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_STDLIB\"\n")
         self.write("bin/uname", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_ARCH\"\n")
-        self.write("stdlib/libstd-fixture.so", "fixture standard library")
+        # The artifact fixture supplies synthetic ELF inputs. Keep the real
+        # collector and closure checker, with fixture-only dynamic linker tools.
+        self.write("bin/ldd", "#!/bin/sh\nprintf 'libstd-fixture.so => %s/libstd-fixture.so (0x0)\\n' \"$FIXTURE_STDLIB\"\n")
+        self.write("bin/readelf", "#!/bin/sh\nexit 0\n")
+        self.write("stdlib/libstd-fixture.so", "\x7fELF fixture standard library")
         self.write("os/scripts/build-thin-apps.sh", """#!/bin/bash
 set -euo pipefail
 [[ "$BUILD_PACKAGES" == calculator ]]
@@ -67,7 +72,7 @@ header[18:20] = (62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183).to_bytes
 pathlib.Path('target/thin-app/calculator').write_bytes(header)
 ELF
 chmod +x target/thin-app/calculator
-printf 'fixture runtime dylib' > target/thin-app/libruntime_dylib.so
+printf '\\177ELF fixture runtime dylib' > target/thin-app/libruntime_dylib.so
 """)
         self.write("os/scripts/verify-elf-hardening.sh", "#!/bin/bash\nset -euo pipefail\nfor f; do test -x \"$f\"; done\n")
         self.write("target/release/tilo-runtime-bundle", """#!/usr/bin/env python3
@@ -83,6 +88,10 @@ elif a[0] == 'build':
     arch = a[a.index('--arch')+1]
     (out/'bundle.toml').write_text(f'version = "{version}"\\narch = "{arch}"\\nroot_hash = "'+'cd'*32+'"\\n')
     (out/'lib').mkdir(); (out/'lib/runtime.so').write_bytes(b'runtime payload')
+    for index, part in enumerate(a):
+        if part == '--include':
+            source = pathlib.Path(a[index + 1])
+            (out/'lib'/source.name).write_bytes(source.read_bytes())
     pathlib.Path(a[a.index('--version-out')+1]).write_text(version + '\\n')
 elif a[0] == 'verify':
     assert (pathlib.Path(a[1])/'bundle.toml').is_file()
