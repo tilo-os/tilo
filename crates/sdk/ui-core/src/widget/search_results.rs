@@ -977,13 +977,7 @@ impl Widget for SearchResultsView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -1456,22 +1450,11 @@ mod tests {
             let node = NodeId::new(0);
 
             let key = |k: NamedKey| {
-                // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero bit
-                // pattern; `handle_event` only inspects `logical_key` + `state`.
-                let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = Key::Named(k);
-                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                );
-                ev.location = winit::keyboard::KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                ev.text = None;
-                WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    event: ev,
-                    is_synthetic: false,
-                }
+                crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+                    Key::Named(k),
+                    None,
+                    ElementState::Pressed,
+                ))
             };
 
             assert_eq!(v.cursor(), 0);
@@ -1548,7 +1531,7 @@ mod tests {
 
             v.handle_event(
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(target.x, target.y),
                 },
                 &mut crate::widget::EventCtx {
@@ -1564,7 +1547,7 @@ mod tests {
             );
             v.handle_event(
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },

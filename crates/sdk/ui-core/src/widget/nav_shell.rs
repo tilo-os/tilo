@@ -3378,13 +3378,7 @@ impl Widget for NavShell {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.refresh_geometry();
         self.reconcile_size_class();
         self.refresh_geometry();
@@ -3718,6 +3712,13 @@ impl WindowHeader for NavShell {
 }
 
 impl crate::widget::controls::ActionControls for NavShell {
+    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        self.for_each_child(&mut |child| {
+            bindings.extend(crate::widget::controls::action_control_bindings(child));
+        });
+        bindings
+    }
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,

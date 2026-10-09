@@ -2585,8 +2585,7 @@ mod tests {
         let group = SegmentedTouchGroup::new(42, &rects, 0);
         let mut recognizer = SegmentedTouch::default();
         let event = |id, phase, x, y| winit::event::Touch {
-            // SAFETY: device identity is opaque and not consulted by the recognizer.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(x, y),
             force: None,
@@ -2653,30 +2652,23 @@ mod tests {
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
 
     fn mouse_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
     }
 
     fn key_press(key: NamedKey) -> WindowEvent {
-        // SAFETY: the non-public `KeyEventExtra` field accepts its all-zero
-        // representation; every public field used by routing is set below.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.state = ElementState::Pressed;
-        event.logical_key = Key::Named(key);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
+        let event = crate::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -2684,7 +2676,7 @@ mod tests {
 
     fn touch(phase: winit::event::TouchPhase, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(point.x, point.y),
             force: None,

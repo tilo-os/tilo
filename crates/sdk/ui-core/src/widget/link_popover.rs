@@ -587,22 +587,15 @@ impl Widget for LinkPopover {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::{ElementState, KeyEvent};
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
+    use winit::event::ElementState;
+    use winit::keyboard::SmolStr;
 
     fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(SmolStr::new);
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            text.map(SmolStr::new),
+            ElementState::Pressed,
+        ))
     }
 
     fn char_press(c: &str) -> WindowEvent {

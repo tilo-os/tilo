@@ -49,14 +49,7 @@ impl Widget for Probe {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -395,7 +388,7 @@ fn narrow_windows_push_the_content_over_the_overview() {
 
     // Escape goes back.
     let esc =
-        crate::synthetic_input::key_event(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+        crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
     assert!(h.dispatch_to_root(&esc));
     settle(&mut h, 560, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
@@ -473,7 +466,7 @@ fn the_system_shortcut_toggles_the_sidebar() {
     h.root_mut::<NavShell>()
         .set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
     settle(&mut h, 1280, 800);
-    let key = crate::synthetic_input::key_event(&Key::Character("L".into()), ElementState::Pressed);
+    let key = crate::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
     let modifiers = winit::event::Modifiers::from(
         winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
     );

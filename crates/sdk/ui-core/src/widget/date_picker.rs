@@ -426,12 +426,7 @@ impl Widget for DatePicker {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
-        self.set_rect(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.set_rect(crate::widget::placed(&l, origin));
     }
 
     fn draw(
@@ -841,7 +836,7 @@ mod tests {
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, MouseButton};
+    use winit::event::MouseButton;
 
     fn modifiers() -> winit::event::Modifiers {
         winit::event::Modifiers::default()
@@ -1023,22 +1018,16 @@ mod tests {
         focused_date_picker_paints_a_focus_ring();
     }
 
-    fn fake_device_id() -> DeviceId {
-        // `DeviceId::dummy()` needs a winit unstable feature and the
-        // regular constructor isn't pub; never inspected by `handle_event`.
-        unsafe { std::mem::zeroed() }
-    }
-
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(x, y),
         }
     }
 
     fn mouse_pressed() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }

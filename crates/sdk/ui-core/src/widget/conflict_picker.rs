@@ -879,7 +879,6 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
     use winit::event::Modifiers;
-    use winit::keyboard::PhysicalKey;
 
     fn alt(label: &str, author: &str) -> Alternative {
         Alternative {
@@ -1004,40 +1003,26 @@ mod tests {
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
 
     fn mouse_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
     }
 
-    /// Synthesise a `WindowEvent::KeyboardInput` carrying `key`
-    /// in the `Pressed` state. Mirrors the zero-init workaround
-    /// used in `command_palette::tests` — winit 0.30 keeps
-    /// `KeyEventExtra` `pub(crate)` so we cannot construct a
-    /// `KeyEvent` through a struct literal.
+    /// Synthesise a `WindowEvent::KeyboardInput` carrying `key` in the `Pressed` state.
     fn key_press(key: NamedKey) -> WindowEvent {
-        // SAFETY: all pub fields of `KeyEvent` tolerate the
-        // all-zero bit pattern; `handle_event` only inspects
-        // `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(key);
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(key),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn dispatch(p: &mut ConflictPicker, event: &WindowEvent) {

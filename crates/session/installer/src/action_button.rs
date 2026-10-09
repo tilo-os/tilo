@@ -202,22 +202,13 @@ impl ActionButton {
 )]
 mod tests {
     use automerge::{AutoCommit, ROOT, ReadDoc};
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     use super::*;
 
     fn press(key: NamedKey) -> WindowEvent {
-        // SAFETY: ActionButton reads only the initialized KeyEvent fields.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(key);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            // SAFETY: ActionButton does not inspect the device id.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -369,12 +360,7 @@ impl Widget for ActionButton {
         // received from its own `build_layout` call.
         #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
     }
 
     fn draw(

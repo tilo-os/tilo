@@ -29,9 +29,7 @@ use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, Button, Dropdown, ModelPath, Row, Spacer, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::Rect;
 
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
@@ -194,11 +192,65 @@ pub fn text_size_name(shown: &str) -> String {
         .map_or_else(|| shown.to_owned(), |(english, _)| (*english).to_owned())
 }
 
+/// The person's current appearance selectors and controls, before the OS
+/// resolves Automatic mode. Theme documents and their private content are not
+/// part of this read surface.
+#[derive(serde::Serialize)]
+struct AppearanceInspection<'a> {
+    schema: &'static str,
+    theme: &'a str,
+    mode: &'a str,
+    dark_theme: &'a str,
+    light_theme: &'a str,
+    density: f64,
+    ui_scale: f64,
+    text_scale: f64,
+    high_contrast: bool,
+    reduce_motion: bool,
+    schedule: &'a str,
+    sunrise: &'a str,
+    sunset: &'a str,
+    wallpaper_scope: &'a str,
+    wallpaper_target: &'a str,
+}
+
+impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
+    fn from(prefs: &'a AppearancePrefs) -> Self {
+        Self {
+            schema: "tilo.settings.appearance.v1",
+            theme: &prefs.theme,
+            mode: &prefs.mode,
+            dark_theme: &prefs.dark_theme,
+            light_theme: &prefs.light_theme,
+            density: prefs.density,
+            ui_scale: prefs.ui_scale,
+            text_scale: prefs.text_scale,
+            high_contrast: prefs.high_contrast,
+            reduce_motion: prefs.reduce_motion,
+            schedule: &prefs.schedule,
+            sunrise: &prefs.sunrise,
+            sunset: &prefs.sunset,
+            wallpaper_scope: &prefs.wallpaper_scope,
+            wallpaper_target: &prefs.wallpaper_target,
+        }
+    }
+}
+
 /// The look of the desktop and every app: theme, scale, contrast, motion,
 /// the day-and-night schedule and the wallpaper.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AppearanceEffect {
+    /// Read the person's current selectors and schedule without resolving
+    /// Automatic mode or changing the OS-controlled theme.
+    #[effect(
+        view,
+        returns,
+        device_only,
+        permission = "read",
+        label = "Inspect appearance preferences"
+    )]
+    InspectAppearance,
     /// Set the theme every app draws with.
     #[effect(idempotent)]
     SetTheme {
@@ -279,6 +331,12 @@ pub(crate) fn answer(
             .ok_or_else(|| format!("`{value}` is not a {what}"))
     };
     match effect {
+        AppearanceEffect::InspectAppearance => {
+            let prefs = host.settings::<AppearancePrefs>().get();
+            serde_json::to_value(AppearanceInspection::from(&prefs))
+                .map(Effected::value)
+                .map_err(|error| format!("the appearance preferences could not be read: {error}"))
+        }
         AppearanceEffect::SetTheme { theme } => {
             if !AppearancePrefs::THEMES.contains(&theme.as_str()) {
                 return Err(format!("`{theme}` is not a theme"));
@@ -796,25 +854,7 @@ impl Widget for AppearancePane {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.composed.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.composed
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.composed.handle_event(event, ctx);
-    }
+    ui::forward_to_composed!(composed);
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // This pane paints only its composition. Keep a child's local visual
@@ -822,14 +862,6 @@ impl Widget for AppearancePane {
         if let Some(composed) = self.composed.element() {
             composed.collect_damage(regions);
         }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.children()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.children_mut()
     }
 
     fn name(&self) -> &'static str {
@@ -840,10 +872,6 @@ impl Widget for AppearancePane {
         let own = std::mem::take(&mut self.structure_dirty);
         let child = self.composed.take_structure_dirty();
         own || child
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.composed.rect()
     }
 
     /// Surface the user's current appearance choice so the running Settings
@@ -1037,3 +1065,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "appearance/inspection_tests.rs"]
+mod inspection_tests;

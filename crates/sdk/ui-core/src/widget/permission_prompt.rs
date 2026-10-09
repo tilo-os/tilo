@@ -420,13 +420,7 @@ impl Widget for PermissionPrompt {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.apply_layout_helper();
     }
 
@@ -792,14 +786,7 @@ mod tests {
     //! `self.rect` so tests don't depend on a GPU/text-renderer.
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{DeviceId, ElementState, MouseButton};
-
-    fn synth_device() -> DeviceId {
-        // SAFETY: `DeviceId` is opaque; tests construct one via
-        // `mem::zeroed`. Same pattern as `quick-tilo_ui::widget::slider`'s
-        // own test helpers.
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::{ElementState, MouseButton};
 
     #[test]
     fn local_input_prompt_has_only_one_shot_choices_and_preserves_field_focus() {
@@ -961,14 +948,14 @@ mod tests {
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
 
     fn left_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }

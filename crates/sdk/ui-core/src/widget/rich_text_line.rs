@@ -1572,41 +1572,23 @@ fn mark_kind(segment: &MarkSegment) -> Option<crate::text_render::TextKind> {
 mod tests {
     use super::*;
     use crate::widget::marks::Mark;
-    use winit::event::{KeyEvent, Modifiers};
-    use winit::keyboard::{
-        Key, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey, PhysicalKey, SmolStr,
-    };
+    use winit::event::Modifiers;
+    use winit::keyboard::{Key, ModifiersKeyState, ModifiersState, NamedKey, SmolStr};
 
-    /// `KeyEventExtra` is `pub(crate)` in winit 0.30, so this zero-constructs
-    /// rather than using a struct literal.
     fn key_press(named: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(named),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn char_press(c: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(SmolStr::new(c));
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(SmolStr::new(c));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Character(SmolStr::new(c)),
+            Some(SmolStr::new(c)),
+            ElementState::Pressed,
+        ))
     }
 
     fn dispatch(line: &mut RichTextLine, event: &WindowEvent) {

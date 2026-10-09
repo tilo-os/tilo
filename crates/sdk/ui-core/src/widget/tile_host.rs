@@ -2163,13 +2163,7 @@ impl Widget for TileHost {
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let _running = self.running();
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let TileContent::App(w) = &mut self.content {
             // Guards a structural mismatch: content is `App` but the taffy
             // node has no child yet (build_layout ran while content was
@@ -5045,7 +5039,7 @@ mod tests {
             assert!(toolbar.width() > 0.0 && toolbar.height() > 0.0);
             let body = Point::new(toolbar.center().x, toolbar.y1 + 40.0);
             assert!(host.get_rect().contains(body) && !toolbar.contains(body));
-            let device = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let motion = |point: Point| WindowEvent::CursorMoved {
                 device_id: device,
                 position: (point.x * scale, point.y * scale).into(),

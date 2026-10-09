@@ -93,7 +93,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         session: None,
     }
     .session_factory(room.clone(), actor.clone(), origin.capture().unwrap());
-    let mut server = factory().unwrap();
+    let server = factory().unwrap();
     let caller = server.execution_caller();
     assert_eq!(caller.user_public_key(), Some(&certificate.user_public_key));
     assert_eq!(
@@ -132,7 +132,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         1,
         "a retained retired server cannot launch again"
     );
-    let mut surviving_server = factory().unwrap();
+    let surviving_server = factory().unwrap();
     origin.invalidate();
     let refused = surviving_server.handle(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_query","arguments":{"workspace":true}}})).await.unwrap();
     drop(surviving_server);

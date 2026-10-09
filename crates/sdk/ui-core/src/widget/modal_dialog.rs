@@ -2126,15 +2126,8 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // centred where the first paint will put it, so the content is
         // placed where it is drawn and hit from the first frame.
         if !self.presented {
-            self.window = tree_window(taffy, node).unwrap_or_else(|| {
-                Rect::from_origin_size(
-                    (
-                        origin.x + f64::from(l.location.x),
-                        origin.y + f64::from(l.location.y),
-                    ),
-                    (f64::from(l.size.width), f64::from(l.size.height)),
-                )
-            });
+            self.window =
+                tree_window(taffy, node).unwrap_or_else(|| crate::widget::placed(&l, origin));
         }
         let Some(content_node) = taffy
             .children(node)

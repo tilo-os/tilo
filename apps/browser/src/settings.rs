@@ -19,11 +19,7 @@
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
 
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Button, Card, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
@@ -520,44 +516,10 @@ impl Widget for SettingsPane {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.composed.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.composed
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        self.composed.handle_event(event, ctx);
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.children()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.children_mut()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "SettingsPane"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.composed.rect()
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -585,6 +547,7 @@ mod tests {
     use automerge::AutoCommit;
     use automerge::ReadDoc;
     use std::collections::HashMap;
+    use vello::kurbo::{Point, Rect};
 
     #[test]
     fn preference_defaults_are_sensible() {
@@ -664,7 +627,7 @@ mod tests {
             // Drive the real five-pass path: build_layout → compute_layout →
             // apply_layout, then flip the ad-block toggle through the live
             // widget tree and assert the CRDT bool changed.
-            use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+            use winit::event::{ElementState, MouseButton, WindowEvent};
 
             // Locate the ad-block toggle's rect by walking the live tree.
             fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
@@ -705,7 +668,7 @@ mod tests {
                 .expect("ad-block toggle is addressable in the tree");
             let center = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mods = winit::event::Modifiers::default();
             let mut dispatch = |pane: &mut SettingsPane, ev: WindowEvent| {
                 let mut handled = false;

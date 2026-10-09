@@ -542,6 +542,32 @@ impl CapnpBrokerState {
         })
     }
 
+    /// Every live published surface, carrying its actions only when
+    /// `with_actions`: who publishes is copied, not every app's whole
+    /// surface, when that is all a caller asked.
+    fn live_surfaces(&self, with_actions: bool) -> Vec<PublishedSurface> {
+        self.surfaces
+            .lock()
+            .map(|surfaces| {
+                surfaces
+                    .values()
+                    .filter(|surface| surface.live)
+                    .map(|surface| PublishedSurface {
+                        peer_id: surface.peer_id,
+                        app_id: surface.app_id.clone(),
+                        route: surface.route.clone(),
+                        actions: if with_actions {
+                            surface.actions.clone()
+                        } else {
+                            Vec::new()
+                        },
+                        live: true,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one authorization pass projects live surfaces, directories, governance and launchers so no source can skip the caller's checks"
@@ -556,8 +582,23 @@ impl CapnpBrokerState {
         caller: &Caller,
         with_rows: bool,
     ) -> (Vec<CatalogueRow>, Vec<CatalogueProvider>) {
-        let surfaces = self.published_surfaces();
+        // Retained surfaces of closed apps are the launchable catalogue's,
+        // and a providers-only answer needs no live surface's actions.
+        let surfaces = self.live_surfaces(with_rows);
         let roots = self.action_directory_roots();
+        // Listed once for every workspace's open and close rows.
+        let applications = self
+            .services
+            .launcher
+            .as_ref()
+            .filter(|_| with_rows && caller.room().is_some())
+            .map(|launcher| launcher.applications())
+            .unwrap_or_default();
+        let closes_applications = self
+            .services
+            .launcher
+            .as_ref()
+            .is_some_and(|launcher| launcher.closes_applications());
         let mut rows = Vec::new();
         let mut providers = Vec::new();
         // Keyboard shortcuts are this device's own settings: offered to
@@ -705,12 +746,8 @@ impl CapnpBrokerState {
             }
             if caller.room().is_some() {
                 rows.extend(
-                    self.services
-                        .launcher
-                        .as_ref()
-                        .map(|launcher| launcher.applications())
-                        .unwrap_or_default()
-                        .into_iter()
+                    applications
+                        .iter()
                         .filter(|app| !live_apps.contains(&app.package_id))
                         .filter(|app| {
                             workspace.decide_at(
@@ -724,18 +761,14 @@ impl CapnpBrokerState {
                             action_row(
                                 workspace_provider(&room),
                                 &app.package_id,
-                                app_open_descriptor(&app),
+                                app_open_descriptor(app),
                             )
                         }),
                 );
                 rows.extend(
-                    self.services
-                        .launcher
-                        .as_ref()
-                        .filter(|launcher| launcher.closes_applications())
-                        .map(|launcher| launcher.applications())
-                        .unwrap_or_default()
-                        .into_iter()
+                    applications
+                        .iter()
+                        .filter(|_| closes_applications)
                         .filter(|app| live_apps.contains(&app.package_id))
                         .filter(|app| {
                             workspace.decide_at(
@@ -1502,12 +1535,13 @@ impl CapnpBrokerState {
     ) -> Option<ActionDirectoryRoot> {
         let peer_id = request.target.provider.parse::<u64>().ok()?;
         let address = &request.target.address;
-        let eager = self.published_surfaces().into_iter().any(|surface| {
-            surface.peer_id == peer_id
-                && surface.live
-                && surface.actions.iter().any(|action| {
-                    action.resource == address.resource && action.action == address.action
-                })
+        let eager = self.surfaces.lock().is_ok_and(|surfaces| {
+            surfaces.get(&peer_id).is_some_and(|surface| {
+                surface.live
+                    && surface.actions.iter().any(|action| {
+                        action.resource == address.resource && action.action == address.action
+                    })
+            })
         });
         (!eager)
             .then(|| self.directory_root_for(caller, peer_id))
@@ -1524,14 +1558,20 @@ impl CapnpBrokerState {
         let unavailable = || ActionHostError::Unavailable {
             reason: "the invocation ledger is unavailable".into(),
         };
-        let Some(revision) = request
-            .revision
-            .clone()
-            .filter(|revision| !revision.is_empty())
-        else {
-            return Pending::ready(Err(ActionHostError::InvalidRequest {
-                reason: "a directory action needs the revision it was chosen at".into(),
-            }));
+        // A request naming no revision acts on the directory as it is now:
+        // its owner resolves it so, in the same turn this broker admits it,
+        // instead of the caller first reading the revision across the same
+        // two hops.
+        let revision = match request.revision.as_deref() {
+            None => String::new(),
+            Some("") => {
+                return Pending::ready(Err(ActionHostError::InvalidRequest {
+                    reason:
+                        "an empty revision names none; omit it to act on the directory as it is now"
+                            .into(),
+                }));
+            }
+            Some(revision) => revision.to_owned(),
         };
         let argument = request.argument.to_slot();
         let address = &request.target.address;
@@ -1752,37 +1792,41 @@ impl CapnpBrokerState {
                 .parse::<u64>()
                 .map_err(|_| ActionHostError::UnknownAction)?
         };
-        let offered = self
-            .published_surfaces()
+        // Only the one action this peer offers is copied out, not every
+        // app's published surface.
+        let (app_id, room, action) = self
+            .surfaces
+            .lock()
+            .ok()
+            .and_then(|surfaces| {
+                let surface = surfaces.get(&peer_id).filter(|surface| surface.live)?;
+                let action = surface.actions.iter().find(|action| {
+                    action.resource == address.resource && action.action == address.action
+                })?;
+                Some((
+                    surface.app_id.clone(),
+                    surface.route.cluster_id.clone(),
+                    action.clone(),
+                ))
+            })
+            .ok_or(ActionHostError::UnknownAction)?;
+        let (offered, room) = self
+            .workspaces_for(caller)
             .into_iter()
-            .find(|surface| surface.peer_id == peer_id && surface.live)
-            .and_then(|surface| {
-                let (workspace, policy, now) =
-                    self.workspaces_for(caller)
-                        .into_iter()
-                        .find(|(workspace, _, _)| {
-                            workspace.room.to_string() == surface.route.cluster_id
-                        })?;
-                let action = surface
-                    .actions
-                    .iter()
-                    .find(|action| {
-                        action.resource == address.resource && action.action == address.action
-                    })?
-                    .clone();
+            .find(|(workspace, _, _)| workspace.room.to_string() == room)
+            .and_then(|(workspace, policy, now)| {
                 Self::allowed(
                     &workspace,
                     &policy,
                     now,
-                    &surface.app_id,
+                    &app_id,
                     &action.resource,
                     &action.action,
                     action.contract.permission,
                 )
-                .then_some((action, surface.route.cluster_id, surface.app_id))
+                .then_some((action, room))
             })
             .ok_or(ActionHostError::UnknownAction)?;
-        let (offered, room, app_id) = offered;
         let actor = self.caller_actor(caller, &room);
         let token = self.confirmation_token(
             peer_id,
@@ -2539,10 +2583,26 @@ impl CapnpBrokerState {
             tokio::select! {
                 _ = seen.changed() => {}
                 () = tilo_rt::sleep(CHANGE_SAFETY_INTERVAL) => {}
+                // A waiter that found its answer some other way (it observed
+                // the invocation finished) holds no task for the interval.
+                () = changed.abandoned() => return,
             }
             changed.complete(());
         });
         Some(change)
+    }
+
+    /// [`Self::action_next_change`] counting only changes after this call:
+    /// the `next_change` of a host whose waiter asks before it observes, so a
+    /// change between the two still wakes it. Authorized exactly as
+    /// [`Self::action_observe`]: `None` for an invocation `caller` did not
+    /// admit.
+    pub fn action_next_change_after_now(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<Pending<()>> {
+        self.action_next_change(caller, id, self.invocation_changes())
     }
 
     /// Ask an invocation `caller` admitted to stop.

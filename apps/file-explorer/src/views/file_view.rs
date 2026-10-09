@@ -966,12 +966,7 @@ impl Widget for FileView {
             reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
         )]
         let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(self.rect.width());
             return;
@@ -1576,10 +1571,6 @@ mod tests {
     use super::*;
     use crate::command::{FileCommand, new_sink};
     use std::path::PathBuf;
-
-    fn dev() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
 
     fn dispatch(v: &mut FileView, tree: &TaffyTree<()>, node: NodeId, ev: &WindowEvent) {
         let mut handled = false;
@@ -2717,14 +2708,14 @@ mod tests {
 
         fn move_to(&mut self, at: Point) {
             self.send(&WindowEvent::CursorMoved {
-                device_id: dev(),
+                device_id: winit::event::DeviceId::dummy(),
                 position: (at.x, at.y).into(),
             });
         }
 
         fn press(&mut self, button: MouseButton) {
             self.send(&WindowEvent::MouseInput {
-                device_id: dev(),
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button,
             });
@@ -2827,7 +2818,7 @@ mod tests {
         let centre = laid.view.list.rect().center();
         laid.move_to(centre);
         laid.send(&WindowEvent::MouseWheel {
-            device_id: dev(),
+            device_id: winit::event::DeviceId::dummy(),
             delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
             phase: winit::event::TouchPhase::Moved,
         });

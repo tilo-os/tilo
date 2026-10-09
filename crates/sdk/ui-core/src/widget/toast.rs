@@ -1227,13 +1227,7 @@ impl Widget for ToastStack {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -1333,7 +1327,7 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use std::collections::HashMap;
-    use winit::event::{DeviceId, ElementState, MouseButton};
+    use winit::event::{ElementState, MouseButton};
 
     fn lay_out(stack: &mut ToastStack) {
         let mut tree = TaffyTree::<()>::new();
@@ -1349,10 +1343,6 @@ mod tests {
         )
         .unwrap();
         stack.apply_layout(&tree, node, Point::ZERO);
-    }
-
-    fn device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
     }
 
     fn feed(s: &mut ToastStack, ev: &WindowEvent) {
@@ -1699,14 +1689,14 @@ mod tests {
             feed(
                 &mut s,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (160.0, 80.0).into(),
                 },
             );
             feed(
                 &mut s,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -1749,7 +1739,7 @@ mod tests {
             feed(
                 &mut s,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (160.0, 24.0).into(),
                 },
             );
@@ -1761,7 +1751,7 @@ mod tests {
             feed(
                 &mut s,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (900.0, 900.0).into(),
                 },
             );

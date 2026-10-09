@@ -810,12 +810,7 @@ impl Widget for DiffMergeApp {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         // Drive both views to the content rect directly so mode switches
         // don't require a taffy rebuild to position correctly, and so the
         // views end at the window bottom rather than a toolbar's height below
@@ -1466,20 +1461,12 @@ mod tests {
     }
 
     fn keyboard_event(key: Key) -> WindowEvent {
-        use winit::event::{DeviceId, KeyEvent};
-        use winit::keyboard::{KeyLocation, PhysicalKey};
+        use winit::event::DeviceId;
 
         // `KeyEvent` has an opaque platform payload. The public fields below
         // are exactly the ones the widget reads; this mirrors the toolkit's
         // own headless keyboard helpers.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
             device_id: DeviceId::dummy(),
             event,

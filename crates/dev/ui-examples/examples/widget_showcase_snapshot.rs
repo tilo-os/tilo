@@ -90,13 +90,7 @@ impl Widget for LabelTile {
         }
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = tilo_ui::widget::layout_rect(taffy, node, origin);
     }
     fn draw(
         &mut self,
@@ -399,7 +393,7 @@ pub fn run(_args: &[String]) {
     // LineDelta(0, -30) = scroll down 30 lines (~600 px after Scrollable's
     // 20× line multiplier). Negative y = "scroll down" in winit's model.
     let wheel = WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         delta: MouseScrollDelta::LineDelta(0.0, -30.0),
         phase: winit::event::TouchPhase::Moved,
     };

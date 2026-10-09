@@ -282,7 +282,7 @@ fn cursor(host: &mut ShellOverlayHost, layout: &Layout, p: Point) {
         host,
         layout,
         &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         },
     );
@@ -293,7 +293,7 @@ fn press(host: &mut ShellOverlayHost, layout: &Layout) {
         host,
         layout,
         &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
@@ -305,7 +305,7 @@ fn release(host: &mut ShellOverlayHost, layout: &Layout) {
         host,
         layout,
         &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         },
@@ -317,7 +317,7 @@ fn press_with_modifiers(host: &mut ShellOverlayHost, layout: &Layout, modifiers:
         host,
         layout,
         &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
@@ -1436,7 +1436,7 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
             &mut host,
             &layout,
             &WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -3.0),
                 phase: winit::event::TouchPhase::Moved,
             },

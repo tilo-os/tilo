@@ -3430,13 +3430,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if self.fill_height {
             // The rows scroll inside whatever height the parent gave.
             let body = (self.rect.height() - self.header_h - self.h_reserve).max(0.0);
@@ -5481,7 +5475,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (20.0, 10.0).into(),
                 },
                 mods,
@@ -5491,7 +5485,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -5552,7 +5546,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (20.0, HEADER_HEIGHT + 12.0).into(),
                 },
                 modifiers,
@@ -5564,7 +5558,7 @@ mod tests {
                         &tree,
                         node,
                         &WindowEvent::MouseInput {
-                            device_id: device(),
+                            device_id: winit::event::DeviceId::dummy(),
                             state,
                             button: MouseButton::Left,
                         },
@@ -5858,7 +5852,7 @@ mod tests {
         typed_text_and_custom_cells_publish_row_specific_values();
     }
 
-    use winit::event::{DeviceId, ElementState, MouseButton};
+    use winit::event::{ElementState, MouseButton};
 
     /// Inside a 300×400 flex-column root so the table's auto width stretches
     /// to 300 and rows get real hit rects.
@@ -5928,7 +5922,7 @@ mod tests {
                 tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (150.0, y).into(),
                 },
                 modifiers,
@@ -6006,7 +6000,7 @@ mod tests {
             let mut focus = None;
             table.handle_event(
                 &WindowEvent::MouseWheel {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     delta: MouseScrollDelta::LineDelta(0.0, -3.0),
                     phase: TouchPhase::Moved,
                 },
@@ -6046,7 +6040,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (20.0, HEADER_HEIGHT + 12.0).into(),
                 },
                 modifiers,
@@ -6056,7 +6050,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -6067,7 +6061,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
@@ -6100,7 +6094,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (50.0, HEADER_HEIGHT + 2.5 * ROW_HEIGHT).into(),
                 },
                 mods,
@@ -6110,7 +6104,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -6132,7 +6126,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (50.0, 85.0).into(),
                 },
                 mods,
@@ -6142,7 +6136,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -6161,21 +6155,12 @@ mod tests {
             t.set_focus(true);
             let (tree, node) = lay_out(&mut t);
             let mods = winit::event::Modifiers::default();
-            // `KeyEvent`'s extra field is `pub(crate)`; zero-init and set the fields we care about.
             let key = |named| {
-                let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = winit::keyboard::Key::Named(named);
-                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                );
-                ev.location = winit::keyboard::KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                WindowEvent::KeyboardInput {
-                    device_id: device(),
-                    event: ev,
-                    is_synthetic: false,
-                }
+                crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+                    winit::keyboard::Key::Named(named),
+                    None,
+                    ElementState::Pressed,
+                ))
             };
             dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 0
             dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 1
@@ -6248,10 +6233,6 @@ mod tests {
                 taffy: tree,
             },
         );
-    }
-
-    fn device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
     }
 
     #[test]
@@ -6376,7 +6357,7 @@ mod tests {
             let mods = winit::event::Modifiers::default();
             assert_eq!(t.scroll_y(), 0.0);
             let wheel = WindowEvent::MouseWheel {
-                device_id: device(),
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -6518,7 +6499,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y).into(),
                 },
                 mods,
@@ -6528,7 +6509,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -6544,7 +6525,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y + 50.0).into(),
                 },
                 mods,
@@ -6563,7 +6544,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y - 50.0).into(),
                 },
                 mods,
@@ -6575,7 +6556,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
@@ -6596,7 +6577,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (x, below_y).into(),
                 },
                 mods,
@@ -6606,7 +6587,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -6634,7 +6615,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y).into(),
                 },
                 mods,
@@ -6644,7 +6625,7 @@ mod tests {
                 &tree,
                 node,
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -6671,11 +6652,11 @@ mod tests {
             let modifiers = winit::event::Modifiers::default();
             let body_top = table.get_rect().y0 + table.header_h;
             let move_cursor = |y| WindowEvent::CursorMoved {
-                device_id: device(),
+                device_id: winit::event::DeviceId::dummy(),
                 position: (20.0, y).into(),
             };
             let button = |state| WindowEvent::MouseInput {
-                device_id: device(),
+                device_id: winit::event::DeviceId::dummy(),
                 state,
                 button: MouseButton::Left,
             };

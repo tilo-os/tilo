@@ -798,6 +798,8 @@ mod tests {
 
     }
 
+    include!("native_publication_scroll_tests.rs");
+
     /// Records where it is clicked, in its own logical coordinates.
     struct ClickProbe {
         rect: KurboRect,
@@ -1273,7 +1275,7 @@ mod tests {
         );
 
         let control = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let close = crate::synthetic_input::key_event(
+        let close = crate::synthetic_input::key_input(
             &winit::keyboard::Key::Character(winit::keyboard::SmolStr::new("w")),
             ElementState::Pressed,
         );
@@ -1331,7 +1333,7 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         embedded.handle_event(
-            &crate::synthetic_input::key_event(
+            &crate::synthetic_input::key_input(
                 &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
                 ElementState::Pressed,
             ),

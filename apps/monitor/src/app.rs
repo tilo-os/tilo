@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
@@ -301,7 +301,7 @@ impl Widget for TabContent {
         self.follow_tab();
         self.structure_dirty = false;
         let child = self.active_mut().build_layout(taffy, theme, node_map);
-        let node = fill_node(taffy, child);
+        let node = taffy.fill_node(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -310,13 +310,7 @@ impl Widget for TabContent {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if let Some(child) = first_child(taffy, node) {
             let origin = self.rect.origin();
             self.active_mut().apply_layout(taffy, child, origin);
@@ -389,22 +383,6 @@ impl Widget for TabContent {
 /// The first child of `node`.
 fn first_child(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
-}
-
-/// A single-child parent node that fills its parent.
-fn fill_node(taffy: &mut TaffyTree<()>, child: NodeId) -> NodeId {
-    taffy.parent_node(
-        Style {
-            display: taffy::Display::Flex,
-            flex_grow: 1.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )
 }
 
 #[allow(
@@ -1623,7 +1601,7 @@ impl Widget for MonitorApp {
         self.publish();
         self.layout_dirty = false;
         let shell = self.shell.build_layout(taffy, theme, node_map);
-        let node = fill_node(taffy, shell);
+        let node = taffy.fill_node(shell);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -1632,12 +1610,7 @@ impl Widget for MonitorApp {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if let Some(shell) = first_child(taffy, node) {
             self.shell
                 .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));

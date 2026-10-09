@@ -1339,12 +1339,7 @@ impl Widget for Dropdown {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
-        self.place(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.place(crate::widget::placed(&l, origin));
         self.layout_dirty = false;
     }
 
@@ -2290,7 +2285,7 @@ mod tests {
     use super::*;
     use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
     use winit::event::Modifiers;
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
+    use winit::keyboard::SmolStr;
 
     fn opts() -> Vec<String> {
         ["UTC", "Europe/Amsterdam", "America/New_York", "Asia/Tokyo"]
@@ -2615,21 +2610,12 @@ mod tests {
         (doc, root)
     }
 
-    /// Synthesise a `Pressed` `KeyboardInput` (winit keeps `KeyEvent`'s
-    /// extra field `pub(crate)`, so a struct literal isn't possible).
     fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(SmolStr::new);
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            text.map(SmolStr::new),
+            ElementState::Pressed,
+        ))
     }
 
     /// Drive a key through a focused dropdown with a throwaway taffy node.
@@ -3025,7 +3011,7 @@ mod tests {
             dd.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
             let (mut doc, root) = doc_with_tz("UTC");
             let enter = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(20.0, 20.0),
             };
             assert!(
@@ -3034,7 +3020,7 @@ mod tests {
             );
             assert!(dd.is_hovered, "the pointer is over the control");
             let leave = WindowEvent::CursorLeft {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
             };
             feed_key(&mut dd, &leave, &mut doc, &root);
             assert!(!dd.is_hovered, "CursorLeft clears the resting hover");

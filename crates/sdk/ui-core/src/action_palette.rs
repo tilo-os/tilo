@@ -651,7 +651,7 @@ impl ActionPalette {
             Some(true) => {
                 self.focus_part(0);
                 self.handle_key(
-                    &crate::synthetic_input::key_event(
+                    &crate::synthetic_input::key_input(
                         &Key::Named(NamedKey::Enter),
                         ElementState::Pressed,
                     ),
@@ -3812,22 +3812,12 @@ mod tests {
     }
 
     fn enter_key() -> KeyEvent {
-        // SAFETY: `handle_key` only reads `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        ev
+        crate::synthetic_input::key_event(Key::Named(NamedKey::Enter), None, ElementState::Pressed)
     }
 
     fn enter() -> WindowEvent {
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: enter_key(),
             is_synthetic: false,
         }
@@ -3991,7 +3981,7 @@ mod tests {
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let enter =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
         palette.handle_key(
             &enter,
             &Modifiers::default(),

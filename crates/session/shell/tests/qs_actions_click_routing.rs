@@ -33,8 +33,8 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Affine, Point};
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 #[derive(Default)]
 struct RecordingDispatcher {
@@ -219,7 +219,7 @@ fn click_at(
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
     let moved = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(x, y),
     };
     host.handle_event(
@@ -240,7 +240,7 @@ fn click_at(
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         let ev = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: button_state,
             button: MouseButton::Left,
         };
@@ -260,10 +260,7 @@ fn click_at(
     }
 }
 
-/// Route a pressed logical key through the host dispatcher. `KeyEvent`
-/// deliberately has no public constructor because a small platform payload is
-/// opaque, so initialise that payload to zero and set every public field just
-/// as the compositor's own test harness does.
+/// Route a pressed logical key through the host dispatcher.
 fn press_key(
     host: &mut shell::shell::overlay_host::ShellOverlayHost,
     taffy: &TaffyTree<()>,
@@ -271,16 +268,9 @@ fn press_key(
     key: Key,
     modifiers: ModifiersState,
 ) -> bool {
-    let mut key_event: KeyEvent = unsafe { std::mem::zeroed() };
-    key_event.logical_key = key;
-    key_event.physical_key =
-        PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    key_event.location = KeyLocation::Standard;
-    key_event.state = ElementState::Pressed;
-    key_event.repeat = false;
-    key_event.text = None;
+    let key_event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
     let event = WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event: key_event,
         is_synthetic: false,
     };

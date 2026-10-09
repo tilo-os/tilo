@@ -1107,12 +1107,7 @@ impl Widget for StoreApp {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
             && let Some(&child_node) = children.first()
         {
@@ -4495,18 +4490,18 @@ mod tests {
                     let mut doc = AutoCommit::new();
                     let mut focus = None;
                     let cursor = WindowEvent::CursorMoved {
-                        device_id: unsafe { std::mem::zeroed() },
+                        device_id: winit::event::DeviceId::dummy(),
                         position: winit::dpi::PhysicalPosition::new(center.x, center.y),
                     };
                     let events = [
                         cursor,
                         WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
+                            device_id: winit::event::DeviceId::dummy(),
                             state: winit::event::ElementState::Pressed,
                             button: winit::event::MouseButton::Left,
                         },
                         WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
+                            device_id: winit::event::DeviceId::dummy(),
                             state: winit::event::ElementState::Released,
                             button: winit::event::MouseButton::Left,
                         },

@@ -260,6 +260,7 @@ fn mounted_wheel_observes_long_note_main_thread_phases() {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(rect.x0 + 40.0, rect.y0 + 40.0),
         });
+    assert_action_inventory(app.harness().root_widget());
     let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
     let event = winit::event::WindowEvent::MouseWheel {
         device_id: winit::event::DeviceId::dummy(),
@@ -308,6 +309,7 @@ fn mounted_wheel_observes_long_note_main_thread_phases() {
         before,
         "scrolling does not mutate canonical note"
     );
+    assert_action_inventory(app.harness().root_widget());
     let scrolled = app
         .surface(|notes: &mut crate::NotesApp| notes.main_panel_mut().scroll_y_for_test())
         .unwrap();
@@ -324,6 +326,22 @@ fn action_presence(root: &dyn ui::Widget, dense: bool) -> (bool, u128) {
         ui::widget::controls::has_action_control_bindings(root)
     };
     (present, began.elapsed().as_nanos())
+}
+
+fn assert_action_inventory(root: &dyn ui::Widget) {
+    assert!(root.concrete_type_name().contains("BoundAppWidget"));
+    let expected = ui::widget::controls::control_action_bindings(root)
+        .into_iter()
+        .filter(|binding| matches!(binding.kind, ui::widget::ControlBindingKind::Action(_)))
+        .collect::<Vec<_>>();
+    assert!(
+        !expected.is_empty(),
+        "real Notes action controls are mounted"
+    );
+    assert_eq!(
+        ui::widget::controls::action_control_bindings(root),
+        expected
+    );
 }
 
 #[test]

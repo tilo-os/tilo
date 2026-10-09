@@ -2944,7 +2944,7 @@ mod lifecycle_tests {
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::{DeviceId, KeyEvent};
+    use winit::event::DeviceId;
 
     fn settle(tb: &mut Toolbar, width: f32, height: f32, scale: f32) {
         let theme = Theme::dark().with_text_scale(scale);
@@ -3061,16 +3061,9 @@ mod lifecycle_tests {
         )
     }
     fn key_event(key: NamedKey) -> WindowEvent {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(key);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.text = None;
+        let event = crate::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: true,
         }
@@ -3503,7 +3496,7 @@ mod lifecycle_tests {
                     );
                 };
                 let mouse_event = |button, state| WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     button,
                     state,
                 };
@@ -3521,7 +3514,7 @@ mod lifecycle_tests {
                 send(
                     &mut host,
                     WindowEvent::CursorMoved {
-                        device_id: unsafe { std::mem::zeroed() },
+                        device_id: winit::event::DeviceId::dummy(),
                         position: winit::dpi::PhysicalPosition::new(point.x, point.y),
                     },
                 );
