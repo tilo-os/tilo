@@ -1,50 +1,17 @@
-//! Automerge document layer for the git client.
-//!
-//! The diff preferences are the person's, not the document's (see
-//! [`crate::settings`]). The shared repository projection — branches, commits, remotes, tags, stashes,
-//! identity — is a JSON scalar at `root.shared_repo`, the same shape Disks uses
-//! for topology: machine-derived, replaced wholesale, never character-edited.
-//! Working-tree status is intentionally omitted from the projection; it stays
-//! a live widget extra when hosted.
+//! What collaborators see of the repository: its branches, history,
+//! remotes, tags, stashes and identity, read from the repository on disk
+//! and stored whole in the record (see [`crate::resource::GitClient`]).
+//! Working-tree status is never part of it; it stays a live row of the
+//! window. The diff preferences are the person's (see [`crate::settings`]).
 
 use serde::{Deserialize, Serialize};
-use ui::automerge::transaction::Transactable;
-use ui::automerge::{AutoCommit, ROOT};
-use ui::doc::read_str;
+use ui::tilo_resource::{self, JsonSchema};
 
 use crate::model::{Branch, Commit, Remote, RepoModel, Stash, Tag};
 
-/// Document keys.
-pub mod keys {
-    pub const SHARED_REPO: &str = "shared_repo";
-    /// The path of the repository the record opens.
-    pub const REPOSITORY: &str = "repository";
-}
-
-/// Framework resource state: the repository the record opens and the shared
-/// repository projection.
-#[derive(Clone, Debug, Default)]
-pub struct GitClientState {
-    /// The path of the repository the record opens; `None` until one was
-    /// opened, when the client looks around its working directory.
-    pub repository: Option<String>,
-    pub repo: RepoModel,
-}
-
-impl GitClientState {
-    pub fn from_doc(doc: &AutoCommit) -> Self {
-        Self {
-            repository: read_str(doc, &ROOT, keys::REPOSITORY).filter(|path| !path.is_empty()),
-            repo: SharedRepo::read(doc)
-                .map(SharedRepo::into_model)
-                .unwrap_or_default(),
-        }
-    }
-}
-
 /// Branches, history, remotes and identity collaborators share. No staged /
 /// unstaged / untracked lists — those are live working-tree status.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SharedRepo {
     pub name: String,
     pub head: String,
@@ -98,22 +65,9 @@ impl SharedRepo {
             author_email: self.author_email,
         }
     }
-
-    #[cfg(test)]
-    pub fn write(doc: &mut AutoCommit, shared: &Self) {
-        let json = serde_json::to_string(shared).unwrap_or_else(|_| "{}".into());
-        Self::write_json(doc, &json);
-    }
-
-    pub fn write_json(doc: &mut AutoCommit, json: &str) {
-        let _ = doc.put(&ROOT, keys::SHARED_REPO, json);
-    }
-
-    pub fn read(doc: &AutoCommit) -> Option<Self> {
-        let json = read_str(doc, &ROOT, keys::SHARED_REPO)?;
-        serde_json::from_str(&json).ok()
-    }
 }
+
+tilo_resource::json_model!(SharedRepo);
 
 /// Stable fingerprint so we rewrite the projection only when shared state moves.
 pub fn shared_fingerprint(model: &RepoModel) -> String {

@@ -46,7 +46,6 @@ pub mod app;
 pub mod changes;
 pub mod diff;
 pub mod diffview;
-mod doc;
 pub mod graph;
 pub mod history;
 mod http_transport;
@@ -57,6 +56,7 @@ pub mod repo;
 pub mod resource;
 pub mod sample;
 pub mod settings;
+pub mod shared;
 mod ssh_transport;
 mod transport;
 

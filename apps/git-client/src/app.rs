@@ -34,6 +34,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::ActionOutput;
+use ui::tilo_resource::Invoke;
 use ui::tokens::TextRole;
 use ui::widget::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar};
 use ui::widget::toolbar::Orientation;
@@ -231,12 +232,9 @@ pub struct GitClientApp {
     diffs: DiffMap,
     graph_layout: GraphLayout,
 
-    /// Framework-owned action dispatch (the only action-dispatch state the app
-    /// holds). Every durable view-preference toggle dispatches its
-    /// [`GitClientAction`](crate::actions::GitClientAction) through this: the
-    /// host brackets the undo boundary, encodes and applies through the executor
-    /// (so it replays byte-identically on peers), and remembers the last action
-    /// for the affordance == `ActionSpec` covenant test.
+    /// Framework-owned action dispatch: opening a repository and recording
+    /// what collaborators see of it go through this, as do the effects the
+    /// controls ask the host for.
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::GitClient>>,
     mode: RunMode,
     opened: Option<String>,
@@ -996,7 +994,8 @@ impl GitClientApp {
             if let Some(path) = &self.repo_path {
                 let path = path.to_string_lossy().into_owned();
                 self.opened = Some(path.clone());
-                self.submit(&crate::actions::GitClientAction::OpenRepository { path });
+                let repository = crate::resource::GitClient::paths().repository;
+                self.submit(Invoke::edit(&repository.set(ui::tilo_resource::Atom(path))));
             }
         } else {
             self.last_error = Some(format!("No git repository at {raw}"));
@@ -1048,13 +1047,14 @@ impl GitClientApp {
         if self.awaiting_repo || !self.mode.is_live() {
             return;
         }
-        let fingerprint = crate::doc::shared_fingerprint(&self.model);
+        let fingerprint = crate::shared::shared_fingerprint(&self.model);
         if self.shared_repo_fingerprint.as_deref() == Some(fingerprint.as_str()) {
             return;
         }
-        let shared = crate::doc::SharedRepo::from_model(&self.model);
-        let json = serde_json::to_string(&shared).unwrap_or_else(|_| "{}".into());
-        self.submit(&crate::actions::GitClientAction::WriteSharedRepo { json });
+        let shared = crate::shared::SharedRepo::from_model(&self.model);
+        self.submit(Ok(
+            crate::resource::GitClient::RECORD_REPOSITORY.with(shared)
+        ));
         self.shared_repo_fingerprint = Some(fingerprint);
     }
 
@@ -3473,9 +3473,10 @@ impl ui::widget::controls::ActionControls for GitClientApp {
 }
 
 impl GitClientApp {
-    fn submit(&self, action: &crate::actions::GitClientAction) {
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+    fn submit(&self, invoke: Result<Invoke<crate::resource::GitClient>, serde_json::Error>) {
+        // A path and the repository's projection always encode.
+        if let (Some(dispatcher), Ok(invoke)) = (&self.dispatcher, invoke) {
+            dispatcher.invoke(invoke);
         }
     }
 }
@@ -3570,22 +3571,23 @@ impl GitClientApp {
 }
 
 impl GitClientApp {
-    pub(crate) fn present_state(&mut self, state: &crate::doc::GitClientState) {
+    pub(crate) fn present_state(&mut self, state: &crate::resource::GitClient) {
         match self.mode {
             RunMode::Live => {
                 let first = !std::mem::replace(&mut self.presented, true);
-                if !first && self.opened == state.repository {
+                let repository = state.opened().map(str::to_owned);
+                if !first && self.opened == repository {
                     return;
                 }
-                self.opened.clone_from(&state.repository);
-                if let Some(path) = &state.repository
+                self.opened.clone_from(&repository);
+                if let Some(path) = &repository
                     && !self.bind_repository(std::path::Path::new(path))
                 {
                     self.last_error = Some(format!("No git repository at {path}"));
                     self.open_input.set_text(path);
                 }
             }
-            RunMode::Past => self.show_model(state.repo.clone(), DiffMap::new()),
+            RunMode::Past => self.show_model(state.shared.clone().into_model(), DiffMap::new()),
             RunMode::Capture => {}
         }
     }
@@ -3593,7 +3595,7 @@ impl GitClientApp {
 
 impl GitClientApp {
     pub(crate) fn working_tree_rows(&self) -> Vec<LiveRow> {
-        let mut rows = Vec::new();
+        let mut rows = crate::actions::repository_rows(&self.model);
         if !self.awaiting_repo {
             rows.push(crate::actions::working_tree_rows(&self.model));
             rows.push(crate::actions::worktree_rows(&self.model));
@@ -3611,12 +3613,14 @@ impl GitClientApp {
 
 impl GitClientApp {
     pub(crate) fn working_tree_row(&self, id: &str) -> Option<LiveRow> {
-        (!self.awaiting_repo)
-            .then(|| {
-                crate::actions::working_tree_row(&self.model, id)
-                    .or_else(|| crate::actions::worktree_row(&self.model, id))
-            })
-            .flatten()
+        crate::actions::repository_row(&self.model, id).or_else(|| {
+            (!self.awaiting_repo)
+                .then(|| {
+                    crate::actions::working_tree_row(&self.model, id)
+                        .or_else(|| crate::actions::worktree_row(&self.model, id))
+                })
+                .flatten()
+        })
     }
 }
 
@@ -3950,7 +3954,7 @@ mod tests {
     #[test]
     fn live_initial_view_stays_empty_until_the_repository_is_explicitly_bound() {
         let mut app = GitClientApp::new();
-        let mut state = crate::doc::GitClientState::default();
+        let mut state = crate::resource::GitClient::default();
         app.present_state(&state);
         assert!(app.awaiting_repo);
         assert!(app.repo_path.is_none());
@@ -3958,7 +3962,8 @@ mod tests {
         assert!(app.model.commits.is_empty());
         let repository = tempfile::tempdir().unwrap();
         git2::Repository::init(repository.path()).unwrap();
-        state.repository = Some(repository.path().to_string_lossy().into_owned());
+        state.repository =
+            ui::tilo_resource::Atom(repository.path().to_string_lossy().into_owned());
         app.present_state(&state);
         assert!(!app.awaiting_repo);
         assert_eq!(app.repo_path.as_deref(), Some(repository.path()));

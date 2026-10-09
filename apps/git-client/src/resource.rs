@@ -1,7 +1,8 @@
-//! Git client as a [`tilo_resource::Resource`]: the repository the record
-//! opens and the shared projection of its history sync; working-tree status
-//! and an in-flight transfer are live rows of the surface, and the diff
-//! preferences are the person's settings, switched by the surface's effects.
+//! Git client as a resource: the record is the repository it opens and
+//! what collaborators see of its history ([`GitClient`]); working-tree
+//! status, the history the window shows and an in-flight transfer are live
+//! rows of the surface, and the diff preferences are the person's settings,
+//! switched by the surface's effects.
 
 use std::rc::Rc;
 
@@ -11,45 +12,50 @@ use ui::framework::{
 };
 use ui::headless::FrameHarness;
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_actions::Resource as PublishedResource;
-use ui::tilo_resource::{Doc, Invoke, ModelError, Resource};
+use ui::tilo_resource::{self, Atom, Invoke, Model, resource};
 use ui::widget::Element;
 
-use crate::actions::{
-    GIT_CLIENT_ACTION_TYPE, GitClientAction, GitClientEffect, document_children, register,
-    resolve_child,
-};
+use crate::actions::GitClientEffect;
 use crate::app::GitClientApp;
-use crate::doc::GitClientState;
 use crate::model::{DiffMap, RepoModel};
+use crate::shared::SharedRepo;
 
-/// The git client resource. Document state is the repository the record
-/// opens and the shared repository projection; working-tree rows and
-/// in-flight fetch/push are live.
-pub struct GitClient;
+/// The record: the repository it opens and what collaborators see of it.
+/// Working-tree rows and in-flight fetch/push are live.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct GitClient {
+    /// Repository
+    ///
+    /// The path of the repository the record opens; empty until one was
+    /// opened, when the client looks around its working directory.
+    pub repository: Atom,
+    /// Shared history
+    ///
+    /// Branches, history, remotes and identity as the repository on disk
+    /// last held them, for collaborators and past versions.
+    #[model(readonly)]
+    pub shared: SharedRepo,
+}
 
-impl Resource for GitClient {
-    const KIND: &'static str = "git_client.repo";
-    const LABEL: &'static str = "Repository";
-    const ACTION_TYPE: &'static str = GIT_CLIENT_ACTION_TYPE;
-
-    type State = GitClientState;
-    type Action = GitClientAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
+impl GitClient {
+    /// The repository the record opens, if one was opened.
+    pub fn opened(&self) -> Option<&str> {
+        Some(self.repository.0.as_str()).filter(|path| !path.is_empty())
     }
+}
 
-    fn read(doc: &Doc) -> Result<GitClientState, ModelError> {
-        Ok(GitClientState::from_doc(doc))
-    }
-
-    fn children(state: &GitClientState) -> Vec<PublishedResource> {
-        document_children(&state.repo)
-    }
-
-    fn child(state: &GitClientState, id: &str) -> Option<PublishedResource> {
-        resolve_child(&state.repo, id)
+#[resource(kind = "git_client.repo", label = "Repository")]
+impl GitClient {
+    /// Record what the repository on disk holds now
+    ///
+    /// Its branches, history, remotes and identity, for collaborators and
+    /// past versions. Read from the repository, nobody's edit.
+    #[action(external)]
+    pub fn record_repository(
+        &mut self,
+        #[param("The repository's branches, history, remotes and identity")] shared: SharedRepo,
+    ) {
+        self.shared = shared;
     }
 }
 
@@ -87,8 +93,8 @@ impl ResourceApp for GitClientShell {
     /// The repository to open, by path.
     const ARGUMENTS: usize = 1;
 
-    fn label(state: &GitClientState) -> String {
-        crate::actions::repo_label(&state.repo)
+    fn label(state: &GitClient) -> String {
+        crate::actions::repo_label(&state.shared.clone().into_model())
     }
 
     fn view(cx: &mut ViewCx<GitClient>) -> Element {
@@ -116,7 +122,7 @@ impl ResourceApp for GitClientShell {
                     .to_string_lossy()
                     .into_owned()
             })
-            .and_then(|path| Invoke::apply(&GitClientAction::OpenRepository { path }).ok())
+            .and_then(|path| Invoke::edit(&GitClient::paths().repository.set(Atom(path))).ok())
             .into_iter()
             .collect()
     }
@@ -167,7 +173,7 @@ fn stage_and_commit(message: &str) -> Result<(), String> {
 }
 
 impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
-    fn present(&mut self, state: &Rc<GitClientState>) {
+    fn present(&mut self, state: &Rc<GitClient>) {
         self.present_state(state);
     }
 
@@ -206,11 +212,11 @@ impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::{SharedRepo, shared_fingerprint};
     use crate::settings::{DiffLayout, Settings};
-    use ui::automerge::AutoCommit;
+    use crate::shared::{SharedRepo, shared_fingerprint};
     use ui::framework::Effect as _;
     use ui::framework::testing::TestApp;
+    use ui::tilo_resource::Replica;
 
     /// A repository with one commit and one untracked file, in a directory
     /// named `name`.
@@ -257,19 +263,18 @@ mod tests {
         assert_eq!(primary.semantic_identity, expected);
     }
 
-    /// The repository door carries the projection's history, branches and
-    /// remotes with their item effects; the working tree is not document
-    /// state.
+    /// The repository door carries what the window shows of the history,
+    /// branches and remotes with their item effects; the record holds only
+    /// the repository it opens and the projection, never the working tree.
     #[test]
-    fn the_repository_door_publishes_the_shared_projection() {
+    fn the_repository_door_publishes_what_the_window_shows() {
         let (model, _) = crate::sample::model();
-        let mut doc = AutoCommit::new();
-        SharedRepo::write(&mut doc, &SharedRepo::from_model(&model));
-        doc.commit();
-
-        let state = GitClient::read(&doc).unwrap();
-        let published =
-            ui::tilo_resource::publish::<GitClient>("git_client.repo", "renderer", &state);
+        let mut app = TestApp::<GitClientShell>::capture(Some("history")).unwrap();
+        let resources = app.harness().resources();
+        let published = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "git_client.repo")
+            .expect("the repository door");
         assert_eq!(published.kind, "git_client.repo");
         for id in [
             "git_client.branches",
@@ -284,13 +289,6 @@ mod tests {
                 "{id} is a child"
             );
         }
-        assert!(
-            published
-                .children
-                .iter()
-                .all(|child| child.id.as_str() != "git_client.changes"),
-            "working-tree status is not in the document"
-        );
         let remote = published
             .children
             .iter()
@@ -303,6 +301,99 @@ mod tests {
             shared_fingerprint(&SharedRepo::from_model(&model).into_model()),
             "the shared fingerprint ignores working-tree rows"
         );
+        let stored = <GitClient as ui::tilo_resource::Resource>::surface();
+        let fields = serde_json::to_string(&stored.fields).unwrap();
+        for absent in ["staged", "unstaged", "untracked"] {
+            assert!(!fields.contains(absent), "{absent} is not stored: {fields}");
+        }
+    }
+
+    /// Two devices that record the repository and open it at once
+    /// converge; recording is nobody's undo step.
+    #[test]
+    fn the_record_converges_and_recording_is_no_undo_step() {
+        let (model, _) = crate::sample::model();
+        let mut ours = Replica::<GitClient>::new();
+        let mut theirs = ours.fork();
+        ours.apply(
+            Invoke::edit(
+                &GitClient::paths()
+                    .repository
+                    .set(Atom("/srv/repos/tilo".into())),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        theirs
+            .apply(GitClient::RECORD_REPOSITORY.with(SharedRepo::from_model(&model)))
+            .unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
+        let state = ours.state().unwrap();
+        assert_eq!(state.opened(), Some("/srv/repos/tilo"));
+        assert_eq!(state.shared, SharedRepo::from_model(&model));
+        assert!(
+            ours.apply(
+                Invoke::edit(&GitClient::paths().shared.set(SharedRepo::default())).unwrap()
+            )
+            .is_err(),
+            "only the repository on disk writes the projection"
+        );
+    }
+
+    /// Opening a repository is history the person reads as the client's
+    /// own sentence; recording the projection is not theirs.
+    #[test]
+    fn history_entries_render_as_the_apps_sentences() {
+        use ui::tilo_actions::{ActionInvoker, ActorKind};
+
+        let mut app = TestApp::<GitClientShell>::capture(Some("empty")).unwrap();
+        let agent = ActionInvoker::actor("agent:claude")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada");
+        let open = GitClient::paths()
+            .repository
+            .set(Atom("/srv/repos/tilo".into()));
+        app.call_by(
+            agent,
+            <GitClient as ui::tilo_resource::Resource>::KIND,
+            "field-edit",
+            serde_json::json!({ "edit": open }),
+        )
+        .unwrap();
+        assert_eq!(app.state().opened(), Some("/srv/repos/tilo"));
+        let english = include_str!("../locales/en-US.ftl");
+        let catalogue = tilo_history::Catalogue::new("en-US", &[english]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let entries: Vec<_> = app
+            .versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|entry| {
+                entry
+                    .invoker
+                    .as_ref()
+                    .is_some_and(|invoker| invoker.actor == "agent:claude")
+            })
+            .collect();
+        let sentences: Vec<String> = entries.iter().map(|entry| reader.sentence(entry)).collect();
+        assert_eq!(sentences, ["Opened the repository /srv/repos/tilo"]);
+        let invoker = entries[0].invoker.as_ref().unwrap();
+        assert_eq!(
+            (invoker.kind, invoker.on_behalf_of.as_deref()),
+            (ActorKind::Agent, Some("ada"))
+        );
+    }
+
+    ui::action_contract_tests! {
+        seed: ui::automerge::AutoCommit::new(),
+        registry: {
+            let mut registry = ui::tilo_actions::ActionRegistry::new();
+            <GitClient as ui::tilo_resource::Resource>::register(&mut registry);
+            registry
+        },
+        resources: |_| TestApp::<GitClientShell>::capture(Some("history")).unwrap().harness().resources(),
+        palette: ["Fetch remote", "Open commit"],
     }
 
     /// Every screenshot is the framework's capture: the sample repository is
@@ -452,15 +543,15 @@ mod tests {
         app.settle();
         let state = app.state();
         assert_eq!(
-            state.repository.as_deref(),
+            state.opened(),
             Some(path.to_str().unwrap()),
             "the launch opened the repository in the record"
         );
         assert_eq!(
-            state.repo.name, "scratch-repo",
+            state.shared.name, "scratch-repo",
             "the projection was written"
         );
-        assert_eq!(state.repo.commits.len(), 1);
+        assert_eq!(state.shared.commits.len(), 1);
 
         let mut reopened = app.reopen().unwrap();
         reopened.settle();
@@ -532,7 +623,7 @@ mod tests {
         let (_dir, path) = scratch_repository("undo-repo");
         let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
         app.settle();
-        assert_eq!(app.state().repo.name, "undo-repo");
+        assert_eq!(app.state().shared.name, "undo-repo");
 
         let mut undone = 0;
         while app.undo() {
@@ -543,14 +634,15 @@ mod tests {
         let state = app.state();
         assert!(undone > 0, "opening the repository is an undo step");
         assert_eq!(
-            state.repository, None,
+            state.opened(),
+            None,
             "undo took back opening the repository"
         );
         assert_eq!(
-            state.repo.name, "undo-repo",
+            state.shared.name, "undo-repo",
             "the projection survives every undo"
         );
-        assert_eq!(state.repo.commits.len(), 1);
+        assert_eq!(state.shared.commits.len(), 1);
     }
 
     /// The client's effects are published on the repository and on the
@@ -705,7 +797,11 @@ mod tests {
             "the actual checkout path is shown: {shown}"
         );
         // Device paths stay out of the shared repository projection.
-        assert!(app.state().repo.worktrees.is_empty());
+        assert!(
+            !serde_json::to_string(&app.state().shared)
+                .unwrap()
+                .contains(destination.to_str().unwrap())
+        );
         assert!(
             app.effect(&GitClientEffect::CreateWorktree {
                 path: destination.to_str().unwrap().into(),

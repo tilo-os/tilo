@@ -5180,6 +5180,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-history",
  "tilo-net",
  "tilo-paths",
  "tilo-test-env",

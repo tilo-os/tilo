@@ -25,36 +25,25 @@
 //!
 //! ## What genuinely lives in the shared document
 //!
-//! Two things live in the CRDT:
-//!
-//! - **The repository the record opens** under `root["repository"]`.
-//! - **Shared repository projection** under `root["shared_repo"]` (see
-//!   [`crate::doc`]) — branches, commits, remotes, tags, stashes and identity.
-//!   Working-tree status is *not* projected; it stays a live hosted extra.
+//! The record ([`crate::resource::GitClient`]) holds the repository it
+//! opens and what collaborators see of it ([`crate::shared`]): branches,
+//! commits, remotes, tags, stashes and identity. Working-tree status is
+//! never in it.
 //!
 //! Git work against the on-disk repository is the [`GitClientEffect`]
-//! vocabulary, answered by the surface. The resource tree is owned by
-//! [`tilo_resource::publish`]: shared children ride the resource's children
-//! with their item effects bound, and working-tree status is the surface's
-//! live rows. The diff preferences are the person's settings
+//! vocabulary, answered by the surface. What the window shows of the
+//! repository — its history, branches, tags, stashes and remotes, and the
+//! working tree — is published as the surface's live rows, each carrying the
+//! effects that act on it. The diff preferences are the person's settings
 //! ([`crate::settings`]), switched by the surface's effects.
 
 use crate::i18n::t;
-use automerge::transaction::Transactable;
-use serde::{Deserialize, Serialize};
-
-use tilo_actions::{
-    Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus, Resource,
-};
 
 use ui::framework::LiveRow;
 use ui::tilo_resource::{self, Effect};
 
-use crate::doc::SharedRepo;
 use crate::model::{ChangeArea, FileChange, RepoModel};
 
-/// Registry `type_id` for every git-client action.
-pub const GIT_CLIENT_ACTION_TYPE: &str = "git_client.action";
 /// The git client's work on the repository on disk and what it shows of one,
 /// which change no document. Navigation and whole-tree work are offered on
 /// the repository; everything else rides the changed file, commit, branch,
@@ -207,74 +196,12 @@ pub enum GitClientEffect {
     WrapLines,
 }
 
-/// Every collaborative operation the git client exports on the shared document.
-///
-/// [`WriteSharedRepo`] replaces the machine-derived branch/commit/remote
-/// projection wholesale (same grain as Disks' topology write).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum GitClientAction {
-    /// Replace the shared repository projection (no working-tree lists).
-    WriteSharedRepo { json: String },
-    /// Open the repository at `path` in this record.
-    OpenRepository { path: String },
-}
-
-impl Action for GitClientAction {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        match self {
-            GitClientAction::WriteSharedRepo { json } => {
-                SharedRepo::write_json(doc, json);
-            }
-            GitClientAction::OpenRepository { path } => {
-                doc.put(
-                    &automerge::ROOT,
-                    crate::doc::keys::REPOSITORY,
-                    path.as_str(),
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    fn locus(&self) -> ExecutionLocus {
-        // The repository and its shared projection: this client applies +
-        // replicates, peers replay.
-        ExecutionLocus::ClientLocal
-    }
-
-    /// The projection is read from the repository on disk, nobody's edit:
-    /// it reaches every collaborator, and no undo takes it back.
-    fn change_kind(&self) -> tilo_actions::ChangeKind {
-        match self {
-            GitClientAction::WriteSharedRepo { .. } => tilo_actions::ChangeKind::External,
-            GitClientAction::OpenRepository { .. } => tilo_actions::ChangeKind::Content,
-        }
-    }
-}
-
-/// Register the git client's action decoder for palette execution + remote
-/// replay. Called once at app start.
-pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<GitClientAction>(GIT_CLIENT_ACTION_TYPE);
-}
-
-/// Encode any [`GitClientAction`] into the wire form the palette and the
-/// on-screen affordances both dispatch — the single point that turns a git
-/// action into a replayable envelope.
-///
-/// # Errors
-///
-/// Returns an error if `action` fails to serialize into the wire envelope.
-pub fn encode(action: &GitClientAction) -> Result<EncodedAction, ActionError> {
-    EncodedAction::encode(GIT_CLIENT_ACTION_TYPE, action)
-}
-
 // ===========================================================================
 // Resource tree
 // ===========================================================================
 
 /// Keep the palette's contextual tree cheap even for monorepos. Every omitted
-/// item is still addressable by id ([`resolve_child`], [`working_tree_row`]).
+/// item is still addressable by id ([`repository_row`], [`working_tree_row`]).
 pub const MAX_CONTEXT_CHANGES: usize = 48;
 pub const MAX_CONTEXT_COMMITS: usize = 48;
 pub const MAX_CONTEXT_REFS: usize = 32;
@@ -337,66 +264,67 @@ fn change_row(change: &FileChange) -> LiveRow {
     }
 }
 
-fn commit_resource(commit: &crate::model::Commit) -> Resource {
-    Resource::new(
-        commit_resource_id(&commit.id),
-        "git_client.commit",
-        commit.summary.clone(),
-    )
-    .with_action(
-        GitClientEffect::OpenCommit {
-            id: commit.id.clone(),
-        }
-        .bound(),
-    )
-    .with_children(commit.files.iter().take(16).map(|file| {
-        Resource::new(
-            format!(
-                "git_client.commit-file:{}:{}",
-                commit.id,
-                stable_component(&file.path)
-            ),
-            "git_client.commit-file",
-            file.path.clone(),
-        )
-    }))
+fn commit_file_resource_id(commit: &str, path: &str) -> String {
+    format!("git_client.commit-file:{commit}:{}", stable_component(path))
 }
 
-fn branch_resource(branch: &crate::model::Branch) -> Resource {
-    let mut resource = Resource::new(
+fn commit_resource(commit: &crate::model::Commit) -> LiveRow {
+    commit.files.iter().take(16).fold(
+        LiveRow::new(
+            commit_resource_id(&commit.id),
+            "git_client.commit",
+            commit.summary.clone(),
+        )
+        .effect(&GitClientEffect::OpenCommit {
+            id: commit.id.clone(),
+        }),
+        |row, file| {
+            row.row(LiveRow::new(
+                commit_file_resource_id(&commit.id, &file.path),
+                "git_client.commit-file",
+                file.path.clone(),
+            ))
+        },
+    )
+}
+
+fn branch_resource(branch: &crate::model::Branch) -> LiveRow {
+    let mut row = LiveRow::new(
         branch_resource_id(&branch.name),
         "git_client.branch",
         branch.name.clone(),
     );
     if !branch.is_head {
-        resource = resource.with_action(
-            GitClientEffect::CheckoutBranch {
-                name: branch.name.clone(),
-            }
-            .bound(),
-        );
+        row = row.effect(&GitClientEffect::CheckoutBranch {
+            name: branch.name.clone(),
+        });
     }
     if !branch.is_head && !branch.is_remote {
-        resource = resource.with_action(
-            GitClientEffect::DeleteBranch {
-                name: branch.name.clone(),
-            }
-            .bound(),
-        );
+        row = row.effect(&GitClientEffect::DeleteBranch {
+            name: branch.name.clone(),
+        });
     }
-    resource
+    row
 }
 
-fn remote_resource(remote: &crate::model::Remote) -> Resource {
+fn tag_resource(tag: &crate::model::Tag) -> LiveRow {
+    LiveRow::new(
+        tag_resource_id(&tag.name),
+        "git_client.tag",
+        tag.name.clone(),
+    )
+}
+
+fn remote_resource(remote: &crate::model::Remote) -> LiveRow {
     let name = || remote.name.clone();
-    Resource::new(
+    LiveRow::new(
         remote_resource_id(&remote.name),
         "git_client.remote",
         remote.name.clone(),
     )
-    .with_action(GitClientEffect::Fetch { remote: name() }.bound())
-    .with_action(GitClientEffect::Pull { remote: name() }.bound())
-    .with_action(GitClientEffect::Push { remote: name() }.bound())
+    .effect(&GitClientEffect::Fetch { remote: name() })
+    .effect(&GitClientEffect::Pull { remote: name() })
+    .effect(&GitClientEffect::Push { remote: name() })
 }
 
 /// The working tree's changed files as live rows: the bounded page beneath
@@ -426,76 +354,58 @@ pub(crate) fn working_tree_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
         .map(change_row)
 }
 
-/// Shared children for [`tilo_resource::publish`]: history, branches, tags,
-/// stashes, remotes. Working-tree Changes stay off this list.
-pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
-    let mut children = Vec::new();
-    children.push(
-        Resource::new(
+/// What the window shows of the repository, as live rows: its history,
+/// branches, tags, stashes and remotes, each a bounded page.
+pub(crate) fn repository_rows(model: &RepoModel) -> Vec<LiveRow> {
+    fn collection<T>(
+        id: &str,
+        label: String,
+        items: &[T],
+        bound: usize,
+        row: impl Fn(&T) -> LiveRow,
+    ) -> LiveRow {
+        items.iter().take(bound).map(row).fold(
+            LiveRow::new(id, "git_client.collection", label),
+            LiveRow::row,
+        )
+    }
+    vec![
+        collection(
             "git_client.history",
-            "git_client.collection",
             t("git-screen-history"),
-        )
-        .with_children(
-            model
-                .commits
-                .iter()
-                .take(MAX_CONTEXT_COMMITS)
-                .map(commit_resource),
+            &model.commits,
+            MAX_CONTEXT_COMMITS,
+            commit_resource,
         ),
-    );
-    children.push(
-        Resource::new(
+        collection(
             "git_client.branches",
-            "git_client.collection",
             t("git-section-branches"),
-        )
-        .with_children(
-            model
-                .branches
-                .iter()
-                .take(MAX_CONTEXT_REFS)
-                .map(branch_resource),
+            &model.branches,
+            MAX_CONTEXT_REFS,
+            branch_resource,
         ),
-    );
-    children.push(
-        Resource::new(
+        collection(
             "git_client.tags",
-            "git_client.collection",
             t("git-section-tags"),
-        )
-        .with_children(model.tags.iter().take(MAX_CONTEXT_REFS).map(|tag| {
-            Resource::new(
-                tag_resource_id(&tag.name),
-                "git_client.tag",
-                tag.name.clone(),
-            )
-        })),
-    );
-    children.push(
-        Resource::new("git_client.stashes", "git_client.collection", "Stashes").with_children(
-            model
-                .stashes
-                .iter()
-                .take(MAX_CONTEXT_STASHES)
-                .map(stash_resource),
+            &model.tags,
+            MAX_CONTEXT_REFS,
+            tag_resource,
         ),
-    );
-    children.push(
-        Resource::new(
+        collection(
+            "git_client.stashes",
+            "Stashes".to_owned(),
+            &model.stashes,
+            MAX_CONTEXT_STASHES,
+            stash_resource,
+        ),
+        collection(
             "git_client.remotes",
-            "git_client.collection",
             t("git-section-remotes"),
-        )
-        .with_children(
-            model
-                .remotes
-                .iter()
-                .take(MAX_CONTEXT_REMOTES)
-                .map(remote_resource),
+            &model.remotes,
+            MAX_CONTEXT_REMOTES,
+            remote_resource,
         ),
-    );
-    children
+    ]
 }
 
 pub(crate) fn repo_label(model: &RepoModel) -> String {
@@ -507,19 +417,25 @@ pub(crate) fn repo_label(model: &RepoModel) -> String {
     }
 }
 
-fn stash_resource(stash: &crate::model::Stash) -> Resource {
-    Resource::new(
+fn stash_resource(stash: &crate::model::Stash) -> LiveRow {
+    LiveRow::new(
         format!("git_client.stash:{}", stash.index),
         "git_client.stash",
         stash.message.clone(),
     )
-    .with_action(GitClientEffect::ApplyStash { index: stash.index }.bound())
+    .effect(&GitClientEffect::ApplyStash { index: stash.index })
 }
 
 /// Resolve one current repository item by id without building the whole
 /// hierarchy, so search, history and agent addresses stay valid beyond the
 /// published page while ids gone after a fetch or checkout resolve to `None`.
-pub(crate) fn resolve_child(model: &RepoModel, id: &str) -> Option<Resource> {
+pub(crate) fn repository_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
+    if let Some(row) = repository_rows(model)
+        .into_iter()
+        .find(|collection| collection.id() == id)
+    {
+        return Some(row);
+    }
     if let Some(commit) = model
         .commits
         .iter()
@@ -528,14 +444,12 @@ pub(crate) fn resolve_child(model: &RepoModel, id: &str) -> Option<Resource> {
         return Some(commit_resource(commit));
     }
     for commit in &model.commits {
-        if let Some(file) = commit.files.iter().find(|file| {
-            format!(
-                "git_client.commit-file:{}:{}",
-                commit.id,
-                stable_component(&file.path)
-            ) == id
-        }) {
-            return Some(Resource::new(
+        if let Some(file) = commit
+            .files
+            .iter()
+            .find(|file| commit_file_resource_id(&commit.id, &file.path) == id)
+        {
+            return Some(LiveRow::new(
                 id,
                 "git_client.commit-file",
                 file.path.clone(),
@@ -554,7 +468,7 @@ pub(crate) fn resolve_child(model: &RepoModel, id: &str) -> Option<Resource> {
         .iter()
         .find(|tag| tag_resource_id(&tag.name) == id)
     {
-        return Some(Resource::new(id, "git_client.tag", tag.name.clone()));
+        return Some(tag_resource(tag));
     }
     if let Some(stash) = model
         .stashes
@@ -626,102 +540,31 @@ pub(crate) fn worktree_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
-    use tilo_actions::LocalTransport;
+    use tilo_actions::Resource;
 
-    fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+    /// The rows the window publishes for `model`: its repository and its
+    /// working tree.
+    fn published(model: &RepoModel) -> Vec<Resource> {
+        repository_rows(model)
+            .into_iter()
+            .chain([working_tree_rows(model)])
+            .map(LiveRow::into_resource)
+            .collect()
     }
 
-    /// Dispatch an action through the executor, exactly as the on-screen
-    /// affordance path does (decode from the wire, apply through a local
-    /// transport).
-    fn dispatch(doc: &mut AutoCommit, action: &GitClientAction) {
-        let encoded = encode(action).unwrap();
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-    }
-
-    /// A base document with a repository opened in it.
-    fn seeded() -> AutoCommit {
-        let mut doc = AutoCommit::new();
-        dispatch(
-            &mut doc,
-            &GitClientAction::OpenRepository {
-                path: "/srv/repos/tilo".into(),
-            },
-        );
-        doc.commit();
-        doc
-    }
-
-    /// The repository door the framework publishes from `doc` once `model`'s
-    /// projection is written into it.
-    fn published(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
-        let mut doc = doc.clone();
-        SharedRepo::write(&mut doc, &SharedRepo::from_model(model));
-        let state = crate::doc::GitClientState::from_doc(&doc);
-        vec![ui::tilo_resource::publish::<crate::resource::GitClient>(
-            "git_client.repo",
-            &repo_label(&state.repo),
-            &state,
-        )]
-    }
-
-    fn repo_model() -> RepoModel {
-        RepoModel {
-            name: "tilo".into(),
-            ..RepoModel::default()
-        }
-    }
-
-    /// The repository resource tree: Ctrl+K publishes the repo; git objects carry confirmation contracts; contextual
-    /// resources are bounded while omitted items still resolve. Each phase is a former test with its own fresh fixture.
+    /// The repository resource tree: git objects carry confirmation
+    /// contracts; contextual resources are bounded while omitted items still
+    /// resolve. Each phase is a former test with its own fresh fixture.
     #[test]
     fn repository_resource_tree_exports_bounded_git_objects_and_contracts() {
-        ctrl_k_publishes_the_repo();
         repository_resources_cover_git_objects_and_confirmation_contracts();
         contextual_resources_are_bounded_but_omitted_items_resolve();
     }
 
-    /// Ctrl+K on an open repository publishes the repo resource. Drives the
-    /// real resource builder.
-    fn ctrl_k_publishes_the_repo() {
-        let doc = seeded();
-        let resources = published(&repo_model(), &doc);
-        assert_eq!(resources.len(), 1, "one repository root");
-        let repo = &resources[0];
-        assert_eq!(repo.kind, "git_client.repo");
-        assert_eq!(repo.label, "tilo");
-        assert_eq!(repo.id.as_str(), "git_client.repo");
-    }
-
-    ui::action_contract_tests! {
-        seed: seeded(),
-        registry: registry(),
-        resources: |doc| published(&crate::sample::model().0, doc),
-        palette: ["Fetch remote", "Open commit"],
-        replay: [
-            open_repository => |_| encode(&GitClientAction::OpenRepository {
-                path: "/srv/repos/other".into(),
-            }).unwrap(),
-        ],
-        undo: [
-            open_repository => |_| encode(&GitClientAction::OpenRepository {
-                path: "/srv/repos/other".into(),
-            }).unwrap(),
-        ],
-    }
-
     fn repository_resources_cover_git_objects_and_confirmation_contracts() {
         let (model, _) = crate::sample::model();
-        let doc = seeded();
-        let root = published(&model, &doc).remove(0);
-        let kinds: std::collections::HashSet<_> = root
-            .children
+        let rows = published(&model);
+        let kinds: std::collections::HashSet<_> = rows
             .iter()
             .flat_map(|collection| collection.children.iter())
             .map(|resource| resource.kind.as_str())
@@ -735,14 +578,15 @@ mod tests {
         ] {
             assert!(kinds.contains(expected), "missing {expected}: {kinds:?}");
         }
-        let changes = working_tree_rows(&model).into_resource();
         assert!(
-            changes.children.iter().all(|row| row
-                .actions
+            rows.iter().all(|collection| collection
+                .children
                 .iter()
+                .flat_map(|row| row.actions.iter())
                 .all(|action| action.kind != tilo_actions::OperationKind::Document)),
-            "working-tree rows only view and run Effects"
+            "repository rows only view and run Effects"
         );
+        let changes = working_tree_rows(&model).into_resource();
         let discard = changes
             .children
             .iter()
@@ -782,10 +626,8 @@ mod tests {
             })
             .collect();
         let omitted = commit_resource_id(&model.commits[MAX_CONTEXT_COMMITS + 3].id);
-        let doc = seeded();
-        let root = published(&model, &doc).remove(0);
-        let history = root
-            .children
+        let rows = published(&model);
+        let history = rows
             .iter()
             .find(|resource| resource.id.as_str() == "git_client.history")
             .unwrap();
@@ -797,10 +639,9 @@ mod tests {
                 .all(|resource| resource.id.as_str() != omitted)
         );
         assert_eq!(
-            resolve_child(&model, &omitted)
+            repository_row(&model, &omitted)
                 .expect("omitted commit resolves lazily")
-                .id
-                .as_str(),
+                .id(),
             omitted
         );
     }
