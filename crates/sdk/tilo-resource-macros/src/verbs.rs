@@ -276,6 +276,9 @@ enum Input {
     /// An outbox of the record, by its field.
     Outbox(syn::Ident),
     Param(usize),
+    /// The item an item method acts on (`fn star(contact: &mut Contact)`),
+    /// named by its id parameter.
+    Item,
 }
 
 fn is_outbox(ty: &Type) -> bool {
@@ -307,6 +310,8 @@ struct Verb {
     options: ActionOptions,
     inputs: Vec<Input>,
     params: Vec<Param>,
+    /// An item method's item: its id parameter and the item's type.
+    item: Option<(syn::Ident, Type)>,
 }
 
 /// The rules a verb's parameters keep: a content or flattened parameter is
@@ -332,6 +337,45 @@ fn check_params(params: &[Param], span: Span) -> syn::Result<()> {
     Ok(())
 }
 
+/// An action takes `&mut self`, or as an item method its item and the
+/// collection it is in.
+fn check_receiver(
+    takes_self: bool,
+    item_method: bool,
+    names_collection: bool,
+    span: Span,
+) -> syn::Result<()> {
+    if !takes_self && !item_method {
+        return Err(syn::Error::new(
+            span,
+            "an action takes `&mut self`, or as an item method the item (`item: &mut Item`) with `#[action(item = field)]`",
+        ));
+    }
+    if item_method && !names_collection {
+        return Err(syn::Error::new(
+            span,
+            "an item method names its collection: `#[action(item = field)]`",
+        ));
+    }
+    Ok(())
+}
+
+/// The id parameter an item method's item is named by.
+fn item_param(ident: &syn::Ident) -> Param {
+    let krate = krate();
+    let name = ident.to_string();
+    Param {
+        ident: ident.clone(),
+        public: name.clone(),
+        ty: syn::parse_quote!(#krate::Id),
+        by_ref: true,
+        description: format!("The {} it acts on", humanize(&name)),
+        example: None,
+        content: false,
+        flatten: false,
+    }
+}
+
 fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb> {
     let options = action_options(attr)?;
     let method_ident = method.sig.ident.clone();
@@ -352,6 +396,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
     let mut takes_self = false;
     let mut inputs = Vec::new();
     let mut params = Vec::new();
+    let mut item = None;
     for input in &mut method.sig.inputs {
         match input {
             FnArg::Receiver(receiver) => {
@@ -376,6 +421,17 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                 }
                 if is_outbox(&typed.ty) {
                     inputs.push(Input::Outbox(pat.ident.clone()));
+                    continue;
+                }
+                // An item method: its first parameter is the item itself.
+                if !takes_self
+                    && inputs.is_empty()
+                    && let Type::Reference(reference) = &*typed.ty
+                    && reference.mutability.is_some()
+                {
+                    item = Some((pat.ident.clone(), (*reference.elem).clone()));
+                    inputs.push(Input::Item);
+                    params.push(item_param(&pat.ident));
                     continue;
                 }
                 let mut param_options = ParamOptions::default();
@@ -403,12 +459,12 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
             }
         }
     }
-    if !takes_self {
-        return Err(syn::Error::new(
-            method.sig.span(),
-            "an action takes `&mut self`",
-        ));
-    }
+    check_receiver(
+        takes_self,
+        item.is_some(),
+        options.item.is_some(),
+        method.sig.span(),
+    )?;
     check_params(&params, method.sig.span())?;
     Ok(Verb {
         method: method_ident,
@@ -419,6 +475,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
         options,
         inputs,
         params,
+        item,
     })
 }
 
@@ -670,6 +727,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     let mut fields_of = Vec::new();
     let mut change_kinds = Vec::new();
     let mut compensations = Vec::new();
+    let mut item_arms = Vec::new();
     let mut compensating = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
@@ -704,33 +762,80 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             .iter()
             .map(|field| format_ident!("__outbox_{}", field))
             .collect();
-        let call_args = verb.inputs.iter().map(|input| match input {
-            Input::Cx => quote!(cx),
-            Input::Outbox(field) => {
-                let taken = format_ident!("__outbox_{}", field);
-                quote!(&mut #taken)
-            }
-            Input::Param(index) => {
-                let Some(param) = verb.params.get(*index) else {
-                    return quote!();
-                };
-                let ident = &param.ident;
-                if param.by_ref {
-                    quote!(&params.#ident)
-                } else {
-                    quote!(::core::clone::Clone::clone(&params.#ident))
+        let call_args: Vec<Tokens> = verb
+            .inputs
+            .iter()
+            .map(|input| match input {
+                Input::Item => quote!(__item),
+                Input::Cx => quote!(cx),
+                Input::Outbox(field) => {
+                    let taken = format_ident!("__outbox_{}", field);
+                    quote!(&mut #taken)
                 }
+                Input::Param(index) => {
+                    let Some(param) = verb.params.get(*index) else {
+                        return quote!();
+                    };
+                    let ident = &param.ident;
+                    if param.by_ref {
+                        quote!(&params.#ident)
+                    } else {
+                        quote!(::core::clone::Clone::clone(&params.#ident))
+                    }
+                }
+            })
+            .collect();
+        if let Some((ident, item_ty)) = &verb.item {
+            if !outboxes.is_empty() {
+                return Err(syn::Error::new(
+                    verb.method.span(),
+                    "an item method changes its item only; a verb that queues takes `&mut self`",
+                ));
             }
-        });
-        arms.push(quote! {
-            Self::#variant(params) => {
-                let _ = &params;
-                #(let mut #taken = ::core::mem::take(&mut record.#outboxes);)*
-                let outcome = #krate::Outcome::into_result(record.#method(#(#call_args),*));
-                #(record.#outboxes = #taken;)*
-                outcome
-            }
-        });
+            let field = verb
+                .options
+                .item
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let field_ident = format_ident!("{}", field);
+            arms.push(quote! {
+                Self::#variant(params) => {
+                    let _ = &params;
+                    let __item = record
+                        .#field_ident
+                        .get_mut(&params.#ident)
+                        .ok_or_else(|| #krate::Refusal::new("no such item"))?;
+                    #krate::Outcome::into_result(<#self_ty>::#method(#(#call_args),*))
+                }
+            });
+            item_arms.push(quote! {
+                Self::#variant(params) => ::core::option::Option::Some(
+                    #krate::__private::apply_item::<#self_ty, #item_ty>(
+                        doc,
+                        cx,
+                        &[
+                            #krate::Segment::Field(::std::string::String::from(#field)),
+                            #krate::Segment::Item(::core::clone::Clone::clone(&params.#ident)),
+                        ],
+                        |__item, cx| {
+                            let _ = &cx;
+                            #krate::Outcome::into_result(<#self_ty>::#method(#(#call_args),*))
+                        },
+                    ),
+                ),
+            });
+        } else {
+            arms.push(quote! {
+                Self::#variant(params) => {
+                    let _ = &params;
+                    #(let mut #taken = ::core::mem::take(&mut record.#outboxes);)*
+                    let outcome = #krate::Outcome::into_result(record.#method(#(#call_args),*));
+                    #(record.#outboxes = #taken;)*
+                    outcome
+                }
+            });
+        }
         let queues = !outboxes.is_empty() || options.queue.is_some();
         let action_kind = if queues {
             quote!(Outside)
@@ -1191,6 +1296,28 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     };
+    // Item methods read and write their item alone, unless the record holds
+    // an invariant of its own, which needs the whole record.
+    let item_fn = if item_arms.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn perform_item(
+                &self,
+                doc: &mut #krate::Doc,
+                cx: &mut #krate::ActionCx,
+            ) -> ::core::option::Option<::core::result::Result<(), #krate::Refusal>> {
+                if <#self_ty>::__OWN_CHECK {
+                    return ::core::option::Option::None;
+                }
+                #[allow(unreachable_patterns, reason = "only some verbs are item methods")]
+                match self {
+                    #(#item_arms)*
+                    _ => ::core::option::Option::None,
+                }
+            }
+        }
+    };
     // A record whose every change may queue an outside consequence: each of
     // its actions reaches outside.
     let (default_kind, queue_fns, queue_inherent) = match &options.queue {
@@ -1334,6 +1461,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 ::core::option::Option::Some(Self::FieldEdit(edit))
             }
             #queue_fns
+            #item_fn
             fn perform(
                 &self,
                 #record_binding: &mut #self_ty,

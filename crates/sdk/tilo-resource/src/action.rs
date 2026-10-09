@@ -369,6 +369,15 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
         let _ = (record, before, cx);
     }
 
+    /// Apply an item method (`fn star(contact: &mut Contact)`) to its item
+    /// alone in `doc`: read the item, run the method, write what changed.
+    /// `None` for any other operation, or where the record holds an
+    /// invariant of its own.
+    fn perform_item(&self, doc: &mut Doc, cx: &mut ActionCx) -> Option<Result<(), Refusal>> {
+        let _ = (doc, cx);
+        None
+    }
+
     /// The field edit `edit` as an operation of the record.
     fn field_edit(edit: crate::Edit<Self::Record>) -> Option<Self> {
         let _ = edit;
@@ -548,6 +557,17 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
             drop(minting);
             record.write_fields(doc, &ROOT).map_err(refused)?;
             return index(doc);
+        }
+        // An item method reads and writes its item alone; what it wrote is
+        // its item's, within its footprint.
+        if !queues {
+            let minting = MintScope::enter(&cx);
+            let performed = self.operation.perform_item(doc, &mut cx);
+            drop(minting);
+            if let Some(performed) = performed {
+                performed.map_err(|refusal| ActionError::Refused(refusal.0))?;
+                return index(doc);
+            }
         }
         // What it was: for the record's `queue`, and to hold what the verb
         // produced against its footprint.
