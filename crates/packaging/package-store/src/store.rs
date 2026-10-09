@@ -433,6 +433,52 @@ impl PackageStore {
         })
     }
 
+    /// Export the current user package as a complete signed archive while its
+    /// canonical row and payload blobs are protected by the installation lock.
+    /// The returned row is the identity a later conditional install must match.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::NotInstalled`] for an absent row, and refuses corrupt
+    /// metadata or missing/modified blobs rather than exporting an incomplete inverse.
+    pub fn export_current<W: std::io::Write + Send>(
+        &self,
+        app_id: &str,
+        out: W,
+    ) -> Result<(InstalledPackage, W), StoreError> {
+        let _lock = self.lock()?;
+        let row = self
+            .registry()?
+            .find(app_id)
+            .cloned()
+            .ok_or_else(|| StoreError::NotInstalled(app_id.to_owned()))?;
+        let dir = integrity::record_dir(&row);
+        let record = integrity::read_record(&dir, &row.id, &row.package_id_hex)
+            .map_err(|error| StoreError::CorruptPackage(row.id.clone(), error.to_string()))?;
+        let meta = PackageMeta::from_root(
+            record.root,
+            record.manifest_bytes,
+            std::fs::read(dir.join(COLLECTION_FILE))?,
+        )
+        .map_err(|error| StoreError::CorruptPackage(row.id.clone(), error.to_string()))?;
+        if meta.manifest.package.id != row.id
+            || meta.manifest.package.version != row.version
+            || meta.manifest.package.runtime.as_deref().unwrap_or_default() != row.runtime
+            || !row
+                .publisher_key_hex
+                .eq_ignore_ascii_case(&hex::encode(meta.publisher()))
+        {
+            return Err(StoreError::CorruptPackage(
+                row.id,
+                "the registry row does not match its signed package".into(),
+            ));
+        }
+        let out = content::session(&self.layout.content(), &self.layout.tmp(), |content| {
+            tilo_app_package::tapp::write(out, &meta, Some(&StoredBlobs { content }))
+                .map_err(|error| StoreError::Tapp(error.to_string()))
+        })?;
+        Ok((row, out))
+    }
+
     /// Every image this store holds.
     ///
     /// # Errors
@@ -501,6 +547,40 @@ impl PackageStore {
             }
             (result, _) => result.map(|installed| InstallSelection::Installed(Box::new(installed))),
         }
+    }
+
+    /// Select a signed package only if the user row still names the expected root and source
+    /// (or is still absent for `None`). Compare and commit share the canonical
+    /// installation lock; explicit holds and current pins retain their meaning.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Refused`] when another installation replaced the
+    /// expected row, otherwise the errors of [`Self::install_preserving_hold`].
+    pub fn install_if_current<F>(
+        &self,
+        tapp: impl Read + Send,
+        expected: Option<&InstalledPackage>,
+        admit: F,
+        fetcher: Option<&dyn BlobFetcher>,
+    ) -> Result<InstallSelection, StoreError>
+    where
+        F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
+    {
+        self.install_preserving_hold(
+            tapp,
+            |meta| {
+                let admission = admit(meta)?;
+                let registry = self.registry().map_err(|error| error.to_string())?;
+                let actual = registry.find(&meta.manifest.package.id);
+                let stamp =
+                    |row: &InstalledPackage| (row.package_id_hex.clone(), row.source.clone());
+                if actual.map(stamp) != expected.map(stamp) {
+                    return Err("the package selection changed after it was retained".into());
+                }
+                Ok(admission)
+            },
+            fetcher,
+        )
     }
 
     /// Decode `tapp`, admit it, store its payload and materialise it.
@@ -831,6 +911,38 @@ impl PackageStore {
         registry
             .remove(app_id)
             .ok_or_else(|| StoreError::NotInstalled(app_id.to_string()))
+    }
+
+    /// Remove a cohort-owned user row only while its root/source still match
+    /// the receipt. A subsequent update, hold or pin keeps the user selection.
+    /// `None` means no row was removed, including an already absent row.
+    ///
+    /// # Errors
+    /// Returns the same persistence and retirement errors as [`Self::remove`].
+    pub fn remove_if_current(
+        &self,
+        expected: &InstalledPackage,
+    ) -> Result<Option<Removed>, StoreError> {
+        let _lock = self.lock()?;
+        let mut registry = self.registry()?;
+        let Some(row) = registry.find(&expected.id).cloned() else {
+            return Ok(None);
+        };
+        if row.package_id_hex != expected.package_id_hex
+            || row.source != expected.source
+            || row.held
+            || row.pinned
+        {
+            return Ok(None);
+        }
+        registry.remove(&row.id);
+        registry.save(&self.layout.registry())?;
+        self.retire_tree(&row)?;
+        let evicted_blobs = self.collect_garbage_locked()?;
+        Ok(Some(Removed {
+            package: Some(row),
+            evicted_blobs,
+        }))
     }
 
     /// Set the pin of `app_id`.
