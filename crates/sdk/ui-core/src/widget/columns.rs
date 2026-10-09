@@ -170,13 +170,7 @@ impl Widget for Columns {
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = tree.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = crate::widget::placed(&layout, origin);
         let start = Point::new(self.rect.x0, self.rect.y0);
         let parts = std::iter::once(&mut self.main).chain(self.aside.as_mut());
         for (child, &wrapper) in parts.zip(&self.nodes) {

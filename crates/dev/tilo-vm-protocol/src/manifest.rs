@@ -76,6 +76,9 @@ pub struct ComponentInfo {
     /// reboots the VM.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reboot: bool,
+    /// Opt-in phase CPU recording for a stand-in slot's shell generation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frame_cpu_trace: bool,
 }
 
 impl ComponentInfo {
@@ -86,6 +89,7 @@ impl ComponentInfo {
             units,
             user_units: Vec::new(),
             reboot: false,
+            frame_cpu_trace: false,
         }
     }
 }
@@ -335,6 +339,7 @@ fn component(name: &str, entry: &toml::Table) -> Component {
             units: strings(entry, "units"),
             user_units: strings(entry, "user_units"),
             reboot: boot && text("dev_swap").as_deref() == Some("reboot") && dev_build.is_some(),
+            frame_cpu_trace: false,
         },
         dev_build,
         packages: strings(entry, "packages"),
@@ -375,6 +380,19 @@ fn strings(entry: &toml::Table, key: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_component_metadata_defaults_cpu_recording_off() {
+        let info: ComponentInfo =
+            serde_json::from_str(r#"{"scope":"session","units":[]}"#).unwrap();
+        assert!(!info.frame_cpu_trace);
+        let mut traced = info.clone();
+        traced.frame_cpu_trace = true;
+        assert_ne!(info, traced);
+        let decoded: ComponentInfo =
+            serde_json::from_str(&serde_json::to_string(&traced).unwrap()).unwrap();
+        assert!(decoded.frame_cpu_trace);
+    }
 
     #[test]
     fn shell_swap_selects_only_the_installed_binary() {
