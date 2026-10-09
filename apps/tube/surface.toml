@@ -1,0 +1,96 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "tube.library"
+label = "Tube"
+version = 1
+
+[[resources.fields]]
+owner = "library"
+path = "likes"
+stored = "value"
+title = "Liked videos"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library"
+path = "queue"
+stored = "value"
+title = "Shared watch queue"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library"
+path = "subscriptions"
+stored = "value"
+title = "Subscribed creators"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library"
+path = "comment_likes"
+stored = "value"
+title = "Liked comments"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library"
+path = "replies"
+stored = "collection"
+title = "Replies to comments"
+type = "Collection<Reply>"
+
+[[resources.fields]]
+owner = "reply"
+path = "replies.*.comment"
+readonly = true
+stored = "value"
+title = "Comment"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "reply"
+path = "replies.*.text"
+readonly = true
+stored = "value"
+title = "Reply"
+type = "String"
+
+[[resources.verbs]]
+description = "Reply to a comment.  Visible to everyone sharing this library. The same reply twice to one comment is kept once, so a retried reply is not posted again."
+id = "reply-to-comment"
+kind = "undoable"
+label = "Reply to a comment"
+
+[[resources.verbs.params]]
+name = "comment"
+required = true
+
+[resources.verbs.params.schema]
+description = "The comment's id: its row id after `tube.comment:`"
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+description = "The reply"
+type = "string"
+
+[[resources.verbs]]
+description = "Retract a reply."
+id = "retract"
+kind = "undoable"
+label = "Retract a reply"
+
+[[resources.verbs.params]]
+name = "reply"
+required = true
+
+[resources.verbs.params.schema]
+description = "Reply"
+type = "string"

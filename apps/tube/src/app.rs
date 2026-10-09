@@ -36,15 +36,15 @@ use ui::widget::{
 };
 
 use crate::action::{self, Action, ActionBus, Invocations};
-use crate::actions::{TubeAction, TubeEffect};
+use crate::actions::TubeEffect;
 use crate::api::{Request, Update, Worker};
 use crate::history::WatchHistory;
 use crate::i18n::{arg, t, t_args};
 use crate::model::{Route, TubeModel};
-use crate::resource::{Tube, TubeShared};
+use crate::resource::Library;
 use crate::screens;
 use crate::widgets::SharedPlayer;
-use ui::tilo_resource::{ActionDecl, Invoke};
+use ui::tilo_resource::{Edit, Invoke};
 
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
@@ -67,7 +67,7 @@ pub struct TubeApp {
     /// Where library edits and effects go: the framework's door for the
     /// resource. `None` until the framework attaches the surface; a bare
     /// widget shows a library it cannot change.
-    dispatcher: Option<Dispatcher<Tube>>,
+    dispatcher: Option<Dispatcher<Library>>,
     /// The person's watch history, a record in their own room, in a live
     /// window.
     history: Option<PersonRecord<WatchHistory>>,
@@ -407,9 +407,9 @@ impl TubeApp {
 
     /// Submit a library edit through the framework's door, which checks it,
     /// applies it, records the undo step and presents the result.
-    fn edit(&self, action: &TubeAction) {
+    fn edit(&self, edit: Edit<Library>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(edit);
         }
     }
 
@@ -523,10 +523,7 @@ impl TubeApp {
                         && self.model.is_subscribed(&channel.id)
                 });
             if !already_subscribed {
-                edits.push(TubeAction::SetSubscription {
-                    channel_id: subscription,
-                    subscribed: true,
-                });
+                edits.push(Library::subscribe(&subscription, true));
             }
         }
 
@@ -573,73 +570,12 @@ impl TubeApp {
         let library_changed = !edits.is_empty();
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.group(|| {
-                for edit in &edits {
-                    dispatcher.apply(edit);
+                for edit in edits {
+                    dispatcher.submit(edit);
                 }
             });
         }
         library_changed || history_changed || preferences_changed
-    }
-
-    /// Edits bound to the open watch page: like it, queue it, subscribe to
-    /// its creator. Each carries the state it sets, read from what the page
-    /// shows now.
-    pub(crate) fn watch_page_declarations(&self) -> Vec<ActionDecl<Tube>> {
-        let Route::Watch(video_id) = &self.model.route else {
-            return Vec::new();
-        };
-        let Some(video) = self.model.video(video_id) else {
-            return Vec::new();
-        };
-        let bound = |id: &'static str, label: &str, action: TubeAction| {
-            ActionDecl::new(id, label, Vec::new(), move |_, _| Ok(action.clone()))
-        };
-        let liked = self.model.is_liked(video_id);
-        let queued = self.model.is_queued(video_id);
-        let subscribed = self.model.is_subscribed(&video.channel_id);
-        let creator = self
-            .model
-            .subscription_key(&video.channel_id)
-            .unwrap_or(&video.channel_id)
-            .to_owned();
-        vec![
-            bound(
-                "like-this-video",
-                if liked {
-                    "Unlike this video"
-                } else {
-                    "Like this video"
-                },
-                TubeAction::SetVideoLiked {
-                    video_id: video_id.clone(),
-                    liked: !liked,
-                },
-            ),
-            bound(
-                "queue-this-video",
-                if queued {
-                    "Remove this video from the queue"
-                } else {
-                    "Add this video to the queue"
-                },
-                TubeAction::SetQueueMembership {
-                    video_id: video_id.clone(),
-                    queued: !queued,
-                },
-            ),
-            bound(
-                "subscribe-to-this-creator",
-                if subscribed {
-                    "Unsubscribe from this creator"
-                } else {
-                    "Subscribe to this creator"
-                },
-                TubeAction::SetSubscription {
-                    channel_id: creator,
-                    subscribed: !subscribed,
-                },
-            ),
-        ]
     }
 
     /// An instance with no catalogue and no network.
@@ -777,11 +713,11 @@ impl TubeApp {
     /// subscriptions and comment likes. Every presentation is the
     /// whole library, so an emptied one (everything unliked, the queue
     /// cleared) shows empty.
-    pub(crate) fn present_library(&mut self, state: &TubeShared) {
-        self.model.liked = TubeShared::on(&state.likes);
-        self.model.queue = TubeShared::on(&state.queue);
-        self.model.subscriptions = TubeShared::on(&state.subscriptions);
-        self.model.comment_likes.clone_from(&state.comment_likes);
+    pub(crate) fn present_library(&mut self, state: &Library) {
+        self.model.liked = state.likes.iter().cloned().collect();
+        self.model.queue = state.queue.iter().cloned().collect();
+        self.model.subscriptions = state.subscriptions.iter().cloned().collect();
+        self.model.comment_likes = state.comment_likes.iter().cloned().collect();
         self.structure_dirty = true;
     }
 
@@ -842,7 +778,7 @@ impl TubeApp {
     /// the person's watch history.
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: Dispatcher<Tube>,
+        dispatcher: Dispatcher<Library>,
         history: Option<PersonRecord<WatchHistory>>,
     ) {
         self.dispatcher = Some(dispatcher);
@@ -1708,7 +1644,7 @@ impl TubeApp {
                 return false;
             }
             Action::Edit(edit) => {
-                self.edit(&edit);
+                self.edit(edit);
                 return false;
             }
             Action::Effect(effect) => {
@@ -2484,7 +2420,7 @@ mod tests {
     use super::*;
     use crate::model::Category;
     use automerge::{AutoCommit, ReadDoc};
-    use ui::tilo_resource::Resource;
+    use ui::tilo_resource::Resource as _;
 
     fn fresh() -> (TubeApp, AutoCommit) {
         (TubeApp::new(), AutoCommit::new())
@@ -2570,17 +2506,17 @@ mod tests {
     #[test]
     fn an_emptied_library_shows_empty() {
         let mut app = TubeApp::new();
-        let mut library = TubeShared::default();
-        library.likes.insert("vid_donut".into(), true);
-        library.queue.insert("vid_donut".into(), true);
-        library.comment_likes.insert("vid_donut#1".into(), true);
+        let mut library = Library::default();
+        library.likes.insert("vid_donut".into());
+        library.queue.insert("vid_donut".into());
+        library.comment_likes.insert("vid_donut#1".into());
         app.present_library(&library);
         assert!(app.model.is_liked("vid_donut") && app.model.is_queued("vid_donut"));
-        assert_eq!(app.model.comment_likes.get("vid_donut#1"), Some(&true));
+        assert!(app.model.comment_likes.contains("vid_donut#1"));
 
         // A collaborator unliked and unqueued everything.
-        library.likes.insert("vid_donut".into(), false);
-        library.queue.insert("vid_donut".into(), false);
+        library.likes.remove(&"vid_donut".into());
+        library.queue.remove(&"vid_donut".into());
         app.present_library(&library);
         assert!(app.model.liked.is_empty(), "an emptied library is shown");
         assert!(app.model.queue.is_empty());
@@ -2954,16 +2890,13 @@ mod tests {
             let (mut app, mut doc) = fresh();
             app.model.route = Route::Watch("vid_donut".into());
             app.model.playhead = 42.0;
-            ui::framework::testing::dispatcher::<crate::resource::Tube>("tube.application")
-                .apply_now(
+            ui::framework::testing::dispatcher::<Library>("tube.library")
+                .submit_now(
                     &mut ui::widget::Edits::lend(&mut doc),
-                    &crate::actions::TubeAction::SetVideoLiked {
-                        video_id: "vid_donut".into(),
-                        liked: true,
-                    },
+                    Library::like("vid_donut", true),
                 )
                 .expect("structured library action applies");
-            app.present_library(&crate::resource::Tube::read(&doc).unwrap());
+            app.present_library(&Library::read(&doc).unwrap());
             Widget::sync(&mut app, &doc, &automerge::ROOT);
             assert!(app.model.liked.iter().any(|id| id == "vid_donut"));
             assert!(

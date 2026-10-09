@@ -11,7 +11,7 @@
 //! stays theme-agnostic and the OS keeps control of the palette.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub type VideoId = String;
 pub type ChannelId = String;
@@ -610,7 +610,7 @@ pub struct TubeModel {
     /// identity used by the action layer. Unlike fetched comments themselves,
     /// these are user mutations mirrored from the collaborative document.
     #[serde(default)]
-    pub comment_likes: BTreeMap<String, bool>,
+    pub comment_likes: BTreeSet<String>,
     /// Transient user-facing notices — auto-skip confirmations, worker status,
     /// "link copied" acknowledgements — rendered as a toast stack on the watch
     /// page. Newest first, capped.
@@ -691,7 +691,7 @@ impl Default for TubeModel {
             playhead: 0.0,
             playing: false,
             liked: Vec::new(),
-            comment_likes: BTreeMap::new(),
+            comment_likes: BTreeSet::new(),
             notices: Vec::new(),
             data_source: DataSource::default(),
             search_hits_query: String::new(),

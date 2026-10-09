@@ -20,10 +20,11 @@ use ui::widget::{
 };
 
 use crate::action::{self, Action, ActionBus, Invocations, SettingFlag};
-use crate::actions::{TubeAction, TubeEffect};
+use crate::actions::TubeEffect;
 use crate::i18n::{arg, t, t_args};
 use crate::images::Imgs;
 use crate::model::{Category, Route, SearchType, SkipMode, TubeModel, Video};
+use crate::resource::Library;
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{PlayerHost, SharedPlayer};
 
@@ -599,9 +600,9 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
 }
 
 fn subscribe_button(ui: Ui<'_>, channel_id: &str) -> Button {
-    let action = Action::Edit(TubeAction::SetSubscription {
-        channel_id: channel_id.to_string(),
-        subscribed: !ui.model.is_subscribed(channel_id),
+    let action = Action::Edit(match ui.model.subscription_key(channel_id) {
+        Some(key) => Library::subscribe(key, false),
+        None => Library::subscribe(channel_id, true),
     });
     if ui.model.is_subscribed(channel_id) {
         Button::new("subscribe_btn", &t("tube-subscribed"))
@@ -853,10 +854,7 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
         .with_icon(Icon::ThumbsUp)
         .with_accessible_name(&like_name)
         .toggled(liked)
-        .on_click(ui.push(Action::Edit(TubeAction::SetVideoLiked {
-            video_id: v.id.clone(),
-            liked: !liked,
-        })));
+        .on_click(ui.push(Action::Edit(Library::like(&v.id, !liked))));
     let queue = Button::new(
         "watch_queue",
         &t(if queued {
@@ -866,10 +864,7 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
         }),
     )
     .with_icon(Icon::ListVideo);
-    let queue = queue.on_click(ui.push(Action::Edit(TubeAction::SetQueueMembership {
-        video_id: v.id.clone(),
-        queued: !queued,
-    })));
+    let queue = queue.on_click(ui.push(Action::Edit(Library::enqueue(&v.id, !queued))));
     let copy_link = Button::new("watch_copy_link", &t("tube-copy-link"))
         .with_icon(Icon::Copy)
         .on_click(ui.push(Action::Share(v.id.clone())));
