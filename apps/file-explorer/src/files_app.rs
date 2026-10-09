@@ -671,6 +671,8 @@ pub struct FileExplorerWidget {
     composed_once: bool,
     /// Command queue the interactive children push into.
     cmds: CommandSink,
+    /// Rows a search hit or an agent's `open` asked to show, by their ids.
+    opened: Rc<RefCell<Vec<String>>>,
     /// Set when applying a command changed structure; consumed by
     /// `take_structure_dirty` so the App rebuilds the composition.
     structure_dirty: bool,
@@ -1748,6 +1750,7 @@ impl FileExplorerWidget {
 
             composed_once: false,
             cmds,
+            opened: Rc::default(),
             structure_dirty: false,
             dispatcher: None,
             preferences: None,
@@ -7667,6 +7670,47 @@ impl FileExplorerWidget {
         clippy::needless_collect,
         reason = "collecting drops the RefCell borrow before the loop; apply_command can itself queue follow-up commands into the same self.cmds sink, and iterating the drain directly would hold the borrow_mut across that and panic"
     )]
+    /// What shows the row a search hit or an agent's `open` names: queued,
+    /// and opened before the next frame is laid out.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+        let opened = Rc::clone(&self.opened);
+        move |anchor| opened.borrow_mut().push(anchor.to_owned())
+    }
+
+    /// Show the row `anchor` names as its own open action does: a place
+    /// opens, a collaborative record is revealed, a remote account shows its
+    /// connection details.
+    ///
+    /// # Errors
+    /// The anchor names no row Files opens, or opening it failed.
+    pub(crate) fn open_anchor(&mut self, anchor: &str) -> Result<(), String> {
+        use crate::effects::FilesEffect;
+        let effect = if anchor.starts_with("files.place:") {
+            FilesEffect::OpenItem {
+                item: anchor.to_owned(),
+            }
+        } else if let Some(record) = anchor.strip_prefix("files.record:") {
+            FilesEffect::Reveal {
+                record: record.to_owned(),
+            }
+        } else if let Some(account) = crate::remote_accounts::account_of_resource(anchor) {
+            FilesEffect::AccountDetails { account }
+        } else {
+            return Err(format!("Files opens no `{anchor}`"));
+        };
+        self.run_effect(effect).map(drop)
+    }
+
+    fn drain_opened(&mut self) -> bool {
+        let opened: Vec<String> = self.opened.borrow_mut().drain(..).collect();
+        for anchor in &opened {
+            if let Err(error) = self.open_anchor(anchor) {
+                self.set_external_status(error);
+            }
+        }
+        !opened.is_empty()
+    }
+
     fn drain_commands(&mut self) -> bool {
         let queued: Vec<FileCommand> = self.cmds.borrow_mut().drain(..).collect();
         let mut dirty = false;
@@ -8121,7 +8165,7 @@ impl FileExplorerWidget {
         let path_before = self.current_path.clone();
         self.nav
             .handle_event(event, &mut ctx.reborrow(ctx.path, nav_node));
-        if self.drain_commands() {
+        if self.drain_commands() | self.drain_opened() {
             self.structure_dirty = true;
         }
         if self.current_path != path_before {

@@ -10,7 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{
-    Collection, Counter, Id, Identified, Invoke, Keyed, Model, Path, Replica, Set, resource,
+    Collection, Counter, Fields, Id, Identified, Invoke, Keyed, Model, Ordered, Path, Replica,
+    Resource, Set, resource,
 };
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -46,6 +47,7 @@ pub struct Timeline {
     pub plays: Counter,
     pub notes: Collection<String>,
     pub colour: [f64; 4],
+    pub stack: Ordered<Clip>,
 }
 
 #[resource(kind = "test.timeline", label = "Timeline")]
@@ -221,4 +223,73 @@ fn ids_made_inside_a_verb_replay_identically_and_surfaces_bind_verbs() {
         &[Timeline::paths().colour.set([1.0, 0.5, 0.0, 1.0])],
     );
     assert_eq!(origin.state().unwrap().colour, [1.0, 0.5, 0.0, 1.0]);
+}
+
+fn stack_ids(timeline: &Timeline) -> Vec<&str> {
+    timeline.stack.iter().map(|c| c.id.as_str()).collect()
+}
+
+#[test]
+fn ordered_items_keep_the_arranged_order_and_merge_by_identity() {
+    let mut timeline = Replica::<Timeline>::new();
+    let paths = Timeline::paths();
+    submit(
+        &mut timeline,
+        &[
+            paths.stack.insert(0, &clip("a", 9.0)),
+            paths.stack.insert(1, &clip("b", 1.0)),
+            paths.stack.insert(2, &clip("c", 5.0)),
+        ],
+    );
+    let state = timeline.state().unwrap();
+    assert_eq!(
+        stack_ids(&state),
+        ["a", "b", "c"],
+        "the arranged order, not the items' own"
+    );
+
+    // One collaborator moves `c` to the top and removes `a`, the other
+    // changes `a` and `c` and adds `d` at the end: the moved item keeps
+    // its change, the removed one stays removed, and both merge alike.
+    let mut other = timeline.fork();
+    let mut moved = state.clone();
+    let c = moved.stack.take(&Id::from_raw("c")).unwrap();
+    moved.stack.insert(0, c);
+    moved.stack.take(&Id::from_raw("a"));
+    let edits = paths.path().edits(&state, &moved);
+    submit(&mut timeline, &edits);
+    assert_eq!(stack_ids(&timeline.state().unwrap()), ["c", "b"]);
+    submit(
+        &mut other,
+        &[
+            paths.stack.item(&Id::from_raw("c")).start.set(6.0),
+            paths.stack.item(&Id::from_raw("a")).name.replace("Gone"),
+            paths.stack.insert(3, &clip("d", 0.0)),
+        ],
+    );
+    timeline.sync_with(&mut other).unwrap();
+    let merged = timeline.state().unwrap();
+    assert_eq!(merged, other.state().unwrap());
+    assert_eq!(stack_ids(&merged), ["c", "b", "d"]);
+    assert_eq!(merged.stack[0].start, 6.0, "the moved item kept its change");
+
+    // Rewriting the whole value keeps the order keys of the items that did
+    // not move: one move writes one key.
+    let before = merged;
+    let mut after = before.clone();
+    after.stack.swap(1, 2);
+    let mut doc = tilo_resource::Doc::new();
+    before.write_fields(&mut doc, &automerge::ROOT).unwrap();
+    doc.commit();
+    let heads = doc.get_heads();
+    after.write_fields(&mut doc, &automerge::ROOT).unwrap();
+    doc.commit();
+    let changed: usize = doc
+        .get_changes(&heads)
+        .iter()
+        .map(automerge::Change::len)
+        .sum();
+    assert_eq!(changed, 1, "one order key rewritten");
+    assert_eq!(stack_ids(&Timeline::read(&doc).unwrap()), ["c", "d", "b"]);
+    assert!(paths.path().edits(&after, &after).is_empty());
 }

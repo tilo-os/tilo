@@ -144,7 +144,7 @@ impl ResourceApp for App {
         // The next item's title is this window's own until it is added.
         let next = cx.form::<checklist::Add>();
         let draft = cx
-            .input(checklist::Add::paths().title)
+            .input(next.paths().title)
             .with_id("draft-input")
             .with_placeholder(keys::CHECKLIST_DRAFT_PLACEHOLDER);
         let add = cx.button(keys::CHECKLIST_ADD, next.submit());

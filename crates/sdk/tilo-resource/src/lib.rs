@@ -116,6 +116,7 @@ pub mod kind;
 mod low_mutation;
 pub mod model;
 pub mod order;
+pub mod ordered;
 pub mod path;
 pub mod reader;
 pub mod replica;
@@ -143,6 +144,7 @@ pub use low_mutation::{APPLY_LOW, GROUP_LOW};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key,
 };
+pub use ordered::Ordered;
 pub use path::{Edit, EditOp, Operations, Path, Segment, Settable};
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
@@ -184,6 +186,40 @@ pub mod __private {
             fields.insert("examples".into(), serde_json::Value::Array(vec![example]));
         }
         schema
+    }
+
+    /// The type of a parameter whose Rust type the macros cannot read
+    /// (an app's own enum or struct): what its schema says it is written as.
+    /// A unit enum is text, a struct an object; a value written in several
+    /// shapes is an object.
+    #[must_use]
+    pub fn param_type_of(schema: &serde_json::Value) -> ParamType {
+        fn of(schema: &serde_json::Value) -> Option<ParamType> {
+            if let Some(kind) = schema.get("type").and_then(serde_json::Value::as_str) {
+                return Some(match kind {
+                    "string" => ParamType::Text,
+                    "integer" => ParamType::Integer,
+                    "number" => ParamType::Number,
+                    "boolean" => ParamType::Boolean,
+                    "array" => ParamType::Array,
+                    _ => ParamType::Object,
+                });
+            }
+            if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array) {
+                return values
+                    .iter()
+                    .all(serde_json::Value::is_string)
+                    .then_some(ParamType::Text);
+            }
+            let alternatives = schema
+                .get("oneOf")
+                .or_else(|| schema.get("anyOf"))
+                .and_then(serde_json::Value::as_array)?;
+            let mut kinds = alternatives.iter().map(of);
+            let first = kinds.next()??;
+            kinds.all(|kind| kind == Some(first)).then_some(first)
+        }
+        of(schema).unwrap_or(ParamType::Object)
     }
 
     pub use crate::resource::default_search;

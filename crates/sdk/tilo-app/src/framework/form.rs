@@ -2,7 +2,7 @@
 //!
 //! A form is a local instance of a verb's parameter struct: never synced,
 //! never undoable, invisible to collaborators. Its fields bind to controls
-//! with the same paths a record's do (`cx.input(bookmarks::Add::paths().url)`),
+//! with the same paths a record's do (`cx.input(form.paths().url)`),
 //! and its button submits it as one invocation of the verb.
 
 use std::any::Any;
@@ -97,6 +97,13 @@ impl<P: Params> Form<P> {
         state
     }
 
+    /// The paths of the verb's parameters, which controls bind to:
+    /// `cx.input(form.paths().url)`.
+    #[must_use]
+    pub fn paths(&self) -> P::Paths {
+        P::paths()
+    }
+
     /// The parameters as filled in now.
     ///
     /// # Errors
@@ -187,11 +194,11 @@ pub enum Attached<V> {
     Local { id: String, state: LocalState<V> },
 }
 
-/// Marks the [`Bound`](super::Bound) implementation for a record's field.
+/// Marks the [`Bindable`](super::Bindable) implementation for a record's field.
 #[doc(hidden)]
 pub enum RecordField {}
 
-/// Marks the [`Bound`](super::Bound) implementation for a form's field.
+/// Marks the [`Bindable`](super::Bindable) implementation for a form's field.
 #[doc(hidden)]
 pub enum FormField {}
 

@@ -1,0 +1,402 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "feeds.library"
+label = "Feeds"
+version = 1
+
+[[resources.fields]]
+owner = "library"
+path = "folders"
+stored = "collection"
+title = "Folders"
+type = "Collection<Folder>"
+
+[[resources.fields]]
+label = true
+owner = "folder"
+path = "folders.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "folder"
+path = "folders.*.collapsed"
+stored = "value"
+title = "Folded in the sidebar"
+type = "bool"
+
+[[resources.fields]]
+owner = "library"
+path = "feeds"
+stored = "collection"
+title = "Subscriptions"
+type = "Collection<Feed>"
+
+[[resources.fields]]
+label = true
+owner = "feed"
+path = "feeds.*.title"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "feed"
+path = "feeds.*.url"
+readonly = true
+stored = "value"
+title = "Address"
+type = "String"
+
+[[resources.fields]]
+owner = "feed"
+path = "feeds.*.site_url"
+readonly = true
+stored = "value"
+title = "Site"
+type = "String"
+
+[[resources.fields]]
+owner = "feed"
+path = "feeds.*.folder"
+stored = "value"
+title = "Folder"
+type = "Option<Id>"
+
+[[resources.fields]]
+owner = "feed"
+path = "feeds.*.kind"
+readonly = true
+stored = "value"
+title = "Kind"
+type = "FeedKind"
+
+[[resources.fields]]
+owner = "feed"
+path = "feeds.*.certificate_pin"
+readonly = true
+stored = "value"
+title = "Server certificate"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "library"
+path = "articles"
+stored = "collection"
+title = "Articles"
+type = "Collection<Article>"
+
+[[resources.fields]]
+owner = "article"
+path = "articles.*.feed_id"
+readonly = true
+stored = "value"
+title = "Subscription"
+type = "Id"
+
+[[resources.fields]]
+label = true
+owner = "article"
+path = "articles.*.title"
+readonly = true
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "article"
+path = "articles.*.author"
+readonly = true
+stored = "value"
+title = "Author"
+type = "String"
+
+[[resources.fields]]
+owner = "article"
+path = "articles.*.url"
+readonly = true
+stored = "value"
+title = "Link"
+type = "String"
+
+[[resources.fields]]
+owner = "article"
+path = "articles.*.published"
+readonly = true
+stored = "value"
+title = "Published"
+type = "i64"
+
+[[resources.fields]]
+owner = "article"
+path = "articles.*.summary"
+readonly = true
+stored = "value"
+title = "Summary"
+type = "String"
+
+[[resources.fields]]
+owner = "article"
+path = "articles.*.blocks"
+readonly = true
+stored = "value"
+title = "Body"
+type = "Json<Vec<ContentBlock>>"
+
+[[resources.fields]]
+owner = "article"
+path = "articles.*.read"
+stored = "value"
+title = "Read"
+type = "bool"
+
+[[resources.fields]]
+owner = "article"
+path = "articles.*.starred"
+stored = "value"
+title = "Starred"
+type = "bool"
+
+[[resources.fields]]
+owner = "article"
+path = "articles.*.tags"
+stored = "value"
+title = "Tags"
+type = "Set<String>"
+
+[[resources.verbs]]
+description = "Add a subscription.  Subscribes to a feed's address. It is titled with its address until a refresh brings its real title and articles."
+id = "add-subscription"
+kind = "undoable"
+label = "Add a subscription"
+
+[[resources.verbs.params]]
+name = "url"
+required = true
+
+[resources.verbs.params.schema]
+description = "Feed URL"
+type = "string"
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+description = "The folder to file it in; none for the top of the sidebar"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Unsubscribe.  Removes the subscription and every article it brought in."
+destructive = true
+id = "unsubscribe"
+kind = "undoable"
+label = "Unsubscribe"
+
+[[resources.verbs.params]]
+name = "feed"
+required = true
+
+[resources.verbs.params.schema]
+description = "Feed"
+type = "string"
+
+[[resources.verbs]]
+description = "Mark all of a subscription's articles as read."
+id = "mark-feed-read"
+kind = "undoable"
+label = "Mark all of a subscription's articles as read"
+
+[[resources.verbs.params]]
+name = "feed"
+required = true
+
+[resources.verbs.params.schema]
+description = "Feed"
+type = "string"
+
+[[resources.verbs]]
+description = "Mark all articles as read."
+id = "mark-everything-read"
+kind = "undoable"
+label = "Mark all articles as read"
+params = []
+
+[[resources.verbs]]
+description = "New folder."
+id = "new-folder"
+kind = "undoable"
+label = "New folder"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name"
+type = "string"
+
+[[resources.verbs]]
+description = "Delete folder.  Its subscriptions stay, at the top of the sidebar."
+destructive = true
+id = "delete-folder"
+kind = "undoable"
+label = "Delete folder"
+
+[[resources.verbs.params]]
+name = "folder"
+required = true
+
+[resources.verbs.params.schema]
+description = "Folder"
+type = "string"
+
+[[resources.verbs]]
+description = "Subscribe to what an OPML file lists.  Every address the library does not have yet, in the folders the file names (made where missing): one step, which one undo takes back."
+id = "import-subscriptions"
+kind = "undoable"
+label = "Subscribe to what an OPML file lists"
+
+[[resources.verbs.params]]
+name = "outlines"
+required = true
+
+[resources.verbs.params.schema]
+description = "The subscriptions the file lists"
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One subscription an OPML file lists."
+required = [
+    "title",
+    "url",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.folder]
+description = "The folder the file files it under, by name."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.site_url]
+description = "Its homepage."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.title]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.url]
+description = "The feed's address."
+type = "string"
+
+[[resources.verbs]]
+description = "Bring in what a refresh fetched for one subscription.  The articles it does not hold yet, its title as the feed names itself, and the certificate a Gemini server presented the first time. Content from the feed, not anyone's edit: no undo takes it back."
+id = "refreshed"
+kind = "undoable"
+label = "Bring in what a refresh fetched for one subscription"
+
+[[resources.verbs.params]]
+name = "articles"
+required = true
+
+[resources.verbs.params.schema]
+description = "The articles it lists"
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "What a refresh fetched for one article, before the library holds it."
+required = ["title"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.author]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.blocks]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.blocks.items]
+additionalProperties = false
+required = [
+    "kind",
+    "text",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.blocks.items.properties.href]
+description = "Target URL for `Link` blocks (gemtext `=>` lines, etc.)."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.blocks.items.properties.kind]
+description = "One rendered content block in an article body. Articles store a small block list rather than raw HTML so the reader pane can lay them out natively (and so gemtext + HTML converge on one representation)."
+enum = [
+    "Heading1",
+    "Heading2",
+    "Heading3",
+    "Paragraph",
+    "Bullet",
+    "Quote",
+    "Code",
+    "Link",
+    "Divider",
+]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.blocks.items.properties.text]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.published]
+description = "Epoch seconds; 0 when unknown."
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.summary]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.title]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.url]
+type = "string"
+
+[[resources.verbs.params]]
+name = "feed"
+required = true
+
+[resources.verbs.params.schema]
+description = "The subscription"
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = false
+
+[resources.verbs.params.schema]
+description = "The title the feed gives itself"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "certificate_pin"
+required = false
+
+[resources.verbs.params.schema]
+description = "The certificate a Gemini server presented"
+type = [
+    "string",
+    "null",
+]

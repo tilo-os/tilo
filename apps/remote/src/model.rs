@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Atom, Collection, Id, JsonSchema, Model, Refusal};
 use uuid::Uuid;
 
 /// Stable identifier for a saved connection. Backs every cross-reference
@@ -24,7 +25,8 @@ pub type ConnectionId = Uuid;
 /// RDP remains a variant so saved, older connection profiles can round-trip
 /// without data loss. Tilo device control is backed by the shell's authenticated
 /// workspace transport and is available for new profiles.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Model, JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConnectionKind {
     /// Secure shell — an interactive terminal session.
     Ssh,
@@ -125,23 +127,13 @@ impl ConnectionKind {
             ConnectionKind::Tilo,
         ]
     }
-
-    /// Parse the persisted tag back into a kind. Unknown tags fall back
-    /// to SSH so a forward-compat document never drops a connection.
-    pub fn from_tag(s: &str) -> ConnectionKind {
-        match s {
-            "VNC" => ConnectionKind::Vnc,
-            "RDP" => ConnectionKind::Rdp,
-            "Tilo" => ConnectionKind::Tilo,
-            _ => ConnectionKind::Ssh,
-        }
-    }
 }
 
 /// How a connection authenticates. Stored alongside the connection but
 /// never carries a live secret in the document — passwords are entered at
 /// connect time and held only in volatile memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Model, JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
     /// Username + password prompted at connect time.
     Password,
@@ -185,14 +177,6 @@ impl AuthMethod {
     pub fn is_supported_by(self, kind: ConnectionKind) -> bool {
         Self::available_for(kind).contains(&self)
     }
-
-    pub fn from_label(s: &str) -> AuthMethod {
-        match s {
-            "Public key" => AuthMethod::PublicKey,
-            "Device identity" => AuthMethod::DeviceIdentity,
-            _ => AuthMethod::Password,
-        }
-    }
 }
 
 /// Reachability of a saved machine, as this device last observed it. Live
@@ -207,28 +191,79 @@ pub enum Presence {
     Unknown,
 }
 
-/// One saved remote machine.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One saved remote machine. Its id is its item's in [`Remote`]; the
+/// address parts are written whole, the name merges as text.
+#[derive(Model, Clone, Debug, PartialEq, Eq)]
+#[model(check = Connection::valid)]
 pub struct Connection {
+    /// The saved connection's id, its item's in [`Remote::connections`].
+    #[model(skip)]
     pub id: ConnectionId,
-    /// Display name shown in the list (e.g. "Home Server").
+    /// Name
+    ///
+    /// Shown in the list (e.g. "Home Server").
+    #[model(label)]
     pub name: String,
+    /// Host
+    ///
     /// Hostname or IP (e.g. "10.0.0.4" or "build.example.com"). For a
     /// Tilo relay this is the exact certified device endpoint id; `name` is
     /// the friendly label shown in the UI.
-    pub host: String,
+    pub host: Atom,
+    /// Port
     pub port: u16,
-    /// Login user. Empty for kinds that don't need one (Tilo relay).
-    pub user: String,
+    /// User
+    ///
+    /// Empty for kinds that don't need one (Tilo relay).
+    pub user: Atom,
+    /// Protocol
     pub kind: ConnectionKind,
+    /// Authentication
     pub auth: AuthMethod,
+    /// Last used
+    ///
     /// When a session to this machine was last opened, in milliseconds
     /// since the Unix epoch, on any of the person's devices.
+    #[model(readonly)]
     pub last_used_ms: Option<i64>,
+    /// Group
+    ///
     /// Optional one-line note / tag (e.g. "prod", "lab").
-    pub group: String,
-    /// Whether the user pinned this connection to the top of the list.
+    pub group: Atom,
+    /// Pinned
+    ///
+    /// Pinned to the top of the list.
     pub favorite: bool,
+}
+
+/// The saved connections: the durable, collaborative part of Remote. Two
+/// devices sharing it converge on one machine list. What this device
+/// observes live (reachability), sessions, the form being filled in and
+/// credentials are never part of it.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct Remote {
+    /// Saved connections
+    pub connections: Collection<Connection>,
+}
+
+impl Remote {
+    /// The saved connections, each carrying its id.
+    pub fn list(&self) -> Vec<Connection> {
+        self.connections
+            .iter()
+            .filter_map(|(id, connection)| {
+                Some(Connection {
+                    id: id.as_str().parse().ok()?,
+                    ..connection.clone()
+                })
+            })
+            .collect()
+    }
+
+    /// The item id of the saved connection `id`.
+    pub fn item(id: ConnectionId) -> Id {
+        Id::from_raw(id.to_string())
+    }
 }
 
 impl Connection {
@@ -240,17 +275,17 @@ impl Connection {
             // carries the user-assigned connection name and the protocol;
             // show a stable prefix here while the editable form retains the
             // exact target id.
-            return compact_tilo_endpoint(&self.host);
+            return compact_tilo_endpoint(&self.host.0);
         }
         let host_part = if self.port == 0 || self.port == self.kind.default_port() {
-            self.host.clone()
+            self.host.0.clone()
         } else {
-            format!("{}:{}", self.host, self.port)
+            format!("{}:{}", self.host.0, self.port)
         };
-        if self.user.is_empty() || self.kind != ConnectionKind::Ssh {
+        if self.user.0.is_empty() || self.kind != ConnectionKind::Ssh {
             host_part
         } else {
-            format!("{}@{}", self.user, host_part)
+            format!("{}@{}", self.user.0, host_part)
         }
     }
 
@@ -261,7 +296,18 @@ impl Connection {
     /// availability contract. No connect attempt is made until this returns
     /// `None`.
     pub fn profile_issue(&self) -> Option<&'static str> {
-        profile_issue(self.kind, &self.host, self.auth)
+        profile_issue(self.kind, &self.host.0, self.auth)
+    }
+
+    /// What every saved connection is, however it was written: named, with
+    /// a host, a port its protocol can use, and an authentication it
+    /// supports.
+    fn valid(&self) -> Result<(), Refusal> {
+        let draft = ConnectionDraft::from_connection(self);
+        match draft.problems().into_iter().next() {
+            Some(problem) => Err(Refusal::new(problem)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -339,12 +385,12 @@ impl ConnectionDraft {
     pub fn from_connection(c: &Connection) -> Self {
         Self {
             name: c.name.clone(),
-            host: c.host.clone(),
+            host: c.host.0.clone(),
             port: c.port.to_string(),
-            user: c.user.clone(),
+            user: c.user.0.clone(),
             kind: c.kind,
             auth: c.auth,
-            group: c.group.clone(),
+            group: c.group.0.clone(),
         }
     }
 
@@ -384,17 +430,19 @@ impl ConnectionDraft {
         Connection {
             id,
             name: self.name.trim().to_string(),
-            host: self.host.trim().to_string(),
+            host: Atom(self.host.trim().to_string()),
             port,
-            user: if self.kind == ConnectionKind::Ssh || self.kind == ConnectionKind::Rdp {
-                self.user.trim().to_string()
-            } else {
-                String::new()
-            },
+            user: Atom(
+                if self.kind == ConnectionKind::Ssh || self.kind == ConnectionKind::Rdp {
+                    self.user.trim().to_string()
+                } else {
+                    String::new()
+                },
+            ),
             kind: self.kind,
             auth: self.auth,
             last_used_ms: None,
-            group: self.group.trim().to_string(),
+            group: Atom(self.group.trim().to_string()),
             favorite: false,
         }
     }
@@ -470,9 +518,9 @@ impl Workspace {
                     return true;
                 }
                 c.name.to_lowercase().contains(&q)
-                    || c.host.to_lowercase().contains(&q)
-                    || c.user.to_lowercase().contains(&q)
-                    || c.group.to_lowercase().contains(&q)
+                    || c.host.0.to_lowercase().contains(&q)
+                    || c.user.0.to_lowercase().contains(&q)
+                    || c.group.0.to_lowercase().contains(&q)
                     || c.kind.tag().to_lowercase().contains(&q)
             })
             .collect();
@@ -508,13 +556,13 @@ mod tests {
         Connection {
             id: Uuid::new_v4(),
             name: name.into(),
-            host: "host".into(),
+            host: Atom("host".into()),
             port: kind.default_port(),
-            user: "user".into(),
+            user: Atom("user".into()),
             kind,
             auth: AuthMethod::Password,
             last_used_ms: None,
-            group: String::new(),
+            group: Atom::default(),
             favorite: false,
         }
     }
@@ -524,8 +572,8 @@ mod tests {
         eprintln!("phase address_formats_user_host_port");
         {
             let mut c = sample("s", ConnectionKind::Ssh);
-            c.host = "10.0.0.1".into();
-            c.user = "root".into();
+            c.host = Atom("10.0.0.1".into());
+            c.user = Atom("root".into());
             c.port = 2222;
             assert_eq!(c.address(), "root@10.0.0.1:2222");
             c.port = 22;
@@ -535,8 +583,8 @@ mod tests {
         eprintln!("phase tilo_address_drops_port");
         {
             let mut c = sample("q", ConnectionKind::Tilo);
-            c.host = "studio-node".into();
-            c.user = String::new();
+            c.host = Atom("studio-node".into());
+            c.user = Atom::default();
             c.port = 0;
             assert_eq!(c.address(), "studio-node");
         }
@@ -544,7 +592,7 @@ mod tests {
         eprintln!("phase tilo_address_compacts_a_long_endpoint_without_string_slicing");
         {
             let mut c = sample("q", ConnectionKind::Tilo);
-            c.host = "abcdefghijklmnopqrstuvwxyz".into();
+            c.host = Atom("abcdefghijklmnopqrstuvwxyz".into());
             assert_eq!(c.address(), "abcdefghijkl…");
         }
     }
@@ -601,7 +649,7 @@ mod tests {
         eprintln!("phase q_os_profiles_require_an_exact_device_identity_and_endpoint");
         {
             let mut connection = sample("q", ConnectionKind::Tilo);
-            connection.host = "friendly-name".into();
+            connection.host = Atom("friendly-name".into());
             connection.auth = AuthMethod::Password;
             assert_eq!(
                 connection.profile_issue(),
@@ -614,7 +662,7 @@ mod tests {
                 Some("Tilo device node must be an exact certified endpoint id.")
             );
 
-            connection.host = SecretKey::generate().public().to_string();
+            connection.host = Atom(SecretKey::generate().public().to_string());
             assert_eq!(connection.profile_issue(), None);
         }
 

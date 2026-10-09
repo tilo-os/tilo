@@ -939,7 +939,7 @@ mod tests {
         assert_eq!(runs[0].steps.len(), 1, "one step, for the closed record");
         assert_eq!(runs[0].steps[0].record, record.to_string());
         assert_eq!(runs[0].steps[0].app, "so.tilo.fixture-drafts");
-        assert_eq!(runs[0].steps[0].summary, "Write draft in Inbox");
+        assert_eq!(runs[0].steps[0].sentence(), "Write draft");
         assert_eq!(
             runs[0].steps[0].run.start,
             ui::history_source::entry_id_from_hash(

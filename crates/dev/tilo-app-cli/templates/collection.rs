@@ -74,7 +74,7 @@ impl ResourceApp for App {
         // undone, until Add submits it as one invocation of `add`.
         let next = cx.form::<items::Add>();
         let draft = cx
-            .input(items::Add::paths().title)
+            .input(next.paths().title)
             .with_id("draft-input")
             .with_placeholder("collection-draft-placeholder");
         let add = cx.button("collection-add", next.submit());

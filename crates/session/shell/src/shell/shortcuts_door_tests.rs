@@ -787,10 +787,7 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
     );
     assert_eq!(recorded.apps(), [FIXTURE]);
     assert_eq!(recorded.steps[0].record, RECORD);
-    assert_eq!(
-        recorded.steps[0].summary,
-        "Draft in Inbox, Publish in Inbox"
-    );
+    assert_eq!(recorded.steps[0].sentence(), "Draft, Publish");
 
     // Undoing the run reverts both steps.
     let mut doc = std::mem::take(&mut door.app.doc);

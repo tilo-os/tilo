@@ -783,7 +783,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::doc::sample_project;
+    use crate::seed::sample_project;
 
     #[test]
     #[allow(
@@ -942,7 +942,8 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Grayscale,
                 amount: 1.0,
-            }];
+            }]
+            .into();
             let CompositedFrame::Clip { base: after, .. } = composite(&p, 6.0) else {
                 panic!("expected clip");
             };
@@ -1384,7 +1385,8 @@ mod tests {
                     id: uuid::Uuid::new_v4(),
                     kind: EffectKind::Sepia,
                     amount: 0.5,
-                }];
+                }]
+                .into();
                 c.fade_in = 2.0;
                 c.opacity = 0.5;
             }

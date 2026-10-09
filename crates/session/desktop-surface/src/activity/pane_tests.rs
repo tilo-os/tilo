@@ -389,7 +389,7 @@ mod tests {
                     app: "org.tilo.Writer".to_string(),
                     record: record.to_string(),
                     run: change,
-                    summary: "Rewrote the launch story".to_string(),
+                    what: vec![crate::activity::testing::verb("rewrite the launch story")],
                 }],
             )
             .expect("task receipt");
@@ -484,7 +484,7 @@ mod tests {
                 app: "org.tilo.Writer".to_string(),
                 record: record.to_string(),
                 run: change,
-                summary: "Rewrote the opening".to_string(),
+                what: vec![crate::activity::testing::verb("rewrite the opening")],
             }],
         )
         .expect("task receipt");
@@ -566,7 +566,7 @@ mod tests {
         );
         assert_eq!(pane.agent_name(task), "Quill");
         assert_eq!(pane.issuer_name(task), "Ada");
-        assert_eq!(task.steps[0].summary, "Rewrote the launch story");
+        assert_eq!(task.steps[0].sentence(), "Rewrite the launch story");
         assert!(
             pane.lens_candidates().iter().any(
                 |(lens, label)| *lens == LensSelection::AgentTasks && label == "Agent tasks  1"
@@ -584,7 +584,7 @@ mod tests {
         assert!(description.contains("Ada"));
         assert!(description.contains("Quill"));
         assert!(description.contains("pricing table"));
-        assert!(description.contains("Rewrote the launch story"));
+        assert!(description.contains("Rewrite the launch story"));
     }
 
     #[test]
@@ -1143,11 +1143,10 @@ mod tests {
             resource: None,
             created_at: 42,
             updated_at: 42,
-            audit: vec![tilo_desktop_model::WorkspaceTaskAuditEvent {
-                at: 42,
-                actor: "agent:scribe".into(),
-                summary: "Reviewed section 2".into(),
-            }],
+            audit: vec![
+                tilo_desktop_model::WorkspaceTaskAuditEvent::new(42, "agent:scribe", "report", [])
+                    .noting("Reviewed section 2"),
+            ],
         };
 
         let byline = task_assignee_label(&task, "ada");
@@ -1155,7 +1154,10 @@ mod tests {
         let accessible = task_accessibility_description(&task, event_time, "ada");
 
         assert_eq!(byline, "Agent · scribe");
-        assert!(audit.starts_with("scribe · Agent · Reviewed section 2"));
+        assert!(
+            audit.starts_with("scribe · Agent · Reported progress: Reviewed section 2"),
+            "{audit}"
+        );
         assert!(accessible.contains("Agent · scribe"));
         assert!(accessible.contains("scribe · Agent"));
         for rendered in [&byline, &audit, &accessible] {

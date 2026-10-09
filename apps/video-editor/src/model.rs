@@ -1,13 +1,13 @@
 //! Pure data model for the editor — media bin, tracks, clips, project.
 //!
-//! This layer is rendering- and CRDT-free: it is the in-memory mirror of
-//! the Automerge document (see [`crate::doc`]). The app reloads it from
-//! the document every `sync`, mutates the document on every edit, then
-//! reloads — so this struct is always a faithful projection of shared
-//! state. All the non-trivial editing math (split, trim, move, ripple
-//! duration) lives here behind unit tests so the widget layer stays thin.
+//! The project is the editor's model: `#[derive(Model)]` stores it in the
+//! record's document field by field, media, tracks, clips and markers keyed
+//! by their own ids ([`Keyed`]), so collaborators' edits merge per field.
+//! All the non-trivial editing math (split, trim, move, ripple duration)
+//! lives here behind unit tests; the verbs ([`crate::resource`]) run it.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Id, Identified, Keyed, Model, Ordered};
 use uuid::Uuid;
 
 use crate::curve::Curve;
@@ -32,7 +32,7 @@ pub const MIN_CLIP: f64 = 0.10;
 /// These are render parameters only — the model stores them, the preview
 /// applies them, and they replicate field-by-field through the CRDT so two
 /// peers grading the same clip converge.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Filters {
     pub brightness: f64,
     pub contrast: f64,
@@ -67,7 +67,7 @@ impl Filters {
 /// colour grade ([`Filters`]). Unlike the grade (three fixed axes), effects are
 /// an ordered list the user builds: add, remove and reorder. `amount` is the
 /// effect's intensity in 0..1 (1 = full).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct ClipEffect {
     /// Immutable instance identity. Unlike the kind, this distinguishes two
     /// copies of the same effect and survives reordering, so a resource/action
@@ -80,7 +80,7 @@ pub struct ClipEffect {
 impl ClipEffect {
     pub fn new(kind: EffectKind) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: tilo_resource::fresh_uuid(),
             kind,
             amount: kind.default_amount(),
         }
@@ -89,7 +89,9 @@ impl ClipEffect {
 
 /// The kinds of stackable effect a clip can carry. Each transforms the graded
 /// colour; the preview and the (gated) export apply them in list order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model, ui::tilo_resource::JsonSchema,
+)]
 pub enum EffectKind {
     Grayscale,
     Sepia,
@@ -158,7 +160,7 @@ impl EffectKind {
 ///
 /// Order of operations, source → screen: crop the source, translate the
 /// anchor to the origin, scale, rotate, then offset by `pos`.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Transform {
     /// Horizontal scale about the anchor. 1.0 = the aspect-fit size.
     pub scale_x: f64,
@@ -272,7 +274,7 @@ impl Transform {
 /// same source window occupies half as long on the timeline. This is why
 /// [`Clip::duration`] divides by the rate — speeding a clip up shortens
 /// it, exactly as dragging its speed handle should.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Speed {
     pub rate: f64,
     /// Play the source window backwards. The clip still occupies the same
@@ -346,7 +348,7 @@ impl Speed {
 /// The key runs on the **source** picture, before the grade and the effect
 /// chain — the order a keyer sits in on a real desk, and the reason grading
 /// a keyed clip does not re-open the matte.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct ChromaKey {
     pub enabled: bool,
     /// The colour to remove, in 0..1 RGB. Only its chroma is used; its
@@ -481,7 +483,7 @@ impl ChromaKey {
 }
 
 /// The shape a [`Mask`] cuts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize, Model)]
 pub enum MaskShape {
     /// No mask at all — the layer covers wherever its picture lands.
     #[default]
@@ -537,7 +539,7 @@ impl MaskShape {
 /// For the common case where the mask is wanted *on* the picture rather
 /// than on the frame, [`Mask::over`] seeds one onto a transform's
 /// on-screen box, which is one click in the inspector.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Mask {
     pub shape: MaskShape,
     /// Centre, as an offset from the frame centre in frame widths/heights.
@@ -648,7 +650,7 @@ impl Mask {
 /// A named point of interest, at a time. Timeline markers hang off the
 /// project in absolute seconds; clip markers hang off a clip in clip-local
 /// seconds so they travel with the footage.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Marker {
     pub id: Uuid,
     /// Seconds. Absolute for a project marker, clip-local for a clip one.
@@ -665,7 +667,7 @@ pub struct Marker {
 impl Marker {
     pub fn new(t: f64, name: impl Into<String>, palette: u8) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: tilo_resource::fresh_uuid(),
             t,
             name: name.into(),
             palette,
@@ -675,7 +677,7 @@ impl Marker {
 }
 
 /// Horizontal placement of a title's lines within its box.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
 pub enum TextAlign {
     Left,
     #[default]
@@ -715,7 +717,7 @@ impl TextAlign {
 /// is switched to 4K. The colour is stored explicitly (unlike clip palette
 /// slots) because a title's colour is authored content, not chrome — the
 /// user picked it and it must survive a theme change.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct TextSource {
     pub content: String,
     /// Cap height as a fraction of the frame height. 0.1 ≈ 108px at 1080p.
@@ -778,7 +780,7 @@ impl TextSource {
 /// What a piece of source media is. Drives the bin icon, whether it
 /// lands on a video or audio track by default, and which inspector
 /// controls (opacity vs. volume) apply.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model)]
 pub enum MediaKind {
     Video,
     Audio,
@@ -828,7 +830,9 @@ impl MediaKind {
 
 /// A track is a horizontal lane. Video lanes stack above audio lanes;
 /// `index` orders within a kind (V1 below V2, A1 above A2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model, ui::tilo_resource::JsonSchema,
+)]
 pub enum TrackKind {
     Video,
     Audio,
@@ -850,7 +854,7 @@ impl TrackKind {
 }
 
 /// Edit-point transition applied at a clip's head. `None` is a hard cut.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model)]
 pub enum Transition {
     None,
     CrossDissolve,
@@ -898,7 +902,7 @@ impl Transition {
 
 /// An imported source clip sitting in the media bin. `duration` is the
 /// full source length; clips reference a sub-range of it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct MediaItem {
     pub id: MediaId,
     pub name: String,
@@ -990,7 +994,8 @@ impl MediaItem {
 }
 
 /// A track instance in the timeline.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
+#[model(check = Track::valid)]
 pub struct Track {
     pub id: TrackId,
     pub name: String,
@@ -1143,7 +1148,7 @@ impl Track {
 
 /// A placed clip: a reference to media, positioned on a track, sourcing a
 /// `[in_point, out_point]` window of that media.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Clip {
     pub id: ClipId,
     pub track: TrackId,
@@ -1182,7 +1187,7 @@ pub struct Clip {
     /// Ordered stack of image effects applied after the base grade. Empty by
     /// default; the user adds / removes / reorders them.
     #[serde(default)]
-    pub effects: Vec<ClipEffect>,
+    pub effects: Ordered<ClipEffect>,
     /// Where the picture lands in the frame: crop, scale, rotation,
     /// position, anchor. Identity is the aspect-fit the compositor has
     /// always drawn, so an untouched clip is pixel-identical to before.
@@ -1205,8 +1210,8 @@ pub struct Clip {
     #[serde(default, skip_serializing_if = "ClipAnimation::is_empty")]
     pub anim: ClipAnimation,
     /// Markers pinned to this clip, in clip-local seconds.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub markers: Vec<Marker>,
+    #[serde(default)]
+    pub markers: Keyed<Marker>,
     /// Which **link group** this clip belongs to, if any. Two clips carrying
     /// the same id are linked: the picture and the sound of one shot, which
     /// move, trim, split, delete and re-time together.
@@ -1303,13 +1308,13 @@ impl Default for Clip {
             fade_in: 0.0,
             fade_out: 0.0,
             transition_duration: 0.0,
-            effects: Vec::new(),
+            effects: Ordered::new(),
             transform: Transform::default(),
             speed: Speed::default(),
             key: ChromaKey::default(),
             mask: Mask::default(),
             anim: ClipAnimation::default(),
-            markers: Vec::new(),
+            markers: Keyed::new(),
             link: None,
             link_follows: true,
             sound_split: false,
@@ -1737,7 +1742,7 @@ impl Clip {
     /// The effect stack at `playhead`, with animated intensities applied.
     pub fn effects_at(&self, playhead: f64) -> Vec<ClipEffect> {
         if self.anim.is_empty() {
-            return self.effects.clone();
+            return self.effects.to_vec();
         }
         self.effects
             .iter()
@@ -1806,7 +1811,7 @@ impl Clip {
 }
 
 /// The whole editable project.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Model)]
 pub struct Project {
     pub name: String,
     pub fps: f64,
@@ -1832,12 +1837,12 @@ pub struct Project {
     /// Timeline **out** mark. `None` is the end of the timeline.
     #[serde(default)]
     pub mark_out: Option<f64>,
-    pub media: Vec<MediaItem>,
-    pub tracks: Vec<Track>,
-    pub clips: Vec<Clip>,
+    pub media: Keyed<MediaItem>,
+    pub tracks: Keyed<Track>,
+    pub clips: Keyed<Clip>,
     /// Timeline markers, in absolute seconds, kept sorted by time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub markers: Vec<Marker>,
+    pub markers: Keyed<Marker>,
 }
 
 /// The narrowest and widest frame dimension a project may be set to.
@@ -1864,10 +1869,10 @@ impl Project {
             format_explicit: false,
             mark_in: None,
             mark_out: None,
-            media: Vec::new(),
-            tracks: Vec::new(),
-            clips: Vec::new(),
-            markers: Vec::new(),
+            media: Keyed::new(),
+            tracks: Keyed::new(),
+            clips: Keyed::new(),
+            markers: Keyed::new(),
         }
     }
 
@@ -2171,7 +2176,7 @@ impl Project {
     /// on `track`. Returns the new clip id. Inherits the media's palette.
     pub fn add_clip(&mut self, track: TrackId, media: MediaId, start: f64) -> Option<ClipId> {
         let m = self.media(media)?.clone();
-        let id = Uuid::new_v4();
+        let id = tilo_resource::fresh_uuid();
         self.clips.push(Clip {
             id,
             track,
@@ -2187,7 +2192,7 @@ impl Project {
             fade_in: 0.0,
             fade_out: 0.0,
             transition_duration: 0.0,
-            effects: Vec::new(),
+            effects: Ordered::new(),
             ..Default::default()
         });
         Some(id)
@@ -2209,7 +2214,7 @@ impl Project {
         let split_src = clip.source_time(at);
         let full = clip.duration();
         let mut right = clip.clone();
-        right.id = Uuid::new_v4();
+        right.id = tilo_resource::fresh_uuid();
         right.start = at;
         // Reversed, the tail of the timeline is the *head* of the source,
         // so the cut moves the out-point rather than the in-point.
@@ -2405,7 +2410,7 @@ impl Project {
         if live.len() < 2 {
             return None;
         }
-        let link = Uuid::new_v4();
+        let link = tilo_resource::fresh_uuid();
         for id in &live {
             if let Some(c) = self.clip_mut(*id) {
                 c.link = Some(link);
@@ -2465,8 +2470,8 @@ impl Project {
     /// so neither half points at the other.
     pub fn add_linked_audio(&mut self, video_clip: ClipId, audio_track: TrackId) -> Option<ClipId> {
         let mut audio = self.clip(video_clip)?.clone();
-        let link = Uuid::new_v4();
-        audio.id = Uuid::new_v4();
+        let link = tilo_resource::fresh_uuid();
+        audio.id = tilo_resource::fresh_uuid();
         audio.track = audio_track;
         audio.link = Some(link);
         // The sound carries the shot's timing and level, not its picture: a
@@ -2475,7 +2480,7 @@ impl Project {
         // two halves disagree about what an "identical" clip is.
         audio.filters = Filters::default();
         audio.curves = Curve::default();
-        audio.effects = Vec::new();
+        audio.effects = Ordered::new();
         audio.transform = Transform::default();
         audio.key = ChromaKey::default();
         audio.mask = Mask::default();
@@ -2842,13 +2847,69 @@ impl Project {
     /// original would drag the copy across the timeline. A caller pasting a
     /// whole linked pair re-links the copies to each other afterwards.
     pub fn paste_clip(&mut self, mut clip: Clip, track: TrackId, start: f64) -> ClipId {
-        clip.id = Uuid::new_v4();
+        clip.id = tilo_resource::fresh_uuid();
         clip.track = track;
         clip.start = start.max(0.0);
         clip.link = None;
         let id = clip.id;
         self.clips.push(clip);
         id
+    }
+}
+
+/// The id a clip, track, source or marker is stored and published under.
+pub fn key(id: Uuid) -> Id {
+    Id::from_raw(id.to_string())
+}
+
+/// A source in the bin sorts by its name.
+impl Identified for MediaItem {
+    fn id(&self) -> Id {
+        key(self.id)
+    }
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.name.cmp(&other.name)
+    }
+}
+
+/// An effect is where it was put in its clip's stack.
+impl Identified for ClipEffect {
+    fn id(&self) -> Id {
+        key(self.id)
+    }
+}
+
+/// A track sorts by the lane it occupies.
+impl Identified for Track {
+    fn id(&self) -> Id {
+        key(self.id)
+    }
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.index
+            .cmp(&other.index)
+            .then_with(|| self.name.cmp(&other.name))
+    }
+}
+
+/// A clip sorts by where it sits in time.
+impl Identified for Clip {
+    fn id(&self) -> Id {
+        key(self.id)
+    }
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.start
+            .total_cmp(&other.start)
+            .then_with(|| self.in_point.total_cmp(&other.in_point))
+    }
+}
+
+/// A timeline marker sorts by its time.
+impl Identified for Marker {
+    fn id(&self) -> Id {
+        key(self.id)
+    }
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.t.total_cmp(&other.t)
     }
 }
 

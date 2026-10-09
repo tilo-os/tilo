@@ -449,6 +449,12 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
         T::paths_at(self.child(Segment::Item(id.clone())))
     }
 
+    /// The path of the item `id` itself.
+    #[must_use]
+    pub fn item_path(&self, id: &Id) -> Path<R, T> {
+        self.child(Segment::Item(id.clone()))
+    }
+
     /// Insert `value` at `at` (clamped to the end) under a fresh id minted
     /// when the edit applies.
     #[must_use]

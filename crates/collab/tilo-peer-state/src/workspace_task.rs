@@ -537,11 +537,15 @@ fn manual_command(
                 resource: resource.as_deref().cloned(),
                 created_at: context.now,
                 updated_at: context.now,
-                audit: vec![WorkspaceTaskAuditEvent {
-                    at: context.now,
-                    actor: author.clone(),
-                    summary: format!("Created manual task · {title}"),
-                }],
+                audit: vec![WorkspaceTaskAuditEvent::new(
+                    context.now,
+                    author.clone(),
+                    "create-task",
+                    [
+                        ("title", tilo_actions::Scalar::text(title)),
+                        ("manual", tilo_actions::Scalar::from(true)),
+                    ],
+                )],
             });
             controls.insert(task_id.clone(), WorkspaceTaskControl::default());
             Ok((
@@ -585,11 +589,12 @@ fn manual_command(
             }
             task.resource = Some(resource.as_ref().clone());
             task.updated_at = context.now;
-            task.audit.push(WorkspaceTaskAuditEvent {
-                at: context.now,
-                actor: author.clone(),
-                summary: format!("Attached resource · {}", resource.label),
-            });
+            task.audit.push(WorkspaceTaskAuditEvent::new(
+                context.now,
+                author.clone(),
+                "attach-resource",
+                [("resource", tilo_actions::Scalar::text(&resource.label))],
+            ));
             Ok((
                 task_id.clone(),
                 WorkspaceTaskMutationResult::ResourceAttached {
@@ -633,11 +638,12 @@ fn set_execution_budget(
     }
     control.execution_budget = observed.2;
     task.updated_at = context.now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: context.now,
-        actor: actor.clone(),
-        summary: "Configured bounded task execution policy".into(),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        context.now,
+        actor.clone(),
+        "set-execution-budget",
+        [],
+    ));
     Ok((
         task_id.into(),
         WorkspaceTaskMutationResult::ExecutionBudgetSet {
@@ -705,11 +711,12 @@ fn queue(
         resource,
         created_at: context.now,
         updated_at: context.now,
-        audit: vec![WorkspaceTaskAuditEvent {
-            at: context.now,
-            actor: author.clone(),
-            summary: format!("Created task · {title}"),
-        }],
+        audit: vec![WorkspaceTaskAuditEvent::new(
+            context.now,
+            author.clone(),
+            "create-task",
+            [("title", tilo_actions::Scalar::text(title))],
+        )],
     });
     controls.insert(task_id.clone(), WorkspaceTaskControl::default());
     Ok((
@@ -788,11 +795,15 @@ fn start_run(
     control.execution = None;
     task.status = WorkspaceTaskStatus::InProgress;
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: format!("agent:{agent_id}"),
-        summary: format!("Started run {epoch}"),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        now,
+        format!("agent:{agent_id}"),
+        "start-run",
+        [(
+            "run",
+            tilo_actions::Scalar::of(&epoch).unwrap_or_else(|| tilo_actions::Scalar::from(0)),
+        )],
+    ));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::RunStarted {
@@ -929,11 +940,15 @@ fn direct(
             now,
         ));
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: author.clone(),
-        summary: format!("Added direction {revision}"),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        now,
+        author.clone(),
+        "add-direction",
+        [(
+            "revision",
+            tilo_actions::Scalar::of(&revision).unwrap_or_else(|| tilo_actions::Scalar::from(0)),
+        )],
+    ));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::DirectionAdded {
@@ -989,11 +1004,15 @@ fn applied(
     }
     run.applied_direction_revision = revision;
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: format!("agent:{agent_id}"),
-        summary: format!("Applied direction {revision}"),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        now,
+        format!("agent:{agent_id}"),
+        "apply-direction",
+        [(
+            "revision",
+            tilo_actions::Scalar::of(&revision).unwrap_or_else(|| tilo_actions::Scalar::from(0)),
+        )],
+    ));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::DirectionApplied {
@@ -1042,11 +1061,15 @@ fn finish(
     control.active_run = None;
     control.execution = None;
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: format!("agent:{agent_id}"),
-        summary: summary.to_owned(),
-    });
+    task.audit.push(
+        WorkspaceTaskAuditEvent::new(
+            now,
+            format!("agent:{agent_id}"),
+            "finish",
+            [("outcome", tilo_actions::Scalar::from(task.status.key()))],
+        )
+        .noting(summary),
+    );
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::Finished {
@@ -1081,11 +1104,8 @@ fn abandon(
     control.execution = None;
     task.status = WorkspaceTaskStatus::Waiting;
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: "host".into(),
-        summary: reason.to_owned(),
-    });
+    task.audit
+        .push(WorkspaceTaskAuditEvent::new(now, "host", "abandon", []).noting(reason));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::Abandoned {
@@ -1115,11 +1135,12 @@ fn retry(
     }
     task.status = WorkspaceTaskStatus::Queued;
     task.updated_at = now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: now,
-        actor: author.clone(),
-        summary: "Queued retry".into(),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        now,
+        author.clone(),
+        "retry",
+        [],
+    ));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::Queued {
@@ -1156,11 +1177,12 @@ fn cancel_for_run(
     control.execution = None;
     task.status = WorkspaceTaskStatus::Cancelled;
     task.updated_at = context.now;
-    task.audit.push(WorkspaceTaskAuditEvent {
-        at: context.now,
-        actor: author.clone(),
-        summary: "Cancelled task".into(),
-    });
+    task.audit.push(WorkspaceTaskAuditEvent::new(
+        context.now,
+        author.clone(),
+        "cancel",
+        [],
+    ));
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::Finished {

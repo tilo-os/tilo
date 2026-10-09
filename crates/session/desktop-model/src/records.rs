@@ -20,31 +20,30 @@ impl Workspace {
         }
         task.status = status;
         task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent {
-            at: now,
-            actor: actor.to_string(),
-            summary: format!("Status · {}", task.status.label()),
-        });
+        task.audit.push(WorkspaceTaskAuditEvent::new(
+            now,
+            actor,
+            "set-status",
+            [("status", tilo_actions::Scalar::from(status.key()))],
+        ));
         Some(task)
     }
 
-    /// Append one audit event to task `task_id` at `now` (Unix seconds)
-    /// without changing its state: agent progress is shared audit data, not
-    /// a substitute for a document write. The task, or `None` when absent.
+    /// Append the progress `actor` reports, in their own words, to task
+    /// `task_id`'s audit at `now` (Unix seconds) without changing its state:
+    /// agent progress is shared audit data, not a substitute for a document
+    /// write. The task, or `None` when absent.
     pub fn append_task_audit_at(
         &mut self,
         task_id: &str,
         actor: &str,
-        summary: impl Into<String>,
+        progress: impl Into<String>,
         now: i64,
     ) -> Option<&WorkspaceTask> {
         let task = self.tasks.iter_mut().find(|task| task.id == task_id)?;
         task.updated_at = now;
-        task.audit.push(WorkspaceTaskAuditEvent {
-            at: now,
-            actor: actor.to_string(),
-            summary: summary.into(),
-        });
+        task.audit
+            .push(WorkspaceTaskAuditEvent::new(now, actor, "report", []).noting(progress));
         Some(task)
     }
 }
@@ -81,7 +80,12 @@ mod tests {
         assert_eq!(task.updated_at, 42);
         let event = task.audit.last().unwrap();
         assert_eq!((event.at, event.actor.as_str()), (42, "person-1"));
-        assert_eq!(event.summary, format!("Status · {}", target.label()));
+        assert_eq!(event.action(), "set-status");
+        assert_eq!(
+            event.entry().what,
+            Some(event.what.clone()),
+            "the event reads as a history entry"
+        );
         // The same status again changes nothing and records nothing.
         assert!(
             workspace
@@ -105,7 +109,9 @@ mod tests {
             .unwrap();
         assert_eq!(task.status, status);
         assert_eq!(task.updated_at, 7);
-        assert_eq!(task.audit.last().unwrap().summary, "Wrote the outline");
+        let event = task.audit.last().unwrap();
+        assert_eq!(event.action(), "report");
+        assert_eq!(event.note.as_deref(), Some("Wrote the outline"));
         assert!(
             workspace
                 .append_task_audit_at("absent", "agent-1", "x", 8)

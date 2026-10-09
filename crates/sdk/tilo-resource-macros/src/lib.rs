@@ -504,20 +504,32 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         }
         checks.push(quote!(#krate::Model::check(&self.#ident)?;));
         checks_const.push(quote!(<#ty as #krate::Model>::CHECKS));
-        if last_ident(ty).is_some_and(|(name, _)| name == "Collection") {
+        let keyed = last_ident(ty).is_some_and(|(name, _)| name == "Keyed" || name == "Ordered");
+        if keyed || last_ident(ty).is_some_and(|(name, _)| name == "Collection") {
+            // Each item with its id: a collection's ids are its own, keyed
+            // and ordered items carry theirs.
+            let (items, find) = if keyed {
+                (
+                    quote!(self.#ident.iter().map(|item| (#krate::Identified::id(item), item))),
+                    quote!(self.#ident.find(id)),
+                )
+            } else {
+                (
+                    quote!(self.#ident.iter().map(|(id, item)| (::core::clone::Clone::clone(id), item))),
+                    quote!(self.#ident.get(id)),
+                )
+            };
             collection_names.push(field_name.clone());
-            item_label_arms.push(quote!(#field_name => self
-                .#ident
-                .get(id)
+            item_label_arms.push(quote!(#field_name => #find
                 .map(|item| #krate::__private::item_label(id, item)),));
             item_searches.push(quote! {
-                for (id, item) in self.#ident.iter() {
+                for (id, item) in #items {
                     if let ::core::option::Option::Some(label) = #krate::Model::label(item) {
                         let mut text = ::std::vec::Vec::new();
                         #krate::Model::collect_text(item, &mut text);
                         found.push(#krate::items::ItemText {
                             field: #field_name,
-                            id: ::core::clone::Clone::clone(id),
+                            id,
                             label,
                             text: text.join("\n"),
                         });
@@ -526,12 +538,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             });
             collections.push(quote!(#krate::items::ItemCollection {
                 field: #field_name,
-                items: self
-                    .#ident
-                    .iter()
+                items: #items
                     .take(#krate::items::ITEM_PAGE)
                     .map(|(id, item)| {
-                        (::core::clone::Clone::clone(id), #krate::__private::item_label(id, item))
+                        let label = #krate::__private::item_label(&id, item);
+                        (id, label)
                     })
                     .collect(),
             }));
@@ -983,14 +994,17 @@ fn last_ident(ty: &Type) -> Option<(String, Option<&Type>)> {
     Some((segment.ident.to_string(), inner))
 }
 
-fn param_type(ty: &Type) -> (Tokens, bool) {
+/// The declared type of a parameter of Rust type `ty`, and whether it is
+/// optional. An app's own type is what its schema says it is written as
+/// when `schema` (the type implements `JsonSchema`), else an object.
+fn param_type(ty: &Type, schema: bool) -> (Tokens, bool) {
     let krate = krate();
     let pt = quote!(#krate::__private::ParamType);
     let (name, inner) = last_ident(ty).unwrap_or_default();
     match name.as_str() {
         "Option" => inner.map_or_else(
             || (quote!(#pt::Object), true),
-            |inner| (param_type(inner).0, true),
+            |inner| (param_type(inner, schema).0, true),
         ),
         "String" | "Id" | "Uuid" | "Atom" => (quote!(#pt::Text), false),
         "f32" | "f64" => (quote!(#pt::Number), false),
@@ -999,7 +1013,13 @@ fn param_type(ty: &Type) -> (Tokens, bool) {
         }
         "bool" => (quote!(#pt::Boolean), false),
         "Vec" => (quote!(#pt::Array), false),
-        _ => (quote!(#pt::Object), false),
+        _ if !schema => (quote!(#pt::Object), false),
+        _ => (
+            quote!(#krate::__private::param_type_of(
+                &<#ty as #krate::JsonSchema>::json_schema()
+            )),
+            false,
+        ),
     }
 }
 

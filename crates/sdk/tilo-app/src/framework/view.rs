@@ -376,13 +376,13 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// person picks the hit, or when an agent invokes the resource's `open`
     /// action. Select the item, switch to its page, scroll it into view:
     /// set the [`LocalState`]s that show it, as the person's own input would.
-    pub fn on_open(&self, mut open: impl FnMut(&str) + 'static) {
+    ///
+    /// `open` may refuse an anchor it cannot show (a row that is gone) by
+    /// returning `Err`; the person or agent is told why.
+    pub fn on_open<O: tilo_resource::Outcome>(&self, mut open: impl FnMut(&str) -> O + 'static) {
         self.stages.push_opener(
             self.alive.clone(),
-            Box::new(move |anchor| {
-                open(anchor);
-                Ok(())
-            }),
+            Box::new(move |anchor| open(anchor).into_result().map_err(|refusal| refusal.0)),
         );
     }
 
@@ -597,7 +597,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// The form of the verb whose parameters are `P`
     /// (`cx.form::<bookmarks::Add>()`): local values, never synced or
     /// undone, that controls bind to with the parameters' paths
-    /// (`cx.input(bookmarks::Add::paths().url)`) and a button submits as one
+    /// (`cx.input(form.paths().url)`) and a button submits as one
     /// invocation (`cx.button("bookmarks-add", form.submit())`). The same
     /// form is answered for `P` everywhere in this scope.
     pub fn form<P: Params<Resource = R>>(&self) -> Form<P> {
@@ -607,7 +607,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// A text field for the text at `field`: a path into the record, whose
     /// committed edits replace it ([`Path::replace`]; the keystrokes of one
     /// word are one undo step), or into a form ([`Self::form`]).
-    pub fn input<M>(&self, field: impl Bound<R, String, M>) -> TextInput {
+    pub fn input<M>(&self, field: impl Bindable<R, String, M>) -> TextInput {
         match field.attach(self, Path::replace) {
             Attached::Record { id, state, binding } => {
                 let input = TextInput::from_state(&state).with_id(&id);
@@ -625,7 +625,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     pub fn checkbox<M>(
         &self,
         label: impl Into<LabelKey>,
-        field: impl Bound<R, bool, M>,
+        field: impl Bindable<R, bool, M>,
     ) -> Checkbox {
         let label: LabelKey = label.into();
         match field.attach(self, Path::set) {
@@ -648,7 +648,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     pub fn control<V, C, M>(
         &self,
         make: impl FnOnce(&LocalState<V>) -> C,
-        field: impl Bound<R, V, M>,
+        field: impl Bindable<R, V, M>,
     ) -> C
     where
         V: Settable + 'static,
@@ -1173,7 +1173,7 @@ where
 /// What a control shows and changes: a field of the record, by its
 /// [`Path`], or a field of a form ([`ViewCx::form`]), by the path into the
 /// verb's parameters. `M` tells the two apart and is always inferred.
-pub trait Bound<R: Resource, V, M>: Sized {
+pub trait Bindable<R: Resource, V, M>: Sized {
     #[doc(hidden)]
     fn attach<T: 'static>(
         self,
@@ -1182,7 +1182,7 @@ pub trait Bound<R: Resource, V, M>: Sized {
     ) -> Attached<V>;
 }
 
-impl<R, V> Bound<R, V, RecordField> for Path<R, V>
+impl<R, V> Bindable<R, V, RecordField> for Path<R, V>
 where
     R: Resource<State = R> + Model,
     V: PartialEq + Default + Clone + Send + Sync + 'static,
@@ -1199,7 +1199,7 @@ where
     }
 }
 
-impl<R, P, V> Bound<R, V, FormField> for Path<P, V>
+impl<R, P, V> Bindable<R, V, FormField> for Path<P, V>
 where
     R: Resource,
     P: Params<Resource = R>,

@@ -540,7 +540,8 @@ fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
                 id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Invert,
                 amount: 1.0,
-            }];
+            }]
+            .into();
             p
         };
 
@@ -1645,7 +1646,8 @@ fn plate_stack(name: &str) -> (Project, uuid::Uuid) {
         id: uuid::Uuid::new_v4(),
         kind: EffectKind::Invert,
         amount: 1.0,
-    }];
+    }]
+    .into();
     (p, over)
 }
 

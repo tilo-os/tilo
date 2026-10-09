@@ -1117,7 +1117,8 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 kind: EffectKind::Vignette,
                 amount: 1.0,
-            }];
+            }]
+            .into();
             let vign = c.frame(&p, 1.0, 64, 64, &mut NoSources);
 
             let corner_before = px(&plain, 64, 1, 62).luma();
@@ -1155,7 +1156,8 @@ mod tests {
                     kind: EffectKind::Sepia,
                     amount: 1.0,
                 },
-            ];
+            ]
+            .into();
             let gray_then_sepia = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
             p.clip_mut(cid).unwrap().move_effect_down(0);
             let sepia_then_gray = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
@@ -1210,7 +1212,8 @@ mod tests {
                     kind: EffectKind::Vignette,
                     amount: 0.5,
                 },
-            ];
+            ]
+            .into();
             let mut c = compositor();
             let a = c.frame(&p, 3.25, 48, 48, &mut NoSources);
             let b = c.frame(&p, 3.25, 48, 48, &mut NoSources);
@@ -1695,7 +1698,7 @@ mod tests {
         // at two sizes, alternating, and require each to be identical to what a
         // compositor that had only ever seen that size produces.
         {
-            let p = crate::doc::sample_project();
+            let p = crate::seed::sample_project();
             let small = (160u32, 90u32);
             let large = (320u32, 180u32);
 
@@ -1997,7 +2000,8 @@ mod tests {
                     id: uuid::Uuid::new_v4(),
                     kind: EffectKind::Invert,
                     amount: 1.0,
-                }];
+                }]
+                .into();
             }
 
             let mut src =

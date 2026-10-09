@@ -21,7 +21,7 @@
 //!     the ordinary action pipeline — so opening a project is one undo
 //!     boundary and replicates to a peer like any other edit.
 //!   * **It absorbs model growth for free.** The project's reader,
-//!     [`VideoDoc::load_project`](crate::doc::VideoDoc::load_project), reads
+//!     [`Project`]'s own read, reads
 //!     every field with an explicit default for "this document predates the
 //!     field". The model grew
 //!     repeatedly in a single day — `solo`, `transition_duration`, `text`,
@@ -75,7 +75,6 @@ use std::path::Path;
 use ui::tilo_resource::Replica;
 
 use crate::model::Project;
-use crate::resource::VideoProject;
 
 /// First nine bytes of every project file.
 pub const MAGIC: &[u8; 9] = b"TiloVEPRJ";
@@ -157,9 +156,12 @@ impl std::error::Error for ProjectFileError {}
 /// [`ProjectFileError::Corrupt`] when the project does not apply to a fresh
 /// document.
 pub fn encode(project: &Project) -> Result<Vec<u8>, ProjectFileError> {
-    let mut replica = Replica::<VideoProject>::new();
+    let mut replica = Replica::<Project>::new();
     replica
-        .apply_action(&crate::actions::load_project_action(project))
+        .apply(
+            ui::tilo_resource::Invoke::edit(&crate::resource::load_project(project))
+                .map_err(|e| ProjectFileError::Corrupt(e.to_string()))?,
+        )
         .map_err(|e| ProjectFileError::Corrupt(e.to_string()))?;
     let payload = replica.save();
 
@@ -219,7 +221,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
     let Some(payload) = bytes.get(HEADER_LEN..HEADER_LEN + declared) else {
         return Err(ProjectFileError::Truncated { declared, present });
     };
-    Replica::<VideoProject>::load(payload)
+    Replica::<Project>::load(payload)
         .and_then(|replica| replica.state())
         .map_err(|e| ProjectFileError::Corrupt(e.to_string()))
 }

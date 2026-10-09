@@ -721,7 +721,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             let name = &param.public;
             let ty = &param.ty;
             let description = &param.description;
-            let (param_ty, optional) = param_type(ty);
+            let (param_ty, optional) = param_type(ty, true);
             let example = param.example.as_ref().map_or_else(
                 || quote!(::core::option::Option::None),
                 |example| {

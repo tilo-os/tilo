@@ -20,6 +20,17 @@ pub enum WorkspaceTaskStatus {
 }
 
 impl WorkspaceTaskStatus {
+    /// The status as task history records it.
+    pub const fn key(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::InProgress => "in-progress",
+            Self::Waiting => "waiting",
+            Self::Done => "done",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Queued => "Queued",
@@ -83,11 +94,72 @@ pub struct WorkspaceAgentRequest {
     pub invocation: tilo_actions::InvocationId,
 }
 
+/// One event of a task's audit trail, as data: what was done to the task
+/// (a verb of [`TASK_KIND`] with its plain arguments), and what its actor
+/// wrote, when it wrote anything. Readers render the sentence.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceTaskAuditEvent {
     pub at: i64,
     pub actor: String,
-    pub summary: String,
+    pub what: tilo_actions::Did,
+    /// The actor's own words: an agent's outcome or progress, a reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// The resource kind task audit verbs are published on.
+pub const TASK_KIND: &str = "workspace-task";
+
+impl WorkspaceTaskAuditEvent {
+    /// `actor` did `action` (a task verb such as `create-task`) with the
+    /// plain `args`, at `at` (Unix seconds).
+    pub fn new(
+        at: i64,
+        actor: impl Into<String>,
+        action: &str,
+        args: impl IntoIterator<Item = (&'static str, tilo_actions::Scalar)>,
+    ) -> Self {
+        Self {
+            at,
+            actor: actor.into(),
+            what: tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(
+                    crate::workspace::WORKSPACE_GOVERNANCE_APP_ID,
+                    TASK_KIND,
+                    action,
+                ),
+                args.into_iter()
+                    .map(|(name, value)| (name.to_owned(), value)),
+            ),
+            note: None,
+        }
+    }
+
+    /// With the actor's own words.
+    #[must_use]
+    pub fn noting(mut self, note: impl Into<String>) -> Self {
+        let note = note.into();
+        self.note = (!note.trim().is_empty()).then_some(note);
+        self
+    }
+
+    /// The verb the event records.
+    pub fn action(&self) -> &str {
+        match &self.what {
+            tilo_actions::Did::Verb(verb) => &verb.action.action,
+            _ => "",
+        }
+    }
+
+    /// The event as a history entry a reader renders.
+    pub fn entry(&self) -> tilo_actions::ActionContext {
+        tilo_actions::ActionContext::for_app(
+            crate::workspace::WORKSPACE_GOVERNANCE_APP_ID,
+            "Workspace",
+        )
+        .with_described(tilo_actions::Described::new(self.what.clone()))
+        .with_invoker(tilo_actions::ActionInvoker::actor(self.actor.clone()))
+    }
 }
 
 /// One person-authored revision to a task's current instructions.

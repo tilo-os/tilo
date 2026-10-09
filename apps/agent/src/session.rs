@@ -2481,7 +2481,13 @@ impl Session {
         Some(context)
     }
 
-    fn capture_step(&mut self, app: &str, record: &str, summary: String, end: ui::HistoryEntryId) {
+    fn capture_step(
+        &mut self,
+        app: &str,
+        record: &str,
+        what: tilo_actions::Described,
+        end: ui::HistoryEntryId,
+    ) {
         let Some(run) = self.active_run.as_mut() else {
             return;
         };
@@ -2489,7 +2495,7 @@ impl Session {
             app: app.to_string(),
             record: record.to_string(),
             run: ui::ChangeRun::single(end),
-            summary,
+            what: vec![what],
         });
     }
 
@@ -2857,7 +2863,13 @@ impl Session {
             {
                 let record = self.cfg.record.as_deref().unwrap_or_default().to_string();
                 let app = self.cfg.app_id.clone();
-                self.capture_step(&app, &record, describe(action), end);
+                let what = serde_json::to_value(action)
+                    .ok()
+                    .and_then(|value| {
+                        tilo_actions::Described::from_value("rich-text", &value, Some(&app))
+                    })
+                    .unwrap_or_else(|| tilo_actions::Described::new(tilo_actions::Did::group([])));
+                self.capture_step(&app, &record, what, end);
             }
         } else {
             let _ = self.link.send(&CollabRequest::Presence {

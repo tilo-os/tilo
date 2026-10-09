@@ -331,6 +331,32 @@ activity-task-mark-done = Mark done
 activity-task-cancel = Cancel task
 activity-task-retry-agent = Retry agent
 activity-task-audit-trail = AUDIT TRAIL
+activity-task-audit-noted = { $what }: { $note }
+workspace-create-task = { $manual ->
+    [true] Created the task “{ $title }” to do by hand
+   *[false] Created the task “{ $title }”
+}
+workspace-attach-resource = Attached { $resource } to the task
+workspace-set-execution-budget = Set how long the task may run
+workspace-start-run = Started run { $run }
+workspace-add-direction = Gave direction { $revision }
+workspace-apply-direction = Followed direction { $revision }
+workspace-finish = { $outcome ->
+    [done] Finished the task
+    [waiting] Stopped to wait
+   *[cancelled] Cancelled the task
+}
+workspace-abandon = Gave up the run
+workspace-retry = Queued the task again
+workspace-cancel = Cancelled the task
+workspace-report = Reported progress
+workspace-set-status = { $status ->
+    [queued] Queued the task
+    [in-progress] Started the task
+    [waiting] Set the task to waiting
+    [done] Marked the task done
+   *[cancelled] Cancelled the task
+}
 activity-task-unassigned-by = Unassigned · created by { $creator }
 activity-task-agent-badge = Agent · { $name }
 activity-task-status-queued = Queued

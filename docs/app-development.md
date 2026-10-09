@@ -1025,7 +1025,7 @@ impl ResourceApp for App {
         });
         Box::new(ui::column![
             cx.input(p.title).with_id("title"),
-            ui::row![cx.input(list::Add::paths().title), cx.button(keys::LIST_ADD, next.submit())],
+            ui::row![cx.input(next.paths().title), cx.button(keys::LIST_ADD, next.submit())],
             books,
         ])
     }
