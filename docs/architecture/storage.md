@@ -2060,7 +2060,7 @@ device is clean and does not rewrite the index (tested,
 | `crates/packaging/tilo-app-package` | signing, manifest, trust, `Collection` | `Collection` v2 (content ids and modes), thin `.tapp` |
 | `crates/packaging/launcher` | sandbox, binds, per-room app dir | source directory moves to the store volume |
 | `crates/runtime/runtime-fs/src/native.rs` | cap-std granted host directories | unchanged |
-| `crates/hosting/tilo-relay` | host, mesh placement, `ReplicationIntent` | stores content and record operations as a normal replica; push target |
+| `crates/hosting/tilo-relay` | host, device mesh policy, `ReplicationIntent` | stores content and record operations as a normal replica; push target |
 
 ### Merge
 
