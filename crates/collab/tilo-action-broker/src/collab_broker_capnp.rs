@@ -9294,6 +9294,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(snapshot) => Arc::<str>::from(snapshot),
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
+        // The session's normal tracing filter passes only errors. Its flight
+        // recorder captures stderr; report numeric metadata without changing
+        // that filter or exporting any authorized catalogue contents.
+        eprintln!(
+            "collab: initial authorized action catalogue snapshot event_kind=ActionCatalogue serialized_bytes={}",
+            initial.len()
+        );
         let (tx, rx) = watch::channel(Some(initial));
         if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
             subscribers.insert(self.peer_id, (cluster, actor, tx));
