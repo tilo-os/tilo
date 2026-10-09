@@ -579,6 +579,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label_part: #label_part,
             quiet_remove: #quiet_remove,
             schema: <#ty as #krate::Model>::value_schema,
+            text: #krate::stored_text::<#ty>,
         }));
         path_fields.push(quote!(#field_vis #ident: <#ty as #krate::Model>::Paths<__R>));
         path_inits.push(quote!(#ident: <#ty as #krate::Model>::paths_at(

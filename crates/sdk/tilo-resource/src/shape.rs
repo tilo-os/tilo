@@ -71,6 +71,26 @@ pub struct FieldShape {
     pub quiet_remove: bool,
     /// The JSON Schema of the field's value ([`Model::value_schema`](crate::Model::value_schema)).
     pub schema: fn() -> serde_json::Value,
+    /// The first line of the field's text as stored ([`stored_text`]): what
+    /// a label made of it reads, rich text included.
+    pub text: StoredText,
+}
+
+/// Reads the first line of a field's text from where it is stored.
+pub type StoredText =
+    fn(&crate::model::Doc, &automerge::Value<'_>, &automerge::ObjId) -> Option<String>;
+
+/// The first non-empty line of the text a `T` stored as `value` at `id`
+/// carries, as [`Model::label`](crate::Model::label) reads it from the value.
+pub fn stored_text<T: crate::Model>(
+    doc: &crate::model::Doc,
+    value: &automerge::Value<'_>,
+    id: &automerge::ObjId,
+) -> Option<String> {
+    // A value that loads on demand is read whole first.
+    let mut stored = T::load(doc, value, id).ok()?;
+    stored.read_whole(doc).ok()?;
+    crate::__private::first_line(&stored)
 }
 
 /// Two fields are the same field when everything but their value schema's

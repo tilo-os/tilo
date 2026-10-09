@@ -474,6 +474,26 @@ fn an_agents_changes_read_as_sentences() {
             "Renamed the deck",
         ]
     );
+    // An element's edits and its item verbs are about the element, named by
+    // its rich-text body's first line, not by its id or its slide's.
+    let named: Vec<(String, String)> = app
+        .versions()
+        .into_iter()
+        .filter_map(|version| version.context)
+        .filter(|entry| {
+            entry
+                .invoker
+                .as_ref()
+                .is_some_and(|invoker| invoker.actor == "agent:claude")
+        })
+        .skip(2)
+        .take(3)
+        .map(|entry| {
+            let item = entry.item.expect("an element's change names the element");
+            (item.id, item.label)
+        })
+        .collect();
+    assert_eq!(named, vec![(title.clone(), "Budget".to_owned()); 3]);
 }
 
 /// The deck's verbs answer their caller with the outline of the deck they

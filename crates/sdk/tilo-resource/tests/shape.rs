@@ -54,6 +54,7 @@ fn a_derived_record_lists_its_stored_fields() {
             label_part: 0,
             quiet_remove: false,
             schema: <String as tilo_resource::Model>::value_schema,
+            text: tilo_resource::stored_text::<String>,
         },
         FieldShape {
             key: "limit",
@@ -69,6 +70,7 @@ fn a_derived_record_lists_its_stored_fields() {
             label_part: 0,
             quiet_remove: false,
             schema: <String as tilo_resource::Model>::value_schema,
+            text: tilo_resource::stored_text::<String>,
         },
     ]);
     const META: Shape = Shape::Record(&[FieldShape {
@@ -85,6 +87,7 @@ fn a_derived_record_lists_its_stored_fields() {
         label_part: 0,
         quiet_remove: false,
         schema: <String as tilo_resource::Model>::value_schema,
+        text: tilo_resource::stored_text::<String>,
     }]);
     assert_eq!(
         Board::shape(),
@@ -103,6 +106,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label_part: 0,
                 quiet_remove: false,
                 schema: <String as tilo_resource::Model>::value_schema,
+                text: tilo_resource::stored_text::<String>,
             },
             FieldShape {
                 key: "cols",
@@ -118,6 +122,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label_part: 0,
                 quiet_remove: false,
                 schema: <String as tilo_resource::Model>::value_schema,
+                text: tilo_resource::stored_text::<String>,
             },
             FieldShape {
                 key: "archived",
@@ -133,6 +138,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label_part: 0,
                 quiet_remove: false,
                 schema: <String as tilo_resource::Model>::value_schema,
+                text: tilo_resource::stored_text::<String>,
             },
             FieldShape {
                 key: "filter",
@@ -148,6 +154,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label_part: 0,
                 quiet_remove: false,
                 schema: <String as tilo_resource::Model>::value_schema,
+                text: tilo_resource::stored_text::<String>,
             },
         ])),
     );
