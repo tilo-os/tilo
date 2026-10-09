@@ -12,6 +12,39 @@ use tokio::sync::mpsc as async_mpsc;
 const DEADLINE: Duration = Duration::from_secs(3);
 type ProgressReply =
     std::pin::Pin<Box<dyn std::future::Future<Output = (u64, Result<Snapshot, String>)>>>;
+/// Per-command transport evidence, containing no PCM, route or identity data.
+#[derive(Default)]
+struct DispatchProgress {
+    requests: u32,
+    replies: u32,
+    backpressure: u32,
+    last: Option<Snapshot>,
+}
+impl DispatchProgress {
+    fn timeout(&self, command: &Command) {
+        let operation = match command {
+            Command::Open {} => "open",
+            Command::Write { .. } => "write",
+            Command::Pause { .. } => "pause",
+            Command::Volume { .. } => "volume",
+            Command::Flush { .. } => "flush",
+            Command::Status { .. } => "status",
+            Command::Close { .. } => "close",
+        };
+        tracing::warn!(
+            target: "tilo::audio_output",
+            operation,
+            requests = self.requests,
+            replies = self.replies,
+            backpressure = self.backpressure,
+            queued_frames = self.last.as_ref().map(|last| last.queued_frames),
+            rendered_frames = self.last.as_ref().map(|last| last.rendered_frames),
+            paused = self.last.as_ref().map(|last| last.paused),
+            ready = self.last.as_ref().map(|last| last.ready),
+            "governed audio command reached its existing deadline"
+        );
+    }
+}
 struct Job {
     command: Command,
     reply: mpsc::SyncSender<Result<Snapshot, String>>,
@@ -91,12 +124,16 @@ pub(super) fn install(channel: runtime_collab::ChannelHandle) {
             let Some(job) = job else {
                 break;
             };
+            let mut transport = DispatchProgress::default();
             let result = tokio::time::timeout(
                 DEADLINE,
-                dispatch(&channel, &job.command, &mut stop_receive),
+                dispatch(&channel, &job.command, &mut stop_receive, &mut transport),
             )
             .await
-            .map_err(|_| "Governed audio output timed out".to_string())
+            .map_err(|_| {
+                transport.timeout(&job.command);
+                "Governed audio output timed out".to_string()
+            })
             .and_then(|result| result);
             if let Ok(snapshot) = &result {
                 // Even a flush/pause acknowledgment can supersede a status
@@ -127,16 +164,21 @@ fn dispatch<'a>(
     channel: &'a runtime_collab::ChannelHandle,
     command: &'a Command,
     urgent: &'a mut async_mpsc::Receiver<Job>,
+    progress: &'a mut DispatchProgress,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Snapshot, String>> + 'a>> {
     Box::pin(async move {
         loop {
+            progress.requests = progress.requests.saturating_add(1);
             let snapshot = channel
                 .audio_output_command(command)
                 .await
                 .map_err(|error| error.to_string())?;
+            progress.replies = progress.replies.saturating_add(1);
+            progress.last = Some(snapshot.clone());
             if let Command::Write { sequence, .. } = command
                 && snapshot.accepted_sequence < *sequence
             {
+                progress.backpressure = progress.backpressure.saturating_add(1);
                 // A full PCM queue must not hold pause, seek or teardown behind its retry.
                 tokio::select! { biased;
                     Some(job) = urgent.recv() => {
@@ -520,6 +562,53 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn governed_output_timeout_distinguishes_rpc_wait_from_queue_backpressure() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for delayed_rpc in [true, false] {
+                    let client = if delayed_rpc {
+                        capnp_rpc::new_client(DelayedProgressPeer {
+                            status_started: Rc::new(tokio::sync::Notify::new()),
+                            accepted: Rc::new(RefCell::new(Vec::new())),
+                            generation: Rc::new(Cell::new(7)),
+                            fail_progress: false,
+                        })
+                    } else {
+                        capnp_rpc::new_client(Peer::default())
+                    };
+                    let channel = runtime_collab::CollabClient::from_raw(client)
+                        .join_channel("fixture", &[])
+                        .await
+                        .unwrap();
+                    let (_urgent, mut receive) = async_mpsc::channel(8);
+                    let write = Command::Write {
+                        generation: 7,
+                        sequence: 1,
+                        samples: vec![16384; 1920],
+                    };
+                    let mut transport = DispatchProgress::default();
+                    let result = tokio::time::timeout(
+                        Duration::from_millis(50),
+                        dispatch(&channel, &write, &mut receive, &mut transport),
+                    )
+                    .await;
+                    assert!(result.is_err());
+                    if delayed_rpc {
+                        assert_eq!(transport.requests, 1);
+                        assert_eq!(transport.replies, 0);
+                        assert_eq!(transport.backpressure, 0);
+                        assert!(transport.last.is_none());
+                    } else {
+                        assert!(transport.replies > 0);
+                        assert!(transport.backpressure > 0);
+                        assert!(transport.last.is_some());
+                    }
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn governed_output_full_pcm_lane_still_processes_flush_and_close() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -546,13 +635,18 @@ mod tests {
                         sequence: 1,
                         samples: vec![16384; 2],
                     };
+                    let mut transport = DispatchProgress::default();
                     let result = tokio::time::timeout(
                         Duration::from_secs(1),
-                        dispatch(&channel, &write, &mut receive),
+                        dispatch(&channel, &write, &mut receive, &mut transport),
                     )
                     .await
                     .unwrap();
                     assert!(received.try_recv().unwrap().is_ok());
+                    assert!(transport.backpressure > 0);
+                    assert!(transport.replies > 0);
+                    assert!(transport.requests >= transport.replies);
+                    assert!(transport.last.is_some());
                     if matches!(stop, Command::Flush { .. }) {
                         assert_eq!(result.unwrap().accepted_sequence, 1);
                     } else {
