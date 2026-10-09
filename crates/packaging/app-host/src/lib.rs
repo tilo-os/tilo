@@ -21,7 +21,11 @@
 //!
 //! The crate exposes both a daemon binary (`tilo-app-host`) and the
 //! library surface, so tests can drive the service in-process without
-//! spawning the binary.
+//! spawning the binary. Only the client side — [`client`], the wire schema,
+//! [`install::InstallExpectation`] and archive review in [`local_package`] —
+//! builds without the default `service` feature. The Store app depends on
+//! that side alone, so an app never compiles the privileged door it talks to
+//! and the shared app runtime does not carry it.
 
 #![cfg_attr(
     test,
@@ -35,12 +39,16 @@
 use std::path::PathBuf;
 
 pub mod client;
+#[cfg(feature = "service")]
 pub mod dev_env;
+#[cfg(feature = "service")]
 pub mod fetch;
 pub mod install;
+#[cfg(feature = "service")]
 pub mod service;
 #[cfg(all(unix, feature = "test-support"))]
 pub mod testing;
+#[cfg(feature = "service")]
 pub mod transport;
 
 /// Generated Cap'n Proto bindings for `schema/app-host.capnp`. The
@@ -63,7 +71,9 @@ pub mod app_host_capnp {
     include!("generated/app_host_capnp.rs");
 }
 
-pub use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
+#[cfg(feature = "service")]
+pub use package_store::PackageStore;
+pub use package_store::{Catalog, InstalledPackage, Pinning};
 pub use tilo_app_package::PackageId;
 
 /// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`, or
