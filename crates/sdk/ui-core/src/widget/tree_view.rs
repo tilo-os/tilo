@@ -2952,13 +2952,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if self.fill {
             self.fit_viewport_to_rect();
         }
@@ -4946,25 +4940,18 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
-            let node = taffy.leaf_node(Style {
+            let style = Style {
                 size: Size {
                     width: percent(1.0_f32),
                     height: Dimension::length(self.height),
                 },
                 ..Default::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-            let layout = taffy.layout(node).copied().unwrap_or_default();
-            self.rect = Rect::new(
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-                origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-                origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(

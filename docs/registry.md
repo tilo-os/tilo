@@ -641,6 +641,12 @@ artifacts stay while a retained history snapshot (which `rollback-snapshot`
 may restore) or the previous version index (which a client one snapshot behind
 may still fetch) lists it; the prune after that deletes them.
 
+Retention is also what lets a device open an app without fetching a runtime:
+a first open takes the newest retained version whose runtime build the device
+already has (`app_cli::first_open_offer`). With the default of 20, an image or
+per-user runtime from within the last 20 releases of an app opens it with no
+runtime download; an older one downloads the runtime the newest version names.
+
 `prune-storage --dry-run --keep-releases N --keep-prereleases M` lists the
 published versions that policy drops and what pruning deletes once they are
 gone, without changing anything.

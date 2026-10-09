@@ -57,16 +57,15 @@ impl Widget for Well {
         use ui::widget::TaffyTreeExt as _;
         // As tall as a panel row: the rail's tools are that size too.
         let side = theme.tokens.metrics.panel_row_height;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: taffy::Dimension::length(side),
                 height: taffy::Dimension::length(side),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

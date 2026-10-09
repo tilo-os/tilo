@@ -355,25 +355,18 @@ impl Widget for ProgressBar {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(crate::num::f32_of_f64(ProgressBarFace::height(theme))),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.dirty = true;
     }
 

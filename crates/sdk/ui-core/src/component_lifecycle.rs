@@ -161,3 +161,15 @@ pub fn take_window_close_intent(widget: &mut (impl Widget + ?Sized)) -> bool {
     capability_mut::<dyn ComponentLifecycle>(widget)
         .is_some_and(ComponentLifecycle::take_window_close_intent)
 }
+
+/// A presentation can request activation without changing its document or owner.
+pub trait WindowActivation {
+    /// Consume one request to reveal this presentation's existing native window.
+    fn take_window_activation_intent(&self) -> bool;
+}
+
+/// Consume an activation request through the root's existing capability door.
+pub fn take_window_activation_intent(widget: &(impl Widget + ?Sized)) -> bool {
+    capability::<dyn WindowActivation>(widget)
+        .is_some_and(WindowActivation::take_window_activation_intent)
+}

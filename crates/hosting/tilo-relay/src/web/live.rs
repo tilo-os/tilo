@@ -3,12 +3,16 @@
 //!
 //! A grant is issued to an authenticated browser session for one workspace
 //! it may subscribe to, and is presented in the carrier's admission preface.
-//! Permission is observed once per [`OBSERVATION`] for every grant together
-//! (PR 541's batched observation): the session is still open, the device is
-//! not revoked, and it is still admitted to the workspace. The relay reads
-//! each grant's observed permission on every per-session recheck, so a revoked
-//! or removed device loses its live session within one observation plus the
-//! relay's recheck interval, and no recheck ever waits on the workspace locks.
+//! Permission is observed for every grant together (PR 541's batched
+//! observation): the session is still open, the device is not revoked, and it
+//! is still admitted to the workspace. [`LiveGrants::follow`] observes when
+//! one of those may have changed — an announced authority change
+//! ([`crate::authority_epoch`]), a session ending or running out, a grant
+//! issued — and on the janitor's sweep as a backstop, not on a fixed clock.
+//! The relay reads each grant's observed permission on every per-session
+//! recheck, so a revoked or removed device loses its live session within the
+//! relay's recheck interval of the change, and no recheck ever waits on the
+//! workspace locks.
 //!
 //! Frames are checked with the host's canonical codec for sealed live frames
 //! ([`tilo_relay_protocol::live::SealedLiveFrame`]): only their clear kind,
@@ -22,11 +26,13 @@ use std::time::{Duration, Instant};
 use tilo_moq::live::{Admission, AuthorizationStatus, LiveAuthority, LiveSession};
 use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 use tilo_relay_protocol::web::{LiveGrant, agent_publisher, live_room};
+use tokio::sync::Notify;
 
 use crate::web::sessions::Sessions;
 
-/// How often grant permission is observed.
-pub(crate) const OBSERVATION: Duration = Duration::from_millis(50);
+/// How often idle sessions are swept and, with them, every grant observed
+/// even though nothing announced a change.
+const SWEEP: Duration = Duration::from_secs(5);
 /// Grant lifetime; the page asks for a new one before it ends.
 const GRANT_TTL: Duration = Duration::from_secs(10 * 60);
 const MAX_GRANTS: usize = 512;
@@ -44,13 +50,40 @@ struct Grant {
 /// Grants and their observed permission.
 pub(crate) struct LiveGrants {
     grants: Mutex<HashMap<[u8; 32], Arc<Grant>>>,
+    /// Signalled when a grant is issued: its admission may predate a change
+    /// an observation already ran for.
+    issued: Notify,
 }
 
 impl LiveGrants {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             grants: Mutex::default(),
+            issued: Notify::new(),
         })
+    }
+
+    /// Observe every grant whenever its permission may have changed, and
+    /// sweep `sessions` every [`SWEEP`]. Runs until aborted.
+    pub(crate) async fn follow(self: Arc<Self>, sessions: Arc<Sessions>) {
+        let mut authority = crate::authority_epoch::subscribe();
+        let mut sweep = tokio::time::interval(SWEEP);
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            // A session that runs out is no longer open, and nothing
+            // announces it.
+            let expiry = sessions.next_expiry().map(tokio::time::Instant::from_std);
+            tokio::select! {
+                // The epoch's sender is a process-wide static and never
+                // closes, so this cannot spin on an error.
+                _ = authority.changed() => {}
+                () = sessions.ended() => {}
+                () = self.issued.notified() => {}
+                () = tokio::time::sleep_until(expiry.unwrap_or_else(tokio::time::Instant::now)), if expiry.is_some() => {}
+                _ = sweep.tick() => sessions.sweep(),
+            }
+            self.observe(&sessions).await;
+        }
     }
 
     /// Issue a grant for `workspace_id` to the session `token`, if its
@@ -97,6 +130,7 @@ impl LiveGrants {
             }
             grants.insert(grant_token, grant.clone());
         }
+        self.issued.notify_one();
         Some(LiveGrant {
             token: grant_token.to_vec(),
             room: grant.room.clone(),
