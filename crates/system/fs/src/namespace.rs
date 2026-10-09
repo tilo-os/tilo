@@ -3235,7 +3235,27 @@ impl Namespace {
     pub fn directly_trashed(&self) -> Vec<String> {
         self.doc
             .keys(&self.nodes)
-            .filter(|id| self.parent_of(id).as_deref() == Some(TRASH_ID))
+            .filter(|id| self.is_directly_trashed(id))
+            .collect()
+    }
+
+    /// Whether `id` itself was moved to the trash, not just an ancestor.
+    pub fn is_directly_trashed(&self, id: &str) -> bool {
+        self.parent_of(id).as_deref() == Some(TRASH_ID)
+    }
+
+    /// Up to `limit` node ids, live or not, in key order, starting after
+    /// `after` (at the first when `None`). Seeking to `after` is a search,
+    /// not a walk, so a caller can visit every node in bounded steps and
+    /// release the namespace lock between them.
+    pub fn node_ids_after(&self, after: Option<&str>, limit: usize) -> Vec<String> {
+        let start = after.map_or(std::ops::Bound::Unbounded, |id| {
+            std::ops::Bound::Excluded(id.to_string())
+        });
+        self.doc
+            .map_range(&self.nodes, (start, std::ops::Bound::Unbounded))
+            .take(limit)
+            .map(|item| item.key.into_owned())
             .collect()
     }
 

@@ -448,6 +448,11 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-image-trust", to = "/usr/bin/tilo-image-trust", mode = "0755" },
   { from = "tilo-device-key-init", to = "/usr/bin/tilo-device-key-init", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-image-trust-staged", to = "/usr/libexec/tilo-image-trust-staged", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-verified-update", to = "/usr/libexec/tilo-verified-update", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-board-successor.py", to = "/usr/libexec/tilo-board-successor.py", mode = "0755" },
+  { from = "@manifest/dev/hardware_profile.py", to = "/usr/lib/tilo/hardware_profile.py", mode = "0644" },
+  { from = "@asset/cosign-v2.5.2", to = "/usr/libexec/tilo-cosign", mode = "0755" },
 ]
 
 [[component]]
