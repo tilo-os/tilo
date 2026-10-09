@@ -3549,6 +3549,10 @@ mod tests {
 
         let mut next_tab = 92_000_u64;
         for step in 0..24_u32 {
+            // The peer has everything this device has before either acts.
+            let peer_heads = peer.doc.get_heads();
+            peer.apply_changes(&tree.export_changes_since(&peer_heads))
+                .expect("the peer catches up");
             let synced = tree.doc.get_heads();
             let kind = match step % 6 {
                 0 => {
@@ -3558,6 +3562,8 @@ mod tests {
                 }
                 1 => {
                     next_tab += 1;
+                    // Home has a window group to open the tab in.
+                    tree.set_active(home);
                     assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
                         next_tab,
                         format!("Tab {next_tab}"),
@@ -3569,8 +3575,6 @@ mod tests {
                 2 => {
                     // The peer acts while this device switches back: two
                     // concurrent changes, merged in either order.
-                    peer.apply_changes(&tree.export_changes_since(&peer.doc.get_heads()))
-                        .expect("the peer catches up");
                     assert!(
                         peer.append_workspace_effect_receipt(
                             home,
@@ -3595,8 +3599,6 @@ mod tests {
                 }
                 3 => {
                     next_tab += 1;
-                    peer.apply_changes(&tree.export_changes_since(&peer.doc.get_heads()))
-                        .expect("the peer catches up");
                     assert!(peer.doc_append_tab_to_first_group_of_active_workspace(
                         next_tab,
                         format!("Bea's tab {next_tab}"),
