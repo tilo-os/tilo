@@ -24,6 +24,9 @@ pub use record_content::InboundRecordContent;
 #[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
+mod room_gate;
+#[cfg(test)]
+mod room_gate_tests;
 #[cfg(test)]
 mod same_person_room_tests;
 
@@ -6939,6 +6942,12 @@ impl ShellNetwork {
         replayed: bool,
         msg: NeighbourMsg,
     ) {
+        // The one boundary for retired wire generations: no build produces
+        // them, so nothing past this point handles or authorizes them.
+        if msg.is_retired() {
+            tracing::debug!(%peer, ws, "dropping a retired collaboration message");
+            return;
+        }
         // A record of the person's own room arrives from another of their
         // devices over the personal fabric, or kept by their always-on host
         // on their continuity topic; never as room traffic.
@@ -6964,7 +6973,6 @@ impl ShellNetwork {
                 NeighbourMsg::SyncReq { .. }
                     | NeighbourMsg::SyncResp { .. }
                     | NeighbourMsg::AppDocument { .. }
-                    | NeighbourMsg::IdentityAnnouncement { .. }
                     | NeighbourMsg::IdentityAnnouncementV2 { .. }
             )
         {
@@ -7111,13 +7119,12 @@ impl ShellNetwork {
         {
             self.redeem_invited_identity(ws, *invite_id, &peer, &identity.device_cert);
         }
-        if self.require_peer_identity
-            && !governed_action
-            && !matches!(&msg, NeighbourMsg::IdentityHello { .. })
-        {
+        if self.require_peer_identity && !governed_action {
             let required = Self::required_room_verb(&msg);
             let pinned_authority_may_bootstrap = matches!(&msg, NeighbourMsg::SyncResp { .. });
-            if !self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap) {
+            if !required.is_some_and(|required| {
+                self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap)
+            }) {
                 tracing::warn!(
                     peer = %peer,
                     workspace_topic = ws,
@@ -7134,9 +7141,6 @@ impl ShellNetwork {
             pending.remove(&room);
         }
         match msg {
-            NeighbourMsg::IdentityAnnouncement { room, device_cert } => {
-                self.handle_identity_announcement(&peer, &room, &device_cert, &[]);
-            }
             NeighbourMsg::IdentityAnnouncementV2 {
                 room,
                 device_cert,
@@ -7473,21 +7477,6 @@ impl ShellNetwork {
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
             | NeighbourMsg::PersonalWorkspaces { .. } => None,
-        }
-    }
-
-    /// Workspace capability required before variant-specific validation.
-    /// Publishing media, injecting input, granting control, and changing room
-    /// state are active collaboration actions and never ride on read access.
-    fn required_room_verb(msg: &NeighbourMsg) -> crate::shell::state::Verb {
-        match msg {
-            NeighbourMsg::SyncResp { .. }
-            | NeighbourMsg::SurfaceFrame { .. }
-            | NeighbourMsg::SurfaceStreamStart { .. }
-            | NeighbourMsg::SurfaceStreamEnd { .. }
-            | NeighbourMsg::RemoteInput { .. }
-            | NeighbourMsg::PermissionGrant { .. } => crate::shell::state::Verb::Write,
-            _ => crate::shell::state::Verb::Read,
         }
     }
 
@@ -11961,14 +11950,15 @@ mod tests {
                     surface: 7,
                     event: Vec::new(),
                 }),
-                crate::shell::state::Verb::Write,
+                Some(crate::shell::state::Verb::Write),
             );
+            // Retired: never admitted as room traffic, not even on read.
             assert_eq!(
                 ShellNetwork::required_room_verb(&NeighbourMsg::PermissionRequest {
                     peer: 42,
                     capability: "remote-input".into(),
                 }),
-                crate::shell::state::Verb::Read,
+                None,
             );
             assert_eq!(
                 ShellNetwork::claimed_publisher(&NeighbourMsg::RemoteInput {
