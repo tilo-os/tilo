@@ -31,6 +31,7 @@ fn edit(field: &str, old: Option<Scalar>, new: Option<Scalar>) -> Did {
         op: EditOp::Set,
         old,
         new,
+        args: std::collections::BTreeMap::new(),
     })
 }
 
@@ -121,6 +122,7 @@ fn sentences_never_show_raw_ids_or_paths() {
         op: EditOp::Replace,
         old: None,
         new: None,
+        args: std::collections::BTreeMap::new(),
     }));
     let sentence = Reader::new("en-US").sentence(&deep);
     assert_eq!(sentence, "Edited Due date of Deploy script");
@@ -248,5 +250,41 @@ fn message_keys_follow_the_convention() {
     assert_eq!(
         message_key("", created().what.as_ref().unwrap()).as_deref(),
         Some("snippets-new-snippet")
+    );
+}
+
+#[test]
+fn an_edit_the_fields_type_describes_passes_its_facts_by_name() {
+    const WP: &str = r"
+word-processor-document-body = { $op ->
+    [mark] { $on ->
+        [true] Made { $words } words { $mark } in { $item }
+       *[false] Removed { $mark } from { $words } words in { $item }
+    }
+   *[other] Edited { $item }
+}
+";
+    let mut args = std::collections::BTreeMap::new();
+    args.insert("mark".to_owned(), Scalar::from("bold"));
+    args.insert("on".to_owned(), Scalar::from(true));
+    args.insert("words".to_owned(), Scalar::from(3));
+    let bold = ActionContext::default()
+        .with_app("org.tilo.WordProcessor", "Writer")
+        .with_described(
+            Described::new(Did::Edit(FieldEdit {
+                ty: "document".into(),
+                field: "body".into(),
+                path: vec![PathStep::Field("body".into())],
+                op: EditOp::Mark,
+                old: None,
+                new: None,
+                args,
+            }))
+            .on("doc", "Report"),
+        );
+    let catalogue = Catalogue::new("en-US", &[WP]);
+    assert_eq!(
+        Reader::new("en-US").with_app(&catalogue).sentence(&bold),
+        "Made 3 words bold in Report"
     );
 }

@@ -535,10 +535,22 @@ impl ActionInvoker {
     /// invocation. `actor` is the identity the host authenticated and put on
     /// the delivery; `context` is the host-built provenance of the same
     /// delivery. The participant and the person it acts for are kept only
-    /// when the context names this exact actor. A context the host did not
-    /// rewrite for this actor therefore never routes to anybody's view, and
-    /// the actor always comes from the delivery, never from the context.
+    /// when the context names this exact actor, or a Shortcut acting for
+    /// exactly that actor. A context the host did not rewrite for this actor
+    /// therefore never routes to anybody's view.
     pub fn delivered(actor: &str, context: Option<&ActionContext>) -> Self {
+        // A Shortcut step is delivered as the person it runs for; the host
+        // names the Shortcut acting for exactly that person.
+        if let Some(shortcut) =
+            context
+                .and_then(|context| context.invoker.as_ref())
+                .filter(|invoker| {
+                    invoker.kind == ActorKind::Shortcut
+                        && invoker.on_behalf_of.as_deref() == Some(actor)
+                })
+        {
+            return shortcut.clone();
+        }
         let named = context
             .and_then(|context| context.invoker.as_ref())
             .filter(|invoker| invoker.actor == actor);
@@ -610,6 +622,7 @@ mod tests {
             op: EditOp::Set,
             old: Some(false.into()),
             new: Some(true.into()),
+            args: std::collections::BTreeMap::new(),
         }))
         .on("s1", "Deploy script")
     }
@@ -753,6 +766,18 @@ mod tests {
         assert_eq!(
             ActionInvoker::delivered("person:b", None),
             ActionInvoker::actor("person:b")
+        );
+        // A Shortcut step is delivered as its person; the Shortcut acting for
+        // exactly that person is kept, for anybody else it is not.
+        let shortcut = ActionInvoker::admitted(
+            &crate::InteractionActor::new("shortcut:morning", ActorKind::Shortcut)
+                .acting_for("person:b"),
+        );
+        let run = ActionContext::default().with_invoker(shortcut.clone());
+        assert_eq!(ActionInvoker::delivered("person:b", Some(&run)), shortcut);
+        assert_eq!(
+            ActionInvoker::delivered("person:c", Some(&run)),
+            ActionInvoker::actor("person:c")
         );
     }
 

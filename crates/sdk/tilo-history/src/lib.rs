@@ -344,6 +344,11 @@ impl<'a> Reader<'a> {
 
     fn edit(&self, edit: &FieldEdit, what: &Did, scope: &Scope<'_, '_>) -> String {
         let mut args = self.base_args(scope);
+        for (name, value) in &edit.args {
+            if !matches!(name.as_str(), "item" | "actor" | "for" | "old" | "new") {
+                args.set(name.clone(), fluent_value(value));
+            }
+        }
         args.set("op", edit.op.as_str());
         if let Some(old) = &edit.old {
             args.set("old", fluent_value(old));

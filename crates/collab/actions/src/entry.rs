@@ -97,6 +97,10 @@ pub struct FieldEdit {
     /// The value after, for a scalar field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new: Option<Scalar>,
+    /// Plain facts of an edit the field's own type describes (a rich-text
+    /// edit's mark, the words it covered), by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub args: BTreeMap<String, Scalar>,
 }
 
 /// One step of a path from a resource's root to a field.

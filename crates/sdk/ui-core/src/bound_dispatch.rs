@@ -1968,6 +1968,13 @@ pub(crate) fn execute_resource_operation(
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
+        // History names the app that published the action, not a guess from
+        // its action type.
+        if context.app.is_none()
+            && let Some(route) = target_route.as_ref()
+        {
+            context = context.with_app(&route.app_id, &route.app_id);
+        }
         // The admitted caller is who the action is by, local or delivered:
         // pinned with it, so its `apply` reads the same author everywhere.
         if context.invoker.is_none() && !actor.is_empty() {

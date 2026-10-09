@@ -168,15 +168,21 @@ pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> 
             .unwrap_or_default(),
         _ => None,
     };
+    let rich = match edit.op() {
+        EditOp::Rich { rich } => R::op_describe(edit.path(), rich),
+        _ => None,
+    };
     let described = Described::new(Did::Edit(FieldEdit {
         ty: owner.to_owned(),
         field,
         path: edit.path().iter().map(step).collect(),
         op: match edit.op() {
-            EditOp::Rich { rich } => R::op_describe(edit.path(), rich)
+            EditOp::Rich { .. } => rich
+                .as_ref()
                 .map_or(tilo_actions::EditOp::Mark, |described| described.op),
             op => operation(op),
         },
+        args: rich.map(|described| described.args).unwrap_or_default(),
         old: matches!(edit.op(), EditOp::Set { .. } | EditOp::Add { .. })
             .then_some(old)
             .flatten(),
