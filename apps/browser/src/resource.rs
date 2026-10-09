@@ -309,6 +309,16 @@ impl ResourceApp for BrowserShell {
             dispatch.effect(&BrowserEffect::Open { url });
             Ok(())
         });
+        // A history or download hit opens its page or shows the download.
+        let index = widget.search_index();
+        let dispatch = cx.dispatcher();
+        cx.on_open(move |anchor: &str| -> Result<(), Refusal> {
+            let effect = index
+                .opened(anchor)
+                .ok_or_else(|| Refusal::new(format!("`{anchor}` is no longer in the history")))?;
+            dispatch.effect(&effect);
+            Ok(())
+        });
         cx.surface(BrowserWindow::new(widget, focus_address))
     }
 }

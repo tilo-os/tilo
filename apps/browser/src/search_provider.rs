@@ -7,7 +7,7 @@
 //! resolved against the current entries, which refuses an address that went
 //! stale after the result was rendered.
 
-use tilo_actions::{ActionAddress, Resource};
+use tilo_actions::Resource;
 use ui::icons::Icon;
 use ui::tilo_resource::SearchEntry;
 
@@ -147,14 +147,7 @@ impl BrowserSearchIndex {
         }
         entries.push(
             SearchEntry::new(row.title.clone(), String::new())
-                .invoking(ActionAddress::new(
-                    &row.resource_id,
-                    if row.download.is_some() {
-                        "show-download"
-                    } else {
-                        "open"
-                    },
-                ))
+                .anchored(&row.resource_id)
                 .grouped(row.search_kind)
                 .subtitled(row.url.clone())
                 .with_icon(row.icon.name())
@@ -172,10 +165,9 @@ impl BrowserSearchIndex {
             .clone()
     }
 
-    /// The row a hit opens: the same row, with the same effect, the window
-    /// publishes for it. `None` once the entry is gone.
-    pub fn resource(&self, id: &str) -> Option<Resource> {
-        use ui::tilo_resource::Effect as _;
+    /// What opening the hit anchored at `id` runs: the history page opens,
+    /// the download shows. `None` once the entry is gone.
+    pub fn opened(&self, id: &str) -> Option<crate::effects::BrowserEffect> {
         let row = self
             .state
             .read()
@@ -183,13 +175,26 @@ impl BrowserSearchIndex {
             .rows
             .get(id)
             .cloned()?;
-        let action = match &row.download {
-            Some(id) => crate::effects::BrowserEffect::ShowDownload { id: id.clone() }.bound(),
+        Some(match &row.download {
+            Some(id) => crate::effects::BrowserEffect::ShowDownload { id: id.clone() },
             None => crate::effects::BrowserEffect::Open {
                 url: row.url.clone(),
-            }
-            .bound(),
-        };
+            },
+        })
+    }
+
+    /// The row a hit opens: the same row, with the same effect, the window
+    /// publishes for it. `None` once the entry is gone.
+    pub fn resource(&self, id: &str) -> Option<Resource> {
+        use ui::tilo_resource::Effect as _;
+        let action = self.opened(id)?.bound();
+        let row = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rows
+            .get(id)
+            .cloned()?;
         Some(Resource::new(&row.resource_id, row.resource_kind, &row.title).with_action(action))
     }
 
@@ -198,7 +203,6 @@ impl BrowserSearchIndex {
     #[cfg(test)]
     pub fn provider(&self) -> TestSearch {
         TestSearch {
-            index: self.clone(),
             source: Box::new(ui::framework::testing::search_source::<
                 crate::resource::Browser,
             >(self.entries())),
@@ -209,7 +213,6 @@ impl BrowserSearchIndex {
 /// See [`BrowserSearchIndex::provider`].
 #[cfg(test)]
 pub struct TestSearch {
-    index: BrowserSearchIndex,
     source: Box<dyn ui::search::SearchProvider>,
 }
 
@@ -245,15 +248,6 @@ impl ui::search::SearchProvider for TestSearch {
             ui::search::ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
         ]
     }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
-        let resource = self.index.resource(&address.resource)?;
-        resource
-            .actions
-            .iter()
-            .any(|action| action.id == address.action)
-            .then_some(resource)
-    }
 }
 
 #[cfg(test)]
@@ -284,8 +278,7 @@ mod tests {
             let provider = index.provider();
             let hits = provider.search_limited("Page", 12);
             assert_eq!(hits.len(), 12);
-            let address = hits[0].action_address().unwrap();
-            assert!(provider.resolve_action_resource(&address).is_some());
+            assert!(index.opened(&hits[0].action_id).is_some());
 
             let query = SearchQuery::new("Page");
             let first = provider.search_page(&query, None, 7, 3);
@@ -305,14 +298,13 @@ mod tests {
             index.sync(&history);
             let provider = index.provider();
             let hit = provider.search_limited("stale", 1).pop().unwrap();
-            let address = hit.action_address().unwrap();
             assert_eq!(
-                address.resource,
+                hit.action_id,
                 crate::actions::history_resource_id("https://stale.example.test")
             );
             history.clear();
             index.sync(&history);
-            assert!(provider.resolve_action_resource(&address).is_none());
+            assert!(index.opened(&hit.action_id).is_none());
         }
 
         // Phase `library_sections_are_scopes_that_admit_only_their_own_hits`.
@@ -371,13 +363,17 @@ mod tests {
             index.sync_all(&crate::history::History::new(), &downloads);
             let provider = index.provider();
             let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
-            let address = hit.action_address().unwrap();
             assert_eq!(
-                address.resource,
+                hit.action_id,
                 format!("{}/stable-download", crate::actions::DOWNLOADS_SCOPE)
             );
-            assert_eq!(address.action, "show-download");
-            let resource = provider.resolve_action_resource(&address).unwrap();
+            assert_eq!(
+                index.opened(&hit.action_id),
+                Some(crate::effects::BrowserEffect::ShowDownload {
+                    id: "stable-download".into()
+                })
+            );
+            let resource = index.resource(&hit.action_id).unwrap();
             assert_eq!(resource.kind, "browser.download");
             assert_eq!(resource.actions[0].id, "show-download");
             assert!(!provider.search_limited("example.test/sdk", 1).is_empty());

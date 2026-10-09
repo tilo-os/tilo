@@ -4174,6 +4174,12 @@ impl Widget for BrowserWidget {
 }
 
 impl BrowserWidget {
+    /// The index of history pages and downloads, shared with the opener of
+    /// their search hits.
+    pub(crate) fn search_index(&self) -> crate::search_provider::BrowserSearchIndex {
+        self.search_index.clone()
+    }
+
     /// Every history page and download as a search entry.
     pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.search_index.entries()
