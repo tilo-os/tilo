@@ -68,6 +68,8 @@
 //!   between output devices, adjust per-stream volume/mute, switch the default
 //!   device, and diff enumerations for hotplug. Every media surface plays
 //!   *through* `PipeWire`; this is where the OS routes it.
+//! * [`audio_watch`] — event-driven notice that the audio device graph
+//!   changed, from a `PipeWire` registry listener that sleeps between changes.
 //! * [`sync_playout`] — the member side of a synchronized speaker group:
 //!   frames stamped on the leader's clock play at a shared presentation time
 //!   through a jitter buffer and a drift-steered resampler, mapped to the
@@ -96,6 +98,7 @@
 pub mod audio;
 pub mod audio_output;
 pub mod audio_runtime;
+pub mod audio_watch;
 pub mod cache;
 pub mod calibration;
 pub mod calibration_fusion;
