@@ -77,8 +77,6 @@ mod dmabuf_direct_capture_path;
 mod dmabuf_feedback_protocol;
 #[path = "document_open_e2e.rs"]
 mod document_open_e2e;
-#[path = "drm_backend_boot.rs"]
-mod drm_backend_boot;
 #[path = "e2e_shell_flows.rs"]
 mod e2e_shell_flows;
 #[path = "emoji_picker_commit.rs"]
