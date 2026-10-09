@@ -35,6 +35,9 @@
 //! parity preflight. It compares 40 (configurable: 20..=100) already-built
 //! native scenes to a persistent full-render reference; it does not produce
 //! performance measurements or accept benchmark budget gates.
+//! Set `TILO_UI_DASH_SAMPLES=<path>` to write every redrawing frame's total
+//! (microseconds, one per line) for `tools/perf/record.py emit`; the
+//! scheduled performance lane records `render.ui.frame_us.4k` from it.
 //! Native masked sparse fine shading is enabled by default when supported;
 //! set `VELLO_SPARSE_FINE=0` to disable it. The raster-pixel metric remains
 //! the actual fine-shaded native pixels; profile output separately accounts
@@ -140,6 +143,8 @@ fn reject_budgets_in_diagnostic_mode(mode: &str, reject_profile_flags: bool) {
         "TILO_UI_DASH_GPU_BUDGET_BYTES",
         "TILO_UI_DASH_RSS_GROWTH_BUDGET_KIB",
         "TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES",
+        // Samples of a diagnostic run are not comparable with the lane's.
+        "TILO_UI_DASH_SAMPLES",
     ];
     // Verification intentionally suppresses every profile report, whereas
     // timestamp diagnostics compose with the frame/host profile reports.
@@ -488,8 +493,8 @@ mod damage_verifier_tests {
         gpu_timestamp_sample_label, has_complete_gpu_dispatch_timestamp,
         has_complete_gpu_timestamp, has_gpu_dispatch_timestamp_stage, mean_frame_budget_passes,
         native_pixel_coordinates, p99_values, parse_mean_frame_budget, pixel_differs_beyond_aa,
-        redraw_frame_totals, sparse_coarse_profile_totals, traffic_byte_redraw_budget_passes,
-        unaccounted_render_us,
+        redraw_frame_samples, redraw_frame_totals, sparse_coarse_profile_totals,
+        traffic_byte_redraw_budget_passes, unaccounted_render_us,
     };
 
     #[test]
@@ -808,6 +813,33 @@ mod damage_verifier_tests {
             assert!(parse_mean_frame_budget(Some("0")).is_err());
             assert!(parse_mean_frame_budget(Some("nope")).is_err());
         }
+    }
+
+    #[test]
+    fn frame_samples_are_the_redraw_population_the_budgets_rank() {
+        assert_eq!(redraw_frame_samples(&[]), "");
+        let histo = [
+            Phase {
+                total_us: 99_999,
+                ..Phase::default()
+            },
+            Phase {
+                draw_us: 1,
+                total_us: 7_000,
+                ..Phase::default()
+            },
+            Phase {
+                render_us: 1,
+                total_us: 9_000,
+                ..Phase::default()
+            },
+        ];
+        // The skipped event is not a frame; both redraws are, in event order.
+        assert_eq!(redraw_frame_samples(&histo), "7000\n9000\n");
+        assert_eq!(
+            redraw_frame_samples(&histo).lines().count(),
+            redraw_frame_totals(&histo).map_or(0, |(_, redraws)| redraws)
+        );
     }
 }
 
@@ -2305,6 +2337,47 @@ fn redraw_frame_totals(histo: &[Phase]) -> Option<(u128, usize)> {
     (redraws > 0).then_some((total_us, redraws))
 }
 
+/// The redraw population the frame budgets rank, one total in microseconds
+/// per line: the samples file `tools/perf/record.py emit` reads.
+fn redraw_frame_samples(histo: &[Phase]) -> String {
+    histo
+        .iter()
+        .filter(|phase| phase.draw_us > 0 || phase.render_us > 0)
+        .fold(String::new(), |mut samples, phase| {
+            let _ = writeln!(samples, "{}", phase.total_us);
+            samples
+        })
+}
+
+/// `TILO_UI_DASH_SAMPLES=<path>`: write every redrawing frame's total, so the
+/// scheduled performance lane records the distribution rather than the
+/// printed summary.
+#[allow(
+    clippy::exit,
+    reason = "a run that cannot hand its samples to the performance lane must not pass as recorded"
+)]
+fn write_frame_samples(histo: &[Phase], path: &std::path::Path) {
+    let samples = redraw_frame_samples(histo);
+    if samples.is_empty() {
+        eprintln!(
+            "frame-samples: FAIL (no redrawing frames were measured; use animated or scroll mode)"
+        );
+        std::process::exit(2);
+    }
+    if let Err(error) = std::fs::write(path, &samples) {
+        eprintln!(
+            "frame-samples: FAIL (cannot write {}: {error})",
+            path.display()
+        );
+        std::process::exit(2);
+    }
+    println!(
+        "frame-samples: {} redraw totals (us) written to {}",
+        samples.lines().count(),
+        path.display()
+    );
+}
+
 /// Whether the exact redraw total is within the requested arithmetic mean.
 /// `None` deliberately represents an invalid zero-redraw acceptance sample.
 fn mean_frame_budget_passes(histo: &[Phase], budget_us: u128) -> Option<bool> {
@@ -2984,6 +3057,9 @@ pub fn run(_args: &[String]) {
             gpu_dispatch_timestamp_status,
             state.renderer.gpu_dispatch_timestamp_buffer_bytes(),
         );
+    }
+    if let Some(path) = tilo_ui::env::var_os("TILO_UI_DASH_SAMPLES").filter(|raw| !raw.is_empty()) {
+        write_frame_samples(&run.histo, std::path::Path::new(&path));
     }
     if let Some(snapshot) = run.allocations {
         report_and_enforce_allocations(

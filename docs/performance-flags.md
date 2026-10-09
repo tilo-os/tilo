@@ -175,6 +175,7 @@ harness-only; none sets a production frame-rate limit.
 | `TILO_UI_DASH_ALLOC_BREAKDOWN` | Nonempty, off | Enables allocation counting plus phase attribution; also enabled automatically by either per-redraw allocation budget. |
 | `TILO_UI_DASH_VERIFY` | Exact-1, off | Retained-versus-full native pixel preflight. Adds reference textures/readbacks, suppresses performance reporting, rejects all acceptance budgets and the four profile-report flags above. Cannot combine with GPU timestamp mode. |
 | `TILO_UI_DASH_VERIFY_FRAMES` | `40`; integer `20..=100` | Number of frames required for verification; invalid values fail with exit 2. Used in verification mode; supply enough iterations/redraws (normally the same number). |
+| `TILO_UI_DASH_SAMPLES` | Unset, or nonempty path | Writes every redrawing frame's total (microseconds, one per line) after the loop, the population the frame budgets rank, for `tools/perf/record.py emit`. Fails with exit 2 when no frame redrew or the file cannot be written. Rejected in verification and GPU timestamp modes. |
 
 ### Optional acceptance budgets
 
@@ -233,6 +234,7 @@ claim. Its CPU destination is reused memory, not a physical KMS mapping.
 | --- | --- | --- |
 | `TILO_REDRAW_BENCH_PROFILE` | Exact-1, off | Phase timing and joined action diagnostics. Acceptance is disabled and the run deliberately returns nonzero even when rendering succeeds. |
 | `TILO_REDRAW_BENCH_PROFILE_OUTPUT` | Unset, or nonempty path | Profile-only all-action report, written after the loop to a newly created file; existing paths are not overwritten. Empty paths fail in profile mode. Ignored outside profile mode. |
+| `TILO_REDRAW_BENCH_SAMPLES` | Unset, or nonempty path | Writes the 1,000 action samples (microseconds, one per line, action order) before the gate decides, so a run that misses the gate is still recorded. Only a complete, valid sample set is written. Empty paths fail; rejected with PROFILE=1. |
 | `TILO_REDRAW_BENCH_SCENE_REUSE` | Exact-1, off | Requires PROFILE=1. Compares/retains resolved upload bytes for **telemetry**, not production scene-reuse enablement. |
 | `TILO_REDRAW_BENCH_GEOMETRY_REUSE` | Exact-1, off | Requires PROFILE=1. Measures potential geometry reuse for **telemetry**, not an implemented production geometry cache. |
 | `SHELL_DRAW_ITERS` | `500`; usize | Only the separate `draw_bench` example: repeated CPU scene paint at 1600×900, no GPU/present. Invalid falls back; use a positive count. |

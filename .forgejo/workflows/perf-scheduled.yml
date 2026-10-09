@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint, agent, latency); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint, agent, latency, render); empty runs all."
         required: false
         default: ""
       accept:
@@ -56,6 +56,7 @@ jobs:
       footprint: ${{ steps.select.outputs.footprint }}
       agent: ${{ steps.select.outputs.agent }}
       latency: ${{ steps.select.outputs.latency }}
+      render: ${{ steps.select.outputs.render }}
     steps:
       - name: Select KPI groups
         id: select
@@ -63,7 +64,7 @@ jobs:
           KPIS: ${{ github.event.inputs.kpis }}
         run: |
           set -euo pipefail
-          known=(fs footprint agent latency)
+          known=(fs footprint agent latency render)
           IFS=, read -r -a selected <<< "${KPIS:-$(IFS=,; echo "${known[*]}")}"
           for group in "${selected[@]}"; do
             [[ " ${known[*]} " == *" $group "* ]] || { echo "::error::unknown KPI group '$group' (known: ${known[*]})"; exit 1; }
@@ -283,8 +284,78 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # Render frame time at native 4K (TIL-582): the toolkit's dashboard harness
+  # (`ui-perf dashboard_perf_bench`, 1,000 events) and the shell's
+  # `redraw_bench` (1,000 clicks through FrameBuilder, the DRM bridge's render,
+  # readback and XRGB swizzle), both release builds made once here, through
+  # scripts/perf/render_bench.py: retained-frame pixel parity first, then the
+  # timed runs, then the toolkit's runner-independent counters (the per-change
+  # gate, ci-render-counters.yml). The runner has no GPU; lavapipe times the
+  # CPU's rasterisation, so these records are compared only with each other
+  # and never quoted as 4K/144 Hz. Hardware frame time is the reference
+  # machines' weekly run (docs/benchmarks/reference-hardware.md).
+  render:
+    needs: [plan, builder]
+    if: needs.plan.outputs.render == 'true'
+    runs-on: runner
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      # The agent job's and ci-render-counters.yml's Cargo environment
+      # (release optimisation, thin LTO as release-apps.yml builds), so the
+      # release builds share one compiler cache.
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the render benchmarks
+        run: |
+          set -euo pipefail
+          bash scripts/ci-run.sh "ui-perf release build" -- \
+            cargo build --locked --release -p ui-examples --example ui-perf
+          bash scripts/ci-run.sh "redraw_bench release build" -- \
+            cargo build --locked --release -p shell --example redraw_bench
+
+      - name: Verify, time and record
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          test -r "$VK_DRIVER_FILES"
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json
+          python3 scripts/perf/render_bench.py timing target/release/examples/ui-perf \
+            target/release/examples/redraw_bench --env-json perf/env.json --out perf \
+            --records perf/render.jsonl
+          cat perf/render.jsonl
+
+      - name: Check the render counters
+        run: python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf --out perf/counters
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-render
+          path: perf/
+          if-no-files-found: warn
+
   compare:
-    needs: [plan, fs, footprint, agent, latency]
+    needs: [plan, fs, footprint, agent, latency, render]
     if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -313,13 +384,14 @@ jobs:
           FOOTPRINT_RESULT: ${{ needs.footprint.result }}
           AGENT_RESULT: ${{ needs.agent.result }}
           LATENCY_RESULT: ${{ needs.latency.result }}
+          RENDER_RESULT: ${{ needs.render.result }}
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -uo pipefail
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;
