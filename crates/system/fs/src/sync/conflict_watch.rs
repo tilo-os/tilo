@@ -15,11 +15,12 @@
 //! [`CONFLICT_SWEEP_INTERVAL`] after it, look everywhere.
 
 use std::collections::BTreeSet;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use fs_protocol::FileRecordId;
 
-use crate::conflict::ContentConflict;
+use crate::conflict::{ConflictPassStats, ContentConflict, NamespaceScan};
 use crate::namespace::Namespace;
 use crate::record_publisher::RecordPublisher;
 use crate::record_repository::RecordRepository;
@@ -39,8 +40,8 @@ pub(super) struct ConflictWatch {
     /// Records whose check failed for a reason that may pass: checked
     /// again next pass.
     records_retry: BTreeSet<FileRecordId>,
-    /// The namespace merge generation the last scan saw; `None` scans.
-    namespace_scanned: Option<u64>,
+    /// Scans the namespace when something was merged since the last scan.
+    namespace: NamespaceScan,
 }
 
 impl ConflictWatch {
@@ -53,7 +54,7 @@ impl ConflictWatch {
         if sweep {
             self.last_sweep = Some(now);
             self.records_checked = None;
-            self.namespace_scanned = None;
+            self.namespace.rescan();
         }
     }
 
@@ -89,19 +90,23 @@ impl ConflictWatch {
 
     /// The namespace's content conflicts still to materialise, scanned for
     /// only when changes from another replica were merged since the last
-    /// scan (or a sweep or a retry asks).
-    pub(super) fn namespace_conflicts(&mut self, namespace: &Namespace) -> Vec<ContentConflict> {
-        let generation = namespace.merge_generation();
-        if self.namespace_scanned == Some(generation) {
-            return Vec::new();
-        }
-        self.namespace_scanned = Some(generation);
-        crate::conflict::detect(namespace)
+    /// scan (or a sweep or a retry asks). The scan takes the namespace
+    /// lock a step at a time ([`NamespaceScan`]), never for the whole walk.
+    pub(super) fn namespace_conflicts(
+        &mut self,
+        namespace: &Mutex<Namespace>,
+    ) -> Vec<ContentConflict> {
+        self.namespace.due(namespace)
+    }
+
+    /// What the last [`Self::namespace_conflicts`] did.
+    pub(super) fn namespace_pass(&self) -> ConflictPassStats {
+        self.namespace.last_pass()
     }
 
     /// A conflict found could not be materialised yet (its content is not
     /// reachable): scan again next pass.
-    pub(super) const fn retry_namespace(&mut self) {
-        self.namespace_scanned = None;
+    pub(super) fn retry_namespace(&mut self) {
+        self.namespace.rescan();
     }
 }

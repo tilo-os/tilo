@@ -158,6 +158,21 @@ impl FileLock {
         &self.file
     }
 
+    /// Transfers the file without explicitly unlocking its open description.
+    ///
+    /// This is for an executed child validating a lock inherited from its
+    /// parent: dropping a normal guard would unlock the parent's transaction.
+    /// The returned file closes normally; the lock survives while any parent
+    /// descriptor still refers to that same open description. Ordinary lock
+    /// owners should keep the guard so its explicit unlock-on-drop remains.
+    #[cfg(unix)]
+    pub fn into_file_preserving_lock(self) -> File {
+        let guard = std::mem::ManuallyDrop::new(self);
+        // SAFETY: suppressing Drop leaves the file initialized; read transfers
+        // its unique ownership exactly once, without executing the unlock.
+        unsafe { std::ptr::read(&raw const guard.file) }
+    }
+
     /// Waits until the lock is converted to `mode`.
     ///
     /// A conversion is not atomic: the kernel may release the old lock before

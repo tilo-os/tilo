@@ -45,6 +45,16 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
 esac
 
 if [ "$crate_name" = "runtime_dylib" ]; then
-    exec "$compiler" "$@" -C prefer-dynamic
+    # Every app process applies this library's dynamic relocations before
+    # main (TIL-604; tools/perf/runtime-size-budget/). Packed relative
+    # relocations shrink its ~360k R_*_RELATIVE entries from 24 bytes each to
+    # a bitmap, as for the apps above. -Bsymbolic-functions binds the
+    # library's calls and function pointers to its own functions at link
+    # time: Rust never interposes them, apps are PIE (no canonical PLT
+    # addresses), and it turns ~60k symbol lookups per app start into
+    # relative relocations or direct calls. Data symbols stay preemptible.
+    exec "$compiler" "$@" -C prefer-dynamic \
+        -C link-arg=-Wl,-z,pack-relative-relocs \
+        -C link-arg=-Wl,-Bsymbolic-functions
 fi
 exec "$compiler" "$@"
