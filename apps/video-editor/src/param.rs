@@ -106,7 +106,9 @@ impl Keyframe {
 /// [`ClipAnimation::clear_effect_slots`] in the same edit so the curve follows
 /// the durable effect instance rather than whichever effect inherits its old
 /// position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Written as its name ([`Param::as_str`]): `opacity`, `pos_x`, `effect0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Param {
     Opacity,
     Volume,
@@ -141,6 +143,33 @@ pub enum Param {
     /// grade drives.
     CurveMix,
     EffectAmount(u32),
+}
+
+impl Serialize for Param {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Param {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Param::from_name(&name)
+            .ok_or_else(|| serde::de::Error::custom(format!("`{name}` is no animatable value")))
+    }
+}
+
+impl ui::tilo_resource::JsonSchema for Param {
+    fn json_schema() -> serde_json::Value {
+        let mut names: Vec<String> = Param::SIMPLE.iter().map(|p| p.as_str()).collect();
+        names.push("effect0".into());
+        serde_json::json!({
+            "type": "string",
+            "description": "An animatable value by name; `effectN` is the strength of the \
+                            effect at position N (from 0) of the clip's stack",
+            "examples": names,
+        })
+    }
 }
 
 impl Param {
@@ -515,6 +544,8 @@ impl ClipAnimation {
         ts
     }
 }
+
+ui::tilo_resource::json_model!(ClipAnimation);
 
 #[cfg(test)]
 mod tests {

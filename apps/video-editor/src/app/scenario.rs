@@ -271,7 +271,7 @@ pub const NARROW_CAPTURE: &str = "narrow";
 /// — an inset over the spine, a title in the lower third, and markers on the
 /// ruler.
 pub(crate) fn composed_project() -> Project {
-    let mut project = crate::doc::sample_project();
+    let mut project = crate::seed::sample_project();
     if let Some(cid) = project.top_video_clip_at(23.0).map(|c| c.id)
         && let Some(c) = project.clip_mut(cid)
     {
@@ -531,7 +531,7 @@ impl VideoEditorApp {
                         t.pan = pan;
                     }
                     if let Some(t) = self.project.track(tid).cloned() {
-                        self.submit(&upsert_track_action(&t));
+                        self.submit_track(&t);
                     }
                 }
                 // What a monitor would have measured playing this: a run of

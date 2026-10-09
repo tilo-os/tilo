@@ -1005,7 +1005,6 @@ impl VideoEditorApp {
                 self.drag = Some(Drag::EffectAmount {
                     idx: i,
                     effect: effect.id,
-                    expected_amount_bits: effect.amount.to_bits(),
                 });
                 let v = slider_value_at(slider, p.x);
                 self.preview_edit(move |c| {

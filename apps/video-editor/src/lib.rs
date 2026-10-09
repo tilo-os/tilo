@@ -54,7 +54,6 @@ pub mod actions;
 pub mod app;
 pub mod audio;
 pub mod curve;
-pub mod doc;
 pub mod export;
 mod files;
 pub mod gpu;
@@ -69,13 +68,15 @@ pub mod probe;
 pub mod project_file;
 pub mod resource;
 pub mod search;
+pub mod seed;
 pub mod shot;
 pub mod thumbnail;
 pub mod timecode;
 pub mod waveform;
 
 pub use app::VideoEditorApp;
-pub use resource::{VideoEditor, VideoProject};
+pub use model::Project;
+pub use resource::VideoEditor;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

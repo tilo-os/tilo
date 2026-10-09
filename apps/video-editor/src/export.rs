@@ -2299,7 +2299,8 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 kind: crate::model::EffectKind::Grayscale,
                 amount: 1.0,
-            }];
+            }]
+            .into();
 
             let dir = std::env::temp_dir();
             let pid = std::process::id();
@@ -2377,7 +2378,8 @@ mod tests {
                         id: uuid::Uuid::new_v4(),
                         kind: crate::model::EffectKind::Invert,
                         amount: 1.0,
-                    }];
+                    }]
+                    .into();
                 }
                 p
             };
