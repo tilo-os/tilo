@@ -537,7 +537,7 @@ fn send(
     session.send_action(bounded_reply(request, message))
 }
 
-fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAction {
+pub(crate) fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAction {
     let mut reply = DirectedAction {
         room: request.room,
         request_id: request.request_id,
