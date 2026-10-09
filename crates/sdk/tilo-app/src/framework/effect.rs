@@ -1592,7 +1592,19 @@ struct OutboxDrain<R: Resource, T, O> {
     caused: HashMap<Id, (InvocationId, causal::Group)>,
     /// The revision the drain last looked at.
     revision: u64,
+    /// Settlements to write in the next settle pass, shared with the root.
+    settling: Settling<R>,
 }
+
+/// One outbox entry's settlement, written in the settle pass of the frame
+/// that learned it: the settle edit, and the invocation that waits for it
+/// with what to tell it once the edit is in the document.
+struct Settlement<R: Resource> {
+    action: R::Action,
+    waiting: Option<(causal::Group, Result<ActionOutput, ActionFailure>)>,
+}
+
+type Settling<R> = Rc<RefCell<Vec<Settlement<R>>>>;
 
 /// An outbox drain, shared by the drains that run what is pending and, for
 /// [`ViewCx::outbox_awaited`](super::ViewCx::outbox_awaited), by those that
@@ -1626,21 +1638,30 @@ where
     /// an invocation waiting on it learns which.
     fn finish(&mut self, id: &Id, answer: Result<ActionOutput, String>) -> bool {
         let settled = answer.and_then(|output| settlement::<O>(&output));
-        if let Some((_, group)) = self.caused.remove(id) {
-            group.borrow_mut().finished(match &settled {
-                Ok(Settled::Done(_)) => Ok(ActionOutput::default()),
-                Ok(Settled::Failed { reason, .. }) => Err(failure(reason.clone())),
-                Err(error) => Err(failure(error.clone())),
-            });
-        }
+        let group = self.caused.remove(id).map(|(_, group)| group);
         match settled {
             Ok(settled) => {
                 self.settled.insert(id.clone());
-                self.env.dispatch.submit(self.outbox.settle(id, &settled));
+                let told = match &settled {
+                    Settled::Done(_) => Ok(ActionOutput::default()),
+                    Settled::Failed { reason, .. } => Err(failure(reason.clone())),
+                };
+                let Some(action) = R::edit_action(self.outbox.settle(id, &settled)) else {
+                    return false;
+                };
+                // The settlement is in the document before whoever waits on
+                // the entry hears it settled: their next request sees it.
+                self.settling.borrow_mut().push(Settlement {
+                    action,
+                    waiting: group.map(|group| (group, told)),
+                });
                 true
             }
             Err(error) => {
                 tracing::warn!(%error, kind = R::KIND, "an outbox entry stays pending");
+                if let Some(group) = group {
+                    group.borrow_mut().finished(Err(failure(error)));
+                }
                 self.retry.insert(id.clone(), self.revision);
                 false
             }
@@ -1786,6 +1807,8 @@ struct Inner<R: Resource> {
     /// Set when the outside world a drain compares against changed, so the
     /// drains look again although the document did not move.
     outside_changed: Rc<Cell<bool>>,
+    /// Outbox settlements waiting for the settle pass.
+    settling: Settling<R>,
 }
 
 /// Every effect handler and projection drain of one live resource root, and
@@ -1816,6 +1839,7 @@ impl<R: Resource> Default for Inner<R> {
             drains: Vec::new(),
             drained: None,
             outside_changed: Rc::default(),
+            settling: Rc::default(),
         }
     }
 }
@@ -1950,6 +1974,7 @@ impl<R: Resource> Effects<R> {
             settled: std::collections::HashSet::new(),
             caused: HashMap::new(),
             revision: 0,
+            settling: Rc::clone(&self.inner.borrow().settling),
         }));
         let mut inner = self.inner.borrow_mut();
         if awaited {
@@ -2050,6 +2075,26 @@ impl<R: Resource> Effects<R> {
                 .borrow_mut()
                 .causal
                 .register(alive, env, pending, run);
+        }
+    }
+
+    /// Write the outbox settlements learned since the last settle pass, then
+    /// tell the invocations waiting on them how they settled.
+    pub(crate) fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>) {
+        let Some(env) = &self.env else {
+            return;
+        };
+        let settling = std::mem::take(&mut *self.inner.borrow().settling.borrow_mut());
+        for Settlement { action, waiting } in settling {
+            let applied = env.dispatch.apply_now(edits, &action);
+            if let Some((group, told)) = waiting {
+                group.borrow_mut().finished(match applied {
+                    Ok(()) => told,
+                    Err(error) => Err(failure(error.to_string())),
+                });
+            } else if let Err(error) = applied {
+                tracing::warn!(%error, kind = R::KIND, "an outbox settlement was refused");
+            }
         }
     }
 
