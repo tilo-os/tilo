@@ -3,7 +3,7 @@ use crate::component_support::*;
 use notes::{actions, doc::NotesDoc};
 use std::{cell::RefCell, rc::Rc};
 use ui::{Widget, headless::Driver};
-use vello::kurbo::Rect;
+use vello::{Scene, kurbo::Rect, peniko::Color};
 
 struct DamageWitness {
     inner: Box<dyn Widget>,
@@ -81,8 +81,17 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // The first edit can change the shared save indicator. The subsequent
     // ordinary edit proves stable app chrome forwards the paragraph damage.
     driver.key("x");
+    let started = ui::time::now();
+    let settled = driver.settle_for_capture(ui::time::Duration::from_secs(2));
+    if !settled {
+        eprintln!(
+            "paragraph-settle-demand key={key:?} reduce_motion={reduce_motion} timestamp={advance_timestamp} elapsed={:?}",
+            started.elapsed(),
+        );
+        report_unsettled_scene(&driver, &f.records, &checkout.id, background);
+    }
     assert!(
-        driver.settle_for_capture(ui::time::Duration::from_secs(2)),
+        settled,
         "ordinary navigation and sidebar transitions settle before stable typing"
     );
     assert!(
@@ -117,19 +126,24 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
         damage.iter().map(Rect::area).sum::<f64>() < 1200.0 * 900.0 / 2.0,
         "ordinary stable paragraph input must not damage the whole app: {damage:?}"
     );
+    assert_sparse_pixels(&before, driver.scene(), &damage, background);
+    close_driver(&mut driver);
+}
+
+fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], background: Color) {
     let mut retained = ui::offscreen::OffscreenRenderer::new(1200, 900);
     let mut full = ui::offscreen::OffscreenRenderer::new(1200, 900);
-    let old_pixels = retained.render(&before, background);
+    let old_pixels = retained.render(before, background);
     let damage = damage
         .iter()
         .map(|rect| rect.inflate(16.0, 16.0))
         .collect::<Vec<_>>();
-    let work = retained.render_damage_regions_gpu_wait(driver.scene(), background, &damage);
+    let work = retained.render_damage_regions_gpu_wait(after, background, &damage);
     assert!(
         work < 1200 * 900,
         "the outer component must exercise actual sparse rasterization"
     );
-    let expected = full.render(driver.scene(), background);
+    let expected = full.render(after, background);
     assert_ne!(
         old_pixels, expected,
         "ordinary input must change visible note paint"
@@ -139,7 +153,28 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
         expected,
         "all retained app pixels match the full GPU oracle"
     );
-    close_driver(&mut driver);
+}
+
+fn report_unsettled_scene(
+    driver: &Driver,
+    records: &ui::record::RecordStore,
+    record: &ui::record::RecordId,
+    background: Color,
+) {
+    eprintln!(
+        "paragraph-settle-state schedule={:?} requesters={:?} save={:?} images={}",
+        driver.frame_schedule(),
+        driver.frame_requesters(),
+        records.save_status(record),
+        ui::image_store::loads_in_flight(),
+    );
+    let mut renderer = ui::offscreen::OffscreenRenderer::new(1200, 900);
+    let pixels = renderer.render(driver.scene(), background);
+    let png = ui::png::encode_rgba8(1200, 900, &pixels).unwrap();
+    eprintln!(
+        "paragraph-settle-failed-scene-png {}",
+        serde_json::to_string(&png).unwrap()
+    );
 }
 
 fn pin_edit_clock(seconds: u64) {
