@@ -96,10 +96,10 @@ fn parallel_requests_complete_out_of_order() {
         "room".into(),
         "owner".into(),
     ));
-    let (client, served) = std::os::unix::net::UnixStream::pair().unwrap();
-    let input = super::spawn_reader(served.try_clone().unwrap()).unwrap();
+    let (client, end) = std::os::unix::net::UnixStream::pair().unwrap();
+    let input = super::spawn_reader(end.try_clone().unwrap()).unwrap();
     let serving = std::thread::spawn(move || {
-        let mut writer = served;
+        let mut writer = end;
         super::serve_lines(
             tilo_rt::try_app().unwrap(),
             input,
@@ -108,7 +108,7 @@ fn parallel_requests_complete_out_of_order() {
             Some(&mut || Ok(())),
         )
     });
-    overlapping_lines(&host, client);
+    overlapping_lines(&host, &client);
     serving.join().unwrap().unwrap();
 }
 

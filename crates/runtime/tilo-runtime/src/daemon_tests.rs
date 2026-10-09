@@ -570,7 +570,7 @@ fn native_socket_serves_parallel_requests() {
             )
         })
     };
-    overlapping_lines(&host, client);
+    overlapping_lines(&host, &client);
     serving.join().unwrap().unwrap();
 }
 
