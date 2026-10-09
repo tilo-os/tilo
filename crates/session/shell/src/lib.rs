@@ -19,9 +19,6 @@ pub use tilo_identity_host::device_fleet;
 pub mod diagnostics;
 pub mod firstboot;
 pub mod identity_broker;
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-mod idle_thread_probe;
 mod idle_wake;
 pub mod runtime_host;
 
