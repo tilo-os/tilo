@@ -105,6 +105,16 @@ impl ClaimedAction {
                 action: verb.action.clone(),
                 item,
             },
+            Did::Group(group) if !group.distinct.is_empty() => {
+                let mut members = Vec::new();
+                for member in &group.distinct {
+                    let member = Self::of_did(member, kind, None)?;
+                    if !members.contains(&member) {
+                        members.push(member);
+                    }
+                }
+                Self::Group(members)
+            }
             Did::Group(group) => {
                 let mut members = Vec::new();
                 for member in &group.members {
@@ -421,15 +431,18 @@ mod tests {
     #[test]
     fn a_group_lists_each_distinct_member_and_refuses_what_it_cannot_list() {
         let members = vec![edit("favorite"), edit("favorite"), edit("title")];
-        let group = Did::Group(GroupOf {
-            members: members.clone(),
-            count: 3,
-        });
+        // Forty members, more than the entry keeps by value: every distinct
+        // action is still listed.
+        let group = Did::group(members.iter().cycle().take(40).cloned());
         let ClaimedAction::Group(listed) = ClaimedAction::of(&context(group)).unwrap() else {
             panic!("a group");
         };
         assert_eq!(listed.len(), 2, "each distinct member once");
-        let truncated = Did::Group(GroupOf { members, count: 40 });
+        let truncated = Did::Group(GroupOf {
+            members,
+            count: 40,
+            distinct: Vec::new(),
+        });
         assert!(matches!(
             ClaimedAction::of(&context(truncated)),
             Err(ClaimError::GroupTooLarge { .. })

@@ -83,6 +83,7 @@
 )]
 
 pub mod action;
+pub mod content;
 pub mod context;
 pub mod contract;
 pub mod door;
@@ -104,6 +105,7 @@ pub mod schema;
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
 };
+pub use content::{CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, MissingContent, keep_content_in};
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
     ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES,

@@ -37,12 +37,19 @@ impl Did {
         Self::Verb(VerbCall::new(action, args))
     }
 
-    /// A group of `members`, keeping at most [`MAX_GROUP_MEMBERS`] by value.
+    /// A group of `members`, keeping at most [`MAX_GROUP_MEMBERS`] by value
+    /// and every distinct action among them without its values.
     pub fn group(members: impl IntoIterator<Item = Did>) -> Self {
         let mut count = 0u32;
         let mut kept = Vec::new();
+        let mut distinct: Vec<Did> = Vec::new();
         for member in members {
             count = count.saturating_add(1);
+            let mut action = member.clone();
+            action.forget_values();
+            if !distinct.contains(&action) {
+                distinct.push(action);
+            }
             if kept.len() < MAX_GROUP_MEMBERS {
                 kept.push(member);
             }
@@ -50,7 +57,21 @@ impl Did {
         Self::Group(GroupOf {
             members: kept,
             count,
+            distinct,
         })
+    }
+
+    /// Drop every value, keeping only which action ran where.
+    fn forget_values(&mut self) {
+        self.forget_args();
+        match self {
+            Self::Edit(edit) => edit.args.clear(),
+            Self::Group(group) => {
+                group.members.iter_mut().for_each(Self::forget_values);
+                group.distinct.iter_mut().for_each(Self::forget_values);
+            }
+            Self::Verb(_) | Self::History(_) => {}
+        }
     }
 
     /// Drop every verb argument and field value, keeping what was done and
@@ -185,6 +206,10 @@ pub struct GroupOf {
     pub members: Vec<Did>,
     /// How many members the group had.
     pub count: u32,
+    /// Every distinct action among the members, without values, however
+    /// many members there were: what a receiver decides the change by.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub distinct: Vec<Did>,
 }
 
 impl GroupOf {
@@ -502,6 +527,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!((group.members.len(), group.count), (MAX_GROUP_MEMBERS, 20));
+        assert_eq!(group.distinct.len(), 1, "every member ran the same action");
         assert!(
             group.shared().is_none(),
             "a cut group does not claim one shared step"

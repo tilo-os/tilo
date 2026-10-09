@@ -48,6 +48,36 @@ pub struct ActionEnvelope {
 }
 
 impl ActionEnvelope {
+    /// The content the change's recorded action names
+    /// ([`crate::executor::recorded_form`]): the large parts of an action
+    /// over the history budget, which the committing device keeps in its
+    /// content store so receivers can resolve them to replay. Empty for an
+    /// action recorded whole.
+    ///
+    /// # Errors
+    /// A payload that is not JSON.
+    pub fn recorded_content(&self) -> Result<tilo_content::ContentInputs, crate::ActionError> {
+        let named = self
+            .context
+            .as_ref()
+            .and_then(|context| context.action.as_ref())
+            .map(EncodedAction::content_parts)
+            .unwrap_or_default();
+        if named.is_empty() {
+            return Ok(tilo_content::ContentInputs::new());
+        }
+        let (_, content) = self
+            .action
+            .with_content_parts(crate::content::CONTENT_PART_THRESHOLD)?;
+        let mut kept = tilo_content::ContentInputs::new();
+        for hash in &named {
+            if let Some(bytes) = content.get(hash) {
+                kept.add(bytes.to_vec());
+            }
+        }
+        Ok(kept)
+    }
+
     /// The base heads as Automerge [`ChangeHash`]es.
     pub fn base_change_hashes(&self) -> Vec<ChangeHash> {
         self.base_heads.iter().map(|b| ChangeHash(*b)).collect()

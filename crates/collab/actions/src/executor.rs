@@ -215,8 +215,7 @@ fn envelope_for(
             "document compensation exceeds the history budget".into(),
         ));
     }
-    let within = recorded_size(&encoded)? <= crate::context::HISTORY_BUDGET;
-    context.action = within.then(|| encoded.clone());
+    context.action = Some(recorded_form(&encoded)?);
     context.compensation = compensation;
     context.executed_action = Some(id);
     let context = Some(context);
@@ -322,6 +321,7 @@ fn apply_under_envelope(
         }
         doc.commit_with(options);
         doc.set_actor(prev_actor);
+        crate::content::keep(env);
     } else {
         // No ops: a genuine no-op. Do not `commit_with` (it would pin then
         // prune this action's fresh actor and desync the patch log — see the
@@ -460,11 +460,34 @@ pub enum Verified {
     /// The change records an action this replica cannot decode: the app is
     /// not installed here, so another device has to verify it.
     UnknownAction(String),
+    /// The recorded action names content (its large parts) that is not in
+    /// this device's content store yet: the change is held until it is.
+    ContentMissing(String),
 }
 
 /// The action a change records, encoded as the executor dispatched it.
 fn recorded_action(context: &ActionContext) -> Option<&EncodedAction> {
     context.action.as_ref()
+}
+
+/// The action as its change records it: itself when it fits the history
+/// budget, else with its large parts kept as content
+/// ([`EncodedAction::with_content_parts`]). An action too large even then
+/// is refused: a change never commits without the action it ran.
+///
+/// # Errors
+/// An action whose recorded form does not fit the budget.
+pub fn recorded_form(action: &EncodedAction) -> Result<EncodedAction, ActionError> {
+    if recorded_size(action)? <= crate::context::HISTORY_BUDGET {
+        return Ok(action.clone());
+    }
+    let (recorded, _) = action.with_content_parts(crate::content::CONTENT_PART_THRESHOLD)?;
+    if recorded_size(&recorded)? > crate::context::HISTORY_BUDGET {
+        return Err(ActionError::Refused(
+            "the action is too large to record, even with its large parts kept as content".into(),
+        ));
+    }
+    Ok(recorded)
 }
 
 /// What an entry's action takes, encoded.
@@ -500,12 +523,16 @@ pub fn verify_change(
     else {
         return Ok(Verified::NothingRecorded);
     };
-    let Some(action) = recorded_action(&context).cloned() else {
+    let Some(recorded) = recorded_action(&context) else {
         return Ok(Verified::NothingRecorded);
     };
-    if !registry.contains(&action.type_id) {
-        return Ok(Verified::UnknownAction(action.type_id));
+    if !registry.contains(&recorded.type_id) {
+        return Ok(Verified::UnknownAction(recorded.type_id.clone()));
     }
+    let action = match registry.resolve(recorded)? {
+        Ok(action) => action,
+        Err(missing) => return Ok(Verified::ContentMissing(missing.0)),
+    };
     let env = ActionEnvelope {
         id: ActionId::new(),
         action,
@@ -548,9 +575,11 @@ pub fn verified_compensation(
     };
     match verify_change(doc, hash, registry)? {
         Verified::Reproduced => registry.decode(&inverse).map(Some),
-        Verified::NothingRecorded | Verified::UnknownAction(_) => Err(ActionError::Refused(
-            "recorded history action does not reproduce its change".into(),
-        )),
+        Verified::NothingRecorded | Verified::UnknownAction(_) | Verified::ContentMissing(_) => {
+            Err(ActionError::Refused(
+                "recorded history action does not reproduce its change".into(),
+            ))
+        }
     }
 }
 
@@ -565,9 +594,8 @@ fn validate_compensation(
     let Some(recorded) = context.action.as_ref() else {
         return Ok(());
     };
-    if recorded != &env.action
+    if recorded != &recorded_form(&env.action)?
         || inverse_as(doc, action, env.actor()) != context.compensation
-        || recorded_size(recorded)? > crate::context::HISTORY_BUDGET
     {
         return Err(ActionError::Refused(
             "recorded compensation differs from the action's canonical before state".into(),

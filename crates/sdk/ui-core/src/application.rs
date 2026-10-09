@@ -615,6 +615,18 @@ impl HostContext {
         // The window's code finds it wherever it runs: an action applying,
         // an action's arguments being built.
         tilo_resource::content::register(&self.wake_scope.handle(), store.clone());
+        // The large parts of the actions this window records, and of those
+        // it replays, live here too.
+        let keep = store.clone();
+        let read = store.clone();
+        tilo_actions::keep_content_in(
+            move |content| {
+                if let Err(error) = keep.put_inputs(&content) {
+                    tracing::warn!(%error, "an action's content could not be kept");
+                }
+            },
+            move |hash| read.read(hash),
+        );
         self.content = Some(store);
     }
     /// The content store the host lent, if any.

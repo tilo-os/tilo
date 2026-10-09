@@ -157,26 +157,26 @@ slides-deck-palette = Changed the theme to { $new }
 slides-slide-layout = Changed a slide's layout to { $new }
 slides-slide-background = Changed a slide's background to { $new }
 slides-slide-notes = Edited the speaker notes
-slides-element-x = Moved an element
-slides-element-y = Moved an element
-slides-element-w = Resized an element
-slides-element-h = Resized an element
-slides-element-body = Edited a text box
-slides-element-src = Changed the picture of an element
-slides-element-fill = Changed the colour of an element
-slides-element-stroke = Changed the outline of an element
-slides-element-stroke-width = Changed the outline width of an element
-slides-element-font-size = Changed the font size of an element
-slides-element-align = Aligned an element { $new }
+slides-element-x = Moved { $item }
+slides-element-y = Moved { $item }
+slides-element-w = Resized { $item }
+slides-element-h = Resized { $item }
+slides-element-body = Edited { $item }
+slides-element-src = Changed the picture of { $item }
+slides-element-fill = Changed the colour of { $item }
+slides-element-stroke = Changed the outline of { $item }
+slides-element-stroke-width = Changed the outline width of { $item }
+slides-element-font-size = Changed the font size of { $item }
+slides-element-align = Aligned { $item } { $new }
 slides-element-bold = { $new ->
-    [true] Made an element bold
-   *[other] Made an element not bold
+    [true] Made { $item } bold
+   *[other] Made { $item } not bold
 }
 slides-element-italic = { $new ->
-    [true] Made an element italic
-   *[other] Made an element not italic
+    [true] Made { $item } italic
+   *[other] Made { $item } not italic
 }
-slides-element-radius = Rounded the corners of an element
+slides-element-radius = Rounded the corners of { $item }
 slides-add-slide = Added a slide
 slides-insert-slide = Added a slide
 slides-duplicate-slide = Duplicated a slide
@@ -185,7 +185,7 @@ slides-move-slide = Moved a slide
 slides-set-text = Rewrote a slide's text
 slides-add-element = Added an element to a slide
 slides-insert-element = Added an element to a slide
-slides-delete-element = Deleted an element
-slides-bring-to-front = Brought an element to the front
-slides-send-to-back = Sent an element to the back
+slides-delete-element = Deleted { $item }
+slides-bring-to-front = Brought { $item } to the front
+slides-send-to-back = Sent { $item } to the back
 slides-replace-deck = Replaced the deck with { $title }

@@ -106,3 +106,56 @@ fn a_change_with_no_recorded_action_or_an_unknown_app_is_left_to_others() {
         Verified::UnknownAction("test.counter".into())
     );
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Paste(String);
+
+impl Action for Paste {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        doc.put(ROOT, "pasted", self.0.as_str())?;
+        Ok(())
+    }
+}
+
+/// An action over the history budget records its large parts as content:
+/// the change still names the action, a device with the content replays
+/// it, and one without holds the change until the content arrives.
+#[test]
+fn a_large_action_is_recorded_with_its_parts_as_content() {
+    let mut origin = base();
+    let mut transport = LocalTransport::new();
+    let paste = Paste("p".repeat(tilo_actions::context::HISTORY_BUDGET + 1));
+    dispatch_with_context(
+        &mut origin,
+        &paste,
+        EncodedAction::encode("test.paste", &paste).unwrap(),
+        &mut transport,
+        ActionContext::for_resource("r", "k", "l"),
+    )
+    .unwrap();
+    let hash = origin.get_heads()[0];
+    let envelope = &transport.replicated[0];
+    let recorded = envelope
+        .context
+        .as_ref()
+        .and_then(|context| context.action.clone())
+        .expect("the change records its action");
+    assert_eq!(recorded.content_parts().len(), 1);
+    let content = envelope.recorded_content().unwrap();
+    assert_eq!(content.len(), 1);
+
+    let mut without = ActionRegistry::new();
+    without.register::<Paste>("test.paste");
+    assert_eq!(
+        verify_change(&mut origin, hash, &without).unwrap(),
+        Verified::ContentMissing(recorded.content_parts()[0].clone())
+    );
+    let mut with = ActionRegistry::new();
+    with.register::<Paste>("test.paste");
+    let kept: std::collections::BTreeMap<String, Vec<u8>> = content.into_iter().collect();
+    with.set_content(move |hash| kept.get(hash).cloned());
+    assert_eq!(
+        verify_change(&mut origin, hash, &with).unwrap(),
+        Verified::Reproduced
+    );
+}
