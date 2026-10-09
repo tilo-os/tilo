@@ -34,13 +34,13 @@ pub enum SlidesEffect {
     #[effect(view)]
     EndPresentation,
     /// Open slide
-    #[effect(view, row)]
+    #[effect(view)]
     OpenSlide {
         #[param("Id of the slide")]
         slide: String,
     },
     /// Reveal element
-    #[effect(view, row)]
+    #[effect(view)]
     OpenElement {
         #[param("Id of the slide")]
         slide: String,
@@ -50,7 +50,7 @@ pub enum SlidesEffect {
     /// Edit text
     ///
     /// Show the text box with its words selected for editing.
-    #[effect(view, row)]
+    #[effect(view)]
     EditText {
         #[param("Id of the slide")]
         slide: String,
@@ -58,7 +58,7 @@ pub enum SlidesEffect {
         element: String,
     },
     /// Open speaker notes
-    #[effect(view, row)]
+    #[effect(view)]
     OpenNotes {
         #[param("Id of the slide")]
         slide: String,
@@ -74,7 +74,7 @@ pub enum SlidesEffect {
     /// Replace the deck with an ODP or PPTX file: the one at `path`, or one
     /// chosen with the system picker.
     #[effect(job, cancellable, destructive, device_only)]
-    Open {
+    OpenPresentation {
         #[param("Absolute path of the presentation; omit to use the system picker")]
         path: Option<String>,
     },
@@ -91,8 +91,7 @@ pub enum SlidesEffect {
     ///
     /// The deck as text: each slide's number, layout and {#id}, its title
     /// (# line), body and other elements each ending in its {#id}, then its
-    /// speaker notes. add-slide, set-slide-text, move-slide and the element
-    /// edits return this too.
+    /// speaker notes.
     #[effect(returns, permission = "read")]
     Read,
 }

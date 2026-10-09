@@ -744,15 +744,12 @@ impl SheetsApp {
         if edits.is_empty() {
             return;
         }
-        // One event's edits are one undo step.
-        for edit in &edits {
-            let Ok(invoke) = Invoke::edit(edit) else {
-                continue;
-            };
-            if !self.submit(doc, invoke) {
-                return;
-            }
-        }
+        let members: Vec<Invoke<Workbook>> = edits
+            .iter()
+            .filter_map(|edit| Invoke::edit(edit).ok())
+            .collect();
+        // One write is one action: one change, one history entry.
+        self.submit(doc, Invoke::group(members));
     }
 
     /// The edits bound to where the user is — the selection, the active cell
@@ -5543,6 +5540,31 @@ pub(crate) mod tests {
     }
 
     /// Copy/cut/paste of values, formats and formulas, range tiling and external TSV.
+    /// A paste of many cells is one change: one history entry, one undo
+    /// step.
+    #[test]
+    fn a_paste_is_one_change() {
+        let _clipboard = CLIP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_range_public((0, 1), (3, 3)); // A2:D4
+        app.copy_selection(false);
+        app.grid.select_only((0, 20));
+        let before = doc.get_heads();
+        app.paste(&mut Edits::lend(&mut doc));
+        assert_eq!(doc_cell_raw(&doc, 0, (0, 20)), "Rent");
+        assert_eq!(
+            doc_cell_raw(&doc, 0, (3, 22)),
+            doc_cell_raw(&doc, 0, (3, 3))
+        );
+        assert_eq!(
+            doc.get_changes(&before).len(),
+            1,
+            "one change for twelve cells"
+        );
+    }
+
     #[test]
     fn copy_cut_and_paste_relativise_formulas_correctly() {
         // Case `copy_paste_preserves_value_and_format`.

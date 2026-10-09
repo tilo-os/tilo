@@ -198,6 +198,30 @@ fn a_settings_section_is_edited_by_path_and_checked_by_its_model() {
     .unwrap();
     assert!((app.settings::<Display>().get().scale - 1.0).abs() < f64::EPSILON);
 
+    // Each change is a step of the person's: undo sets the value before it
+    // again and redo the one after, as new changes of the settings.
+    let scale = |app: &TestApp<BoardApp>| app.settings::<Display>().get().scale;
+    let step = |app: &mut TestApp<BoardApp>, action: &str, steps: i64| {
+        app.call_on(
+            "settings:test.display",
+            action,
+            serde_json::json!({ "steps": steps }),
+        )
+        .unwrap();
+    };
+    step(&mut app, "undo", 1);
+    assert!((scale(&app) - 2.0).abs() < f64::EPSILON);
+    step(&mut app, "undo", 1);
+    assert!((scale(&app) - 1.0).abs() < f64::EPSILON);
+    assert!(app.settings::<Display>().get().high_contrast);
+    step(&mut app, "undo", 1);
+    assert!(!app.settings::<Display>().get().high_contrast);
+    step(&mut app, "redo", 2);
+    assert!(app.settings::<Display>().get().high_contrast);
+    assert!((scale(&app) - 2.0).abs() < f64::EPSILON);
+    app.harness().relayout();
+    assert!(app.harness().inspection_json().unwrap().contains("scale 2"));
+
     // A write made elsewhere (the Settings app, another device) reaches the
     // bound control.
     app.settings::<Display>()

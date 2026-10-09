@@ -1308,24 +1308,7 @@ impl PdfApp {
         let Some(dispatcher) = self.dispatcher.as_ref() else {
             return;
         };
-        // A group applies member by member until `submit_now` takes one
-        // whole; the event's members are still one undo step.
-        let applied = if invoke.id == ui::tilo_resource::GROUP {
-            ui::tilo_resource::group::build_group::<PdfMarkup>(
-                &invoke.arguments,
-                ui::tilo_resource::origin_now_ms(),
-            )
-            .map_err(ui::tilo_actions::ActionError::Refused)
-            .and_then(|group| {
-                group
-                    .actions
-                    .iter()
-                    .try_for_each(|action| dispatcher.apply_now(state, action))
-            })
-        } else {
-            dispatcher.submit_now(state, invoke)
-        };
-        if let Err(error) = applied {
+        if let Err(error) = dispatcher.submit_now(state, invoke) {
             self.status_note = Some(error.to_string());
             self.dirty = true;
         }
