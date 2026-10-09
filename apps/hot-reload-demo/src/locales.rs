@@ -32,6 +32,11 @@ pub mod keys {
     pub const GRAPH_CREATE: LabelKey = LabelKey::new("graph-create");
     pub const GRAPH_CREATE_TOOLTIP: LabelKey = LabelKey::new("graph-create-tooltip");
     pub const GRAPH_PROJECT_NAME: LabelKey = LabelKey::new("graph-project-name");
+    pub const HOT_RELOAD_DEMO_CLEAR: LabelKey = LabelKey::new("hot-reload-demo-clear");
+    pub const HOT_RELOAD_DEMO_DOCUMENT_BODY: LabelKey =
+        LabelKey::new("hot-reload-demo-document-body");
+    pub const HOT_RELOAD_DEMO_DOCUMENT_TITLE: LabelKey =
+        LabelKey::new("hot-reload-demo-document-title");
     pub const LIST_ACCESSIBLE_NAME: LabelKey = LabelKey::new("list-accessible-name");
     pub const LIST_LAST_OPENED: LabelKey = LabelKey::new("list-last-opened");
     pub const LIST_LOADING: LabelKey = LabelKey::new("list-loading");
