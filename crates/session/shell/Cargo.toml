@@ -14,7 +14,7 @@ signal-profile-native-test = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support"]
+test-support = ["tilo-action-broker/test-support", "dep:tilo-net", "ui/test-support"]
 # When set, the hosted-mode compositor (`shell --backend winit`) binds
 # the TILO_TEST_CONTROL Unix socket the same way the headless backend
 # does. A background thread reads JSON commands and injects equivalent
@@ -47,7 +47,17 @@ dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
 # independent of `dev-overrides`; desktop and OS images never enable it.
 agent-control = []
 
+[[bin]]
+name = "network-boundary-fixture"
+path = "tests/fixtures/network-boundary.rs"
+test = false
+bench = false
+required-features = ["test-support"]
+
 [dependencies]
+# Read the app SDK snapshot only in the owned native boundary fixture.
+tilo-net = { path = "../../platform/tilo-net", optional = true }
+
 agent-provider-config = { path = "../../agent/provider-config" }
 fnv.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }

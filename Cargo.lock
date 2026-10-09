@@ -14360,6 +14360,7 @@ dependencies = [
  "tilo-messaging",
  "tilo-messaging-protocol",
  "tilo-moq",
+ "tilo-net",
  "tilo-nm",
  "tilo-paths",
  "tilo-peer-state",
