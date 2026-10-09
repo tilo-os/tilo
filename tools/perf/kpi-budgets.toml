@@ -445,7 +445,55 @@ source = "run.py work_ms_p95 / work_ms_p99: compositor CPU per painted frame dur
 # minute; tools/perf/adapters.py hosting-load prices them with
 # tools/perf/prices.toml. The KPI document's target is at most $0.001 per
 # active collaborator-hour.
+#
+# The enforced ceilings are about twice the first measurement (Perf /
+# scheduled run 90022 on `runner`): CPU 31.2 s, RSS 0.86 MiB, fan-out p50 13.8
+# and p99 244 ms. Bytes are nearly deterministic (egress 11.04 MB, frames
+# 9.50 MB, max within 0.5 % of p50), so their ceilings sit about 15 % above:
+# a delta resent whole or a presence storm fails at once. CPU and latency
+# share the runner and get the fs gate's wider tolerances.
 
+[kpi."hosting.relay.cpu_s_per_collab_hour.n100"]
+unit = "s"
+p50 = 62.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 3.0
+source = "relay_load: relay process CPU-seconds per active collaborator-hour"
+
+[kpi."hosting.relay.rss_mib_per_collab.n100"]
+unit = "MiB"
+p50 = 2.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.2
+source = "relay_load: relay resident memory per connected collaborator, above the idle relay"
+
+[kpi."hosting.relay.egress_bytes_per_collab_hour.n100"]
+unit = "bytes"
+p50 = 12700000.0
+enforce = true
+source = "relay_load: UDP bytes the relay's endpoint sent per active collaborator-hour"
+
+[kpi."hosting.relay.frame_bytes_per_collab_hour.n100"]
+unit = "bytes"
+p50 = 10900000.0
+enforce = true
+source = "relay_load: framed bytes written to peer sessions per active collaborator-hour"
+
+[kpi."hosting.relay.fanout_ms.n100"]
+unit = "ms"
+p50 = 30.0
+p99 = 500.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one edit, publish to receipt by each other member of the room"
+
+# Not met on AWS: egress at $0.09/GB is $0.00099 of the measured $0.00113.
 [kpi."hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]
 unit = "usd"
 p50 = 0.001
@@ -454,4 +502,5 @@ source = "KPI document: Relay cost per active collaborator-hour"
 [kpi."hosting.relay.cost_usd_per_collab_hour.hetzner-cx22.n100"]
 unit = "usd"
 p50 = 0.001
+enforce = true
 source = "KPI document: Relay cost per active collaborator-hour"

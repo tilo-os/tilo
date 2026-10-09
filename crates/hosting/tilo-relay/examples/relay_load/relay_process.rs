@@ -138,6 +138,10 @@ pub fn serve() -> anyhow::Result<()> {
     tilo_rt::daemon("tilo-relay").run(serve_relay())?
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay must keep serving until shutdown().await consumes it"
+)]
 async fn serve_relay() -> anyhow::Result<()> {
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
     let setup: Setup = serde_json::from_str(&stdin.next_line().await?.context("no setup")?)?;
