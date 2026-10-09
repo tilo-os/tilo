@@ -517,7 +517,6 @@ fn direct_reason(scanouts: &[ScanoutEntry]) -> &str {
     reason = "independent facts about one output, reported together when direct scanout is refused"
 )]
 struct DirectEligibility<'a> {
-    normal_transform: bool,
     color_managed: bool,
     hardware_cursor: bool,
     event_pageflips: bool,
@@ -528,10 +527,9 @@ struct DirectEligibility<'a> {
 
 /// Why one output cannot render straight into its own scanout target, or `None` when it
 /// can. Each output is judged alone: other outputs, and how they present, play no part.
+/// A rotated output is eligible: its final pass turns the frame on the GPU
+/// (`shell::render::orientation`).
 fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
-    if !input.normal_transform {
-        return Some("output transform is not normal");
-    }
     if input.color_managed {
         return Some("output color transform is active");
     }
@@ -571,6 +569,10 @@ struct PhaseWindow {
     direct_sparse_frames: u64,
     readback_bytes: u64,
     output_bytes: u64,
+    /// Passes the readback presenter made over an output's pixels on the CPU (rotate and
+    /// swizzle or PQ-encode, ICC copy, qcms), summed over the window's frames and outputs.
+    /// Zero while every output renders direct.
+    cpu_pixel_passes: u64,
     /// Wall time around the complete renderer bridge call. This remains
     /// available when a failed/timed-out paint cannot publish its detailed
     /// Vello phase record.
@@ -599,6 +601,7 @@ impl Default for PhaseWindow {
             backdrop_us: 0,
             readback_bytes: 0,
             output_bytes: 0,
+            cpu_pixel_passes: 0,
             bridge_us: 0,
             scanout_us: 0,
             direct_us: 0,
@@ -657,6 +660,7 @@ impl PhaseWindow {
             scanout_us: self.scanout_us,
             readback_bytes: self.readback_bytes,
             output_bytes: self.output_bytes,
+            cpu_pixel_passes: self.cpu_pixel_passes,
         }
     }
 
@@ -718,6 +722,7 @@ struct PhaseSummaryFields {
     scanout_us: u128,
     readback_bytes: u64,
     output_bytes: u64,
+    cpu_pixel_passes: u64,
 }
 
 #[cfg(test)]
@@ -898,7 +903,6 @@ mod direct_eligibility_tests {
 
     fn eligible() -> DirectEligibility<'static> {
         DirectEligibility {
-            normal_transform: true,
             color_managed: false,
             hardware_cursor: true,
             event_pageflips: true,
@@ -910,18 +914,18 @@ mod direct_eligibility_tests {
 
     #[test]
     fn direct_eligibility_is_per_scanout() {
-        // Two outputs side by side: the normal one renders direct while its
-        // rotated sibling names its own reason. Neither is judged by the count
-        // of outputs it shares the desktop with.
-        let normal = eligible();
-        let rotated = DirectEligibility {
-            normal_transform: false,
+        // Two outputs side by side: the plain one renders direct while its
+        // colour-managed sibling names its own reason. Neither is judged by the
+        // count of outputs it shares the desktop with.
+        let plain = eligible();
+        let calibrated = DirectEligibility {
+            color_managed: true,
             ..eligible()
         };
-        assert_eq!(direct_scanout_rejection(normal), None);
+        assert_eq!(direct_scanout_rejection(plain), None);
         assert_eq!(
-            direct_scanout_rejection(rotated),
-            Some("output transform is not normal")
+            direct_scanout_rejection(calibrated),
+            Some("output color transform is active")
         );
     }
 
@@ -930,13 +934,6 @@ mod direct_eligibility_tests {
         // Phase `direct_path_requires_the_complete_safe_contract`.
         assert_eq!(direct_scanout_rejection(eligible()), None);
         for (rejected, reason) in [
-            (
-                DirectEligibility {
-                    normal_transform: false,
-                    ..eligible()
-                },
-                "output transform is not normal",
-            ),
             (
                 DirectEligibility {
                     color_managed: true,
@@ -1231,6 +1228,10 @@ impl DrmPresenter {
     }
 
     fn emit_phase_profile(&mut self, sample: PaintScanoutSample) {
+        self.phase_window.cpu_pixel_passes = self
+            .phase_window
+            .cpu_pixel_passes
+            .saturating_add(sample.cpu_pixel_passes);
         if sample.legacy_attempted {
             let timing = self
                 .paint
@@ -1255,7 +1256,8 @@ impl DrmPresenter {
                 "frames={} direct_frames={} direct_dropped={} flip_completions={} \
                  unprofiled_frames={} window_us={} avg_submit_us={} \
                  avg_gpu_readback_map_us={} avg_settle_us={} avg_cpu_swizzle_us={} \
-                 avg_backdrop_us={} readback_bytes={} output_bytes={} bridge_us={} scanout_us={} \
+                 avg_backdrop_us={} readback_bytes={} output_bytes={} cpu_pixel_passes={} \
+                 bridge_us={} scanout_us={} \
                  avg_direct_us={} max_direct_us={} direct_sparse_frames={} \
                  direct_failures={} \
                  direct_scanout_status={} direct_scanout_reason={:?} \
@@ -1288,6 +1290,7 @@ impl DrmPresenter {
                     .unwrap_or(0),
                 summary.readback_bytes,
                 summary.output_bytes,
+                summary.cpu_pixel_passes,
                 summary.bridge_us,
                 summary.scanout_us,
                 self.phase_window
@@ -1359,6 +1362,8 @@ struct PaintScanoutSample {
     legacy_attempted: bool,
     bridge_us: u128,
     scanout_us: u128,
+    /// CPU passes over an output's pixels this frame (`PhaseWindow::cpu_pixel_passes`).
+    cpu_pixel_passes: u64,
 }
 
 /// Apply one reconfiguration to a scanout set. Shared by the presenter (normal case, render
@@ -2100,24 +2105,30 @@ impl RendererIdentity {
     }
 }
 
-/// The part of the scene `entry` shows.
+/// The part of the scene `entry` shows, turned the way its scanout is.
 fn output_view(entry: &ScanoutEntry, outputs: &[Output]) -> paint::OutputView {
-    view_of(entry.id, entry.position, entry.scanout.size(), outputs)
+    view_of(
+        entry.id,
+        entry.position,
+        (entry.scanout.size(), entry.transform),
+        outputs,
+    )
 }
 
-/// The view of output `id`, at `position` in the scene: its extent from the output table, or
-/// its scanout `mode` while the table does not list it.
+/// The view of output `id`, at `position` in the scene, whose scanout `mode` is turned by
+/// `transform` against the scene: its extent from the output table (which lists it upright),
+/// or the mode turned upright while the table does not list it. Its targets are the mode.
 fn view_of(
     id: OutputId,
     position: (i32, i32),
-    mode: (u32, u32),
+    (mode, transform): ((u32, u32), settings_store::hardware::OutputTransform),
     outputs: &[Output],
 ) -> paint::OutputView {
-    let size = outputs
-        .iter()
-        .find(|output| output.id == id)
-        .map_or(mode, |output| output.size);
-    paint::OutputView::at(id, position, size)
+    let size = outputs.iter().find(|output| output.id == id).map_or_else(
+        || crate::shell::render::orientation::turned(mode, transform),
+        |output| output.size,
+    );
+    paint::OutputView::at(id, position, size).oriented(transform)
 }
 
 /// What the direct path did with one output's frame.
@@ -2226,9 +2237,9 @@ fn keeps_shown_image(
 
 /// Render one output straight into its own direct scanout target and hand it to KMS.
 ///
-/// The direct path stays narrow until every transformed, colour-managed and software-cursor
-/// composition case has an exact GPU implementation; every unsupported case remains on the
-/// established readback presenter, with the reason logged.
+/// A rotated output renders its surface upright and is turned by the final GPU pass. The
+/// colour-managed and software-cursor cases have no exact GPU implementation yet and remain
+/// on the established readback presenter, with the reason logged.
 #[allow(
     clippy::too_many_lines,
     reason = "one output's eligibility, target lifetime, render and submission form one transaction whose failures each pick the presenter"
@@ -2244,7 +2255,6 @@ fn present_direct(
 ) -> DirectOutcome {
     let drm_bus_id = entry.scanout.drm_bus_id();
     let eligibility = DirectEligibility {
-        normal_transform: entry.transform == settings_store::hardware::OutputTransform::Normal,
         color_managed: entry.color_transform.is_some(),
         hardware_cursor: entry.scanout.hardware_cursor_active(),
         event_pageflips: entry.scanout.event_pageflips_available(),
@@ -2301,7 +2311,7 @@ fn present_direct(
     };
     if entry.direct_targets.is_none() && !degradation.blocked(Instant::now()) {
         let earlier_failures = degradation.failures();
-        match create_direct_targets(&entry.scanout, bridge, want_hdr, view.size) {
+        match create_direct_targets(&entry.scanout, bridge, want_hdr, view.target_size()) {
             Ok(targets) => {
                 eprintln!(
                     "direct_scanout_status=enabled format={:?} output={} renderer_pci={} renderer_drm={:?} renderer_drm_matches={} drm_bus_id={:?} earlier_failures={earlier_failures} DRM direct scanout enabled",
@@ -2515,6 +2525,7 @@ fn paint_scanouts_cpu(
     let rgba = renderer.screen_rgba();
     let size = (target_size.0 as usize, target_size.1 as usize);
     for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+        // The CPU renderer has no readback; its own profile covers this copy.
         paint_one_scanout(entry, outputs, rgba, size, pointer, None, None);
     }
     let pixels = u64::from(target_size.0).saturating_mul(u64::from(target_size.1));
@@ -2585,6 +2596,8 @@ fn present_single_xrgb(
             legacy_attempted: true,
             bridge_us,
             scanout_us: elapsed_us.saturating_sub(bridge_us),
+            // The readback swizzled into the dumb buffer.
+            cpu_pixel_passes: 1,
             ..PaintScanoutSample::default()
         };
     }
@@ -2614,6 +2627,8 @@ fn present_single_xrgb(
         legacy_attempted: true,
         bridge_us,
         scanout_us: elapsed_us.saturating_sub(bridge_us),
+        // The readback swizzled into the dumb buffer.
+        cpu_pixel_passes: 1,
         ..PaintScanoutSample::default()
     }
 }
@@ -2854,11 +2869,20 @@ fn upload_combined_scene(
         scene_width: cw,
         layers: hdr_layers,
     });
+    let mut cpu_pixel_passes: u64 = 0;
     for entry in scanouts
         .iter_mut()
         .filter(|entry| entry.present_by_readback)
     {
-        paint_one_scanout(entry, outputs, rgba, (cw, ch), pointer, hdr, None);
+        cpu_pixel_passes = cpu_pixel_passes.saturating_add(paint_one_scanout(
+            entry,
+            outputs,
+            rgba,
+            (cw, ch),
+            pointer,
+            hdr,
+            None,
+        ));
     }
     if note_workspace && let Some(id) = workspace_id {
         bridge.note_shown_workspace(id);
@@ -2867,6 +2891,7 @@ fn upload_combined_scene(
         legacy_attempted: true,
         bridge_us,
         scanout_us: scanout_started.elapsed().as_micros(),
+        cpu_pixel_passes,
         ..PaintScanoutSample::default()
     }
 }
@@ -3022,15 +3047,25 @@ fn present_composed_readback(
         usize::try_from(target_size.0).unwrap_or(0),
         usize::try_from(target_size.1).unwrap_or(0),
     );
+    let mut cpu_pixel_passes: u64 = 0;
     for entry in scanouts
         .iter_mut()
         .filter(|entry| entry.present_by_readback)
     {
-        paint_one_scanout(entry, outputs, rgba, (cw, ch), pointer, None, damage);
+        cpu_pixel_passes = cpu_pixel_passes.saturating_add(paint_one_scanout(
+            entry,
+            outputs,
+            rgba,
+            (cw, ch),
+            pointer,
+            None,
+            damage,
+        ));
     }
     PaintScanoutSample {
         legacy_attempted: true,
         scanout_us: scanout_started.elapsed().as_micros(),
+        cpu_pixel_passes,
         ..PaintScanoutSample::default()
     }
 }
@@ -3185,6 +3220,9 @@ fn output_local_cursor(
 /// unchanged from the inline version, so the present call still lands at
 /// exactly the same point in the per-output iteration.
 /// `rgba` is the combined frame, `(cw, ch)` pixels.
+///
+/// Returns how many passes it made over the output's pixels on the CPU: the rotate and
+/// swizzle (or PQ encode), plus the sub-rect copy and the qcms pass of an ICC profile.
 fn paint_one_scanout(
     e: &mut ScanoutEntry,
     outputs: &[Output],
@@ -3193,7 +3231,7 @@ fn paint_one_scanout(
     pointer: (f64, f64),
     hdr_layers: Option<CpuComposite<'_>>,
     damage: Option<vello::FineDamageRect>,
-) {
+) -> u64 {
     let (px, py) = e.position;
     let (physical_w, physical_h) = e.scanout.size();
     let logical_size = outputs
@@ -3247,8 +3285,10 @@ fn paint_one_scanout(
     let composite = hdr_layers.map(|layers| (layers, scene_origin));
     let local = damage.map(|rect| output_local_clip(px, py, logical_size, rect));
     let pageflip = e.scanout.event_pageflips_available();
+    // The ICC profile's copy and qcms pass are already done.
+    let profile_passes: u64 = if copied { 2 } else { 0 };
     if matches!(local, Some(None)) && !pageflip {
-        return;
+        return profile_passes;
     }
     let clip = local.flatten();
     e.scanout.set_damage_rect(clip);
@@ -3258,7 +3298,9 @@ fn paint_one_scanout(
             && transform == settings_store::hardware::OutputTransform::Normal
             && composite.is_none()
     });
+    let mut written = false;
     e.scanout.present_no_drain(local_cursor, |dst, pitch| {
+        written = true;
         if let Some(clip) = clip_write {
             write_encoded_clip_xrgb(subrect, clip, dst, pitch);
             return;
@@ -3283,6 +3325,8 @@ fn paint_one_scanout(
             ),
         }
     });
+    // Plus the write into the dumb buffer, unless a pending flip refused the frame.
+    profile_passes.saturating_add(u64::from(written))
 }
 
 impl Presenter for DrmPresenter {
@@ -4031,6 +4075,7 @@ mod presentation_proof_tests {
 #[cfg(test)]
 mod per_output_presentation_tests {
     use super::*;
+    use settings_store::hardware::OutputTransform;
 
     /// An output at `position` (scene and logical alike) scanning out at `refresh_mhz`.
     fn head(id: u32, position: (i32, i32), size: (u32, u32), refresh_mhz: u32) -> Output {
@@ -4082,6 +4127,64 @@ mod per_output_presentation_tests {
     }
 
     #[test]
+    fn a_rotated_output_renders_upright_into_targets_of_its_mode() {
+        // A 1920x1080 panel turned to portrait beside a landscape head: the output table
+        // lists it upright (1080x1920); its scanout targets stay the KMS mode.
+        let outputs = [
+            head(0, (0, 0), (2560, 1440), 60_000),
+            head(1, (2560, 0), (1080, 1920), 60_000),
+        ];
+        for transform in [OutputTransform::Rotate90, OutputTransform::Rotate270] {
+            let view = view_of(OutputId(1), (2560, 0), ((1920, 1080), transform), &outputs);
+            assert_eq!(
+                view.size,
+                (1080, 1920),
+                "the surface is upright, as in the scene"
+            );
+            assert_eq!(view.target_size(), (1920, 1080), "the targets are the mode");
+            assert_eq!(view.orientation, transform);
+            // A caret on the rotated head maps onto its upright surface by translation, so
+            // the head repairs it sparsely like any other.
+            let caret = [vello::FineDamageRect {
+                x: 2600,
+                y: 1800,
+                width: 8,
+                height: 20,
+            }];
+            assert_eq!(
+                view.damage(&caret),
+                Some(vec![vello::FineDamageRect {
+                    x: 40,
+                    y: 1800,
+                    width: 8,
+                    height: 20,
+                }])
+            );
+        }
+        // Not yet in the table: the mode, turned upright.
+        let unlisted = view_of(
+            OutputId(2),
+            (0, 0),
+            ((1920, 1080), OutputTransform::Rotate90),
+            &[],
+        );
+        assert_eq!(
+            (unlisted.size, unlisted.target_size()),
+            ((1080, 1920), (1920, 1080))
+        );
+        let upside_down = view_of(
+            OutputId(2),
+            (0, 0),
+            ((1920, 1080), OutputTransform::Rotate180),
+            &[],
+        );
+        assert_eq!(
+            (upside_down.size, upside_down.target_size()),
+            ((1920, 1080), (1920, 1080))
+        );
+    }
+
+    #[test]
     fn damage_is_routed_only_to_the_output_it_touches() {
         let outputs = [
             head(0, (0, 0), (2560, 1440), 60_000),
@@ -4092,7 +4195,12 @@ mod per_output_presentation_tests {
                 .iter()
                 .find(|output| output.id == id)
                 .expect("the head is listed");
-            view_of(id, output.position, (1, 1), &outputs)
+            view_of(
+                id,
+                output.position,
+                ((1, 1), OutputTransform::Normal),
+                &outputs,
+            )
         });
         // A caret blinking on head 2.
         let caret = [vello::FineDamageRect {
@@ -4240,6 +4348,7 @@ mod per_output_presentation_tests {
 #[cfg(test)]
 mod lone_output_tests {
     use super::*;
+    use settings_store::hardware::OutputTransform;
     use vello::FineDamageRect;
     use vello::kurbo::{Affine, Rect};
     use vello::peniko::{Color, Fill};
@@ -4252,7 +4361,7 @@ mod lone_output_tests {
         let mut bridge = paint::VelloDrmBridge::new(SIZE.0, SIZE.1)
             .expect("renderer gate requires a real wgpu adapter");
         bridge.warm_renderer_for_test();
-        let view = view_of(OutputId(0), (0, 0), SIZE, &[]);
+        let view = view_of(OutputId(0), (0, 0), (SIZE, OutputTransform::Normal), &[]);
         assert!(
             bridge.view_is_whole_scene(&view),
             "a lone output renders into the bridge's target"
@@ -4336,6 +4445,7 @@ mod lone_output_tests {
                     view: &target,
                     format: wgpu::TextureFormat::Bgra8Unorm,
                     size: SIZE,
+                    orientation: settings_store::hardware::OutputTransform::Normal,
                 },
                 Instant::now()
                     .checked_add(tilo_test_env::hang_bound())

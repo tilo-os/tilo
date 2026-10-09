@@ -6,6 +6,10 @@
 //! and the revision they hold, so retained damage stays sparse per output. The surface swaps
 //! into the bridge's target for the render: the vello renderer, its pipelines, client frames
 //! and recovery budget, and the device are shared by every output.
+//!
+//! A rotated output's surface still holds its part of the scene upright; the final pass turns
+//! it into the scanout's physical orientation on the GPU ([`super::super::orientation`]), so
+//! damage maps onto the surface by translation alone and the pixels are the readback's.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -13,6 +17,9 @@ use std::time::Instant;
 use vello::kurbo::{Affine, Rect};
 use vello::{FineDamageRect, Scene, wgpu};
 
+use settings_store::hardware::OutputTransform;
+
+use super::super::orientation::turned;
 use super::{BridgeError, GpuFrameStats, RetainedGpuTarget, SceneDamage, VelloDrmBridge};
 use crate::shell::hdr_surface::HdrLayer;
 use crate::shell::render::OutputId;
@@ -21,21 +28,39 @@ use crate::shell::render::OutputId;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OutputView {
     pub id: OutputId,
-    /// Scene → output pixels: `translate(-position)`. Folding the output transform in as
-    /// well is step 2 of TIL-148.
+    /// Scene → surface pixels: `translate(-position)`.
     pub transform: Affine,
-    /// The output's extent in pixels; its targets must have exactly this size.
+    /// The output's extent in the scene, in pixels: the size of its surface.
     pub size: (u32, u32),
+    /// How the scanout is turned against the surface. Its targets are
+    /// [`Self::target_size`], the physical mode.
+    pub orientation: OutputTransform,
 }
 
 impl OutputView {
-    /// The view of an output whose top-left corner sits at `position` in the scene.
+    /// The view of an unrotated output whose top-left corner sits at `position` in the scene.
     pub fn at(id: OutputId, position: (i32, i32), size: (u32, u32)) -> Self {
         Self {
             id,
             transform: Affine::translate((-f64::from(position.0), -f64::from(position.1))),
             size,
+            orientation: OutputTransform::Normal,
         }
+    }
+
+    /// The same view on an output whose scanout is turned by `orientation`.
+    #[must_use]
+    pub fn oriented(self, orientation: OutputTransform) -> Self {
+        Self {
+            orientation,
+            ..self
+        }
+    }
+
+    /// The extent of the output's scanout targets: [`Self::size`], turned by the
+    /// orientation.
+    pub fn target_size(&self) -> (u32, u32) {
+        turned(self.size, self.orientation)
     }
 
     /// The whole-pixel offset `transform` subtracts, when it is a pure translation by whole
@@ -111,17 +136,27 @@ pub struct OutputTarget<'a> {
     pub view: &'a wgpu::TextureView,
     /// `Bgra8Unorm` receives a copy; the HDR scanout formats receive the PQ encode.
     pub format: wgpu::TextureFormat,
+    /// The target's own extent: the physical mode.
     pub size: (u32, u32),
+    /// How the target is turned against the surface the final pass reads.
+    pub orientation: OutputTransform,
 }
 
 impl<'a> OutputTarget<'a> {
+    /// An unrotated imported scanout buffer.
     #[cfg(target_os = "linux")]
     pub fn imported(target: &'a ui::dmabuf_import::ImportedRenderTarget) -> Self {
         Self {
             view: &target.view,
             format: target.format,
             size: (target.width, target.height),
+            orientation: OutputTransform::Normal,
         }
+    }
+
+    /// The extent of the surface this target shows, in scene orientation.
+    pub fn surface_size(&self) -> (u32, u32) {
+        turned(self.size, self.orientation)
     }
 }
 
@@ -223,8 +258,9 @@ impl VelloDrmBridge {
     ///
     /// # Errors
     ///
-    /// Fails when the target is not the view's size, the output's surface cannot be
-    /// allocated, rendering or submission fails, or the marker misses `deadline`.
+    /// Fails when the target is not the view's [`OutputView::target_size`], the output's
+    /// surface cannot be allocated, rendering or submission fails, or the marker misses
+    /// `deadline`.
     #[cfg(target_os = "linux")]
     pub fn paint_output_until(
         &mut self,
@@ -239,7 +275,10 @@ impl VelloDrmBridge {
             scene,
             view,
             damage,
-            OutputTarget::imported(target),
+            OutputTarget {
+                orientation: view.orientation,
+                ..OutputTarget::imported(target)
+            },
             deadline,
             signal,
         )
@@ -259,10 +298,17 @@ impl VelloDrmBridge {
         deadline: Instant,
         signal: OutputSignal<'_>,
     ) -> Result<GpuFrameStats, BridgeError> {
-        if target.size != view.size {
+        let expected = view.target_size();
+        if target.size != expected || target.orientation != view.orientation {
             return Err(BridgeError::InvalidSize(format!(
-                "output {} target is {}x{}, the output is {}x{}",
-                view.id.0, target.size.0, target.size.1, view.size.0, view.size.1
+                "output {} target is {}x{} {:?}, the output's scanout is {}x{} {:?}",
+                view.id.0,
+                target.size.0,
+                target.size.1,
+                target.orientation,
+                expected.0,
+                expected.1,
+                view.orientation
             )));
         }
         if view.covers_whole_scene(self.target.size) {
