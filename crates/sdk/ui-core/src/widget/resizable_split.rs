@@ -854,23 +854,19 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             children.push(self.handle.build_layout(taffy, theme, node_map));
         }
         self.style_panes(taffy, left_node, right_node);
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: match self.orientation {
-                    SplitOrientation::Horizontal => taffy::FlexDirection::Row,
-                    SplitOrientation::Vertical => taffy::FlexDirection::Column,
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: match self.orientation {
+                SplitOrientation::Horizontal => taffy::FlexDirection::Row,
+                SplitOrientation::Vertical => taffy::FlexDirection::Column,
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     /// The panes follow a moved divider without rebuilding the tree.

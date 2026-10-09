@@ -20,6 +20,7 @@
 
 use automerge::transaction::Transactable;
 use std::collections::{HashMap, HashSet};
+use ui::widget::TaffyTreeExt;
 
 /// The files the calendar imports and exports.
 fn ics_filter() -> ui::portal::FileFilter {
@@ -3758,24 +3759,14 @@ impl Widget for CalendarApp {
         // comment) — and `Widget::build_layout` returns a bare `NodeId`
         // across every implementor, so there is nowhere to surface a
         // theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "child was just built in this tree; see ui::widget::TaffyTreeExt"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[editor_node],
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[editor_node], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

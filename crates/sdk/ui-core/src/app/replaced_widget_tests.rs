@@ -2,6 +2,7 @@
 //! one: a pointer move before the next layout (its cursor and tooltip
 //! lookups) reached a dropped colour picker and crashed Canvas.
 
+use crate::widget::TaffyTreeExt;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -50,11 +51,7 @@ impl Widget for Swapper {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &[child])
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(taffy::Style::default(), &[child], node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, (100.0, 40.0));

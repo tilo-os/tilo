@@ -381,15 +381,11 @@ impl Widget for NativeView {
         });
         self.fallback_node = child;
         let children = child.into_iter().collect::<Vec<_>>();
-        let node = taffy.parent_node(
-            Style {
-                size: self.requested_size,
-                ..Default::default()
-            },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: self.requested_size,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

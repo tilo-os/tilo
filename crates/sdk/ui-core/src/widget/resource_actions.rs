@@ -355,18 +355,14 @@ impl Widget for ResourceActionHost {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.root.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(
-            crate::taffy::Style {
-                size: crate::taffy::Size {
-                    width: crate::taffy::style_helpers::percent(1.0_f32),
-                    height: crate::taffy::style_helpers::percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = crate::taffy::Style {
+            size: crate::taffy::Size {
+                width: crate::taffy::style_helpers::percent(1.0_f32),
+                height: crate::taffy::style_helpers::percent(1.0_f32),
             },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

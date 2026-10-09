@@ -6,6 +6,7 @@
 //! accessibility tree a screen reader reads.
 
 use std::collections::HashMap;
+use tilo_app::widget::TaffyTreeExt;
 
 use tilo_app::a11y::{AccessNode, Action as A11yAction, Role};
 use tilo_app::framework::{Dispatcher, SurfaceCx};
@@ -70,17 +71,14 @@ impl Widget for Booth {
         _: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(tilo_app::taffy::Style {
-                size: tilo_app::taffy::Size {
-                    width: tilo_app::taffy::Dimension::length(200.0),
-                    height: tilo_app::taffy::Dimension::length(40.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = tilo_app::taffy::Style {
+            size: tilo_app::taffy::Size {
+                width: tilo_app::taffy::Dimension::length(200.0),
+                height: tilo_app::taffy::Dimension::length(40.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
