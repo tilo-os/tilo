@@ -357,13 +357,28 @@ its dynamic relocations before `main`. `tools/perf/runtime_size_ratchet.py`
 reads four numbers from the ELF file, per architecture: `bytes`,
 `relocation_bytes` (the relocation tables), `relocated_bytes` (the 4 KiB pages
 those relocations dirty in each app process) and `symbol_relocations` (the
-relocations that need a symbol lookup). It also names any media library the
-runtime makes every app load. The budgets are in
+relocations that need a symbol lookup). The budgets are in
 `tools/perf/runtime-size-budget/budget.toml`, with the same headroom, rounding
-and raise files as the app budgets above:
+and raise files as the app budgets above.
+
+GLib and GStreamer are part of the runtime but not of every app's start:
+`tools/ci/rustc-thin-app-wrapper.sh` links `libruntime_dylib.so` through
+`tools/ci/runtime-dylib-lazy-link.py`, which keeps them out of `DT_NEEDED`,
+serves the runtime's calls into them through hidden trampolines that load them
+on first use, and records their SONAMEs in the `.tilo.lazy_needed` section. The
+runtime bundle tools (`os/scripts/collect-runtime-dependencies.py`,
+`verify-runtime-bundle-closure.sh`) ship and verify those libraries like
+`DT_NEEDED` ones. A library of `[targets] needed_absent` in the runtime's
+`DT_NEEDED`, in what every app loads with it, or in what a built app of
+`apps_without_media` loads at exec fails the build gate; if the runtime starts
+reading a GLib or GStreamer *variable*, the link itself fails, since nothing can
+provide one before the library loads.
 
 - **Release / apps** (`Shared runtime within its size budget`) measures the
-  dylib it has just built.
+  dylib it has just built, and the closures above. Its next steps report the
+  loader's cost for an app without media (statistics, the objects it loads,
+  its private dirty memory) and, when Video Player is built, decode its H.264
+  fixture through the thin runtime.
 - **Perf / scheduled** (footprint group) fetches the newest published
   `so.tilo.runtime` of each architecture, holds it to the budgets and records
   `footprint.runtime.<metric>.<arch>`.
