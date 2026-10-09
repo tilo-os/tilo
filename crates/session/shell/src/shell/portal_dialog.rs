@@ -966,18 +966,27 @@ impl PortalDialogQueue {
             }),
             PendingDialog::ActionGrant { request, .. } => Some(DialogView::ActionGrant {
                 handle: request.handle.clone(),
-                title: t_args(
-                    "portal-grant-title",
-                    &[
-                        ("app", friendly_app_name(&request.app_id).into()),
-                        ("target", friendly_app_name(&request.target_app).into()),
-                    ],
-                ),
+                title: if request.confirming {
+                    t_args(
+                        "portal-confirm-title",
+                        &[("who", friendly_app_name(&request.app_id).into())],
+                    )
+                } else {
+                    t_args(
+                        "portal-grant-title",
+                        &[
+                            ("app", friendly_app_name(&request.app_id).into()),
+                            ("target", friendly_app_name(&request.target_app).into()),
+                        ],
+                    )
+                },
                 // A grant covers this action on this resource only, so the
                 // sheet names both.
                 action: format!("{} · {}", request.resource_label, request.action_label),
                 detail: action_grant_detail(request),
-                choices: AppActionConsent::ALLOWING
+                // Confirming one invocation grants nothing: it is allowed
+                // this once or not at all.
+                choices: action_grant_answers(request)
                     .iter()
                     .map(|answer| crate::shell::app_action_consent::consent_label(*answer))
                     .collect(),
@@ -2564,9 +2573,21 @@ fn chooser_detail(request: &ApplicationChoiceRequest) -> String {
         ],
     )
 }
+/// The allowing answers the grant sheet offers for `request`, in order.
+fn action_grant_answers(request: &AppActionConsentRequest) -> &'static [AppActionConsent] {
+    if request.confirming {
+        &AppActionConsent::ALLOWING[..1]
+    } else {
+        &AppActionConsent::ALLOWING
+    }
+}
+
 /// The action's consequences, as the grant sheet states them.
 fn action_grant_detail(request: &AppActionConsentRequest) -> String {
     let risk = crate::shell::app_action_consent::risk_label(request.risk);
+    if request.confirming {
+        return t_args("portal-confirm-detail", &[("risk", risk.into())]);
+    }
     let key = if request.needs_confirmation {
         "portal-grant-detail-confirms"
     } else {

@@ -377,7 +377,9 @@ fn refusal(reason: String) -> ActionHostError {
 /// The legacy JSON evidence the workspace profile path reads.
 fn confirmation_evidence(confirmation: Option<&Confirmation>) -> serde_json::Value {
     match confirmation {
-        None => serde_json::json!({}),
+        // Governing a room is a person's own act: an answer given for
+        // someone acting for them confirms nothing here.
+        None | Some(Confirmation::Witnessed(_)) => serde_json::json!({}),
         Some(Confirmation::Confirmed) => serde_json::json!({"confirm": true}),
         Some(Confirmation::Phrase(phrase)) => serde_json::json!({"confirmation_phrase": phrase}),
     }
@@ -662,7 +664,7 @@ impl CapnpBrokerState {
     /// Every live published surface, carrying its actions only where
     /// `scope` builds that surface's rows: who publishes is copied, not every
     /// app's whole surface, when that is all a caller asked.
-    fn live_surfaces(&self, scope: RowScope<'_>) -> Vec<PublishedSurface> {
+    pub(super) fn live_surfaces(&self, scope: RowScope<'_>) -> Vec<PublishedSurface> {
         self.surfaces
             .lock()
             .map(|surfaces| {
@@ -722,6 +724,7 @@ impl CapnpBrokerState {
             .filter(|_| caller.device_public_key().is_none());
         let mut keymap = None;
         for (workspace, policy, now) in self.workspaces_for(caller) {
+            let first = rows.len();
             let room = workspace.room.to_string();
             let mut live_apps = std::collections::HashSet::new();
             for surface in surfaces
@@ -912,8 +915,41 @@ impl CapnpBrokerState {
                         }),
                 );
             }
+            if let Some(added) = rows.get_mut(first..) {
+                Self::mark_asks(&workspace, &policy, now, added);
+            }
         }
         (rows, providers)
+    }
+
+    /// Mark each of `rows` whose action the room's grants let `actor` take
+    /// only after asking: it asks for confirmation, which the person gives
+    /// on their own device.
+    fn mark_asks(workspace: &Workspace, actor: &BrokerActor, now: u64, rows: &mut [CatalogueRow]) {
+        for row in rows {
+            let app = row.app_id.clone();
+            let Some(descriptor) = row.action.as_mut() else {
+                continue;
+            };
+            if descriptor.contract.confirmation != tilo_actions::ConfirmationPolicy::None {
+                continue;
+            }
+            let node = Self::target_node(
+                workspace,
+                &app,
+                (
+                    &descriptor.resource_kind,
+                    &descriptor.address.resource,
+                    &descriptor.address.action,
+                ),
+                &descriptor.contract,
+            );
+            if actor.answer_in(workspace, &node, descriptor.contract.kind, now)
+                == tilo_action_policy::Answer::Ask
+            {
+                descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+            }
+        }
     }
 
     /// Actions retained from applications that are closed in `workspace`,
@@ -1851,7 +1887,7 @@ impl CapnpBrokerState {
             root.peer_id,
             &offered,
             argument,
-            &actor.id,
+            &actor,
             request.confirmation.as_ref(),
         )?;
         let surface = PublishedSurface {
@@ -1948,9 +1984,11 @@ impl CapnpBrokerState {
                 ))
             })
             .ok_or(ActionHostError::UnknownAction)?;
+        // Offered when the caller may take it or would be asked first;
+        // admission requires the confirmation an ask needs.
         let (offered, room) = self
             .decide_for(caller, &room, |workspace, policy, now| {
-                Self::allowed(
+                Self::offered(
                     workspace,
                     policy,
                     now,
@@ -1966,7 +2004,7 @@ impl CapnpBrokerState {
             peer_id,
             &offered,
             argument.as_deref(),
-            &actor.id,
+            &actor,
             request.confirmation.as_ref(),
         )?;
         self.start_invocation_confirmed_for_origin(

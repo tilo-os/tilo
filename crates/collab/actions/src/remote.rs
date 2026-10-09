@@ -509,6 +509,11 @@ pub enum Confirmation {
     Confirmed,
     /// The caller typed the phrase the contract asks for.
     Phrase(String),
+    /// The person the caller acts for confirmed this very invocation on
+    /// their own device: the host hands the caller this token, which names
+    /// that answer. Only a person acting themselves confirms by their own
+    /// word; anyone acting for them carries the person's answer.
+    Witnessed(String),
 }
 
 /// Provider token naming the calling application's own connection, for an

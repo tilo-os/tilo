@@ -63,6 +63,9 @@ pub struct AppActionConsentRequest {
     pub risk: tilo_actions::RiskLevel,
     /// Whether each use still asks for confirmation, whatever is granted.
     pub needs_confirmation: bool,
+    /// The person confirms this one invocation, which `app_id` (an agent or
+    /// an application) makes for them, rather than granting anything.
+    pub confirming: bool,
 }
 
 /// The person's answer.

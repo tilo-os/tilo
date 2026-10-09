@@ -123,7 +123,7 @@ impl ShownActor {
     /// How `caller`, admitted as `actor`, appears in the view it acts in;
     /// `None` for a person acting for themselves on this device, whose own
     /// view already shows what they do.
-    fn of(
+    pub(super) fn of(
         caller: Option<&Caller>,
         actor: &BrokerActor,
         context: Option<&tilo_actions::ActionContext>,

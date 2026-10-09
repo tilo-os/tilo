@@ -701,6 +701,109 @@ mod tests {
         assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
     }
 
+    /// An action the room's grants let an agent take only after asking is
+    /// offered to it marked as asking for confirmation. The agent's own word
+    /// does not confirm it; the person's answer, witnessed on their device,
+    /// does, for that one invocation.
+    #[test]
+    fn an_agent_asked_first_acts_only_on_the_persons_witnessed_confirmation() {
+        use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
+        use tilo_actions::remote::CatalogueQuery;
+        let mut workspace = workspace();
+        workspace.admit_agent("scribe", KindSet::READ);
+        workspace.answer(
+            Subject::agent("scribe"),
+            &TreePath::root().app(APP),
+            KindSet::UNDOABLE,
+            Answer::Ask,
+        );
+        let (state, room) = broker(&workspace);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(5, surface(5, &room));
+        let mut app = state.capture_invocations_for_test(5);
+        let agent = Caller::local_agent("scribe").in_room(&room);
+
+        let page = state
+            .action_query(&agent, &CatalogueQuery::default())
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("answered")
+            .expect("the agent may read the catalogue");
+        let offered = page
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .find(|descriptor| descriptor.address.action == "new-window")
+            .expect("an action asking first is offered");
+        assert_eq!(
+            offered.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm,
+            "marked as asking for confirmation"
+        );
+
+        assert_eq!(
+            invoke(&state, &agent, "5", "new-window", None).err(),
+            Some(ActionHostError::ConfirmationRequired)
+        );
+        assert_eq!(
+            invoke(
+                &state,
+                &agent,
+                "5",
+                "new-window",
+                Some(Confirmation::Confirmed)
+            )
+            .err(),
+            Some(ActionHostError::ConfirmationRequired),
+            "an agent never confirms by its own word"
+        );
+        assert!(app.try_recv().is_err(), "nothing ran");
+
+        let witnessed = state
+            .witness_confirmation("agent:scribe", ("files.app", "new-window"), None)
+            .expect("the person's answer is recorded");
+        invoke(
+            &state,
+            &agent,
+            "5",
+            "new-window",
+            Some(Confirmation::Witnessed(witnessed.clone())),
+        )
+        .expect("the person's confirmation admits the call");
+        assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
+        assert_eq!(
+            invoke(
+                &state,
+                &agent,
+                "5",
+                "new-window",
+                Some(Confirmation::Witnessed(witnessed))
+            )
+            .err(),
+            Some(ActionHostError::ConfirmationRequired),
+            "the answer was for that one call"
+        );
+        let other = state
+            .witness_confirmation("agent:scribe", ("files.app", "empty-trash"), None)
+            .expect("recorded");
+        assert_eq!(
+            invoke(
+                &state,
+                &agent,
+                "5",
+                "new-window",
+                Some(Confirmation::Witnessed(other))
+            )
+            .err(),
+            Some(ActionHostError::ConfirmationRequired),
+            "an answer for another action confirms nothing here"
+        );
+    }
+
     /// An agent's action shows in the view it runs in, named with the
     /// person it acts for; a person's own action on this device does not
     /// put a second marker on what their view already shows.

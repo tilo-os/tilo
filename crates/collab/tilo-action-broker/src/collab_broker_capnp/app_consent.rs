@@ -147,7 +147,9 @@ impl CapnpBrokerState {
                     .policy
                     .grants
                     .retain(|grant| grant.lifetime != Lifetime::Once);
-                Some(Self::allowed(
+                // A standing grant that asks first already answered the
+                // question: each call is confirmed, nothing more granted.
+                Some(Self::offered(
                     &standing,
                     &as_app,
                     now,
@@ -179,6 +181,7 @@ impl CapnpBrokerState {
             needs_confirmation: contract.advertised_confirmation()
                 != tilo_actions::ConfirmationPolicy::None
                 || contract.risk.requires_confirmation(),
+            confirming: false,
         };
         Some((consent, (descriptor.resource_kind.clone(), contract.need())))
     }
@@ -252,7 +255,7 @@ pub(super) fn serve_after_consent(
     message: RemoteActionMessage,
     mut results: channel_handle::RemoteActionResults,
 ) -> Promise<(), capnp::Error> {
-    use tilo_actions::remote::{ActionHostError, RemoteActionFrame, refuse, serve};
+    use tilo_actions::remote::{ActionHostError, RemoteActionFrame, refuse};
     Promise::from_future(async move {
         let mut consent = consent;
         let answer = (&mut consent.answer)
@@ -272,10 +275,15 @@ pub(super) fn serve_after_consent(
                     }
                     other => other,
                 };
-                let answered = match serve(&host, &caller, message) {
-                    Some(answer) => answer.await,
-                    None => None,
-                };
+                let person = consent.request.person.clone();
+                let answered = super::witness::serve_answering(
+                    Arc::clone(&state),
+                    host,
+                    caller,
+                    person,
+                    message,
+                )
+                .await;
                 if grant.consumed_on_use {
                     state.consume_app_action_grant(&grant);
                 }

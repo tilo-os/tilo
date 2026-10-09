@@ -873,6 +873,20 @@ impl AdmittedJoinIdentity {
     }
 }
 
+/// Answer a remote-action request with `error`, refusing it.
+fn refused(
+    message: &tilo_actions::remote::RemoteActionMessage,
+    error: tilo_actions::remote::ActionHostError,
+    results: channel_handle::RemoteActionResults,
+) -> Promise<(), capnp::Error> {
+    match tilo_actions::remote::refuse(message, error) {
+        Some(refusal) => reply_frame(refusal, results),
+        None => Promise::err(capnp::Error::failed(
+            "only remote-action requests are answered".into(),
+        )),
+    }
+}
+
 /// Whether `evidence` is what `offered`'s confirmation policy asks for.
 /// Minting the grant that binds it to one delivery is
 /// [`CapnpBrokerState::confirmation_token`]'s job.
@@ -1767,6 +1781,7 @@ mod admission_memo;
 mod app_consent;
 mod launchable;
 mod local_action_host;
+mod witness;
 pub use local_action_host::CertifiedPersonContext;
 
 pub use launchable::launchable_provider;
@@ -2796,6 +2811,16 @@ fn validate_directory_target_input(
     Ok(())
 }
 
+/// A person's confirmation, given on their own device, of one invocation
+/// someone acting for them makes.
+struct Witness {
+    actor: String,
+    resource: String,
+    action: String,
+    argument_digest: [u8; 32],
+    expires: std::time::Instant,
+}
+
 struct ConfirmationGrant {
     peer_id: u64,
     resource: String,
@@ -3014,6 +3039,9 @@ pub struct CapnpBrokerState {
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
+    /// Confirmations people gave on their own device for an invocation
+    /// someone acting for them makes; see [`Self::witness_confirmation`].
+    witnessed_confirmations: Mutex<HashMap<String, Witness>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
@@ -3787,6 +3815,7 @@ impl CapnpBrokerState {
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
+                witnessed_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
                 pending_task_runs: Mutex::new(HashMap::new()),
@@ -4490,6 +4519,8 @@ impl CapnpBrokerState {
         contract: &tilo_actions::ActionContract,
         confirmation: Option<DirectoryActionConfirmation>,
     ) -> Result<Option<String>, ActionDirectoryBridgeError> {
+        // Only a person acting themselves confirms by their own word.
+        let confirmation = confirmation.filter(|_| actor.direct());
         match &contract.confirmation {
             tilo_actions::ConfirmationPolicy::Confirm | tilo_actions::ConfirmationPolicy::None
                 if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) =>
@@ -4539,7 +4570,7 @@ impl CapnpBrokerState {
         actor: &BrokerActor,
         app_id: &str,
         questions: &[DirectoryQuestion<'_>],
-    ) -> Result<Vec<bool>, capnp::Error> {
+    ) -> Result<Vec<Answer>, capnp::Error> {
         let now = self.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("the action broker has no workspace authority".into())
@@ -4548,7 +4579,7 @@ impl CapnpBrokerState {
             .decide_in_room(cluster_id, |workspace| {
                 let workspace = workspace
                     .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-                Ok::<Vec<bool>, String>(
+                Ok::<Vec<Answer>, String>(
                     questions
                         .iter()
                         .map(|question| {
@@ -4560,9 +4591,7 @@ impl CapnpBrokerState {
                                 question.field,
                                 question.action,
                             );
-                            // Listed when the actor may take it, or would be
-                            // asked first.
-                            actor.answer_in(workspace, &node, question.kind, now) != Answer::Deny
+                            actor.answer_in(workspace, &node, question.kind, now)
                         })
                         .collect(),
                 )
@@ -5154,7 +5183,7 @@ impl CapnpBrokerState {
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
-                durable_local_invocation::authorize_action_in(
+                let asks = durable_local_invocation::admit_action_in(
                     workspace,
                     (
                         &offered.0.app_id,
@@ -5167,18 +5196,19 @@ impl CapnpBrokerState {
                     now,
                 )?;
                 if actor.is_agent {
-                    return Ok::<bool, String>(false);
+                    return Ok::<bool, String>(asks);
                 }
                 // A person is authorized on the route record (Artifact)
                 // too, not only on (app, action).
-                crate::published_authorization::authorize_person_published(
-                    workspace,
-                    now,
-                    &actor.id,
-                    actor.capped,
-                    &offered.0,
-                    &offered.1,
-                )
+                Ok(asks
+                    | crate::published_authorization::authorize_person_published(
+                        workspace,
+                        now,
+                        &actor.id,
+                        actor.capped,
+                        &offered.0,
+                        &offered.1,
+                    )?)
             })??;
 
         if (durable.is_some() || execution.is_some())
@@ -5436,13 +5466,24 @@ impl CapnpBrokerState {
                 tilo_actions::InteractionPhase::Cancelled { message: None }
             }
         };
+        self.publish_interaction(target.route(), shown, update.invocation(), phase);
+    }
+
+    /// Show `shown` in the view `route` names, in `phase` of `invocation`.
+    fn publish_interaction(
+        &self,
+        route: &CrdtRoute,
+        shown: &execution_activity::ShownActor,
+        invocation: tilo_actions::InvocationId,
+        phase: tilo_actions::InteractionPhase,
+    ) {
         let sequence = shown
             .sequence
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .saturating_add(1);
         let interaction = tilo_actions::SemanticInteraction {
             version: tilo_actions::INTERACTION_VERSION,
-            invocation: update.invocation(),
+            invocation,
             sequence,
             actor: shown.actor.clone(),
             phase,
@@ -5454,7 +5495,6 @@ impl CapnpBrokerState {
         if interaction.validate().is_err() {
             return;
         }
-        let route = target.route();
         let key = PresenceKey::resource(&route.app_id, &shown.resource.id, &shown.resource.kind);
         let payload = PresencePayload::Interaction(Box::new(interaction));
         // Peers see it too; their ingress keeps the actor only as far as
@@ -5531,20 +5571,32 @@ impl CapnpBrokerState {
         peer_id: u64,
         offered: &PublishedAction,
         argument: Option<&str>,
-        actor: &str,
+        actor: &BrokerActor,
         evidence: Option<&tilo_actions::remote::Confirmation>,
     ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
         use tilo_actions::remote::{ActionHostError, Confirmation};
+        // Only a person acting themselves confirms by their own word; anyone
+        // acting for them carries the answer the person gave on their device.
+        let witnessed = match evidence {
+            Some(Confirmation::Witnessed(token)) => self.take_witness(
+                token,
+                &actor.id,
+                (&offered.resource, &offered.action),
+                argument,
+            ),
+            _ => false,
+        };
+        let own = actor.direct().then_some(evidence).flatten();
         if matches!(
             offered.contract.advertised_confirmation(),
             tilo_actions::ConfirmationPolicy::None
         ) {
             // A confirmation given anyway answers the room's ask, if the
             // grants ask; admission decides whether they do.
-            if !matches!(evidence, Some(Confirmation::Confirmed)) {
+            if !witnessed && !matches!(own, Some(Confirmation::Confirmed)) {
                 return Ok(None);
             }
-        } else if !confirmation_satisfied(offered, evidence) {
+        } else if !witnessed && !confirmation_satisfied(offered, own) {
             return Err(ActionHostError::ConfirmationRequired);
         }
         let unavailable = || ActionHostError::Unavailable {
@@ -5564,12 +5616,68 @@ impl CapnpBrokerState {
                 resource: offered.resource.clone(),
                 action: offered.action.clone(),
                 argument_digest: argument_digest(argument),
-                actor: actor.to_string(),
+                actor: actor.id.clone(),
                 expires,
             },
         );
         drop(grants);
         Ok(Some(token))
+    }
+
+    /// Record that the person `actor` acts for confirmed `actor`'s invocation
+    /// of `action` on `resource` with `argument` on their own device. The
+    /// returned token, carried as [`Confirmation::Witnessed`], answers that
+    /// one invocation once, within a minute.
+    ///
+    /// [`Confirmation::Witnessed`]: tilo_actions::remote::Confirmation::Witnessed
+    pub(crate) fn witness_confirmation(
+        &self,
+        actor: &str,
+        (resource, action): (&str, &str),
+        argument: Option<&str>,
+    ) -> Option<String> {
+        let now = std::time::Instant::now();
+        let expires = now.checked_add(std::time::Duration::from_secs(60))?;
+        let token = uuid::Uuid::new_v4().to_string();
+        let mut witnessed = self.witnessed_confirmations.lock().ok()?;
+        witnessed.retain(|_, witness| witness.expires >= now);
+        witnessed.insert(
+            token.clone(),
+            Witness {
+                actor: actor.to_owned(),
+                resource: resource.to_owned(),
+                action: action.to_owned(),
+                argument_digest: argument_digest(argument),
+                expires,
+            },
+        );
+        drop(witnessed);
+        Some(token)
+    }
+
+    /// Spend the person's answer `token` names, when it was given for this
+    /// very invocation.
+    fn take_witness(
+        &self,
+        token: &str,
+        actor: &str,
+        (resource, action): (&str, &str),
+        argument: Option<&str>,
+    ) -> bool {
+        let Ok(mut witnessed) = self.witnessed_confirmations.lock() else {
+            return false;
+        };
+        let matches = witnessed.get(token).is_some_and(|witness| {
+            witness.expires >= std::time::Instant::now()
+                && witness.actor == actor
+                && witness.resource == resource
+                && witness.action == action
+                && witness.argument_digest == argument_digest(argument)
+        });
+        if matches {
+            witnessed.remove(token);
+        }
+        matches
     }
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
@@ -7641,12 +7749,20 @@ impl channel_handle::Server for CapnpChannelHandle {
 
     /// The caller-side door to published actions: one remote-action request
     /// frame in, one answer out, as the caller this channel was admitted as.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one door: admission, an app's grant question and the person's confirmation decide each request in order"
+    )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the action host moves into the future that answers the request"
+    )]
     fn remote_action(
         self: Rc<Self>,
         params: channel_handle::RemoteActionParams,
         mut results: channel_handle::RemoteActionResults,
     ) -> Promise<(), capnp::Error> {
-        use tilo_actions::remote::{RemoteActionFrame, serve};
+        use tilo_actions::remote::RemoteActionFrame;
         let current = match self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -7692,6 +7808,36 @@ impl channel_handle::Server for CapnpChannelHandle {
             return self.resource_view_query(*correlation, query.clone(), results);
         }
 
+        if tilo_actions::remote::refuse(
+            &request.message,
+            tilo_actions::remote::ActionHostError::UnknownAction,
+        )
+        .is_none()
+        {
+            return Promise::err(capnp::Error::failed(
+                "only remote-action requests are answered".into(),
+            ));
+        }
+        // An application reaching for another app's action it holds no
+        // grant for: the person using it is asked first, or it is refused.
+        let consent = match (caller.principal(), &request.message) {
+            (
+                tilo_actions::remote::CallerPrincipal::App(app_id),
+                tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+            ) => match self.state.app_action_consent(&person, app_id, invoke) {
+                app_consent::ConsentStep::Serve => None,
+                app_consent::ConsentStep::Refuse => {
+                    return refused(
+                        &request.message,
+                        tilo_actions::remote::ActionHostError::NotPermitted,
+                        results,
+                    );
+                }
+                app_consent::ConsentStep::Ask(consent) => Some(consent),
+            },
+            _ => None,
+        };
+        let admitting_person = current.principal_id.clone();
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -7700,45 +7846,25 @@ impl channel_handle::Server for CapnpChannelHandle {
                 admitted: Box::new(current),
             },
         };
-        // An application reaching for another app's action it holds no
-        // grant for: the person using it is asked first, or it is refused.
-        if let (
-            tilo_actions::remote::CallerPrincipal::App(app_id),
-            tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
-        ) = (caller.principal(), &request.message)
-        {
-            match self.state.app_action_consent(&person, app_id, invoke) {
-                app_consent::ConsentStep::Serve => {}
-                app_consent::ConsentStep::Refuse => {
-                    let refused = tilo_actions::remote::RemoteActionMessage::Receipt(
-                        tilo_actions::remote::InvocationReceipt {
-                            invocation: invoke.invocation,
-                            status: tilo_actions::remote::ReceiptStatus::Rejected {
-                                error: tilo_actions::remote::ActionHostError::NotPermitted,
-                            },
-                        },
-                    );
-                    return reply_frame(refused, results);
-                }
-                app_consent::ConsentStep::Ask(consent) => {
-                    return app_consent::serve_after_consent(
-                        Arc::clone(&self.state),
-                        consent,
-                        host,
-                        caller,
-                        request.message,
-                        results,
-                    );
-                }
-            }
+        if let Some(consent) = consent {
+            return app_consent::serve_after_consent(
+                Arc::clone(&self.state),
+                consent,
+                host,
+                caller,
+                request.message,
+                results,
+            );
         }
-        let answer = serve(&host, &caller, request.message);
-        drop(host);
-        let Some(answer) = answer else {
-            return Promise::err(capnp::Error::failed(
-                "only remote-action requests are answered".into(),
-            ));
-        };
+        // An invocation the caller may not confirm itself is put to the
+        // person who admitted the connection, on their own device.
+        let answer = witness::serve_answering(
+            Arc::clone(&self.state),
+            host,
+            caller,
+            admitting_person,
+            request.message,
+        );
         // Awaited on this local set, which is also where an application's
         // directory answers; the connection's other calls keep flowing.
         Promise::from_future(async move {
@@ -9942,8 +10068,7 @@ fn permits_directory_row(
     Ok(state
         .permits_directory_actions(cluster_id, actor, app_id, &[question])?
         .first()
-        .copied()
-        .unwrap_or(false))
+        .is_some_and(|answer| *answer != Answer::Deny))
 }
 
 /// What current authority must decide for one directory row: the action
@@ -10122,13 +10247,27 @@ fn filter_directory_page(
         .iter()
         .map(directory_row_question)
         .collect::<Result<Vec<_>, _>>()?;
-    let allowed = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
+    let answers = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
     drop(questions);
+    // Listed when the actor may take it, or would be asked first; an action
+    // asking first asks for the confirmation the person gives on their
+    // own device.
     page.rows = page
         .rows
         .into_iter()
-        .zip(allowed)
-        .filter_map(|(row, allowed)| allowed.then_some(row))
+        .zip(answers)
+        .filter_map(|(mut row, answer)| match answer {
+            Answer::Deny => None,
+            Answer::Allow => Some(row),
+            Answer::Ask => {
+                if let Some(descriptor) = row.descriptor.as_mut()
+                    && descriptor.contract.confirmation == tilo_actions::ConfirmationPolicy::None
+                {
+                    descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+                }
+                Some(row)
+            }
+        })
         .collect();
     Ok(page)
 }
