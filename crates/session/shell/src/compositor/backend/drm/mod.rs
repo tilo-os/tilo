@@ -134,6 +134,36 @@ impl DrmBackend {
     fn recompute_refresh(&self) -> Option<std::time::Duration> {
         Self::refresh_from(&self.inner)
     }
+
+    /// The only way a frame reaches the scanouts while this backend still owns them inline,
+    /// before [`Backend::take_presenter`] moves them to [`DrmPresenter::submit`].
+    ///
+    /// This runs on the loop thread, the one that drops DRM master, so it cannot overlap
+    /// that drop; it takes the present gate anyway so both submission paths keep one rule.
+    /// It never blocks on a vblank: a queued flip retires through the next frame's
+    /// non-blocking drain in `paint_scanouts`, and reconfiguration is drained by
+    /// [`Backend::poll_events`].
+    fn submit_inline(&mut self, frame: ScanoutFrame<'_>) {
+        let present_gate = self.inner.dispatch.present_gate.clone();
+        let _quiesced = quiesce_presentations(present_gate.as_ref());
+        // While blanked the CRTCs are disabled — painting/presenting would be wasted or re-light the
+        // panel out from under idle/lock logic; skip until `set_dpms(true)`. `paused` is the other reason: the CRTCs belong to another session until it switches back.
+        if self.blanked || self.paused {
+            return;
+        }
+        let pointer = self.inner.dispatch.pointer;
+        paint_scanouts(
+            &mut self.inner.scanouts,
+            &self.outputs,
+            &mut self.paint,
+            &mut self.cpu,
+            pointer,
+            frame,
+            None,
+        );
+        publish_readback_presenting(&self.inner.scanouts, &self.readback_presenting);
+        report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
+    }
 }
 
 /// The presentation half of [`DrmBackend`]: the per-connector scanouts plus the vello→XRGB8888
@@ -163,8 +193,9 @@ pub struct DrmPresenter {
     /// Reconfiguration commands from the loop thread (hotplug, VT switches, resume), drained at the top of every frame so a change lands between frames, not during one.
     commands: Option<Receiver<ScanoutCommand>>,
     /// Shared with the dispatch thread so dropping DRM master cannot race a
-    /// present already in progress. The lock is held across one complete
-    /// render/reconfiguration operation.
+    /// present already in progress. [`Self::submit`] holds it across one complete
+    /// frame — reconfiguration drain, paint and page-flip retirement — and
+    /// [`Presenter::set_dpms`] across a power change.
     present_gate: Option<Arc<Mutex<()>>>,
     /// Opt-in physical-hardware profiling. The production session wrapper
     /// enables this while the readback presenter is under development so a
@@ -988,50 +1019,16 @@ fn physical_flip_proof(
 }
 
 impl DrmPresenter {
-    /// Frame-production body, identical to the pre-split `submit_frame`.
-    fn render(&mut self, scene: &Scene) {
-        self.pointer = *self
-            .shared_pointer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let present_gate = self.present_gate.clone();
-        let _present_guard = present_gate.as_ref().map(|gate| {
-            gate.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
-        self.drain_commands();
-        if self.blanked || self.paused {
-            return;
-        }
-        let sample = paint_scanouts(
-            &mut self.scanouts,
-            &self.outputs,
-            &mut self.paint,
-            &mut self.cpu,
-            self.pointer,
-            ScanoutFrame {
-                scene,
-                damage: None,
-                hdr_layers: &[],
-                overview: None,
-                workspace_id: None,
-                workspace_hold: false,
-                workspace_clip: None,
-                backdrop: None,
-            },
-            Some(&mut self.phase_window),
-        );
-        publish_readback_presenting(&self.scanouts, &self.readback_presenting);
-        if sample.direct_queued || self.direct_flip_pending() {
-            let _ = self.retire_direct_flips();
-        }
-        self.emit_phase_profile(sample);
-        report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
-    }
-
-    fn render_frame(
+    /// The only way a frame reaches the scanouts from the render thread: every [`Presenter`]
+    /// entry point that presents lands here.
+    ///
+    /// The present gate is held for the whole frame, flip retirement included, so dropping
+    /// DRM master for a VT switch (`DrmDispatchState::perform(SessionAction::DropMaster)`)
+    /// waits until no output's page flip is queued or in flight. A `Pause` queued before
+    /// that drop is drained here under the same gate, so the frame after it paints nothing.
+    fn submit(
         &mut self,
-        frame: &FramePaint,
+        frame: ScanoutFrame<'_>,
     ) -> Option<crate::shell::present::PhysicalPresentation> {
         self.frame_phases = None;
         self.display_timing = crate::shell::present::DisplayTiming::default();
@@ -1043,13 +1040,8 @@ impl DrmPresenter {
             .shared_pointer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Held across the whole frame, flip retirement included: dropping DRM
-        // master for a VT switch must not race any output's page flip.
         let present_gate = self.present_gate.clone();
-        let _present_guard = present_gate.as_ref().map(|gate| {
-            gate.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
+        let _quiesced = quiesce_presentations(present_gate.as_ref());
         self.drain_commands();
         if self.blanked || self.paused {
             return None;
@@ -1064,20 +1056,7 @@ impl DrmPresenter {
             &mut self.paint,
             &mut self.cpu,
             self.pointer,
-            ScanoutFrame {
-                scene: &frame.scene,
-                damage: (frame.revision != 0).then_some(SceneDamage {
-                    revision: frame.revision,
-                    previous_revision: frame.previous_revision,
-                    regions: frame.damage_regions.as_deref(),
-                }),
-                hdr_layers: &frame.hdr_layers,
-                overview: frame.overview_patch.as_ref(),
-                workspace_id: frame.workspace_id,
-                workspace_hold: frame.workspace_hold,
-                workspace_clip: frame.workspace_clip,
-                backdrop: frame.backdrop.as_ref(),
-            },
+            frame,
             Some(&mut self.phase_window),
         );
         publish_readback_presenting(&self.scanouts, &self.readback_presenting);
@@ -1401,7 +1380,7 @@ fn apply_scanout_command(
             // Dropping a scanout closes its dup of the card fd and releases the CRTC — full teardown for
             // an unplugged display. No per-device page-flip source to register/withdraw: every scanout on
             // a card dups one open file description, so all crtcs' completions arrive on one event stream
-            // that `render` drains once and routes by crtc; a removed output takes its pending completion with it.
+            // that `paint_scanouts` drains once and routes by crtc; a removed output takes its pending completion with it.
             scanouts.retain(|e| !remove.contains(&e.id));
             scanouts.extend(add);
             // Positions come from the loop thread's re-layout: survivors move too, since the set was re-packed to close the hole an unplugged display left.
@@ -1511,6 +1490,56 @@ struct ScanoutFrame<'a> {
     workspace_clip: Option<vello::FineDamageRect>,
     /// What the scene's floating surfaces are drawn over.
     backdrop: Option<&'a std::sync::Arc<ui::backdrop::BackdropFrame>>,
+}
+
+// These two constructors are the only places a frame is translated for the scanouts, so a field
+// added to or removed from `ScanoutFrame` changes them and `paint_scanouts`, nothing else.
+impl<'a> ScanoutFrame<'a> {
+    /// A complete scene with no relation to what is shown: every output repaints it whole.
+    fn scene_only(scene: &'a Scene) -> Self {
+        Self {
+            scene,
+            damage: None,
+            hdr_layers: &[],
+            overview: None,
+            workspace_id: None,
+            workspace_hold: false,
+            workspace_clip: None,
+            backdrop: None,
+        }
+    }
+}
+
+impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
+    /// A producer frame. Revision 0 carries no retained-damage authority
+    /// ([`FramePaint::full`]), so it presents without damage, as a scene-only frame does.
+    fn from(frame: &'a FramePaint) -> Self {
+        Self {
+            scene: &frame.scene,
+            damage: (frame.revision != 0).then_some(SceneDamage {
+                revision: frame.revision,
+                previous_revision: frame.previous_revision,
+                regions: frame.damage_regions.as_deref(),
+            }),
+            hdr_layers: &frame.hdr_layers,
+            overview: frame.overview_patch.as_ref(),
+            workspace_id: frame.workspace_id,
+            workspace_hold: frame.workspace_hold,
+            workspace_clip: frame.workspace_clip,
+            backdrop: frame.backdrop.as_ref(),
+        }
+    }
+}
+
+/// Hold the present gate (see [`DrmPresenter::present_gate`]): every frame submission and the
+/// master drop on a VT switch (`DrmDispatchState::perform(SessionAction::DropMaster)`) go
+/// through here, so one of them waits for the other. A poisoned gate still quiesces: the frame that panicked is over, and
+/// refusing the lock would let master drop under the next one.
+fn quiesce_presentations(gate: Option<&Arc<Mutex<()>>>) -> Option<std::sync::MutexGuard<'_, ()>> {
+    gate.map(|gate| {
+        gate.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    })
 }
 
 /// An unchanged frame, or an overview fade that carries its own panel patch,
@@ -1771,9 +1800,9 @@ fn bridge_extent(outputs: &[Output], readback: bool) -> (u32, u32) {
 /// Render the frame's scene into `scanouts`. Each output renders through its own view of the
 /// scene where it can; the rest present through the combined readback. `*paint` is lazily
 /// (re)allocated to [`bridge_extent`]. Shared by
-/// [`DrmPresenter::render`] (post-split, render thread) and
-/// [`Backend::submit_frame`] for [`DrmBackend`] (inline path, pre-split) —
-/// same painting logic, different owner of the scanouts and the pointer.
+/// [`DrmPresenter::submit`] (post-split, render thread) and
+/// [`DrmBackend::submit_inline`] (inline path, pre-split) — same painting logic,
+/// different owner of the scanouts and the pointer. Nothing else calls it.
 #[allow(
     clippy::too_many_lines,
     reason = "one dispatcher keeps bridge lifetime, sparse eligibility, diagnostics, and the single versus multi-output presentation boundaries together"
@@ -3258,7 +3287,7 @@ fn paint_one_scanout(
 
 impl Presenter for DrmPresenter {
     fn present(&mut self, scene: &Scene, _output: OutputId) {
-        self.render(scene);
+        let _ = self.submit(ScanoutFrame::scene_only(scene));
     }
 
     fn frame_phase_timing(&self) -> Option<crate::shell::present::FramePhaseTiming> {
@@ -3298,7 +3327,7 @@ impl Presenter for DrmPresenter {
     }
 
     fn present_frame(&mut self, frame: &FramePaint, _output: OutputId) {
-        let _ = self.render_frame(frame);
+        let _ = self.submit(frame.into());
     }
 
     fn present_frame_observed(
@@ -3306,7 +3335,7 @@ impl Presenter for DrmPresenter {
         frame: &FramePaint,
         _output: OutputId,
     ) -> Option<crate::shell::present::PhysicalPresentation> {
-        self.render_frame(frame)
+        self.submit(frame.into())
     }
 
     fn frame_detail(&mut self) -> Option<String> {
@@ -3318,10 +3347,7 @@ impl Presenter for DrmPresenter {
 
     fn set_dpms(&mut self, on: bool) {
         let present_gate = self.present_gate.clone();
-        let _present_guard = present_gate.as_ref().map(|gate| {
-            gate.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
+        let _quiesced = quiesce_presentations(present_gate.as_ref());
         self.blanked = !on;
         for e in &mut self.scanouts {
             e.scanout.set_dpms(on && !e.powered_off);
@@ -3361,37 +3387,7 @@ impl Backend for DrmBackend {
 
     /// Inline presentation, reached only when the presenter hasn't been split off yet — kept so a caller that never splits still paints.
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
-        let present_gate = self.inner.dispatch.present_gate.clone();
-        let _present_guard = present_gate.as_ref().map(|gate| {
-            gate.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
-        // While blanked the CRTCs are disabled — painting/presenting would be wasted or re-light the
-        // panel out from under idle/lock logic; skip until `set_dpms(true)`. `paused` is the other reason: the CRTCs belong to another session until it switches back.
-        if self.blanked || self.paused {
-            return;
-        }
-        let pointer = self.inner.dispatch.pointer;
-        paint_scanouts(
-            &mut self.inner.scanouts,
-            &self.outputs,
-            &mut self.paint,
-            &mut self.cpu,
-            pointer,
-            ScanoutFrame {
-                scene,
-                damage: None,
-                hdr_layers: &[],
-                overview: None,
-                workspace_id: None,
-                workspace_hold: false,
-                workspace_clip: None,
-                backdrop: None,
-            },
-            None,
-        );
-        publish_readback_presenting(&self.inner.scanouts, &self.readback_presenting);
-        report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
+        self.submit_inline(ScanoutFrame::scene_only(scene));
     }
 
     fn supports_workspace_clip(&self) -> bool {
@@ -3404,39 +3400,7 @@ impl Backend for DrmBackend {
     }
 
     fn submit_frame_with_damage(&mut self, frame: &FramePaint, _output: OutputId) {
-        let present_gate = self.inner.dispatch.present_gate.clone();
-        let _present_guard = present_gate.as_ref().map(|gate| {
-            gate.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
-        if self.blanked || self.paused {
-            return;
-        }
-        let pointer = self.inner.dispatch.pointer;
-        paint_scanouts(
-            &mut self.inner.scanouts,
-            &self.outputs,
-            &mut self.paint,
-            &mut self.cpu,
-            pointer,
-            ScanoutFrame {
-                scene: &frame.scene,
-                damage: (frame.revision != 0).then_some(SceneDamage {
-                    revision: frame.revision,
-                    previous_revision: frame.previous_revision,
-                    regions: frame.damage_regions.as_deref(),
-                }),
-                hdr_layers: &frame.hdr_layers,
-                overview: frame.overview_patch.as_ref(),
-                workspace_id: frame.workspace_id,
-                workspace_hold: frame.workspace_hold,
-                workspace_clip: frame.workspace_clip,
-                backdrop: frame.backdrop.as_ref(),
-            },
-            None,
-        );
-        publish_readback_presenting(&self.inner.scanouts, &self.readback_presenting);
-        report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
+        self.submit_inline(frame.into());
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
@@ -3964,6 +3928,70 @@ mod tests {
             assert_eq!(presenter.queue_depth(), crate::shell::present::QUEUE_DEPTH);
         }
     }
+
+    #[test]
+    fn every_present_entry_point_waits_for_a_master_drop_in_progress() {
+        // A VT switch queues `Pause` to the presenter, then drops DRM master while holding the
+        // present gate (`DrmDispatchState::perform`). A frame the render thread starts in that
+        // window must neither run nor queue a page flip until master is gone, and must then see
+        // the `Pause` — so it never flips into CRTCs this session no longer owns.
+        type Entry = fn(&mut DrmPresenter);
+        let entries: [(&str, Entry); 3] = [
+            ("present", |presenter| {
+                presenter.present(&Scene::new(), OutputId(0));
+            }),
+            ("present_frame", |presenter| {
+                presenter.present_frame(&FramePaint::full(Scene::new()), OutputId(0));
+            }),
+            ("present_frame_observed", |presenter| {
+                let _ =
+                    presenter.present_frame_observed(&FramePaint::full(Scene::new()), OutputId(0));
+            }),
+        ];
+        for (name, entry) in entries {
+            let gate = Arc::new(Mutex::new(()));
+            let (commands, receiver) = std::sync::mpsc::channel();
+            let mut presenter = DrmPresenter::new(PresenterParts {
+                scanouts: Vec::new(),
+                outputs: vec![Output::new(OutputId(0), (1920, 1080), 1.0)],
+                pointer: (0.0, 0.0),
+                shared_pointer: Arc::new(Mutex::new((0.0, 0.0))),
+                cpu: None,
+                blanked: false,
+                paused: false,
+                commands: Some(receiver),
+                present_gate: Some(Arc::clone(&gate)),
+                profile_phases: false,
+                readback_presenting: Arc::new(AtomicBool::new(false)),
+                signal_reports: None,
+            });
+            commands
+                .send(ScanoutCommand::Pause)
+                .expect("the presenter holds the command receiver");
+            let dropping_master = quiesce_presentations(Some(&gate));
+            let (returned, presented) = std::sync::mpsc::channel();
+            let render_thread = std::thread::spawn(move || {
+                entry(&mut presenter);
+                let _ = returned.send(());
+                presenter
+            });
+            assert_eq!(
+                presented.recv_timeout(Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+                "{name} presented while DRM master was being dropped"
+            );
+            drop(dropping_master);
+            tilo_test_env::recv(
+                format!("{name} to present once the master drop finished"),
+                &presented,
+            );
+            let presenter = render_thread.join().expect("the render thread");
+            assert!(
+                presenter.paused,
+                "{name} drained the Pause queued before the master drop under the same gate"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4246,14 +4274,8 @@ mod lone_output_tests {
 
     fn frame<'a>(scene: &'a Scene, damage: SceneDamage<'a>) -> ScanoutFrame<'a> {
         ScanoutFrame {
-            scene,
             damage: Some(damage),
-            hdr_layers: &[],
-            overview: None,
-            workspace_id: None,
-            workspace_hold: false,
-            workspace_clip: None,
-            backdrop: None,
+            ..ScanoutFrame::scene_only(scene)
         }
     }
 
