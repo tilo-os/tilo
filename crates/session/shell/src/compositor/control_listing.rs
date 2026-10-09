@@ -156,6 +156,7 @@ mod tests {
         test_control::Command::ActionsEnumerate {
             query: "read".into(),
             include_programmatic: false,
+            page: test_control::ListingRequest::default(),
             wait_ms,
             after_revision: after.map(str::to_string),
         }
