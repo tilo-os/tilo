@@ -27,6 +27,9 @@ pub(crate) enum Stage {
     BoundControlProjection,
     ControlCache,
     ControlRefresh,
+    /// Deciding whether an input kept the published tree: `hit` kept it.
+    #[cfg(feature = "native")]
+    InputCarry,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]

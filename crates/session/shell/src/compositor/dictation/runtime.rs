@@ -3,30 +3,38 @@
 use std::collections::VecDeque;
 use std::os::fd::AsRawFd as _;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use agent_provider_config::speech::{
-    FRAME, MAX_TEXT_BYTES, RequestKind, SpeechConfig, SpeechError, SpeechReply, request,
+    DraftPolicy, FRAME, MAX_TEXT_BYTES, RequestKind, SpeechConfig, SpeechError, SpeechReply,
+    request,
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use super::super::audio_capture::AudioCapture;
 
+pub mod vocabulary;
+
 const START_WINDOW: Duration = Duration::from_secs(15);
 const RECORD_WINDOW: Duration = Duration::from_secs(105);
-const FINISH_WINDOW: Duration = Duration::from_secs(15);
-const DRAFT_INTERVAL: Duration = Duration::from_secs(1);
-const QUEUE_BYTES: usize = 256 * 1024;
+// Public CPU qualification takes about nineteen seconds for a seventy-second
+// automatic-language final. Keep capture off while a bounded slower pass finishes.
+const FINISH_WINDOW: Duration = Duration::from_secs(60);
+// A slow draft must not discard live speech. This covers the entire bounded
+// PCM16 session plus framing; it grows only as the owned worker backpressures.
+const QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REPLY: usize = 64 * 1024 + 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeError {
     Worker(SpeechError),
     MicrophoneUnavailable,
+    VocabularyUnavailable,
+    VocabularyChanged,
     AudioDiscontinuity,
     TimedOut,
     Protocol,
@@ -54,7 +62,7 @@ enum Control {
 /// successor must wait for the old actor's actual microphone/worker teardown.
 pub struct Runtime {
     commands: SyncSender<Control>,
-    events: Receiver<RuntimeEvent>,
+    events: EventReceiver,
     cancel: Arc<AtomicBool>,
     owner: Option<JoinHandle<()>>,
 }
@@ -64,6 +72,28 @@ impl Runtime {
     /// # Errors
     /// Rejects invalid languages or an unavailable actor thread.
     pub fn start(language: &str) -> Result<Self, RuntimeError> {
+        Self::start_with_vocabulary(language, None)
+    }
+    /// Use only a host-delivered reader for the authenticated local person.
+    /// Binding replacement must cancel the existing compositor session too.
+    /// # Errors
+    /// Invalid language or unavailable actor; reader failures arrive asynchronously.
+    pub fn start_with_vocabulary(
+        language: &str,
+        vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+    ) -> Result<Self, RuntimeError> {
+        Self::spawn_with_vocabulary(Self::image_command(), language, vocabulary)
+    }
+    /// Field policy comes only from the compositor's original active target.
+    /// It grants neither microphone consent nor a different insertion target.
+    pub(super) fn start_for_field(
+        language: &str,
+        vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+        multiline: bool,
+    ) -> Result<Self, RuntimeError> {
+        Self::spawn_for_field(Self::image_command(), language, vocabulary, multiline)
+    }
+    fn image_command() -> Command {
         let mut command = Command::new("/usr/bin/tilo-speech-worker");
         command.env_clear();
         // These select the same per-user store as the model manager; trust
@@ -75,9 +105,25 @@ impl Runtime {
                 command.env(key, value);
             }
         }
-        Self::spawn(command, language)
+        command
     }
-    fn spawn(mut command: Command, language: &str) -> Result<Self, RuntimeError> {
+    #[cfg(test)]
+    fn spawn(command: Command, language: &str) -> Result<Self, RuntimeError> {
+        Self::spawn_with_vocabulary(command, language, None)
+    }
+    fn spawn_with_vocabulary(
+        command: Command,
+        language: &str,
+        vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+    ) -> Result<Self, RuntimeError> {
+        Self::spawn_for_field(command, language, vocabulary, false)
+    }
+    fn spawn_for_field(
+        mut command: Command,
+        language: &str,
+        vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+        multiline: bool,
+    ) -> Result<Self, RuntimeError> {
         if language.is_empty()
             || language.len() > 16
             || !language
@@ -91,20 +137,42 @@ impl Runtime {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         bounded_command::own_process_tree(&mut command);
-        let config = serde_json::to_vec(&SpeechConfig {
-            language: language.into(),
-        })
-        .map_err(|_| RuntimeError::Protocol)?;
+        let language = language.to_owned();
         let (commands, receiver) = sync_channel(2);
-        let (sender, events) = sync_channel(8);
+        let (sender, events) = event_channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let canceled = Arc::clone(&cancel);
         let owner = std::thread::Builder::new()
             .name("tilo-dictation".into())
             .spawn(move || {
-                let result = run(&mut command, &config, &receiver, &sender, &canceled);
+                let result = (|| {
+                    let mut vocabulary = vocabulary
+                        .map(|reader| vocabulary::VocabularyLease::capture(reader, &language))
+                        .transpose()
+                        .map_err(|_| RuntimeError::VocabularyUnavailable)?;
+                    let config = SpeechConfig {
+                        language,
+                        vocabulary: vocabulary
+                            .as_ref()
+                            .map_or_else(Vec::new, |lease| lease.hints().to_vec()),
+                    };
+                    let bytes = serde_json::to_vec(&config).map_err(|_| RuntimeError::Protocol)?;
+                    drop(config);
+                    let mut config = Configuration {
+                        bytes: Zeroizing::new(bytes),
+                        multiline,
+                    };
+                    run(
+                        &mut command,
+                        &mut config,
+                        &receiver,
+                        &sender,
+                        &canceled,
+                        &mut vocabulary,
+                    )
+                })();
                 if let Err(error) = result {
-                    let _ = sender.try_send(RuntimeEvent::Stopped(error));
+                    let _ = event(&sender, RuntimeEvent::Stopped(error));
                 }
             })
             .map_err(|_| RuntimeError::Worker(SpeechError::WorkerStopped))?;
@@ -136,7 +204,7 @@ impl Runtime {
         self.cancel.store(true, Ordering::Release);
     }
     pub fn poll(&self) -> Option<RuntimeEvent> {
-        self.events.try_recv().ok()
+        self.events.poll()
     }
     pub fn is_stopped(&mut self) -> bool {
         if self.owner.as_ref().is_some_and(JoinHandle::is_finished)
@@ -163,6 +231,7 @@ impl Drop for Process {
 }
 
 struct Pipe {
+    multiline: bool,
     queue: VecDeque<Zeroizing<Vec<u8>>>,
     offset: usize,
     queued: usize,
@@ -171,8 +240,9 @@ struct Pipe {
     waiting: Option<(RequestKind, u64)>,
 }
 impl Pipe {
-    fn new() -> Self {
+    fn new(multiline: bool) -> Self {
         Self {
+            multiline,
             queue: VecDeque::new(),
             offset: 0,
             queued: 0,
@@ -184,8 +254,9 @@ impl Pipe {
     fn enqueue(&mut self, kind: RequestKind, payload: &[u8]) -> Result<(), RuntimeError> {
         let sequence = self.sequence.checked_add(1).ok_or(RuntimeError::Protocol)?;
         let mut frame = Zeroizing::new(Vec::new());
+        let encoded = Zeroizing::new(request(kind, sequence, payload));
         FRAME
-            .write(&mut *frame, &request(kind, sequence, payload))
+            .write(&mut *frame, &encoded)
             .map_err(|_| RuntimeError::Protocol)?;
         if self.queued.saturating_add(frame.len()) > QUEUE_BYTES {
             return Err(RuntimeError::AudioDiscontinuity);
@@ -230,9 +301,9 @@ impl Pipe {
         &mut self,
         input: &mut impl std::io::Read,
     ) -> Result<Option<SpeechReply>, RuntimeError> {
-        let mut chunk = [0_u8; 4096];
+        let mut chunk = Zeroizing::new([0_u8; 4096]);
         loop {
-            match input.read(&mut chunk) {
+            match input.read(&mut *chunk) {
                 Ok(0) => return Err(RuntimeError::Worker(SpeechError::WorkerStopped)),
                 Ok(n) => self
                     .incoming
@@ -294,6 +365,7 @@ impl Pipe {
                 sequence: got,
                 model,
                 revision,
+                ..
             } => {
                 kind == RequestKind::Configure
                     && *got == sequence
@@ -305,11 +377,13 @@ impl Pipe {
             SpeechReply::Draft {
                 sequence: got,
                 text,
-            } => kind == RequestKind::Draft && *got == sequence && valid_text(text),
+            } => kind == RequestKind::Draft && *got == sequence && valid_text(text, self.multiline),
             SpeechReply::Done {
                 sequence: got,
                 text,
-            } => kind == RequestKind::Finish && *got == sequence && valid_text(text),
+            } => {
+                kind == RequestKind::Finish && *got == sequence && valid_text(text, self.multiline)
+            }
             SpeechReply::Error { error, .. } => return Err(RuntimeError::Worker(*error)),
         };
         if !matches {
@@ -319,8 +393,11 @@ impl Pipe {
         Ok(())
     }
 }
-fn valid_text(text: &str) -> bool {
-    text.len() <= MAX_TEXT_BYTES && !text.chars().any(char::is_control)
+fn valid_text(text: &str, multiline: bool) -> bool {
+    text.len() <= MAX_TEXT_BYTES
+        && !text
+            .chars()
+            .any(|character| character.is_control() && !(multiline && character == '\n'))
 }
 fn nonblocking(fd: std::os::fd::RawFd) -> Result<(), RuntimeError> {
     // SAFETY: caller owns this live pipe and F_GETFL/F_SETFL use integer args.
@@ -332,15 +409,82 @@ fn nonblocking(fd: std::os::fd::RawFd) -> Result<(), RuntimeError> {
     }
     Ok(())
 }
-fn event(sender: &SyncSender<RuntimeEvent>, event: RuntimeEvent) -> Result<(), RuntimeError> {
-    sender.try_send(event).map_err(|_| RuntimeError::Protocol)
+// Previews are replaceable render state, not an event history. Keep one
+// zeroizing slot so an occupied compositor cannot backpressure recognition.
+// Lifecycle events remain ordered in a separate bounded channel.
+struct EventSender {
+    lifecycle: SyncSender<RuntimeEvent>,
+    preview: Arc<Mutex<Option<Zeroizing<String>>>>,
+}
+struct EventReceiver {
+    lifecycle: Receiver<RuntimeEvent>,
+    preview: Arc<Mutex<Option<Zeroizing<String>>>>,
+}
+impl EventReceiver {
+    fn poll(&self) -> Option<RuntimeEvent> {
+        if let Ok(event) = self.lifecycle.try_recv() {
+            return Some(event);
+        }
+        // Never wait on the compositor thread. The actor holds this lock only
+        // while replacing or retiring one bounded preview.
+        let mut slot = self.preview.try_lock().ok()?;
+        slot.take()
+            .map(|mut text| RuntimeEvent::Draft(std::mem::take(&mut *text)))
+    }
+}
+fn event_channel() -> (EventSender, EventReceiver) {
+    let (sender, receiver) = sync_channel(8);
+    let preview = Arc::new(Mutex::new(None));
+    (
+        EventSender {
+            lifecycle: sender,
+            preview: Arc::clone(&preview),
+        },
+        EventReceiver {
+            lifecycle: receiver,
+            preview,
+        },
+    )
+}
+fn event(sender: &EventSender, event: RuntimeEvent) -> Result<(), RuntimeError> {
+    match event {
+        RuntimeEvent::Draft(text) => {
+            let mut preview = sender.preview.lock().map_err(|_| RuntimeError::Protocol)?;
+            *preview = Some(Zeroizing::new(text));
+            drop(preview);
+            Ok(())
+        }
+        terminal @ (RuntimeEvent::Done(_) | RuntimeEvent::Stopped(_)) => {
+            // A final or failure supersedes every pending preview. Replacement,
+            // cancellation and drop all wipe the retired private text.
+            sender
+                .preview
+                .lock()
+                .map_err(|_| RuntimeError::Protocol)?
+                .take();
+            sender
+                .lifecycle
+                .try_send(terminal)
+                .map_err(|_| RuntimeError::Protocol)
+        }
+        lifecycle => sender
+            .lifecycle
+            .try_send(lifecycle)
+            .map_err(|_| RuntimeError::Protocol),
+    }
+}
+struct Configuration {
+    bytes: Zeroizing<Vec<u8>>,
+    // Local original-field metadata, never a model-supplied configuration key.
+    multiline: bool,
 }
 fn run(
     command: &mut Command,
-    config: &[u8],
+    config: &mut Configuration,
     controls: &Receiver<Control>,
-    events: &SyncSender<RuntimeEvent>,
+    events: &EventSender,
     cancel: &AtomicBool,
+    vocabulary: &mut Option<vocabulary::VocabularyLease>,
 ) -> Result<(), RuntimeError> {
     let result;
     {
@@ -353,8 +497,9 @@ fn run(
         let mut output = worker.0.stdin.take().ok_or(RuntimeError::Protocol)?;
         nonblocking(input.as_raw_fd())?;
         nonblocking(output.as_raw_fd())?;
-        let mut pipe = Pipe::new();
-        pipe.enqueue(RequestKind::Configure, config)?;
+        let mut pipe = Pipe::new(config.multiline);
+        pipe.enqueue(RequestKind::Configure, &config.bytes)?;
+        config.bytes.zeroize();
         result = pump_io(
             &mut pipe,
             &mut ActorIo {
@@ -363,6 +508,7 @@ fn run(
                 controls,
                 events,
                 cancel,
+                vocabulary,
             },
         );
         // These pipe owners drop before Process kills/reaps. The capture has
@@ -377,19 +523,39 @@ struct ActorIo<'a> {
     input: &'a mut std::process::ChildStdout,
     output: &'a mut std::process::ChildStdin,
     controls: &'a Receiver<Control>,
-    events: &'a SyncSender<RuntimeEvent>,
+    events: &'a EventSender,
     cancel: &'a AtomicBool,
+    vocabulary: &'a mut Option<vocabulary::VocabularyLease>,
+}
+fn check_vocabulary(io: &mut ActorIo<'_>) -> Result<(), RuntimeError> {
+    if let Some(vocabulary) = io.vocabulary.as_mut() {
+        vocabulary.check().map_err(|error| match error {
+            vocabulary::LeaseError::Changed => RuntimeError::VocabularyChanged,
+            vocabulary::LeaseError::Unavailable => RuntimeError::VocabularyUnavailable,
+        })?;
+    }
+    Ok(())
 }
 fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError> {
     let mut microphone: Option<AudioCapture> = None;
     let mut ready = false;
     let mut finishing = false;
     let mut deadline = later(START_WINDOW);
-    let session_end = later(RECORD_WINDOW.saturating_add(FINISH_WINDOW));
-    let mut next_draft = later(DRAFT_INTERVAL);
+    let session_end = later(
+        START_WINDOW
+            .saturating_add(RECORD_WINDOW)
+            .saturating_add(FINISH_WINDOW),
+    );
+    let mut draft_policy = DraftPolicy::FullContext;
+    let mut next_draft = later(draft_policy.interval());
+    let mut next_vocabulary_check = Instant::now();
     loop {
         if io.cancel.load(Ordering::Acquire) {
             return Err(RuntimeError::Canceled);
+        }
+        if Instant::now() >= next_vocabulary_check {
+            check_vocabulary(io)?;
+            next_vocabulary_check = later(Duration::from_millis(250));
         }
         if Instant::now() >= deadline && microphone.is_some() && !finishing {
             if let Some(capture) = microphone.as_mut() {
@@ -405,6 +571,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
         }
         match io.controls.try_recv() {
             Ok(Control::Capture) if ready && microphone.is_none() && !finishing => {
+                check_vocabulary(io)?;
                 microphone = Some(
                     AudioCapture::start_dictation_if_active(io.cancel)
                         .map_err(|_| RuntimeError::MicrophoneUnavailable)?,
@@ -412,12 +579,18 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 if io.cancel.load(Ordering::Acquire) {
                     return Err(RuntimeError::Canceled);
                 }
-                deadline = session_end
-                    .checked_sub(FINISH_WINDOW)
-                    .unwrap_or_else(Instant::now);
+                deadline = later(RECORD_WINDOW).min(
+                    session_end
+                        .checked_sub(FINISH_WINDOW)
+                        .unwrap_or_else(Instant::now),
+                );
+                // Anchor context accumulation to actual capture, not model
+                // startup or time spent awaiting the user's consent.
+                next_draft = later(draft_policy.initial_delay());
                 event(io.events, RuntimeEvent::Listening)?;
             }
             Ok(Control::Finish) if ready && !finishing => {
+                check_vocabulary(io)?;
                 // Drain the complete final chunk before stopping capture.
                 if let Some(capture) = microphone.as_mut() {
                     audio(pipe, capture)?;
@@ -439,14 +612,19 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 pipe.enqueue(RequestKind::Finish, &[])?;
             } else if microphone.is_some() && Instant::now() >= next_draft {
                 pipe.enqueue(RequestKind::Draft, &[])?;
-                next_draft = later(DRAFT_INTERVAL);
+                next_draft = later(draft_policy.interval());
             }
         }
         pipe.flush(io.output)?;
         if let Some(reply) = pipe.read(io.input)? {
             pipe.accept(&reply)?;
+            check_vocabulary(io)?;
             match reply {
-                SpeechReply::Ready { .. } => {
+                SpeechReply::Ready {
+                    draft_policy: policy,
+                    ..
+                } => {
+                    draft_policy = policy;
                     ready = true;
                     event(io.events, RuntimeEvent::Ready)?;
                 }
@@ -475,6 +653,43 @@ fn audio(pipe: &mut Pipe, capture: &mut AudioCapture) -> Result<(), RuntimeError
 }
 
 #[cfg(test)]
+pub(super) fn dictionary_test_peer(
+    reader: Arc<dyn settings_store::personal_dictionary::Vocabulary>,
+    pid: &std::path::Path,
+    completes: bool,
+) -> Runtime {
+    let mode = if completes {
+        "dictionary_repeated"
+    } else {
+        "dictionary_slow"
+    };
+    let peer =
+        Runtime::spawn_with_vocabulary(tests::peer_command(mode, pid), "en", Some(reader)).unwrap();
+    assert!(matches!(tests::next(&peer), RuntimeEvent::Ready));
+    peer
+}
+
+#[cfg(test)]
+pub(super) fn finishing_test_peer(pid: &std::path::Path) -> Runtime {
+    let peer = tests::peer("repeated", pid);
+    assert!(matches!(tests::next(&peer), RuntimeEvent::Ready));
+    peer
+}
+
+#[cfg(test)]
+pub(super) fn repair_test_peer(pid: &std::path::Path, language: &str) -> Runtime {
+    let mode = match language {
+        "de" => "repair_de",
+        "fr" => "repair_fr",
+        "es" => "repair_es",
+        _ => "repair",
+    };
+    let peer = Runtime::spawn(tests::peer_command(mode, pid), language).unwrap();
+    assert!(matches!(tests::next(&peer), RuntimeEvent::Ready));
+    peer
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -496,22 +711,49 @@ def reply(value):
     sys.stdout.buffer.write(struct.pack('<I', len(b)) + b)
     sys.stdout.buffer.flush()
 k, s, b = read()
-assert k == 0 and s == 1 and json.loads(b)['language'] == 'en'
+expected_language=sys.argv[1].removeprefix('repair_') if sys.argv[1].startswith('repair_') else 'en'
+assert k == 0 and s == 1 and json.loads(b)['language'] == expected_language
+if sys.argv[1].startswith('dictionary_'): assert json.loads(b)['vocabulary'] == ['TiLo']
 reply(dict(kind='ready', sequence=2 if sys.argv[1] == 'replay' else s, model='fixture', revision='1'))
+if sys.argv[1] == 'backpressure':
+    total = 0
+    for index in range(60):
+        k, s, b = read()
+        assert k == 1 and s == index + 2
+        assert len(b) == 64000 and b == struct.pack('<h', index) * 32000
+        total += len(b)
+    k, s, b = read()
+    assert k == 3 and s == 62 and b == b''
+    reply(dict(kind='done', sequence=s, text=str(total)))
+    raise SystemExit(0)
 k, s, b = read()
 assert k == 3 and b == b''
-if sys.argv[1] == 'slow': time.sleep(60)
-reply(dict(kind='done', sequence=s, text='unsafe\n' if sys.argv[1] == 'control' else 'Corrected 👋'))
+if sys.argv[1] in ('slow', 'dictionary_slow'): time.sleep(60)
+if sys.argv[1] == 'delayed': time.sleep(18)
+if sys.argv[1] in ('repeated', 'repair', 'dictionary_repeated') or sys.argv[1].startswith('repair_'):
+    deadline = time.monotonic() + 10
+    while not os.path.exists(sys.argv[2] + '.release'):
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+repairs={'repair':'Let me grab two, uh, no, three of these','repair_de':'TiLo braucht zwei, äh, nein, drei Stück.','repair_fr':'Prendre deux, euh, non, trois exemplaires.','repair_es':'TiLo necesita dos, eh, no, tres unidades.'}
+paragraphs={'paragraph':'First paragraph.\n\nSecond paragraph.','paragraph_cr':'First\rSecond','paragraph_escape':'First\x1bSecond','paragraph_nul':'First\0Second'}
+reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in repairs else paragraphs[sys.argv[1]] if sys.argv[1] in paragraphs else 'unsafe\n' if sys.argv[1] == 'control' else 'Corrected 👋'))
 ";
 
-    fn peer(mode: &str, pid: &std::path::Path) -> Runtime {
+    pub(super) fn peer_command(mode: &str, pid: &std::path::Path) -> Command {
         let mut command = Command::new("python3");
         command.args(["-c", PEER, mode]);
         command.arg(pid);
-        Runtime::spawn(command, "en").unwrap()
+        command
     }
-    fn next(runtime: &Runtime) -> RuntimeEvent {
-        let deadline = later(Duration::from_secs(5));
+    pub(super) fn peer(mode: &str, pid: &std::path::Path) -> Runtime {
+        Runtime::spawn(peer_command(mode, pid), "en").unwrap()
+    }
+    pub(super) fn next(runtime: &Runtime) -> RuntimeEvent {
+        next_within(runtime, Duration::from_secs(5))
+    }
+    fn next_within(runtime: &Runtime, wait: Duration) -> RuntimeEvent {
+        let deadline = later(wait);
         loop {
             if let Some(event) = runtime.poll() {
                 return event;
@@ -519,6 +761,157 @@ reply(dict(kind='done', sequence=s, text='unsafe\n' if sys.argv[1] == 'control' 
             assert!(Instant::now() < deadline, "actor must report a result");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn stalled_compositor_keeps_latest_preview_and_terminal_result() {
+        let (sender, events) = event_channel();
+        let (commands, _controls) = sync_channel(2);
+        let runtime = Runtime {
+            commands,
+            events,
+            cancel: Arc::new(AtomicBool::new(false)),
+            owner: None,
+        };
+        event(&sender, RuntimeEvent::Ready).unwrap();
+        event(&sender, RuntimeEvent::Listening).unwrap();
+        // The production publisher keeps decoding while the compositor is
+        // busy. A preview is replaceable; lifecycle and final events are not.
+        for index in 0..64 {
+            event(&sender, RuntimeEvent::Draft(format!("preview {index}"))).unwrap();
+        }
+        assert!(matches!(runtime.poll(), Some(RuntimeEvent::Ready)));
+        assert!(matches!(runtime.poll(), Some(RuntimeEvent::Listening)));
+        assert!(matches!(runtime.poll(), Some(RuntimeEvent::Draft(text)) if text == "preview 63"));
+        assert!(runtime.poll().is_none(), "old previews must not replay");
+        for index in 0..64 {
+            event(&sender, RuntimeEvent::Draft(format!("pending {index}"))).unwrap();
+        }
+        event(&sender, RuntimeEvent::Finishing).unwrap();
+        event(&sender, RuntimeEvent::Done("final 👋".into())).unwrap();
+        assert!(matches!(runtime.poll(), Some(RuntimeEvent::Finishing)));
+        assert!(matches!(runtime.poll(), Some(RuntimeEvent::Done(text)) if text == "final 👋"));
+        assert!(runtime.poll().is_none(), "no preview may follow the final");
+
+        event(
+            &sender,
+            RuntimeEvent::Draft("private canceled preview".into()),
+        )
+        .unwrap();
+        event(&sender, RuntimeEvent::Stopped(RuntimeError::Canceled)).unwrap();
+        assert!(matches!(
+            runtime.poll(),
+            Some(RuntimeEvent::Stopped(RuntimeError::Canceled))
+        ));
+        assert!(
+            runtime.poll().is_none(),
+            "cancellation retires the pending preview"
+        );
+    }
+
+    #[test]
+    fn actual_pipe_dictionary_removal_revocation_and_service_drop_reap_busy_worker() {
+        use settings_store::personal_dictionary::{Edit, Service, Word};
+        let directory = tempfile::tempdir().unwrap();
+        for mode in ["remove", "rebind", "drop"] {
+            let service = Service::new(directory.path().join(mode)).unwrap();
+            let reader = service.bind(Some([7; 32])).unwrap();
+            let word = Word::new("TiLo", None).unwrap();
+            let snapshot = service.edit(&reader, 0, Edit::Add(word.clone())).unwrap();
+            let pid = directory.path().join(format!("{mode}.pid"));
+            let mut runtime = Runtime::spawn_with_vocabulary(
+                peer_command("dictionary_slow", &pid),
+                "en",
+                Some(Arc::new(reader.clone())),
+            )
+            .unwrap();
+            assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+            runtime.finish().unwrap();
+            assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+            match mode {
+                "remove" => {
+                    service
+                        .edit(&reader, snapshot.revision, Edit::Remove(word))
+                        .unwrap();
+                }
+                "rebind" => {
+                    service.bind(None);
+                    service.bind(Some([7; 32]));
+                }
+                _ => drop(service),
+            }
+            let expected = if mode == "remove" {
+                RuntimeError::VocabularyChanged
+            } else {
+                RuntimeError::VocabularyUnavailable
+            };
+            assert!(matches!(next(&runtime), RuntimeEvent::Stopped(error) if error == expected));
+            reaped(&mut runtime, &pid);
+            assert!(
+                runtime.poll().is_none(),
+                "retired vocabulary cannot deliver late words"
+            );
+        }
+    }
+
+    #[test]
+    fn actual_pipe_actor_keeps_a_slow_final_without_opening_a_microphone() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid = directory.path().join("delayed");
+        let mut runtime = peer("delayed", &pid);
+        assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+        runtime.finish().unwrap();
+        assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+        assert!(matches!(
+            next_within(&runtime, Duration::from_secs(30)),
+            RuntimeEvent::Done(text) if text == "Corrected 👋"
+        ));
+        reaped(&mut runtime, &pid);
+    }
+
+    #[test]
+    fn actual_private_pipe_preserves_bounded_audio_under_worker_backpressure() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid = directory.path().join("backpressure");
+        let mut command = peer_command("backpressure", &pid);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
+        bounded_command::own_process_tree(&mut command);
+        let mut child = Process(command.spawn().unwrap());
+        let mut output = child.0.stdin.take().unwrap();
+        let mut input = child.0.stdout.take().unwrap();
+        nonblocking(input.as_raw_fd()).unwrap();
+        nonblocking(output.as_raw_fd()).unwrap();
+        let mut pipe = Pipe::new(false);
+        pipe.enqueue(RequestKind::Configure, br#"{"language":"en"}"#)
+            .unwrap();
+        let deadline = later(Duration::from_secs(10));
+        loop {
+            pipe.flush(&mut output).unwrap();
+            if let Some(reply) = pipe.read(&mut input).unwrap() {
+                pipe.accept(&reply).unwrap();
+                assert!(matches!(reply, SpeechReply::Ready { .. }));
+                break;
+            }
+            assert!(Instant::now() < deadline, "private peer must become ready");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Queue before flushing so the actual OS pipe must backpressure it.
+        for index in 0_i16..60 {
+            let samples = index.to_le_bytes().repeat(32000);
+            pipe.enqueue(RequestKind::Audio, &samples).unwrap();
+        }
+        pipe.enqueue(RequestKind::Finish, &[]).unwrap();
+        loop {
+            pipe.flush(&mut output).unwrap();
+            if let Some(reply) = pipe.read(&mut input).unwrap() {
+                pipe.accept(&reply).unwrap();
+                assert!(matches!(reply, SpeechReply::Done { text, .. } if text == "3840000"));
+                break;
+            }
+            assert!(Instant::now() < deadline, "all bounded audio must arrive");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(child.0.wait().unwrap().success());
     }
     fn reaped(runtime: &mut Runtime, pid: &std::path::Path) {
         let deadline = later(Duration::from_secs(5));
@@ -572,6 +965,38 @@ reply(dict(kind='done', sequence=s, text='unsafe\n' if sys.argv[1] == 'control' 
                 next(&runtime),
                 RuntimeEvent::Stopped(RuntimeError::Protocol)
             ));
+            reaped(&mut runtime, &pid);
+        }
+    }
+
+    #[test]
+    fn actual_pipe_actor_accepts_only_field_bound_paragraphs_without_opening_a_microphone() {
+        let directory = tempfile::tempdir().unwrap();
+        for (index, (mode, multiline, accepted)) in [
+            ("paragraph", false, false),
+            ("paragraph", true, true),
+            ("paragraph_cr", true, false),
+            ("paragraph_escape", true, false),
+            ("paragraph_nul", true, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let pid = directory.path().join(index.to_string());
+            let mut runtime =
+                Runtime::spawn_for_field(peer_command(mode, &pid), "en", None, multiline).unwrap();
+            assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+            runtime.finish().unwrap();
+            assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+            if accepted {
+                assert!(matches!(next(&runtime), RuntimeEvent::Done(text)
+                    if text == "First paragraph.\n\nSecond paragraph."));
+            } else {
+                assert!(matches!(
+                    next(&runtime),
+                    RuntimeEvent::Stopped(RuntimeError::Protocol)
+                ));
+            }
             reaped(&mut runtime, &pid);
         }
     }

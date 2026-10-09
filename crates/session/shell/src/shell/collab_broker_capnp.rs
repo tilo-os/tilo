@@ -2,10 +2,12 @@
 pub use tilo_action_broker::collab_broker_capnp::*;
 
 mod local_consent;
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod local_consent_tests;
 mod realtime_host;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) use local_consent::LocalSessionLiveness;
 pub(crate) use local_consent::LocalSessionPermit;
 pub(crate) use local_consent::{LocalSessionAuthority, LocalSessionLifecycle};

@@ -1357,7 +1357,8 @@ mod tests {
 /// Denials proven through the production injection path, against a real
 /// `State`/`Seat`, asserting both the refusal rule and that the seat didn't
 /// move — a return-value-only check would pass even if the refusal happened after injection.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod production_path {
     use super::*;
     use crate::compositor::state::State;

@@ -623,6 +623,13 @@ jobs:
           # The publish job reuses this already-built CLI to create signed
           # registry mutations from the final tapp bytes.
           install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package
+      # The signed bytes a person downloads, each app against its own budget
+      # (tools/perf/tapp-size-budget/; DEVELOPMENT.md, "App package size").
+      # It measures only what this job built, so it adds no build.
+      - name: Shipped tapps within their size budget
+        run: >-
+          python3 tools/perf/tapp_size_ratchet.py measure dist/app-release
+          --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
       - name: Generate unpublished receipt with canonical verifiers
         # Runs for publish=false too. Uses tools compiled by package-apps.sh;
         # adds no build, credentials, registry write or channel promotion.

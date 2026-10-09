@@ -9,10 +9,12 @@
 use std::collections::HashMap;
 
 use collab_types::{
-    CanonicalError, ConflictResolution, ConflictStatus, ContentRevisionV1, FileActor,
-    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationTransaction, FileProvenance,
-    FileRecordError, FileRecordId, FileVersionId, FileVersionV1, Signature, VerifyError,
-    canonical_bytes, prefer_conflict_resolution, sign_event, verify_event,
+    CanonicalError, Signature, VerifyError, canonical_bytes, sign_event, verify_event,
+};
+use fs_protocol::{
+    ConflictResolution, ConflictStatus, ContentRevisionV1, FileActor, FileBindingV1,
+    FileConflictV1, FileMetadataV1, FileMutationTransaction, FileProvenance, FileRecordError,
+    FileRecordId, FileVersionId, FileVersionV1, prefer_conflict_resolution,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -420,12 +422,12 @@ impl RecordReplica {
     /// clone only; incomplete transactions never enter the live replica fields.
     pub(crate) fn project_completed_participant(
         &mut self,
-        participant: &collab_types::FileMutationParticipant,
+        participant: &fs_protocol::FileMutationParticipant,
         commit_sequence: u64,
     ) {
         let binding = &participant.proposed_binding;
         let stamp = BindingStamp::for_binding(binding, commit_sequence);
-        if participant.role != collab_types::FileMutationParticipantRole::RestoreContent
+        if participant.role != fs_protocol::FileMutationParticipantRole::RestoreContent
             && self
                 .binding
                 .as_ref()
@@ -882,12 +884,13 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use collab_types::{
+    use collab_types::generate_keypair;
+    use fs_protocol::{
         CONTENT_REVISION_VERSION, ConflictResolution, ConflictStatus, ConflictStrategy,
         ContentHash, FILE_BINDING_VERSION, FILE_MUTATION_TRANSACTION_VERSION, FileConflictV1,
         FileMutationOperation, FileMutationParticipant, FileMutationParticipantRole,
         FileMutationTransactionManifest, FileNodeKind, FilePropertiesV1, FileProvenance,
-        FileVersionId, IndexStatus, generate_keypair,
+        FileVersionId, IndexStatus,
     };
 
     #[derive(Default)]
@@ -929,7 +932,7 @@ mod tests {
 
     fn metadata(record: FileRecordId, actor: FileActor, observed_at_ms: u64) -> FileMetadataV1 {
         FileMetadataV1 {
-            schema_version: collab_types::files::FILE_METADATA_VERSION,
+            schema_version: fs_protocol::files::FILE_METADATA_VERSION,
             record_id: record,
             content_hash: Some(ContentHash([7; 32])),
             byte_len: 12,
@@ -939,7 +942,7 @@ mod tests {
             observed_at_ms,
             index_status: IndexStatus::Indexed,
             properties: Some(FilePropertiesV1 {
-                schema_version: collab_types::files::FILE_PROPERTIES_VERSION,
+                schema_version: fs_protocol::files::FILE_PROPERTIES_VERSION,
                 image_width: Some(16),
                 image_height: Some(9),
                 duration_ms: None,
@@ -1108,7 +1111,7 @@ mod tests {
                     provenance: FileProvenance::Create,
                 };
                 let revision = ContentRevisionV1 {
-                    schema_version: collab_types::CONTENT_REVISION_VERSION,
+                    schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                     record_id: record,
                     version_id: version.id,
                     content_hash: version.content_hash,
@@ -1331,7 +1334,7 @@ mod tests {
                     first_actor,
                     5,
                     RecordOperationV1::SetContentRevision(ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id: record,
                         version_id: first_result.id,
                         content_hash: first_result.content_hash,
@@ -1354,7 +1357,7 @@ mod tests {
                     second_actor,
                     2,
                     RecordOperationV1::SetContentRevision(ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id: record,
                         version_id: second_result.id,
                         content_hash: second_result.content_hash,
@@ -1537,11 +1540,11 @@ mod tests {
             let (key, actor, record, _) = fixture();
             let parent = FileRecordId::new();
             let binding = FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: record,
                 parent: Some(parent),
                 name: "bound.txt".into(),
-                kind: collab_types::FileNodeKind::File,
+                kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
                 actor,
                 observed_at_ms: 1,
@@ -1583,11 +1586,11 @@ mod tests {
             let (key, actor, record, auth) = fixture();
             let parent = FileRecordId::new();
             let binding = |name: &str, observed_at_ms: u64| FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: record,
                 parent: Some(parent),
                 name: name.into(),
-                kind: collab_types::FileNodeKind::File,
+                kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
                 actor,
                 observed_at_ms,

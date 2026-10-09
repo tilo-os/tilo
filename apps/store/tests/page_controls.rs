@@ -49,7 +49,7 @@ fn has_test_id(w: &dyn Widget, id: &str) -> bool {
 
 fn cursor(app: &mut Framed<StoreApp>, at: Point) {
     Framed::harness_mut(app).dispatch_to_root(&WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(at.x, at.y),
     });
 }
@@ -58,7 +58,7 @@ fn click(app: &mut Framed<StoreApp>, at: Point) {
     cursor(app, at);
     for state in [ElementState::Pressed, ElementState::Released] {
         Framed::harness_mut(app).dispatch_to_root(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state,
             button: MouseButton::Left,
         });

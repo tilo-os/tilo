@@ -6,7 +6,6 @@
 const ALLOWED: &[(&str, &str)] = &[
     // Default app, workspace and tab names are written to the replicated
     // desktop tree, then shown as the user's own.
-    ("main.rs", "Files"),
     ("shell/state.rs", "Available on another device"),
     ("shell/state.rs", "Document"),
     ("shell/state.rs", "Files"),

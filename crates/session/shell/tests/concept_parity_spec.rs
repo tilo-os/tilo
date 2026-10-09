@@ -54,6 +54,8 @@ use ui::widget::Widget;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{AppKind, TabDescriptor, TileContent, WindowGroup, WindowWidth};
 
+use crate::support::host::{Layout, dispatch, dispatch_in, lay_out};
+
 const W: f32 = 1600.0;
 const H: f32 = 900.0;
 
@@ -63,40 +65,8 @@ const H: f32 = 900.0;
 fn render_overlay_host(tree: &WorkspaceTree) -> (Scene, Chrome) {
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
     let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root_node = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
+    lay_out(&mut host, W, H);
     let mut tr = TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root_node,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
@@ -199,40 +169,8 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
         let (mut host2, chrome2) = build_tilo_overlay_host_with_chrome(&tree);
         chrome2.borrow_mut().overlays.ws_settings = true;
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = host2.build_layout(&mut taffy, &theme, &mut node_map);
-        let root_node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut host2, W, H);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root_node,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        host2.apply_layout(&taffy, child, Point::ORIGIN);
         let mut open_scene = Scene::new();
         let presence = PresenceCtx::default();
         host2.draw(
@@ -587,40 +525,8 @@ fn render_with_ws_settings_tab(tree: &WorkspaceTree, tab: WsTab) -> (usize, Chro
         st.ws_settings_tab = tab;
     }
     let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root_node = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
+    lay_out(&mut host, W, H);
     let mut tr = TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root_node,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |known, avail, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, avail, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
     host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -642,40 +548,8 @@ fn global_search_renders_its_icon_kbd_chip_and_indigo_selection() {
         palette.push(CommandEntry::new("ws.create", "Create Workspace"));
         palette.push(CommandEntry::new("file.open", "Open File"));
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = palette.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(640.0),
-                        height: Dimension::length(400.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut palette, 640.0, 400.0);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(640.0),
-                    height: AvailableSpace::Definite(400.0),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        palette.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         palette.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -702,40 +576,8 @@ fn global_search_renders_its_icon_kbd_chip_and_indigo_selection() {
         let mut palette = CommandPalette::new();
         palette.push(CommandEntry::new("ws.create", "Create Workspace"));
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = palette.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(640.0),
-                        height: Dimension::length(400.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut palette, 640.0, 400.0);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(640.0),
-                    height: AvailableSpace::Definite(400.0),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        palette.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         palette.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -763,40 +605,8 @@ fn global_search_renders_its_icon_kbd_chip_and_indigo_selection() {
         palette.push(CommandEntry::new("ws.create", "Create Workspace"));
         palette.push(CommandEntry::new("file.open", "Open File"));
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = palette.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(640.0),
-                        height: Dimension::length(400.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut palette, 640.0, 400.0);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(640.0),
-                    height: AvailableSpace::Definite(400.0),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        palette.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         palette.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -836,40 +646,8 @@ fn quick_settings_renders_power_utility_white_slider_fill_and_wifi_drill_in() {
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         open_quick_settings(&chrome);
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut host, W, H);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        host.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -916,40 +694,8 @@ fn quick_settings_renders_power_utility_white_slider_fill_and_wifi_drill_in() {
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         open_quick_settings(&chrome);
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut host, W, H);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        host.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1014,40 +760,8 @@ fn render_quick_settings_open(
     chrome.borrow_mut().overlays.quick_settings = true;
     mutate_chrome(&chrome);
     let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
+    lay_out(&mut host, W, H);
     let mut tr = TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |known, avail, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, avail, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
     host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1070,40 +784,8 @@ fn topbar_system_monitor_labels_and_sparkline_take_their_theme_colours() {
         chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
 
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1280.0),
-                        height: Dimension::length(48.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut chrome, 1280.0, 48.0);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(1280.0),
-                    height: AvailableSpace::Definite(48.0),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        chrome.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1130,40 +812,8 @@ fn topbar_system_monitor_labels_and_sparkline_take_their_theme_colours() {
         chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
 
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1280.0),
-                        height: Dimension::length(48.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut chrome, 1280.0, 48.0);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(1280.0),
-                    height: AvailableSpace::Definite(48.0),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        chrome.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1191,40 +841,8 @@ fn topbar_system_monitor_labels_and_sparkline_take_their_theme_colours() {
         chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
 
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1280.0),
-                        height: Dimension::length(48.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut chrome, 1280.0, 48.0);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(1280.0),
-                    height: AvailableSpace::Definite(48.0),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        chrome.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1259,8 +877,6 @@ fn topbar_system_monitor_labels_and_sparkline_take_their_theme_colours() {
 /// always draws it. Renders with no cursor, then at y=200.
 #[test]
 fn maximized_chrome_hides_when_cursor_below_y_80() {
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{Modifiers, WindowEvent};
     let theme = Theme::dark();
 
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
@@ -1276,40 +892,8 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     let mut group = WindowGroup::new(100, tabs, /* active_id */ 1, WindowWidth::Normal);
     group.maximized = true;
 
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = group.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(960.0),
-                    height: Dimension::length(540.0),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
+    let Layout { taffy, child_node } = lay_out(&mut group, 960.0, 540.0);
     let mut tr = TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(960.0),
-                height: AvailableSpace::Definite(540.0),
-            },
-            |known, avail, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, avail, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    group.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene_no_cursor = Scene::new();
     let presence = PresenceCtx::default();
@@ -1323,26 +907,9 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     let fills_no_cursor = collect_solid_colors(&scene_no_cursor).len();
 
     // y=200 is well below the y<=80 reveal band; chrome should still hide.
-    let cursor_event = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(480.0, 200.0),
-    };
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    let mut doc = automerge::AutoCommit::new();
-    group.handle_event(
-        &cursor_event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: child,
-            taffy: &taffy,
-        },
-    );
+    let cursor_event = ui::synthetic_input::cursor_moved(480.0, 200.0);
+    let modifiers = winit::event::Modifiers::default();
+    dispatch(&mut group, &taffy, child_node, modifiers, &cursor_event);
 
     let mut scene_below = Scene::new();
     group.draw(
@@ -1410,40 +977,8 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
 
         let mut chrome = TopBarChrome::from_tree(&tree.desktop);
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1280.0),
-                        height: Dimension::length(48.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut chrome, 1280.0, 48.0);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(1280.0),
-                    height: AvailableSpace::Definite(48.0),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        chrome.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1506,40 +1041,8 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
 
         let mut chrome = TopBarChrome::from_tree(&tree.desktop);
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1280.0),
-                        height: Dimension::length(48.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut chrome, 1280.0, 48.0);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(1280.0),
-                    height: AvailableSpace::Definite(48.0),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        chrome.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1587,40 +1090,8 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         );
 
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1280.0),
-                        height: Dimension::length(48.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut chrome, 1280.0, 48.0);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(1280.0),
-                    height: AvailableSpace::Definite(48.0),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        chrome.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1797,40 +1268,8 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         );
 
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1280.0),
-                        height: Dimension::length(48.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        lay_out(&mut chrome, 1280.0, 48.0);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(1280.0),
-                    height: AvailableSpace::Definite(48.0),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        chrome.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -1867,40 +1306,8 @@ fn layout_topbar_and_collect_fills(
     presence: &PresenceCtx,
 ) -> Vec<(u8, u8, u8, u8)> {
     let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(1280.0),
-                    height: Dimension::length(48.0),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
+    lay_out(chrome, 1280.0, 48.0);
     let mut tr = TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(1280.0),
-                height: AvailableSpace::Definite(48.0),
-            },
-            |known, avail, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, avail, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    chrome.apply_layout(&taffy, child, Point::ORIGIN);
     let mut scene = Scene::new();
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence);
     collect_solid_colors(&scene)
@@ -1913,8 +1320,8 @@ fn layout_topbar_and_collect_fills(
 mod overview_add_workspace {
     use super::*;
     use shell::shell::overlay_host::ShellOverlayHost;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+    use ui::synthetic_input::{cursor_moved, mouse_press};
+    use winit::event::Modifiers;
 
     /// Keeps the taffy tree + child node alive so tests can pump events after
     /// layout — `handle_event` indexes `children[0]`, so a leaf isn't enough.
@@ -1934,40 +1341,8 @@ mod overview_add_workspace {
         host.force_overview_settled(true);
 
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+        let Layout { taffy, child_node } = lay_out(&mut host, W, H);
         let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        host.apply_layout(&taffy, child, Point::ORIGIN);
 
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
@@ -1976,7 +1351,7 @@ mod overview_add_workspace {
             host,
             chrome,
             taffy,
-            root_node: child,
+            root_node: child_node,
         }
     }
 
@@ -2035,44 +1410,17 @@ mod overview_add_workspace {
             // last_cursor on MouseInput::Pressed.
             let centre = rect.center();
             let mut doc = automerge::AutoCommit::new();
-            let doc_root = automerge::ObjId::Root;
             let modifiers = Modifiers::default();
-            let mut focus: Option<NodeId> = None;
-            let mut handled = false;
-
-            h.host.handle_event(
-                &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: PhysicalPosition::new(centre.x, centre.y),
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: ui::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: h.root_node,
-                    taffy: &h.taffy,
-                },
-            );
-            h.host.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: ui::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: h.root_node,
-                    taffy: &h.taffy,
-                },
-            );
+            for event in [cursor_moved(centre.x, centre.y), mouse_press()] {
+                dispatch_in(
+                    &mut doc,
+                    &mut h.host,
+                    &h.taffy,
+                    h.root_node,
+                    modifiers,
+                    &event,
+                );
+            }
 
             let st = h.chrome.borrow();
             assert_eq!(

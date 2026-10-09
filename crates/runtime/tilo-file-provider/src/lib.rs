@@ -12,16 +12,6 @@
 //! the caller frees with [`tilo_fp_string_free`]; `macos/TiloFileProvider.h`
 //! declares the functions.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod session;
 
 use serde::Serialize;

@@ -755,27 +755,10 @@ impl Widget for SlashMenu {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{ElementState, KeyEvent};
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 
-    /// Same workaround used in `command_palette::tests` — `KeyEventExtra`
-    /// is `pub(crate)` in winit 0.30 so we can't struct-literal a
-    /// `KeyEvent`. The all-zero bit pattern is safe for every field
-    /// `handle_key` reads.
-    fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(SmolStr::new);
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use winit::keyboard::SmolStr;
+
+    use crate::synthetic_input::key_press;
 
     fn char_press(c: &str) -> WindowEvent {
         key_press(Key::Character(SmolStr::new(c)), Some(c))

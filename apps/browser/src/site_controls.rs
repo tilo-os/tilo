@@ -729,7 +729,6 @@ mod tests {
             assert!(done.height() > 0.0);
             assert!(scroll.get_rect().contains(done.center()));
             let mut doc = automerge::AutoCommit::new();
-            let mut handled;
             let mut focus = None;
             for event in [
                 winit::event::WindowEvent::CursorMoved {
@@ -747,20 +746,12 @@ mod tests {
                     button: winit::event::MouseButton::Left,
                 },
             ] {
-                handled = false;
-                panel.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                focus = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node)
+                    .focus_target(focus)
+                    .send(&mut *panel, &event)
+                    .focus_target;
             }
             let intent = ui::widget::controls::take_control_invocation(panel.as_mut())
                 .expect("pointer emits the Done operation");

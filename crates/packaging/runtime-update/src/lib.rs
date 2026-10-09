@@ -9,15 +9,6 @@
 //! The bundle is then replaced by [`swap::replace_bundle`] and the runtime
 //! agent restarted.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod release;

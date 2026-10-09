@@ -748,6 +748,13 @@ fn spawn_inner(
         tilo_action_broker::services::HostServices::default()
     };
     services.record_content = record_content;
+    // The same service the identity broker answers key requests from: its
+    // changes tell each route's endpoint when to ask again.
+    services.channel_keys = channel_encryption.clone().map(|access| {
+        let keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
+        keys.set(Some(access));
+        keys
+    });
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));
@@ -970,6 +977,11 @@ pub(crate) fn answer_remote_actions(
     host: Option<&crate::shell::remote_actions::BrokerActionHost>,
     requests: Vec<crate::shell::remote_action_link::InboundRemoteAction>,
 ) {
+    // A waiting request parks on the broker's change signal, a task on the
+    // session runtime; without one it is answered at once, as before.
+    let _runtime = crate::session_runtime::runtime()
+        .ok()
+        .map(tokio::runtime::Runtime::enter);
     for request in requests {
         // A record is read from where this device keeps it, by the device
         // itself; no action host is asked.

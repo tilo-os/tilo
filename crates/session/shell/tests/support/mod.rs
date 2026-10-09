@@ -14,6 +14,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+pub mod host;
 pub mod offscreen;
 pub mod snapshot;
 pub mod wayland;

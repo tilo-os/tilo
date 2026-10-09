@@ -34,8 +34,9 @@ use crate::environment_host::{
 };
 use crate::frame::{read_frame_or_eof, write_frame};
 use crate::mesh::DeviceKey;
-use crate::peer::WorkspaceRegistry;
+use crate::peer::{AgentRegistry, WorkspaceRegistry};
 use crate::policy::TrustPolicy;
+use crate::room_access::{self, RelayTrust, RoomOperation};
 use crate::workspace::{SharedWorkspace, WorkspaceRuntime};
 
 const VIEWER_QUEUE: usize = 128;
@@ -121,20 +122,24 @@ pub(crate) struct RoutingContext {
     pub(crate) own_user_public_key: [u8; 32],
     pub(crate) trust_policy: Arc<RwLock<TrustPolicy>>,
     pub(crate) revocations: Arc<RwLock<RevocationList>>,
+    pub(crate) agents: AgentRegistry,
     pub(crate) metering: Arc<dyn Metering>,
 }
 
 impl RoutingContext {
-    /// The peer is still admitted relay-wide: not revoked, and admitted by
-    /// the live trust policy.
+    fn trust(&self) -> RelayTrust<'_> {
+        RelayTrust {
+            revocations: &self.revocations,
+            policy: &self.trust_policy,
+            own_user: &self.own_user_public_key,
+            agents: &self.agents,
+        }
+    }
+
+    /// The peer is still admitted relay-wide: its certificate is current,
+    /// not revoked, and admitted by the live trust policy.
     fn still_trusted(&self, peer: &AuthenticatedPeer) -> bool {
-        self.revocations
-            .read()
-            .is_ok_and(|list| !list.is_revoked(&peer.device_public_key))
-            && self
-                .trust_policy
-                .read()
-                .is_ok_and(|policy| policy.admits(&peer.cert, &self.own_user_public_key))
+        self.trust().cert(peer, tilo_clock::unix_now_ns()).is_ok()
     }
 
     async fn workspace(&self, workspace_id: u64) -> Option<SharedWorkspace> {
@@ -142,19 +147,14 @@ impl RoutingContext {
     }
 }
 
-/// Whether `peer` is a current member of `workspace`: an exact member
-/// device, a device of an admitted user, or, on a same-owner host that
-/// admits its owner's devices, one of the owner's devices.
-pub(crate) fn admitted(
+/// Whether `peer` may use environments in `workspace` now, see
+/// [`room_access::decide`].
+fn admitted(
     workspace: &WorkspaceRuntime,
     peer: &AuthenticatedPeer,
-    own_user_public_key: &[u8; 32],
+    trust: &RelayTrust<'_>,
 ) -> bool {
-    workspace.membership.contains(&peer.device_public_key)
-        || workspace.admitted_users.contains(&peer.user_public_key)
-        || (workspace.admit_authenticated
-            && !workspace.governed_access
-            && &peer.user_public_key == own_user_public_key)
+    room_access::decide(workspace, trust, peer, RoomOperation::Environment).admitted()
 }
 
 fn member_of(peer: &AuthenticatedPeer) -> MemberIdentity {
@@ -294,7 +294,7 @@ async fn route_environment(
         choose_route(
             &mut workspace,
             peer,
-            &context.own_user_public_key,
+            &context.trust(),
             workspace_id,
             &request,
         )
@@ -348,11 +348,11 @@ async fn route_environment(
 fn choose_route(
     workspace: &mut WorkspaceRuntime,
     peer: &AuthenticatedPeer,
-    own_user_public_key: &[u8; 32],
+    trust: &RelayTrust<'_>,
     workspace_id: u64,
     request: &SessionRequest,
 ) -> Result<(SessionId, DeviceKey, iroh::endpoint::Connection, bool), (Refusal, &'static str)> {
-    if !admitted(workspace, peer, own_user_public_key) {
+    if !admitted(workspace, peer, trust) {
         return Err((Refusal::NotAMember, "not a member of this workspace"));
     }
     let member = member_of(peer);
@@ -471,7 +471,7 @@ async fn serve_viewer(
     let member = member_of(peer);
     let (frames_tx, mut frames) = mpsc::channel(VIEWER_QUEUE);
     let mut guard = workspace.lock().await;
-    if !admitted(&guard, peer, &context.own_user_public_key) {
+    if !admitted(&guard, peer, &context.trust()) {
         drop(guard);
         return refuse(send, Refusal::NotAMember, "not a member of this workspace").await;
     }

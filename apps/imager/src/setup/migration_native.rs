@@ -842,7 +842,8 @@ pub fn maybe_run_command(args: &[String]) -> io::Result<Option<i32>> {
     Ok(Some(if report.complete() { 0 } else { 2 }))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::{cell::RefCell, rc::Rc, sync::atomic::Ordering};

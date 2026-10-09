@@ -359,6 +359,7 @@ async fn main() {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         }),
         |message| match message {
             RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {

@@ -100,9 +100,12 @@ EOF
     chmod 0600 "$TOOLS_MEDIA"
     digest="$(sha256sum "$INSTALL_MEDIA" | awk '{print $1}')"
     uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-    printf '%s\n' "$uuid" > "$UUID_FILE"
-    chown root:tilo-identity "$UUID_FILE"
-    chmod 0640 "$UUID_FILE"
+    # Rename the identity into place complete: its appearance starts the
+    # Windows status timer (tilo-windows-vm-egress-reaper.path).
+    printf '%s\n' "$uuid" > "$UUID_FILE.new"
+    chown root:tilo-identity "$UUID_FILE.new"
+    chmod 0640 "$UUID_FILE.new"
+    mv -f "$UUID_FILE.new" "$UUID_FILE"
     printf '{"schema_version":1,"phase":{"installing":{"media_digest":"%s"}},"license":"unknown","catalog_generation":0}\n' "$digest" > "$STATE"
     chown root:tilo-identity "$STATE"
     chmod 0660 "$STATE"
