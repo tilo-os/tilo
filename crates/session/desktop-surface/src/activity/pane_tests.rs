@@ -3572,6 +3572,14 @@ mod tests {
             .expect("the peer's change merges");
         pane.refresh(&mut tree);
         native_pane().refresh(&mut tree.clone());
+        // The catalogues those rows loaded were added after this refresh
+        // read the log; the next change reads it under them.
+        tree.set_active(second);
+        tree.commit_room_change();
+        pane.refresh(&mut tree);
+        tree.set_active(home);
+        tree.commit_room_change();
+        pane.refresh(&mut tree);
 
         let mut next_tab = 92_000_u64;
         for step in 0..24_u32 {
