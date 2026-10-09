@@ -443,11 +443,20 @@ def agent_profile_task_availability(agent, *, windows=None):
     return matches[0] if matches else None
 
 
-def prove_managed_agent_profile_availability(socket, agent, expected, output, process, case):
+def prove_managed_agent_profile_availability(socket, observation, output, process):
     """Exercise the public profile door and real external AT observation."""
+    room, agent, expected, case = (
+        observation[key] for key in ("room", "agent", "expected", "case")
+    )
     if expected not in {"available", "unavailable"} or case not in {
             "before-start", "admitted", "retired-before-replacement"}:
         raise RuntimeError("the native profile proof case is not a fixed expected boundary")
+    status_action = wait_for("owner-published exact Agent availability action", lambda: (
+        offered_membership_action(socket, room, f"desktop:agent:{agent}", "read-availability")
+    ), process)
+    receipt = wait_terminal(socket, invoke(socket, status_action), process)
+    if terminal_value(receipt) != {"availability": expected}:
+        raise RuntimeError("the exact Agent semantic availability did not match its live boundary")
     invoke(socket, require_action(socket, "settings.participant.open"), {
         "kind": "agent", "id": agent,
     })
@@ -464,6 +473,7 @@ def prove_managed_agent_profile_availability(socket, agent, expected, output, pr
     wait_for("actual managed Agent profile task availability", observed, process)
     (output / f"managed-profile-{case}.json").write_text(json.dumps({
         "public_profile_action_invoked": True,
+        "public_availability_action_observed": True,
         "external_accessibility_observed": True,
         "task_availability": expected,
         "private_fixture_content_recorded": False,
@@ -6281,7 +6291,8 @@ def native_agent_membership_revocation(
     wait_for("fresh Tide Chat route", lambda: offered_agent_action(
         socket, room, record, "tide", "open-agent-conversation"), process)
     prove_managed_agent_profile_availability(
-        socket, "tide", "unavailable", output, process, "retired-before-replacement")
+        socket, {"room": room, "agent": "tide", "expected": "unavailable",
+                 "case": "retired-before-replacement"}, output, process)
     start_managed_agent(socket, room, "tide", process,
                         public_failure_path=output / "failed-agent-tide-restart-terminal.json")
 
@@ -7098,7 +7109,8 @@ def managed_task_and_message_lifecycle(
     if not task_only:
         configure_lifecycle_task_budget(socket, room, task_id, process, output)
         prove_managed_agent_profile_availability(
-            socket, agent, "unavailable", output, process, "before-start")
+            socket, {"room": room, "agent": agent, "expected": "unavailable",
+                     "case": "before-start"}, output, process)
     startup = start_managed_agent(socket, room, agent, process)
 
     # Start acknowledges only the authenticated launch request. Keep it
@@ -7197,7 +7209,8 @@ def managed_task_and_message_lifecycle(
         raise RuntimeError("active task has no exact owner frontier")
     if not task_only:
         prove_managed_agent_profile_availability(
-            socket, agent, "available", output, process, "admitted")
+            socket, {"room": room, "agent": agent, "expected": "available",
+                     "case": "admitted"}, output, process)
     planning_sequence = active["execution"]["sequence"]
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / "managed-task-owner-planning.png"
