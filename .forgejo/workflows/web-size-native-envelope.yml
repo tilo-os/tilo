@@ -66,6 +66,11 @@ jobs:
         env:
           EXPECTED_ARCH: aarch64
         run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"
+      - name: Prohibit swap within this diagnostic job
+        run: >-
+          python3 tools/ci/qualify_native_envelope.py prepare
+          --memory-gib ${{ needs.builder.outputs.memory }} --cpus 24
+          --state "$RUNNER_TEMP/release-envelope-before.json"
       - name: Observe enforced native envelope before compilation
         run: >-
           python3 tools/ci/qualify_native_envelope.py before
