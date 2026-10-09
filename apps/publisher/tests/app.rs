@@ -7,7 +7,7 @@ use ui::tilo_resource::Path;
 
 /// Replace the text of one field of the profile, as its input does.
 #[expect(clippy::expect_used, reason = "a path of the profile always encodes")]
-fn edit(field: Path<Publisher, String>, text: &str) -> Invoke<Publisher> {
+fn edit(field: &Path<Publisher, String>, text: &str) -> Invoke<Publisher> {
     Invoke::edit(&field.replace(text)).expect("an edit")
 }
 use ui::tilo_actions::{
@@ -55,7 +55,7 @@ fn the_registry_must_be_https_or_this_machine() {
     ] {
         assert!(registry_client::RegistryClient::validate_url(address).is_ok());
         profile
-            .apply(edit(Publisher::paths().registry, address))
+            .apply(edit(&Publisher::paths().registry, address))
             .expect("HTTPS or an actual loopback host");
         assert_eq!(profile.state().expect("profile").registry, address);
     }
@@ -72,7 +72,7 @@ fn the_registry_must_be_https_or_this_machine() {
         assert!(registry_client::RegistryClient::validate_url(address).is_err());
         assert!(
             profile
-                .apply(edit(Publisher::paths().registry, address))
+                .apply(edit(&Publisher::paths().registry, address))
                 .is_err(),
             "reject an invalid address at the action door: {address}"
         );
@@ -209,7 +209,7 @@ fn applying_reports_what_the_registry_answered() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.effect_confirmed(&KeyEffect::CreateKey)
         .expect("create the key");
-    app.invoke(edit(Publisher::paths().registry, "http://127.0.0.1:9"))
+    app.invoke(edit(&Publisher::paths().registry, "http://127.0.0.1:9"))
         .expect("an unreachable registry");
     let nothing = app.effect(&KeyEffect::ApplyForNamespaces);
     assert!(
@@ -224,7 +224,7 @@ fn applying_reports_what_the_registry_answered() {
         "the application explains why it failed: {detail}"
     );
 
-    app.invoke(edit(Publisher::paths().domain, "example.com"))
+    app.invoke(edit(&Publisher::paths().domain, "example.com"))
         .expect("domain");
     assert!(
         app.effect(&KeyEffect::ApplyForNamespaces).is_err(),
@@ -243,9 +243,9 @@ fn applying_reports_what_the_registry_answered() {
 fn the_claims_are_durable() {
     let _home = home();
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(edit(Publisher::paths().domain, "example.com"))
+    app.invoke(edit(&Publisher::paths().domain, "example.com"))
         .expect("domain");
-    app.invoke(edit(Publisher::paths().forge_account, "codeberg:ada"))
+    app.invoke(edit(&Publisher::paths().forge_account, "codeberg:ada"))
         .expect("forge");
     let app = app.reopen().expect("the app reopens");
     assert_eq!(app.state().domain, "example.com");
@@ -293,12 +293,12 @@ fn narrow_key_actions_reserve_their_wrapped_rows_before_namespaces() {
 fn history_names_the_field_that_changed() {
     let _home = home();
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(edit(Publisher::paths().domain, "example.com"))
+    app.invoke(edit(&Publisher::paths().domain, "example.com"))
         .expect("domain");
-    app.invoke(edit(Publisher::paths().contact, "ada@example.com"))
+    app.invoke(edit(&Publisher::paths().contact, "ada@example.com"))
         .expect("contact");
     assert!(
-        app.invoke(edit(Publisher::paths().registry, "not a URL"))
+        app.invoke(edit(&Publisher::paths().registry, "not a URL"))
             .is_err(),
         "the invariant refuses an address the client would not use"
     );
