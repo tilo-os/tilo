@@ -3373,11 +3373,18 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 Err(error) => eprintln!("record conflict publisher unavailable: {error}"),
             }
         }
-        let conflicts = conflict_watch.namespace_conflicts(
-            &namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        // Takes the namespace lock a step at a time: FUSE requests between
+        // the steps never wait for the whole walk.
+        let conflicts = conflict_watch.namespace_conflicts(&namespace);
+        if trace {
+            let pass = conflict_watch.namespace_pass();
+            eprintln!(
+                "  conflict scan: {} node(s) in {} lock hold(s), longest {} us",
+                pass.nodes,
+                pass.lock_holds,
+                pass.longest_hold.as_micros()
+            );
+        }
         for c in conflicts {
             // Fetch just the loser's manifest for its length (chunks hydrate
             // lazily on read). Skipped if no peer can serve it yet; retried next pass.
