@@ -36,7 +36,9 @@ use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 pub struct CertifiedAction {
     action: tilo_delivery_protocol::peer_actions::DirectedAction,
     certificate: DeviceCert,
-    signed: Option<SignedDirectedAction>,
+    // Boxed: the signed bytes would otherwise make every delivery event as
+    // large as the largest one.
+    signed: Option<Box<SignedDirectedAction>>,
 }
 impl CertifiedAction {
     /// Exact source-bound private request.
@@ -56,7 +58,7 @@ impl CertifiedAction {
     ///
     /// [`ActionMessage::requires_signature`]: tilo_delivery_protocol::peer_actions::ActionMessage::requires_signature
     pub fn signed(&self) -> Option<&SignedDirectedAction> {
-        self.signed.as_ref()
+        self.signed.as_deref()
     }
 }
 /// Private session control or opaque authenticated delivery.
@@ -1142,7 +1144,11 @@ impl RelayClient {
             EnvelopeV2::CertifiedSignedDelivered {
                 action,
                 source_certificate,
-            } => (action.action().clone(), source_certificate, Some(action)),
+            } => (
+                action.action().clone(),
+                source_certificate,
+                Some(Box::new(action)),
+            ),
             other => return Some(CertifiedActionEvent::Control(other)),
         };
         let cert: DeviceCert = serde_json::from_slice(&source_certificate).ok()?;
@@ -2379,7 +2385,9 @@ mod session_carrier_tests {
             .windows(32)
             .position(|window| window == action.source)
             .unwrap();
-        wire.get_mut(at..at + 32).unwrap().copy_from_slice(&source);
+        wire.get_mut(at..at.saturating_add(32))
+            .unwrap()
+            .copy_from_slice(&source);
         postcard::from_bytes(&wire).unwrap()
     }
 

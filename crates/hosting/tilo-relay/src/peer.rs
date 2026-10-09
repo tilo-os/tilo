@@ -6289,7 +6289,8 @@ pub(crate) struct PrivateDelivery {
     certified: bool,
     action: DirectedAction,
     /// The source device's signature over `action`, forwarded unchanged.
-    signed: Option<SignedDirectedAction>,
+    /// Boxed so a queued reply is not as large as a signed delivery.
+    signed: Option<Box<SignedDirectedAction>>,
     source: AuthenticatedPeer,
     source_tx: mpsc::Sender<Envelope>,
     reply: mpsc::Sender<PrivateOutbound>,
@@ -6672,7 +6673,7 @@ async fn route_private_signed(
     private_phase(action, "route_authorized");
     let delivery = PrivateDelivery {
         action: action.clone(),
-        signed: signed.cloned(),
+        signed: signed.cloned().map(Box::new),
         source: peer.clone(),
         source_tx: session.outbound.clone(),
         reply: session.private_tx.clone(),
@@ -6711,7 +6712,7 @@ async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
                     // them; an older target gets the unsigned frame it knows.
                     Some(signed) if session.signed_actions => {
                         EnvelopeV2::CertifiedSignedDelivered {
-                            action: signed.clone(),
+                            action: SignedDirectedAction::clone(signed),
                             source_certificate,
                         }
                     }
