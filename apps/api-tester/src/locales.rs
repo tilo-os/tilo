@@ -15,4 +15,64 @@ pub mod keys {
     use ui::i18n::LabelKey;
     pub const API_VARIABLES_RESOLVED: LabelKey = LabelKey::new("api-variables-resolved");
     pub const API_VARIABLES_UNRESOLVED: LabelKey = LabelKey::new("api-variables-unresolved");
+    pub const API_TESTER_WORKSPACE_COLLECTIONS: LabelKey =
+        LabelKey::new("api-tester-workspace-collections");
+    pub const API_TESTER_WORKSPACE_ENVIRONMENTS: LabelKey =
+        LabelKey::new("api-tester-workspace-environments");
+    pub const API_TESTER_WORKSPACE_ACTIVE_ENVIRONMENT: LabelKey =
+        LabelKey::new("api-tester-workspace-active-environment");
+    pub const API_TESTER_WORKSPACE_REQUEST: LabelKey =
+        LabelKey::new("api-tester-workspace-request");
+    pub const API_TESTER_REQUEST_RECORD_NAME: LabelKey =
+        LabelKey::new("api-tester-request-record-name");
+    pub const API_TESTER_REQUEST_RECORD_AUTH: LabelKey =
+        LabelKey::new("api-tester-request-record-auth");
+    pub const API_TESTER_REQUEST_RECORD_METHOD: LabelKey =
+        LabelKey::new("api-tester-request-record-method");
+    pub const API_TESTER_REQUEST_RECORD_URL: LabelKey =
+        LabelKey::new("api-tester-request-record-url");
+    pub const API_TESTER_REQUEST_RECORD_PARAMS: LabelKey =
+        LabelKey::new("api-tester-request-record-params");
+    pub const API_TESTER_REQUEST_RECORD_HEADERS: LabelKey =
+        LabelKey::new("api-tester-request-record-headers");
+    pub const API_TESTER_REQUEST_RECORD_BODY_MODE: LabelKey =
+        LabelKey::new("api-tester-request-record-body-mode");
+    pub const API_TESTER_REQUEST_RECORD_BODY: LabelKey =
+        LabelKey::new("api-tester-request-record-body");
+    pub const API_TESTER_REQUEST_RECORD_FORM: LabelKey =
+        LabelKey::new("api-tester-request-record-form");
+    pub const API_TESTER_CREDENTIALS_SCHEME: LabelKey =
+        LabelKey::new("api-tester-credentials-scheme");
+    pub const API_TESTER_CREDENTIALS_USERNAME: LabelKey =
+        LabelKey::new("api-tester-credentials-username");
+    pub const API_TESTER_CREDENTIALS_HEADER: LabelKey =
+        LabelKey::new("api-tester-credentials-header");
+    pub const API_TESTER_ROW_KEY: LabelKey = LabelKey::new("api-tester-row-key");
+    pub const API_TESTER_ROW_VALUE: LabelKey = LabelKey::new("api-tester-row-value");
+    pub const API_TESTER_ROW_ENABLED: LabelKey = LabelKey::new("api-tester-row-enabled");
+    pub const API_TESTER_SAVED_COLLECTION_NAME: LabelKey =
+        LabelKey::new("api-tester-saved-collection-name");
+    pub const API_TESTER_SAVED_COLLECTION_REQUESTS: LabelKey =
+        LabelKey::new("api-tester-saved-collection-requests");
+    pub const API_TESTER_ENVIRONMENT_NAME: LabelKey = LabelKey::new("api-tester-environment-name");
+    pub const API_TESTER_ENVIRONMENT_VARIABLES: LabelKey =
+        LabelKey::new("api-tester-environment-variables");
+    pub const API_TESTER_VARIABLE_KEY: LabelKey = LabelKey::new("api-tester-variable-key");
+    pub const API_TESTER_VARIABLE_VALUE: LabelKey = LabelKey::new("api-tester-variable-value");
+    pub const API_TESTER_VARIABLE_ENABLED: LabelKey = LabelKey::new("api-tester-variable-enabled");
+    pub const API_TESTER_NEW_REQUEST: LabelKey = LabelKey::new("api-tester-new-request");
+    pub const API_TESTER_NEW_COLLECTION: LabelKey = LabelKey::new("api-tester-new-collection");
+    pub const API_TESTER_DELETE_COLLECTION: LabelKey =
+        LabelKey::new("api-tester-delete-collection");
+    pub const API_TESTER_ADD_REQUEST: LabelKey = LabelKey::new("api-tester-add-request");
+    pub const API_TESTER_SAVE_REQUEST: LabelKey = LabelKey::new("api-tester-save-request");
+    pub const API_TESTER_OPEN_REQUEST: LabelKey = LabelKey::new("api-tester-open-request");
+    pub const API_TESTER_DELETE_REQUEST: LabelKey = LabelKey::new("api-tester-delete-request");
+    pub const API_TESTER_NEW_ENVIRONMENT: LabelKey = LabelKey::new("api-tester-new-environment");
+    pub const API_TESTER_DELETE_ENVIRONMENT: LabelKey =
+        LabelKey::new("api-tester-delete-environment");
+    pub const API_TESTER_USE_ENVIRONMENT: LabelKey = LabelKey::new("api-tester-use-environment");
+    pub const API_TESTER_ADD_VARIABLE: LabelKey = LabelKey::new("api-tester-add-variable");
+    pub const API_TESTER_OPEN_SENT: LabelKey = LabelKey::new("api-tester-open-sent");
+    pub const API_TESTER_RECORD_SENT: LabelKey = LabelKey::new("api-tester-record-sent");
 }

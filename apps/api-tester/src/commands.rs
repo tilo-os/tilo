@@ -8,16 +8,21 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ui::framework::ActionControl;
+use ui::tilo_resource::{Edit, Path};
+
 use crate::model::Id;
+use crate::resource::Workspace;
 
 /// The queue every widget callback pushes onto.
 #[derive(Clone)]
 pub(crate) struct Sink {
     queue: Rc<RefCell<Vec<Cmd>>>,
-    pub(crate) dispatcher:
-        Rc<RefCell<Option<ui::framework::Dispatcher<crate::resource::ApiTester>>>>,
-    pub(crate) actions: Rc<RefCell<Option<ui::framework::Actions<crate::resource::ApiTester>>>>,
+    pub(crate) dispatcher: Rc<RefCell<Option<ui::framework::Dispatcher<Workspace>>>>,
+    pub(crate) actions: Rc<RefCell<Option<ui::framework::Actions<Workspace>>>>,
     pub(crate) method: ui::LocalState<String>,
+    /// The builder's URL as the record holds it, for the variable hint.
+    pub(crate) url: Rc<RefCell<String>>,
     pub(crate) reset_area: ui::LocalState<bool>,
 }
 impl Sink {
@@ -27,8 +32,27 @@ impl Sink {
     pub(crate) fn borrow_mut(&self) -> std::cell::RefMut<'_, Vec<Cmd>> {
         self.queue.borrow_mut()
     }
+    /// `control` bound to the field at `path`: each committed value becomes
+    /// the field edit `edit(path, value)`. Unavailable until the window is
+    /// attached, and for a field nobody may edit.
+    pub(crate) fn bind_field<C: ActionControl<V>, V: 'static>(
+        &self,
+        control: C,
+        path: Path<Workspace, V>,
+        edit: impl Fn(&Path<Workspace, V>, V) -> Edit<Workspace> + Send + Sync + 'static,
+    ) -> C {
+        match self
+            .actions
+            .borrow()
+            .as_ref()
+            .and_then(|actions| actions.edit_binding(path, edit))
+        {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
+    }
+
     pub(crate) fn retry(&self, state: ui::widget::EmptyState) -> ui::widget::EmptyState {
-        use ui::framework::ActionControl;
         match self.actions.borrow().as_ref() {
             Some(actions) => {
                 actions.bind_effect_invocation(state, &crate::actions::ApiTesterEffect::Send)
@@ -52,6 +76,18 @@ pub(crate) enum Table {
     Params,
     Headers,
     Form,
+}
+
+impl Table {
+    /// The path of the table's rows in the builder's request.
+    pub(crate) fn rows(self) -> Path<Workspace, ui::tilo_resource::Collection<crate::record::Row>> {
+        let request = Workspace::paths().request;
+        match self {
+            Table::Params => request.params,
+            Table::Headers => request.headers,
+            Table::Form => request.form,
+        }
+    }
 }
 
 /// An edit to one row of a [`Table`], by durable row id.
@@ -158,7 +194,7 @@ impl FormMode {
 
 /// What a dialog acts on, when it is not the active selection: the row a
 /// hover action was pressed on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FormTarget {
     pub(crate) collection: Option<Id>,
     pub(crate) request: Option<Id>,
@@ -171,6 +207,7 @@ impl Default for Sink {
             dispatcher: Rc::default(),
             actions: Rc::default(),
             method: ui::LocalState::new(String::new()),
+            url: Rc::default(),
             reset_area: ui::LocalState::new(false),
         }
     }

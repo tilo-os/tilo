@@ -3,52 +3,83 @@
 //! through a headless driver in `tests/a11y.rs`.
 
 use super::*;
-use crate::actions::API_TESTER_ACTION_TYPE;
-use crate::doc::ApiDoc;
 use crate::resource::ApiTesterShell;
-use automerge::ROOT;
+use automerge::{AutoCommit, ROOT};
 use ui::Theme;
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::{Invoke, Resource as _};
+use ui::tilo_resource::{Edit, Invoke, Operation as _, Replica, Resource as _};
+
+/// The sample workspace, built through its edits and verbs.
+fn sample() -> AutoCommit {
+    let mut replica = Replica::<Workspace>::new();
+    for invoke in crate::seed::workspace() {
+        replica.apply(invoke).unwrap();
+    }
+    AutoCommit::load(&replica.save()).unwrap()
+}
+
+/// The record `doc` holds.
+fn record(doc: &AutoCommit) -> Rc<Workspace> {
+    Rc::new(Workspace::read(doc).unwrap())
+}
 
 /// A demo app whose workspace has been seeded into a fresh document.
 fn demo() -> (ApiTesterApp, AutoCommit) {
-    let dispatcher = ui::framework::testing::dispatcher::<ApiTester>("so.tilo.api-tester");
-    let mut doc = AutoCommit::new();
-    ApiTester::initialize(&mut doc).unwrap();
-    for action in crate::seed::workspace() {
-        dispatcher
-            .apply_now(&mut ui::widget::Edits::lend(&mut doc), &action)
-            .unwrap();
-    }
+    let dispatcher = ui::framework::testing::dispatcher::<Workspace>("so.tilo.api-tester");
+    let doc = sample();
     let mut app = ApiTesterApp::new_demo();
     app.dispatcher = Some(dispatcher.clone());
     *app.sink.dispatcher.borrow_mut() = Some(dispatcher);
-    app.present_workspace(&ApiTester::read(&doc).unwrap());
+    app.present_workspace(&record(&doc));
     app.sync(&doc, &ROOT);
     (app, doc)
 }
 
-thread_local! { static LAST: std::cell::RefCell<Option<ui::tilo_actions::EncodedAction>> = const { std::cell::RefCell::new(None) }; }
+thread_local! { static LAST: std::cell::RefCell<Option<serde_json::Value>> = const { std::cell::RefCell::new(None) }; }
 
 fn resync(app: &mut ApiTesterApp, doc: &AutoCommit) {
-    app.present_workspace(&ApiTester::read(doc).unwrap());
+    app.present_workspace(&record(doc));
     app.sync(doc, &ROOT);
 }
 
+/// Apply what the window submitted, as its host does, and present the
+/// result. Remembers the last field edit applied.
 fn drain(app: &mut ApiTesterApp, doc: &mut AutoCommit) -> bool {
-    let changed = app.drain_commands(doc, &ROOT);
-    let applied = ui::framework::testing::resolve(app.dispatcher.as_ref().unwrap(), doc).unwrap();
-    if let Some(action) = applied.last().and_then(|group| group.last()) {
-        LAST.with(|last| *last.borrow_mut() = Some(actions::encode(action)));
-    }
-    app.present_workspace(&ApiTester::read(doc).unwrap());
+    let changed = app.drain_commands();
+    apply(app, doc);
     changed
 }
 
+fn apply(app: &mut ApiTesterApp, doc: &mut AutoCommit) {
+    let applied = ui::framework::testing::resolve(app.dispatcher.as_ref().unwrap(), doc).unwrap();
+    if let Some(action) = applied.last().and_then(|group| group.last()) {
+        let edit = action
+            .operation
+            .edit()
+            .map(|edit| serde_json::to_value(edit).unwrap());
+        LAST.with(|last| *last.borrow_mut() = edit);
+    }
+    app.present_workspace(&record(doc));
+}
+
+/// The field edit `edit` as the last drain records one.
+fn as_applied(edit: &Edit<Workspace>) -> serde_json::Value {
+    serde_json::to_value(edit).unwrap()
+}
+
 fn outgoing(app: &mut ApiTesterApp, doc: &AutoCommit) -> Outgoing {
-    app.present_workspace(&ApiTester::read(doc).unwrap());
+    app.present_workspace(&record(doc));
     app.outgoing()
+}
+
+/// Apply `submit` to `doc` as the window would submit it.
+fn submit(
+    app: &mut ApiTesterApp,
+    doc: &mut AutoCommit,
+    submit: impl ui::framework::Submit<Workspace>,
+) {
+    app.submit(submit);
+    apply(app, doc);
 }
 
 fn push(app: &ApiTesterApp, cmd: Cmd) {
@@ -74,16 +105,9 @@ fn constructors_start_live_empty_demo_seeded_and_persist_through_crdt() {
         "no canned response before a real Send"
     );
 
-    let mut doc = AutoCommit::new();
-    ApiTester::initialize(&mut doc).unwrap();
-    let dispatcher = ui::framework::testing::dispatcher::<ApiTester>("so.tilo.api-tester");
-    for action in crate::seed::workspace() {
-        dispatcher
-            .apply_now(&mut ui::widget::Edits::lend(&mut doc), &action)
-            .unwrap();
-    }
+    let doc = sample();
     let mut b = ApiTesterApp::new();
-    b.present_workspace(&ApiTester::read(&doc).unwrap());
+    b.present_workspace(&record(&doc));
     assert_eq!(b.collections.len(), a.collections.len());
     assert_eq!(b.environments.len(), a.environments.len());
 }
@@ -105,7 +129,8 @@ fn request_builder_resolves_environment_and_loads_saved_requests() {
     assert!(!out.url.contains("sort="), "a disabled row is not sent");
 
     // The URL the person typed is what is sent, not the model's copy.
-    ApiDoc::set_text(&mut doc, &ROOT, "url", "{{base_url}}/typed");
+    let url = Workspace::paths().request.url;
+    submit(&mut a, &mut doc, url.replace("{{base_url}}/typed"));
     assert!(outgoing(&mut a, &doc).url.contains("/v2/typed"));
 
     push(&a, Cmd::LoadRequest(0, 2));
@@ -113,12 +138,10 @@ fn request_builder_resolves_environment_and_loads_saved_requests() {
     assert_eq!(a.request.method, HttpMethod::Post);
     assert_eq!(a.request.body_mode, BodyMode::Json);
     assert_eq!(a.selected, Some((0, 2)));
-    assert_eq!(ApiDoc::read_text(&doc, &ROOT, "url"), "{{base_url}}/users");
-    assert_eq!(
-        ApiDoc::request(&doc, &ROOT).unwrap().method,
-        HttpMethod::Post
-    );
-    assert!(ApiDoc::read_text(&doc, &ROOT, "body").contains("Grace Hopper"));
+    let stored = record(&doc);
+    assert_eq!(stored.request.url, "{{base_url}}/users");
+    assert_eq!(stored.request.method, HttpMethod::Post);
+    assert!(stored.request.body.contains("Grace Hopper"));
     assert_eq!(a.active_tab, RequestTab::Params);
 }
 
@@ -129,46 +152,49 @@ fn replaying_history_fills_the_builder_without_sending() {
     push(&a, Cmd::ReplayHistory(1));
     drain(&mut a, &mut doc);
     assert_eq!(a.request.method, HttpMethod::Post);
-    assert_eq!(
-        ApiDoc::read_text(&doc, &ROOT, "url"),
-        "https://api.example.com/v2/users"
-    );
+    assert_eq!(record(&doc).request.url, "https://api.example.com/v2/users");
     assert!(!a.sending);
     assert_eq!(a.selected, None);
 }
 
 /// The environment picker is wired through the action host: selecting a new
-/// environment dispatches exactly the [`SetActiveEnvironment`] the Ctrl+K
-/// "activate" spec would build (affordance == `ActionSpec`), and the choice
-/// lands in the shared document. Its commands open the sheets that manage
-/// environments and are not kept as a value.
+/// environment submits exactly the field edit of the active environment an
+/// agent would, and the choice lands in the shared document. Its commands
+/// open the sheets that manage environments and are not kept as a value.
 #[test]
 fn selecting_environment_dispatches_the_set_active_action() {
     let (mut a, mut doc) = demo();
     assert!(a.environments.len() >= 2, "demo seeds several environments");
     let target = a.environments[1].clone();
-    assert_ne!(a.active_env, Some(target.id), "target isn't already active");
+    assert_ne!(
+        a.active_env.as_ref(),
+        Some(&target.id),
+        "target isn't already active"
+    );
 
     push(&a, Cmd::PickEnvironment(target.name.clone()));
     drain(&mut a, &mut doc);
 
     assert_eq!(
-        a.active_env,
-        Some(target.id),
+        a.active_env.as_ref(),
+        Some(&target.id),
         "the active environment switched"
     );
     let dispatched = LAST
         .with(|last| last.borrow().clone())
-        .expect("the picker dispatched an action");
-    let expected = actions::encode(&actions::set_active_environment_action(Some(target.id)));
-    assert_eq!(dispatched.type_id, expected.type_id);
+        .expect("the picker submitted a field edit");
     assert_eq!(
-        dispatched.payload, expected.payload,
-        "affordance == ActionSpec"
+        dispatched,
+        as_applied(
+            &Workspace::paths()
+                .active_environment
+                .set(Some(target.id.clone()))
+        ),
+        "the picker submits what an agent would"
     );
     assert_eq!(
-        ApiDoc::active_env(&doc, &ROOT),
-        Some(target.id.to_string()),
+        record(&doc).active_environment.as_ref(),
+        Some(&target.id),
         "the selection is recorded in the shared document"
     );
     assert!(
@@ -196,7 +222,10 @@ fn selecting_environment_dispatches_the_set_active_action() {
 #[test]
 fn renaming_the_active_environment_keeps_it_active() {
     let (mut a, mut doc) = demo();
-    let active = a.active_env.expect("demo has an active environment");
+    let active = a
+        .active_env
+        .clone()
+        .expect("demo has an active environment");
     a.open_form(FormMode::RenameEnvironment, FormTarget::default());
     a.form
         .as_ref()
@@ -207,7 +236,7 @@ fn renaming_the_active_environment_keeps_it_active() {
     push(&a, Cmd::SubmitForm);
     drain(&mut a, &mut doc);
     resync(&mut a, &doc);
-    assert_eq!(a.active_env, Some(active));
+    assert_eq!(a.active_env.as_ref(), Some(&active));
     assert_eq!(a.env_state.get(), "Live");
 
     a.open_form(FormMode::DeleteEnvironment, FormTarget::default());
@@ -244,16 +273,11 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
     push(&a, Cmd::SubmitForm);
     assert!(drain(&mut a, &mut doc));
     assert!(
-        ApiDoc::collections(&doc, &ROOT)
-            .iter()
+        record(&doc)
+            .collections
+            .values()
             .any(|collection| collection.name == "Billing API"),
-        "New collection dispatched its canonical action"
-    );
-    assert_eq!(
-        LAST.with(|last| last.borrow().clone())
-            .expect("recorded")
-            .type_id,
-        API_TESTER_ACTION_TYPE
+        "New collection submitted its verb"
     );
     assert!(a.form.is_none(), "the sheet closes on submit");
 
@@ -263,16 +287,19 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
     fields.value.set("eu-west-1".into());
     push(&a, Cmd::SubmitForm);
     drain(&mut a, &mut doc);
-    let active = a.active_env.expect("demo has an active environment");
+    let active = a
+        .active_env
+        .clone()
+        .expect("demo has an active environment");
     assert!(
-        ApiDoc::environments(&doc, &ROOT)
-            .iter()
-            .find(|environment| environment.id == active)
+        record(&doc)
+            .environments
+            .get(&active)
             .is_some_and(|environment| environment
                 .variables
-                .iter()
+                .values()
                 .any(|variable| variable.key == "region" && variable.value == "eu-west-1")),
-        "Add variable dispatched its canonical action"
+        "Add variable submitted its edit"
     );
 
     // A hover action on the second saved request renames that request, not
@@ -293,13 +320,13 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
             .iter()
             .find(|r| r.name == "Get user by id")
             .expect("demo request");
-        (collection.id, request.id)
+        (collection.id.clone(), request.id.clone())
     };
     a.open_form(
         FormMode::RenameRequest,
         FormTarget {
-            collection: Some(collection),
-            request: Some(request),
+            collection: Some(collection.clone()),
+            request: Some(request.clone()),
         },
     );
     assert_eq!(
@@ -351,17 +378,10 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
 #[test]
 fn saving_a_request_files_it_and_selects_it() {
     let (mut a, mut doc) = demo();
-    ApiDoc::set_text(&mut doc, &ROOT, "url", "{{base_url}}/health");
-    let mut request = Request::new("Health");
-    request.url = "{{base_url}}/health".into();
-    a.dispatcher
-        .as_ref()
-        .unwrap()
-        .apply_now(
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ApiTesterAction::OpenRequest { request },
-        )
-        .unwrap();
+    submit(&mut a, &mut doc, Workspace::NEW_REQUEST.with(()));
+    let paths = Workspace::paths().request;
+    submit(&mut a, &mut doc, paths.name.replace("Health"));
+    submit(&mut a, &mut doc, paths.url.replace("{{base_url}}/health"));
     resync(&mut a, &doc);
     a.open_form(FormMode::SaveRequest, FormTarget::default());
     push(&a, Cmd::SubmitForm);
@@ -393,9 +413,9 @@ fn view_commands_stay_device_local() {
     assert!(drain(&mut a, &mut doc));
     assert_eq!(a.request.body_mode, BodyMode::Json);
     assert!(matches!(a.request.auth, Auth::Basic { .. }));
-    let stored = ApiTester::read(&doc).unwrap();
+    let stored = record(&doc);
     assert_eq!(stored.request.body_mode, BodyMode::Json);
-    assert!(matches!(stored.request.auth, Auth::Basic { .. }));
+    assert_eq!(stored.request.auth.scheme, crate::record::AuthScheme::Basic);
     assert_ne!(
         doc.get_heads(),
         heads,
@@ -416,12 +436,9 @@ fn key_value_tables_edit_the_request() {
     let count = a.request.params.len();
     let blank = a.blanks.params.clone();
 
-    a.submit(&ApiTesterAction::EditRowField {
-        section: RowSection::Params,
-        row_id: blank.clone(),
-        field: "key".into(),
-        value: "limit".into(),
-    });
+    let params = Table::Params.rows();
+    let blank_id = Id::from_raw(blank.clone());
+    a.submit(params.insert_as(&blank_id, count, &crate::record::Row::new("limit", "")));
     drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count + 1);
     let pair = a.request.params.last().expect("the new pair");
@@ -438,22 +455,12 @@ fn key_value_tables_edit_the_request() {
     );
 
     // Further typing edits the same pair; it does not append again.
-    a.submit(&ApiTesterAction::EditRowField {
-        section: RowSection::Params,
-        row_id: blank.clone(),
-        field: "value".into(),
-        value: "10".into(),
-    });
+    a.submit(params.item(&blank_id).value.replace("10"));
     drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count + 1);
     assert_eq!(a.request.params[count].value, "10");
 
-    a.submit(&ApiTesterAction::EditRowField {
-        section: RowSection::Params,
-        row_id: blank.clone(),
-        field: "enabled".into(),
-        value: "false".into(),
-    });
+    a.submit(params.item(&blank_id).enabled.set(false));
     drain(&mut a, &mut doc);
     assert!(!a.request.params[count].enabled);
     assert!(
@@ -461,14 +468,9 @@ fn key_value_tables_edit_the_request() {
         "an unchecked row is not sent"
     );
 
-    // Emptying the blank row's text does not add a pair.
-    let fresh = a.blanks.params.clone();
-    a.submit(&ApiTesterAction::EditRowField {
-        section: RowSection::Params,
-        row_id: fresh,
-        field: "key".into(),
-        value: String::new(),
-    });
+    // A field of a row that is not there yet changes nothing.
+    let fresh = Id::from_raw(a.blanks.params.clone());
+    a.submit(params.item(&fresh).key.replace(""));
     drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count + 1);
 
@@ -484,38 +486,20 @@ fn key_value_tables_edit_the_request() {
     assert_eq!(a.request.params.len(), count);
 }
 
-/// The auth tab edits the scheme the request is composed with.
+/// The auth tab edits the scheme the request is composed with; its
+/// credential stays on the device.
 #[test]
-
 fn auth_fields_edit_the_request() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
-    app.invoke(
-        Invoke::<ApiTester>::apply(&ApiTesterAction::SetAuth {
-            auth: Auth::Basic {
-                username: String::new(),
-                password: String::new(),
-            },
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    app.effect(&ApiTesterEffect::EditAuthField {
-        field: "username".into(),
-        value: "ada".into(),
-    })
-    .unwrap();
+    let auth = Workspace::paths().request.auth;
+    app.invoke(Invoke::edit(&auth.scheme.set(crate::record::AuthScheme::Basic)).unwrap())
+        .unwrap();
+    app.invoke(Invoke::edit(&auth.username.replace("ada")).unwrap())
+        .unwrap();
     app.effect(&ApiTesterEffect::SetCredential {
         secret: "secret".into(),
     })
     .unwrap();
-    assert!(
-        app.effect(&ApiTesterEffect::EditAuthField {
-            field: "token".into(),
-            value: "ignored".into()
-        })
-        .is_err(),
-        "a credential cannot enter through the shared metadata door"
-    );
     app.settle();
     assert_eq!(
         app.with_surface::<ApiTesterApp, _>(|surface| surface.request.auth.clone())
@@ -526,26 +510,22 @@ fn auth_fields_edit_the_request() {
         }
     );
     assert_eq!(
-        app.state().request.auth,
+        app.state().request.auth.shown(),
         Auth::Basic {
             username: "ada".into(),
             password: String::new()
         },
-        "the authoritative document holds the auth scheme and username, with no credential"
+        "the record holds the auth scheme and username, with no credential"
     );
-    app.invoke(
-        Invoke::<ApiTester>::apply(&ApiTesterAction::SetAuth {
-            auth: Auth::ApiKey {
-                header: "X-Api-Key".into(),
-                value: String::new(),
-            },
-        })
-        .unwrap(),
-    )
-    .unwrap();
+    let saved = app.read_document(|doc| doc.clone().save());
+    assert!(!saved.windows(6).any(|window| window == b"secret"));
+    app.invoke(Invoke::edit(&auth.scheme.set(crate::record::AuthScheme::ApiKey)).unwrap())
+        .unwrap();
+    app.invoke(Invoke::edit(&auth.header.replace("X-Api-Key")).unwrap())
+        .unwrap();
     app.settle();
     assert!(
-        matches!(app.state().request.auth, Auth::ApiKey { ref header, .. } if header == "X-Api-Key")
+        matches!(app.state().request.auth.shown(), Auth::ApiKey { ref header, .. } if header == "X-Api-Key")
     );
 }
 
@@ -621,6 +601,18 @@ fn resource_provider_sends_for_real_and_resolves_exact_records() {
     resource_provider_resolves_a_late_record_without_scanning_the_workspace();
 }
 
+/// Open `request` in the builder of `app`, as a new request.
+fn open(app: &mut TestApp<ApiTesterShell>, request: &Request) {
+    app.invoke(Workspace::NEW_REQUEST.with(())).unwrap();
+    let edits = Workspace::paths().request.path().edits(
+        &app.state().request,
+        &crate::record::RequestRecord::of(request),
+    );
+    for edit in edits {
+        app.invoke(Invoke::edit(&edit).unwrap()).unwrap();
+    }
+}
+
 /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
 #[expect(
     clippy::too_many_lines,
@@ -690,16 +682,15 @@ fn resource_send_performs_a_real_http_round_trip() {
     request
         .headers
         .push(KeyValue::new("X-Tilo-Probe", "native"));
-    app.invoke(Invoke::apply(&ApiTesterAction::OpenRequest { request }).unwrap())
-        .unwrap();
+    open(&mut app, &request);
     assert!(app.state().history.is_empty());
     let admitted = app.start_effect(&ApiTesterEffect::Send).unwrap();
     assert!(
         !app.effect_progress().iter().any(|update| matches!(
             update,
-            tilo_actions::InvocationUpdate::Succeeded { .. }
-                | tilo_actions::InvocationUpdate::Failed { .. }
-                | tilo_actions::InvocationUpdate::Cancelled { .. }
+            ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+                | ui::tilo_actions::InvocationUpdate::Failed { .. }
+                | ui::tilo_actions::InvocationUpdate::Cancelled { .. }
         )),
         "admitted HTTP invocation {admitted:?} has not completed at queue time"
     );
@@ -713,22 +704,11 @@ fn resource_send_performs_a_real_http_round_trip() {
         "admission is not a completed request record"
     );
     // A later edit cannot change the history record of the request already sent.
-    app.invoke(
-        Invoke::apply(&ApiTesterAction::EditUrl(
-            ui::tilo_resource::TextEdit::ReplaceText {
-                text: "http://127.0.0.1/edited-after-send".into(),
-            },
-        ))
-        .unwrap(),
-    )
-    .unwrap();
-    app.invoke(
-        Invoke::apply(&ApiTesterAction::SetMethod {
-            method: HttpMethod::Post,
-        })
-        .unwrap(),
-    )
-    .unwrap();
+    let builder = Workspace::paths().request;
+    app.invoke(Invoke::edit(&builder.url.replace("http://127.0.0.1/edited-after-send")).unwrap())
+        .unwrap();
+    app.invoke(Invoke::edit(&builder.method.set(HttpMethod::Post)).unwrap())
+        .unwrap();
     release_response
         .send(())
         .expect("release the held HTTP backend");
@@ -737,9 +717,9 @@ fn resource_send_performs_a_real_http_round_trip() {
         app.effect_progress().iter().any(|update| {
             matches!(
                 update,
-                tilo_actions::InvocationUpdate::Succeeded { .. }
-                    | tilo_actions::InvocationUpdate::Failed { .. }
-                    | tilo_actions::InvocationUpdate::Cancelled { .. }
+                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+                    | ui::tilo_actions::InvocationUpdate::Failed { .. }
+                    | ui::tilo_actions::InvocationUpdate::Cancelled { .. }
             )
         })
     });
@@ -747,7 +727,7 @@ fn resource_send_performs_a_real_http_round_trip() {
     assert!(
         updates
             .iter()
-            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. })),
+            .any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. })),
         "admitted HTTP invocation {admitted:?} must succeed after the held backend replies: {updates:?}"
     );
     server.join().unwrap();
@@ -758,11 +738,12 @@ fn resource_send_performs_a_real_http_round_trip() {
     assert_eq!(response.status, 200);
     assert_eq!(response.body, "{\"result\":\"Grün\"}");
     let state = app.state();
-    assert_eq!(state.history.len(), 1);
-    assert_eq!(state.history[0].status, 200);
-    assert_eq!(state.history[0].method, HttpMethod::Get);
+    let history = state.history_shown();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, 200);
+    assert_eq!(history[0].method, HttpMethod::Get);
     assert_eq!(
-        state.history[0].url,
+        history[0].url,
         format!("http://{address}/probe?name=Gr%C3%BCn")
     );
     assert!(
@@ -775,33 +756,24 @@ fn resource_send_performs_a_real_http_round_trip() {
     assert_eq!(
         app.effect_progress()
             .iter()
-            .filter(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+            .filter(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. }))
             .count(),
         1,
         "terminal delivery is at most once"
     );
-    assert_eq!(
-        app.read_document(|doc| ApiDoc::history(doc, &ROOT)),
-        state.history
-    );
-    let mut restarted = app.reopen().unwrap();
+    let restarted = app.reopen().unwrap();
     assert_eq!(
         restarted.state().history,
         state.history,
         "completed requests survive restart"
     );
-    restarted
-        .invoke(
-            Invoke::apply(&ApiTesterAction::RecordHistory {
-                entry: state.history[0].clone(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-    assert_eq!(
-        restarted.state().history.len(),
-        1,
-        "replay does not duplicate history"
+    assert!(
+        restarted
+            .state()
+            .history
+            .values()
+            .all(|sent| !sent.route.0.contains("Gr%C3%BCn")),
+        "a sent request is named without its query values"
     );
 }
 
@@ -821,20 +793,19 @@ fn a_failed_request_is_shown_in_the_response_pane() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
     let mut request = Request::new("Failure proof");
     request.url = format!("http://{address}/unreachable");
-    app.invoke(Invoke::apply(&ApiTesterAction::OpenRequest { request }).unwrap())
-        .unwrap();
+    open(&mut app, &request);
     app.start_effect(&ApiTesterEffect::Send).unwrap();
     tilo_test_env::wait_until("the failed HTTP worker", || {
         app.settle();
         app.effect_progress()
             .iter()
-            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Failed { .. }))
+            .any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Failed { .. }))
     });
     let failure = app
         .effect_progress()
         .into_iter()
         .find_map(|update| match update {
-            tilo_actions::InvocationUpdate::Failed { error, .. } => Some(error.message),
+            ui::tilo_actions::InvocationUpdate::Failed { error, .. } => Some(error.message),
             _ => None,
         })
         .expect("the worker reported why it failed");
@@ -848,25 +819,41 @@ fn a_failed_request_is_shown_in_the_response_pane() {
 
 /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
 fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
-    let mut doc = AutoCommit::new();
-    ApiTester::initialize(&mut doc).unwrap();
-    let mut collection = Collection::new("Load test");
-    collection.requests = (0..5_000)
-        .map(|index| Request::new(format!("Request {index}")))
-        .collect();
-    let request = collection.requests.last().expect("late request").id;
-    // Load the large fixture with the document's canonical keyed-record
-    // writer. Replaying SaveRequest would scan the growing workspace for
-    // each setup action, obscuring the indexed lookup this test measures.
-    ApiDoc::set_collections(&mut doc, &ROOT, &[collection]);
-    let state = ApiTester::read(&doc).unwrap();
+    let mut workspace = Replica::<Workspace>::new();
+    let mut requests = ui::tilo_resource::Collection::new();
+    for index in 0..5_000 {
+        requests.push(
+            crate::model::fresh_id(),
+            crate::record::RequestRecord::named(format!("Request {index}")),
+        );
+    }
+    let collection = crate::model::fresh_id();
+    let saved = crate::record::SavedCollection {
+        name: "Load test".into(),
+        requests,
+    };
+    workspace
+        .apply(
+            Invoke::edit(
+                &Workspace::paths()
+                    .collections
+                    .insert_as(&collection, 0, &saved),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let state = workspace.state().unwrap();
     assert_eq!(state.collections.len(), 1);
-    assert_eq!(state.collections[0].requests.len(), 5_000);
-    let id = format!("api_tester.request:{request}");
-    let resource = actions::resolve_child(&state, &id).expect("late exact address resolves");
+    let id = ui::tilo_resource::items::item_resource_id::<Workspace>("collections", &collection);
+    let resource = Workspace::child(&state, &id).expect("the collection resolves by its id");
     assert_eq!(resource.id.0, id);
-    assert!(resource.actions.iter().any(|action| action.id == "send"));
-    assert_eq!(state.exact_inspected.get(), 1, "one indexed address lookup");
+    assert!(
+        resource
+            .actions
+            .iter()
+            .any(|action| action.id == "save-request"),
+        "the collection offers its verbs"
+    );
 }
 
 /// The document returns records in the order of their ids, so a pick or a
@@ -885,12 +872,12 @@ fn rereading_the_document_keeps_the_order_on_screen() {
         resync(&mut app, &doc);
         assert_eq!((names(&app), collections(&app)), before);
     }
-    let first = app.environments[0].id;
-    let second = app.environments[1].id;
-    app.pick_environment(&doc, &ROOT, "Staging");
+    let first = app.environments[0].id.clone();
+    let second = app.environments[1].id.clone();
+    app.pick_environment("Staging");
     drain(&mut app, &mut doc);
-    assert_eq!(app.active_env, Some(second));
-    assert_ne!(app.active_env, Some(first));
+    assert_eq!(app.active_env.as_ref(), Some(&second));
+    assert_ne!(app.active_env.as_ref(), Some(&first));
     assert_eq!((names(&app), collections(&app)), before);
 }
 
@@ -939,22 +926,32 @@ fn long_navigation_labels_fit_the_shared_rows() {
     for scale in [1.0, 2.0] {
         let mut app = TestApp::<ApiTesterShell>::capture(None).unwrap();
         let workspace = app.state();
-        let collection = workspace.collections.first().expect("sample collection");
-        let request = collection.requests.first().expect("sample request");
+        let (collection, saved) = workspace
+            .collections
+            .iter()
+            .next()
+            .expect("sample collection");
+        let request = saved.requests.ids().next().expect("sample request");
         app.invoke(
-            Invoke::apply(&actions::rename_request_action(
-                collection.id,
-                request.id,
-                long,
-            ))
+            Invoke::edit(
+                &Workspace::paths()
+                    .collections
+                    .item(collection)
+                    .requests
+                    .item(request)
+                    .name
+                    .replace(long),
+            )
             .unwrap(),
         )
         .unwrap();
-        let mut entry = workspace.history.first().expect("sample history").clone();
-        entry.id = uuid::Uuid::new_v4();
-        entry.url = format!("https://example.invalid/{long}");
-        app.invoke(Invoke::apply(&actions::ApiTesterAction::RecordHistory { entry }).unwrap())
-            .unwrap();
+        app.invoke(Workspace::RECORD_SENT.with(verbs::RecordSent {
+            method: "GET".into(),
+            url: format!("https://example.invalid/{long}"),
+            status: 200,
+            duration_ms: 12,
+        }))
+        .unwrap();
         let theme = Theme::dark().with_text_scale(scale);
         app.harness().set_theme(theme.clone());
         app.with_surface::<ApiTesterApp, _>(|surface| {
