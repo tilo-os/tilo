@@ -13,6 +13,7 @@ fallback, so there it is unobservable; `run.py --gl` boots the VM with virgl, wh
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import shlex
@@ -273,6 +274,7 @@ WARM_APPS = ("so.tilo.file-explorer", "so.tilo.notes", "so.tilo.settings")
 WARM_LAUNCHES = 10
 OPEN_WAIT_S = 30
 EXIT_WAIT_S = 15
+_NUDGE = itertools.cycle((8, 12))
 
 
 def _short(app: str) -> str:
@@ -309,6 +311,10 @@ def _timed_open(ctx, app: str) -> tuple[float, float] | None:
     t0 = _first_int(out)
     times = open_times(t0, _marks(ctx, t0, app, OPEN_WAIT_S)) if t0 is not None else None
     ctx.reset()
+    # Opens through the control socket are no user activity: without a real input the
+    # session locks itself on idle a few minutes into the series, as a person's would.
+    # The pointer moves between launches, never inside a measured one.
+    ctx.vm.input("move", str(next(_NUDGE)), "300")
     if not _app_gone(ctx, app):
         raise CheckFailed(f"{app}'s processes were still running {EXIT_WAIT_S} s after its window closed, "
                           "so the next open would not start it afresh")
@@ -324,6 +330,7 @@ def warm_opens(ctx, res):
     kind = "cpu" if software else "gpu"
     launches = WARM_LAUNCHES
     ctx.reset()
+    ctx.vm.input("move", str(next(_NUDGE)), "300")
     problems, unobserved, summary = [], [], {}
     for app in WARM_APPS:
         _timed_open(ctx, app)
