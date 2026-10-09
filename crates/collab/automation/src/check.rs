@@ -379,7 +379,7 @@ impl Checker<'_> {
                         },
                     );
                 }
-                Some((Ty::of_param(param), param.schema.clone()))
+                Some((Ty::of_param(param), param.schema.as_deref().cloned()))
             }
         }
     }
@@ -479,7 +479,8 @@ impl Checker<'_> {
         if !grant_permits(
             &self.shortcut.grant,
             app_id,
-            action,
+            &descriptor.address,
+            &descriptor.resource_kind,
             descriptor.contract.permission,
         ) {
             self.fail(

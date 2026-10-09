@@ -16,6 +16,9 @@ pub struct Cli {
     /// Print one JSON object instead of text (errors too: {"error","hint","see"}).
     #[arg(long, global = true)]
     pub json: bool,
+    /// Registered development target; overrides `TILO_VM`, `.tilo-vm` and the default.
+    #[arg(long, global = true)]
+    pub target: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -246,6 +249,28 @@ pub enum Command {
         /// Extra cargo features, comma separated.
         #[arg(long, value_delimiter = ',')]
         features: Vec<String>,
+        /// Attested source inventory used to verify the builder inputs.
+        #[arg(long)]
+        source_inventory: Option<PathBuf>,
+        /// Content hashes the target has verified; at most eight.
+        #[arg(long)]
+        cached_layer: Vec<String>,
+        /// Stream bounded raw chunks with a verified footer instead of base64.
+        #[arg(long)]
+        binary: bool,
+    },
+    /// Package one app on the architecture-configured remote builder.
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm app-pack --app so.tilo.notes --source-inventory target/source-inventory.json   # on the architecture-configured builder"
+    )]
+    AppPack {
+        /// App id to package from the attested source inventory.
+        #[arg(long)]
+        app: String,
+        /// Attested source inventory used to verify the builder inputs.
+        #[arg(long)]
+        source_inventory: PathBuf,
     },
     /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
     #[command(
@@ -378,6 +403,7 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
         None | Some(
             Command::Status { .. }
                 | Command::LayerPack { .. }
+                | Command::AppPack { .. }
                 | Command::Doctor
                 | Command::Guide { .. }
                 | Command::Logs { .. }
@@ -654,6 +680,14 @@ pub enum GamepadCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum VmCommand {
+    /// Carry the canonical semantic action operations over the owner's authenticated device route.
+    Actions {
+        /// The registered device (default: the one this worktree uses).
+        #[arg(long = "device")]
+        name: Option<String>,
+        #[command(subcommand)]
+        command: DeviceActionCommand,
+    },
     /// List registered VMs and which one this worktree uses.
     #[command(after_help = "Examples:\n  tilo-vm vm list")]
     List,
@@ -822,6 +856,32 @@ pub enum VmCommand {
     },
 }
 
+/// Transport-only spelling of the existing console semantic operations.
+#[derive(Debug, Subcommand)]
+pub enum DeviceActionCommand {
+    /// List the device's declared actions and typed arguments.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions list\n  tilo-vm vm actions list enroll"
+    )]
+    List {
+        /// Filter declared actions by this query (default: list all actions).
+        query: Option<String>,
+    },
+    /// Invoke a declared action; private arguments come only from stdin.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions invoke device-unlock enroll --args-stdin < private-args.json\n\nRead the action's declared JSON arguments with vm actions list. Private\narguments are read from stdin and never placed in the command line."
+    )]
+    Invoke {
+        /// The provider returned by vm actions list.
+        provider: String,
+        /// The declared action ID returned by vm actions list.
+        id: String,
+        /// Read the action's JSON arguments from stdin, including private fields.
+        #[arg(long, required = true)]
+        args_stdin: bool,
+    },
+}
+
 #[derive(Debug, Args)]
 pub struct AddArgs {
     /// The name to register the device under.
@@ -899,7 +959,8 @@ pub struct CreateArgs {
     /// `[user@]host[:port]` when the adapter cannot discover it.
     #[arg(long)]
     pub ssh: Option<String>,
-    /// Host port forwarded to the guest's SSH (libvirt, qemu).
+    /// Host port forwarded to the guest's SSH (libvirt, qemu, whpx).
+    /// Defaults to the first unregistered, available port from 2222.
     #[arg(long)]
     pub ssh_port: Option<u16>,
     /// UTM VM to clone.
@@ -1104,6 +1165,17 @@ pub enum SeatCommand {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn target_flag_works_before_and_after_swap() {
+        use clap::Parser as _;
+        for args in [
+            vec!["tilo-vm", "--target", "review", "swap", "shell"],
+            vec!["tilo-vm", "swap", "shell", "--target", "review"],
+        ] {
+            let cli = super::Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.target.as_deref(), Some("review"));
+        }
+    }
     use clap::CommandFactory;
 
     use super::*;

@@ -79,6 +79,7 @@ enum SetupCommand {
     Next,
     Back,
     InstallDesktop,
+    OpenUsbWizard,
     CancelDesktopDownload,
     RetryDesktop,
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -168,8 +169,11 @@ pub struct SetupApp {
     imports: Option<LocalState<bool>>,
     /// Built with live adapters: a live window starts them on attach.
     starts_when_live: bool,
+    actions: Option<ui::framework::Actions<Imager>>,
+    usb: Option<LocalState<bool>>,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
+    review_saver: fn(&[super::controller::FolderChoice]) -> Result<(), String>,
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
     internal_download_flow: Option<InternalDownloadFlow>,
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -309,8 +313,11 @@ impl SetupApp {
             import_requested: false,
             imports: None,
             starts_when_live: false,
+            actions: None,
+            usb: None,
             desktop_flow,
             desktop_revision: 0,
+            review_saver: super::desktop_continuation::persist_review,
             #[cfg(any(target_os = "linux", windows, all(test, unix)))]
             internal_download_flow,
             #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -528,6 +535,24 @@ impl SetupApp {
                 help_open: self.show_help,
                 imports_open: self.import_requested,
             },
+            desktop: super::desktop_journey::project(
+                &self.desktop_flow,
+                self.on_review_for(Experience::Desktop) && self.folder_selection_settled(),
+            ),
+            methods: super::desktop_journey::MethodProjection {
+                selected: chosen_experience.map(|experience| match experience {
+                    Experience::Desktop => "desktop",
+                    Experience::FullOs => "alongside",
+                }),
+                alongside: self.capabilities.platform.supports(Experience::FullOs),
+                usb: page == SetupPage::Experience
+                    && !self.desktop_flow.has_pending_operation()
+                    && self.usb.is_some()
+                    && matches!(
+                        self.capabilities.platform.host,
+                        HostOs::Linux | HostOs::Windows
+                    ),
+            },
             review: super::actions::ReviewProjection {
                 ready: page == SetupPage::Review,
             },
@@ -568,6 +593,14 @@ impl SetupApp {
         }
         let command = match effect {
             SetupEffect::ReadSetupStatus => return Ok(self.setup_projection().value()),
+            SetupEffect::ReadDesktopStatus => {
+                return serde_json::to_value(self.setup_projection().desktop)
+                    .map_err(|e| e.to_string());
+            }
+            SetupEffect::InstallDesktop
+            | SetupEffect::CancelDesktopDownload
+            | SetupEffect::RecheckDesktop
+            | SetupEffect::OpenUsbWizard => return self.answer_desktop(effect),
             SetupEffect::ChooseExperience { experience } => {
                 if self.controller().page() != SetupPage::Experience {
                     return Err("Experience choices are available on the first setup page.".into());
@@ -697,11 +730,51 @@ impl SetupApp {
         Ok(self.setup_projection().value())
     }
 
+    fn answer_desktop(&mut self, effect: SetupEffect) -> Result<serde_json::Value, String> {
+        let state = self.setup_projection();
+        let allowed = match effect {
+            SetupEffect::InstallDesktop => state.desktop.actions.install,
+            SetupEffect::CancelDesktopDownload => state.desktop.actions.cancel,
+            SetupEffect::RecheckDesktop => state.desktop.actions.recheck,
+            SetupEffect::OpenUsbWizard => state.methods.usb,
+            _ => false,
+        };
+        if !allowed {
+            return Err(super::strings::t(
+                "imager-setup-desktop-command-unavailable",
+            ));
+        }
+        self.status_is_error = false;
+        match effect {
+            SetupEffect::InstallDesktop => self.start_desktop_install(),
+            SetupEffect::CancelDesktopDownload => {
+                if !self.desktop_flow.cancel_download() {
+                    return Err(super::strings::t(
+                        "imager-setup-desktop-command-unavailable",
+                    ));
+                }
+            }
+            SetupEffect::RecheckDesktop => self.desktop_flow.retry()?,
+            SetupEffect::OpenUsbWizard => {
+                self.usb
+                    .as_ref()
+                    .ok_or_else(|| super::strings::t("imager-setup-usb-unavailable"))?
+                    .set(true);
+            }
+            _ => unreachable!("validated Desktop effect"),
+        }
+        self.structure_dirty = true;
+        if self.status_is_error {
+            return Err(self.status.clone());
+        }
+        Ok(self.setup_projection().value())
+    }
+
     fn start_desktop_install(&mut self) {
         if !self.folder_selection_settled() {
             return;
         }
-        match super::desktop_continuation::persist_review(self.controller.borrow().folders())
+        match (self.review_saver)(self.controller.borrow().folders())
             .and_then(|()| self.desktop_flow.start_install())
         {
             Ok(()) => self.status = "Rechecking this host before download…".into(),
@@ -800,6 +873,12 @@ impl SetupApp {
                 }
                 self.controller.borrow_mut().back();
                 self.status = "Your choices are retained while you make changes.".into();
+            }
+            SetupCommand::OpenUsbWizard => {
+                if let Err(error) = self.answer_desktop(SetupEffect::OpenUsbWizard) {
+                    self.status = error;
+                    self.status_is_error = true;
+                }
             }
             SetupCommand::InstallDesktop => self.start_desktop_install(),
             SetupCommand::CancelDesktopDownload => {
@@ -1174,6 +1253,19 @@ impl SetupApp {
     }
 
     fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
+        let effect = match command {
+            SetupCommand::InstallDesktop => Some(SetupEffect::InstallDesktop),
+            SetupCommand::CancelDesktopDownload => Some(SetupEffect::CancelDesktopDownload),
+            SetupCommand::RetryDesktop => Some(SetupEffect::RecheckDesktop),
+            SetupCommand::OpenUsbWizard => Some(SetupEffect::OpenUsbWizard),
+            _ => None,
+        };
+        if let (Some(actions), Some(effect)) = (&self.actions, effect) {
+            return actions.bind_effect_invocation(
+                Button::new(id, label).control_size(ControlSize::Regular),
+                &effect,
+            );
+        }
         let sink = Rc::clone(&self.commands);
         Button::new(id, label)
             .control_size(ui::widget::ControlSize::Regular)
@@ -1221,17 +1313,24 @@ impl SetupApp {
                 "Installs Tilo next to your current system, which stays the startup default.",
             ),
         };
-        ListRow::new(id, experience_label(experience))
-            .icon(match experience {
-                Experience::Desktop => Icon::Monitor,
-                Experience::FullOs => Icon::HardDrive,
-            })
-            .secondary(secondary)
-            .selected(self.chosen_experience == Some(experience))
-            .on_activate(move || {
-                sink.borrow_mut()
-                    .push(SetupCommand::ChooseExperience(experience));
-            })
+        ListRow::new(
+            id,
+            if experience == Experience::FullOs {
+                super::strings::t("imager-setup-alongside")
+            } else {
+                experience_label(experience).to_owned()
+            },
+        )
+        .icon(match experience {
+            Experience::Desktop => Icon::Monitor,
+            Experience::FullOs => Icon::HardDrive,
+        })
+        .secondary(secondary)
+        .selected(self.chosen_experience == Some(experience))
+        .on_activate(move || {
+            sink.borrow_mut()
+                .push(SetupCommand::ChooseExperience(experience));
+        })
     }
 
     fn experience_body(&self) -> Column {
@@ -1240,44 +1339,25 @@ impl SetupApp {
         if let Some(resume) = self.internal_resume_card() {
             body = body.push(Box::new(resume));
         }
-        let mut rows: Vec<Box<dyn Widget>> = Vec::new();
-        let mut recheck = false;
-        // What is on offer is a choice; what is not stays in the list as a
-        // disabled row that says why, so nothing is missing without a reason.
-        for experience in [Experience::Desktop, Experience::FullOs] {
-            if self.capabilities.platform.supports(experience) {
-                rows.push(Box::new(self.experience_row(experience)));
-                continue;
-            }
-            let (id, sentence) = match experience {
-                Experience::Desktop => {
-                    let (sentence, can_recheck) = self.desktop_unavailable();
-                    recheck = can_recheck;
-                    ("setup.desktop.live", sentence)
-                }
-                Experience::FullOs => {
-                    let sentence = "Not available on this computer yet.".to_string();
-                    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-                    let sentence = if self.internal_install.gate() {
-                        self.internal_readiness_text()
-                    } else {
-                        sentence
-                    };
-                    ("setup.internal.readiness", sentence)
-                }
+        let (desktop, recheck): (Box<dyn Widget>, bool) =
+            if self.capabilities.platform.supports(Experience::Desktop) {
+                (Box::new(self.experience_row(Experience::Desktop)), false)
+            } else {
+                let (sentence, recheck) = self.desktop_unavailable();
+                (
+                    Box::new(
+                        ListRow::new("setup.desktop.live", experience_label(Experience::Desktop))
+                            .icon(Icon::Monitor)
+                            .secondary(sentence)
+                            .two_line_secondary()
+                            .with_enabled(false),
+                    ),
+                    recheck,
+                )
             };
-            rows.push(Box::new(
-                ListRow::new(id, experience_label(experience))
-                    .icon(match experience {
-                        Experience::Desktop => Icon::Monitor,
-                        Experience::FullOs => Icon::HardDrive,
-                    })
-                    .secondary(sentence)
-                    .two_line_secondary()
-                    .with_enabled(false),
-            ));
-        }
+        let rows = vec![desktop];
         body = body.push(Box::new(Section::new(rows)));
+        body = body.push(Box::new(self.method_choices()));
         if recheck {
             body = body.push(Box::new(self.button(
                 "setup.desktop.recheck",
@@ -1320,6 +1400,42 @@ impl SetupApp {
             .into_iter()
             .filter(|mode| *mode != FolderMode::Connected || self.capabilities.connected_folders)
             .collect()
+    }
+
+    fn method_choices(&self) -> Section {
+        let t = super::strings::t;
+        let methods = self.setup_projection().methods;
+        let mut rows: Vec<Box<dyn Widget>> =
+            vec![Box::new(Text::new(&t("imager-setup-method-body")))];
+        if methods.alongside {
+            rows.push(Box::new(self.experience_row(Experience::FullOs)));
+        } else {
+            let reason = t("imager-setup-alongside-unavailable");
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            let reason = if self.internal_install.gate() {
+                self.internal_readiness_text()
+            } else {
+                reason
+            };
+            rows.push(Box::new(
+                ListRow::new("setup.internal.readiness", t("imager-setup-alongside"))
+                    .icon(Icon::HardDrive)
+                    .secondary(reason)
+                    .with_enabled(false),
+            ));
+        }
+        rows.push(Box::new(
+            self.button(
+                "setup.method.usb",
+                &t("imager-setup-usb-open"),
+                SetupCommand::OpenUsbWizard,
+            )
+            .with_enabled(methods.usb),
+        ));
+        if !methods.usb {
+            rows.push(Box::new(Text::new(&t("imager-setup-usb-unavailable"))));
+        }
+        Section::new(rows).with_header(SectionHeader::heading(t("imager-setup-method-heading")))
     }
 
     /// One selected folder: what it holds, how it comes over, and removing it.
@@ -3110,6 +3226,7 @@ impl ResourceSurface<Imager, SetupEffect> for SetupApp {
     fn present(&mut self, _state: &Rc<ImagerState>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
+        self.actions = Some(cx.actions());
         if cx.mode().is_live() && self.starts_when_live {
             self.start_live();
         }
@@ -3122,8 +3239,12 @@ impl ResourceSurface<Imager, SetupEffect> for SetupApp {
             return;
         };
         let imports = self.imports.take();
+        let actions = self.actions.take();
+        let usb = self.usb.take();
         *self = Self::for_shot(scenario);
         self.imports = imports;
+        self.actions = actions;
+        self.usb = usb;
         self.structure_dirty = true;
     }
 
@@ -3170,16 +3291,25 @@ pub(crate) fn mount(
     setup: fn(RunMode) -> SetupApp,
     imports: fn(RunMode) -> ImportApp,
 ) -> Element {
-    let importing = cx.local(false);
-    let shown = importing.clone();
-    cx.switch(&shown, move |cx, importing_now| {
-        if *importing_now {
-            cx.surface(imports(cx.mode()))
-        } else {
-            let mut app = setup(cx.mode());
-            app.imports = Some(importing.clone());
-            cx.surface(app)
+    let writing = cx.local(false);
+    let writer_shown = writing.clone();
+    cx.switch(&writer_shown, move |cx, writing_now| {
+        if *writing_now {
+            return cx.surface(crate::ImagerApp::new());
         }
+        let importing = cx.local(false);
+        let shown = importing.clone();
+        let writing = writing.clone();
+        cx.switch(&shown, move |cx, importing_now| {
+            if *importing_now {
+                cx.surface(imports(cx.mode()))
+            } else {
+                let mut app = setup(cx.mode());
+                app.imports = Some(importing.clone());
+                app.usb = Some(writing.clone());
+                cx.surface(app)
+            }
+        })
     })
 }
 
@@ -3224,6 +3354,8 @@ mod tests {
     const TEST_SYSTEM_ROOT: &str = r"C:\Windows";
     #[cfg(not(windows))]
     const TEST_SYSTEM_ROOT: &str = "/etc";
+
+    include!("desktop_journey_tests.rs");
 
     fn supported_fixture() -> SetupApp {
         SetupApp::with_capabilities(SetupCapabilities {
@@ -4942,7 +5074,7 @@ mod tests {
                 .unwrap()
                 .clone();
             let remove_a = match &remove_a.input {
-                tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+                tilo_actions::ActionInput::Immediate(encoded) => encoded.as_ref().clone(),
                 tilo_actions::ActionInput::Prompted { .. }
                 | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("remove must be immediate")

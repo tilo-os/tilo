@@ -635,8 +635,10 @@ pub enum Collects {
 /// How an [`ActionSpec`] produces its replayable [`EncodedAction`] when chosen.
 #[derive(Clone)]
 pub enum ActionInput {
-    /// Fires immediately with this pre-encoded action.
-    Immediate(EncodedAction),
+    /// Fires immediately with this pre-encoded action. Cloned publications
+    /// share immutable bytes; modifying this public lane uses copy-on-write
+    /// and never changes the private execution witness.
+    Immediate(Arc<EncodedAction>),
     /// A no-argument operation built only at final admitted owner execution.
     /// Enumeration and confirmation retain declared intent, not minted bytes.
     Deferred {
@@ -999,7 +1001,8 @@ impl ActionSpec {
     {
         let locus = action.locus();
         let encoded = EncodedAction::encode(type_id, action)?;
-        let for_build = encoded.clone();
+        let encoded = Arc::new(encoded);
+        let for_build = Arc::clone(&encoded);
         Ok(Self {
             id: id.into(),
             label: label.into(),
@@ -1010,7 +1013,7 @@ impl ActionSpec {
             contract: ActionContract::default(),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
-            build: InvocationBuilder::Fixed(Arc::new(for_build)),
+            build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
             permission_of: None,
             history_label_of: None,
@@ -1032,7 +1035,8 @@ impl ActionSpec {
         locus: ExecutionLocus,
         encoded: EncodedAction,
     ) -> Self {
-        let for_build = encoded.clone();
+        let encoded = Arc::new(encoded);
+        let for_build = Arc::clone(&encoded);
         Self {
             id: id.into(),
             label: label.into(),
@@ -1043,7 +1047,7 @@ impl ActionSpec {
             contract: ActionContract::default(),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
-            build: InvocationBuilder::Fixed(Arc::new(for_build)),
+            build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
             permission_of: None,
             history_label_of: None,
@@ -1119,7 +1123,8 @@ impl ActionSpec {
         debug_assert_ne!(kind, OperationKind::Document);
         let type_id = type_id.into();
         let encoded = EncodedAction::encode_operation(type_id.clone(), payload)?;
-        let for_build = encoded.clone();
+        let encoded = Arc::new(encoded);
+        let for_build = Arc::clone(&encoded);
         Ok(Self {
             id: id.into(),
             label: label.into(),
@@ -1134,7 +1139,7 @@ impl ActionSpec {
             },
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
-            build: InvocationBuilder::Fixed(Arc::new(for_build)),
+            build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
             permission_of: None,
             history_label_of: None,
@@ -1661,7 +1666,9 @@ impl ActionSpec {
             }
         };
         self.input = match self.input {
-            ActionInput::Immediate(encoded) => ActionInput::Immediate(wrap(encoded)),
+            ActionInput::Immediate(encoded) => {
+                ActionInput::Immediate(Arc::new(wrap(encoded.as_ref().clone())))
+            }
             ActionInput::Deferred { build, .. } => ActionInput::Deferred {
                 type_id: wrapped_type.to_owned(),
                 build: Arc::new(move || wrap(build())),
@@ -1800,7 +1807,7 @@ fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String
         .find(|p| p.required)
         .or_else(|| params.first())
     else {
-        return ActionInput::Immediate(build(&ActionArgs::none()));
+        return ActionInput::Immediate(Arc::new(build(&ActionArgs::none())));
     };
     let name = primary.name.to_string();
     let ty = primary.ty;

@@ -101,6 +101,10 @@ impl Submission {
     /// # Errors
     /// Refuses malformed ids, destinations, empty reports or oversized context.
     pub fn validate(&self) -> Result<(), Error> {
+        self.validated_bytes().map(|_| ())
+    }
+
+    fn validate_fields(&self) -> Result<(), Error> {
         if self.id.len() != 32 || !self.id.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Err(Error::Invalid("submission id"));
         }
@@ -137,13 +141,22 @@ impl Submission {
         {
             return Err(Error::Invalid("screenshot"));
         }
+        Ok(())
+    }
+
+    // Validation and receipt hashing share one bounded canonical encoder.
+    // Keep its serializer out of line instead of duplicating it in callers.
+    #[inline(never)]
+    fn validated_bytes(&self) -> Result<Vec<u8>, Error> {
+        self.validate_fields()?;
         // The existing native action transport allows 32 KiB of arguments.
         // Leave room for its action wrapper and escaped JSON, and refuse an
         // oversized report rather than truncate what the person approved.
-        if serde_json::to_vec(self)?.len() > 28_000 {
+        let bytes = serde_json::to_vec(self)?;
+        if bytes.len() > 28_000 {
             return Err(Error::Invalid("encoded submission size"));
         }
-        Ok(())
+        Ok(bytes)
     }
 
     /// The immutable report and routing binding used by destination receipts.
@@ -151,8 +164,7 @@ impl Submission {
     /// # Errors
     /// Refuses an invalid submission or an unencodable payload.
     pub fn digest(&self) -> Result<String, Error> {
-        self.validate()?;
-        let bytes = serde_json::to_vec(self)?;
+        let bytes = self.validated_bytes()?;
         Ok(blake3::hash(&bytes).to_hex().to_string())
     }
 }
@@ -195,4 +207,51 @@ pub enum Error {
     CaptureChanged,
     #[error(transparent)]
     Image(#[from] image::ImageError),
+}
+
+#[cfg(test)]
+mod submission_tests {
+    use super::*;
+
+    fn report() -> Submission {
+        Submission {
+            id: "0123456789abcdef".repeat(2),
+            destination: Destination {
+                room: "demo".into(),
+                provider: "record:chat:feedback".into(),
+                channel: "feedback".into(),
+            },
+            feedback: ReviewedFeedback {
+                text: "A useful report".into(),
+                context: Vec::new(),
+                screenshot: None,
+            },
+        }
+    }
+
+    #[test]
+    fn receipt_digest_keeps_the_exact_canonical_payload_and_validation_bounds() {
+        let mut submission = report();
+        submission.validate().unwrap();
+        assert_eq!(
+            submission.digest().unwrap(),
+            blake3::hash(&serde_json::to_vec(&submission).unwrap())
+                .to_hex()
+                .to_string()
+        );
+        submission.feedback.text = "\"".repeat(8_000);
+        submission.feedback.context.push(ContextField {
+            key: "context:1".into(),
+            value: "\\".repeat(8_000),
+        });
+        assert!(serde_json::to_vec(&submission).unwrap().len() > 28_000);
+        assert!(matches!(
+            submission.validate(),
+            Err(Error::Invalid("encoded submission size"))
+        ));
+        assert!(matches!(
+            submission.digest(),
+            Err(Error::Invalid("encoded submission size"))
+        ));
+    }
 }

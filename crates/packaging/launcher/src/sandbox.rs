@@ -198,6 +198,7 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
     // injector or output path. Keep arbitrary profiling/scenario environment stripped.
     for name in [
         "TILO_PROFILE_PRESENTATION",
+        "TILO_PROFILE_GPU_STAGES",
         "VELLO_GPU_TIMESTAMPS",
         "VELLO_GPU_DISPATCH_TIMESTAMPS",
     ] {
@@ -729,7 +730,7 @@ pub fn egress_decision(
         && crate::dev_env::dev_override(crate::dev_env::NET_GATE_ENV).is_some_and(|v| v == "off")
     {
         tracing::warn!(
-            hosts = ?decision.policy().map(super::netgate::EgressPolicy::hosts),
+            hosts = ?decision.policy().map(super::netgate::EgressPolicy::describe),
             "{}=off: launching with UNRESTRICTED outbound network access even though this app \
              was granted specific hosts. Per-host filtering is NOT enforced for this launch.",
             crate::run::NET_GATE_ENV,
@@ -824,6 +825,27 @@ pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> 
     argv.push("TILO_USER_HOME".to_string());
     argv.push(home.display().to_string());
     Some(home)
+}
+
+/// Name the user's data directory only when an existing capability binds it.
+/// Apps keep their own `XDG_DATA_HOME`; this hint lets shared host controls
+/// identify user resources such as Trash without granting another path.
+pub fn push_user_data(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> Option<PathBuf> {
+    let data = xdg_paths::data_dir().filter(|path| path.is_absolute())?;
+    if !capabilities
+        .ro_paths
+        .iter()
+        .chain(capabilities.rw_paths.iter())
+        .any(|granted| data.starts_with(granted))
+    {
+        return None;
+    }
+    argv.extend([
+        "--setenv".to_owned(),
+        "TILO_USER_DATA_HOME".to_owned(),
+        data.display().to_string(),
+    ]);
+    Some(data)
 }
 
 /// Pass on the session's workspace roots this app's capability plan
@@ -955,6 +977,41 @@ mod tests {
                 ..CapabilityPlan::default()
             };
             assert_eq!(granted_workspace_roots("/var/workspace-notes", &plan), None);
+        }
+    }
+
+    #[test]
+    fn user_data_hint_requires_an_existing_filesystem_grant() {
+        let home = tilo_test_env::TestHome::new().unwrap();
+        let data = home.data().to_path_buf();
+        let mut argv = Vec::new();
+        assert_eq!(push_user_data(&mut argv, &CapabilityPlan::default()), None);
+        assert!(
+            argv.is_empty(),
+            "naming Trash must not mint a bind or grant"
+        );
+        let sibling = CapabilityPlan {
+            rw_paths: vec![data.with_file_name("share-other")],
+            ..Default::default()
+        };
+        assert_eq!(push_user_data(&mut argv, &sibling), None);
+        assert!(argv.is_empty());
+        for plan in [
+            CapabilityPlan {
+                ro_paths: vec![data.clone()],
+                ..Default::default()
+            },
+            CapabilityPlan {
+                rw_paths: vec![home.home().to_path_buf()],
+                ..Default::default()
+            },
+        ] {
+            let mut argv = Vec::new();
+            assert_eq!(push_user_data(&mut argv, &plan), Some(data.clone()));
+            assert_eq!(
+                argv,
+                vec!["--setenv", "TILO_USER_DATA_HOME", data.to_str().unwrap()]
+            );
         }
     }
 
@@ -1375,7 +1432,8 @@ mod tests {
                 .set("TILO_NATIVE_INPUT_GATE", "private-approval")
                 .set("TILO_PROFILE_OUT", "/private/log")
                 .set("VELLO_GPU_DISPATCH_TIMESTAMPS", value)
-                .set("VELLO_GPU_TIMESTAMPS", value);
+                .set("VELLO_GPU_TIMESTAMPS", value)
+                .set("TILO_PROFILE_GPU_STAGES", value);
             let argv = build_bwrap_argv(
                 &mk_manifest("off"),
                 Path::new("/host/pkg"),
@@ -1390,7 +1448,11 @@ mod tests {
                 setenv_value(&argv, "TILO_PROFILE_PRESENTATION"),
                 (value == "1").then_some("1")
             );
-            for key in ["VELLO_GPU_TIMESTAMPS", "VELLO_GPU_DISPATCH_TIMESTAMPS"] {
+            for key in [
+                "VELLO_GPU_TIMESTAMPS",
+                "VELLO_GPU_DISPATCH_TIMESTAMPS",
+                "TILO_PROFILE_GPU_STAGES",
+            ] {
                 assert_eq!(setenv_value(&argv, key), (value == "1").then_some("1"));
             }
             for key in [

@@ -95,6 +95,15 @@ fi
 runtime_dylib="$thin_app_dir/libruntime_dylib.so"
 rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)
 [[ -f $runtime_dylib && -f $rust_libstd ]]
+# The default SDK also serves osk/settings's native keyboard-map dependency.
+# Include this fixed platform root for every selection: using only the emitted
+# apps' dependencies would change the SDK identity for a partial release.
+keyboard_libdir=$(pkg-config --variable=libdir xkbcommon)
+keyboard_library="$keyboard_libdir/libxkbcommon.so.0"
+[[ -n $keyboard_libdir && -f $keyboard_library ]] || {
+    printf 'default SDK keyboard library is missing: %s\n' "$keyboard_library" >&2
+    exit 1
+}
 # Keep the public runtime and publisher key under the root transported by
 # release-apps.yml and consumed by assemble-collection.sh. Private identities
 # stay in work/ (or the caller's external identity files), outside that root.
@@ -103,11 +112,13 @@ OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
     SOURCE_DATE_EPOCH="$source_epoch" \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
-    EXTRA_LIBS="$runtime_dylib $rust_libstd" \
+    EXTRA_LIBS="$runtime_dylib $rust_libstd $keyboard_library" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
 # Every app below links this exact runtime build and names it.
 runtime_version=$(<"$out/work/runtime-version")
 runtime_id="tilo-runtime/$runtime_version"
+"$repo_root/os/scripts/verify-runtime-bundle-closure.sh" \
+    "$out/runtime/tilo-runtime/$runtime_version" "${app_binaries[@]}"
 
 if [[ -z $identity ]]; then
     identity="$out/work/publisher.json"

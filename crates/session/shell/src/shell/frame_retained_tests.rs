@@ -401,6 +401,7 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
 #[test]
 fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
     let mut frame = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
+    frame.set_workspace_clip_supported(true);
     frame.relayout();
     let warm = frame.paint_with_damage();
     assert!(
@@ -423,6 +424,21 @@ fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
     assert!(
         following.scene.encoding().is_empty() && following.workspace_hold,
         "the rest of the switch stays on the content clip"
+    );
+    // Hot-unplugging to a single scanout changes presenter capability while
+    // the same transition is in flight. Its next frame must be complete.
+    frame.set_workspace_clip_supported(false);
+    let single = frame.paint_with_damage();
+    assert!(!single.workspace_hold && single.workspace_clip.is_none());
+    assert!(
+        !single.scene.encoding().is_empty(),
+        "single-output presenter needs actual scene pixels"
+    );
+    frame.set_workspace_clip_supported(true);
+    let multiple = frame.paint_with_damage();
+    assert!(
+        multiple.workspace_hold && multiple.scene.encoding().is_empty(),
+        "restored multi-output replay capability keeps its clip optimisation"
     );
 }
 
@@ -861,6 +877,9 @@ fn foreign_replacement_pixel_oracle(
     clock.set("TILO_SHOTS_THEME", "dark");
     fixture.night_light = true;
     fixture.watch_configured_theme = true;
+    // What `enable_configured_theme` reads from that variable once, when
+    // watching starts; the settings file stays unwatched.
+    fixture.shots_theme_pinned = true;
     assert!(
         fixture.paint_with_damage().damage_regions.is_none(),
         "global filters require dense repair"
@@ -1246,6 +1265,10 @@ fn dense_capture_does_not_inherit_another_producers_canvas_policy() {
     frame.host_mut().set_strip_scroll_for_test(120.0);
     frame.relayout();
     let _ = frame.paint();
+    // Compare the same production content on both draw-policy paths. A real
+    // startup save acknowledgment must not change Notes' status between them.
+    acknowledge_notes_saves(&mut frame);
+    assert_notes_startup_saved(&mut frame);
     let dense = frame.paint();
     let outer = ui::retained_present::RetainedScene::begin(true);
     let nested = frame.paint();
@@ -1254,26 +1277,65 @@ fn dense_capture_does_not_inherit_another_producers_canvas_policy() {
         "the enclosing presenter keeps its draw policy"
     );
     drop(outer);
+    assert_notes_startup_saved(&mut frame);
     assert_layer_cpu_pixels_match(&nested, &dense, SIZE);
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same_screen() {
-    const SIZE: (u32, u32) = (1280, 720);
-    let mut clock = tilo_test_env::ScopedEnv::new();
-    let _ambient = DenyAmbientStarts::new();
-    clock.set("TILO_CLOCK", "09:41");
-    let mut frame = wide_retained_fixture(SIZE);
-    frame.relayout();
-    let _ = frame.paint();
-    assert!(
-        frame.paint_with_damage().cache.is_none(),
-        "no layers unless a presenter composites them"
+fn acknowledge_notes_saves(frame: &mut PopulatedShellFixture) {
+    let (apps, room) = {
+        let chrome = frame.chrome();
+        let room = chrome
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("fixture workspace")
+            .room
+            .to_string();
+        let apps = chrome
+            .hosted_inputs()
+            .in_process()
+            .expect("fixture app owner")
+            .clone();
+        (apps, room)
+    };
+    assert_eq!(
+        apps.borrow_mut()
+            .flush_fixture_records(notes::definition().app_id, &room)
+            .expect("actual Notes startup writes acknowledged"),
+        3
     );
+    // Durability is sampled after sync; the next sync presents that sample.
+    assert_eq!(frame.wake_mounted_components(), 3);
+    let _ = frame.paint_with_damage();
+    assert_eq!(frame.wake_mounted_components(), 3);
+    let _ = frame.paint_with_damage();
+}
 
-    frame.set_retained_layer_width(Some(8192));
-    // Settle: the first frames lay the tab bars out at their final widths.
+#[cfg(target_os = "linux")]
+fn assert_notes_startup_saved(frame: &mut PopulatedShellFixture) {
+    let saved = std::cell::RefCell::new(Vec::new());
+    let _ = frame.mounted_mut::<()>(|widget| {
+        if let Some(notes) = tilo_app::framework::testing::surface_in_root::<
+            notes::NotesShell,
+            notes::NotesApp,
+        >(widget)
+        {
+            saved
+                .borrow_mut()
+                .push(notes.status_bar_for_test().state().save_status);
+        }
+        None
+    });
+    assert_eq!(
+        *saved.borrow(),
+        vec![notes::status_bar::SaveStatus::Saved; 3],
+        "all three real Notes surfaces present their acknowledged startup state"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn acknowledged_notes_canvas(frame: &mut PopulatedShellFixture) -> FramePaint {
     let mut at_rest = frame.paint_with_damage();
     for _ in 0..8 {
         frame.relayout();
@@ -1290,8 +1352,94 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
             break;
         }
     }
+    // Startup creates real records. A writer acknowledgment between the two
+    // encodings would change Saving to Saved and invalidate the pixel oracle.
+    acknowledge_notes_saves(frame);
+    at_rest = frame.paint_with_damage();
+    assert_notes_startup_saved(frame);
+    at_rest
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cpu_presenter_rounds_strip_layout_and_retains_the_same_screen() {
+    const SIZE: (u32, u32) = (1280, 720);
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let mut frame = wide_retained_fixture(SIZE);
+    frame.host_mut().set_pixel_aligned_strip_pan(true);
+    frame.set_retained_layer_width(Some(8192));
+    let rest = acknowledged_notes_canvas(&mut frame);
+    let offsets = rest
+        .cache
+        .as_ref()
+        .expect("CPU canvas")
+        .strips
+        .iter()
+        .map(|strip| strip.scroll_x)
+        .collect::<Vec<_>>();
+    assert_eq!(offsets.len(), 1);
+    frame.host_mut().set_strip_scroll_for_test(120.5);
+    frame.relayout();
+    assert_eq!(
+        frame.host().strip_scroll_offsets()[0].1,
+        121.0,
+        "the presenter receives the same pan as the laid-out input geometry"
+    );
+    let panned = frame.paint_with_damage();
+    assert_eq!(
+        panned
+            .cache
+            .as_ref()
+            .expect("CPU canvas")
+            .strips
+            .iter()
+            .map(|strip| strip.scroll_x)
+            .collect::<Vec<_>>(),
+        offsets
+            .iter()
+            .map(|offset| offset + 121)
+            .collect::<Vec<_>>()
+    );
+    frame.set_retained_layer_width(None);
+    acknowledge_notes_saves(&mut frame);
+    let dense = frame.paint();
+    assert_layer_cpu_pixels_match(&panned.scene, &dense, SIZE);
+    // A policy transition restores fractional layout rather than rounding state.
+    frame.host_mut().set_pixel_aligned_strip_pan(false);
+    frame.relayout();
+    assert_eq!(frame.host().strip_scroll_offsets()[0].1, 120.5);
+}
+
+#[test]
+fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same_screen() {
+    const SIZE: (u32, u32) = (1280, 720);
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let mut frame = wide_retained_fixture(SIZE);
+    frame.relayout();
+    let _ = frame.paint();
+    assert!(
+        frame.paint_with_damage().cache.is_none(),
+        "no layers unless a presenter composites them"
+    );
+
+    frame.set_retained_layer_width(Some(8192));
+    // Settle: the first frames lay the tab bars out at their final widths.
+    let at_rest = acknowledged_notes_canvas(&mut frame);
     let rest = at_rest.cache.as_ref().expect("the frame as layers");
-    assert!(rest.strips.is_empty(), "a strip at rest is read in place");
+    let offsets = rest
+        .strips
+        .iter()
+        .map(|strip| strip.scroll_x)
+        .collect::<Vec<_>>();
+    assert_eq!(offsets.len(), 1, "the fixture has one retained strip");
+    assert!(
+        offsets[0] > 0,
+        "the canvas includes left rubber-band padding"
+    );
     assert!(
         rest.width > SIZE.0,
         "the fixture's strip is wider than the screen: {}",
@@ -1307,7 +1455,10 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
             .iter()
             .map(|strip| strip.scroll_x)
             .collect::<Vec<_>>(),
-        vec![120]
+        offsets
+            .iter()
+            .map(|offset| offset + 120)
+            .collect::<Vec<_>>()
     );
     assert!(
         pan.layers.backdrop.encoding_eq(&rest.layers.backdrop),
@@ -1335,6 +1486,9 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     frame.set_retained_layer_width(None);
     // Encode both paths before rasterizing either: app status bubbles use
     // monotonic linger deadlines, and CPU rendering may cross a deadline.
+    // Exercise the same late acknowledgment boundary that reproduced the
+    // historical 1,034-pixel failure; startup is already durable on both paths.
+    acknowledge_notes_saves(&mut frame);
     let dense_scene = frame.paint();
     assert_layer_cpu_pixels_match(&panned.scene, &dense_scene, SIZE);
 

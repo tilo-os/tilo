@@ -43,6 +43,7 @@ use thiserror::Error;
 pub mod catalog;
 pub mod developer;
 pub mod ownership;
+pub mod run_observation;
 #[cfg(target_os = "linux")]
 pub mod speech;
 #[cfg(target_os = "linux")]
@@ -107,6 +108,14 @@ pub trait ProcessSupervisor {
     /// Returns [`ServiceError::Backend`] when the supervisor refuses the
     /// command or the service does not become ready.
     fn start(&mut self, command: &VllmCommand, handle: &ProcessHandle) -> Result<(), ServiceError>;
+    /// Capture content-free counters of this exact owned runtime.
+    /// Unsupported supervisors report unavailable, never invented zeros.
+    fn observe(
+        &self,
+        _handle: &ProcessHandle,
+    ) -> run_observation::Observed<run_observation::RuntimeSample> {
+        run_observation::Observed::unavailable("supervisor has no owned-runtime observer")
+    }
     /// Stop the process behind `handle`.
     ///
     /// # Errors
@@ -207,17 +216,24 @@ fn runtime_arguments(
         Some(RuntimeExecution::LlamaCpp {
             max_context_tokens,
             gpu_layers,
-        }) => vec![
-            "--model".into(),
-            path.into(),
-            "--alias".into(),
-            model.id.clone(),
-            "--ctx-size".into(),
-            (*max_context_tokens).min(model.context_window).to_string(),
-            "--n-gpu-layers".into(),
-            gpu_layers.to_string(),
-            "--jinja".into(),
-        ],
+            parallel_slots,
+        }) => {
+            let mut args = vec![
+                "--model".into(),
+                path.into(),
+                "--alias".into(),
+                model.id.clone(),
+                "--ctx-size".into(),
+                (*max_context_tokens).min(model.context_window).to_string(),
+                "--n-gpu-layers".into(),
+                gpu_layers.to_string(),
+                "--jinja".into(),
+            ];
+            if let Some(slots) = parallel_slots {
+                args.extend(["--parallel".into(), slots.get().to_string()]);
+            }
+            args
+        }
         execution => {
             let mut args = vec![
                 "serve".into(),
@@ -439,6 +455,89 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
 
     pub fn state(&self) -> &ServiceState {
         &self.state
+    }
+
+    /// Observe current exact runtime custody without starting or changing it.
+    #[must_use]
+    pub fn runtime_observations(
+        &self,
+    ) -> BTreeMap<String, run_observation::Observed<run_observation::RuntimeSample>> {
+        self.state
+            .models
+            .iter()
+            .filter_map(|(id, model)| model.process.as_ref().map(|handle| (id, handle)))
+            .enumerate()
+            .map(|(index, (id, handle))| {
+                let observation = if index < 2 {
+                    self.fenced_observation(id, handle)
+                } else {
+                    run_observation::Observed::unavailable(
+                        "snapshot live observation count exceeds bound",
+                    )
+                };
+                (id.clone(), observation)
+            })
+            .collect()
+    }
+
+    fn fenced_observation(
+        &self,
+        model_id: &str,
+        handle: &ProcessHandle,
+    ) -> run_observation::Observed<run_observation::RuntimeSample> {
+        let agrees = || {
+            load_state(&self.root.join(STATE_FILE)).is_ok_and(|state| {
+                state.models.get(model_id).is_some_and(|model| {
+                    model.process.as_ref() == Some(handle)
+                        && self
+                            .state
+                            .models
+                            .get(model_id)
+                            .is_some_and(|expected| expected.model_sha256 == model.model_sha256)
+                })
+            })
+        };
+        if !agrees() {
+            return run_observation::Observed::unavailable(
+                "runtime state frontier unavailable or changed",
+            );
+        }
+        let sample = self.supervisor.observe(handle);
+        if !agrees() {
+            return run_observation::Observed::unavailable(
+                "runtime state frontier changed during observation",
+            );
+        }
+        sample
+    }
+
+    fn checkpoint(
+        &self,
+        model_id: &str,
+        handle: &ProcessHandle,
+        phase: &str,
+        runtime_id: Option<String>,
+    ) -> Option<run_observation::RunCheckpoint> {
+        let model = self.state.models.get(model_id)?;
+        Some(run_observation::RunCheckpoint {
+            schema: 1,
+            phase: phase.into(),
+            model_id: model_id.into(),
+            model_sha256: model.model_sha256.clone(),
+            runtime_id,
+            process: handle.clone(),
+            sample: self.fenced_observation(model_id, handle),
+        })
+    }
+
+    fn retain_checkpoint(&self, checkpoint: Option<run_observation::RunCheckpoint>) {
+        if let Some(checkpoint) = checkpoint
+            && run_observation::retain(&self.root, &checkpoint).is_err()
+        {
+            eprintln!(
+                "owned runtime observation checkpoint could not be retained; cleanup is unaffected"
+            );
+        }
     }
 
     /// Path of the content-addressed object named by `sha256`.
@@ -990,6 +1089,12 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         ) {
             return Err(self.failed_start(&model.id, &handle, &error));
         }
+        self.retain_checkpoint(self.checkpoint(
+            &model.id,
+            &handle,
+            "ready",
+            Some(runtime.release.id.clone()),
+        ));
         Ok(endpoint)
     }
 
@@ -1043,6 +1148,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         handle: &ProcessHandle,
         error: &ServiceError,
     ) -> ServiceError {
+        let checkpoint = self.checkpoint(model_id, handle, "failed_start", None);
         let cleanup = self.supervisor.stop(handle);
         let retained = cleanup.is_err().then(|| handle.clone());
         let message = format!("runtime start failed: {error}; cleanup: {cleanup:?}");
@@ -1053,6 +1159,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             },
             retained,
         );
+        self.retain_checkpoint(checkpoint);
         ServiceError::Backend(format!("{message}; state publication: {publication:?}"))
     }
 
@@ -1068,9 +1175,14 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .get(model_id)
             .cloned()
             .ok_or_else(|| ServiceError::ModelNotInstalled(model_id.into()))?;
+        let checkpoint = managed
+            .process
+            .as_ref()
+            .and_then(|handle| self.checkpoint(model_id, handle, "before_stop", None));
         if let Some(handle) = managed.process {
             if let Err(error) = self.supervisor.stop(&handle) {
                 let _ = self.record_failure(model_id, error.to_string());
+                self.retain_checkpoint(checkpoint);
                 return Err(error);
             }
         } else if matches!(
@@ -1081,7 +1193,10 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
                 "runtime state has no observable process custody".into(),
             ));
         }
-        self.update_status(model_id, LocalModelStatus::Installed, None)?;
+        let publication = self.update_status(model_id, LocalModelStatus::Installed, None);
+        // Disk retention is deliberately after exact cleanup and its state CAS.
+        self.retain_checkpoint(checkpoint);
+        publication?;
         Ok(LocalModelStatus::Installed)
     }
 
@@ -1603,6 +1718,7 @@ mod tests {
             execution: Some(RuntimeExecution::LlamaCpp {
                 max_context_tokens: 16384,
                 gpu_layers: 12,
+                parallel_slots: None,
             }),
         };
         let mut release = model(b"weights");
@@ -1632,6 +1748,21 @@ mod tests {
                 "8000"
             ]
         );
+        for slots in [1, 64, 65] {
+            runtime.execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 16384,
+                gpu_layers: 12,
+                parallel_slots: std::num::NonZeroU16::new(slots),
+            });
+            let generated = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000);
+            if slots == 65 {
+                assert!(generated.is_err());
+            } else {
+                let mut expected = args.clone();
+                expected.splice(9..9, ["--parallel".into(), slots.to_string()]);
+                assert_eq!(generated.unwrap(), expected);
+            }
+        }
         runtime.kind = RuntimeKind::Cpu;
         assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
         runtime.execution = Some(RuntimeExecution::Vllm {
@@ -1692,6 +1823,55 @@ mod tests {
         assert!(service.supervisor.command.is_none());
     }
 
+    #[test]
+    fn owned_runtime_unavailable_observation_and_retention_failure_do_not_prevent_stop() {
+        let bytes = b"counter observer failure fixture";
+        let runtime = signed_fixture_runtime(bytes);
+        let mut release = model(bytes);
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        let root = tempfile::tempdir().unwrap();
+        let mut service = service_for(root.path(), bytes);
+        service.install_with_runtime(&runtime, &release).unwrap();
+        service.start(&runtime, &release, 9000).unwrap();
+        assert!(matches!(
+            service.runtime_observations().get("tiny"),
+            Some(run_observation::Observed::Unavailable { .. })
+        ));
+        fs::write(root.path().join("run-observations"), b"not a directory").unwrap();
+        assert_eq!(service.stop("tiny").unwrap(), LocalModelStatus::Installed);
+        assert_eq!(service.supervisor.stopped, ["svc-1"]);
+        assert!(
+            load_state(&root.path().join(STATE_FILE)).unwrap().models["tiny"]
+                .process
+                .is_none()
+        );
+        assert!(matches!(
+            run_observation::retained(root.path()),
+            run_observation::Observed::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn owned_runtime_observation_refuses_retired_state_frontier() {
+        let bytes = b"retired counter observer fixture";
+        let runtime = signed_fixture_runtime(bytes);
+        let mut release = model(bytes);
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        let root = tempfile::tempdir().unwrap();
+        let mut service = service_for(root.path(), bytes);
+        service.install_with_runtime(&runtime, &release).unwrap();
+        service.start(&runtime, &release, 9000).unwrap();
+        let stale = service_for(root.path(), bytes);
+        service.stop("tiny").unwrap();
+        let observations = stale.runtime_observations();
+        assert_eq!(
+            observations.get("tiny"),
+            Some(&run_observation::Observed::unavailable(
+                "runtime state frontier unavailable or changed"
+            ))
+        );
+    }
+
     fn signed_fixture_runtime(bytes: &[u8]) -> SignedRuntime {
         let item = artifact(bytes);
         let manifest = system_extension::ExtensionManifest {
@@ -1735,6 +1915,7 @@ mod tests {
                 execution: Some(RuntimeExecution::LlamaCpp {
                     max_context_tokens: 1024,
                     gpu_layers: 0,
+                    parallel_slots: None,
                 }),
             },
         }

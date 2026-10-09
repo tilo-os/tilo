@@ -37,6 +37,7 @@ on:
       - os/dev/composefs/Containerfile
       - os/containers/tilo-relay/Containerfile
       - os/Containerfile.env-runtime
+      - os/dev/uki-tools.packages
       - .forgejo/workflows/build-rpms.yml
 
 concurrency:
@@ -50,7 +51,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       fingerprint: ${{ steps.fp.outputs.fingerprint }}
       tag: ${{ steps.fp.outputs.tag }}
@@ -401,7 +402,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
     steps:

@@ -149,6 +149,13 @@ pub trait CollabTransport: Send {
     /// The remote end's decision about the latest primary `Hello`, once.
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>>;
 
+    /// Native private window identity acknowledged by the original broker.
+    /// Unsupported transports and ordinary document/identity markers grant none.
+    fn private_window_binding(&self, route: &RouteSpec) -> Option<u64> {
+        let _ = route;
+        None
+    }
+
     /// Like [`Self::take_primary_route_result`], but a transport that can
     /// block its caller may wait up to `timeout` for the result. A transport
     /// that timed the `Hello` from a deadline it shares with its remote end
@@ -193,6 +200,12 @@ pub trait CollabTransport: Send {
         None
     }
 
+    /// Scope delivery capture waits to the App’s reconciled live document owners.
+    fn set_document_owner_routes(&mut self, _routes: Vec<RouteSpec>) {}
+
+    /// Release native capture turns after the owner applies its drained batch.
+    fn finish_event_batch(&mut self) {}
+
     /// Whether the remote end refused or failed an action-surface
     /// publication since the last call. The owner then republishes its
     /// current surface: a refused one must never count as published.
@@ -206,6 +219,14 @@ pub trait CollabTransport: Send {
     fn document_publishable(&self, channel: Option<&str>) -> bool {
         let _ = channel;
         true
+    }
+
+    /// Independently sampled read phases, for bounded test diagnostics only.
+    /// These observations never authorize publication or acknowledge a read.
+    #[cfg(any(test, feature = "test-support"))]
+    fn controlled_document_read_phase_for_test(&self, channel: &str) -> Option<serde_json::Value> {
+        let _ = channel;
+        None
     }
 
     /// Hand one native media command for `channel` to the transport's media

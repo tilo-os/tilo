@@ -942,7 +942,7 @@ pub(crate) fn apply_param<R: Resource>() -> ActionParam {
             .map(|schema| crate::schema::fold_declared(&schema, &declared_args::<R>()))
     });
     match schema {
-        Some(schema) => param.with_schema(schema),
+        Some(schema) => param.with_shared_schema(schema),
         None => param,
     }
 }
@@ -957,7 +957,7 @@ enum TypeSchema {
 #[derive(Default)]
 struct CompiledSchemas {
     epoch: u64,
-    entries: HashMap<(TypeId, TypeSchema), Option<serde_json::Value>>,
+    entries: HashMap<(TypeId, TypeSchema), Option<Arc<serde_json::Value>>>,
 }
 
 static SCHEMAS: OnceLock<Mutex<CompiledSchemas>> = OnceLock::new();
@@ -978,18 +978,27 @@ pub fn reset_type_schemas() {
 fn per_type<R: Resource>(
     schema: TypeSchema,
     build: impl FnOnce() -> Option<serde_json::Value>,
-) -> Option<serde_json::Value> {
+) -> Option<Arc<serde_json::Value>> {
     let cache = SCHEMAS.get_or_init(Mutex::default);
-    let key = (TypeId::of::<R>(), schema);
+    cached_schema(cache, (TypeId::of::<R>(), schema), build)
+}
+
+fn cached_schema(
+    cache: &Mutex<CompiledSchemas>,
+    key: (TypeId, TypeSchema),
+    build: impl FnOnce() -> Option<serde_json::Value>,
+) -> Option<Arc<serde_json::Value>> {
     let epoch = {
         let store = cache.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(found) = store.entries.get(&key) {
+            #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+            let _phase = crate::profiling::Phase::start("schema.cached_clone");
             return found.clone();
         }
         store.epoch
     };
     // Build outside the lock: a schema may publish another resource's.
-    let value = build();
+    let value = build().map(Arc::new);
     let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
     // A build started before a code reload cannot repopulate the new cache.
     if store.epoch == epoch {
@@ -1056,7 +1065,7 @@ pub(crate) fn group_param<R: Resource>() -> ActionParam {
         ]));
         Some(array(one_of(members)))
     })
-    .unwrap_or_else(|| serde_json::json!({"type": "array"}));
+    .unwrap_or_else(|| Arc::new(serde_json::json!({"type": "array"})));
     ActionParam::required_owned(
         crate::GROUP_PARAM,
         ParamType::Array,
@@ -1065,10 +1074,12 @@ pub(crate) fn group_param<R: Resource>() -> ActionParam {
             R::LABEL
         ),
     )
-    .with_schema(schema)
+    .with_shared_schema(schema)
 }
 
 fn apply_spec<R: Resource>() -> ActionSpec {
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    let _phase = crate::profiling::Phase::start("resource.apply_spec");
     ActionSpec::typed(
         APPLY,
         format!("Apply {} edit", R::LABEL),
@@ -1131,6 +1142,8 @@ pub(crate) fn permission_rank(requirement: PermissionRequirement) -> u8 {
 }
 
 fn group_spec<R: Resource>() -> ActionSpec {
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    let _phase = crate::profiling::Phase::start("resource.group_spec");
     ActionSpec::typed(
         crate::GROUP,
         format!("Apply several {} edits as one", R::LABEL),
@@ -1202,7 +1215,11 @@ pub(crate) fn publish_parts<R: Resource>(
 ) -> tilo_actions::Resource {
     let children = state.map(R::children).unwrap_or_default();
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
+    // Describe the declared domain ID before any host dispatch alias projection.
+    resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(R::KIND, id);
     for decl in R::declarations() {
+        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+        let _phase = crate::profiling::Phase::start("resource.declaration_spec");
         let spec = declaration_spec(&decl);
         // Offered on the items it acts on, with some of its arguments bound
         // ([`items::bound`](crate::items::bound)), it stays published here
@@ -1431,4 +1448,41 @@ pub fn scope_contains(scope: &str, anchor: &str) -> bool {
     anchor
         .strip_prefix(scope)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+#[cfg(test)]
+mod schema_sharing_tests {
+    use super::*;
+
+    #[test]
+    fn shared_schema_reloads_do_not_retain_or_repopulate_stale_generation() {
+        let cache = Mutex::new(CompiledSchemas::default());
+        let key = (TypeId::of::<()>(), TypeSchema::Apply);
+        let first = cached_schema(&cache, key, || Some(serde_json::json!({"minimum":1}))).unwrap();
+        let reused = cached_schema(&cache, key, || panic!("cached type must not rebuild")).unwrap();
+        assert!(Arc::ptr_eq(&first, &reused));
+        {
+            let mut store = cache.lock().unwrap();
+            store.epoch += 1;
+            store.entries.clear();
+        }
+        let old_build = cached_schema(&cache, key, || {
+            let mut store = cache.lock().unwrap();
+            store.epoch += 1;
+            store.entries.clear();
+            drop(store);
+            Some(serde_json::json!({"minimum":2}))
+        })
+        .unwrap();
+        assert!(
+            cache.lock().unwrap().entries.is_empty(),
+            "old build cannot repopulate new generation"
+        );
+        let current =
+            cached_schema(&cache, key, || Some(serde_json::json!({"minimum":3}))).unwrap();
+        assert_eq!(first["minimum"], 1);
+        assert_eq!(old_build["minimum"], 2);
+        assert_eq!(current["minimum"], 3);
+        assert!(!Arc::ptr_eq(&first, &current));
+    }
 }

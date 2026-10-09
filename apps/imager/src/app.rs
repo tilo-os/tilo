@@ -133,6 +133,7 @@ pub struct ImagerApp {
     profile: InstallProfile,
     /// Host-session Wi-Fi passphrase. Never enters the collaborative document.
     wifi_psk: String,
+    ssh_public_key: String,
     // ---- local machine/window state ----
     targets: Vec<TargetDrive>,
     /// Tilo releases offered on the Source step are a bounded local catalogue;
@@ -222,6 +223,7 @@ impl ImagerApp {
             action: Action::Flash,
             profile: InstallProfile::default(),
             wifi_psk: String::new(),
+            ssh_public_key: String::new(),
             progress: Progress::default(),
             confirm_text: String::new(),
             status: String::new(),
@@ -319,6 +321,11 @@ impl ImagerApp {
     /// verified write onto the installed root.
     fn offers_write_setup(&self) -> bool {
         self.source.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ssh_key_for_test(&self) -> &str {
+        &self.ssh_public_key
     }
 
     #[cfg(test)]
@@ -961,6 +968,11 @@ impl ImagerApp {
                 "Pre-configured for {} on {}",
                 self.profile.user.username, self.profile.hostname
             )
+        } else if let Some(hostname) = crate::handoff::chosen_hostname(&self.profile) {
+            crate::setup::strings::t_args(
+                "imager-review-setup-hostname",
+                &[("hostname", ui::i18n::ArgValue::from(hostname))],
+            )
         } else {
             "Written unchanged, then verified".to_string()
         }
@@ -1015,6 +1027,7 @@ impl ImagerApp {
             body = body.push(page::form_block(crate::write_setup::form(
                 &self.profile,
                 &self.wifi_psk,
+                &self.ssh_public_key,
                 &self.commands,
             )));
         }
@@ -1492,18 +1505,38 @@ impl ImagerApp {
         if device != tgt.dev_path() {
             return Err("The selected target changed; review the write plan again.".into());
         }
-        // Stage Wi-Fi / enrollment for any image the operator configured on
-        // Confirm. Official media still embeds only the secret-free profile
-        // block; the passphrase and new device key stay in the staged tree
-        // and are copied onto the installed root after verification.
-        let handoff_stage =
-            if !self.profile.wifi_ssid.trim().is_empty() || self.profile.enroll_local_identity {
-                let local = crate::handoff::local_identity_from_env()?;
-                crate::handoff::stage_setup_handoff(&self.profile, &self.wifi_psk, &local)?
-                    .map(|stage| stage.root)
-            } else {
-                None
-            };
+        // Checked before the identity lookup, so a setup machine without an
+        // identity does not hide the missing passphrase behind that error.
+        if !self.profile.wifi_ssid.trim().is_empty() && self.wifi_psk.is_empty() {
+            return Err("A Wi-Fi password is required when a network name is set.".into());
+        }
+        crate::handoff::validate_bringup_ssh_key(&self.ssh_public_key)?;
+        // Stage Wi-Fi, the owner SSH key, and enrollment for any image the
+        // operator configured on Confirm. Official media still embeds only the
+        // secret-free profile block; the passphrase, key, and new device key
+        // stay in the staged tree and are copied onto the installed root
+        // after verification. Only enrollment needs this machine's identity.
+        let handoff_stage = if self.profile.enroll_local_identity {
+            let local = crate::handoff::local_identity_from_env()?;
+            let staged =
+                crate::handoff::stage_setup_handoff(&self.profile, &self.wifi_psk, &local)?;
+            if let Some(stage) = staged.as_ref()
+                && let Err(error) =
+                    crate::handoff::install_bringup_ssh_key(stage.path(), &self.ssh_public_key)
+            {
+                let _ = std::fs::remove_dir_all(stage.path());
+                return Err(error);
+            }
+            staged.map(|stage| stage.root)
+        } else {
+            crate::handoff::stage_access_handoff(
+                &self.profile,
+                &self.wifi_psk,
+                &self.ssh_public_key,
+                !src.installable,
+            )?
+            .map(|stage| stage.root)
+        };
         let src_size = src.size;
         let req = WriteRequest {
             source: src,
@@ -1832,6 +1865,42 @@ impl ImagerApp {
                 Ok(Effected::Pending)
             }
             ImagerEffect::Status => Ok(Effected::value(self.status_value())),
+            ImagerEffect::CustomizeImage {
+                image,
+                hostname,
+                wifi_ssid,
+                wifi_psk_file,
+                ssh_keys_file,
+                home_files,
+            } => {
+                let mut args = vec!["imager".into(), "--customize-image".into(), image];
+                for (flag, value) in [
+                    ("--hostname", hostname),
+                    ("--wifi-ssid", wifi_ssid),
+                    ("--wifi-psk-file", wifi_psk_file),
+                    ("--ssh-keys-file", ssh_keys_file),
+                ] {
+                    if let Some(value) = value {
+                        args.extend([flag.into(), value]);
+                    }
+                }
+                for path in home_files {
+                    args.extend(["--home-file".into(), path]);
+                }
+                Ok(cx.thread(
+                    move |_| {
+                        crate::customize_image::maybe_run(&args).map_err(|error| error.to_string())
+                    },
+                    |app: &mut Self, result, _| {
+                        let code = result?.ok_or(
+                            "the image customization helper did not recognize its request",
+                        )?;
+                        app.set_status("Image customization complete");
+                        app.dirty = true;
+                        Ok(Effected::value(serde_json::json!({ "exit_code": code })))
+                    },
+                ))
+            }
             ImagerEffect::ChooseImage => {
                 self.set_status("Opening the file picker…");
                 self.dirty = true;
@@ -1859,6 +1928,12 @@ impl ImagerApp {
             ImagerEffect::SetWifiPsk { value } => {
                 self.wifi_psk = value;
 
+                self.dirty = true;
+                Ok(Effected::done())
+            }
+            ImagerEffect::SetSshKey { value } => {
+                crate::handoff::validate_bringup_ssh_key(&value)?;
+                self.ssh_public_key = value;
                 self.dirty = true;
                 Ok(Effected::done())
             }
@@ -2039,7 +2114,16 @@ impl ImagerApp {
                         Some(action) => self.submit(&action),
                         None => {
                             if let Some(dispatcher) = &self.dispatcher {
-                                dispatcher.effect(&ImagerEffect::SetWifiPsk { value });
+                                match field {
+                                    SetupField::WifiPsk => {
+                                        dispatcher.effect(&ImagerEffect::SetWifiPsk { value });
+                                    }
+                                    SetupField::SshKey => {
+                                        self.ssh_public_key = value;
+                                        self.dirty = true;
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
                     }
@@ -2374,6 +2458,51 @@ mod tests {
         ImagerDoc::seed_demo(&mut doc);
         present(&mut app, &doc);
         (app, doc)
+    }
+
+    #[test]
+    fn unchanged_disk_review_discloses_the_authored_hostname() {
+        use tilo_actions::Action as _;
+
+        let (mut app, mut doc) = seeded_app();
+        let mut source = app
+            .recent
+            .iter()
+            .find(|source| source.kind == SourceKind::IsoFile)
+            .unwrap()
+            .clone();
+        source.installable = false;
+        ImagerAction::SelectSource {
+            source: Box::new(source),
+            previous: None,
+            recent_rank: 1,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        present(&mut app, &doc);
+        app.goto(Step::Confirm);
+        assert!(!app.customizable());
+        assert_eq!(app.review_setup(), "Written unchanged, then verified");
+
+        ImagerAction::SetHostname {
+            value: "reviewed-host".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        present(&mut app, &doc);
+        assert_eq!(
+            crate::handoff::chosen_hostname(&app.profile),
+            Some("reviewed-host")
+        );
+        let setup = app
+            .review_rows()
+            .into_iter()
+            .find(|(label, _)| *label == "Setup")
+            .unwrap()
+            .1;
+        assert!(setup.contains("reviewed-host"), "{setup}");
+        assert!(setup.contains("then verified"), "{setup}");
+        assert!(!setup.contains("Pre-configured"), "{setup}");
     }
 
     /// Blank start, demo seeding, local state and restart reconciliation.
@@ -2997,6 +3126,31 @@ mod tests {
                     .any(|row| row.id() == "imager.download")
             );
         }
+    }
+
+    #[test]
+    fn owner_ssh_key_can_be_typed_before_the_complete_key_is_validated() {
+        let mut host =
+            ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("confirm")).unwrap();
+        host.harness()
+            .perform_named(
+                "imager.write-setup.ssh-key",
+                &ui::a11y::Action::SetValue("ssh-".into()),
+            )
+            .unwrap();
+        assert_eq!(
+            host.with_widget::<ImagerApp, _>(|app| app.ssh_public_key.clone())
+                .unwrap(),
+            "ssh-"
+        );
+        host.with_widget::<ImagerApp, _>(|app| {
+            let error = app
+                .begin_write("/dev/sdb", "sdb")
+                .expect_err("an incomplete key must refuse the write");
+            assert!(error.contains("public key"), "unexpected refusal: {error}");
+            assert!(app.job_control.is_none());
+        })
+        .expect("the hosted wizard");
     }
 
     /// The primary interaction, proven end to end by clicking the real

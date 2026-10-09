@@ -1841,3 +1841,9 @@ fn wait_network_prompt(queue: &crate::portal::PromptQueueHandle) -> crate::porta
         std::thread::park_timeout(ui::time::Duration::from_millis(1));
     }
 }
+
+#[path = "messaging_sms_first_tests.rs"]
+mod sms_first_journey;
+
+#[path = "messaging_native_first_tests.rs"]
+mod native_first_journey;

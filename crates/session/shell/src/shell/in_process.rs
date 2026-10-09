@@ -21,11 +21,14 @@ use ui::launch::LaunchError;
 use ui::permissions::{Actor, PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
+#[cfg(test)]
+mod feedback_tests;
 pub mod messaging;
 
 /// The apps the shell mounts in-process, with the store their records and
 /// views live in, as one person on one device.
 pub struct InProcessApps {
+    feedback: Option<tilo_desktop::feedback::PrivateFeedback>,
     store: Rc<dyn durable_store::DurableStore>,
     owners: RecordOwners,
     views: HashMap<String, Rc<InstanceViewStore>>,
@@ -40,11 +43,15 @@ pub struct InProcessApps {
     credential_owner: Option<accounts::CredentialOwner>,
     messaging_records: Option<Rc<dyn messaging::records::RecordQueries>>,
     messaging_record_wake: Option<crate::session_runtime::Wake>,
+    messaging_transport:
+        Option<tokio::sync::oneshot::Receiver<crate::network::private_messages::Transport>>,
+    native_messaging_transport: Option<crate::network::private_messages::Transport>,
     messaging_starts: Option<Rc<dyn messaging::activation::PendingAccounts>>,
     messaging_lifetime: std::sync::Arc<()>,
     messaging_network_prompts: Option<crate::portal::PromptQueueHandle>,
     messaging_providers: Vec<launcher::owned_service::ServiceCancellation>,
     messaging_native_accounts: Vec<std::sync::Arc<dyn messaging::NativeAccountCustody>>,
+    native_messaging_peers: Option<crate::network::PeerIdentityStore>,
     native_messaging_root: Option<std::path::PathBuf>,
     native_broker_socket: Option<std::path::PathBuf>,
     receivers: Vec<tilo_messaging_protocol::signal_broker::ReceiveGuard>,
@@ -70,6 +77,7 @@ impl InProcessApps {
     /// `device_id`.
     pub fn new(store: Rc<dyn durable_store::DurableStore>, device_id: &str, author: &str) -> Self {
         Self {
+            feedback: None,
             owners: RecordOwners::with_store(Rc::clone(&store)),
             store,
             views: HashMap::new(),
@@ -82,11 +90,14 @@ impl InProcessApps {
             credential_owner: None,
             messaging_records: None,
             messaging_record_wake: None,
+            messaging_transport: None,
+            native_messaging_transport: None,
             messaging_starts: None,
             messaging_lifetime: std::sync::Arc::new(()),
             messaging_network_prompts: None,
             messaging_providers: Vec::new(),
             messaging_native_accounts: Vec::new(),
+            native_messaging_peers: None,
             native_messaging_root: None,
             native_broker_socket: None,
             receivers: Vec::new(),
@@ -104,8 +115,38 @@ impl InProcessApps {
         }
     }
 
+    pub(crate) fn bind_private_messages_network(
+        &mut self,
+        network: &crate::shell::network::ShellNetwork,
+    ) {
+        if self.native_messaging_transport.is_some() || self.messaging_transport.is_some() {
+            return;
+        }
+        self.native_messaging_peers = Some(network.private_message_identities());
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        if network
+            .cmd_tx
+            .try_send(crate::network::NetCmd::PrivateMessages(reply))
+            .is_ok()
+        {
+            self.messaging_transport = Some(receiver);
+        }
+    }
+
     /// Service bounded worker reads on the actual UI owner, without a window.
     pub(crate) fn pump_messaging_records(&mut self) {
+        if let Some(receiver) = self.messaging_transport.as_mut() {
+            match receiver.try_recv() {
+                Ok(transport) => {
+                    self.native_messaging_transport = Some(transport);
+                    self.messaging_transport = None;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    self.messaging_transport = None;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            }
+        }
         if let Some(records) = &self.messaging_records {
             records.pump();
         }
@@ -201,7 +242,7 @@ impl InProcessApps {
             tilo_messaging_protocol::Service::Whatsapp => "whatsapp",
             tilo_messaging_protocol::Service::Signal => "signal",
             tilo_messaging_protocol::Service::Sms => "sms",
-            tilo_messaging_protocol::Service::Tilo => return Err(LaunchError::BindingMismatch),
+            tilo_messaging_protocol::Service::Tilo => "tilo",
         };
         let mut services = self.messaging_services.clone();
         services.push((
@@ -264,8 +305,30 @@ impl InProcessApps {
         component: &AppComponent,
         room: &str,
     ) -> Option<ui::collaboration::CollaborationManager> {
+        if component.app_id() == tilo_desktop::feedback::PACKAGE {
+            return None;
+        }
         let broker = self.broker.as_ref()?;
         component.collaborate_through(broker(component.app_id(), room))
+    }
+
+    /// Acknowledge startup writes through the fixture's real canonical owner.
+    #[cfg(test)]
+    pub(crate) fn flush_fixture_records(
+        &mut self,
+        app_id: &str,
+        room: &str,
+    ) -> Result<usize, String> {
+        let records = self
+            .owners
+            .open(app_id, room)
+            .map_err(|error| error.to_string())?;
+        let count = records.open_records().len();
+        if count == 0 {
+            return Err("fixture must observe mounted records before flushing".into());
+        }
+        records.try_flush()?;
+        Ok(count)
     }
 
     /// The apps of a session whose state lives in `profile_root`: their
@@ -368,6 +431,12 @@ impl InProcessApps {
         record: RecordId,
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
+        if definition.app_id == tilo_desktop::feedback::PACKAGE {
+            return match &self.feedback {
+                Some(feedback) => feedback.prepare(&self.device_id, &self.author.0, tab),
+                None => tilo_desktop::feedback::unconfigured(&self.device_id, &self.author.0, tab),
+            };
+        }
         if definition.app_id == "so.tilo.messages" {
             if self.first_accounts.is_none()
                 && self.native_broker_socket.is_some()
@@ -450,6 +519,42 @@ impl InProcessApps {
     }
 }
 
+impl InProcessApps {
+    /// Bind a trusted host's already-admitted feedback adapter to this profile.
+    /// This is host configuration, never an action or a URL-supplied destination.
+    ///
+    /// # Errors
+    /// Refuses replacement of existing custody or an invalid/recovering outbox.
+    pub fn install_feedback(
+        &mut self,
+        destination: tilo_desktop::feedback::Destination,
+        host: Box<dyn tilo_desktop::feedback::FeedbackHost>,
+    ) -> Result<(), LaunchError> {
+        if self.feedback.is_some() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        self.feedback = Some(
+            tilo_desktop::feedback::PrivateFeedback::new(Rc::clone(&self.store), destination, host)
+                .map_err(|error| LaunchError::Operation(error.to_string()))?,
+        );
+        Ok(())
+    }
+
+    /// Storage/transport wakes service the approved outbox, including while
+    /// its private window is closed. Failures remain in the private status UI.
+    pub(crate) fn pump_feedback(&self) {
+        if let Some(feedback) = &self.feedback {
+            let _ = feedback.pump();
+        }
+    }
+
+    pub(crate) fn feedback_deadline(&self) -> Option<ui::time::Instant> {
+        self.feedback
+            .as_ref()
+            .and_then(tilo_desktop::feedback::PrivateFeedback::next_wake_deadline)
+    }
+}
+
 /// A connection for `app` in `room` to the broker at `collab` and the
 /// identity service at `identity`, made as the launcher makes an app's: the
 /// session records the launch, the connection names the app and room, and
@@ -484,6 +589,7 @@ mod tests {
     use super::*;
     use tilo_resource::Resource as _;
     include!("in_process_files_clipboard_tests.rs");
+    include!("in_process_publication_tests.rs");
 
     const ROOM: &str = "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc";
     const TAB: u64 = 41;

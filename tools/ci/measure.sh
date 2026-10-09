@@ -18,6 +18,17 @@ if [ -r "$cgroup_root/memory.events" ]; then
   memory_events_before="$(cat "$cgroup_root/memory.events")"
 fi
 
+# A missing or disappearing metric must not replace the measured exit status.
+read_cpu_metric() {
+  local value
+  if value=$(tr '\n' ' ' 2>/dev/null < "$cgroup_root/$1"); then
+    printf '%s' "$value"
+  else
+    printf 'unavailable'
+  fi
+}
+cpu_stat_before=$(read_cpu_metric cpu.stat)
+
 status=0
 if command -v /usr/bin/time >/dev/null 2>&1; then
   /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" "$@" || status=$?
@@ -27,6 +38,16 @@ else
   printf 'wall_seconds=%s\nuser_seconds=unavailable\nsystem_seconds=unavailable\nmax_rss_kib=unavailable\n' \
     "$(( $(date +%s) - start ))" > "$timing"
 fi
+
+# Record the actual inner job envelope. Pod/QEMU metrics cannot establish
+# Docker's quota or allowed CPU set, and interactive CRI exec may be unavailable.
+for cpu_file in cpu.max cpuset.cpus.effective; do
+  cpu_value=$(read_cpu_metric "$cpu_file")
+  printf 'cgroup_%s=%s\n' "${cpu_file//./_}" "$cpu_value" >> "$timing"
+done
+printf 'cgroup_cpu_stat_before=%s\n' "$cpu_stat_before" >> "$timing"
+cpu_stat_after=$(read_cpu_metric cpu.stat)
+printf 'cgroup_cpu_stat_after=%s\n' "$cpu_stat_after" >> "$timing"
 
 # The container's peak memory so far, success or not: the headroom job
 # parallelism is tuned against.

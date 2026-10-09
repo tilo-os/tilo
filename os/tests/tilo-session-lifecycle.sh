@@ -28,7 +28,8 @@ grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.targe
 grep -Fqx 'Wants=tilo-ush.service' "$target"
 for socket in \
   "$repo/os/usr/lib/systemd/user/tilo-models.socket" \
-  "$repo/os/usr/lib/systemd/user/tilo-model-gateway.socket"; do
+  "$repo/os/usr/lib/systemd/user/tilo-model-gateway.socket" \
+  "$repo/os/usr/lib/systemd/user/tilo-projector.socket"; do
   grep -Fqx 'PartOf=tilo-graphical-session.target' "$socket"
   grep -Fqx 'WantedBy=tilo-graphical-session.target' "$socket"
 done
@@ -180,6 +181,11 @@ runs=0
 [ ! -f "$runs_file" ] || runs=$(cat "$runs_file")
 runs=$((runs + 1))
 printf '%s\n' "$runs" >"$runs_file"
+# Observe the real wrapper's recovery channel before simulating a compositor
+# that hands its locked state back on ordered teardown.
+recovery_file="$(dirname "$TILO_SESSION_LOGOUT_REQUEST")/lock-state"
+cat "$recovery_file" >>"$TILO_SESSION_TEST_LOG.recovery"
+[ "$runs" != 1 ] || printf 'locked\n' >"$recovery_file"
 printf 'control=%s\nfirst-use=%s\n' "${TILO_TEST_CONTROL:-}" "${TILO_TEST_CONTROL_FIRST_USE:-}" \
   >"$TILO_SESSION_TEST_LOG.control"
 printf 'desktop-output %s trace=%s\n' "$*" "${TILO_FRAME_TRACE:-}"
@@ -362,14 +368,16 @@ cmp "$tmp/expected" "$log"
 # Session termination is forwarded to the compositor and cleanup still stops
 # the lifecycle target.
 : >"$log"
-rm -f "$log.verify-count"
+rm -f "$log.verify-count" "$log.holding"
 XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_HOLD=1 \
   "$test_wrapper" --backend drm &
 session_pid=$!
 for _ in $(seq 1 100); do
-  grep -Fq 'desktop --backend drm' "$log" 2>/dev/null && break
+  [ -s "$log.holding" ] && break
   sleep 0.02
 done
+# The desktop log precedes the TERM handler; the holding marker follows it.
+[ -s "$log.holding" ]
 grep -Fq 'desktop --backend drm' "$log"
 kill -TERM "$session_pid"
 wait "$session_pid" || [ "$?" = 143 ]
@@ -383,6 +391,7 @@ grep -Fqx 'desktop-term' "$log"
 : >"$log"
 rm -f "$log.runs" "$log.holding"
 restart_state="$tmp/restart-state"
+rm -f "$log.recovery"
 XDG_STATE_HOME="$restart_state" XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" \
   TILO_SESSION_HOLD_FIRST=1 TILO_SESSION_DESKTOP_STATUS=7 \
   "$test_wrapper" --backend drm >/dev/null &
@@ -401,6 +410,8 @@ status=$?
 set -e
 [ "$status" = 7 ] || { echo "restarted session ended with $status" >&2; exit 1; }
 [ "$(cat "$log.runs")" = 2 ]
+printf 'unlocked\nlocked\n' >"$tmp/expected-recovery"
+cmp "$tmp/expected-recovery" "$log.recovery"
 cat >"$tmp/expected" <<'EOF'
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE

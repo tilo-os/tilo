@@ -14,8 +14,8 @@ use tilo_doc::snapshot::DocSnapshot;
 #[path = "../tests/support/synth.rs"]
 mod synth;
 
-const SAMPLE_DOCX: &[u8] = include_bytes!("../../fixtures/sample.docx");
-const SAMPLE_ODT: &[u8] = include_bytes!("../../fixtures/sample.odt");
+const SAMPLE_DOCX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sample.docx"));
+const SAMPLE_ODT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sample.odt"));
 
 #[derive(Clone, Copy, Debug)]
 enum Path {
@@ -262,23 +262,23 @@ fn bulk_and_incremental_imports_agree() {
         for (name, docx, odt) in [
             (
                 "lo-structure",
-                include_bytes!("../../fixtures/lo-structure.docx").as_slice(),
-                include_bytes!("../../fixtures/lo-structure.odt").as_slice(),
+                include_bytes!(concat!(env!("OUT_DIR"), "/lo-structure.docx")).as_slice(),
+                include_bytes!(concat!(env!("OUT_DIR"), "/lo-structure.odt")).as_slice(),
             ),
             (
                 "lo-annotations",
-                include_bytes!("../../fixtures/lo-annotations.docx").as_slice(),
-                include_bytes!("../../fixtures/lo-annotations.odt").as_slice(),
+                include_bytes!(concat!(env!("OUT_DIR"), "/lo-annotations.docx")).as_slice(),
+                include_bytes!(concat!(env!("OUT_DIR"), "/lo-annotations.odt")).as_slice(),
             ),
             (
                 "lo-fields",
-                include_bytes!("../../fixtures/lo-fields.docx").as_slice(),
-                include_bytes!("../../fixtures/lo-fields.odt").as_slice(),
+                include_bytes!(concat!(env!("OUT_DIR"), "/lo-fields.docx")).as_slice(),
+                include_bytes!(concat!(env!("OUT_DIR"), "/lo-fields.odt")).as_slice(),
             ),
             (
                 "lo-drawings",
-                include_bytes!("../../fixtures/lo-drawings.docx").as_slice(),
-                include_bytes!("../../fixtures/lo-drawings.odt").as_slice(),
+                include_bytes!(concat!(env!("OUT_DIR"), "/lo-drawings.docx")).as_slice(),
+                include_bytes!(concat!(env!("OUT_DIR"), "/lo-drawings.odt")).as_slice(),
             ),
         ] {
             assert_paths_agree(&format!("{name}.docx"), &DocxCodec, docx);

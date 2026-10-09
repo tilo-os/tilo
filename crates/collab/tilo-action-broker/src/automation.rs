@@ -55,9 +55,10 @@ pub const DELETE_ACTION: &str = "delete";
 /// Every shortcut saved in the workspace.
 pub const LIST_ACTION: &str = "list";
 
-/// How long a running step is left before it is observed again, when the
-/// broker has nothing to push.
-const SETTLE_INTERVAL: Duration = Duration::from_millis(25);
+/// How long a running step is left before it is observed again, when its
+/// host cannot say when it changes. The broker's own door can, so this is
+/// only a fallback.
+const SETTLE_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Finished runs kept for the history recorder; the oldest go first.
 const MAX_FINISHED_RUNS: usize = 64;
@@ -82,10 +83,13 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
             ParamType::Object,
             "The shortcut, as JSON: id, name, inputs, steps, output and grant",
         );
-        param.schema = Some(serde_json::json!({
-            "type": "object",
-            "required": ["id", "name", "steps"]
-        }));
+        param.schema = Some(
+            serde_json::json!({
+                "type": "object",
+                "required": ["id", "name", "steps"]
+            })
+            .into(),
+        );
         param
     };
     let saved = ResultSpec::Resource {
@@ -563,12 +567,17 @@ pub struct RunStart {
 /// [`RunHooks`] for a run started through the door.
 pub struct DoorHooks {
     confirmation: Option<Confirmation>,
+    /// The runtime the run's poll fallback waits on.
+    runtime: tokio::runtime::Handle,
 }
 
 impl DoorHooks {
     #[must_use]
-    pub fn new(confirmation: Option<Confirmation>) -> Self {
-        Self { confirmation }
+    pub fn new(confirmation: Option<Confirmation>, runtime: tokio::runtime::Handle) -> Self {
+        Self {
+            confirmation,
+            runtime,
+        }
     }
 }
 
@@ -583,28 +592,19 @@ impl RunHooks for DoorHooks {
         Pending::ready(None)
     }
 
-    fn settle(&self, invocation: InvocationId) -> Pending<()> {
-        settle_later(invocation)
+    fn settle(&self, _invocation: InvocationId) -> Pending<()> {
+        settle_later(&self.runtime)
     }
 }
 
-/// Resolve after [`SETTLE_INTERVAL`], so a running step is observed again.
-fn settle_later(_invocation: InvocationId) -> Pending<()> {
+/// Resolve after [`SETTLE_INTERVAL`] on `runtime`'s timer, so a running step
+/// is observed again. Waiting takes a timer, never a thread.
+fn settle_later(runtime: &tokio::runtime::Handle) -> Pending<()> {
     let (completer, answer) = pending();
-    match tokio::runtime::Handle::try_current() {
-        Ok(runtime) => {
-            runtime.spawn(async move {
-                tokio::time::sleep(SETTLE_INTERVAL).await;
-                completer.complete(());
-            });
-        }
-        Err(_) => {
-            std::thread::spawn(move || {
-                std::thread::sleep(SETTLE_INTERVAL);
-                completer.complete(());
-            });
-        }
-    }
+    runtime.spawn(async move {
+        tilo_rt::sleep(SETTLE_INTERVAL).await;
+        completer.complete(());
+    });
     answer
 }
 
@@ -673,14 +673,21 @@ impl StepPrompts {
 pub struct SheetHooks {
     prompts: StepPrompts,
     shortcut: String,
+    /// The runtime the run's poll fallback waits on.
+    runtime: tokio::runtime::Handle,
 }
 
 impl SheetHooks {
     #[must_use]
-    pub fn new(prompts: StepPrompts, shortcut: impl Into<String>) -> Self {
+    pub fn new(
+        prompts: StepPrompts,
+        shortcut: impl Into<String>,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
         Self {
             prompts,
             shortcut: shortcut.into(),
+            runtime,
         }
     }
 
@@ -712,8 +719,8 @@ impl RunHooks for SheetHooks {
             })
     }
 
-    fn settle(&self, invocation: InvocationId) -> Pending<()> {
-        settle_later(invocation)
+    fn settle(&self, _invocation: InvocationId) -> Pending<()> {
+        settle_later(&self.runtime)
     }
 }
 

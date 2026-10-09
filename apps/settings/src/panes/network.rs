@@ -591,7 +591,11 @@ impl Drop for NetworkChange {
 /// device, a fixed sample in a screenshot or test.
 pub(crate) trait NetworkService: Send + Sync {
     /// Read everything Network shows; `initial` also reads the SIMs.
+    /// Connectivity is the last verdict; this never probes the internet.
     fn snapshot(&self, initial: bool) -> NetworkSnapshot;
+    /// Ask the device to check internet connectivity again, so the next
+    /// snapshot carries a fresh verdict. Only the explicit refresh does this.
+    fn recheck_connectivity(&self) {}
     /// Carry out `change`.
     ///
     /// # Errors
@@ -628,6 +632,12 @@ struct DeviceNetwork {
 impl NetworkService for DeviceNetwork {
     fn snapshot(&self, initial: bool) -> NetworkSnapshot {
         NetworkSnapshot::read(initial)
+    }
+
+    fn recheck_connectivity(&self) {
+        // A refused or failed recheck still leaves the last verdict, which
+        // the snapshot that follows reads and reports.
+        let _ = os_actions::check_connectivity_now();
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
@@ -1372,7 +1382,10 @@ impl NetworkModel {
             }
             NetworkEffect::RefreshNetworks => {
                 self.refreshes_pending += 1;
-                Begun::work(move || Landed::Refreshed(service.snapshot(false)))
+                Begun::work(move || {
+                    service.recheck_connectivity();
+                    Landed::Refreshed(service.snapshot(false))
+                })
             }
             NetworkEffect::SetWifi { on } => {
                 if let Some(error) = &self.read_errors.wifi_enabled {
@@ -3301,9 +3314,15 @@ mod tests {
         profiles: Mutex<Vec<SavedNetworkProfile>>,
         snapshot_gate: Mutex<Option<SnapshotGate>>,
         snapshot_reads: std::sync::atomic::AtomicUsize,
+        connectivity_rechecks: std::sync::atomic::AtomicUsize,
     }
 
     impl NetworkService for FakeNetwork {
+        fn recheck_connectivity(&self) {
+            self.connectivity_rechecks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+
         fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
             self.snapshot_reads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3739,11 +3758,24 @@ mod tests {
             "an unread radio is not switched"
         );
 
+        assert_eq!(
+            fake.connectivity_rechecks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "opening Network reads the last verdict; it does not probe the internet"
+        );
+
         *fake.unreadable.lock().unwrap() = None;
         *fake.networks.lock().unwrap() = networks();
         run(&mut model, NetworkEffect::RefreshNetworks).unwrap();
         assert_eq!(model.read_errors, NetworkReadErrors::default());
         assert_eq!(model.networks().len(), 3);
+        assert_eq!(
+            fake.connectivity_rechecks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the explicit refresh asks for a fresh connectivity verdict"
+        );
     }
 
     /// A secure network first asks the person's devices for its password,

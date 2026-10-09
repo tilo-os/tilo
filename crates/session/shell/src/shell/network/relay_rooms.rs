@@ -13,7 +13,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join::{self, MemberRole};
-use tilo_relay::rooms::{CancelInvitationRequest, IssueInvitationRequest, RoomCommand, RoomReply};
+use tilo_relay_session::rooms::{
+    CancelInvitationRequest, IssueInvitationRequest, RoomCommand, RoomReply,
+};
 use tilo_user_identity::DeviceCert;
 
 /// How long one exchange with a relay's room authority may take.
@@ -119,7 +121,7 @@ impl ShellNetwork {
             .host_identity
             .as_ref()
             .ok_or("native identity unavailable")?;
-        let (relay, certificate) = owner.with_current(room, |view| {
+        let (relay, certificate, governor_lane) = owner.with_current(room, |view| {
             let (certificate, _) = identity.current_native_material(view.workspace())?;
             if view.device() != &certificate {
                 return Err("effect caller differs from admitted native custody".into());
@@ -130,8 +132,18 @@ impl ShellNetwork {
             if hint.room != room.to_string() || &hint.governing_authority != view.governor() {
                 return Err("effect host differs from current admitted governor".into());
             }
-            Ok((hint.endpoint_addr, certificate))
+            Ok((
+                hint.endpoint_addr,
+                certificate,
+                !view.governor().capabilities.can_act_as_host
+                    || &hint.host_device_certificate != view.governor(),
+            ))
         })?;
+        if governor_lane {
+            return self
+                .record_effect_at_governor(room, invocation, redacted)
+                .await;
+        }
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
         self.cmd_tx
             .try_send(NetCmd::RoomAdmin {
@@ -383,7 +395,7 @@ impl ShellNetwork {
         &self,
         relay: &iroh::EndpointAddr,
         certificate: &DeviceCert,
-        summary: &tilo_relay::rooms::RoomSummary,
+        summary: &tilo_relay_session::rooms::RoomSummary,
     ) -> Result<(), String> {
         let room = RoomId::parse(&summary.room).ok_or("the host named an invalid room")?;
         let tree = self

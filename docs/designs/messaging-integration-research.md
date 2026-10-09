@@ -1451,6 +1451,59 @@ This is a normal accepted-authority release, not a fixture-signature workaround.
 Its registry request still needs normal admission. No release dispatch or live
 account qualification is implied by documenting the entrypoint.
 
+### Isolated follow-up transport qualification
+
+Provider readiness is separate from the Messages UI and from one another:
+
+| Provider | Qualified path | Next production gap |
+| --- | --- | --- |
+| Signal | Default empty native app, synthetic first-account linking, original protected Passwords review, receive/display/reply and revocation | Protected main integration, existing-authority publication, accepted catalogue artifacts and immutable installed-runtime qualification; no real account is enrolled |
+| WhatsApp | Encrypted SDK state, original account grant on every SDK state transaction, guarded supplied network handles and explicit native account activation | Default startup never invokes `start_native_whatsapp_account`; first-account self-identity/linking and protected network/credential review need an owned host factory |
+| SMS | Pinned private ModemManager D-Bus receive/display/reply, explicit sender selection, submitted-only receipt and revoked-write refusal | Protected SIM selection/lease and default native startup are absent; a supplied adapter is not SIM enrollment |
+| Native Tilo | Shared Contacts service identity/routing vocabulary | No private native-Tilo broker is installed by this provider supervisor; workspace Chat must not provide a fallback |
+
+The SMS fixture `sms_runtime::tests::actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_shared_state`
+uses an owned private `dbus-daemon` and synthetic ModemManager objects. It receives
+through the production inbox observer into the real Messages accessibility tree,
+replies through the production D-Bus adapter and confirms that revocation prevents
+both further modem mutations and encrypted history writes. The native Send result
+is `submitted`, not carrier delivery. Text remains absent from shared app state.
+The fixture supplies an account and authority; it does not qualify default account
+setup, protected SIM permission review, physical SIM hot-swap or a real modem.
+
+Run it remotely with plain Cargo arguments:
+
+```sh
+cargo test --locked -p tilo-messaging-protocol --lib sms_runtime::tests::actual_sms_arrival_reply_and_revocation_keep_private_history_out_of_shared_state -- --exact
+```
+
+WhatsApp fixtures must next connect the original default first-account owner to
+an isolated SDK network peer, retaining its own reviewed self identity and grant.
+Native-Tilo fixtures must use independent personal owners and an authenticated
+private transport, prove encrypted histories remain separate and prove workspace
+collaborators cannot enumerate messages or membership. Neither qualification may
+borrow workspace Chat, manufacture a trusted publisher or use real accounts.
+
+The native WhatsApp bootstrap retains the original account grant in the encrypted
+SDK store. It checks that grant under the shared transaction lock before reads or
+writes, including through clones made before the guard was attached. A grant
+cannot be replaced on that store. The fixture
+`whatsapp_store::tests::revoked_original_grant_stops_actual_sdk_ratchet_and_pending_writes`
+uses the real SDK Backend traits to prove that revoked session, prekey and pending
+inbound writes leave the ciphertext unchanged, revoked reads fail, and already
+revoked opening performs no custody I/O. It uses supplied fixture custody and
+qualifies no real account, default enrollment or external network connection.
+
+The same production constructor now retains that original grant before opening
+private SDK state. Custody lookup can block; a grant revoked while it responds is
+rechecked before directory, lock or encrypted-header creation. The production
+constructor fixture
+`whatsapp_store::tests::revocation_during_custody_lookup_prevents_store_initialization`
+failed against the prior post-initialization guard and passes with no store path
+created. Initialization also rechecks before a missing header is published and
+before returning the backend. These boundary checks do not claim cancellation of
+an already executing filesystem write. No real keychain or account is used.
+
 Fresh Signal activation uses the original approved account key for its private
 profile, history and send journal. Their existing vault formats authenticate
 separate purpose identities. It no longer asks for an unrelated, unprovisioned

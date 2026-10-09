@@ -48,10 +48,9 @@ impl Daemon {
             .unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let stdin = child.stdin.take().unwrap();
-        Self {
-            child,
-            client: Client::new(stdout, stdin),
-        }
+        let mut client = Client::new(stdout, stdin);
+        client.enable_binary_uploads();
+        Self { child, client }
     }
 }
 
@@ -767,4 +766,145 @@ fn the_device_slot_is_the_machines_own_session() {
             unit: "tilo-vm-session@agent-a.service".into()
         }));
     }
+}
+
+#[test]
+fn chunked_upload_preserves_verified_layer_and_cache() {
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(root.path());
+    daemon.client.hello("upload-ack-test").unwrap();
+    // Send multiple chunks and leave a short final chunk.
+    let data = vec![83_u8; tilo_vm_protocol::UPLOAD_CHUNK_BYTES * 5 + 17];
+    let bytes = tarball("usr/bin/shell", &data);
+    let hash = import(&mut daemon.client, "shell", &bytes);
+    let installed =
+        std::fs::read(root.path().join("layers").join(&hash).join("usr/bin/shell")).unwrap();
+    assert_eq!(
+        sha2::Sha256::digest(&installed),
+        sha2::Sha256::digest(&data)
+    );
+    assert_eq!(installed.len(), data.len());
+    let again = import(&mut daemon.client, "shell", &bytes);
+    assert_eq!(again, hash, "chunked uploads preserve layer identity");
+    let layers = daemon.client.call(LayerList {}).unwrap();
+    assert_eq!(
+        layers.len(),
+        1,
+        "the existing content cache reuses the layer"
+    );
+    assert_eq!(layers[0].hash, hash);
+    assert_eq!(layers[0].provenance.component, "shell");
+
+    let invalid = tarball("etc/unapproved", b"bad layer");
+    let upload = daemon.client.upload(invalid.as_slice()).unwrap();
+    assert!(
+        daemon
+            .client
+            .call(LayerImport {
+                source: LayerSource::Upload(upload),
+                provenance: Box::new(Provenance::local("shell")),
+            })
+            .is_err()
+    );
+    let retained = daemon.client.call(LayerList {}).unwrap();
+    assert_eq!(retained.len(), 1, "rejected imports cannot publish a layer");
+    assert_eq!(retained[0].hash, hash);
+}
+
+#[test]
+fn verified_layer_cache_refuses_corruption_and_missing_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(root.path());
+    daemon.client.hello("cache-fixture").unwrap();
+    let bytes = tarball("usr/bin/shell", b"source-pinned payload");
+    let hash = import(&mut daemon.client, "shell", &bytes);
+    let verified = daemon
+        .client
+        .call(tilo_vm_protocol::LayerVerify { hash: hash.clone() })
+        .unwrap();
+    assert_eq!(verified.hash, hash);
+    assert_eq!(verified.provenance.component, "shell");
+    let missing = daemon.client.call(tilo_vm_protocol::LayerVerify {
+        hash: "f".repeat(64),
+    });
+    assert!(missing.is_err());
+    std::fs::write(
+        root.path().join("layers").join(&hash).join("usr/bin/shell"),
+        b"damaged cache",
+    )
+    .unwrap();
+    assert!(
+        daemon
+            .client
+            .call(tilo_vm_protocol::LayerVerify { hash: hash.clone() })
+            .is_err()
+    );
+    // A normal reupload must not silently return the corrupt existing directory.
+    let upload = daemon.client.upload(bytes.as_slice()).unwrap();
+    assert!(
+        daemon
+            .client
+            .call(LayerImport {
+                source: LayerSource::Upload(upload),
+                provenance: Box::new(Provenance::local("shell")),
+            })
+            .is_err()
+    );
+    std::fs::remove_dir_all(root.path().join("layers").join(&hash)).unwrap();
+    let replaced = import(&mut daemon.client, "shell", &bytes);
+    assert_eq!(replaced, hash);
+    assert!(
+        daemon
+            .client
+            .call(tilo_vm_protocol::LayerVerify { hash })
+            .is_ok()
+    );
+}
+
+#[test]
+fn binary_upload_cancellation_cleans_partial_files_and_keeps_rpc_aligned() {
+    struct Failing(std::io::Cursor<Vec<u8>>);
+    impl std::io::Read for Failing {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.position() == self.0.get_ref().len() as u64 {
+                return Err(std::io::Error::other("source cancelled"));
+            }
+            std::io::Read::read(&mut self.0, output)
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(dir.path());
+    daemon.client.hello("binary-fixture").unwrap();
+    assert!(matches!(
+        daemon
+            .client
+            .upload(Failing(std::io::Cursor::new(vec![31; 2 << 20]))),
+        Err(ClientError::Io(_))
+    ));
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("uploads"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert!(daemon.client.call(LayerList {}).unwrap().is_empty());
+    let bytes = tarball("usr/bin/binary-probe", &vec![57; (2 << 20) + 33]);
+    let hash = import(&mut daemon.client, "binary-probe", &bytes);
+    assert_eq!(daemon.client.call(LayerList {}).unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("uploads"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        std::fs::read(
+            dir.path()
+                .join("layers")
+                .join(hash)
+                .join("usr/bin/binary-probe")
+        )
+        .unwrap(),
+        vec![57; (2 << 20) + 33]
+    );
 }

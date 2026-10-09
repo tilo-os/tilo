@@ -40,14 +40,16 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
-pub use admin::{
-    ROOM_ADMIN_ALPN, RoomAdminClient, RoomAdminError, RoomAdminProtocol, RoomCommand, RoomReply,
-    RoomSummary,
-};
+pub use admin::RoomAdminProtocol;
 pub use collaboration::{
-    CancelInvitationRequest, CollaborationError, GovernanceCompletion, GrantAppAuthorshipRequest,
-    IssueInvitationRequest, IssuedInvitation, PendingInvitation, RemoveMemberRequest,
-    RoomJoinService, SetMemberRoleRequest,
+    CollaborationError, GovernanceCompletion, GrantAppAuthorshipRequest, RoomJoinService,
+};
+// The administration wire vocabulary and the device's client, under the
+// daemon's historic paths.
+pub use tilo_relay_session::rooms::{
+    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
+    ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand, RoomReply,
+    RoomSummary, SetMemberRoleRequest,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -301,14 +303,28 @@ impl GovernedRoom {
             .take_while(|publication| !publication.checkpoint)
             .count();
         if tail >= MAX_PUBLICATION_TAIL {
-            // Record checkpoints stay retained on their own channels: the
-            // governor's copy of a record is only the empty one it created, and
-            // republishing it would replace every member write since.
+            // Keep unchanged record checkpoints on their own channels; replacing
+            // those baselines could discard member writes. A record changed by
+            // this commit must still publish at the governance rollover.
+            let changed_records = candidate
+                .clone()
+                .durable_mutation_messages(&self.peer, key, now, generation)?
+                .into_iter()
+                .filter_map(|message| match message {
+                    tilo_peer_state::NeighbourMsg::AppDocument {
+                        app_id, record_id, ..
+                    } => Some((app_id, record_id)),
+                    _ => None,
+                })
+                .collect::<std::collections::BTreeSet<_>>();
             record.outgoing = candidate
                 .durable_bootstrap_messages(key, now, generation)?
                 .iter()
-                .filter(|message| {
-                    !matches!(message, tilo_peer_state::NeighbourMsg::AppDocument { .. })
+                .filter(|message| match message {
+                    tilo_peer_state::NeighbourMsg::AppDocument {
+                        app_id, record_id, ..
+                    } => changed_records.contains(&(app_id.clone(), record_id.clone())),
+                    _ => true,
                 })
                 .map(|message| publication(message, true))
                 .collect::<Result<_, _>>()?;

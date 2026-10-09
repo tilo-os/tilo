@@ -2639,6 +2639,7 @@ impl App {
             && !crate::bound_dispatch::permits_local_value(
                 &self.permission_ctx,
                 &crate::collaboration::local_app_id(),
+                &address.resource,
                 resolved,
                 typed_arguments.as_ref(),
                 argument,
@@ -3389,6 +3390,16 @@ impl App {
         // Embedded History refresh discards only its own hidden live queue.
         // Defer sibling work until this input frame ends without consuming it.
         if self.framework_input.get() {
+            return 0;
+        }
+        // A committed refresh temporarily closes the original native history
+        // gate. Keep control/causal intents with their existing producers until
+        // the owner applies that capture and its worker rechecks the route.
+        // Nothing has crossed the action door yet; accepted deliveries retain
+        // the separate fail-closed guard in invoke_published_action.
+        if self.collaboration.manager.has_native_committed_primary()
+            && !self.published_action_history_ready()
+        {
             return 0;
         }
         crate::history_mode::embedded::discard_active_output(self.root_widget.as_mut());
@@ -4264,10 +4275,12 @@ impl App {
         &self,
         mut resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
+        let resource_id = resource.id.as_str().to_owned();
         resource.actions.retain(|action| {
             crate::bound_dispatch::permits_local_action(
                 &self.permission_ctx,
                 &crate::collaboration::local_app_id(),
+                &resource_id,
                 action,
             )
         });

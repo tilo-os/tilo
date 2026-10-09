@@ -80,6 +80,7 @@ pub fn agent_package_row(
         runtime: String::new(),
         source: String::new(),
         held: false,
+        payload_bytes: 0,
         system: false,
     }
 }
@@ -463,7 +464,9 @@ impl ManagedRuntime {
         if options.allow_unsigned_runtime || options.allow_missing_runtime {
             return Err("managed runtime cannot bypass signature or availability policy".into());
         }
-        let publishers = crate::run::load_trusted_publisher_list().unwrap_or_default();
+        let publishers = crate::run::load_trusted_publisher_list()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
         if options.require_runtime_publisher.is_none() && publishers.is_empty() {
             return Err("managed runtime requires independently configured publisher trust".into());
         }

@@ -50,7 +50,11 @@ mod tests {
         // A key that resolves to itself is a key with no catalogue entry — the
         // failure mode that ships an untranslatable literal to a screen.
         for key in [
+            "chat-voice-unavailable",
+            "chat-attachment-import-unavailable",
             "chat-mention-agent-tag",
+            "chat-person-unnamed",
+            "chat-person-relative-name",
             "chat-identity-available",
             "chat-identity-in-voice",
             "chat-context-sharing",

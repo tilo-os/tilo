@@ -287,6 +287,10 @@ fn clipboard() -> std::sync::Arc<dyn crate::clipboard::ClipboardBackend> {
     crate::host::current().clipboard
 }
 
+pub(crate) fn request_clipboard_paste() -> std::sync::mpsc::Receiver<Option<String>> {
+    clipboard().request_text(ClipboardTarget::Clipboard)
+}
+
 /// Push `text` onto the system clipboard — the Ctrl+C buffer.
 ///
 /// Routes to the current host's clipboard; see [`crate::clipboard`]. Without

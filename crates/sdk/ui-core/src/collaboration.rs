@@ -54,7 +54,8 @@ pub mod record_content;
 mod route_keys;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
-    CertifiedEndpointIdentity, HostSessionConnector, speaker_command, wifi_continuity_command,
+    CertifiedEndpointIdentity, HostSessionConnector, display_control, speaker_command,
+    wifi_continuity_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of
@@ -157,6 +158,15 @@ pub fn speaker_command(
     _command: runtime_collab::SpeakerCommand,
 ) -> Result<runtime_collab::SpeakerReply, String> {
     Err("speakers need the certified collaboration service".to_string())
+}
+
+/// The native display control service is unavailable without an admitted broker.
+///
+/// # Errors
+/// Always reports unavailable on this transport.
+#[cfg(not(feature = "broker-transport"))]
+pub fn display_control(_command: Vec<u8>, _origin: DisplayOrigin) -> Result<Vec<u8>, String> {
+    Err("Displays need the certified collaboration service.".into())
 }
 
 pub use crate::host::ContinuationMetadata;
@@ -1229,10 +1239,9 @@ impl CollaborationManager {
     }
 }
 
-/// Launcher-issued instance identity for an app window. It deliberately rides
-/// in the existing record component of the authenticated CRDT route so the
-/// broker can retain multiple Browser windows in one workspace without
-/// conflating their continuation metadata.
+/// Compatibility route marker for a launcher-issued app window. Native
+/// document routes obtain their separate window binding from original broker
+/// custody; this environment value cannot authorize native private control.
 fn continuation_instance_env() -> Option<String> {
     let environment = crate::host::environment();
     let value = environment.identity.continuity_instance.as_deref()?.trim();
@@ -1363,6 +1372,23 @@ impl CollaborationManager {
     /// event loop to keep ticking so the stream drains promptly.
     pub(crate) fn primary_route(&self) -> Option<&PrimaryRouteWitness> {
         self.primary_route.current(self.is_connected())
+    }
+
+    pub(crate) fn private_window_instance(&self) -> Option<u64> {
+        let witness = self.primary_route()?;
+        let Backend::Transport(transport) = &self.backend else {
+            return None;
+        };
+        if transport.committed_document_required(&witness.route.channel_id()) {
+            return transport.private_window_binding(&witness.route);
+        }
+        witness
+            .route
+            .record
+            .as_deref()?
+            .strip_prefix("continuation:")?
+            .parse::<u64>()
+            .ok()
     }
 
     /// Whether requests currently reach peers: [`Self::state`] is
@@ -1647,6 +1673,19 @@ impl CollaborationManager {
             }
     }
 
+    /// Independently sample the existing transport read gates without admission.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub(crate) fn controlled_document_read_phase_for_test(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<serde_json::Value> {
+        if let Backend::Transport(transport) = &self.backend {
+            transport.controlled_document_read_phase_for_test(&route.channel_id())
+        } else {
+            None
+        }
+    }
+
     /// Test-only: whether `route` has resolved its document mode, so a
     /// document mutation on it would be admitted rather than refused.
     #[cfg(test)]
@@ -1749,6 +1788,18 @@ impl CollaborationManager {
             Backend::Disabled("pre-terminal document publication; outcome unknown".into());
         self.awaiting_primary = false;
         self.primary_route.accepted = None;
+    }
+
+    pub(crate) fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.set_document_owner_routes(routes);
+        }
+    }
+
+    pub(crate) fn finish_event_batch(&mut self) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.finish_event_batch();
+        }
     }
 
     /// Drain every event pending on the current backend. Non-blocking.
@@ -2127,3 +2178,6 @@ mod portable_transport_tests {
         assert!(manager.poll().is_empty());
     }
 }
+
+/// Original authority retained across display background work.
+pub use runtime_collab::DisplayOrigin;

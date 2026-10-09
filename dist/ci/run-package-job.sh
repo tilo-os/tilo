@@ -124,6 +124,7 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             --env TILO_DEB_REVISION="$revision" \
             --env SOURCE_DATE_EPOCH="$source_epoch" \
             --env GITHUB_SHA="$source_revision" \
+            --env TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY="${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}" \
             --env CARGO_INCREMENTAL=0 \
             --env CARGO_BUILD_JOBS="$cargo_jobs" \
             --env CARGO_PROFILE_RELEASE_LTO=thin \
@@ -319,6 +320,20 @@ record_failure() {
     exit "$status"
 }
 trap record_failure ERR
+
+# The outer helper copies /artifacts even when this userspace fails, before
+# removing its container. Keep diagnostic RPMs separate from install-tested
+# output; signing and release publication must never consume this directory.
+retain_failed_rpms() {
+    local status=$?
+    trap - EXIT
+    if (( status != 0 )) && [[ $distro == fedora-44 ]]; then
+        python3 dist/ci/retain-failed-rpms.py "$stage" "$status" || \
+            echo '::warning::failed RPMs could not be retained within the provenance/storage bounds' >&2
+    fi
+    exit "$status"
+}
+trap retain_failed_rpms EXIT
 
 stage=architecture-check
 dist/ci/assert-native-arch.sh "$execution_arch"
