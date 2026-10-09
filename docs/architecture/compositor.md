@@ -172,6 +172,26 @@ also converts `BGRA` and forces `X` alpha), so a client frame costs one
 full-frame GPU copy — at 3840×2160, 66 MB of GPU memory traffic instead of
 the 133 MB of the earlier copy-then-atlas route.
 
+An SHM commit still copies on the logic thread — the client's pool may only
+be read inside Smithay's guarded mapping — but only its buffer damage, when
+the surface's previous commit was an SHM buffer of the same size
+(`ForeignFrameStore::capture_shm_commit`). Any other commit (a dmabuf, an
+unmap, a commit the capture never saw), a failure, unknown damage or a resize
+clears that base and the next copy is whole. A damaged copy carries the
+generation of the commit it is relative to, and the worker lays it only over
+the frame it built for exactly that commit (`build_shm_frame`); against
+anything else the copy is dropped and the next one forced whole — never laid
+over another frame or over zeros. The worker writes into the frame the
+previous one replaced when nothing draws it any more, so a caret blink in a
+4K terminal moves kilobytes, not 33 MB; that spare is released once the
+worker idles. Queued damaged copies chain rather than replace each other,
+and a whole copy supersedes them, which bounds a slow worker's queue.
+Published frames are shared `Arc`s: publication swaps one under the
+frame-store lock and the tile draws the stored pixels without a copy. What
+remains is the CPU swizzle of the damage and Vello's upload of the whole
+image into its atlas; the next step is a persistent per-surface GPU texture
+that takes only the damaged rows straight from the guarded pool copy.
+
 Drawing from the client's buffer means the compositor decides when it goes
 back. Smithay sends `wl_buffer.release` for the replaced buffer the moment
 the next commit applies, so the commit handler takes the applied buffer out
