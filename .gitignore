@@ -48,6 +48,10 @@ keys/**/*.private.pem
 *.crdt
 rustypipe_cache.json
 .claude/test-scratch/
+# Local experiments and boot backups are generated task output, not app sources.
+# rcargo uses Git's source list, so these must not enter a normal source sync.
+/.claude/scratch/
+/.claude/esp-backup/
 # Local build infrastructure and feature worktrees. These live under
 # .claude so they travel with the checkout, but none of them belong in
 # history: the sccache alone is ~11 GB, and .claude/tilo is a nested
