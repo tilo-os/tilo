@@ -4678,3 +4678,64 @@ fn cell_fills_snap_to_device_pixels_and_adjacent_cells_tile() {
         }
     }
 }
+
+/// Typing repaints the row it lands on and the cursor, not the terminal:
+/// each row on screen and the cursor are damage parts the compositor
+/// compares frame to frame (`ui::scene_parts`).
+#[test]
+fn typing_damages_only_its_row_and_the_cursor() {
+    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+    use vello::{Scene, kurbo::Affine};
+
+    let (mut widget, _) = build_test_widget();
+    let viewport = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+    widget.force_geometry(viewport, 10.0, 20.0);
+    widget.feed(b"first line\r\nsecond line\r\n$ ");
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut frame = |widget: &mut TerminalWidget| {
+        let mut scene = Box::new(Scene::new());
+        let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
+            widget.draw(
+                scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+        });
+        (scene, parts.expect("the terminal's parts are well nested"))
+    };
+    // The first draw measures the cell and resizes the grid to the
+    // viewport; the next output applies that size.
+    let _ = frame(&mut widget);
+    widget.feed(b"");
+    let (before, before_parts) = frame(&mut widget);
+    let (again, again_parts) = frame(&mut widget);
+    assert_eq!(
+        ui::scene_parts::damage(&before, &before_parts, &again, &again_parts),
+        Ok(Vec::new()),
+        "an unchanged terminal draws the same commands"
+    );
+    widget.feed(b"l");
+    let (after, after_parts) = frame(&mut widget);
+    let damage = ui::scene_parts::damage(&again, &again_parts, &after, &after_parts)
+        .expect("typing changes nothing outside the terminal's parts");
+    assert!(!damage.is_empty(), "the typed letter is repainted");
+    let (_, rows) = widget.grid_size();
+    let row_h = widget.grid_rect().height() / rows.max(1) as f64;
+    assert!(
+        damage.iter().all(|rect| rect.height() <= 3.0 * row_h + 2.0),
+        "typing repaints a row band and the cursor's cell, not the grid: {damage:?}"
+    );
+    let area: f64 = damage.iter().map(Rect::area).sum();
+    eprintln!(
+        "TIL-579 terminal keystroke damage: {area} of {} px",
+        viewport.area()
+    );
+    assert!(
+        area * 4.0 < viewport.area(),
+        "typing repaints a sliver of the terminal, not {area} of {} px: {damage:?}",
+        viewport.area()
+    );
+}
