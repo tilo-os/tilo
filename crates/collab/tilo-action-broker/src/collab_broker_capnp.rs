@@ -3470,12 +3470,19 @@ impl CapnpBrokerState {
             failure: &self.owner_commit_failure,
             complete: false,
         };
-        self.publisher
-            .commit_owner(request, record_kind)
-            .await
-            .map_err(capnp::Error::failed)?;
+        let result = self.publisher.commit_owner(request, record_kind).await;
         waiting.complete = true;
-        Ok(())
+        match result {
+            Ok(_) => Ok(()),
+            Err(reason) => {
+                // The owner answered: retain its actual refusal/failure for
+                // later clients instead of labeling this as a dropped RPC.
+                if let Ok(mut failure) = self.owner_commit_failure.lock() {
+                    failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));
+                }
+                Err(capnp::Error::failed(reason))
+            }
+        }
     }
 
     async fn commit_effect_before_terminal(
