@@ -68,6 +68,11 @@ path = "src/main.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "workspace_startup"
+path = "tests/workspace_startup.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "collab_release_matrix"
 path = "tests/collab_release_matrix.rs"
 required-features = ["filesystem"]

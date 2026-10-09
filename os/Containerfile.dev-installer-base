@@ -12,20 +12,26 @@ RUN test "$(cat /usr/lib/tilo/image-flavour)" = dev \
     && mkdir -p /kernel \
     && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
+# The sealing stages are os/Containerfile's, kept identical by
+# tools/policy/check_uki_pipeline.py; only uki-tools' FROM differs. No composefs
+# digest is passed here, so os/dev/uki.sh computes it over the split rootfs.
 FROM ${BASE_IMAGE} AS uki-tools
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
-# tilo-rpm-snapshot-package[aarch64]: systemd-ukify
-# tilo-rpm-snapshot-package[aarch64]: systemd-boot-unsigned
-# tilo-rpm-snapshot-package[aarch64]: binutils
-# tilo-rpm-snapshot-package[aarch64]: python3-pillow
+COPY os/dev/uki-tools.packages /usr/local/share/tilo/uki-tools.packages
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    dnf install -y --setopt=reposdir=/repo \
-      systemd-ukify systemd-boot-unsigned binutils python3-pillow \
+    grep -v '^#' /usr/local/share/tilo/uki-tools.packages \
+    | xargs dnf install -y --setopt=reposdir=/repo \
     && dnf clean all
 COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
 
 FROM uki-tools AS uki
+# Empty here: the installer disk builder closes the derived seal (header).
+ARG TILO_CFS_DIGEST=
+ENV CFS_DIGEST=${TILO_CFS_DIGEST}
+# 0 builds os/dev/uki.sh's negative control, a UKI without tilo.generation=.
+ARG TILO_SEAL_GENERATION=1
+ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
     --mount=type=bind,from=split,target=/target,rw \
