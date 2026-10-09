@@ -573,7 +573,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
@@ -1590,7 +1590,10 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         h.host.begin_wifi_password("Tilo test network");
         assert!(pump(
             &mut h,
-            &crate::shell::test_support::typed_key_event(Key::Character("a".into())),
+            &ui::synthetic_input::key_input(
+                &Key::Character("a".into()),
+                winit::event::ElementState::Pressed
+            ),
             Modifiers::default()
         ));
 
@@ -1612,7 +1615,10 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         assert!(!h.host.capture_studio.is_open());
         assert!(pump(
             &mut h,
-            &crate::shell::test_support::typed_key_event(Key::Character("b".into())),
+            &ui::synthetic_input::key_input(
+                &Key::Character("b".into()),
+                winit::event::ElementState::Pressed
+            ),
             Modifiers::default()
         ));
         assert!(h.chrome.borrow().quick_settings.wifi_password.is_some());
@@ -2009,12 +2015,11 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
 }
 
 fn key_press(logical_key: Key) -> WindowEvent {
-    // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero
-    // bit pattern (`logical_key` is overwritten below, `text` is
-    // `Option<…>` whose niche-optimised `None` is the all-zero
-    // bit pattern, and `KeyEventExtra` is `pub(crate)` and only
-    // inspected by winit-internal code that the host never reaches).
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    let mut ev = ui::synthetic_input::key_event(
+        winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+        None,
+        winit::event::ElementState::Pressed,
+    );
     // A character key carries its text, as a real keyboard's does; text
     // fields type from it.
     let text = match &logical_key {
@@ -2028,7 +2033,7 @@ fn key_press(logical_key: Key) -> WindowEvent {
     ev.repeat = false;
     ev.text = text;
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
     }
@@ -2036,14 +2041,14 @@ fn key_press(logical_key: Key) -> WindowEvent {
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(p.x, p.y),
     }
 }
 
 fn left_button_pressed() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     }
@@ -2051,7 +2056,7 @@ fn left_button_pressed() -> WindowEvent {
 
 fn left_button_released() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,
     }

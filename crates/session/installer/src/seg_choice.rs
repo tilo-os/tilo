@@ -300,23 +300,14 @@ impl ui::widget::controls::ActionControls for SegChoice {
 #[cfg(test)]
 mod tests {
     use automerge::{AutoCommit, ROOT, ReadDoc};
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     use super::*;
     use crate::control::{Press, Presses};
 
     fn arrow(key: NamedKey) -> WindowEvent {
-        // SAFETY: SegChoice reads only the initialized KeyEvent fields below.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(key);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            // SAFETY: SegChoice does not inspect the device id.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }

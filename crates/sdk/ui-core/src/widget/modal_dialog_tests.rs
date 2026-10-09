@@ -8,8 +8,7 @@ use crate::widget::Text;
 use std::cell::Cell;
 use std::rc::Rc;
 use vello_encoding::DrawTag;
-use winit::event::{DeviceId, KeyEvent, MouseButton};
-use winit::keyboard::{KeyLocation, PhysicalKey};
+use winit::event::MouseButton;
 
 const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -113,40 +112,27 @@ impl Widget for CountingContent {
     }
 }
 
-/// SAFETY: opaque `DeviceId` whose all-zero bit pattern winit tolerates.
-fn synth_device() -> DeviceId {
-    unsafe { std::mem::zeroed() }
-}
-
 fn cursor_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(p.x, p.y),
     }
 }
 
 fn left_press() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     }
 }
 
-/// Built over a zeroed buffer since winit's `KeyEventExtra` is `pub(crate)`.
 fn key_press_event(named: NamedKey) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(named);
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+        Key::Named(named),
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 fn dispatch<C: Widget + 'static>(d: &mut ModalDialog<C>, event: &WindowEvent) -> bool {
@@ -1015,7 +1001,7 @@ fn dialog_paints_destructive_and_hover_faces() {
             dispatch(
                 &mut d,
                 &WindowEvent::CursorLeft {
-                    device_id: synth_device(),
+                    device_id: winit::event::DeviceId::dummy(),
                 },
             );
         }
@@ -1066,7 +1052,7 @@ fn open_dialog_captures_input_and_closed_dialog_is_inert() {
 
 fn wheel(dy: f32) -> WindowEvent {
     WindowEvent::MouseWheel {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         delta: winit::event::MouseScrollDelta::LineDelta(0.0, dy),
         phase: winit::event::TouchPhase::Moved,
     }
@@ -1476,7 +1462,7 @@ fn an_immediate_sheet_paints_hit_tests_and_answers_without_a_renderer() {
     assert_eq!(sheet.handle(&cursor_at(overwrite), 1.0), None);
     assert_eq!(sheet.handle(&left_press(), 1.0), None);
     let release = WindowEvent::MouseInput {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,
     };

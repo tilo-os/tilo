@@ -1461,20 +1461,12 @@ mod tests {
     }
 
     fn keyboard_event(key: Key) -> WindowEvent {
-        use winit::event::{DeviceId, KeyEvent};
-        use winit::keyboard::{KeyLocation, PhysicalKey};
+        use winit::event::DeviceId;
 
         // `KeyEvent` has an opaque platform payload. The public fields below
         // are exactly the ones the widget reads; this mirrors the toolkit's
         // own headless keyboard helpers.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
             device_id: DeviceId::dummy(),
             event,

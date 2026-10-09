@@ -1625,19 +1625,11 @@ mod tests {
     }
 
     fn key(logical: Key) -> WindowEvent {
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn send(
@@ -2115,12 +2107,11 @@ mod host_driven_tests {
             }
         }
         let press = |scope: &mut FindScope, modifiers: winit::keyboard::ModifiersState| {
-            use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Character("f".into());
-            ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-            ev.location = KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
+            let ev = crate::synthetic_input::key_event(
+                Key::Character("f".into()),
+                None,
+                ElementState::Pressed,
+            );
             let event = WindowEvent::KeyboardInput {
                 device_id: winit::event::DeviceId::dummy(),
                 event: ev,

@@ -978,15 +978,14 @@ mod command_path_tests {
     }
 
     fn command_l_opens_the_editable_location_bar_without_a_pointer() {
-        use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, ModifiersState};
 
         let mut widget = FileExplorerWidget::new();
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Character(winit::keyboard::SmolStr::new("l"));
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Character(winit::keyboard::SmolStr::new("l")),
+            None,
+            winit::event::ElementState::Pressed,
+        );
 
         assert!(widget.handle_app_key(
             &event,
@@ -999,15 +998,14 @@ mod command_path_tests {
     }
 
     fn shortcut_reference_is_a_keyboard_and_command_reachable_view() {
-        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, NamedKey};
         let mut widget = FileExplorerWidget::new();
 
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(NamedKey::F1);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::F1),
+            None,
+            winit::event::ElementState::Pressed,
+        );
         assert!(widget.handle_app_key(&event, winit::event::Modifiers::default()));
         let panel = widget
             .collab_panel
@@ -4298,14 +4296,14 @@ mod responsive_body_tests {
 
         fn cursor(&mut self, x: f64, y: f64) {
             self.dispatch(&winit::event::WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(x, y),
             });
         }
 
         fn right_press(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Right,
             });
@@ -4313,7 +4311,7 @@ mod responsive_body_tests {
 
         fn left_release(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Released,
                 button: winit::event::MouseButton::Left,
             });
@@ -4321,7 +4319,7 @@ mod responsive_body_tests {
 
         fn left_press(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
             });
@@ -4377,34 +4375,26 @@ mod responsive_body_tests {
         }
 
         fn press_named(&mut self, key: winit::keyboard::NamedKey) {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Named(key);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Named(key),
+                None,
+                winit::event::ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
             self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             });
         }
 
         fn type_char(&mut self, s: &str) {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s));
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s)),
+                Some(winit::keyboard::SmolStr::new(s)),
+                winit::event::ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = Some(winit::keyboard::SmolStr::new(s));
             self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             });

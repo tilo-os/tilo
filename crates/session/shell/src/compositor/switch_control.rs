@@ -154,19 +154,18 @@ mod tests {
     use settings_store::live::LiveSettings;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use winit::event::{DeviceId, KeyEvent};
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+    use winit::event::DeviceId;
 
     fn key(logical_key: Key, pressed: bool) -> WindowEvent {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = logical_key;
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        };
+        let event = ui::synthetic_input::key_event(
+            logical_key,
+            None,
+            if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+        );
         WindowEvent::KeyboardInput {
             device_id: unsafe { std::mem::zeroed::<DeviceId>() },
             event,

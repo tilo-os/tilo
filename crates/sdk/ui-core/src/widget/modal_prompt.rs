@@ -363,12 +363,8 @@ mod tests {
     use crate::widget::ModalDialog;
     use automerge::AutoCommit;
     use vello::kurbo::Point;
-    use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton};
-    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
-
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::{ElementState, MouseButton};
+    use winit::keyboard::{Key, NamedKey};
 
     fn laid_out(body: PromptBody, viewport: Rect) -> ModalDialog<PromptBody> {
         let mut d = ModalDialog::new("Prompt", body)
@@ -423,30 +419,23 @@ mod tests {
     }
 
     fn char_event(ch: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(ch.into());
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(ch.into());
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Character(ch.into()),
+            Some(ch.into()),
+            ElementState::Pressed,
+        ))
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
 
     fn left_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
@@ -562,20 +551,17 @@ mod tests {
             let body = PromptBody::new("Notes", "").multiline(true);
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
             dispatch(&mut d, &char_event("a"));
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(NamedKey::Enter);
-            ev.physical_key =
-                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-            ev.location = KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
+            let ev = crate::synthetic_input::key_event(
+                Key::Named(NamedKey::Enter),
+                None,
+                ElementState::Pressed,
+            );
             // The dialog itself does not intercept Enter (only Escape), so it
             // forwards to the multiline field, which inserts a newline.
             dispatch(
                 &mut d,
                 &WindowEvent::KeyboardInput {
-                    device_id: synth_device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     event: ev,
                     is_synthetic: false,
                 },

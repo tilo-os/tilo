@@ -5039,7 +5039,7 @@ mod tests {
             assert!(toolbar.width() > 0.0 && toolbar.height() > 0.0);
             let body = Point::new(toolbar.center().x, toolbar.y1 + 40.0);
             assert!(host.get_rect().contains(body) && !toolbar.contains(body));
-            let device = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let motion = |point: Point| WindowEvent::CursorMoved {
                 device_id: device,
                 position: (point.x * scale, point.y * scale).into(),

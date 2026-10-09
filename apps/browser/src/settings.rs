@@ -627,7 +627,7 @@ mod tests {
             // Drive the real five-pass path: build_layout → compute_layout →
             // apply_layout, then flip the ad-block toggle through the live
             // widget tree and assert the CRDT bool changed.
-            use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+            use winit::event::{ElementState, MouseButton, WindowEvent};
 
             // Locate the ad-block toggle's rect by walking the live tree.
             fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
@@ -668,7 +668,7 @@ mod tests {
                 .expect("ad-block toggle is addressable in the tree");
             let center = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mods = winit::event::Modifiers::default();
             let mut dispatch = |pane: &mut SettingsPane, ev: WindowEvent| {
                 let mut handled = false;

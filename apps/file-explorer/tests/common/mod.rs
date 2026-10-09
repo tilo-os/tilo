@@ -94,20 +94,20 @@ impl Harness {
 
     pub fn move_cursor(&mut self, p: Point) {
         self.dispatch(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: (p.x, p.y).into(),
         });
     }
     pub fn press(&mut self) {
         self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
     }
     pub fn release(&mut self) {
         self.dispatch(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });

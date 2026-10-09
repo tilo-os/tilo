@@ -3222,21 +3222,14 @@ fn press_named_with_modifiers(
     key: NamedKey,
     mods: Modifiers,
 ) {
-    use winit::keyboard::{NativeKeyCode, PhysicalKey};
     let taffy: TaffyTree<()> = TaffyTree::new();
     let node = NodeId::new(0);
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.logical_key = Key::Named(key);
-    ev.text = None;
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
+    let ev = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
     wp.handle_event(
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         },
@@ -3262,7 +3255,7 @@ fn pinch(
     let mut handled = false;
     wp.handle_event(
         &WindowEvent::PinchGesture {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta,
             phase,
         },
@@ -5995,7 +5988,7 @@ pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt
     // Move the pointer, then press.
     wp.handle_event(
         &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: (pt.x, pt.y).into(),
         },
         &mut ui::widget::EventCtx {
@@ -6011,7 +6004,7 @@ pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt
     );
     wp.handle_event(
         &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
@@ -6391,7 +6384,7 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
             wp.lifecycle.dirty = false;
             wp.handle_event(
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: (point.x * 2.0, point.y * 2.0).into(),
                 },
                 &mut ui::widget::EventCtx {
@@ -6587,31 +6580,21 @@ fn templates_replace_the_document_only_when_chosen() {
     }
 }
 
-/// Drive a real keypress (single typed character) through the production
-/// `handle_event` keyboard path. winit's `KeyEvent` has a private
-/// `platform_specific` field, so (per the shell's `e2e_shell_flows` pattern)
-/// zero-init the whole struct and overwrite the public fields we read.
 fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
-    use winit::keyboard::{NativeKeyCode, PhysicalKey, SmolStr};
+    use winit::keyboard::SmolStr;
     let taffy: TaffyTree<()> = TaffyTree::new();
     let node = NodeId::new(0);
     let mods = Modifiers::default();
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
-    // SAFETY: identical to the shell's KeyEvent synthesis — all public fields
-    // tolerate the zero bit pattern (Option → None, enums → first variant),
-    // and we overwrite the ones `handle_event` reads (`logical_key`/`text`/
-    // `state`). The private `platform_specific` field is plain/zero-sized.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.logical_key = Key::Character(SmolStr::new(ch.to_string()));
-    ev.text = Some(SmolStr::new(ch.to_string()));
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
+    let ev = ui::synthetic_input::key_event(
+        Key::Character(SmolStr::new(ch.to_string())),
+        Some(SmolStr::new(ch.to_string())),
+        ElementState::Pressed,
+    );
     wp.handle_event(
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         },
@@ -6633,22 +6616,15 @@ fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
 /// Drive a real Tab keypress through the production `handle_event` keyboard
 /// path (no `text`, just the named key).
 fn press_tab(wp: &mut WordProcessorWidget, state: &mut ui::State) {
-    use winit::keyboard::{NativeKeyCode, PhysicalKey};
     let taffy: TaffyTree<()> = TaffyTree::new();
     let node = NodeId::new(0);
     let mods = Modifiers::default();
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.logical_key = Key::Named(NamedKey::Tab);
-    ev.text = None;
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
+    let ev = ui::synthetic_input::key_event(Key::Named(NamedKey::Tab), None, ElementState::Pressed);
     wp.handle_event(
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         },
@@ -8062,7 +8038,7 @@ fn dropped_and_selected_images_expose_their_controls() {
         // drop the file there.
         wp.handle_event(
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: (drop_pt.x, drop_pt.y).into(),
             },
             &mut ui::widget::EventCtx {
@@ -8410,7 +8386,7 @@ fn the_colour_picker_applies_and_cancels_previews() {
         let mut focus: Option<NodeId> = None;
         wp.handle_event(
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: (sv_pt.x, sv_pt.y).into(),
             },
             &mut ui::widget::EventCtx {
@@ -8426,7 +8402,7 @@ fn the_colour_picker_applies_and_cancels_previews() {
         );
         wp.handle_event(
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
@@ -8489,7 +8465,7 @@ fn preview_custom_colour(
     let mut focus: Option<NodeId> = None;
     wp.handle_event(
         &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         },

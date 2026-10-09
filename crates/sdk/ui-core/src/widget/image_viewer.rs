@@ -382,7 +382,7 @@ mod tests {
             // Bypasses taffy — a real layout pass would need a parent.
             iv.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
 
-            let dev = dummy_device_id();
+            let dev = winit::event::DeviceId::dummy();
             let modifiers = Modifiers::default();
             let mut state = AutoCommit::new();
             let root = automerge::ROOT.clone();
@@ -441,7 +441,7 @@ mod tests {
             // through taffy in production.
             iv.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
 
-            let dev = dummy_device_id();
+            let dev = winit::event::DeviceId::dummy();
             let modifiers = Modifiers::default();
             let mut state = AutoCommit::new();
             let root = automerge::ROOT.clone();
@@ -555,15 +555,5 @@ mod tests {
         image_viewer_scroll_up_zooms_in();
         image_viewer_drag_pans();
         image_viewer_fit_resets_zoom_and_pan();
-    }
-
-    /// `DeviceId` has no public constructor; `mem::zeroed` is the
-    /// standard escape hatch other widget tests in this crate use
-    /// (see `group_row.rs`).
-    fn dummy_device_id() -> winit::event::DeviceId {
-        // SAFETY: DeviceId is an opaque wrapper around a platform u64;
-        // a zeroed value is what winit itself uses for the "no device"
-        // sentinel on every backend. No fields require validity.
-        unsafe { std::mem::zeroed() }
     }
 }

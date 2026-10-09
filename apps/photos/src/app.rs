@@ -3083,11 +3083,7 @@ impl PhotosApp {
         let Ok(node) = taffy.new_leaf(Style::default()) else {
             return;
         };
-        // SAFETY: `DeviceId` has no public constructor; a zeroed value is
-        // winit's own "no device" sentinel, and every field below is
-        // overwritten or unused by `ImageViewer::handle_event`. Same idiom
-        // `ui::widget::image_viewer`'s own tests use.
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         v.handle_event(
             &winit::event::WindowEvent::CursorMoved {
                 device_id,
@@ -13431,7 +13427,7 @@ mod history_reconcile_tests {
                 .unwrap();
             app.apply_layout(&taffy, node, Point::ZERO);
             let center = app.viewer.as_ref().unwrap().get_rect().center();
-            let device_id = unsafe { std::mem::zeroed() };
+            let device_id = winit::event::DeviceId::dummy();
             let mut handled = false;
             let mut focus = None;
             for event in [

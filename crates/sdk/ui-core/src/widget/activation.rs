@@ -768,14 +768,14 @@ mod tests {
 
     fn moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
 
     fn button(state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state,
             button: MouseButton::Left,
         }
@@ -795,7 +795,7 @@ mod tests {
         let mut targets = keys();
         targets.set_host_focus(true);
         let mut enter =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
         assert!(send(&mut targets, &enter));
         assert_eq!(targets.take_activated(), vec!["seven"]);
         if let WindowEvent::KeyboardInput { event, .. } = &mut enter {
@@ -849,7 +849,7 @@ mod tests {
         send(&mut targets, &moved(10.0, 10.0));
         send(&mut targets, &button(ElementState::Pressed));
         let escape =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
         assert!(send(&mut targets, &escape));
         assert!(send(&mut targets, &button(ElementState::Released)));
         assert!(targets.take_activated().is_empty());
@@ -889,7 +889,7 @@ mod tests {
             "Tab stays inside before the last target"
         );
         let tab =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Tab), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Tab), ElementState::Pressed);
         assert!(send(&mut targets, &tab));
         assert_eq!(targets.focused(), Some("eight"));
         assert!(
@@ -897,7 +897,7 @@ mod tests {
             "the disabled target is skipped; Tab leaves"
         );
         let enter =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
         assert!(send(&mut targets, &enter));
         assert_eq!(targets.take_activated(), vec!["eight".to_string()]);
     }

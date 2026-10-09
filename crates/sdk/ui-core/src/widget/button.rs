@@ -2805,7 +2805,7 @@ mod tests {
         fn disabled_button_rejects_input() {
             use std::cell::Cell;
             use std::rc::Rc;
-            use winit::event::{DeviceId, ElementState, MouseButton};
+            use winit::event::{ElementState, MouseButton};
 
             let fired = Rc::new(Cell::new(0u32));
             let mut b = {
@@ -2829,7 +2829,7 @@ mod tests {
             .unwrap();
             b.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             let mods = winit::event::Modifiers::default();
@@ -3177,7 +3177,7 @@ mod tests {
         fn on_click_callback_fires_on_release_over_button() {
             use std::cell::Cell;
             use std::rc::Rc;
-            use winit::event::{DeviceId, ElementState, MouseButton};
+            use winit::event::{ElementState, MouseButton};
 
             let fired = Rc::new(Cell::new(0u32));
             let mut b = {
@@ -3199,7 +3199,7 @@ mod tests {
             .unwrap();
             b.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             let mods = winit::event::Modifiers::default();
