@@ -497,19 +497,20 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
             ),
             (format!("/artifacts/{digest}.tapp.zst"), full.clone()),
         ] {
-            let twin = client.get(url(h.addr, &path)).send().await.unwrap();
-            assert_eq!(twin.status(), reqwest::StatusCode::OK, "{path}");
-            assert_eq!(twin.headers()["content-type"], "application/zstd");
+            let served = client.get(url(h.addr, &path)).send().await.unwrap();
+            assert_eq!(served.status(), reqwest::StatusCode::OK, "{path}");
+            assert_eq!(served.headers()["content-type"], "application/zstd");
             assert_eq!(
-                twin.headers()
+                served
+                    .headers()
                     .get_all("cache-control")
                     .iter()
                     .collect::<Vec<_>>(),
                 ["public, max-age=31536000, immutable"],
                 "exactly one Cache-Control, so an edge cache may keep it"
             );
-            assert!(twin.headers().get("content-encoding").is_none());
-            let body = twin.bytes().await.unwrap();
+            assert!(served.headers().get("content-encoding").is_none());
+            let body = served.bytes().await.unwrap();
             assert_eq!(decompress(&body, raw.len()), raw, "{path}");
         }
         let data = h.tmp.path();
