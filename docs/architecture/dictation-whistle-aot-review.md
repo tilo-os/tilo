@@ -253,6 +253,27 @@ at the start to a sampled minimum of 104898965504 and 108880007168 at completion
 The sampled peak aggregate growth was 9801871360 bytes; this measures the shared
 volume and is not attributed to this compile. The observer stopped explicitly.
 
+### Default automatic-language qualification
+
+The [automatic-language ledger](dictation-whistle-aot-image-auto.json) exercises
+the setting the user receives by default, using the same existing production
+worker and four public recordings. There was no Rust rebuild, microphone or
+activation. Ready includes ephemeral fixture setup, approximately 1.11 seconds.
+Final delivery after Ready takes 11.848 seconds for English, 21.152 for German,
+11.392 for French and 15.255 for Spanish. Every literal final equals its
+explicit-language counterpart byte for byte; raw word errors remain 4/19,
+6/18, 0/20 and 2/29 respectively. The existing production-output insertion
+tests therefore cover these same final bytes; these runs do not add concurrent
+recognition-to-application evidence.
+
+All four observed one native thread, with maximum VmPeak 204164 KiB and no
+guard or cgroup memory-event increase. All four scopes were inactive after
+observation. The first nonempty German, French and Spanish previews were the
+invented English phrase “Thank you.” around 2.6 seconds after Ready, before the
+later hypothesis switched language. Raw drafts remain in the ledger. Automatic
+detection reaching the same final is not evidence that its early preview is
+accurate, nor qualification of languages outside these four recordings.
+
 The adjacent [JSON ledger](dictation-whistle-aot-review.json) records source-built
 runtime/compiler/artifact digests, exact Rust/bridge source hashes, raw receipt
 hashes, measured public replies, fixture custody and cleanup. First-batch and
