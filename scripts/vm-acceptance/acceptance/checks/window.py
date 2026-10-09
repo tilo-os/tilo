@@ -572,8 +572,10 @@ def _judge(name, st, b, hardware) -> tuple[list[str], list[str]]:
 def judge_switch_lines(switches: list[dict], expected: int, b: dict, hardware: bool) -> list[str]:
     """Problems in the compositor's own `WORKSPACE-SWITCH` timing of `expected` switches.
 
-    The first frame is judged from when it was queued everywhere, and from when it was
-    shown on real display hardware only: a virtual display presents on its own timer."""
+    Everywhere: one line per switch, and a frame run rather than a jump. On real display
+    hardware also the first frame shown and the intervals without a new frame. A virtual
+    display presents on its own timer and holds frames back, so there its times are only
+    recorded; the trace-based judgement above takes the display's waits out instead."""
     if len(switches) != expected:
         return [f"{expected} workspace switches, {len(switches)} WORKSPACE-SWITCH lines in the session log"]
     problems = []
@@ -582,11 +584,13 @@ def judge_switch_lines(switches: list[dict], expected: int, b: dict, hardware: b
         if switch["frames"] < b["animation_min_frames"]:
             problems.append(f"{name}: {switch['frames']} frames in the switch's frame run "
                             f"(want >= {b['animation_min_frames']})")
-        first = (switch["first_shown_us"] if hardware else switch["first_queued_us"]) / 1000
+        if not hardware:
+            continue
+        first = switch["first_shown_us"] / 1000
         if first > b["input_first_frame_ms"]:
-            problems.append(f"{name}: first frame {first:.1f} ms after the chord "
+            problems.append(f"{name}: first frame shown {first:.1f} ms after the chord "
                             f"> {b['input_first_frame_ms']} ms")
-        if hardware and switch["dropped"]:
+        if switch["dropped"]:
             problems.append(f"{name}: {switch['dropped']} refresh intervals without a new frame")
     return problems
 

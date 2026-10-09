@@ -135,12 +135,12 @@ class SwitchLineTest(unittest.TestCase):
         with self.assertRaises(Unobservable):
             parse_switch_lines("WORKSPACE-SWITCH first_queued_us=1 frames=2")
 
-    def test_the_virtual_display_is_judged_by_queueing_and_hardware_by_showing(self):
-        slow_display = parse_switch_lines(SWITCH.format(q=6000, s=50000, f=25, d=3))
+    def test_only_real_hardware_is_judged_by_what_it_showed(self):
+        slow_display = parse_switch_lines(SWITCH.format(q=60000, s=90000, f=25, d=3))
         self.assertEqual(judge_switch_lines(slow_display, 1, BUDGETS, hardware=False), [])
         problems = judge_switch_lines(slow_display, 1, BUDGETS, hardware=True)
         self.assertEqual(len(problems), 2, problems)
-        self.assertIn("first frame 50.0 ms", problems[0])
+        self.assertIn("first frame shown 90.0 ms", problems[0])
         self.assertIn("3 refresh intervals", problems[1])
 
     def test_a_jump_or_a_missing_line_is_a_problem(self):
