@@ -17,7 +17,7 @@ use tilo_relay_protocol::room_operator::{
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, Notify, broadcast};
+use tokio::sync::{Mutex, Notify, broadcast, oneshot};
 
 /// How long the relay may take to announce that it serves browsers.
 const START_WAIT: Duration = Duration::from_secs(60);
@@ -40,23 +40,34 @@ pub struct Member {
 #[derive(Clone, Debug)]
 pub enum Event {
     Member(Member),
-    /// An admitted pairing code certified nobody.
-    Refused {
-        pairing_code: String,
-        reason: RefusalReason,
-    },
     Expired,
 }
 
+/// The relay's answer to one admission: the browser it certified, or why
+/// it certified nobody.
+type Answer = std::result::Result<Member, RefusalReason>;
+
 /// Where a single-use ticket stands.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum TicketState {
     Free,
-    /// The relay was told to certify the browser showing this code and has
-    /// not answered yet; the ticket admits nobody else meanwhile.
-    Admitting(String),
+    /// The relay was told to certify the browser showing `pairing_code` and
+    /// has not answered yet; the ticket admits nobody else meanwhile. The
+    /// answer goes to exactly the admission that asked, so it can be
+    /// neither missed nor mistaken for an earlier admission of the same
+    /// code.
+    Admitting {
+        pairing_code: String,
+        answer: oneshot::Sender<Answer>,
+    },
     /// A browser was certified with it.
     Spent,
+}
+
+impl TicketState {
+    fn admits(&self, code: &str) -> bool {
+        matches!(self, Self::Admitting { pairing_code, .. } if pairing_code == code)
+    }
 }
 
 /// A single-use permission to have one browser device certified.
@@ -260,9 +271,11 @@ impl Room {
                 if let Err(error) = reader.observe(&line) {
                     eprintln!("tilo-room-service: room {}: {error:#}", reader.id);
                     reader.broken.notify_one();
-                    return;
+                    break;
                 }
             }
+            // Nothing will answer a pending admission any more.
+            reader.abandon_admissions();
         });
         Ok(room)
     }
@@ -284,7 +297,6 @@ impl Room {
                 label,
                 pairing_code,
             }) => {
-                self.settle(&pairing_code, TicketState::Spent);
                 let member = Member {
                     label,
                     device,
@@ -295,18 +307,13 @@ impl Room {
                     history.push(member.clone());
                     drop(history);
                 }
+                self.settle(&member.pairing_code, Ok(member.clone()));
                 let _ = self.events.send(Event::Member(member));
             }
             Ok(RoomEvent::AdmitRefused {
                 pairing_code,
                 reason,
-            }) => {
-                self.settle(&pairing_code, TicketState::Free);
-                let _ = self.events.send(Event::Refused {
-                    pairing_code,
-                    reason,
-                });
-            }
+            }) => self.settle(&pairing_code, Err(reason)),
         }
         Ok(())
     }
@@ -327,16 +334,14 @@ impl Room {
     }
 
     /// Holds `ticket` for the browser that shows `pairing_code` until the
-    /// relay answers.
-    fn reserve(&self, ticket: &str, pairing_code: &str) -> Result<()> {
+    /// relay answers, and returns where that answer will arrive.
+    fn reserve(&self, ticket: &str, pairing_code: &str) -> Result<oneshot::Receiver<Answer>> {
         let mut tickets = self
             .tickets
             .lock()
             .map_err(|_| anyhow::anyhow!("tickets poisoned"))?;
         ensure!(
-            !tickets
-                .iter()
-                .any(|entry| entry.state == TicketState::Admitting(pairing_code.to_owned())),
+            !tickets.iter().any(|entry| entry.state.admits(pairing_code)),
             "this pairing code is already being admitted"
         );
         let entry = tickets
@@ -344,26 +349,77 @@ impl Room {
             .find(|entry| entry.secret == ticket)
             .context("this invitation was already used or does not exist")?;
         match entry.state {
-            TicketState::Free => entry.state = TicketState::Admitting(pairing_code.to_owned()),
-            TicketState::Admitting(_) => bail!("this invitation is already admitting a device"),
+            TicketState::Free => {}
+            TicketState::Admitting { .. } => {
+                bail!("this invitation is already admitting a device")
+            }
             TicketState::Spent => bail!("this invitation was already used or does not exist"),
         }
+        let (answer, answered) = oneshot::channel();
+        entry.state = TicketState::Admitting {
+            pairing_code: pairing_code.to_owned(),
+            answer,
+        };
         drop(tickets);
-        Ok(())
+        Ok(answered)
     }
 
-    /// Moves the ticket admitting `pairing_code` to `state`.
-    fn settle(&self, pairing_code: &str, state: TicketState) {
+    /// Settles the ticket admitting `pairing_code` with the relay's answer:
+    /// spent on a certified browser, usable again after a refusal.
+    fn settle(&self, pairing_code: &str, answer: Answer) {
         let Ok(mut tickets) = self.tickets.lock() else {
             return;
         };
-        let admitting = TicketState::Admitting(pairing_code.to_owned());
-        match tickets.iter_mut().find(|entry| entry.state == admitting) {
-            Some(entry) => entry.state = state,
-            None => eprintln!(
+        let Some(entry) = tickets
+            .iter_mut()
+            .find(|entry| entry.state.admits(pairing_code))
+        else {
+            drop(tickets);
+            eprintln!(
                 "tilo-room-service: room {}: an answer for a code no ticket is admitting",
                 self.id
-            ),
+            );
+            return;
+        };
+        let settled = if answer.is_ok() {
+            TicketState::Spent
+        } else {
+            TicketState::Free
+        };
+        if let TicketState::Admitting { answer: waiter, .. } =
+            std::mem::replace(&mut entry.state, settled)
+        {
+            // The admission may have stopped waiting; the ticket is settled
+            // all the same.
+            let _ = waiter.send(answer);
+        }
+        drop(tickets);
+    }
+
+    /// Frees the ticket admitting `pairing_code` without an answer: the
+    /// relay was never told.
+    fn release(&self, pairing_code: &str) {
+        let Ok(mut tickets) = self.tickets.lock() else {
+            return;
+        };
+        for entry in tickets.iter_mut() {
+            if entry.state.admits(pairing_code) {
+                entry.state = TicketState::Free;
+            }
+        }
+        drop(tickets);
+    }
+
+    /// Ends every pending admission, whose waiters then learn the room
+    /// ended: the relay will answer none of them.
+    fn abandon_admissions(&self) {
+        let Ok(mut tickets) = self.tickets.lock() else {
+            return;
+        };
+        for entry in tickets.iter_mut() {
+            if matches!(entry.state, TicketState::Admitting { .. }) {
+                entry.state = TicketState::Free;
+            }
         }
         drop(tickets);
     }
@@ -380,47 +436,20 @@ impl Room {
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == ' '),
             "invalid pairing code"
         );
-        let mut events = self.events.subscribe();
-        self.reserve(ticket, pairing_code)?;
+        let answered = self.reserve(ticket, pairing_code)?;
         let admit = OperatorCommand::Admit {
             pairing_code: pairing_code.to_owned(),
         };
         if let Err(error) = self.tell(&admit).await {
-            self.settle(pairing_code, TicketState::Free);
+            self.release(pairing_code);
             return Err(error);
         }
-        let until = deadline(ADMIT_ANSWER_WAIT);
-        loop {
-            match tokio::time::timeout_at(until, events.recv()).await {
-                Ok(Ok(Event::Member(member))) if member.pairing_code == pairing_code => {
-                    return Ok(member);
-                }
-                Ok(Ok(Event::Refused {
-                    pairing_code: refused,
-                    reason,
-                })) if refused == pairing_code => bail!("{}", reason.message()),
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
-                    if let Some(member) = self.certified(pairing_code) {
-                        return Ok(member);
-                    }
-                }
-                Ok(Ok(Event::Member(_) | Event::Refused { .. })) => {}
-                Ok(Ok(Event::Expired) | Err(broadcast::error::RecvError::Closed)) => {
-                    bail!("the room ended")
-                }
-                Err(_) => bail!("the room did not answer in time"),
-            }
+        match tokio::time::timeout_at(deadline(ADMIT_ANSWER_WAIT), answered).await {
+            Ok(Ok(Ok(member))) => Ok(member),
+            Ok(Ok(Err(reason))) => bail!("{}", reason.message()),
+            Ok(Err(_)) => bail!("the room ended"),
+            Err(_) => bail!("the room did not answer in time"),
         }
-    }
-
-    /// The member certified with `pairing_code`, if one was.
-    fn certified(&self, pairing_code: &str) -> Option<Member> {
-        let history = self.history.lock().ok()?;
-        history
-            .iter()
-            .rev()
-            .find(|member| member.pairing_code == pairing_code)
-            .cloned()
     }
 
     /// Writes one operator command to the relay.
@@ -446,6 +475,7 @@ impl Room {
     /// every byte the room wrote.
     pub async fn stop(&self, mut child: Child) {
         let _ = self.events.send(Event::Expired);
+        self.abandon_admissions();
         let _ = self.tell(&OperatorCommand::Shutdown {}).await;
         if tokio::time::timeout(Duration::from_secs(10), child.wait())
             .await
@@ -662,6 +692,74 @@ mod tests {
             })
             .await;
         admitting.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_answer_reaches_its_admission_however_busy_the_room_and_never_an_older_one() {
+        let (room, mut relay) = running_room().await;
+        let (first, second) = (room.ticket(2).unwrap(), room.ticket(2).unwrap());
+        let admitting = tokio::spawn({
+            let (room, ticket) = (Arc::clone(&room), first.clone());
+            async move { room.admit(&ticket, "111111").await }
+        });
+        relay.command().await;
+        let certified = RoomEvent::MemberCertified {
+            device: "cd".into(),
+            label: "Phone".into(),
+            pairing_code: "111111".into(),
+        };
+        relay.report(&certified).await;
+        admitting.await.unwrap().unwrap();
+
+        // The same code again, on another ticket, while more members are
+        // announced than the room's event channel holds.
+        let admitting = tokio::spawn({
+            let (room, ticket) = (Arc::clone(&room), second.clone());
+            async move { room.admit(&ticket, "111111").await }
+        });
+        relay.command().await;
+        for index in 0..200 {
+            relay
+                .report(&RoomEvent::MemberCertified {
+                    device: format!("{index:02x}"),
+                    label: "Other".into(),
+                    pairing_code: format!("other-{index}"),
+                })
+                .await;
+        }
+        relay
+            .report(&RoomEvent::AdmitRefused {
+                pairing_code: "111111".into(),
+                reason: RefusalReason::NoMatchingRequest,
+            })
+            .await;
+        let refused = tokio::time::timeout(Duration::from_secs(5), admitting)
+            .await
+            .expect("the refusal did not reach its admission")
+            .unwrap()
+            .expect_err("an earlier certificate of the same code answered this admission");
+        assert_eq!(
+            refused.to_string(),
+            RefusalReason::NoMatchingRequest.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pending_admission_ends_with_its_relay() {
+        let (room, mut relay) = running_room().await;
+        let ticket = room.ticket(1).unwrap();
+        let admitting = tokio::spawn({
+            let room = Arc::clone(&room);
+            async move { room.admit(&ticket, "111111").await }
+        });
+        relay.command().await;
+        drop(relay);
+        let ended = tokio::time::timeout(Duration::from_secs(5), admitting)
+            .await
+            .expect("the admission outlived its relay")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(ended.to_string(), "the room ended");
     }
 
     #[tokio::test]
