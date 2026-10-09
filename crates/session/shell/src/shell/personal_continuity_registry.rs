@@ -94,20 +94,25 @@ fn installed_schema_agrees(
 /// while the app was not installed here carried only the sending device's
 /// word for its semantic schema; now the signed manifest decides. A
 /// disagreeing semantic projection is dropped and the framework's
-/// presentation kept, so the tab still opens where it was.
+/// presentation kept, so the tab still opens where it was — unless the
+/// manifest requires the semantic facet, in which case a presentation-only
+/// resume breaks its contract and the launch starts fresh instead.
 pub(crate) fn resume_for_installed_launch(
     app_id: &str,
     schema: u16,
     bytes: Vec<u8>,
 ) -> Option<(u16, Vec<u8>)> {
-    if schema == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
-        return ui::app::sanitize_structural_continuation_metadata(&bytes, |inner, payload| {
+    let contract = continuity_contract_for_app(app_id).ok()?;
+    let bytes = if schema == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
+        ui::app::sanitize_structural_continuation_metadata(&bytes, |inner, payload| {
             semantic_metadata_valid(app_id, inner, payload, Uninstalled::Refuse)
-        })
-        .map(|canonical| (schema, canonical));
-    }
-    validate_app_metadata_for(app_id, schema, &bytes, Uninstalled::Refuse)
-        .then_some((schema, bytes))
+        })?
+    } else {
+        validate_app_metadata_for(app_id, schema, &bytes, Uninstalled::Refuse).then_some(bytes)?
+    };
+    let resume = ResumeMetadata::new(schema, ResumeSensitivity::Syncable, bytes).ok()?;
+    resume_has_required_facets(&resume, &contract.required)
+        .then(|| (schema, resume.bytes().to_vec()))
 }
 
 /// The schema this device knows `app_id` by: its signed manifest, or for an
@@ -1230,6 +1235,13 @@ mod tests {
     /// An app store holding at most the third-party reader, declaring
     /// `schema` when given. Callers hold `process_env`.
     fn reader_store(schema: Option<&str>) -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
+        reader_store_requiring(schema, r#"["presentation", "semantic"]"#)
+    }
+
+    fn reader_store_requiring(
+        schema: Option<&str>,
+        required: &str,
+    ) -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
         let dir = tempfile::tempdir().unwrap();
         if let Some(schema) = schema {
             let payload = dir.path().join("payloads").join(READER);
@@ -1240,7 +1252,7 @@ mod tests {
                 format!(
                     "[package]\nid = \"{READER}\"\nversion = \"1.0.0\"\n\
                      [entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
-                     [continuity]\nrequired = [\"presentation\", \"semantic\"]\n\
+                     [continuity]\nrequired = {required}\n\
                      semantic-schema = \"{schema}\"\n"
                 ),
             )
@@ -1335,8 +1347,8 @@ mod tests {
             }),
         )
         .unwrap();
-        let launch_with = |schema: Option<&str>| {
-            let (_store, _env) = reader_store(schema);
+        let launch_with = |schema: Option<&str>, required: &str| {
+            let (_store, _env) = reader_store_requiring(schema, required);
             let room = RoomId::new();
             launcher::clear_pending_placements();
             launcher::set_pending_placement(
@@ -1352,22 +1364,31 @@ mod tests {
             );
             let staged = launcher::take_staged_resume_for_package(READER, room);
             launcher::clear_pending_placements();
-            let (Some((schema, bytes)), record) = staged.expect("the tab keeps its launch") else {
-                panic!("the presentation checkpoint survives");
-            };
+            let (resume, record) = staged.expect("the tab keeps its launch");
             assert_eq!(record, 4_100, "the source record still reopens");
-            assert_eq!(schema, ui::app::STRUCTURAL_CONTINUATION_SCHEMA);
-            let facets = ui::app::structural_continuation_facets(&bytes).unwrap();
-            assert!(facets.presentation());
-            (facets.semantic(), bytes)
+            resume.map(|(schema, bytes)| {
+                assert_eq!(schema, ui::app::STRUCTURAL_CONTINUATION_SCHEMA);
+                let facets = ui::app::structural_continuation_facets(&bytes).unwrap();
+                assert!(facets.presentation());
+                (facets.semantic(), bytes)
+            })
         };
+        let both = r#"["presentation", "semantic"]"#;
+        let presentation = r#"["presentation"]"#;
 
-        let (semantic, bytes) = launch_with(Some("publication-position-v1"));
+        let (semantic, bytes) = launch_with(Some("publication-position-v1"), both)
+            .expect("an agreeing manifest receives the checkpoint");
         assert!(semantic, "an agreeing manifest receives the position");
         assert_eq!(bytes, checkpoint.bytes);
-        let (semantic, _) = launch_with(Some("web-location-v1"));
+        let (semantic, _) = launch_with(Some("web-location-v1"), presentation)
+            .expect("the presentation checkpoint survives");
         assert!(!semantic, "a disagreeing manifest never sees the payload");
-        let (semantic, _) = launch_with(None);
+        assert_eq!(
+            launch_with(Some("web-location-v1"), both),
+            None,
+            "a manifest requiring the semantic facet never receives a presentation-only resume",
+        );
+        let (semantic, _) = launch_with(None, both).expect("the presentation checkpoint survives");
         assert!(!semantic, "a launch with no signed manifest cannot agree");
     }
 
