@@ -2171,6 +2171,12 @@ fn push_runtime_landlock_rules(argv: &mut Vec<String>, runtime: Option<(&Path, &
         let rt = crate::sandbox::runtime_mount_for(ver);
         argv.push("--ro".to_string());
         argv.push(rt.display().to_string());
+        if rt_root.join("lib/fonts").is_dir() {
+            argv.extend([
+                "--ro".to_string(),
+                crate::sandbox::RUNTIME_FONT_CATALOG_PATH.to_string(),
+            ]);
+        }
         // Also allow the canonical loader paths re-bound out of the bundle —
         // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
         for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {

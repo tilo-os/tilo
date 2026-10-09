@@ -134,6 +134,24 @@ def native_dependencies(objects, dependency_env):
     return sorted(paths)
 
 
+def prepare_runtime_fonts(repo, directory):
+    """Ship the reviewed standalone catalog inside the signed SDK payload."""
+    fonts = directory / 'fonts'
+    run(['python3', str(repo / 'tools/font-catalog.py'), 'prepare',
+         str(repo / 'crates/sdk/ui-core/assets/fonts'), str(fonts),
+         '--scope', 'product'])
+    return fonts
+
+
+def publish_runtime_fonts(repo, fonts, catalogs):
+    """Expose the same verified bytes to image processes outside app sandboxes."""
+    identity = hashlib.sha256((fonts / 'manifest.toml').read_bytes()).hexdigest()
+    catalog = catalogs / identity
+    run(['python3', str(repo / 'tools/font-catalog.py'), 'stage',
+         str(fonts), str(catalog), '--scope', 'product'])
+    return catalog
+
+
 def assemble_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
     rows = applications(repo)
@@ -147,7 +165,9 @@ def assemble_inside(args):
         raise ValueError('the exact graph toolkit or Rust standard library is missing')
     dependency_env = dict(os.environ, LD_LIBRARY_PATH=f'{toolkit.parent}:{libdir}')
     closure = native_dependencies([toolkit, *binaries], dependency_env)
-    includes = list(dict.fromkeys([toolkit, std[0], *closure]))
+    fonts = prepare_runtime_fonts(repo, stage / 'work')
+    publish_runtime_fonts(repo, fonts, stage / 'tree/usr/share/tilo/font-catalogs')
+    includes = list(dict.fromkeys([toolkit, std[0], *closure, fonts]))
     bundle = target / 'release/tilo-runtime-bundle'
     identity = stage / 'work/runtime-identity.json'
     version_file = stage / 'work/runtime-version'
