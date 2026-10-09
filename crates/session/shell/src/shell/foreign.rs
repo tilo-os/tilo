@@ -1028,6 +1028,9 @@ pub struct ForeignFrameStore {
     /// Which surfaces a capture must draw as a placeholder — see
     /// [`crate::shell::capture_protection`].
     capture_protection: Mutex<CaptureProtection>,
+    /// Advanced after every change to [`Self::capture_protection`], so the
+    /// compositor can tell that nothing changed without taking the lock.
+    capture_protection_epoch: AtomicU64,
     /// The size, in logical pixels, other devices of the person show each
     /// streamed window at. A window not shown here is configured to it.
     remote_extents: Mutex<HashMap<SurfaceId, (i32, i32)>>,
@@ -2156,14 +2159,19 @@ impl ForeignFrameStore {
     /// (or no longer does) want its windows withheld from captures. Covers
     /// windows it maps later too, so a new window is never briefly exposed.
     pub fn request_app_capture_protection(&self, connection: u64, app_id: &str, protected: bool) {
-        let mut guard = self
-            .capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if protected {
-            guard.apps.insert(connection, app_id.to_string());
-        } else {
-            guard.apps.remove(&connection);
+        let changed = {
+            let mut guard = self
+                .capture_protection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if protected {
+                guard.apps.insert(connection, app_id.to_string()).as_deref() != Some(app_id)
+            } else {
+                guard.apps.remove(&connection).is_some()
+            }
+        };
+        if changed {
+            self.advance_capture_protection_epoch();
         }
     }
 
@@ -2177,24 +2185,57 @@ impl ForeignFrameStore {
 
     /// The connection closed: its request goes with it.
     pub fn release_capture_protection(&self, connection: u64) {
-        self.capture_protection
+        let released = self
+            .capture_protection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .apps
-            .remove(&connection);
+            .remove(&connection)
+            .is_some();
+        if released {
+            self.advance_capture_protection_epoch();
+        }
     }
 
     /// Protect (or stop protecting) one surface regardless of its app.
     pub fn set_surface_capture_protected(&self, id: SurfaceId, protected: bool) {
-        let mut guard = self
-            .capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if protected {
-            guard.surfaces.insert(id);
-        } else {
-            guard.surfaces.remove(&id);
+        self.set_surfaces_capture_protected(&[(id, protected)]);
+    }
+
+    /// [`Self::set_surface_capture_protected`] for several surfaces under
+    /// one acquisition of the lock.
+    pub fn set_surfaces_capture_protected(&self, surfaces: &[(SurfaceId, bool)]) {
+        let changed = {
+            let mut guard = self
+                .capture_protection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            surfaces.iter().fold(false, |changed, &(id, protected)| {
+                let flipped = if protected {
+                    guard.surfaces.insert(id)
+                } else {
+                    guard.surfaces.remove(&id)
+                };
+                changed | flipped
+            })
+        };
+        if changed {
+            self.advance_capture_protection_epoch();
         }
+    }
+
+    /// Changes to which apps and surfaces are protected so far. Equal values
+    /// read at two moments mean nothing was protected or released in
+    /// between. Takes no lock.
+    pub fn capture_protection_epoch(&self) -> u64 {
+        self.capture_protection_epoch.load(Ordering::Acquire)
+    }
+
+    /// Called after a change lands, so a reader that loaded the epoch
+    /// before reading the protection state sees a new epoch next time.
+    fn advance_capture_protection_epoch(&self) {
+        self.capture_protection_epoch
+            .fetch_add(1, Ordering::Release);
     }
 
     /// Whether a capture must draw surface `id`, owned by `app_id`, as a
@@ -2211,11 +2252,7 @@ impl ForeignFrameStore {
 
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
-        self.capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .surfaces
-            .remove(&id);
+        self.set_surface_capture_protected(id, false);
         let mut guard = self
             .entries
             .lock()

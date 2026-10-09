@@ -28,8 +28,21 @@ mod schema_rows {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+enum CatalogueAvailability {
+    #[default]
+    Ready,
+    Hidden,
+    NotPermitted,
+    ExitDuringQuery,
+}
+
 #[derive(Clone, Default)]
 struct StubHost {
+    activation: bool,
+    availability: CatalogueAvailability,
+    exited: Arc<std::sync::atomic::AtomicBool>,
+    record: Option<String>,
     room: Option<String>,
     invoked: Arc<StdMutex<Vec<InvokeRequest>>>,
     callers: Arc<StdMutex<Vec<Caller>>>,
@@ -56,6 +69,13 @@ impl StubHost {
             .unwrap();
         descriptor.contract.confirmation = self.confirmation.clone();
         descriptor.kind = *self.kind.lock().unwrap();
+        if self.activation {
+            descriptor.address.action = tilo_actions::remote::APPLICATION_ACTIVATE_ACTION.into();
+            descriptor.kind = tilo_actions::OperationKind::View;
+            descriptor.contract = tilo_actions::ActionContract::view();
+            descriptor.params.clear();
+            descriptor.input = tilo_actions::door::InputSpec::None;
+        }
         CatalogueRow {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
@@ -80,6 +100,19 @@ impl ActionHost for StubHost {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        if matches!(self.availability, CatalogueAvailability::ExitDuringQuery)
+            && query.provider.is_some()
+        {
+            self.exited.store(true, std::sync::atomic::Ordering::SeqCst);
+            return Pending::ready(Err(ActionHostError::Unavailable {
+                reason: "owner exited".into(),
+            }));
+        }
+        if matches!(self.availability, CatalogueAvailability::NotPermitted)
+            && query.provider.is_some()
+        {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
         let mut row = self.row();
         if let Some(provider) = query.provider.clone() {
             row.provider = provider;
@@ -89,9 +122,14 @@ impl ActionHost for StubHost {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
             room: self.room.clone().unwrap_or_else(|| "room".into()),
-            record_id: String::new(),
+            record_id: self.record.clone().unwrap_or_default(),
             browsable: true,
         }];
+        if matches!(self.availability, CatalogueAvailability::Hidden)
+            || self.exited.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            page.providers.clear();
+        }
         Pending::ready(Ok(page))
     }
 
@@ -162,6 +200,88 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
         .build()
         .unwrap()
         .block_on(future)
+}
+
+#[test]
+fn default_activation_rechecks_an_owner_that_exits_during_admission() {
+    let host = StubHost {
+        activation: true,
+        availability: CatalogueAvailability::ExitDuringQuery,
+        ..StubHost::default()
+    };
+    let invoked = host.invoked.clone();
+    let server = McpServer::new(host, "room".into(), "owner".into());
+    assert_eq!(run(server.activate_existing("so.tilo.test")).unwrap(), None);
+    assert!(invoked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn default_activation_uses_the_existing_permission_checked_view_door() {
+    let host = StubHost {
+        activation: true,
+        ..StubHost::default()
+    };
+    let invoked = host.invoked.clone();
+    let server = McpServer::new(host, "room".into(), "owner".into());
+    run(async {
+        assert_eq!(
+            server.activate_existing("so.tilo.test").await.unwrap(),
+            Some(71)
+        );
+    });
+    let requests = invoked.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].target.provider, "71");
+    assert_eq!(requests[0].target.address.resource, "test.note:1");
+    assert_eq!(
+        requests[0].target.address.action,
+        tilo_actions::remote::APPLICATION_ACTIVATE_ACTION
+    );
+    drop(requests);
+}
+
+#[test]
+fn default_activation_does_not_confuse_other_records_or_absence_with_a_live_owner() {
+    for host in [
+        StubHost {
+            activation: true,
+            availability: CatalogueAvailability::Hidden,
+            ..StubHost::default()
+        },
+        StubHost {
+            activation: true,
+            record: Some("uuid:another-record".into()),
+            ..StubHost::default()
+        },
+    ] {
+        let invoked = host.invoked.clone();
+        let server = McpServer::new(host, "room".into(), "owner".into());
+        run(async {
+            assert_eq!(
+                server.activate_existing("so.tilo.test").await.unwrap(),
+                None
+            );
+        });
+        assert!(invoked.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn default_activation_refuses_unready_and_older_owners_without_starting_an_action() {
+    for host in [
+        StubHost::default(),
+        StubHost {
+            availability: CatalogueAvailability::NotPermitted,
+            ..StubHost::default()
+        },
+    ] {
+        let invoked = host.invoked.clone();
+        let server = McpServer::new(host, "room".into(), "owner".into());
+        run(async {
+            assert!(server.activate_existing("so.tilo.test").await.is_err());
+        });
+        assert!(invoked.lock().unwrap().is_empty());
+    }
 }
 
 fn endpoint(host: StubHost, token: Option<&str>) -> Arc<Endpoint<StubHost>> {

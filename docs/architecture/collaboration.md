@@ -189,6 +189,37 @@ This covers a governance change on the hop that authenticated it. A relayed
 or delegated governance change — one a member forwards on the governor's
 behalf — needs the operation signed rather than the hop authenticated.
 
+### Reading governance
+
+`tilo_peer_state::room::governance_of` returns a named `RoomGovernance`:
+every governed value exactly as stored, capability and identity rows as
+their raw JSON blobs. Admission compares it byte for byte, so a changed but
+undecodable row is still a change. Decoded views of the same document state
+are cached on the native peer's `CachedDocument`: `policy()` (owner and
+decoded capabilities) and `identities()` (each identity row decoded). A
+document message is authorized from those caches, so it pays no JSON decode
+while the room's governance is unchanged.
+
+Effect receipts are compared by their stored bytes; a receipt is decoded
+only when its bytes differ from what is held. The native peer's receipt
+ledger keeps each receipt as received, never re-encoded.
+
+### Retention
+
+- **Identity admissions.** A governed identity row keeps its first
+  redemption receipt (`admission`) for good, since that is its admission
+  evidence. Of the later receipts (`admissions`) it keeps only the latest
+  `tilo_peer_state::governance::MAX_RETAINED_IDENTITY_ADMISSIONS` (8). No
+  replay protection is lost: every redemption also writes each receipt it
+  has seen into the per-invite `invitation_receipts_v1` ledger, in the same
+  transaction that drops one from the row. That ledger refuses a second
+  redemption of a spent invitation, from any device, and is never pruned.
+- **Effect receipts** are not pruned. They are immutable evidence ("omission
+  cannot erase old evidence"), and dropping one is safe only behind a
+  compaction checkpoint every peer agrees on, which does not exist yet.
+  Admission keeps their per-message cost flat instead: an unchanged receipt
+  is never decoded.
+
 ## Workspace hosts
 
 `crates/hosting/tilo-relay` is the persistent server tier. Despite the retained

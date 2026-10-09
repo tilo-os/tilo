@@ -313,11 +313,7 @@ impl ManagedModel {
                 license_id: model.license_id.clone(),
                 size_bytes: model.artifact.size_bytes,
                 capabilities: model.in_process_capabilities(),
-                recorded_at_unix_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |elapsed| {
-                        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-                    }),
+                recorded_at_unix_ms: tilo_clock::unix_now_ms(),
             }),
         }
     }
@@ -343,7 +339,7 @@ pub struct InstalledInProcessModel {
 /// shared fallback: a store anyone can write would let them plant the model
 /// this user runs.
 pub fn user_model_root() -> Option<PathBuf> {
-    xdg_paths::xdg::data_home().map(|data| data.join("tilo/models"))
+    tilo_paths::xdg::data_home().map(|data| data.join("tilo/models"))
 }
 
 /// Find the installed in-process model that provides `capability` in the

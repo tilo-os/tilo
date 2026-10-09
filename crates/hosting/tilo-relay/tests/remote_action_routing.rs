@@ -258,7 +258,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
 }
 
 /// How the relay answered a frame it must refuse: the typed reason it led
-/// with, or `None` when the 1 s access audit closed the session first —
+/// with, or `None` when the access audit closed the session first —
 /// either way nothing was served. A served frame fails the test.
 async fn refusal(client: &RelayClient, who: &str) -> Option<UnavailableReason> {
     loop {
@@ -276,16 +276,6 @@ async fn refusal(client: &RelayClient, who: &str) -> Option<UnavailableReason> {
             Some(other) => panic!("{who} expected a refusal, got {other:?}"),
         }
     }
-}
-
-fn now_ns() -> u64 {
-    u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap()
 }
 
 #[tokio::test]
@@ -412,7 +402,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
 
     // Delegate the subscribed device briefly; until expiry it acts as the agent.
     let lifetime = Duration::from_millis(500);
-    let issued = now_ns();
+    let issued = tilo_clock::try_unix_now_ns().unwrap();
     let expires = issued
         .checked_add(u64::try_from(lifetime.as_nanos()).unwrap())
         .unwrap();
@@ -447,7 +437,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
     assert_eq!(*actions.callers.lock().unwrap(), delegated);
 
     // Just past expiry, without waiting for the access audit.
-    let remaining = expires.saturating_sub(now_ns());
+    let remaining = expires.saturating_sub(tilo_clock::try_unix_now_ns().unwrap());
     tokio::time::sleep(Duration::from_nanos(remaining).saturating_add(Duration::from_millis(20)))
         .await;
     client

@@ -342,7 +342,7 @@ impl Dictionary {
 /// variable is set (e.g. a locked-down sandbox), in which case the user
 /// dictionary lives only in memory.
 pub fn user_dict_path() -> Option<std::path::PathBuf> {
-    let base = xdg_paths::xdg::config_home()?;
+    let base = tilo_paths::xdg::config_home()?;
     Some(base.join("tilo").join("userdict.txt"))
 }
 

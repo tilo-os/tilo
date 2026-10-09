@@ -36,6 +36,7 @@ impl std::fmt::Debug for NativeInvocationSource {
 }
 
 impl NativeInvocationSource {
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn from_delivery(
         route: RouteSpec,
         delivery: &runtime_collab::Invocation,
@@ -78,6 +79,7 @@ impl NativeInvocationSource {
         &self.route
     }
 
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn request(&self) -> &PublishedInvocationRequest {
         &self.request
     }
@@ -86,6 +88,7 @@ impl NativeInvocationSource {
         &self.spec
     }
 
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn transport_source(
         &self,
     ) -> &runtime_collab::document_contribution::DocumentContributionSource {
@@ -141,10 +144,12 @@ impl NativeInvocationSource {
 
 /// The actual stream task owns this guard, including early failure and abort.
 /// Retiring it stops fresh input effects, not historical receipt observation.
+#[cfg(feature = "broker-transport")]
 pub(crate) struct NativeMessageStreamLifetime {
     retired: Arc<AtomicBool>,
 }
 
+#[cfg(feature = "broker-transport")]
 impl NativeMessageStreamLifetime {
     pub(crate) fn new() -> Self {
         Self {
@@ -153,6 +158,7 @@ impl NativeMessageStreamLifetime {
     }
 }
 
+#[cfg(feature = "broker-transport")]
 impl Drop for NativeMessageStreamLifetime {
     fn drop(&mut self) {
         self.retired.store(true, Ordering::Release);
@@ -170,10 +176,18 @@ pub struct NativeExecutedContribution {
 
 impl std::fmt::Debug for NativeExecutedContribution {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("NativeExecutedContribution(..)")
+        // Keep the retained payload opaque in every host configuration. Only
+        // bounded sizes, never tokens, document bytes or change hashes, escape.
+        formatter
+            .debug_struct("NativeExecutedContribution")
+            .field("source", &self.source)
+            .field("envelope_bytes", &self.envelope.len())
+            .field("change_count", &self.changes.len())
+            .finish_non_exhaustive()
     }
 }
 
+#[cfg(feature = "broker-transport")]
 impl NativeExecutedContribution {
     pub(crate) fn source(&self) -> &NativeInvocationSource {
         &self.source

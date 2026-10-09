@@ -28,12 +28,6 @@ pub(super) struct ChatRun {
     pub(super) observed_mutation: bool,
 }
 
-fn now() -> i64 {
-    ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs().min(i64::MAX as u64) as i64)
-}
-
 fn chat_reply_id(agent_id: &str, summons_id: &str) -> String {
     // This stable, length-delimited derivation mints a Chat message identifier.
     // The returned UUID payload is never used as a document artifact or route grant.
@@ -121,7 +115,7 @@ impl Session {
             &summons.channel,
             &summons.message,
             reply_id,
-            now(),
+            ui::time::unix_now_i64(),
             &reply,
         ))?;
         Ok(true)
@@ -309,7 +303,7 @@ impl Session {
     fn chat_refused(&mut self, why: &str) -> Result<bool> {
         if let Some(run) = &mut self.chat_run {
             run.work.state = AgentWorkState::Refused;
-            run.work.since = now();
+            run.work.since = ui::time::unix_now_i64();
         }
         self.publish_chat_work(Some(why))?;
         self.active_run = None;
@@ -406,7 +400,7 @@ impl Session {
             &self.cfg.agent_id,
             &self.cfg.name,
             self.last_chat_action.as_ref(),
-            now(),
+            ui::time::unix_now_i64(),
             &handled,
         ) else {
             return Ok(false);
@@ -428,7 +422,7 @@ impl Session {
             self.publish_chat(&::chat::actions::send_message_action(
                 &summons.channel,
                 &reply,
-                now(),
+                ui::time::unix_now_i64(),
                 "",
                 Some(summons.message.clone()),
                 None,
@@ -439,7 +433,7 @@ impl Session {
             channel: summons.channel.clone(),
             reply,
             subject: summons.subject.resource().map(str::to_string),
-            work: AgentWork::new(AgentWorkState::Taken, now()),
+            work: AgentWork::new(AgentWorkState::Taken, ui::time::unix_now_i64()),
             uncertain: false,
             target_artifact: None,
             observed_mutation: false,
@@ -541,7 +535,7 @@ impl Session {
                     did: offer.descriptor.action_label.clone(),
                     about: offer.descriptor.resource_label.clone(),
                 };
-                run.work.since = now();
+                run.work.since = ui::time::unix_now_i64();
             }
             self.publish_chat_work(None)?;
             let trace_len = self.chat_run.as_ref().map_or(0, |run| run.work.trace.len());
@@ -567,7 +561,7 @@ impl Session {
                     self.publish_chat_work(None)?;
                     self.last_chat_action = Some(crate::listen::LastAction::new(
                         &offer.descriptor.address.resource,
-                        now(),
+                        ui::time::unix_now_i64(),
                     ));
                     previous = Some(outcome);
                 }
@@ -605,7 +599,7 @@ impl Session {
             .unwrap_or_default();
         if let Some(run) = &mut self.chat_run {
             run.work.state = AgentWorkState::Done { did: did.clone() };
-            run.work.since = now();
+            run.work.since = ui::time::unix_now_i64();
         }
         self.publish_chat_work(Some(&format!("Completed: {did}.")))?;
         self.active_run = None;

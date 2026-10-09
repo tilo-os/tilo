@@ -86,13 +86,16 @@ pub(super) struct InputRuntime {
     /// Last primary-surface pointer in logical pixels. Mouse button events do
     /// not carry coordinates, so the marker gesture reuses the preceding
     /// platform `CursorMoved` just like retained controls do.
+    #[cfg(feature = "native")]
     pub(super) agent_marker_cursor: Option<vello::kurbo::Point>,
     /// A marker owns its press through release. This is presentation custody,
     /// never an action/caller token.
+    #[cfg(feature = "native")]
     pub(super) agent_marker_press: Option<AgentMarkerPress>,
 }
 
 #[derive(Clone)]
+#[cfg(feature = "native")]
 pub(super) struct AgentMarkerPress {
     pub(super) room: String,
     pub(super) surface: String,
@@ -112,7 +115,9 @@ impl InputRuntime {
             tooltip_host: crate::widget::TooltipHost::new(),
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
+            #[cfg(feature = "native")]
             agent_marker_cursor: None,
+            #[cfg(feature = "native")]
             agent_marker_press: None,
         }
     }

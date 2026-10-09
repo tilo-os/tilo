@@ -188,7 +188,7 @@ fn spawn_broker(
     let membership = tree.shared();
     let broker = crate::shell::collab_broker::spawn_native_harness(
         path.to_path_buf(),
-        std::sync::Arc::clone(&membership),
+        membership.clone(),
         [
             FIXTURE_HANDLE,
             SHORTCUTS_HANDLE,
@@ -977,10 +977,8 @@ fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     door.save_as(&session, &triggered_draft("from-keys", vec![chord]))
         .expect("the shortcut is saved with its keyboard trigger");
 
-    let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_handle(
-        std::sync::Arc::clone(&door.membership),
-        false,
-    );
+    let (mut host, _chrome) =
+        crate::shell::build_tilo_overlay_host_with_handle(door.membership.clone(), false);
     host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
         .expect("the built-in shortcut table is valid");
     host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));
@@ -2016,10 +2014,8 @@ fn with_nobody_present_the_call_is_refused_without_asking() {
 /// A compositor session sharing the door's workspaces and broker, and the
 /// person it acts for.
 fn session_host(door: &Door) -> crate::shell::overlay_host::ShellOverlayHost {
-    let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_handle(
-        std::sync::Arc::clone(&door.membership),
-        false,
-    );
+    let (mut host, _chrome) =
+        crate::shell::build_tilo_overlay_host_with_handle(door.membership.clone(), false);
     host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
         .expect("the built-in shortcut table is valid");
     host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));

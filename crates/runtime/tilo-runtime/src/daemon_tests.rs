@@ -9,6 +9,92 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[test]
+fn default_admission_activates_a_live_owner_and_retries_after_its_exit() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct Endpoint {
+        active: Arc<AtomicBool>,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Endpoint {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(thread) = self.thread.take() {
+                thread.join().unwrap();
+            }
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(directory.path().join("native.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let active = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (serving, stopping) = (active.clone(), stop.clone());
+    let endpoint = Endpoint {
+        active,
+        stop,
+        thread: Some(std::thread::spawn(move || {
+            while !stopping.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .unwrap();
+                        let mut request = String::new();
+                        BufReader::new(stream.try_clone().unwrap())
+                            .read_line(&mut request)
+                            .unwrap();
+                        let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                        assert_eq!(
+                            request,
+                            serde_json::json!({"native":"activate", "app_id":"so.tilo.fixture"})
+                        );
+                        writeln!(
+                            stream,
+                            "{}",
+                            serde_json::json!({"activated": serving.load(Ordering::SeqCst)})
+                        )
+                        .unwrap();
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("activation endpoint failed: {error}"),
+                }
+            }
+        })),
+    };
+    let grace = Duration::from_millis(60);
+    let first = super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
+        .unwrap()
+        .unwrap();
+    endpoint.active.store(true, Ordering::SeqCst);
+    assert!(
+        super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
+            .unwrap()
+            .is_none(),
+        "a second healthy launch attaches without replacing its owner"
+    );
+    endpoint.active.store(false, Ordering::SeqCst);
+    let refusal =
+        super::default_launch_guard(directory.path(), "so.tilo.fixture", grace).unwrap_err();
+    assert_eq!(refusal.kind(), io::ErrorKind::WouldBlock);
+    assert!(refusal.to_string().contains("owner was retained"));
+    drop(first);
+    // The stale PID left in the lock file never counts as a live owner.
+    let retry = super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
+        .unwrap()
+        .expect("owner exit releases the kernel lease for a fresh launch");
+    drop(retry);
+    drop(endpoint);
+}
+
 const LIMITS: StartupLimits = StartupLimits {
     stall: Duration::from_millis(300),
     cap: Duration::from_secs(10),

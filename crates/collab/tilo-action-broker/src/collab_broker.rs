@@ -731,6 +731,13 @@ impl AppActionBroker {
         self.state.take_finished_shortcut_runs()
     }
 
+    /// Whether a finished shortcut run is waiting to be taken, without
+    /// taking it: a frame can ask every tick.
+    #[must_use]
+    pub fn has_finished_shortcut_runs(&self) -> bool {
+        self.state.has_finished_shortcut_runs()
+    }
+
     /// Run saved shortcut `shortcut` in `room` for `caller`, who is at the
     /// screen; its confirmations and questions wait for the compositor's
     /// sheet ([`Self::take_step_prompt`]). Answers with the broker job the

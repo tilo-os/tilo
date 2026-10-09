@@ -1481,5 +1481,7 @@ mod host_effect_tests;
 pub(crate) mod native_message;
 #[cfg(test)]
 pub(crate) mod tests;
+pub(crate) use native_message::NativeMessageCapture;
+#[cfg(feature = "broker-transport")]
+pub(crate) use native_message::NativeMessageStreamLifetime;
 pub use native_message::{NativeExecutedContribution, NativeInvocationSource};
-pub(crate) use native_message::{NativeMessageCapture, NativeMessageStreamLifetime};

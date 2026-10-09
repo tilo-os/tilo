@@ -329,10 +329,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         child_plan(&child_case);
         return None;
     }
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let nonce = tilo_clock::try_unix_now_ns().unwrap();
     let temp = TemporaryConfig(std::env::temp_dir().join(format!(
         "tilo-plan-{test}-{case}-{}-{nonce}",
         std::process::id()
@@ -736,10 +733,16 @@ fn plan_dispatch_preserves_success_and_protocol_credentials() {
             assert!(request.contains("x-api-key: fabricated-test-key\r\n"));
             assert!(request.contains("anthropic-version: 2023-06-01\r\n"));
             assert_eq!(observed.response.output.as_deref(), Some(ANTHROPIC_OUTPUT));
+            // The request on the wire carries the prompt-cache breakpoint.
+            assert_eq!(
+                request_body(request)["messages"][0]["content"][0]["cache_control"]["type"],
+                "ephemeral"
+            );
         } else {
             assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
             assert!(request.contains("authorization: Bearer fabricated-test-key\r\n"));
             assert_eq!(observed.response.output.as_deref(), Some(OUTPUT));
+            assert!(!request.contains("cache_control"));
         }
         assert!(request.contains("test instruction"));
     }

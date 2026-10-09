@@ -33,6 +33,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Prepare an exact enrolled Files binding using existing identity and explicit filesystem permission.
+    FilesWorkspaceJoin {
+        #[command(flatten)]
+        options: files_setup::JoinOptions,
+    },
     /// Explicitly prepare an empty primary Files namespace for the existing device; never recover or replace saved data.
     FilesWorkspaceInitialize {
         #[command(flatten)]
@@ -197,6 +202,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::FilesWorkspaceJoin { options } => files_setup::join(&options),
         Cmd::FilesWorkspaceInitialize { options } => files_setup::initialize(&options),
         Cmd::FilesWorkspaceCheck {
             identity_root,
@@ -572,7 +578,7 @@ fn persist_canonical_revocation(
 fn persist_fleet_revocation(
     revocation: &tilo_user_identity::RevocationEntry,
 ) -> anyhow::Result<()> {
-    let config = xdg_paths::xdg::config_home()
+    let config = tilo_paths::xdg::config_home()
         .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?;
     let path = config
         .join("tilo/identities/fleets")

@@ -34,7 +34,7 @@ use crate::shell::state::{PeerOrigin, RoomId};
 /// and a FIFO queue of messages to broadcast on its behalf.
 ///
 /// The tree is a [`WorkspaceTreeHandle`]
-/// (`Arc<parking_lot::RwLock<WorkspaceTree>>`) shared with the shell chrome
+/// (one tree behind a lock, with a write generation) shared with the shell chrome
 /// and the portal's grant store, so `apply_changes` is visible to both
 /// immediately. `pending_outgoing` uses `std::sync::Mutex` — drained from
 /// arbitrary threads, no read-heavy workload to motivate `RwLock`.
@@ -1253,7 +1253,7 @@ mod tests {
             use crate::shell::state::WorkspaceTreeHandleExt;
 
             // Construct via the handle so chrome + replica share the same
-            // `Arc<RwLock<WorkspaceTree>>`; starts empty so every chrome mutation is captured.
+            // tree; starts empty so every chrome mutation is captured.
             let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::test_default();
             let replica = WorkspaceTreeReplica::new(42, handle.clone());
             let chrome = ChromeState::new_with_handle(handle.clone());

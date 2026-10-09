@@ -2750,9 +2750,7 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
     // exercised against a disposable temp dir, never the user's real cache.
     {
         let mut a = app_at(1280.0, 720.0);
-        let uniq = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
+        let uniq = ui::time::unix_now_ns();
         let dir =
             std::env::temp_dir().join(format!("tilo-maps-cctest-{}-{}", std::process::id(), uniq));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2896,10 +2894,7 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
 /// A fresh, isolated on-disk cache dir so a delete step never touches the
 /// user's real tile cache.
 fn region_test_cache(tag: &str) -> std::path::PathBuf {
-    let n = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let n = ui::time::try_unix_now_ns().unwrap();
     std::env::temp_dir().join(format!("tilo-maps-{tag}-{}-{}", std::process::id(), n))
 }
 

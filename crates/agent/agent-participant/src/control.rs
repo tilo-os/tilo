@@ -1113,8 +1113,9 @@ impl AgentSupervisor {
                     let grant: GrantRequest =
                         serde_json::from_value(serde_json::Value::Object(arguments.clone()))
                             .map_err(|error| invalid(&error.to_string()))?;
-                    let (id, pairing_code) =
-                        self.request_grant(&grant, now_ns()).map_err(refused)?;
+                    let (id, pairing_code) = self
+                        .request_grant(&grant, tilo_clock::unix_now_ns())
+                        .map_err(refused)?;
                     serde_json::json!({"grant": id, "pairingCode": pairing_code})
                 }
                 _ => return Err(ActionHostError::UnknownAction),
@@ -1304,14 +1305,6 @@ fn row(
         fresh_binding: None,
         visibility: None,
     }
-}
-
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
-        })
 }
 
 fn invalid(reason: &str) -> ActionHostError {

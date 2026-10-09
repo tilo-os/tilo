@@ -1498,8 +1498,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rm -rf /var/cache/swcatalog
 
 # Flatpak applies predefined remotes to the default system installation offline,
-# importing their embedded GPG key. Its applied-remotes history preserves an
-# owner's disabled or removed default instead of recreating it on each boot.
+# importing their embedded GPG key. The root initializer completes this before
+# login, so the first Store discovery sees defaults instead of racing lazy
+# initialization. Flatpak's applied-remotes history preserves disabled/removed
+# defaults; the initializer never uses unconditional remote-add.
 COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
@@ -2101,6 +2103,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
     os/usr/lib/systemd/system/tilo-firstboot-user.service \
+    os/usr/lib/systemd/system/tilo-flatpak-defaults.service \
     os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
     os/usr/lib/systemd/system/tilo-session-recovery.service \
     /usr/lib/systemd/system/
@@ -2505,6 +2508,7 @@ RUN systemctl enable greetd.service && \
        /etc/systemd/system/graphical.target.wants/power-profiles-daemon.service \
        /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
+    systemctl enable tilo-flatpak-defaults.service && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \
@@ -2682,9 +2686,11 @@ ARG KERNEL_RPMS_REF
 # The Lenovo profile needs the Adreno SQE firmware from Fedora's qcom-firmware
 # RPM. Keep it in the frozen ARM package set, but install it only in that image.
 # tilo-rpm-snapshot-package[aarch64]: qcom-firmware
+# Hash only this profile's firmware. Later board imports must not rebuild the
+# generic kernel/initramfs when the runner seed publishes the same rootfs.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
-    --mount=type=bind,source=os/hardware/firmware,target=/run/tilo-hardware-firmware \
+    --mount=type=bind,source=os/hardware/firmware/${TILO_HARDWARE_PROFILE},target=/run/tilo-hardware-firmware \
     --mount=type=bind,source=os/dev/prepare-hardware-profile.py,target=/run/tilo-prepare-hardware-profile.py \
     --mount=type=bind,source=os/scripts/build-initramfs.sh,target=/run/tilo-build-initramfs.sh \
     --mount=type=bind,source=os/scripts/verify-board-initramfs.py,target=/run/verify-board-initramfs.py \
@@ -2760,7 +2766,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     python3 -B /run/tilo-prepare-hardware-profile.py \
         --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
         --profiles-dir /run/tilo-hardware-profiles \
-        --firmware-dir "/run/tilo-hardware-firmware/$TILO_HARDWARE_PROFILE" \
+        --firmware-dir "/run/tilo-hardware-firmware" \
         --target-update-ref "$TILO_TARGET_IMGREF"; \
     # The initramfs recipe and its checks, shared with the dev image's board
     # layer.

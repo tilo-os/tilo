@@ -1,12 +1,11 @@
 //! The native palette/control caller, derived from protected host identity.
 //! No agent transport or app request can enter this process-owned capability.
-use super::state::{RoomId, WorkspaceTree};
-use std::sync::Weak;
+use super::state::{RoomId, WeakWorkspaceTreeHandle};
 use tilo_action_broker::services::LocalPersonServices;
 use tilo_user_identity::DeviceCert;
 
 pub(crate) struct NativeLocalPerson {
-    pub tree: Weak<parking_lot::RwLock<WorkspaceTree>>,
+    pub tree: WeakWorkspaceTreeHandle,
 }
 
 fn current_certificate(room: &str, person: &str) -> Result<DeviceCert, String> {
@@ -75,7 +74,7 @@ mod tests {
     use super::*;
 
     fn native_host(
-        tree: &std::sync::Arc<parking_lot::RwLock<WorkspaceTree>>,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
         room: RoomId,
     ) -> (
         super::super::remote_actions::BrokerActionHost,
@@ -93,7 +92,7 @@ mod tests {
                         super::super::broker_services::NativeCertificates::default(),
                     )),
                     local_person: Some(std::sync::Arc::new(NativeLocalPerson {
-                        tree: std::sync::Arc::downgrade(tree),
+                        tree: tree.downgrade(),
                     })),
                     ..Default::default()
                 },
@@ -191,7 +190,7 @@ mod tests {
         let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
             certificate.user_public_key,
         );
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         let room = tree.desktop.workspaces[0].room;
         tree.desktop.workspaces[0].set_owner(&person);
         tree.persist_path = Some(directory.path().join("state.json"));
@@ -199,7 +198,7 @@ mod tests {
         let owner = super::super::native_workspace_owner::open(tree.clone()).unwrap();
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         let service = NativeLocalPerson {
-            tree: std::sync::Arc::downgrade(&tree),
+            tree: tree.downgrade(),
         };
         assert_eq!(
             service.certificate(&room.to_string(), &person).unwrap(),

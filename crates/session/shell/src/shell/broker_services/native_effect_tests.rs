@@ -380,7 +380,7 @@ fn assert_native_profile_original_certificate(fixture: &NativeFixture) {
     use tilo_action_broker::services::LocalPersonServices;
     let tree = native_workspace_owner::test_tree_of(&fixture.owner);
     let service = crate::shell::local_person::NativeLocalPerson {
-        tree: std::sync::Arc::downgrade(&tree),
+        tree: tree.downgrade(),
     };
     let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
         fixture.certificate.user_public_key,

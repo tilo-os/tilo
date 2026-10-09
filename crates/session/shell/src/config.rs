@@ -64,7 +64,7 @@ pub enum EncoderChoice {
 /// [`SYSTEM_CONFIG`], else the defaults. A file that does not parse is
 /// reported and skipped rather than quietly read as the defaults.
 pub fn load_config() -> DesktopConfig {
-    let user = xdg_paths::config_dir().map(|dir| dir.join("tilo-desktop").join("desktop.toml"));
+    let user = tilo_paths::config_dir().map(|dir| dir.join("tilo-desktop").join("desktop.toml"));
     load_first(
         user.iter()
             .map(PathBuf::as_path)

@@ -536,12 +536,7 @@ impl Widget for Toggle {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::placed(&layout, origin);
     }
 
     fn draw(
@@ -673,37 +668,20 @@ impl Widget for Toggle {
         }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
+        crate::widget::draw_gate_and_peer_focus(
+            self,
+            scene,
+            transform,
+            theme,
+            presence,
+            permissions,
+        );
     }
 }
 
 impl crate::presence::capability::PublishesPresence for Toggle {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 

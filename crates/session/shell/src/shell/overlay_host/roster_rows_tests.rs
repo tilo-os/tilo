@@ -177,6 +177,7 @@ fn paint_people(host: &mut ShellOverlayHost, rows: &[RosterRow]) {
             own_status_automatic: false,
             status_sharing: ui::StatusSharing::Automatic,
             status_editing: false,
+            status_selection: ui::text_selection::Selection::default(),
             screen_exposure: None,
         },
         None,

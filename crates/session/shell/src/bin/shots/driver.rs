@@ -1692,12 +1692,14 @@ impl ShellDriver {
                     ssid: "Conference-room-very-long-5GHz-network-name".into(),
                     signal: 4,
                     secure: true,
+                    security: os_actions::WifiSecurity::Wpa2,
                     connected: true,
                 },
                 shell::shell::quick_settings::WifiNetwork {
                     ssid: "Café Gäste-WLAN mit einem außergewöhnlich langen Namen".into(),
                     signal: 2,
                     secure: false,
+                    security: os_actions::WifiSecurity::Open,
                     connected: false,
                 },
             ];
@@ -2056,9 +2058,7 @@ impl ShellDriver {
             peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
             if peer.apply_incoming(base).is_ok() {
                 const DAY: i64 = 86_400;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+                let now = tilo_clock::unix_now_i64();
                 for (days_ago, title) in
                     [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
                 {

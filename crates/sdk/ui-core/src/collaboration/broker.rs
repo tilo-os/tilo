@@ -1289,30 +1289,35 @@ fn task_run_bytes(run: &runtime_collab::TaskRunEnvelope, meter: &mut ByteMeter) 
     clippy::too_many_lines,
     reason = "one exhaustive event meter must account for every bounded queue variant without a permissive fallback"
 )]
-fn event_bytes(event: &CollabEvent) -> Option<usize> {
+fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
     let mut meter = ByteMeter(Some(std::mem::size_of::<CollabEvent>()));
-    match event {
+    let kind = match event {
         CollabEvent::CommittedDocument { route, .. } => {
             // Capture bytes retain their own process-wide preallocation permit.
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
+            "CommittedDocument"
         }
         CollabEvent::Context {
             collaborators,
             permissions,
-        } => context_event_bytes(
-            collaborators,
-            collaborators.capacity(),
-            permissions,
-            permissions.capacity(),
-            &mut meter,
-        ),
+        } => {
+            context_event_bytes(
+                collaborators,
+                collaborators.capacity(),
+                permissions,
+                permissions.capacity(),
+                &mut meter,
+            );
+            "Context"
+        }
         CollabEvent::FollowChanged { peer_id } => {
             if let Some(peer_id) = peer_id {
                 meter.string_capacity(peer_id);
             }
+            "FollowChanged"
         }
         CollabEvent::Handoff { request } => {
             meter.add_product(1, std::mem::size_of_val(request));
@@ -1329,15 +1334,26 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
                 meter.string_capacity(&successor.record);
                 meter.string_capacity(&successor.by);
             }
+            "Handoff"
         }
-        CollabEvent::DocumentSnapshotRequested { route }
-        | CollabEvent::ChannelAccess { route, .. } => {
+        CollabEvent::DocumentSnapshotRequested { route } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
+            "DocumentSnapshotRequested"
         }
-        CollabEvent::RemoteCursorMoved { user_id, .. } => meter.string_capacity(user_id),
+        CollabEvent::ChannelAccess { route, .. } => {
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            "ChannelAccess"
+        }
+        CollabEvent::RemoteCursorMoved { user_id, .. } => {
+            meter.string_capacity(user_id);
+            "RemoteCursorMoved"
+        }
         CollabEvent::RemotePresenceUpdate {
             user_id,
             key,
@@ -1346,6 +1362,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.string_capacity(user_id);
             serialized_bytes(key, &mut meter);
             presence_payload_bytes(payload, &mut meter);
+            "RemotePresenceUpdate"
         }
         CollabEvent::ActionArrived {
             type_id,
@@ -1355,6 +1372,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.string_capacity(type_id);
             meter.bytes(payload);
             meter.string_capacity(from_user_id);
+            "ActionArrived"
         }
         CollabEvent::Document {
             envelope,
@@ -1366,18 +1384,22 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             if let Some(payload) = decrypted_payload {
                 meter.bytes(payload);
             }
+            "Document"
         }
         CollabEvent::ScrollbackBatch {
             ops,
             decrypted_payloads,
             ..
-        } => scrollback_batch_bytes(
-            ops,
-            ops.capacity(),
-            decrypted_payloads,
-            decrypted_payloads.capacity(),
-            &mut meter,
-        ),
+        } => {
+            scrollback_batch_bytes(
+                ops,
+                ops.capacity(),
+                decrypted_payloads,
+                decrypted_payloads.capacity(),
+                &mut meter,
+            );
+            "ScrollbackBatch"
+        }
         CollabEvent::Invocation {
             resource,
             action,
@@ -1401,27 +1423,50 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
                     .0
                     .and_then(|bytes| bytes.checked_add(source.retained_bytes()?));
             }
+            "Invocation"
         }
-        CollabEvent::InvocationCancellation { .. } => {}
-        CollabEvent::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabEvent::InvocationCancellation { .. } => "InvocationCancellation",
+        CollabEvent::RemoteAction { message } => {
+            serialized_bytes(message, &mut meter);
+            "RemoteAction"
+        }
         CollabEvent::ActionCatalogue { surfaces } => {
             action_catalogue_bytes(surfaces, surfaces.capacity(), &mut meter);
+            "ActionCatalogue"
         }
-        CollabEvent::ActionDirectoryPage { result, .. } => match result {
-            Ok(page) => directory_client::page_bytes(page, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::PublishedActionResolution { result, .. } => match result {
-            Ok(resolution) => directory_client::resolution_bytes(resolution, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
+        CollabEvent::ActionDirectoryPage { result, .. } => {
+            match result {
+                Ok(page) => directory_client::page_bytes(page, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "ActionDirectoryPage"
+        }
+        CollabEvent::PublishedActionResolution { result, .. } => {
+            match result {
+                Ok(resolution) => directory_client::resolution_bytes(resolution, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "PublishedActionResolution"
+        }
         #[cfg(unix)]
-        CollabEvent::ManagedInvocationObservation { result } => meter.add(result.meter_bytes()),
-        CollabEvent::PublishedInvocationResult { result, .. }
-        | CollabEvent::InstalledApplicationLaunchResult { result, .. } => match result {
-            Ok((_, update)) => serialized_bytes(update, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
+        CollabEvent::ManagedInvocationObservation { result } => {
+            meter.add(result.meter_bytes());
+            "ManagedInvocationObservation"
+        }
+        CollabEvent::PublishedInvocationResult { result, .. } => {
+            match result {
+                Ok((_, update)) => serialized_bytes(update, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "PublishedInvocationResult"
+        }
+        CollabEvent::InstalledApplicationLaunchResult { result, .. } => {
+            match result {
+                Ok((_, update)) => serialized_bytes(update, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "InstalledApplicationLaunchResult"
+        }
         CollabEvent::TaskActionInvocationResult {
             result,
             continuation,
@@ -1434,8 +1479,12 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             if let Some(continuation) = continuation {
                 meter.add(continuation.capacity());
             }
+            "TaskActionInvocationResult"
         }
-        CollabEvent::EnrolledTask(run) => serialized_bytes(run, &mut meter),
+        CollabEvent::EnrolledTask(run) => {
+            serialized_bytes(run, &mut meter);
+            "EnrolledTask"
+        }
         CollabEvent::AgentMessage(input) => {
             for field in [
                 &input.invocation,
@@ -1452,55 +1501,81 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
                 meter.string_capacity(id);
                 meter.string_capacity(text);
             }
+            "AgentMessage"
         }
         CollabEvent::AgentMessageReply { result, .. } => {
             if let Err(error) = result {
                 meter.string_capacity(error);
             }
+            "AgentMessageReply"
         }
-        CollabEvent::AgentMessageDisconnected { detail } => meter.string_capacity(detail),
-        CollabEvent::AgentMessageProgress { result, .. } => match result {
-            Ok(Some(runtime_collab::AgentMessagePublicProgress {
-                phase: runtime_collab::AgentMessagePublicPhase::Committed { reply_row },
-                ..
-            })) => meter.string_capacity(reply_row),
-            Err(detail) => meter.string_capacity(detail),
-            Ok(_) => {}
-        },
-        CollabEvent::AgentMessageObservation { result, .. } => match result {
-            Ok(runtime_collab::AgentMessageObservation::Prepared { reply, text }) => {
-                meter.string_capacity(reply);
-                meter.string_capacity(text);
+        CollabEvent::AgentMessageDisconnected { detail } => {
+            meter.string_capacity(detail);
+            "AgentMessageDisconnected"
+        }
+        CollabEvent::AgentMessageProgress { result, .. } => {
+            match result {
+                Ok(Some(runtime_collab::AgentMessagePublicProgress {
+                    phase: runtime_collab::AgentMessagePublicPhase::Committed { reply_row },
+                    ..
+                })) => meter.string_capacity(reply_row),
+                Err(detail) => meter.string_capacity(detail),
+                Ok(_) => {}
             }
-            Ok(runtime_collab::AgentMessageObservation::Committed { reply }) => {
-                meter.string_capacity(reply)
+            "AgentMessageProgress"
+        }
+        CollabEvent::AgentMessageObservation { result, .. } => {
+            match result {
+                Ok(runtime_collab::AgentMessageObservation::Prepared { reply, text }) => {
+                    meter.string_capacity(reply);
+                    meter.string_capacity(text);
+                }
+                Ok(runtime_collab::AgentMessageObservation::Committed { reply }) => {
+                    meter.string_capacity(reply)
+                }
+                Ok(_) => {}
+                Err(detail) => meter.string_capacity(detail),
             }
-            Ok(_) => {}
-            Err(detail) => meter.string_capacity(detail),
-        },
+            "AgentMessageObservation"
+        }
         CollabEvent::EnrolledTaskReply { result, .. } => {
             if let Err(error) = result {
                 meter.string_capacity(error);
             }
+            "EnrolledTaskReply"
         }
-        CollabEvent::EnrolledTaskDisconnected { detail } => meter.string_capacity(detail),
-        CollabEvent::TaskRun(run) => task_run_bytes(run, &mut meter),
+        CollabEvent::EnrolledTaskDisconnected { detail } => {
+            meter.string_capacity(detail);
+            "EnrolledTaskDisconnected"
+        }
+        CollabEvent::TaskRun(run) => {
+            task_run_bytes(run, &mut meter);
+            "TaskRun"
+        }
         CollabEvent::TaskRunCancellation { result, .. } => {
             if let Err(error) = result {
                 meter.string_capacity(error);
             }
+            "TaskRunCancellation"
         }
-        CollabEvent::TaskRunControl { result, .. } => match result {
-            Ok(control) => serialized_bytes(control, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
+        CollabEvent::TaskRunControl { result, .. } => {
+            match result {
+                Ok(control) => serialized_bytes(control, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "TaskRunControl"
+        }
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);
+            "WorkspaceControl"
         }
-        CollabEvent::NativeMediaCommandResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
+        CollabEvent::NativeMediaCommandResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "NativeMediaCommandResult"
+        }
         CollabEvent::RecordContent { route, hash, bytes } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
@@ -1508,22 +1583,44 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             }
             meter.string_capacity(hash);
             meter.bytes(bytes);
+            "RecordContent"
         }
-        CollabEvent::RealtimeCommandResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::LocalFileClipboardResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::NearbyTransferCommandResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::Realtime(event) => serialized_bytes(event, &mut meter),
-    }
-    meter.finish()
+        CollabEvent::RealtimeCommandResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "RealtimeCommandResult"
+        }
+        CollabEvent::LocalFileClipboardResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "LocalFileClipboardResult"
+        }
+        CollabEvent::NearbyTransferCommandResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "NearbyTransferCommandResult"
+        }
+        CollabEvent::Realtime(event) => {
+            serialized_bytes(event, &mut meter);
+            "Realtime"
+        }
+    };
+    (kind, meter.finish())
+}
+
+/// Content-free names share the meter's exhaustive, platform-aware match.
+fn event_kind(event: &CollabEvent) -> &'static str {
+    event_diagnostics(event).0
+}
+
+fn event_bytes(event: &CollabEvent) -> Option<usize> {
+    event_diagnostics(event).1
 }
 
 /// Shared failure latch. The UI reads it through `is_connected()` even when
@@ -2049,18 +2146,23 @@ impl InboundBridge {
     }
 
     fn send_durable(&self, event: CollabEvent) -> bool {
-        self.send_durable_turn(event, None)
+        self.send_durable_turn(event, None, None)
     }
 
-    /// `send_durable` retaining the existing producer turn through its owner acknowledgement.
-    fn send_durable_turn(&self, event: CollabEvent, turn: Option<EventTurn>) -> bool {
+    /// Retain the producer turn through its existing owner acknowledgement.
+    fn send_durable_turn(
+        &self,
+        event: CollabEvent,
+        turn: Option<EventTurn>,
+        serialized_bytes: Option<usize>,
+    ) -> bool {
         let required_bytes = event_bytes(&event).unwrap_or(usize::MAX);
         let Some(reservation) = self
             .state
             .event_bytes
             .reserve(required_bytes, SDK_EVENT_QUEUE_BYTES)
         else {
-            let (event_kind, surface_count, action_count) = match &event {
+            let (_catalogue_kind, surface_count, action_count) = match &event {
                 CollabEvent::ActionCatalogue { surfaces } => (
                     "action_catalogue",
                     surfaces.len(),
@@ -2072,7 +2174,10 @@ impl InboundBridge {
                 _ => ("control", 0, 0),
             };
             tracing::error!(
-                event_kind,
+                event_kind = event_kind(&event),
+                ?serialized_bytes,
+                remaining_bytes = SDK_EVENT_QUEUE_BYTES
+                    .saturating_sub(self.state.event_bytes.0.load(Ordering::Acquire)),
                 required_bytes,
                 reserved_bytes = self.state.event_bytes.0.load(Ordering::Acquire),
                 limit_bytes = SDK_EVENT_QUEUE_BYTES,
@@ -4577,6 +4682,7 @@ async fn spawn_invocation_stream(
                         native_source,
                     },
                     turn.map(|turn| EventTurn::Document(turn.permits)),
+                    None,
                 ) {
                     break;
                 }
@@ -4834,37 +4940,45 @@ async fn spawn_action_catalogue_stream(
         tracing::warn!("managed Agent initial action catalogue read refused");
         format!("reading initial action catalogue failed: {error}")
     })?;
-    let catalogue =
-        serde_json::from_str::<BrokerActionCatalogueWire>(&initial).map_err(|error| {
-            tracing::warn!("managed Agent initial action catalogue decode refused");
-            format!("decoding initial action catalogue failed: {error}")
-        })?;
     // The initial baseline occupies the same turn as subsequent watched
     // snapshots. Otherwise a busy constructor retains both before its first
     // owner poll, which can exhaust the bridge despite each baseline fitting.
-    tracing::info!(target: "tilo_agent_catalogue",
-        surfaces = catalogue.surfaces.len(),
-        actions = catalogue.surfaces.iter().map(|surface| surface.actions.len()).sum::<usize>(),
-        "SDK initial catalogue boundary");
     let turns = Arc::new(tokio::sync::Semaphore::new(1));
     let turn = turns
         .clone()
         .acquire_owned()
         .await
         .map_err(|error| error.to_string())?;
-    if !inbound_tx.send_durable_turn(
-        CollabEvent::ActionCatalogue {
-            surfaces: catalogue.surfaces,
-        },
-        Some(EventTurn::Snapshot(turn)),
-    ) {
-        return Err("delivering initial action catalogue failed".to_string());
-    }
+    admit_initial_action_catalogue(&initial, inbound_tx, Some(turn))?;
 
     let tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
         forward_action_catalogues(async || stream.read().await.map_err(|_| ()), &tx, turns).await;
     });
+    Ok(())
+}
+
+/// Decode and admit the initial snapshot through the same bounded owner queue.
+fn admit_initial_action_catalogue(
+    initial: &str,
+    tx: &InboundBridge,
+    turn: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> Result<(), String> {
+    let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(initial)
+        .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
+    tracing::info!(target: "tilo_agent_catalogue",
+        surfaces = catalogue.surfaces.len(),
+        actions = catalogue.surfaces.iter().map(|surface| surface.actions.len()).sum::<usize>(),
+        "SDK initial catalogue boundary");
+    if !tx.send_durable_turn(
+        CollabEvent::ActionCatalogue {
+            surfaces: catalogue.surfaces,
+        },
+        turn.map(EventTurn::Snapshot),
+        Some(initial.len()),
+    ) {
+        return Err("delivering initial action catalogue failed".to_string());
+    }
     Ok(())
 }
 
@@ -4898,6 +5012,7 @@ async fn forward_action_catalogues(
                         surfaces: catalogue.surfaces,
                     },
                     Some(EventTurn::Snapshot(turn)),
+                    Some(snapshot.len()),
                 ) {
                     break;
                 }
@@ -12161,6 +12276,38 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
+    #[test]
+    fn initial_action_catalogue_admission_accounts_for_retained_payload() {
+        let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
+        let state = BridgeState::new();
+        let inbound = InboundBridge::new(tx, state.clone());
+        let snapshot = |bytes: usize| {
+            format!(
+                r#"{{"surfaces":[{{"peer_id":1,"app_id":"so.tilo.notes","cluster_id":"c","record_id":"{}","live":true,"actions":[]}}]}}"#,
+                "r".repeat(bytes)
+            )
+        };
+        let initial = snapshot(700 * 1024);
+        admit_initial_action_catalogue(&initial, &inbound, None).unwrap();
+        let queued = rx.try_recv().expect("initial catalogue reaches the owner");
+        assert_eq!(event_kind(&queued.event), "ActionCatalogue");
+        let retained = event_bytes(&queued.event).unwrap();
+        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), retained);
+        assert!(retained >= 700 * 1024);
+        drop(queued);
+        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), 0);
+        assert!(state.is_healthy());
+
+        let oversized = snapshot(SDK_EVENT_QUEUE_BYTES);
+        assert!(admit_initial_action_catalogue(&oversized, &inbound, None).is_err());
+        assert!(
+            !state.is_healthy(),
+            "oversized initial snapshots fail closed"
+        );
+        assert!(rx.try_recv().is_err(), "rejected payload is never retained");
+        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), 0);
+    }
+
     /// A headless worker is drained only between pumps. Large catalogue
     /// snapshots (one per host publication) must not pile up in its bounded
     /// bridge: one stays queued, the rest coalesce to the latest.

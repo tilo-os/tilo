@@ -2478,6 +2478,11 @@ impl CapnpBrokerState {
         self.shortcut_runs.take()
     }
 
+    /// Whether a finished shortcut run is waiting to be taken.
+    pub fn has_finished_shortcut_runs(&self) -> bool {
+        self.shortcut_runs.has_finished()
+    }
+
     /// Execute a host-owned workspace governance action (permission
     /// profiles). There is no application to forward to: the host's
     /// governance service validates, applies and records it under its own

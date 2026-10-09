@@ -194,7 +194,7 @@ fn endpoints() -> Result<NativeAgentServiceEndpoints, String> {
     Ok(NativeAgentServiceEndpoints {
         identity: launcher::services::identity_socket(),
         model_gateway: launcher::services::socket_for(launcher::services::MODEL_GATEWAY_SERVICE),
-        data_home: xdg_paths::data_dir().ok_or("Agent data home unavailable")?,
+        data_home: tilo_paths::data_dir().ok_or("Agent data home unavailable")?,
         provider: launcher::services::ManagedProviderSelection {
             profile_id: profile.id.clone(),
             model_id: model.clone(),

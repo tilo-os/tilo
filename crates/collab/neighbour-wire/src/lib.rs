@@ -29,7 +29,7 @@ pub mod contribution;
 pub mod hdr_metadata;
 pub mod retention;
 
-pub use retention::{Retention, retention};
+pub use retention::{Retention, app_document_channel, retention};
 
 use serde::{Deserialize, Serialize};
 
@@ -206,7 +206,9 @@ pub enum NeighbourMsg {
         surface: SurfaceId,
         event: Vec<u8>,
     },
-    /// `peer` would like permission `capability`.
+    /// Retired: `peer` would like permission `capability`. No build produces
+    /// it and receivers refuse it ([`NeighbourMsg::is_retired`]); it stays
+    /// only so every later Postcard discriminant keeps its value.
     PermissionRequest { peer: PeerId, capability: String },
     /// `peer` was granted permission `capability`.
     PermissionGrant { peer: PeerId, capability: String },
@@ -296,10 +298,11 @@ pub enum NeighbourMsg {
         /// Hashed Iroh peer id of the answering broker.
         responder: PeerId,
     },
-    /// Root-signed device certificate announced on one room. Appended to the
-    /// enum to preserve every existing Postcard discriminant. The receiver
-    /// binds it to the transport-authenticated sender endpoint and only the
-    /// room governor may promote it into replicated governance.
+    /// Retired first generation of [`Self::IdentityAnnouncementV2`]: a
+    /// root-signed device certificate announced on one room, without the
+    /// revocations that keep a lost device out. No build produces it and
+    /// receivers refuse it ([`NeighbourMsg::is_retired`]); it stays only so
+    /// every later Postcard discriminant keeps its value.
     IdentityAnnouncement {
         room: String,
         device_cert: Box<tilo_user_identity::DeviceCert>,
@@ -453,6 +456,47 @@ impl NeighbourMsg {
     pub fn is_app_document(bytes: &[u8]) -> bool {
         const _: () = assert!(NeighbourMsg::APP_DOCUMENT_TAG < 0x80);
         bytes.first() == Some(&Self::APP_DOCUMENT_TAG)
+    }
+
+    /// Whether this is a retired wire generation that no current build
+    /// produces. Receivers refuse such a message once, where it enters,
+    /// before any handler or authorization sees it; the variant itself stays
+    /// only because removing it would shift every later Postcard
+    /// discriminant.
+    pub fn is_retired(&self) -> bool {
+        match self {
+            // Superseded by `IdentityAnnouncementV2`, whose revocations a
+            // receiver must see before trusting the certificate.
+            Self::IdentityAnnouncement { .. }
+            // Never acted on; control consent rides `PermissionGrant`.
+            | Self::PermissionRequest { .. } => true,
+            Self::SyncReq { .. }
+            | Self::SyncResp { .. }
+            | Self::PresenceMoved { .. }
+            | Self::PresenceCleared { .. }
+            | Self::SurfaceFrame { .. }
+            | Self::SurfaceStreamStart { .. }
+            | Self::SurfaceStreamEnd { .. }
+            | Self::RemoteInput { .. }
+            | Self::PermissionGrant { .. }
+            | Self::Heartbeat { .. }
+            | Self::IdentityHello { .. }
+            | Self::AppDocument { .. }
+            | Self::AppPresenceV2 { .. }
+            | Self::ScrollbackRequest { .. }
+            | Self::ScrollbackResponse { .. }
+            | Self::IdentityAnnouncementV2 { .. }
+            | Self::PersonalContinuityRequest { .. }
+            | Self::PersonalContinuityCheckpoint { .. }
+            | Self::RemoteAction { .. }
+            | Self::MediaCapabilities { .. }
+            | Self::MlsGovernance { .. }
+            | Self::MlsAccessRequest { .. }
+            | Self::MlsGovernanceAck { .. }
+            | Self::PersonalWorkspaces { .. }
+            | Self::RecordContentWant { .. }
+            | Self::RecordContentPiece { .. } => false,
+        }
     }
 }
 
@@ -878,6 +922,18 @@ mod tests {
         }
         assert!(app_documents > 0, "no AppDocument fixture was classified");
         assert!(!NeighbourMsg::is_app_document(&[]));
+    }
+
+    /// Exactly the two generations no build produces are retired; every
+    /// other variant, including both identity successors, stays live.
+    #[test]
+    fn only_the_unproduced_generations_are_retired() {
+        let retired: Vec<&str> = fixtures()
+            .iter()
+            .filter(|(_, message)| message.is_retired())
+            .map(|(_, message)| variant(message))
+            .collect();
+        assert_eq!(retired, ["PermissionRequest", "IdentityAnnouncement"]);
     }
 
     /// Names every variant through an exhaustive match, so adding a variant

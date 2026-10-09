@@ -229,7 +229,7 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
 /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set to an
 /// absolute path.
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
-    if let Some(config) = xdg_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
+    if let Some(config) = tilo_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
         return Ok(config.join("tilo").join("identity"));
     }
     Err(io::Error::new(

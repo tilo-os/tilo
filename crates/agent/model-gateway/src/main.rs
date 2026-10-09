@@ -960,6 +960,9 @@ fn outbound_body(
             object.remove("stream");
         }
     }
+    if profile.protocol == ProviderProtocol::Anthropic {
+        apply_anthropic_cache_breakpoints(profile, &mut object);
+    }
     // Apply the model-owned cap after provider shaping and optional omission.
     // A caller cannot suppress or duplicate the enforced token-limit field.
     if let Some((capped_field, limit)) = capped {
@@ -968,6 +971,177 @@ fn outbound_body(
         object.insert(capped_field.into(), serde_json::Value::from(limit));
     }
     Ok(serde_json::Value::Object(object))
+}
+
+/// Anthropic's limit on `cache_control` breakpoints in one request.
+const MAX_CACHE_BREAKPOINTS: usize = 4;
+
+/// Mark an Anthropic request's stable prefixes for prompt caching.
+///
+/// Anthropic caches only up to an explicit `cache_control` breakpoint (an
+/// OpenAI-compatible provider caches a repeated prefix by itself), so without
+/// these every agent turn re-prefills the tools, the system prompt and the
+/// whole conversation. In order of value, each only while a breakpoint is
+/// left and only where none is already set:
+///
+/// 1. the last `system` block (a string becomes one text block): tools and
+///    system render first, so this one entry holds both, across turns and
+///    tasks;
+/// 2. the last cacheable block of the last `user` message, so the growing
+///    conversation is read back incrementally on the next turn — skipped
+///    when the caller asked for automatic caching (top-level
+///    `cache_control`), which places that breakpoint itself;
+/// 3. the last tool, which still holds when the system prompt changes.
+///
+/// A caller's own breakpoints count against the limit and are never moved or
+/// duplicated. A caller that chose a non-default TTL owns the whole layout
+/// (a shorter-lived entry may not precede a longer one), so nothing is
+/// added. A profile listing `cache_control` in `omit_params` (an
+/// Anthropic-compatible endpoint that rejects it) gets no breakpoints and
+/// loses a top-level `cache_control`, as every omitted field does.
+fn apply_anthropic_cache_breakpoints(
+    profile: &ProviderProfile,
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if profile
+        .omit_params
+        .iter()
+        .any(|param| param == "cache_control")
+    {
+        object.remove("cache_control");
+        return;
+    }
+    let existing = cache_markers(object);
+    if existing.iter().any(|marker| {
+        marker
+            .get("ttl")
+            .is_some_and(|ttl| ttl.as_str() != Some("5m"))
+    }) {
+        return;
+    }
+    let mut free = MAX_CACHE_BREAKPOINTS.saturating_sub(existing.len());
+    let automatic = object.contains_key("cache_control");
+    if free > 0 && object.get_mut("system").is_some_and(mark_last_cacheable) {
+        free = free.saturating_sub(1);
+    }
+    if free > 0 && !automatic && mark_conversation_tail(object) {
+        free = free.saturating_sub(1);
+    }
+    if free > 0 {
+        mark_last_tool(object);
+    }
+}
+
+/// Every `cache_control` already in an Anthropic request: top-level
+/// (automatic caching), on tools, on system blocks, on message blocks and on
+/// the blocks inside a `tool_result`. Structural, so a tool schema or a tool
+/// input that merely has a `cache_control` key is not counted.
+fn cache_markers(object: &serde_json::Map<String, serde_json::Value>) -> Vec<&serde_json::Value> {
+    fn items(value: Option<&serde_json::Value>) -> impl Iterator<Item = &serde_json::Value> {
+        value
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+    }
+    let mut markers: Vec<&serde_json::Value> = object.get("cache_control").into_iter().collect();
+    for item in items(object.get("tools")).chain(items(object.get("system"))) {
+        markers.extend(item.get("cache_control"));
+    }
+    for message in items(object.get("messages")) {
+        for block in items(message.get("content")) {
+            markers.extend(block.get("cache_control"));
+            if block.get("type").and_then(serde_json::Value::as_str) == Some("tool_result") {
+                for inner in items(block.get("content")) {
+                    markers.extend(inner.get("cache_control"));
+                }
+            }
+        }
+    }
+    markers
+}
+
+/// Whether a content block may carry `cache_control`. Thinking blocks cannot,
+/// and an empty text block is refused with or without a marker.
+fn cacheable_block(block: &serde_json::Value) -> bool {
+    match block.get("type").and_then(serde_json::Value::as_str) {
+        Some("text") => block
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty()),
+        Some("image" | "document" | "search_result" | "tool_use" | "tool_result") => true,
+        _ => false,
+    }
+}
+
+/// Put a breakpoint on the last cacheable block of `content` (a `system`
+/// value or a message's `content`), turning a plain string into one text
+/// block. False when there is no such block or it is already marked.
+fn mark_last_cacheable(content: &mut serde_json::Value) -> bool {
+    match content {
+        serde_json::Value::String(text) if !text.trim().is_empty() => {
+            let text = std::mem::take(text);
+            *content = serde_json::json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": { "type": "ephemeral" },
+            }]);
+            true
+        }
+        serde_json::Value::Array(blocks) => {
+            let Some(block) = blocks
+                .iter_mut()
+                .rev()
+                .find(|block| cacheable_block(block))
+                .and_then(serde_json::Value::as_object_mut)
+            else {
+                return false;
+            };
+            if block.contains_key("cache_control") {
+                return false;
+            }
+            block.insert(
+                "cache_control".into(),
+                serde_json::json!({ "type": "ephemeral" }),
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Put a breakpoint at the end of the last `user` message.
+fn mark_conversation_tail(object: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    object
+        .get_mut("messages")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|messages| {
+            messages.iter_mut().rev().find(|message| {
+                message.get("role").and_then(serde_json::Value::as_str) == Some("user")
+            })
+        })
+        .and_then(|message| message.get_mut("content"))
+        .is_some_and(mark_last_cacheable)
+}
+
+/// Put a breakpoint on the last tool sent with the request (a deferred tool
+/// is not part of the prompt prefix).
+fn mark_last_tool(object: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(tool) = object
+        .get_mut("tools")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|tools| {
+            tools.iter_mut().rev().find(|tool| {
+                tool.get("defer_loading")
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true)
+            })
+        })
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    tool.entry("cache_control")
+        .or_insert_with(|| serde_json::json!({ "type": "ephemeral" }));
 }
 
 /// The largest provider stream read for one Plan.
@@ -1500,6 +1674,9 @@ struct PlanTiming {
     reasoning_tokens: Option<u64>,
     /// Prompt tokens the provider served from its prompt cache.
     cached_tokens: Option<u64>,
+    /// Prompt tokens written to the prompt cache (Anthropic reports these;
+    /// its `input_tokens` is only the remainder neither read nor written).
+    cache_write_tokens: Option<u64>,
     tool_calls: usize,
     output_allowance: Option<u64>,
     runtime_context: Option<u32>,
@@ -1528,6 +1705,7 @@ impl PlanTiming {
             completion_tokens: None,
             reasoning_tokens: None,
             cached_tokens: None,
+            cache_write_tokens: None,
             tool_calls: 0,
             output_allowance: None,
             runtime_context: None,
@@ -1598,6 +1776,7 @@ impl PlanTiming {
         // OpenAI-compatible (Cerebras, OpenAI) and Anthropic spellings.
         self.cached_tokens = number("/prompt_tokens_details/cached_tokens")
             .or_else(|| number("/cache_read_input_tokens"));
+        self.cache_write_tokens = number("/cache_creation_input_tokens");
     }
 
     fn log(&self, call: &PlanCall<'_>, outcome: Result<(), &String>) {
@@ -1616,7 +1795,7 @@ impl PlanTiming {
             "tilo-model-gateway: timing plan trace={trace} profile={} model={} stream={} status={} \
              start_unix_ms={} first_byte_ms={} first_reasoning_ms={} first_token_ms={} first_tool_call_ms={} \
              plan_call_ms={} done_ms={} prompt_tokens={} completion_tokens={} \
-             reasoning_tokens={} cached_tokens={} tool_calls={} output_allowance={} \
+             reasoning_tokens={} cached_tokens={} cache_write_tokens={} tool_calls={} output_allowance={} \
              source_context={} runtime_context={} timeout_ms={} {} outcome={}",
             log_token(call.profile_id),
             log_token(call.model_id),
@@ -1634,6 +1813,7 @@ impl PlanTiming {
             count(self.completion_tokens),
             count(self.reasoning_tokens),
             count(self.cached_tokens),
+            count(self.cache_write_tokens),
             self.tool_calls,
             count(self.output_allowance),
             count(self.source_context.map(u64::from)),
@@ -2995,6 +3175,9 @@ mod tests {
         drop(stalled);
     }
 }
+
+#[cfg(test)]
+mod cache_tests;
 
 #[cfg(test)]
 mod plan_tests;

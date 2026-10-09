@@ -108,6 +108,9 @@ pub struct PeerPresence {
     /// The rooms this session is in, mirrored from [`Self::set_rooms`]
     /// so a room this session has left stops being remembered below.
     rooms: Mutex<Vec<String>>,
+    /// The workspace tree generation [`Self::follow_tree`] last read the
+    /// rooms at, and the room on screen then.
+    followed: Mutex<Option<(u64, Option<String>)>>,
     /// What this session last put on the wire, per room: position and
     /// when. Read by [`should_publish_cursor`].
     last_published: Mutex<CursorPublishHistory>,
@@ -324,6 +327,7 @@ impl PeerPresence {
             seen_departures: Mutex::new(seen_departures),
             subscription,
             rooms: Mutex::new(rooms_mirror),
+            followed: Mutex::new(None),
             last_published: Mutex::new(HashMap::new()),
             net: net_for_desktop,
         }
@@ -333,6 +337,9 @@ impl PeerPresence {
     /// whenever the workspace set changes.
     pub fn set_rooms(&self, rooms: Vec<String>) {
         if let Ok(mut g) = self.rooms.lock() {
+            if *g == rooms {
+                return;
+            }
             // Forget publishes to a left room, so rejoining re-announces
             // rather than staying silent behind a stale keepalive.
             if let Ok(mut last) = self.last_published.lock() {
@@ -341,6 +348,51 @@ impl PeerPresence {
             g.clone_from(&rooms);
         }
         self.subscription.set_rooms(rooms);
+    }
+
+    /// Follow the session's workspaces: after any write to `tree` since the
+    /// last call, re-point the subscription at its rooms; then put the
+    /// pointer on the wire in the room on screen. A wakeup with no tree
+    /// write reads nothing from the tree. Returns whether anything went out.
+    pub fn follow_tree(&self, tree: &crate::shell::state::WorkspaceTreeHandle) -> bool {
+        let mut followed = self
+            .followed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Loaded before the tree is read: a write racing the read below is
+        // read again on the next call.
+        let generation = tree.generation();
+        if followed.as_ref().map(|(seen, _)| *seen) != Some(generation) {
+            let (rooms, here) = {
+                let tree = tree.read();
+                let rooms = tree
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .map(|workspace| workspace.room.to_string())
+                    .collect::<Vec<_>>();
+                // The room the user is looking at (where their pointer is),
+                // distinct from the set above (every room the session
+                // listens to).
+                let here = tree
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == tree.desktop.active)
+                    .map(|workspace| workspace.room.to_string());
+                drop(tree);
+                (rooms, here)
+            };
+            self.set_rooms(rooms);
+            *followed = Some((generation, here));
+        }
+        // Say where this session's pointer is whether or not an app is
+        // publishing — the app-driven republish alone stays silent over a
+        // window whose app draws no cursor.
+        followed
+            .as_ref()
+            .and_then(|(_, here)| here.as_deref())
+            .is_some_and(|here| self.publish_local_cursor(here))
     }
 
     /// Put this session's own pointer on the wire, in the room the user
