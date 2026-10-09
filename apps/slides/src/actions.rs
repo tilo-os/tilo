@@ -2313,9 +2313,7 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// A document holding the sample deck.

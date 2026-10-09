@@ -231,8 +231,7 @@ fn clipboard_history_step(
     operation: &str,
     redo: bool,
 ) -> Result<automerge::ChangeHash, ActionError> {
-    let mut registry = ActionRegistry::new();
-    ui::tilo_resource::group::register::<FileExplorer>(&mut registry);
+    let registry = ActionRegistry::with(ui::tilo_resource::group::register::<FileExplorer>);
     let mut matching = Vec::new();
     for hash in ui::history_source::steps::pending_compensations(doc) {
         if ui::history_source::steps::compensation_is_redo(doc, hash) != redo {
