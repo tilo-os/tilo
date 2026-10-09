@@ -195,12 +195,6 @@ impl PlotDatum {
         self.detail = detail.into();
         self
     }
-
-    #[must_use]
-    pub fn with_radius(mut self, radius: f64) -> Self {
-        self.radius = radius.max(1.0);
-        self
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -375,10 +369,6 @@ impl CartesianAnnotation {
 
     pub fn x_band(id: impl Into<String>, start: f64, end: f64, color: Color) -> Self {
         Self::new(id, CartesianAnnotationKind::XBand { start, end }, color)
-    }
-
-    pub fn y_band(id: impl Into<String>, start: f64, end: f64, color: Color) -> Self {
-        Self::new(id, CartesianAnnotationKind::YBand { start, end }, color)
     }
 
     pub fn point(id: impl Into<String>, x: f64, y: f64, color: Color) -> Self {
@@ -668,13 +658,6 @@ impl Domain {
             AxisRange::Auto | AxisRange::Fixed { .. } => None,
         }
     }
-
-    fn shifted(self, delta: f64) -> Self {
-        Self {
-            min: self.min + delta,
-            max: self.max + delta,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -821,10 +804,6 @@ impl CartesianPlot {
     ) -> Self {
         self.annotations = annotations.into_iter().collect();
         self
-    }
-    pub fn set_annotations(&mut self, annotations: impl IntoIterator<Item = CartesianAnnotation>) {
-        self.annotations = annotations.into_iter().collect();
-        self.hovered_annotation = None;
     }
     pub fn annotations(&self) -> &[CartesianAnnotation] {
         &self.annotations
@@ -986,9 +965,6 @@ impl CartesianPlot {
         }
         self.hovered_annotation.is_some()
     }
-    pub fn take_brush_selection(&mut self) -> Option<CartesianBrushSelection> {
-        self.brushed.take()
-    }
     /// Restore automatic/fixed axis domains after interactive zooming.
     pub fn reset_view(&mut self) {
         self.x_view = None;
@@ -1036,31 +1012,6 @@ impl CartesianPlot {
         self.view_changed = true;
         self.update_hover();
         true
-    }
-    /// Pan the current viewport by data-coordinate deltas. An axis without an
-    /// explicit viewport starts from its automatic/fixed configured domain.
-    pub fn pan_view_by(&mut self, x_delta: f64, y_delta: f64) -> bool {
-        if !x_delta.is_finite() || !y_delta.is_finite() {
-            return false;
-        }
-        let x = self
-            .x_view
-            .unwrap_or_else(|| self.base_domain(&self.style.x_axis, true))
-            .shifted(x_delta);
-        let y = self
-            .y_view
-            .unwrap_or_else(|| self.base_domain(&self.style.y_axis, false))
-            .shifted(y_delta);
-        self.set_viewport(
-            Some(AxisRange::Fixed {
-                min: x.min,
-                max: x.max,
-            }),
-            Some(AxisRange::Fixed {
-                min: y.min,
-                max: y.max,
-            }),
-        )
     }
     /// Pan by fractions of the visible width and height. This is convenient
     /// for responsive buttons, trackpads, and synchronized overview charts.
@@ -1149,10 +1100,6 @@ impl CartesianPlot {
     pub fn zoom_to_selection(&mut self, selection: CartesianBrushSelection) -> bool {
         self.set_viewport(Some(selection.x), selection.y)
     }
-    /// Reports and clears the viewport-change flag.
-    pub fn take_view_changed(&mut self) -> bool {
-        std::mem::take(&mut self.view_changed)
-    }
     pub fn style_mut(&mut self) -> &mut CartesianStyle {
         self.invalidate_domains();
         &mut self.style
@@ -1162,9 +1109,6 @@ impl CartesianPlot {
     }
     pub fn take_activated(&mut self) -> Option<(String, String)> {
         self.activated.take()
-    }
-    pub fn take_annotation_activated(&mut self) -> Option<String> {
-        self.annotation_activated.take()
     }
 
     fn plot_rect(&self) -> Rect {

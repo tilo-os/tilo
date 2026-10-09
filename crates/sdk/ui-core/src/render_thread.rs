@@ -71,18 +71,6 @@ static POST_PROCESSOR: std::sync::Mutex<Option<Box<dyn FramePostProcess>>> =
 static POST_PROCESSOR_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Called by an app before its window comes up. A no-op for apps that
-/// don't set one, so the shared render path is unchanged for everyone else.
-pub fn set_frame_post_processor(p: Box<dyn FramePostProcess>) {
-    // A poisoned lock means some other caller already panicked while
-    // holding it; there's nothing safe left to do but skip installing the
-    // processor rather than taking this caller down too.
-    if let Ok(mut guard) = POST_PROCESSOR.lock() {
-        *guard = Some(p);
-        POST_PROCESSOR_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
-    }
-}
-
 /// Compile-time `Send` check: a vello/wgpu regression fails to compile rather
 /// than at thread spawn.
 const _: fn() = || {
@@ -362,21 +350,6 @@ impl RenderThreadHandle {
             .send(RenderRequest::Shutdown { keep_renderer });
         self.join.take()?.join().ok().flatten()
     }
-}
-
-/// Channel capacities are documented at the module level.
-///
-/// # Errors
-///
-/// Returns an error if the OS refuses to spawn the `ui-render` thread (e.g.
-/// the process is out of resources for new threads).
-pub fn spawn_render_thread(
-    render_cx: RenderContext,
-    surface: RenderSurface<'static>,
-    renderer: Renderer,
-    wake: Arc<dyn Fn() + Send + Sync>,
-) -> Result<RenderThreadHandle, String> {
-    spawn_render_thread_for_window(render_cx, surface, renderer, wake, None)
 }
 
 /// Same worker with the native window retained for standard Wayland feedback.

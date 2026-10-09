@@ -103,7 +103,6 @@ pub struct Scrollable {
     vx: f32,
     vy: f32,
     decay: f32,
-    sticky_header_height: f32,
     /// Pins the outer viewport to an exact height instead of `percent(1.0)`,
     /// which resolves against nothing (viewport collapses to zero) when the
     /// parent has no definite height. See [`Scrollable::fill_parent_height`]
@@ -225,7 +224,6 @@ impl Scrollable {
             vx: 0.0,
             vy: 0.0,
             decay: 0.92,
-            sticky_header_height: 0.0,
             fixed_height: None,
             max_height: None,
             fill_parent_height: false,
@@ -308,11 +306,6 @@ impl Scrollable {
         self
     }
 
-    #[must_use]
-    pub fn with_sticky_header(mut self, h: f32) -> Self {
-        self.sticky_header_height = h;
-        self
-    }
     /// The bar still auto-hides per-axis whenever content fits regardless
     /// of this flag; `false` suppresses it unconditionally.
     #[must_use]
@@ -341,12 +334,6 @@ impl Scrollable {
     #[must_use]
     pub fn always_visible(mut self) -> Self {
         self.overlay = false;
-        self
-    }
-
-    #[must_use]
-    pub fn with_overlay(mut self, overlay: bool) -> Self {
-        self.overlay = overlay;
         self
     }
 

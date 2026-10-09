@@ -483,15 +483,6 @@ impl RenderContext {
         self.configure_surface(surface);
     }
 
-    pub fn set_present_mode(
-        &self,
-        surface: &mut RenderSurface<'_>,
-        present_mode: wgpu::PresentMode,
-    ) {
-        surface.config.present_mode = present_mode;
-        self.configure_surface(surface);
-    }
-
     pub fn configure_surface(&self, surface: &RenderSurface<'_>) {
         let Some(handle) = self.devices.get(surface.dev_id) else {
             return;

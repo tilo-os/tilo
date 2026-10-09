@@ -320,12 +320,6 @@ impl ChoiceCard {
         self
     }
 
-    /// The height a card takes in `theme`, for hosts that reserve room for
-    /// a pinned stack of cards before laying it out.
-    pub fn height_for(theme: &Theme) -> f32 {
-        px(card_height(theme))
-    }
-
     #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.control = self.control.with_enabled(enabled);

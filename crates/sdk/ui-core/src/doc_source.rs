@@ -71,20 +71,6 @@ impl Codec for Text {
     }
 }
 
-/// A string scalar.
-struct Str;
-
-impl Codec for Str {
-    type Value = String;
-
-    fn read(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-        match scalar(doc, obj, key)? {
-            ScalarValue::Str(value) => Some(value.to_string()),
-            _ => None,
-        }
-    }
-}
-
 struct DocKey<C> {
     key: String,
     codec: PhantomData<C>,
@@ -121,9 +107,4 @@ pub fn number_key(key_name: &str) -> BoxedBinding<f64> {
 /// Collaborative text under `key`.
 pub fn text_key(key_name: &str) -> BoxedBinding<String> {
     key::<Text>(key_name)
-}
-
-/// A string scalar under `key`.
-pub fn str_key(key_name: &str) -> BoxedBinding<String> {
-    key::<Str>(key_name)
 }

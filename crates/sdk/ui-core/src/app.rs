@@ -1407,18 +1407,6 @@ impl App {
         ))
     }
 
-    /// Construct with an explicit live producer capability before any factory callback.
-    pub fn from_factory_with_control_custody(
-        state: State,
-        factory: impl FnOnce(&crate::ControlDomain) -> Box<dyn Widget>,
-    ) -> Self {
-        let scope = crate::wake::WakeScope::new();
-        let _entry = scope.enter();
-        let domain = crate::control_custody::ControlDomain::outer();
-        let root = factory(&domain);
-        Self::from_scoped_parts_with_custody(scope, state, root, domain)
-    }
-
     pub(crate) fn from_scoped_parts_with_custody(
         scope: crate::WakeScope,
         state: State,
@@ -2541,22 +2529,6 @@ impl App {
         self.invalidate_widget_resource_cache();
     }
 
-    /// Inspect controlled launch composition without opening a native window.
-    /// Available only to downstream runner tests through `test-support`.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn controlled_history_definitions_for_test(
-        &self,
-    ) -> (
-        Option<&'static crate::history_mode::HistoryDefinition>,
-        Option<&'static crate::history_mode::HistoryDefinition>,
-    ) {
-        (
-            self.controlled_installed_history_definition,
-            crate::history_mode::capability::document_history_definition(self.root_widget.as_ref()),
-        )
-    }
-
     /// Takes effect when the window is created, so set before [`App::run`].
     #[must_use]
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
@@ -2576,17 +2548,6 @@ impl App {
     /// [`Self::with_window_app_id`].
     pub fn window_app_id(&self) -> Option<&str> {
         self.window.app_id.as_deref()
-    }
-
-    /// `None` clears the override and restores automatic resolution.
-    pub fn set_window_title(&mut self, title: Option<String>) {
-        self.window.title = title;
-    }
-
-    /// Precedence: explicit override → `TILO_APP_NAME` → package id → binary
-    /// name → generic default.
-    pub fn resolved_window_title(&self) -> String {
-        resolve_window_title(self.window.title.as_deref())
     }
 }
 

@@ -3381,41 +3381,6 @@ impl Drop for ActiveEntry {
     }
 }
 
-pub(crate) fn with_owned_record_action<R>(
-    records: &RecordStore,
-    checkout: &RecordCheckout,
-    instance_id: crate::application::InstanceId,
-    app_id: &str,
-    author: UserId,
-    context: tilo_actions::ActionContext,
-    callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
-) -> Result<R, BoundDispatchError> {
-    let scope = crate::wake::WakeScope::new();
-    let owner = Rc::new(());
-    let binding = CallbackBinding {
-        lifetime: scope.handle(),
-        closing: Rc::new(Cell::new(false)),
-        registry_owner: Rc::downgrade(&owner),
-        lifetime_id: uuid::Uuid::new_v4(),
-        control_domain: crate::control_custody::WeakControlDomain::default(),
-        queued_controls: Rc::new(RefCell::new(std::collections::VecDeque::new())),
-        search_requests: Rc::default(),
-        instance_id,
-        app_id: app_id.to_string(),
-        records: records.clone(),
-        checkout: checkout.clone(),
-        permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
-        author,
-        operation_context: context,
-        writes_as_author: false,
-    };
-    let mut outer_witness = AutoCommit::new();
-    binding.with_document(&mut outer_witness, |document, root| {
-        let value = callback(document, root);
-        binding.finish_action_boundary(document).map(|()| value)
-    })?
-}
-
 impl CallbackBinding {
     /// Queue a search for the host presenting this component. Only the
     /// latest request matters: an older one the host has not shown yet is

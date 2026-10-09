@@ -447,15 +447,6 @@ impl ViewportState {
         self.clamp_scroll();
     }
 
-    /// Reset to 100 % zoom, scrolled to the top-left. An alternative Ctrl+0
-    /// behaviour for hosts that prefer true 1:1 over fit.
-    pub fn reset_to_actual_size(&mut self) {
-        self.zoom = (1.0_f64).clamp(self.min_zoom, self.max_zoom);
-        self.scroll_x = 0.0;
-        self.scroll_y = 0.0;
-        self.clamp_scroll();
-    }
-
     /// Zoom so `area` (content units) fills the viewport, honouring
     /// padding, and centre it as far as the scroll range allows: the "zoom to
     /// selection" path. A degenerate area keeps the zoom and only centres.
