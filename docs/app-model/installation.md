@@ -414,6 +414,33 @@ whose BLAKE3 hash an installed bundle's `bundle.toml` lists is copied from
 that bundle, re-hashed while it is copied, and only the rest is fetched, with
 four requests in flight.
 
+A per-user runtime is writable by the user's unconfined processes, so the
+launcher proves every byte of it before every launch, not only at install.
+Hashing 260 MB took a quarter-second per open, so the installer *seals* the
+verified bundle with fs-verity instead (`sealed   : N file(s) with
+fs-verity`): every `bundle.toml` lists each file's fs-verity digest (SHA-256,
+4 KiB blocks) under a second publisher signature (`verity_signature_hex`)
+that leaves the root hash, the ABI digest and the signature older launchers
+check unchanged. A sealed file can never be written again and the kernel
+checks every page read from it against its Merkle tree, so the launcher
+accepts a file unread when its kernel-measured digest equals the signed one,
+and hashes every other file as before: an unsealed or replaced file, one
+with another digest, a bundle without the verity signature, any filesystem
+without fs-verity (XFS, tmpfs). Launch verification of a sealed runtime costs
+a few system calls per file. What it guarantees is unchanged:
+
+- a byte that differs from the signed payload is refused before the sandbox
+  is built — replacing a sealed file through its writable directory leaves
+  an unsealed file, or one that measures another digest, and either is
+  hashed and refused;
+- a forged digest breaks the verity signature, which every verification
+  (install and launch) refuses;
+- the window between verification and the sandbox's bind mount, in which a
+  process of the same user could swap a file, is the one the full hash had
+  (shorter, now that verification takes microseconds); closing it needs a
+  runtime directory the user cannot write, which is the system bundle's
+  property, not the per-user one's.
+
 ```
 $ tilo-install runtime install --version 2026.07 --from-host --force
 installed runtime bundle: tilo-runtime/2026.07
