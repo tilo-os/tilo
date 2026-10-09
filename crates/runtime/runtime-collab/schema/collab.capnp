@@ -276,7 +276,7 @@ interface ChannelHandle {
   # Read the current owner-confirmed control frontier for one exact leased
   # run. This is the direction/cancellation carrier; JSON is closed and
   # versioned independently from Cap'n Proto evolution.
-  taskRunControl @58 (runId :UInt64, lease :Text) -> (controlJson :Text);
+  taskRunControl @66 (runId :UInt64, lease :Text) -> (controlJson :Text);
 
   # Record a terminal effect started by this application's own local UI.
   # The broker re-resolves resource/action against the connection's current
@@ -408,6 +408,11 @@ interface ChannelHandle {
   # derived from the launcher-attested channel. No host socket or capture API
   # is returned. The closed command is bounded to 32 KiB and 20 ms stereo PCM.
   audioOutputCommand @57 (command :Data) -> (reply :Data);
+
+  # Execute a host-approved check only for this actual target worker's retained
+  # accepted invocation. Request has correlation + check ID, never argv/path/env.
+  # Unsupported brokers refuse; clients must not fall back to raw execution.
+  approvedCheck @58 (request :Data) -> (receipt :Data);
 
   # Native addressed contributions use the existing complete signed-document
   # door, not incomplete native document frames. The opaque source token came

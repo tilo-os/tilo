@@ -409,10 +409,16 @@ impl<R: Resource> ResourceRoot<R> {
         state: &R::State,
         mut resource: tilo_actions::Resource,
     ) -> tilo_actions::Resource {
-        let mut bound = self.bindings.declarations(state);
+        let mut bound = {
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.bound_declarations");
+            self.bindings.declarations(state)
+        };
         let mut rows = Vec::new();
         let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.surface_publication");
             bound.extend(surface.bound_declarations());
             availability.extend(surface.availability());
             rows.extend(
@@ -457,7 +463,12 @@ impl<R: Resource> ResourceRoot<R> {
         }
         // The app's own effects come before the framework's history and
         // render operations: an app answering `diff` its own way is asked.
-        for spec in self.effects.specs() {
+        let effects = {
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.effect_specs");
+            self.effects.specs()
+        };
+        for spec in effects {
             let shadowed = resource
                 .actions
                 .iter()
@@ -1417,6 +1428,9 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
         ui_core::widget::controls::control_action_bindings(self.content.as_ref())
     }
 
+    fn action_control_bindings(&self) -> Vec<ui_core::widget::ControlBindingMetadata> {
+        ui_core::widget::controls::action_control_bindings(self.content.as_ref())
+    }
     fn has_action_control_bindings(&self) -> bool {
         // Match the explicit content inventory, including controls emitted by
         // its root, without allocating the complete accessibility tree.

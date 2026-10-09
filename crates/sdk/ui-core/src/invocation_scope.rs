@@ -1,4 +1,13 @@
 //! Host-local invocation custody. No wire caller can manufacture these checks.
+
+/// A typed host check response, suitable for an existing effect worker.
+pub type ApprovedCheckFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<runtime_collab::approved_checks::Receipt, String>>
+            + Send,
+    >,
+>;
+
 /// Inert delivered inputs. Only the registered host can associate these with
 /// an original admitted caller, contract and exact worker connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -657,6 +666,39 @@ impl ResourceInvocationScope {
 
     pub fn invocation(&self) -> tilo_actions::InvocationId {
         self.lease.request.invocation
+    }
+
+    /// Queue only a check ID under this exact admitted effect's record route.
+    /// The host resolves commands and execution bounds and rechecks custody.
+    ///
+    /// # Errors
+    /// Refuses absent transport, changed custody, malformed IDs or a full lane.
+    pub fn approved_check(&self, check_id: &str) -> Result<ApprovedCheckFuture, String> {
+        self.check()?;
+        #[cfg(feature = "broker-transport")]
+        {
+            let scope = self.effect_scope()?;
+            let request = runtime_collab::approved_checks::Request {
+                version: 1,
+                invocation: self.invocation().0.to_string(),
+                check_id: check_id.into(),
+            };
+            let receive = crate::collaboration::approved_checks::enqueue(
+                &self.route().channel_id(),
+                request,
+            )?;
+            Ok(Box::pin(async move {
+                let receipt = receive
+                    .await
+                    .map_err(|_| "approved-check transport retired")??;
+                scope.with_effect(|| Ok(receipt))
+            }))
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = check_id;
+            Err("approved project checks require the admitted native broker transport".into())
+        }
     }
 
     /// The canonical record route construction verified against the owner.

@@ -38,33 +38,16 @@ const PROCESS_TEST: &str =
 const PROCESS_ROOT: &str = "TILO_STANDALONE_TEST_ROOT";
 const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 
-#[tokio::test]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the broker fixture owns its authority and invocation registry for the whole scenario"
-)]
-async fn runtime_invocation_ownership_survives_device_normalization() {
-    use tilo_action_broker::{
-        collab_broker::CrdtRoute,
-        collab_broker_capnp::{
-            CapnpBrokerState, PublishedAction, PublishedInput, PublishedSurface,
-        },
-        test_support::{Workspace, WorkspaceId, WorkspaceTree},
+fn ownership_test_surface(room: &str) -> tilo_action_broker::collab_broker_capnp::PublishedSurface {
+    use tilo_action_broker::collab_broker::CrdtRoute;
+    use tilo_action_broker::collab_broker_capnp::{
+        PublishedAction, PublishedInput, PublishedSurface,
     };
-    use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 
-    let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
-    workspace.set_owner("a1".repeat(32));
-    let room = workspace.room.to_string();
-    let mut tree = WorkspaceTree::default();
-    tree.desktop.workspaces.push(workspace);
-    let membership = tree.shared();
-    let broker =
-        CapnpBrokerState::test_broker_with_authority(membership.authority(), membership.services());
-    broker.replace_published_surfaces_for_test(vec![PublishedSurface {
+    PublishedSurface {
         peer_id: 7,
         app_id: "so.tilo.files".into(),
-        route: CrdtRoute::app("so.tilo.files", room.clone()),
+        route: CrdtRoute::app("so.tilo.files", room),
         actions: vec![PublishedAction {
             semantic_identity: None,
             resource: "files.entry:/tmp/synthetic-report".into(),
@@ -84,7 +67,30 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
             view: None,
         }],
         live: true,
-    }]);
+    }
+}
+
+#[tokio::test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the broker fixture owns its authority and invocation registry for the whole scenario"
+)]
+async fn runtime_invocation_ownership_survives_device_normalization() {
+    use tilo_action_broker::{
+        collab_broker_capnp::CapnpBrokerState,
+        test_support::{Workspace, WorkspaceId, WorkspaceTree},
+    };
+    use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
+
+    let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
+    workspace.set_owner("a1".repeat(32));
+    let room = workspace.room.to_string();
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let membership = tree.shared();
+    let broker =
+        CapnpBrokerState::test_broker_with_authority(membership.authority(), membership.services());
+    broker.replace_published_surfaces_for_test(vec![ownership_test_surface(&room)]);
     let mut invocations = broker.capture_invocations_for_test(7);
     let (joined, _directory) = Joined::test_empty().await;
     let host = RuntimeActionHost {
@@ -120,6 +126,11 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     assert!(invocations.try_recv().is_ok());
     assert!(host.observe(&owner, &id).is_some());
     assert!(host.observe(&other, &id).is_none());
+    // Waiting on a change is authorized exactly as observing.
+    assert!(host.next_change(&other, &id).is_none());
+    let change = host
+        .next_change(&owner, &id)
+        .expect("the owner may wait on its invocation");
     assert_eq!(
         host.cancel(&other, &id),
         Err(ActionHostError::UnknownInvocation)
@@ -137,6 +148,13 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         "retries must not dispatch again"
     );
     assert_eq!(host.cancel(&owner, &id), Ok(()));
+    // The cancellation request changed the invocation: the waiter wakes on
+    // it, well before the broker's one-second safety interval.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(500), change).await,
+        Ok(Some(())),
+        "a change wakes its waiter"
+    );
 }
 
 /// In the parent, runs the test at path `test` again in a child process
@@ -249,7 +267,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     let listed = tilo_rt::try_app()
         .unwrap()
         .block_on(async {
-            let mut server = McpServer::new(
+            let server = McpServer::new(
                 session.action_host().unwrap(),
                 session.room().to_owned(),
                 session.actor().to_owned(),

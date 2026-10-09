@@ -2640,7 +2640,7 @@ impl AppHandler {
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
         mark_first_frame("first-frame-update-start");
-        if app.update_model() {
+        if app.update_native_model() {
             floating_content_changed = true;
         }
         mark_first_frame("first-frame-update-done");
@@ -3939,7 +3939,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
-        let idle_model = app.service_idle_model();
+        let idle_model = app.service_native_idle_model();
         if idle_model.changed {
             request_primary_redraw();
         }
@@ -4865,7 +4865,7 @@ fn sync_scheduled_deadline(app: &mut App) -> bool {
     // hosted model pump uses; retaining cursors without the comparison would
     // let a real document or authority change reuse stale capability state.
     let directory = app.begin_model_directory_refresh();
-    let updated = app.update_model();
+    let updated = app.update_native_model();
     let _ = app.sync_model(true);
     let structure = app.forget_replaced_widgets();
     if directory.is_some() {

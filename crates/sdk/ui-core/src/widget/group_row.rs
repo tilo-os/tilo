@@ -3430,13 +3430,7 @@ impl Widget for GroupRow {
             self.rect = Rect::ZERO;
             return;
         }
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Portable hosts learn their width here. Rebuild provisional widths
         // in the same bounded settlement, including a same-viewport root swap.
         self.structure_dirty |= !self.width_basis_is_current();

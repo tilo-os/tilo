@@ -268,14 +268,50 @@ pub fn host_resolver(host_root: &Path) -> Option<String> {
 /// land on the `/var` tmpfs, the masks after the grants they cover), so keep
 /// the call order matching the section order in this function.
 pub fn build_argv(plan: &GuestPlan, seccomp_fd: Option<std::os::fd::RawFd>) -> Vec<OsString> {
+    build_guest_argv(plan, seccomp_fd, None)
+}
+
+/// Build a broker-free, network-isolated check guest using the same image,
+/// namespace, seccomp and helper closure as ordinary environment guests.
+/// The trusted supervisor supplies both paths; neither comes from an effect.
+#[must_use]
+pub fn build_check_argv(
+    plan: &GuestPlan,
+    seccomp_fd: std::os::fd::RawFd,
+    checkout: &Path,
+    build: &Path,
+) -> Vec<OsString> {
+    build_guest_argv(plan, Some(seccomp_fd), Some((checkout, build)))
+}
+
+fn build_guest_argv(
+    plan: &GuestPlan,
+    seccomp_fd: Option<std::os::fd::RawFd>,
+    check: Option<(&Path, &Path)>,
+) -> Vec<OsString> {
     let mut a: Vec<OsString> = Vec::new();
     push_namespace_flags(&mut a, plan);
+    if check.is_some() {
+        a.push("--unshare-net".into());
+    }
     push_image_mounts(&mut a, plan);
     push_symlinks(&mut a);
     push_pseudo_filesystems_and_var(&mut a, plan);
-    push_runtime_and_broker(&mut a, plan);
+    push_runtime_and_broker(&mut a, plan, check.is_none());
     push_home_and_grants(&mut a, plan);
-    push_environment(&mut a, plan);
+    if let Some((checkout, build)) = check {
+        a.extend([
+            "--ro-bind".into(),
+            checkout.as_os_str().into(),
+            "/project".into(),
+            "--bind".into(),
+            build.as_os_str().into(),
+            "/project/target".into(),
+            "--chdir".into(),
+            "/project".into(),
+        ]);
+    }
+    push_environment(&mut a, plan, check.is_none());
     push_seccomp_and_command(&mut a, plan, seccomp_fd);
     a
 }
@@ -414,7 +450,7 @@ fn push_pseudo_filesystems_and_var(a: &mut Vec<OsString>, plan: &GuestPlan) {
 
 /// The runtime binary (read-only, with its command shims) and the broker
 /// socket the guest sends requests over.
-fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
+fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
     a.push("--dir".into());
     a.push(crate::GUEST_BIN_DIR.into());
     a.push("--ro-bind".into());
@@ -445,6 +481,9 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
             plan.session_dir.join("helper-shim").into_os_string(),
             format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into(),
         ]);
+    }
+    if !broker {
+        return;
     }
     for cmd in crate::GUEST_COMMANDS {
         if !crate::guest_command_available(&plan.host_root, cmd) {
@@ -516,7 +555,7 @@ fn push_home_and_grants(a: &mut Vec<OsString>, plan: &GuestPlan) {
 /// The guest's whole environment: fixed variables, the locale/timezone
 /// carried from the supervisor, the plan's own extras, and finally
 /// unsetting the store path so nothing inside the namespace can reach it.
-fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan) {
+fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
     let setenv = |k: &str, v: &str, a: &mut Vec<OsString>| {
         a.push("--setenv".into());
         a.push(k.into());
@@ -529,7 +568,9 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan) {
     setenv("LOGNAME", &plan.user.name, a);
     setenv("SHELL", &plan.shell.to_string_lossy(), a);
     setenv("TILO_USH_ENVIRONMENT", &plan.environment, a);
-    setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
+    if broker {
+        setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
+    }
     // Carried across explicitly since the guest no longer inherits it: a shell
     // with no `LANG` answers in the C locale, breaking `ls`, `date`, and messages.
     for key in INHERITED_ENV {
@@ -653,6 +694,30 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approved_check_mounts_source_read_only_target_writeable_and_no_broker() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan_in(dir.path());
+        let argv = build_check_argv(
+            &plan,
+            42,
+            Path::new("/private/source"),
+            Path::new("/private/build"),
+        );
+        assert!(argv.iter().any(|s| s == "--unshare-net"));
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--ro-bind", "/private/source", "/project"])
+        );
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--bind", "/private/build", "/project/target"])
+        );
+        assert!(argv.windows(2).any(|w| w == ["--seccomp", "42"]));
+        assert!(!argv.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
+        assert!(!argv.iter().any(|s| s == plan.broker_socket.as_os_str()));
+    }
 
     fn plan_in(dir: &Path) -> GuestPlan {
         let tool = dir.join("pkgs/tool");

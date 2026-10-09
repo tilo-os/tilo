@@ -14,6 +14,8 @@
 //! fetch instead.
 
 mod agent_messages;
+mod approved_checks;
+pub use approved_checks::{ApprovedCheckContext, ApprovedCheckServices};
 mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
@@ -3104,6 +3106,7 @@ pub struct CapnpBrokerState {
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
     message_sources: Mutex<workspace_messages::MessageSources>,
+    approved_check_jobs: Mutex<approved_checks::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
@@ -4037,6 +4040,7 @@ impl CapnpBrokerState {
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
                 message_sources: Mutex::new(workspace_messages::MessageSources::default()),
+                approved_check_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
                 shortcut_runs: crate::automation::ShortcutRuns::default(),
                 app_action_access: RwLock::new(
@@ -8353,6 +8357,32 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
+    fn approved_check(
+        self: Rc<Self>,
+        params: channel_handle::ApprovedCheckParams,
+        mut results: channel_handle::ApprovedCheckResults,
+    ) -> Promise<(), capnp::Error> {
+        let request = match params
+            .get()
+            .and_then(channel_handle::approved_check_params::Reader::get_request)
+            .map_err(|error| error.to_string())
+            .and_then(runtime_collab::approved_checks::Request::decode)
+        {
+            Ok(request) => request,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let context = match approved_checks::context(&self, request) {
+            Ok(context) => context,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        Promise::from_future(async move {
+            let reply = approved_checks::execute(context)
+                .await
+                .map_err(capnp::Error::failed)?;
+            results.get().set_receipt(&reply);
+            Ok(())
+        })
+    }
     fn offer_blob(
         self: Rc<Self>,
         params: channel_handle::OfferBlobParams,
@@ -14887,6 +14917,8 @@ pub mod tests {
     #[cfg(test)]
     include!("resolved_invocation_tests.rs");
     #[cfg(test)]
+    include!("approved_check_rpc_tests.rs");
+    #[cfg(test)]
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
     include!("canonical_route_tests.rs");
@@ -18946,8 +18978,8 @@ pub mod tests {
                 // A durable cancellation request acknowledges receipt only; it
                 // does not assert that the running external effect stopped.
                 use tilo_delivery_protocol::{
-                    delivery_v3::private_wire,
                     peer_actions::{ActionMessage, DirectedAction},
+                    transport_v2::{self, EnvelopeV2},
                 };
                 let cancel = DirectedAction {
                     room: uuid::Uuid::parse_str(&caller.room).unwrap(),
@@ -18958,30 +18990,31 @@ pub mod tests {
                         invocation: request.invocation,
                     },
                 };
-                let acknowledgement = DirectedAction {
-                    room: cancel.room,
-                    request_id: cancel.request_id,
-                    source: cancel.target,
-                    target: cancel.source,
-                    message: ActionMessage::CancellationRequested {
+                // The broker's reply path answers exactly this cancel: same
+                // room and request, reversed direction, the same invocation.
+                let acknowledgement = crate::peer_actions::bounded_reply(
+                    &cancel,
+                    ActionMessage::CancellationRequested {
                         invocation: request.invocation,
                     },
-                };
-                let encoded = private_wire::encode_response(
-                    private_wire::PrivateOperation::Cancel,
-                    &cancel,
-                    &acknowledgement,
-                )
-                .unwrap();
-                assert_eq!(
-                    private_wire::decode_response(
-                        private_wire::PrivateOperation::Cancel,
-                        &cancel,
-                        &encoded
-                    )
-                    .unwrap(),
-                    acknowledgement
                 );
+                assert_eq!(
+                    acknowledgement,
+                    DirectedAction {
+                        room: cancel.room,
+                        request_id: cancel.request_id,
+                        source: cancel.target,
+                        target: cancel.source,
+                        message: ActionMessage::CancellationRequested {
+                            invocation: request.invocation,
+                        },
+                    }
+                );
+                // And it survives the private lane the relay carries.
+                assert!(cancel.validate() && acknowledgement.validate());
+                let reply = EnvelopeV2::Directed(acknowledgement);
+                let encoded = transport_v2::encode(&reply).unwrap();
+                assert_eq!(transport_v2::decode(&encoded[4..]).unwrap(), reply);
                 if disconnected {
                     fixture.state.remove_connection(71);
                 } else {

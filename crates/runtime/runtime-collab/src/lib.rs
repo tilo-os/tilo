@@ -68,7 +68,7 @@ pub mod collab_capnp {
 }
 
 mod agent_messages;
-
+pub mod approved_checks;
 /// The host distinguishes local UI intent from continuation of a published action.
 /// A published id is resolved only against broker-retained original custody.
 #[derive(Clone, Copy, Debug)]

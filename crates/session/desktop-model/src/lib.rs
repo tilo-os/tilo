@@ -28,6 +28,7 @@ pub mod collaborator;
 pub mod commands;
 pub mod desktop_doc;
 pub mod grants;
+pub mod history;
 pub mod ids;
 pub mod layout;
 pub mod partition;

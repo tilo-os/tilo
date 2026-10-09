@@ -60,6 +60,7 @@ async fn certified_launcher_signs_complete_native_document_only_on_plain_committ
     let _fixture = RecordFixture::new(source);
     let budget = NativeDocumentBudget::default();
     let mut route = super::super::SdkRoute {
+        _checks: None,
         spec: route_spec,
         channel: source_channel().await,
         presence: None,
@@ -129,6 +130,7 @@ async fn staged_actual_executor_contribution_is_charged_and_duplicate_is_refused
             let contribution = fixture.capture.finish().unwrap();
             let budget = NativeDocumentBudget::default();
             let route = super::super::SdkRoute {
+                _checks: None,
                 spec: contribution.source().route().clone(),
                 channel: source_channel().await,
                 presence: None,
@@ -167,6 +169,7 @@ async fn full_shared_budget_refuses_before_staging_and_retirement_stops_fresh_st
             let contribution = fixture.capture.finish().unwrap();
             let budget = NativeDocumentBudget::default();
             let route = super::super::SdkRoute {
+                _checks: None,
                 spec: contribution.source().route().clone(),
                 channel: source_channel().await,
                 presence: None,

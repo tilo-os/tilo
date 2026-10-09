@@ -1065,6 +1065,8 @@ pub trait DisplayControlServices: Send + Sync {
 
 #[derive(Clone, Default)]
 pub struct HostServices {
+    /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
+    pub approved_checks: Option<Arc<dyn crate::collab_broker_capnp::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the native host
     /// can carry it over its current authenticated room connection.
     pub resource_views: Option<Arc<dyn NativeResourceViews>>,

@@ -200,6 +200,7 @@ fn shared_actual_dispatch_isolates_typed_range_after_untyped_same_document_edit(
                     &crate::bound_dispatch::legacy_document_tests::registry(),
                     &mut tilo_actions::LocalTransport::default(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: Some(caller.lease.route.clone()),
                         address: &caller.lease.request.address,
                         resource: &resource,
                         spec: &declaration,

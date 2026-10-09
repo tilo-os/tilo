@@ -6,8 +6,8 @@ on:
       runner:
         description: 'Native host; checks always produce wasm32 output.'
         type: choice
-        default: runner-large-arm64
-        options: [runner-large-arm64, runner]
+        default: runner-native-portable
+        options: [runner-native-portable, runner-large-arm64, runner]
 
 env:
   CARGO_BUILD_JOBS: "4"
@@ -71,8 +71,8 @@ jobs:
 
       - name: Verify native wasm-check runner architecture
         env:
-          EXPECTED_ARCH: ${{ github.event.inputs.runner == 'runner' && 'x86_64' || 'aarch64' }}
-        run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"
+          EXPECTED_ARCH: ${{ runner.arch }}
+        run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build

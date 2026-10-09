@@ -2609,6 +2609,23 @@ pub trait TaffyTreeExt {
         node_map.insert(node, std::ptr::from_mut(widget));
         node
     }
+
+    /// Insert a flex parent that fills its own parent around one child: the
+    /// root node of a window that hosts a single widget tree.
+    fn fill_node(&mut self, child: NodeId) -> NodeId {
+        self.parent_node(
+            taffy::Style {
+                display: taffy::Display::Flex,
+                flex_grow: 1.0,
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+    }
 }
 
 impl TaffyTreeExt for TaffyTree<()> {

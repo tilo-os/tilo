@@ -41,6 +41,8 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = runtime_portal::local_socket::SUPPOR
 pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 
 #[cfg(feature = "broker-transport")]
+pub(crate) mod approved_checks;
+#[cfg(feature = "broker-transport")]
 mod broker;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
@@ -1782,6 +1784,10 @@ impl CollaborationManager {
             if document {
                 tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_custody:disabled");
             }
+            tracing::debug!(
+                cause = "missing_committed_document_custody",
+                "document route handoff refused"
+            );
             return Err(CollabSendError::Unavailable);
         }
         if matches!(req, CollabRequest::Hello { .. }) {
@@ -1792,6 +1798,10 @@ impl CollaborationManager {
             if document {
                 tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_primary:disabled");
             }
+            tracing::debug!(
+                cause = "primary_join_pending",
+                "document route handoff refused"
+            );
             return Err(CollabSendError::Unavailable);
         }
         if let CollabRequest::NativeMediaCommand {
@@ -1828,10 +1838,18 @@ impl CollaborationManager {
         match document_state {
             Some(transport::DocumentRouteState::Applying) if !known_pending_document => {
                 tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_route_applying:in_flight");
+                tracing::debug!(
+                    cause = "original_history_unapplied",
+                    "document route handoff pending"
+                );
                 return Err(CollabSendError::NotReady);
             }
             Some(transport::DocumentRouteState::Unavailable) => {
                 tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_route:disabled");
+                tracing::debug!(
+                    cause = "document_route_unavailable",
+                    "document route handoff refused"
+                );
                 // An unknown route may still be joined for later UI/history
                 // use. That request is not proof that this mutation is safe
                 // to retain or publish.
@@ -1849,6 +1867,9 @@ impl CollaborationManager {
         let result = self.submit(TransportCommand::ToRoute(route, req));
         if document && matches!(result, Err(TransportError::Closed)) {
             tracing::debug!(target: "tilo_agent_delivery", "native-delivery:document_transport:disabled");
+        }
+        if let Err(error) = &result {
+            tracing::debug!(%error, cause = "transport_queue_refusal", "document route handoff refused");
         }
         Ok(result?)
     }

@@ -479,10 +479,7 @@ impl App {
             Err(DocumentQueueError::Busy) => TerminalDocumentQueue::Busy,
             Err(DocumentQueueError::NotReady) => TerminalDocumentQueue::NotReady,
             Err(DocumentQueueError::Refused(reason)) => {
-                tracing::error!(
-                    reason,
-                    "document publication blocked before action terminal"
-                );
+                tracing::error!(reason, "pre-terminal document publication blocked");
                 self.action_publication_failure = Some(format!(
                     "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
                 ));

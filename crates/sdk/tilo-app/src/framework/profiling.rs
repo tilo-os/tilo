@@ -62,6 +62,13 @@ pub fn observe<T>(operation: impl FnOnce() -> T) -> (T, Vec<Sample>) {
     (result, capture.samples)
 }
 
+/// Record the real operation within an active observation on this thread.
+/// Without an observation this executes the operation without reading time.
+pub fn measure<T>(phase: &'static str, operation: impl FnOnce() -> T) -> T {
+    let _scope = Scope::start(phase);
+    operation()
+}
+
 pub(crate) struct Scope(Option<(&'static str, Instant)>);
 
 impl Scope {

@@ -211,6 +211,65 @@ scheduled integration runs do not publish an OS release. macOS setup packaging,
 cask publication and installation tests remain in **Release / imager** but are
 disabled during alpha; tags do not enable those lanes.
 
+## Performance results
+
+Performance KPIs (the Linear document "Performance and cost KPIs — what we
+market and how we measure it") are measured by **Perf / scheduled**
+(`.forgejo/workflows/perf-scheduled.yml`), nightly at 01:15 UTC and by manual
+dispatch. It is not a required check and never runs per push. Every result is
+one JSON record (`tools/perf/record.py`): KPI id, unit, n, nearest-rank
+p50/p95/p99/max, commit, build profile, renderer, virtualization, runner class
+and hardware. `tools/perf/compare.py` compares each record only with stored
+records of the same KPI and environment, and fails the run on
+
+- a p50 more than 10 % or a p99 more than 20 % above the median of the last five
+  comparable runs, on two consecutive runs (one bad night is reported as
+  `regression-pending`);
+- an enforced ceiling in `tools/perf/kpi-budgets.toml` (non-enforced ceilings
+  are marketing targets and are only reported);
+- a selected benchmark that produced no record.
+
+The records, each with its verdict, are appended to the public generic package
+`tilo-perf-results` (one immutable file per run, a version per UTC month), so
+the current numbers come from there, not from `docs/benchmarks/`. Read them with
+`python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
+`kpis` selects groups (`fs`, `footprint`); `accept` takes this run's values as
+the new baseline start after an intended change (from main only); and
+`synthetic_series` with `synthetic_factor` multiplies a run's values to prove
+the gate. A 1.25 factor passes as pending in the first run of a series and fails
+in the second. Synthetic records never enter a real baseline.
+
+To add a benchmark (a KPI group):
+
+1. Name its KPIs `<group>.<metric>[.<variant>]`, for example
+   `render.frame_ms.4k` or `agent.invoke.local.noop`.
+2. Make it produce records. Either the benchmark writes samples, one number per
+   line, and calls
+   `python3 tools/perf/record.py emit --kpi ... --unit ... --samples-file ... --env-json env.json`,
+   or a function in `tools/perf/adapters.py` parses the output it already
+   prints, as `fs-gate` does for the tilo-fs gate's `PERF` lines. Make
+   `env.json` with `record.py env --profile ... --renderer ... --virtualization
+   ... --runner ...`. State the environment truthfully: llvmpipe, TCG or a dev
+   build is a different environment from GPU, KVM or release, and is never
+   compared with them.
+3. Add a job to `perf-scheduled.yml`, and add the group to `known` in its
+   `plan` job, to the `compare` job's `needs` and to its job-result loop.
+   The job runs on the runner class the KPI is defined for and consumes
+   artifacts that are already built: a published tapp or image, or an example
+   built once in that job. It must not start a full build. It uploads its
+   records as the artifact `perf-<group>` (`*.jsonl`).
+4. List every KPI the group must report in `tools/perf/kpi-budgets.toml`, with
+   its unit, its ceilings and `enforce`, and override the tolerances only with a
+   measured reason. A listed KPI that stops reporting fails the run.
+5. Add tests for an adapter to `tools/perf/test_adapters.py`. Dispatch the
+   workflow with `kpis=<group>` from your branch: it compares without writing to
+   the store.
+
+Pull requests may gate only on deterministic, runner-independent counters
+(bytes, allocation counts, raster pixels), only when the measured paths change,
+and following `tools/web/wasm_size_ratchet.py`. Wall-clock KPIs belong in
+this lane.
+
 ## Fast checks before assembly
 
 For a native integration test without a full workspace dispatch, use

@@ -281,6 +281,7 @@ impl RecordFixture {
                     &registry,
                     &mut transport,
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: Some(self.capture.source.route().clone()),
                         address: &tilo_actions::ActionAddress::new(
                             format!("chat.person:{AGENT}"),
                             "message",

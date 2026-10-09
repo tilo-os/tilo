@@ -682,6 +682,15 @@ impl App {
     /// that is not on this network, at its address or by name, is reached
     /// over the peer network instead ([`Self::connect_peer`]).
     fn connect(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
+        self.connect_with_wake(vm, false)
+    }
+
+    /// Swaps may resume a managed VM before transport; status remains observational.
+    fn connect_for_swap(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
+        self.connect_with_wake(vm, true)
+    }
+
+    fn connect_with_wake(&mut self, vm: &Resolved, wake: bool) -> Result<Remote, CliError> {
         self.peer = None;
         if let Some(route) = vm.entry.peer.clone()
             && vm.entry.hypervisor == hypervisor::DEVICE
@@ -700,13 +709,20 @@ impl App {
         let mut retried = false;
         let (endpoint, connected) = loop {
             let endpoint = self.endpoint(vm)?;
-            let connected = Remote::connect(
-                &vm.name,
-                &endpoint,
-                vm.entry.key.as_deref(),
-                vm.entry.daemon.as_deref(),
-                debug.clone(),
-            );
+            let transport = || {
+                Remote::connect(
+                    &vm.name,
+                    &endpoint,
+                    vm.entry.key.as_deref(),
+                    vm.entry.daemon.as_deref(),
+                    debug.clone(),
+                )
+            };
+            let connected = if wake {
+                swap_transport(adapter.as_ref(), &vm.vm(), &mut self.runner, transport)
+            } else {
+                transport()
+            };
             match &connected {
                 Err(CliError::Unreachable { detail, .. })
                     if !retried
@@ -4073,7 +4089,7 @@ impl App {
         }
         let cohort_inputs = self.cohort_inputs(&component, &source)?;
         let vm = self.resolve_vm(None)?;
-        let mut remote = self.connect(&vm)?;
+        let mut remote = self.connect_for_swap(&vm)?;
         self.check_vm_space(&mut remote, &vm)?;
         let layer = if let ci::Source::Layer(hash) = source {
             hash
@@ -4097,7 +4113,7 @@ impl App {
         }
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
-        remote = self.connect(&vm)?;
+        remote = self.connect_for_swap(&vm)?;
         let info = frame_cpu_info(entry, frame_cpu_trace)?;
         let result = self.receipt.phase("apply", || {
             remote.call(Swap {
@@ -6659,6 +6675,26 @@ fn wait_for_session(remote: &mut Remote, slot: &str) -> bool {
     }
     false
 }
+
+/// Resume only an observed suspended managed VM before the ordinary strict transport.
+fn swap_transport<T>(
+    adapter: &dyn Hypervisor,
+    vm: &Vm<'_>,
+    runner: &mut dyn Runner,
+    transport: impl FnOnce() -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    if adapter.name() != hypervisor::DEVICE && adapter.suspended(vm, runner) == Some(true) {
+        let commands = adapter.wake(vm).ok_or_else(|| CliError::Unsupported {
+            what: format!("waking suspended VM {} with {}", vm.name, adapter.name()),
+            alternative: "resume the VM in the hypervisor's UI before swapping".into(),
+        })?;
+        run_all(runner, &commands)?;
+    }
+    transport()
+}
+
+#[cfg(test)]
+mod swap_wake_tests;
 
 #[cfg(test)]
 mod host_layer_tests;

@@ -239,7 +239,8 @@ pub mod close_admission;
 /// (`tools/policy/check_app_resource_action_contract.py`).
 pub mod host_operation {
     pub use crate::widget::resource_operation::{
-        OperationRequest, ResourceOperation, ResourceOperationStart, start_in_children,
+        OperationRequest, OperationTarget, ResourceOperation, ResourceOperationStart,
+        start_in_children,
     };
 }
 pub mod host_palette;

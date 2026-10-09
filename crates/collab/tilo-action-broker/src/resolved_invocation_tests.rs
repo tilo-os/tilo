@@ -446,3 +446,148 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
         })
         .await;
 }
+
+async fn listed_fresh_binding(
+    fixture: &LocalDirectoryFixture,
+    caller: &tilo_actions::remote::Caller,
+) -> tilo_actions::remote::FreshActionBinding {
+    let query = tilo_actions::remote::CatalogueQuery {
+        provider: Some(fixture.peer_id.to_string()),
+        max_results: 1,
+        ..tilo_actions::remote::CatalogueQuery::default()
+    };
+    let mut pending = fixture.state.action_query(caller, &query);
+    let page = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            drain_directory_bridge(fixture).await;
+            if let tilo_actions::remote::PendingPoll::Ready(result) = pending.poll_ready() {
+                break result;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("bounded directory listing")
+    .expect("fresh directory lists");
+    page.rows
+        .first()
+        .and_then(|row| row.fresh_binding.clone())
+        .expect("the owner publishes a complete fresh binding")
+}
+
+/// A revisionless invocation is not an implicit grant. The caller must copy
+/// the owner's complete fresh binding; that explicit mode asks the owner to
+/// resolve the action as the directory is now in the same admission turn.
+/// An empty pinned revision and an unbound revisionless request both refuse.
+#[tokio::test(flavor = "current_thread")]
+async fn a_directory_invoke_needs_an_owner_binding_to_resolve_the_current_directory() {
+    use tilo_actions::remote::{
+        ActionHostError, Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+    };
+    struct Recording {
+        revisions: Rc<RefCell<Vec<String>>>,
+        row: runtime_collab::ActionDirectoryRow,
+    }
+    impl action_directory::Server for Recording {
+        fn resolve(
+            self: Rc<Self>,
+            params: action_directory::ResolveParams,
+            mut results: action_directory::ResolveResults,
+        ) -> Promise<(), capnp::Error> {
+            let revision = params.get().and_then(|request| {
+                request
+                    .get_revision()?
+                    .to_str()
+                    .map(str::to_owned)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))
+            });
+            match revision {
+                Ok(revision) => self.revisions.borrow_mut().push(revision),
+                Err(error) => return Promise::err(error),
+            }
+            let mut resolution = results.get().init_resolution();
+            let written = runtime_collab::write_action_directory_row(
+                resolution.reborrow().init_found(),
+                &self.row,
+            );
+            resolution.set_revision("directory-current");
+            match written {
+                Ok(()) => Promise::ok(()),
+                Err(error) => Promise::err(error),
+            }
+        }
+    }
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut fixture = local_directory_fixture();
+            fixture.directory_state.borrow_mut().fresh_binding = true;
+            let caller = Caller::local_person("fixture-owner")
+                .in_room(fixture.cluster_id.clone())
+                .in_new_execution();
+            let fresh_binding = listed_fresh_binding(&fixture, &caller).await;
+            let revisions = Rc::new(RefCell::new(Vec::new()));
+            let recording = capnp_rpc::new_client(Recording {
+                revisions: Rc::clone(&revisions),
+                row: fixture.directory_state.borrow().row(),
+            });
+            fixture
+                .directories
+                .directories
+                .borrow_mut()
+                .get_mut(&fixture.peer_id)
+                .unwrap()
+                .directory = recording;
+            let mut request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: fixture.peer_id.to_string(),
+                    address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: Some(String::new()),
+                fresh_binding: None,
+                on_behalf_of: None,
+            };
+            assert!(matches!(
+                fixture
+                    .state
+                    .action_invoke(&caller, None, None, &request)
+                    .poll_ready(),
+                PendingPoll::Ready(Err(ActionHostError::InvalidRequest { .. }))
+            ));
+            request.revision = None;
+            assert!(matches!(
+                fixture
+                    .state
+                    .action_invoke(&caller, None, None, &request)
+                    .poll_ready(),
+                PendingPoll::Ready(Err(ActionHostError::InvalidRequest { .. }))
+            ));
+            assert!(
+                revisions.borrow().is_empty(),
+                "an unbound request is refused before contacting its owner"
+            );
+            request.fresh_binding = Some(fresh_binding);
+            let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
+            let admitted = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    drain_directory_bridge(&fixture).await;
+                    if let PendingPoll::Ready(result) = pending.poll_ready() {
+                        break result;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("bounded directory admission");
+            admitted.expect("admitted against the directory as it is now");
+            assert_eq!(*revisions.borrow(), [String::new()]);
+            let (_, delivered) = fixture
+                .take_invocation_identity()
+                .expect("the owner receives the invocation");
+            assert_eq!(delivered, request.invocation);
+        })
+        .await;
+}

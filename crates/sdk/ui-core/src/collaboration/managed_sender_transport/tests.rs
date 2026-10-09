@@ -266,6 +266,7 @@ where
                 native_documents: super::super::native_message::NativeDocumentQueue::new(
                     super::super::native_message::NativeDocumentBudget::default(),
                 ),
+                _checks: None,
                 spec: RouteSpec {
                     app_id: "notes".into(),
                     cluster_id: uuid::Uuid::from_u128(7),
