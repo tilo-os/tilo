@@ -224,7 +224,72 @@ fn build_item<R: Resource>(
     for spec in R::item_effects(field, id) {
         child = child.with_action(spec);
     }
+    for view in R::item_views(field, id) {
+        child = child.with_view(view);
+    }
+    if let Some(rename) = rename_spec::<R>(field, id)
+        && !child.actions.iter().any(|action| action.id == rename.id)
+    {
+        child = child.with_action(rename);
+    }
     child
+}
+
+/// The id of the prompt that renames an item.
+pub const RENAME: &str = "rename";
+
+/// "Rename" on an item whose `#[model(label)]` is a plain text field: the
+/// field edit that sets it, asking for the new name, so the palette and
+/// agents offer what a person would otherwise type into the item's title.
+fn rename_spec<R: Resource>(field: &str, id: &Id) -> Option<ActionSpec> {
+    use crate::path::{EditOp, Segment};
+    use crate::shape::Shape;
+    if !R::EDITS {
+        return None;
+    }
+    let collection = R::shape()?
+        .fields()
+        .iter()
+        .find(|candidate| candidate.name == field)?;
+    let (Shape::Collection(item) | Shape::Keyed(item)) = collection.shape else {
+        return None;
+    };
+    let label = item.fields().iter().find(|candidate| candidate.label)?;
+    let plain_text = label.ty.ends_with("String") || label.ty.ends_with("Atom");
+    if collection.readonly || label.readonly || !plain_text {
+        return None;
+    }
+    let path = vec![
+        Segment::Field(collection.key.to_owned()),
+        Segment::Item(id.clone()),
+        Segment::Field(label.key.to_owned()),
+    ];
+    let param = label.name;
+    let decl = ActionDecl::<R>::new(
+        RENAME,
+        "Rename",
+        vec![ActionParam::required_owned(
+            param,
+            tilo_actions::ParamType::Text,
+            label.title,
+        )],
+        move |args, now_ms| {
+            let Some(tilo_actions::ArgValue::Text(name)) = args.get(param) else {
+                return Err(format!("missing `{param}`"));
+            };
+            let edit = crate::Edit::<R>::new(
+                path.clone(),
+                EditOp::Set {
+                    value: serde_json::Value::String(name.clone()),
+                },
+            );
+            let mut action =
+                R::edit_action(edit).ok_or_else(|| format!("{} has no field edits", R::LABEL))?;
+            R::stamp(&mut action, now_ms);
+            Ok(action)
+        },
+    );
+    Some(crate::resource::declaration_spec(&decl))
 }
 
 /// What a published resource is, as text: its identity, its actions with

@@ -32,12 +32,15 @@ pub(crate) struct ResourceOptions {
     queue: Option<syn::Path>,
     effects: Option<syn::Path>,
     answer: Option<syn::Path>,
+    /// The views each item of a collection offers.
+    item_views: Option<syn::Path>,
 }
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
      `read_content = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
-     `locate = path`, `lands = path`, `queue = path`, `effects = Type` or `answer = path`";
+     `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
+     `item_views = path`";
 
 pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<ResourceOptions> {
     let metas = syn::parse::Parser::parse(Punctuated::<Meta, Token![,]>::parse_terminated, attr)?;
@@ -61,6 +64,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         queue: None,
         effects: None,
         answer: None,
+        item_views: None,
     };
     let mut kind = None;
     let mut label = None;
@@ -113,6 +117,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ("queue", Expr::Path(path)) => options.queue = Some(path.path.clone()),
             ("effects", Expr::Path(path)) => options.effects = Some(path.path.clone()),
             ("answer", Expr::Path(path)) => options.answer = Some(path.path.clone()),
+            ("item_views", Expr::Path(path)) => options.item_views = Some(path.path.clone()),
             _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
         }
     }
@@ -1020,6 +1025,19 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
+    let item_views = options.item_views.as_ref().map_or_else(
+        || quote!(),
+        |path| {
+            quote! {
+                fn item_views(
+                    field: &str,
+                    item: &#krate::Id,
+                ) -> ::std::vec::Vec<#krate::__private::ResourceViewSpec> {
+                    #path(field, item)
+                }
+            }
+        },
+    );
     let answer = options.answer.as_ref().map_or_else(
         || quote!(),
         |path| {
@@ -1456,6 +1474,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
 
             #item_effects
+            #item_views
             #answer
 
             fn child(

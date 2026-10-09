@@ -265,6 +265,14 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// The views the item `item` of the collection `field` offers
+    /// (`#[resource(item_views = path)]`): published on the item resource,
+    /// so a link to the item opens it in one, each opened by one of the
+    /// item's own actions ([`item_effects`](Self::item_effects)).
+    fn item_views(_field: &str, _item: &crate::Id) -> Vec<tilo_actions::ResourceViewSpec> {
+        Vec::new()
+    }
+
     /// The nested resource `id`, when [`children`](Self::children) leaves it
     /// out. A resource with more children than a published tree should carry
     /// (a book of contacts, a long history) publishes a bounded page from
