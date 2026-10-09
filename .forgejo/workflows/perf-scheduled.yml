@@ -220,12 +220,21 @@ jobs:
           set -euo pipefail
           mkdir -p perf
           curl --fail --silent --show-error --retry 3 --retry-all-errors --proto '=https' \
-            --output perf/entries.json https://apps.tilo.so/entries
+            --output "$RUNNER_TEMP/entries.json" https://apps.tilo.so/entries
           python3 tools/perf/record.py env --profile release --renderer none \
             --virtualization none --runner none --hardware "apps.tilo.so registry index" > perf/env.json
-          python3 tools/perf/adapters.py tapp-sizes --env-json perf/env.json perf/entries.json > perf/footprint.jsonl
-          rm perf/entries.json
+          python3 tools/perf/adapters.py tapp-sizes --env-json perf/env.json "$RUNNER_TEMP/entries.json" \
+            > perf/footprint.jsonl
           cat perf/footprint.jsonl
+
+      # The enforced app-size gate (DEVELOPMENT.md, "App package size"): every
+      # published app within its budget, and the apps' median, p90 and max
+      # within the fleet ceilings of tools/perf/tapp-size-budget/. The records
+      # above are uploaded either way; compare fails the run on this job.
+      - name: Published apps within their budgets and the fleet ceilings
+        run: >-
+          python3 tools/perf/tapp_size_ratchet.py fleet "$RUNNER_TEMP/entries.json"
+          --summary "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
