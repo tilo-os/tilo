@@ -1653,7 +1653,7 @@ impl FrameBuilder {
     /// which can't touch the chrome, so this bumps the revision whenever the
     /// room epoch (or a pending peer-window decision) has moved. Cheap on a
     /// quiet frame — three counters read under one acquisition of the tree's
-    /// read lock, plus the queued-retry and hydration checks; no tab walk.
+    /// read lock, plus the queued-card and hydration checks; no tab walk.
     fn pump_room_contents(&mut self) -> bool {
         // Peer windows are examined on rounds after an arrival too, not just
         // the arrival itself: `peer_windows::examine` starts at most one
@@ -1673,6 +1673,7 @@ impl FrameBuilder {
         let epoch = revisions.room_epoch;
         let owed = pending
             || crate::shell::peer_windows::retry_requested()
+            || crate::shell::peer_windows::install_requested()
             || crate::shell::record_hydration::any_waiting();
         let decided = if owed {
             let chrome = self.chrome.borrow();
@@ -3225,9 +3226,11 @@ impl FrameBuilder {
             self.peer_windows_quiet_at != Some(TreeRevisions::read(&chrome, &tree))
                 && crate::shell::peer_windows::any_pending(&tree)
         };
-        (owed || crate::shell::peer_windows::retry_requested())
-            .then(|| Instant::now().checked_add(std::time::Duration::from_millis(250)))
-            .flatten()
+        (owed
+            || crate::shell::peer_windows::retry_requested()
+            || crate::shell::peer_windows::install_requested())
+        .then(|| Instant::now().checked_add(std::time::Duration::from_millis(250)))
+        .flatten()
     }
 
     /// Whether any tab is still holding a place for an app that hasn't drawn
