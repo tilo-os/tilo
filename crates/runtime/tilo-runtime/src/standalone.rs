@@ -157,6 +157,9 @@ impl Standalone {
                 })),
                 legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
                 record_content: Some(joined::record_content(&joined, &root.join(BLOB_SOCKET))),
+                // The service the identity service answers key requests
+                // from: endpoints ask again when it says a channel changed.
+                channel_keys: Some(channel_keys.keys.clone()),
                 ..HostServices::default()
             },
             channels,

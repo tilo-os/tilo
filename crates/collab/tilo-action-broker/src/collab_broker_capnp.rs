@@ -7293,6 +7293,44 @@ impl blob_stream::Server for BlobStreamServer {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    /// Resolves once this route's own channel changed since `after`. The
+    /// channel is derived from the admitted route, so an app follows only
+    /// its own records' channels, and learns nothing but that one changed.
+    fn channel_keys_changed(
+        self: Rc<Self>,
+        params: channel_handle::ChannelKeysChangedParams,
+        mut results: channel_handle::ChannelKeysChangedResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        if route.app_id.is_empty() || route.cluster_id.is_empty() {
+            return Promise::err(capnp::Error::failed(
+                "channel keys belong to a certified app route".into(),
+            ));
+        }
+        let Some(keys) = self.state.services.channel_keys.clone() else {
+            return Promise::err(capnp::Error::unimplemented(
+                "this host has no channel service to follow".into(),
+            ));
+        };
+        let after = match params.get() {
+            Ok(params) => params.get_after(),
+            Err(error) => return Promise::err(error),
+        };
+        let channel =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
+        Promise::from_future(async move {
+            let change = keys.channel_changed(channel, after).await;
+            results.get().set_change(change);
+            Ok(())
+        })
+    }
+
     fn approved_check(
         self: Rc<Self>,
         params: channel_handle::ApprovedCheckParams,

@@ -3563,10 +3563,192 @@ fn run_shovel(
     state.notify_events();
 }
 
-/// How often an endpoint asks the identity service whether its routes'
-/// channel keys changed. Also bounds how long an edit waits after a new
-/// device is admitted.
+/// How soon a route waiting for keys is asked about again after anything
+/// changed, and how often every route is asked when the broker does not say
+/// when keys change (`channelKeysChanged`).
 const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
+
+/// The longest a route waiting for keys goes unasked while nothing changes.
+/// Admission is pushed; this timer covers only what is not, such as a
+/// channel service that starts after the app or a steward this device learns
+/// of later.
+const CHANNEL_KEY_WAIT_LONGEST: Duration = Duration::from_secs(30);
+
+/// What makes an endpoint ask the identity service about a route's keys.
+enum KeySignal {
+    /// The route's channel changed, or ciphertext arrived its keys can't
+    /// open: ask for the route's keys now.
+    Changed(String),
+    /// The broker does not say when keys change: ask on a timer.
+    Unpushed,
+}
+
+/// Which routes one round of key questions asks about. Only routes that ask
+/// the identity service at all are ever asked.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct KeyRound {
+    /// Every such route.
+    all: bool,
+    /// Routes holding no keys yet.
+    waiting: bool,
+    /// These routes, by channel key.
+    routes: std::collections::BTreeSet<String>,
+}
+
+impl KeyRound {
+    fn asks(&self, route: &str, keys: &super::route_keys::RouteKeys) -> bool {
+        keys.asks_identity_service()
+            && (self.all || (self.waiting && keys.awaiting_keys()) || self.routes.contains(route))
+    }
+}
+
+/// When an endpoint asks the identity service for its routes' keys.
+///
+/// A route holding keys is asked only when told to: the broker resolves the
+/// route's pending `channelKeysChanged` the moment its channel's keys or
+/// this device's access change, ciphertext arrives its keys can't open, or
+/// the broker refuses an edit sealed under them (`send_document_frame`). An
+/// endpoint whose routes all hold keys therefore never wakes for them.
+///
+/// Every channel change the identity service would answer differently is a
+/// commit the channel's steward makes within its reconcile interval (about a
+/// second) of the policy change: a key rotation, an invite, a removal, a
+/// role change that ends reading, a device's enrolment or revocation. The
+/// endpoint asks the moment that commit reaches this device, so a removed or
+/// revoked route stops holding its keys within that bound plus the commit's
+/// delivery to this device. Independently, the broker refuses content sealed
+/// under a superseded epoch on every path, and the identity service checks
+/// this device's trust and the person's role on every signature, so a stale
+/// key never publishes past the commit.
+///
+/// A route waiting for keys is asked on a timer as well: after
+/// [`CHANNEL_KEY_REFRESH`], then backing off to [`CHANNEL_KEY_WAIT_LONGEST`]
+/// while nothing changes. An endpoint whose broker pushes nothing asks for
+/// every route every [`CHANNEL_KEY_REFRESH`], as before.
+struct KeySchedule {
+    /// Whether the broker says when keys change. Assumed until a route's
+    /// `channelKeysChanged` is refused.
+    pushed: bool,
+    /// Routes told to ask since the last round.
+    marked: std::collections::BTreeSet<String>,
+    /// When the timer's next round is due, and the wait after it.
+    due: tokio::time::Instant,
+    wait: Duration,
+}
+
+impl KeySchedule {
+    fn new(now: tokio::time::Instant) -> Self {
+        Self {
+            pushed: true,
+            marked: std::collections::BTreeSet::new(),
+            due: now + CHANNEL_KEY_REFRESH,
+            wait: CHANNEL_KEY_REFRESH,
+        }
+    }
+
+    /// When the timer starts its next round: never while every route holds
+    /// keys and the broker pushes their changes.
+    fn next_round(&self, awaiting: bool) -> Option<tokio::time::Instant> {
+        (!self.pushed || awaiting).then_some(self.due)
+    }
+
+    fn note(&mut self, signal: KeySignal, now: tokio::time::Instant) {
+        match signal {
+            KeySignal::Changed(route) => {
+                self.marked.insert(route);
+                self.restart(now);
+            }
+            KeySignal::Unpushed if self.pushed => {
+                self.pushed = false;
+                self.restart(now);
+            }
+            KeySignal::Unpushed => {}
+        }
+    }
+
+    /// The round the timer starts `now`.
+    fn timer_round(&mut self, now: tokio::time::Instant) -> KeyRound {
+        if self.pushed {
+            self.wait = self.wait.saturating_mul(2).min(CHANNEL_KEY_WAIT_LONGEST);
+        }
+        self.due = now + self.wait;
+        KeyRound {
+            all: !self.pushed,
+            waiting: true,
+            routes: std::mem::take(&mut self.marked),
+        }
+    }
+
+    /// A round for the routes told to ask since the last one, if any.
+    fn marked_round(&mut self) -> Option<KeyRound> {
+        (!self.marked.is_empty()).then(|| KeyRound {
+            all: false,
+            waiting: false,
+            routes: std::mem::take(&mut self.marked),
+        })
+    }
+
+    /// The round a route that joined `now` starts: it learns its keys, or
+    /// that it waits, before its first edit.
+    fn join_round(&mut self, now: tokio::time::Instant) -> KeyRound {
+        self.restart(now);
+        KeyRound {
+            all: !self.pushed,
+            waiting: true,
+            routes: std::mem::take(&mut self.marked),
+        }
+    }
+
+    /// Something changed (a route joined, keys or access moved): a route
+    /// still waiting is asked again soon.
+    fn restart(&mut self, now: tokio::time::Instant) {
+        self.wait = CHANNEL_KEY_REFRESH;
+        self.due = now + CHANNEL_KEY_REFRESH;
+    }
+}
+
+/// Whether any route holds no keys yet and asks the identity service.
+fn any_route_awaiting_keys(routes: &std::collections::HashMap<String, SdkRoute>) -> bool {
+    routes.values().any(|route| {
+        route
+            .encryption
+            .lock()
+            .is_ok_and(|keys| keys.awaiting_keys())
+    })
+}
+
+/// Follow `channel`'s key changes for as long as the endpoint runs, telling
+/// the shovel to ask for `route`'s keys after each. The call is pending
+/// without traffic while nothing changes.
+fn follow_channel_keys(
+    channel: runtime_collab::ChannelHandle,
+    route: String,
+    signals: tokio_mpsc::UnboundedSender<KeySignal>,
+) {
+    tokio::task::spawn_local(async move {
+        let mut after = 0;
+        loop {
+            match channel.channel_keys_changed(after).await {
+                Ok(change) if change != after => {
+                    after = change;
+                    if signals.send(KeySignal::Changed(route.clone())).is_err() {
+                        return;
+                    }
+                }
+                Ok(_) => {
+                    tracing::warn!("collab: the broker reported an unchanged channel as changed");
+                    let _ = signals.send(KeySignal::Unpushed);
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "collab: the broker does not say when channel keys change; asking on a timer");
+                    let _ = signals.send(KeySignal::Unpushed);
+                    return;
+                }
+            }
+        }
+    });
+}
 
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
 /// spawns one subscription task per stream on the first `join_channel`.
@@ -3601,11 +3783,13 @@ async fn drive_shovel(
             SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_)
         )
     );
-    let mut key_refresh = tokio::time::interval(CHANNEL_KEY_REFRESH);
-    key_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // A certified identity service is asked on a blocking thread. The
-    // periodic round runs alongside this loop, which keeps sending while the
-    // routes keep receiving; at most one round is in flight.
+    // When to ask for keys: see `KeySchedule`. Each encrypted route follows
+    // its channel's changes and marks itself on `key_signals`.
+    let mut key_schedule = KeySchedule::new(tokio::time::Instant::now());
+    let (key_signals, mut key_signal_rx) = tokio_mpsc::unbounded_channel::<KeySignal>();
+    // A certified identity service is asked on a blocking thread. A round
+    // runs alongside this loop, which keeps sending while the routes keep
+    // receiving; at most one round is in flight.
     let mut key_fetch: Option<KeyFetch> = None;
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
@@ -3621,10 +3805,30 @@ async fn drive_shovel(
     let mut unpublished: Option<String> = None;
 
     loop {
+        let next_round = if asks_channel_keys && key_fetch.is_none() {
+            key_schedule.next_round(any_route_awaiting_keys(&routes))
+        } else {
+            None
+        };
         let queued = tokio::select! {
             queued = outbound_rx.recv() => queued,
-            _ = key_refresh.tick(), if asks_channel_keys && key_fetch.is_none() => {
-                key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx).await;
+            Some(signal) = key_signal_rx.recv() => {
+                key_schedule.note(signal, tokio::time::Instant::now());
+                if key_fetch.is_none()
+                    && let Some(round) = key_schedule.marked_round()
+                {
+                    key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
+                }
+                continue;
+            }
+            () = async {
+                match next_round {
+                    Some(due) => tokio::time::sleep_until(due).await,
+                    None => std::future::pending().await,
+                }
+            }, if next_round.is_some() => {
+                let round = key_schedule.timer_round(tokio::time::Instant::now());
+                key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
                 continue;
             }
             fetched = async {
@@ -3635,7 +3839,13 @@ async fn drive_shovel(
             }, if key_fetch.is_some() =>
             {
                 key_fetch = None;
-                apply_fetched_keys(&routes, fetched, &mut signer, &inbound_tx).await;
+                if apply_fetched_keys(&routes, fetched, &mut signer, &inbound_tx).await {
+                    key_schedule.restart(tokio::time::Instant::now());
+                }
+                // Routes told to ask while the round was out ask now.
+                if let Some(round) = key_schedule.marked_round() {
+                    key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
+                }
                 continue;
             }
         };
@@ -3666,6 +3876,7 @@ async fn drive_shovel(
                     ensure_sdk_route(
                         &SdkJoinContext {
                             asks_channel_keys,
+                            key_signals: &key_signals,
                             client: &client,
                             presentation: &presentation,
                             participant_handle: participant_handle.as_deref(),
@@ -3720,6 +3931,7 @@ async fn drive_shovel(
                 let _ = ensure_sdk_route(
                     &SdkJoinContext {
                         asks_channel_keys,
+                        key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -3738,6 +3950,7 @@ async fn drive_shovel(
                 let joined = ensure_sdk_route(
                     &SdkJoinContext {
                         asks_channel_keys,
+                        key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -3801,6 +4014,7 @@ async fn drive_shovel(
                 let result = install_sdk_encryption(
                     SdkJoinContext {
                         asks_channel_keys,
+                        key_signals: &key_signals,
                         client: &client,
                         presentation: &presentation,
                         participant_handle: participant_handle.as_deref(),
@@ -3908,12 +4122,13 @@ async fn drive_shovel(
         }
         if asks_channel_keys && routes.len() > routes_before {
             // A route joined just now learns its keys (or that it waits)
-            // before its first edit rather than at the next tick. Only
+            // before its first edit rather than at the next round. Only
             // sending waits for that; the routes keep receiving.
             if let Some(fetch) = key_fetch.take() {
                 apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
             }
-            if let Some(fetch) = refresh_keys(&routes, &mut signer, &inbound_tx).await {
+            let round = key_schedule.join_round(tokio::time::Instant::now());
+            if let Some(fetch) = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await {
                 apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
             }
         }
@@ -3946,6 +4161,8 @@ async fn install_sdk_encryption(
 #[derive(Clone, Copy)]
 struct SdkJoinContext<'a> {
     asks_channel_keys: bool,
+    /// Where each route's endpoint says its keys may have changed.
+    key_signals: &'a tokio_mpsc::UnboundedSender<KeySignal>,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
     participant_handle: Option<&'a str>,
@@ -3980,6 +4197,7 @@ async fn ensure_sdk_route(
 ) -> Result<(), String> {
     let SdkJoinContext {
         asks_channel_keys,
+        key_signals,
         client,
         presentation: identity_bytes,
         participant_handle,
@@ -4056,18 +4274,27 @@ async fn ensure_sdk_route(
     // committing host holds no channel keys: it could neither open a sealed
     // edit nor accept cleartext on the route after one. Committed routes
     // therefore stay cleartext end to end.
-    let encryption =
-        std::sync::Arc::new(std::sync::Mutex::new(if asks_channel_keys && !committed {
-            super::route_keys::RouteKeys::requested()
-        } else {
-            super::route_keys::RouteKeys::plain()
-        }));
+    let encrypted = asks_channel_keys && !committed;
+    let encryption = std::sync::Arc::new(std::sync::Mutex::new(if encrypted {
+        super::route_keys::RouteKeys::requested()
+    } else {
+        super::route_keys::RouteKeys::plain()
+    }));
+    if encrypted {
+        follow_channel_keys(channel.clone(), channel_id.clone(), key_signals.clone());
+    }
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
     let ((), (), (), (), (), (), presence) = tokio::join!(
         async {
             if !committed {
-                spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
+                spawn_op_stream(
+                    &channel,
+                    inbound_tx,
+                    std::sync::Arc::clone(&encryption),
+                    encrypted.then(|| (channel_id.clone(), key_signals.clone())),
+                )
+                .await;
             }
         },
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
@@ -4167,6 +4394,7 @@ async fn spawn_op_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &InboundBridge,
     encryption: SharedRouteKeys,
+    key_signals: Option<(String, tokio_mpsc::UnboundedSender<KeySignal>)>,
 ) {
     if let Ok(stream) = channel.subscribe().await {
         let tx = inbound_tx.clone();
@@ -4176,7 +4404,18 @@ async fn spawn_op_stream(
                     Ok(envelope) => {
                         match signed_document_event(envelope, event.from_user_id, &encryption) {
                             Ok(event) => event,
-                            Err(UndeliveredDocument::Held) => continue,
+                            Err(UndeliveredDocument::Held) => {
+                                // Sealed under an epoch the held keys lack:
+                                // ask for newer keys, once per generation.
+                                if let Some((route, signals)) = key_signals.as_ref()
+                                    && encryption
+                                        .lock()
+                                        .is_ok_and(|mut keys| keys.wants_keys_for_held())
+                                {
+                                    let _ = signals.send(KeySignal::Changed(route.clone()));
+                                }
+                                continue;
+                            }
                             Err(error) => {
                                 tracing::warn!(
                                     %error,
@@ -5349,8 +5588,8 @@ async fn certified_channel_keys(
     .unwrap_or_default()
 }
 
-/// Start a round of key questions for every route that asks the identity
-/// service. A certified service is asked off this thread and the round is
+/// Start a round of key questions for the routes `round` names. A certified
+/// service is asked off this thread and the round is
 /// returned to be awaited alongside the loop; a host's asynchronous service
 /// is asked here, and its answers are taken at once.
 #[allow(
@@ -5361,16 +5600,18 @@ async fn refresh_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
     signer: &mut LocalSdkDocumentSigner,
     inbound_tx: &InboundBridge,
+    round: &KeyRound,
 ) -> Option<KeyFetch> {
     let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) = signer else {
-        refresh_all_route_keys(routes, signer, inbound_tx).await;
+        refresh_all_route_keys(routes, signer, inbound_tx, round).await;
         return None;
     };
     let queries: Vec<KeyQuery> = routes
-        .values()
-        .filter_map(|route| {
+        .iter()
+        .filter_map(|(key, route)| {
             let keys = route.encryption.lock().ok()?;
-            keys.asks_identity_service()
+            round
+                .asks(key, &keys)
                 .then(|| KeyQuery::of(route, keys.generation()))
         })
         .collect();
@@ -5384,6 +5625,7 @@ async fn refresh_keys(
 }
 
 /// Take a finished round's answers, then deliver what waited on them.
+/// Returns whether any route's state or keys changed.
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
@@ -5393,7 +5635,8 @@ async fn apply_fetched_keys(
     fetched: FetchedKeys,
     signer: &mut LocalSdkDocumentSigner,
     inbound_tx: &InboundBridge,
-) {
+) -> bool {
+    let mut changed = false;
     for (key, asked, reply) in fetched {
         let Some(route) = routes.get(&key) else {
             continue;
@@ -5405,16 +5648,18 @@ async fn apply_fetched_keys(
             .lock()
             .is_ok_and(|keys| keys.generation() == asked)
         {
-            update_route_keys(route, reply, asked);
+            changed |= update_route_keys(route, reply, asked);
         }
         if !deliver_waiting(route, signer, inbound_tx).await {
-            return;
+            return changed;
         }
     }
+    changed
 }
 
-/// Bring every route's keys up to date, report access changes to the app,
-/// then send the edits and deliver the ciphertext that waited on them.
+/// Bring the keys of the routes `round` names up to date, report access
+/// changes to the app, then send the edits and deliver the ciphertext that
+/// waited on them.
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
@@ -5423,9 +5668,16 @@ async fn refresh_all_route_keys(
     routes: &std::collections::HashMap<String, SdkRoute>,
     signer: &mut LocalSdkDocumentSigner,
     inbound_tx: &InboundBridge,
+    round: &KeyRound,
 ) {
-    for route in routes.values() {
-        refresh_route_keys(route, signer).await;
+    for (key, route) in routes {
+        if route
+            .encryption
+            .lock()
+            .is_ok_and(|keys| round.asks(key, &keys))
+        {
+            refresh_route_keys(route, signer).await;
+        }
         if !deliver_waiting(route, signer, inbound_tx).await {
             return;
         }
@@ -6688,6 +6940,9 @@ mod tests {
         action_catalogue_fixture: Option<Vec<String>>,
         action_catalogue_subscriptions: usize,
         action_catalogue_reads: usize,
+        /// The channel service whose changes `channelKeysChanged` follows;
+        /// without one the call is unimplemented, as on an older broker.
+        key_changes: Option<Arc<tokio::sync::watch::Sender<u64>>>,
     }
 
     struct DocumentSendGate {
@@ -7060,6 +7315,31 @@ mod tests {
     }
 
     impl channel_handle::Server for FakeChannel {
+        fn channel_keys_changed(
+            self: Rc<Self>,
+            params: channel_handle::ChannelKeysChangedParams,
+            mut results: channel_handle::ChannelKeysChangedResults,
+        ) -> Promise<(), capnp::Error> {
+            let Some(changes) = self.captures.lock().unwrap().key_changes.clone() else {
+                return Promise::err(capnp::Error::unimplemented(
+                    "fixture has no channel service".into(),
+                ));
+            };
+            let after = match params.get() {
+                Ok(params) => params.get_after(),
+                Err(error) => return Promise::err(error),
+            };
+            let mut changed = changes.subscribe();
+            Promise::from_future(async move {
+                let change = *changed
+                    .wait_for(|change| *change != after)
+                    .await
+                    .map_err(|_| capnp::Error::disconnected("fixture service gone".into()))?;
+                results.get().set_change(change);
+                Ok(())
+            })
+        }
+
         fn invocation_cancellation(
             self: Rc<Self>,
             _: channel_handle::InvocationCancellationParams,
@@ -8624,6 +8904,149 @@ mod tests {
     fn committed_routes_stay_out_of_channel_keys_while_op_routes_ask() {
         assert_eq!(channel_key_requests_on_route(true), 0);
         assert!(channel_key_requests_on_route(false) > 0);
+    }
+
+    /// A certified endpoint on one ordinary route of a broker that says when
+    /// channel keys change (`changes`) or does not (`None`), with the count
+    /// of its key requests.
+    #[cfg(unix)]
+    fn keyed_endpoint(
+        changes: Option<Arc<tokio::sync::watch::Sender<u64>>>,
+    ) -> (
+        CollaborationManager,
+        Arc<std::sync::atomic::AtomicUsize>,
+        thread::JoinHandle<()>,
+    ) {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                key_changes: changes,
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _captures, thread) = stand_up_fake_broker(broker);
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
+                    asked: Arc::clone(&asked),
+                })),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::disabled();
+        manager.backend = Backend::Transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.test".into(),
+            cluster_id: Uuid::new_v4(),
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        manager.await_primary_route().unwrap();
+        tilo_test_env::wait_until("the route's endpoint to ask for its channel keys", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) > 0
+        });
+        (manager, asked, thread)
+    }
+
+    /// TIL-598: an endpoint holding its route's keys asks for them again only
+    /// when the broker says the channel changed, once per change, and never
+    /// on a timer: an idle app costs the identity service nothing.
+    #[test]
+    #[cfg(unix)]
+    fn routes_holding_keys_ask_only_when_their_channel_changes() {
+        let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
+        let (manager, asked, thread) = keyed_endpoint(Some(Arc::clone(&changes)));
+        let joined = asked.load(std::sync::atomic::Ordering::Acquire);
+        // The refresh timer would have asked three times by now.
+        std::thread::sleep(CHANNEL_KEY_REFRESH * 3 + Duration::from_millis(500));
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Acquire),
+            joined,
+            "a route holding keys asked again with nothing changed"
+        );
+
+        changes.send_replace(7);
+        tilo_test_env::wait_until("the endpoint to ask after its channel changed", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) > joined
+        });
+        std::thread::sleep(CHANNEL_KEY_REFRESH * 2);
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Acquire),
+            joined + 1,
+            "one change asks once"
+        );
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    /// A broker that does not say when keys change (an older one) leaves the
+    /// endpoint asking for every route every second, as before.
+    #[test]
+    #[cfg(unix)]
+    fn without_pushed_changes_routes_are_asked_every_second() {
+        let (manager, asked, thread) = keyed_endpoint(None);
+        let joined = asked.load(std::sync::atomic::Ordering::Acquire);
+        tilo_test_env::wait_until("the endpoint to keep asking on its timer", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) >= joined + 2
+        });
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    /// The timer only covers routes still waiting for keys while the broker
+    /// pushes changes, backing off while nothing changes; a change asks at
+    /// once and starts the backoff over. Without pushes, every route is
+    /// asked every second.
+    #[test]
+    fn key_schedule_polls_only_what_is_not_pushed() {
+        let start = tokio::time::Instant::now();
+        let mut schedule = KeySchedule::new(start);
+        assert_eq!(
+            schedule.next_round(false),
+            None,
+            "routes holding keys are never polled while changes are pushed"
+        );
+        let mut now = start;
+        let mut waits = Vec::new();
+        for _ in 0..7 {
+            let due = schedule
+                .next_round(true)
+                .expect("a waiting route is polled");
+            waits.push(due.duration_since(now));
+            now = due;
+            let round = schedule.timer_round(now);
+            assert!(round.waiting && !round.all, "{round:?}");
+        }
+        assert_eq!(
+            waits,
+            [1, 2, 4, 8, 16, 30, 30].map(Duration::from_secs),
+            "waiting routes back off to the longest wait"
+        );
+
+        schedule.note(KeySignal::Changed("route".into()), now);
+        assert_eq!(schedule.next_round(true), Some(now + CHANNEL_KEY_REFRESH));
+        let round = schedule.marked_round().expect("the changed route asks now");
+        assert!(!round.all && !round.waiting);
+        assert_eq!(round.routes.into_iter().collect::<Vec<_>>(), ["route"]);
+        assert_eq!(schedule.marked_round(), None, "asked once");
+
+        schedule.note(KeySignal::Unpushed, now);
+        for _ in 0..3 {
+            let due = schedule
+                .next_round(false)
+                .expect("without pushes, every route");
+            assert_eq!(due.duration_since(now), CHANNEL_KEY_REFRESH);
+            now = due;
+            assert!(schedule.timer_round(now).all);
+        }
     }
 
     #[test]
