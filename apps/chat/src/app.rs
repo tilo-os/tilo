@@ -1092,6 +1092,24 @@ impl ChatApp {
         }
     }
 
+    /// Test-only: apply what this window asked the person to confirm (a
+    /// destructive verb), as the door does once they agree, and read the
+    /// record again.
+    #[cfg(test)]
+    pub(crate) fn confirm_asked(&mut self, doc: &mut AutoCommit) {
+        let Some(dispatch) = &self.dispatch else {
+            return;
+        };
+        let mut chat = ui::tilo_resource::Replica::<crate::resource::Chat>::from_doc(doc.clone())
+            .as_invoker(&self.me.id);
+        for action in dispatch.take_asked().expect("what was asked builds") {
+            chat.apply_action(&action)
+                .expect("a confirmed change applies");
+        }
+        *doc = chat.doc().clone();
+        self.reload(doc);
+    }
+
     /// Edit through `dispatcher` from now on.
     pub(crate) fn attach_framework(
         &mut self,

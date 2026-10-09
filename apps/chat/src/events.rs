@@ -2021,7 +2021,9 @@ mod tests {
                 from_spec["op"],
                 "the delete-channel affordance and its palette action build the identical action"
             );
-            // And it really deleted the channel (the affordance is on the real path).
+            // And it really deleted the channel once the person confirmed (the
+            // affordance is on the real path).
+            app.confirm_asked(&mut doc);
             assert!(
                 crate::testing::channels(&doc)
                     .into_iter()
@@ -2039,6 +2041,7 @@ mod tests {
                 MenuTarget::Channel("c_random".into()),
                 MenuAction::Delete,
             );
+            app.confirm_asked(&mut doc);
             assert!(
                 !app.channels.iter().any(|c| c.id == "c_random"),
                 "channel deleted via menu"
@@ -2129,6 +2132,7 @@ mod tests {
                 &mut doc,
                 &mouse(ElementState::Released, MouseButton::Left),
             );
+            app.confirm_asked(&mut doc);
             assert!(
                 !app.channels.iter().any(|c| c.id == "c_random"),
                 "the committed swipe deleted the channel"
