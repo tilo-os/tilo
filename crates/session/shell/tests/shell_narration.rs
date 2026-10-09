@@ -3,22 +3,17 @@
 //! control, a notification's arrival is spoken politely (an error cuts
 //! in), and a hardware-key readout is announced.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use settings_store::hardware::QuickSettingsConfig;
 use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::shell_narrator::ShellNarrator;
-use shell::shell::state::{FreshId as _, WorkspaceId, WorkspaceTree};
-use taffy::prelude::TaffyMaxContent;
-use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use ui::screen_reader::ScreenReader;
-use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::kurbo::Point;
-use winit::event::{ElementState, Modifiers, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+use crate::support::host::{layout_host, one_workspace_tree, press_key};
 
 #[derive(Clone, Default)]
 struct RecordingSpeaker(Arc<Mutex<Vec<tts::Utterance>>>);
@@ -44,87 +39,13 @@ impl tts::Speaker for RecordingSpeaker {
     }
 }
 
-fn tree() -> WorkspaceTree {
-    let ws = shell::shell::state::Workspace::new(WorkspaceId::new(), "W");
-    let active = ws.id;
-    WorkspaceTree {
-        desktop: shell::shell::state::DesktopTree {
-            workspaces: vec![ws],
-            active,
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
-fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
-    use taffy::{Dimension, Style};
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let host_node = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
-                ..Default::default()
-            },
-            &[host_node],
-        )
-        .unwrap();
-    let map_for_measure = node_map.clone();
-    let mut tr = ui::text_render::TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(1600.0),
-                height: AvailableSpace::Definite(900.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = map_for_measure.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .or_else(|_| taffy.compute_layout(root, taffy::Size::MAX_CONTENT))
-        .expect("layout must compute");
-    host.apply_layout(&taffy, host_node, Point::ZERO);
-    (taffy, host_node)
-}
-
 fn press(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, key: NamedKey) {
-    let key_event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
-    let mut state = automerge::AutoCommit::new();
-    let mut handled = false;
-    let mut focus_target = None;
-    host.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: key_event,
-            is_synthetic: false,
-        },
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut state),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy,
-        },
-    );
+    press_key(host, taffy, node, Key::Named(key), ModifiersState::empty());
 }
 
 #[test]
 fn tab_in_quick_settings_speaks_the_focused_control() {
-    let (host, chrome) = build_tilo_overlay_host_with_chrome(&tree());
+    let (host, chrome) = build_tilo_overlay_host_with_chrome(&one_workspace_tree());
     let mut host = host.with_quick_settings_config(QuickSettingsConfig::default());
     let speaker = RecordingSpeaker::default();
     let mut narrator =
@@ -171,7 +92,7 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
 
 #[test]
 fn a_notification_arrival_is_spoken_politely_and_an_error_cuts_in() {
-    let (host, chrome) = build_tilo_overlay_host_with_chrome(&tree());
+    let (host, chrome) = build_tilo_overlay_host_with_chrome(&one_workspace_tree());
     let speaker = RecordingSpeaker::default();
     let mut narrator =
         ShellNarrator::with_reader(ScreenReader::with_speaker(Box::new(speaker.clone())));
