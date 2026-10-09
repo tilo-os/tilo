@@ -212,6 +212,10 @@ pub struct ChannelEncryption {
     changed: HashMap<ChannelId, u64>,
     /// [`Self::generation`], announced to whoever waits for a change.
     changes: tokio::sync::watch::Sender<u64>,
+    /// An endpoint's [`Self::access`] queued governance the next pump sends
+    /// (a genesis to announce, an access request to make). A host that parks
+    /// its pump while idle wakes it on this; see [`ChannelKeyAccess::with_wake`].
+    queued: bool,
 }
 
 impl ChannelEncryption {
@@ -240,6 +244,7 @@ impl ChannelEncryption {
             generation: 0,
             changed: HashMap::new(),
             changes: tokio::sync::watch::Sender::new(0),
+            queued: false,
         };
         for room_dir in std::fs::read_dir(&service.config.root)? {
             let room_dir = room_dir?.path();
@@ -286,11 +291,12 @@ impl ChannelEncryption {
     /// has already decided the endpoint may read the route.
     pub fn access(&mut self, room: RoomId, channel: ChannelId, now: Instant) -> ChannelAccess {
         if self.directory.governs(room) {
-            if !self.stewards.contains_key(&channel)
-                && let Err(error) = self.open_steward(room, channel)
-            {
-                tracing::warn!(%error, %room, "channel group could not be created");
-                return ChannelAccess::Unavailable;
+            if !self.stewards.contains_key(&channel) {
+                if let Err(error) = self.open_steward(room, channel) {
+                    tracing::warn!(%error, %room, "channel group could not be created");
+                    return ChannelAccess::Unavailable;
+                }
+                self.queued = true;
             }
             return self
                 .stewards
@@ -304,7 +310,7 @@ impl ChannelEncryption {
         }
         if !self.members.contains_key(&channel) {
             match self.open_member(room, channel, now) {
-                Ok(true) => {}
+                Ok(true) => self.queued = true,
                 Ok(false) => return ChannelAccess::Unavailable,
                 Err(error) => {
                     tracing::warn!(%error, %room, "channel member state could not be created");
@@ -326,6 +332,7 @@ impl ChannelEncryption {
                     entry.rejoin = true;
                     entry.request = None;
                     entry.retry = Backoff::now(now, REQUEST_FIRST);
+                    self.queued = true;
                 }
                 ChannelAccess::Removed
             }
@@ -708,28 +715,49 @@ impl ChannelEncryption {
     }
 }
 
+/// Wakes a host's parked governance pump.
+pub type PumpWake = Arc<dyn Fn() + Send + Sync>;
+
 /// Cheap shared handle for the identity service and the broker.
 #[derive(Clone)]
 pub struct ChannelKeyAccess {
     inner: Arc<Mutex<ChannelEncryption>>,
+    wake: Option<PumpWake>,
 }
 
 impl ChannelKeyAccess {
     pub fn new(service: ChannelEncryption) -> Self {
         Self {
             inner: Arc::new(Mutex::new(service)),
+            wake: None,
+        }
+    }
+
+    /// As [`Self::new`], for a host that parks its pump while
+    /// [`Self::has_live_channels`] is false: `wake` runs whenever an
+    /// endpoint's access queues governance the next pump must send, so a
+    /// first channel is announced or requested without waiting for a timer.
+    pub fn with_wake(service: ChannelEncryption, wake: PumpWake) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(service)),
+            wake: Some(wake),
         }
     }
 
     /// See [`ChannelEncryption::access`]; also returns the service's
     /// generation, which changes whenever any channel's keys or access do.
     pub fn access(&self, room: RoomId, channel: ChannelId) -> (ChannelAccess, u64) {
-        self.inner
-            .lock()
-            .map_or((ChannelAccess::Unavailable, 0), |mut service| {
-                let access = service.access(room, channel, Instant::now());
-                (access, service.generation())
-            })
+        let Ok(mut service) = self.inner.lock() else {
+            return (ChannelAccess::Unavailable, 0);
+        };
+        let access = service.access(room, channel, Instant::now());
+        let generation = service.generation();
+        let queued = std::mem::take(&mut service.queued);
+        drop(service);
+        if queued && let Some(wake) = &self.wake {
+            wake();
+        }
+        (access, generation)
     }
 
     /// Seal an ephemeral frame only with a key this device already holds for
@@ -1291,6 +1319,66 @@ mod tests {
                 .unwrap()
                 .rejoin
         );
+    }
+
+    #[test]
+    fn opening_a_channel_wakes_a_parked_pump_and_reading_it_does_not() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let dir = tempfile::tempdir().unwrap();
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        let owner = device(&room, room_id, 0, (1, 1), &Policy::default(), dir.path());
+        let access = ChannelKeyAccess::with_wake(
+            owner.service,
+            Arc::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        assert!(!access.has_live_channels());
+        let channel = ChannelId::new();
+        access.access(room_id, channel);
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            1,
+            "a new steward group has a genesis to announce"
+        );
+        assert!(access.has_live_channels());
+        access.access(room_id, channel);
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            1,
+            "an open channel queues nothing new"
+        );
+
+        let member_dir = tempfile::tempdir().unwrap();
+        let member = device(
+            &room,
+            room_id,
+            1,
+            (2, 1),
+            &Policy::default(),
+            member_dir.path(),
+        );
+        let member_wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&member_wakes);
+        let member = ChannelKeyAccess::with_wake(
+            member.service,
+            Arc::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        assert!(matches!(
+            member.access(room_id, channel).0,
+            ChannelAccess::Waiting
+        ));
+        assert_eq!(
+            member_wakes.load(Ordering::SeqCst),
+            1,
+            "a new member has an access request to make"
+        );
+        member.access(room_id, channel);
+        assert_eq!(member_wakes.load(Ordering::SeqCst), 1);
     }
 
     #[test]
