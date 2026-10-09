@@ -11918,6 +11918,7 @@ pub fn run() {
             // Lay out only when about to paint — any structural change (spliced group,
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
+            let paint_cpu = metrics.cpu_snapshot();
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             // `relayout` publishes a new tile rect (for a tab switch, move,
@@ -11962,7 +11963,9 @@ pub fn run() {
             }
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
+            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Layout, paint_cpu);
             let t_scene_start = Instant::now();
+            let scene_cpu = metrics.cpu_snapshot();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
             let retained_damage_supported = backend.supports_retained_scene_damage();
             frame_builder.set_workspace_clip_supported(backend.supports_workspace_clip());
@@ -12088,6 +12091,7 @@ pub fn run() {
                 frame_paint
             };
             metrics.mark_scene(t_scene_start.elapsed());
+            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Scene, scene_cpu);
             // The selector queued semantic work and closed before this clean
             // scene was built. Execute screenshots here, before ownership of
             // the scene moves to the presentation thread; this is the only
@@ -12334,6 +12338,7 @@ pub fn run() {
                 .presentation_feedback
                 .composed(foreign::store(), feedback_output);
             let t_submit_start = Instant::now();
+            let submit_cpu = metrics.cpu_snapshot();
             let mut render_thread_lost = false;
             let mut submitted_serial = None;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
@@ -12397,6 +12402,9 @@ pub fn run() {
                 submit_done,
                 submitted_serial,
             );
+            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Submit, submit_cpu);
+            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Paint, paint_cpu);
+            metrics.mark_paint_wall(submit_done.saturating_duration_since(t_layout_start));
             if let Some(serial) = submitted_serial {
                 let presented = {
                     let mut keys = crate::compositor::key_latency::tracker();
