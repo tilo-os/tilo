@@ -292,7 +292,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     const auto action=Action();
     if(PrivateText() && action=="prepare_text_input") {
       auto data=value?value->GetDictionary("data"):nullptr;
-      if(!data || data->GetType("lease")!=VTYPE_STRING) { Fail("script","The private preparation returned no lease");return; }
+      if(!data || data->GetType("lease")!=VTYPE_STRING || data->GetType("multiline")!=VTYPE_BOOL) { Fail("script","The private preparation returned no field policy");return; }
       text_owner_=text_frame_;text_lease_=data->GetString("lease").ToString();
     }
     if(PrivateText() && (action=="cancel_text_input" || action=="commit_text_input" || action=="undo_text_input" || action=="redo_text_input")) { text_owner_.reset();text_lease_.clear(); }

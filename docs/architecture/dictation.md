@@ -2220,10 +2220,10 @@ replays; the pending/detached SHM readback mapping guard; 17 opted-in speech
 tests; multiline IME intent and the existing decorator forwarding contract.
 The full rootfs COPY invariant script also passed. These are synthetic field
 and worker checks, not live microphone or deployed-image qualification.
-Browser and block-document paragraph policy remain separate unfinished work.
+At this checkpoint, browser and block-document paragraph policy remained unfinished; subsequent sections record their qualification.
 
 
-### Document paragraph transaction and browser qualification boundary
+### Document paragraph transaction and browser qualification boundary (checkpoint db5d7fc7a8)
 
 BlockEditor now advertises paragraph intent only for its focused writable
 ordinary text/code field. Find, link/slash controls, visual formulas and tables
@@ -2300,3 +2300,90 @@ dependency union; no inference metric is attributed to a new model run.
 The actual Notes paragraph test also passed after the 426aa5cd2f integration
 (0.543 seconds for the three cases, remote compile 2m57s), proving the newly
 imported SDK view changes preserve the original field and owned undo transaction.
+
+### Corrected native browser paragraphs and concurrent recognition (2026-10-09)
+
+The original pinned-CEF rich-field failure is corrected through guarded native
+line-break editing, rather than Chromium's block-paragraph insertion. The exact
+sample now renders two requested LF as two LF, keeps both paragraphs inside the
+original bold style and has one native undo/redo entry. Mixed-format selections
+inherit Chromium's initial replacement style; the helper then carries that
+collapsed style across breaks. Native bold, italic, underline, strike, sub/super,
+font family, size, foreground and highlight state are preserved through native
+format commands, without copying page markup or setting a field value.
+
+The original failed prototype and assertion remain on local diagnostic branch
+`codex/dictation-browser-paragraph-probe-20261009` at `1b8658e6c9`. The corrected
+production regression asserts the exact native notification sequence
+`insertText, insertLineBreak, insertLineBreak, insertText`, exact rendered text,
+exact bold markup, one undo/redo, no repeated final and no site activation.
+Four notifications are still one consumed original-field final. The pinned
+native IME control reproduces the old defect; merely changing the host API is
+insufficient. Chromium's [native insertion commands](https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/renderer/core/editing/commands/insert_commands.cc)
+and [composition implementation](https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/renderer/core/editing/ime/input_method_controller.cc)
+provide implementation context; the pinned-host tests establish behavior.
+
+Every native step checks the original field's focus, writable/private/composition
+state and fixed expiry. An input handler that changes focus interrupts the edit;
+remaining text cannot move to another field. The partial original edit can be
+undone, and the consumed lease cannot retry it. No automatic cross-field rollback,
+clipboard replacement or field-value assignment is introduced.
+
+Literal edge whitespace remains a bounded browser limitation. Normal HTML
+whitespace rules can collapse an existing space or produce NBSP around a leading
+or trailing break. Such rich-field requests fail before handlers or editing.
+Textarea and explicitly whitespace-preserving rich fields (`pre`, `pre-wrap`,
+`break-spaces`) qualify pure and trailing breaks exactly. The whitespace policy
+is retained in the original private snapshot; it cannot be changed by model output.
+
+The complete guarded CEF suite passed 49 tests on the boundary revision, including
+its real 180-second fixed lease timer (245.880 seconds). The final mixed-format
+revision passed all nine focused browser cases (9.269 seconds). The existing
+mounted SDK executable passed direct and decorated ownership journeys; its rich
+paragraph assertions are extended as part of this fix. A separate native typing
+control verifies that dictation undo retains text typed immediately beforehand.
+The 20 focused shell dictation integration cases also passed (0.502 seconds).
+
+`qualify_dictation_browser_worker.py` runs an authenticated public-audio image
+worker concurrently with a private real-browser field lease. Existing resource
+and custody checks remain intact; bounded worker replies are forwarded as they
+occur. The cases cover an original textarea final, focus-away-and-back retirement,
+cancellation after actual recognition, and a fresh repeated input-field session.
+Drafts never edit fields; successful finals insert once and undo/redo exactly.
+The receipt distinguishes decoder status from the transient scope launcher and
+checks all trailing cancellation replies. This is worker/browser concurrency,
+not a live microphone or compositor shortcut journey.
+
+Browser runtime references advance together to `2026.10.9-chromium` in SDK,
+app manifest, package-contract fixture and image argument, so an installed older
+bundle cannot satisfy the new editing protocol. No runtime or model is installed,
+activated, signed for publication or deployed by this work. The PR remains held.
+
+Field capacity is also part of the private original snapshot. Text inputs and
+textareas validate the full prospective UTF-16 value against maxlength before
+handlers; native email/number retain their existing complete-value checks.
+Changing capacity during a paragraph interrupts remaining commands rather than
+silently truncating an acknowledged final. Unobservable resource-scope control
+files now fail explicitly as unverified controls before reading any artifact.
+
+The final capacity-aware pinned CEF host passed 12 focused browser cases
+(11.522 seconds). A fresh final concurrent run passed all four cases with the
+same authenticated French final: original textarea (12.925 seconds), retired
+focus (12.748 seconds), cancellation without a trailing final (3.922 seconds),
+and a fresh repeated input session (12.689 seconds). The three complete workers
+exit successfully with unchanged guard/cgroup limits; cancellation records no
+unobserved decoder exit claim. An earlier stricter rerun was refused before its
+fourth worker became ready by host pressure admission; that failure is retained
+separately rather than hidden or counted as a pass. Detailed source/host digests,
+exact outputs and limits are in `dictation-browser-paragraph-fixed.json`.
+
+The final mounted SDK run passes for direct and decorated widgets, including
+the corrected rich paragraph's exact text/markup and one native undo/redo.
+Its first outer harness run passed the Rust assertions but raced asynchronous
+helper shutdown during profile deletion. The final private PID-namespace init
+waits for every owned native descendant to exit before removing profiles; the
+whole run now exits successfully. Both logs remain in the receipt. No production
+supervisor behavior or sandbox flag was changed to hide that cleanup failure.
+The package-kind/browser-runtime contract passes on the new runtime reference
+(1 test, 0.008 seconds), as do 3 package preparation and 4 scope-contract tests.
+The final required remote shell all-test check passes (1.12 seconds cached).

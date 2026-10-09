@@ -193,6 +193,69 @@ fn native_rich_baseline<W: Widget + 'static>(
     snapshot
 }
 
+fn qualify_paragraphs<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine, url: &str) {
+    for paragraph in ["First café.\n\nSecond 👋", "\n\n", "First café.\n"] {
+        load(engine, url);
+        selected(view, engine, "notes");
+        assert!(
+            view.ime_multiline(),
+            "original textarea policy reaches the retained owner"
+        );
+        let start = view.start_deferred_text().unwrap();
+        assert_eq!(finish(view, &start), Ok(()));
+        let receipt = view.commit_deferred_text(paragraph).unwrap();
+        assert_eq!(finish(view, &receipt), Ok(()));
+        let expected = format!("alpha {paragraph} gamma");
+        assert_eq!(evaluate(engine, "notes.value"), expected);
+        assert_eq!(evaluate(engine, "first.value"), "alpha beta gamma");
+        assert_eq!(evaluate(engine, "document.execCommand('undo')"), true);
+        assert_eq!(evaluate(engine, "notes.value"), "alpha beta gamma");
+        assert_eq!(evaluate(engine, "document.execCommand('redo')"), true);
+        assert_eq!(evaluate(engine, "notes.value"), expected);
+        assert_eq!(evaluate(engine, "navigator.userActivation.isActive"), false);
+    }
+    load(engine, url);
+    selected(view, engine, "rich");
+    assert!(
+        view.ime_multiline(),
+        "original rich field admits paragraphs"
+    );
+    let start = view.start_deferred_text().unwrap();
+    assert_eq!(finish(view, &start), Ok(()));
+    let receipt = view
+        .commit_deferred_text("First café.\n\nSecond 👋")
+        .unwrap();
+    assert_eq!(finish(view, &receipt), Ok(()));
+    assert_eq!(
+        evaluate(engine, "rich.innerText"),
+        "alpha First café.\n\nSecond 👋 gamma"
+    );
+    assert_eq!(
+        evaluate(engine, "rich.innerHTML"),
+        "alpha <b>First café.<br><br>Second 👋</b> gamma"
+    );
+    assert_eq!(evaluate(engine, "document.execCommand('undo')"), true);
+    assert_eq!(
+        evaluate(engine, "rich.innerHTML"),
+        "alpha <b>beta</b> gamma"
+    );
+    assert_eq!(evaluate(engine, "document.execCommand('redo')"), true);
+    assert_eq!(
+        evaluate(engine, "rich.innerText"),
+        "alpha First café.\n\nSecond 👋 gamma"
+    );
+    println!("PASS mounted rich paragraph: literal breaks, inherited bold, one native undo/redo");
+    load(engine, url);
+    selected(view, engine, "first");
+    assert!(!view.ime_multiline(), "single-line policy remains closed");
+    let start = view.start_deferred_text().unwrap();
+    assert_eq!(finish(view, &start), Ok(()));
+    let receipt = view.commit_deferred_text("first\nsecond").unwrap();
+    assert_eq!(finish(view, &receipt), Err(Failure::Rejected));
+    assert_eq!(evaluate(engine, "first.value"), "alpha beta gamma");
+    println!("PASS mounted paragraph intent: exact final, one undo/redo and single-line rejection");
+}
+
 fn qualify_replacements<W: Widget + 'static>(
     view: &mut Framed<W>,
     engine: &SharedEngine,
@@ -513,6 +576,7 @@ fn qualify_view<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine
     qualify_activation(view, engine, url);
     qualify_iframes(view, engine, url);
     qualify_replacements(view, engine, url);
+    qualify_paragraphs(view, engine, url);
     qualify_common_fields(view, engine, url);
     qualify_refusals(view, engine, url);
     qualify_queued_finals(view, engine, url);

@@ -15,9 +15,10 @@ PAGE = b'''<!doctype html><title>Guarded input</title>
 <div id="rich" contenteditable>alpha <b>beta</b> gamma</div><div id="shadow"></div>
 <script>
 shadow.attachShadow({mode:'open'}).innerHTML='<input value="alpha beta gamma">';
-window.editEvents=[];
+window.editEvents=[];window.beforeEdits=0;
 addEventListener('input', e=>editEvents.push(e.inputType), true);
 addEventListener('beforeinput', e=>{
+ window.beforeEdits++;
  if(window.rejectEdit) e.preventDefault();
  if(window.redirectEdit) second.focus();
 }, true);
@@ -95,7 +96,7 @@ class GuardedTextInput(unittest.TestCase):
     def prepare(self):
         result = self.request_input('prepare')
         self.assertTrue(result['ok'], result)
-        self.assertEqual(set(result['data']), {'lease'}, 'preparation must export no field content')
+        self.assertEqual(set(result['data']), {'lease', 'multiline'}, 'preparation must export no field content')
         return result['data']['lease']
 
     def unchanged(self, target='first'):
@@ -117,8 +118,182 @@ class GuardedTextInput(unittest.TestCase):
         self.assertIs(ready.get('native_caret_text_input'), True)
         result = self.request_input('prepare', native_caret=True)
         self.assertTrue(result['ok'], result)
-        self.assertEqual(set(result['data']), {'lease'})
+        self.assertEqual(set(result['data']), {'lease', 'multiline'})
+        self.assertIs(result['data']['multiline'], False)
         return result['data']['lease']
+
+    def test_multiline_paragraph_replacement_is_one_native_history_edit(self):
+        paragraph = 'First café.\n\nSecond 👋'
+        for target in ['notes', 'rich']:
+            with self.subTest(target=target):
+                self.main_world("(()=>{const e=" + target + ";e.focus();if(e.setSelectionRange)e.setSelectionRange(6,10);else{const r=document.createRange();r.selectNodeContents(e.querySelector('b'));getSelection().removeAllRanges();getSelection().addRange(r)}return true})()")
+                result = self.request_input('prepare')
+                self.assertTrue(result['ok'], result)
+                self.assertIs(result['data']['multiline'], True)
+                lease = result['data']['lease']
+                self.assertEqual(self.request_input('start', lease=lease)['data'],
+                                 {'lease': lease, 'multiline': True})
+                self.main_world('(editEvents=[],true)')
+                self.assertTrue(self.request_input('commit', lease=lease, text=paragraph)['ok'])
+                self.assertEqual(self.main_world('editEvents'),
+                                 ['insertText', 'insertLineBreak', 'insertLineBreak', 'insertText'])
+                expression = 'notes.value' if target == 'notes' else 'rich.innerText'
+                self.assertEqual(self.main_world(expression), 'alpha ' + paragraph + ' gamma')
+                if target == 'rich':
+                    self.assertEqual(self.main_world('rich.innerHTML'),
+                                     'alpha <b>First café.<br><br>Second 👋</b> gamma')
+                self.assertTrue(self.main_world("document.execCommand('undo')"))
+                self.assertEqual(self.main_world(expression), 'alpha beta gamma')
+                self.assertTrue(self.main_world("document.execCommand('redo')"))
+                self.assertEqual(self.main_world(expression), 'alpha ' + paragraph + ' gamma')
+                self.assertFalse(self.request_input('commit', lease=lease, text=paragraph)['ok'])
+                self.assertFalse(self.main_world('navigator.userActivation.isActive'))
+                self.assertTrue(self.main_world("document.execCommand('undo')"))
+
+    def test_paragraph_only_and_trailing_breaks_keep_selection_and_history(self):
+        self.main_world('(rich.style.whiteSpace="pre-wrap",true)')
+        for target in ['notes', 'rich']:
+            for paragraph, events in [('\n\n', ['insertLineBreak', 'insertLineBreak']),
+                                      ('First café.\n', ['insertText', 'insertLineBreak'])]:
+                with self.subTest(target=target, paragraph=repr(paragraph)):
+                    self.main_world("(()=>{const e=" + target + ";e.focus();if(e.setSelectionRange)e.setSelectionRange(6,10);else{const r=document.createRange();r.selectNodeContents(e.querySelector('b'));getSelection().removeAllRanges();getSelection().addRange(r)}editEvents=[];return true})()")
+                    original = self.main_world(target + ('.value' if target == 'notes' else '.innerHTML'))
+                    lease = self.prepare()
+                    self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                    self.assertTrue(self.request_input('commit', lease=lease, text=paragraph)['ok'])
+                    self.assertEqual(self.main_world('editEvents'), events)
+                    expression = target + ('.value' if target == 'notes' else '.innerText')
+                    self.assertEqual(self.main_world(expression), 'alpha ' + paragraph + ' gamma')
+                    self.assertTrue(self.main_world("document.execCommand('undo')"))
+                    self.assertEqual(self.main_world(target + ('.value' if target == 'notes' else '.innerHTML')), original)
+                    self.assertTrue(self.main_world("document.execCommand('redo')"))
+                    self.assertEqual(self.main_world(expression), 'alpha ' + paragraph + ' gamma')
+                    self.assertTrue(self.main_world("document.execCommand('undo')"))
+
+    def test_collapsing_rich_whitespace_rejects_boundary_edits_before_handlers(self):
+        for text in ['\n\n', 'First\n', '\nFirst', 'First \nSecond', 'First\n Second']:
+            with self.subTest(text=repr(text)):
+                self.main_world("(()=>{rich.focus();const r=document.createRange();r.selectNodeContents(rich.querySelector('b'));getSelection().removeAllRanges();getSelection().addRange(r);return true})()")
+                lease = self.prepare()
+                self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                before = self.main_world('beforeEdits')
+                result = self.request_input('commit', lease=lease, text=text)
+                self.assertFalse(result['ok'], result)
+                self.assertEqual(result['code'], 'rejected')
+                self.assertEqual(self.main_world('beforeEdits'), before)
+                self.assertEqual(self.main_world('rich.innerHTML'), 'alpha <b>beta</b> gamma')
+                self.assertFalse(self.request_input('commit', lease=lease, text='retry')['ok'])
+
+    def test_rich_paragraph_retains_native_inline_typing_format(self):
+        self.main_world("(()=>{const e=rich.querySelector('b');e.style.cssText='color: rgb(123, 45, 67);font-style:italic;font-family:monospace';rich.focus();const r=document.createRange();r.selectNodeContents(e);getSelection().removeAllRanges();getSelection().addRange(r);return true})()")
+        original = self.main_world('rich.innerHTML')
+        lease = self.prepare()
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.assertTrue(self.request_input('commit', lease=lease, text='First\n\nSecond')['ok'])
+        self.assertEqual(self.main_world('rich.innerText'), 'alpha First\n\nSecond gamma')
+        self.assertEqual(self.main_world("(()=>{const w=document.createTreeWalker(rich,NodeFilter.SHOW_TEXT);while(w.nextNode()){if(w.currentNode.data.includes('Second')){const s=getComputedStyle(w.currentNode.parentElement);return [s.fontWeight,s.fontStyle,s.color,s.fontFamily]}}return null})()"),
+                         ['700', 'italic', 'rgb(123, 45, 67)', 'monospace'])
+        self.assertTrue(self.main_world("document.execCommand('undo')"))
+        self.assertEqual(self.main_world('rich.innerHTML'), original)
+        self.assertTrue(self.main_world("document.execCommand('redo')"))
+        self.assertEqual(self.main_world('rich.innerText'), 'alpha First\n\nSecond gamma')
+
+    def test_rich_paragraph_mixed_selection_keeps_native_start_format(self):
+        self.main_world("(()=>{rich.focus();const r=document.createRange();r.setStart(rich.querySelector('b').firstChild,2);r.setEnd(rich.lastChild,2);getSelection().removeAllRanges();getSelection().addRange(r);return true})()")
+        lease = self.prepare()
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.assertTrue(self.request_input('commit', lease=lease, text='First\n\nSecond')['ok'])
+        self.assertEqual(self.main_world('rich.innerText'), 'alpha beFirst\n\nSecondamma')
+        self.assertEqual(self.main_world('rich.innerHTML'), 'alpha <b>beFirst<br><br>Second</b>amma')
+        self.assertTrue(self.main_world("document.execCommand('undo')"))
+        self.assertEqual(self.main_world('rich.innerHTML'), 'alpha <b>beta</b> gamma')
+        self.assertTrue(self.main_world("document.execCommand('redo')"))
+        self.assertEqual(self.main_world('rich.innerHTML'), 'alpha <b>beFirst<br><br>Second</b>amma')
+
+    def test_paragraph_undo_does_not_absorb_previous_native_typing(self):
+        self.main_world("(notes.focus(),notes.setSelectionRange(notes.value.length,notes.value.length),document.execCommand('insertText',false,' typed'))")
+        previous = self.main_world('notes.value')
+        lease = self.prepare()
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.assertTrue(self.request_input('commit', lease=lease, text='First\n\nSecond')['ok'])
+        self.assertEqual(self.main_world('notes.value'), previous + 'First\n\nSecond')
+        self.assertTrue(self.main_world("document.execCommand('undo')"))
+        self.assertEqual(self.main_world('notes.value'), previous)
+        self.assertTrue(self.main_world("document.execCommand('redo')"))
+        self.assertEqual(self.main_world('notes.value'), previous + 'First\n\nSecond')
+
+    def test_paragraph_input_handler_cannot_redirect_remaining_text(self):
+        self.main_world('(notes.focus(),notes.setSelectionRange(6,10),true)')
+        lease = self.prepare()
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.main_world("(notes.addEventListener('input',()=>second.focus(),{once:true}),true)")
+        result = self.request_input('commit', lease=lease, text='First\nSecond')
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['code'], 'text_input_changed')
+        self.assertEqual(self.main_world('notes.value'), 'alpha First gamma')
+        self.assertEqual(self.main_world('second.value'), 'second')
+        self.assertFalse(self.request_input('commit', lease=lease, text='Second')['ok'])
+        self.main_world('(notes.focus(),true)')
+        self.assertTrue(self.main_world("document.execCommand('undo')"))
+        self.assertEqual(self.main_world('notes.value'), 'alpha beta gamma')
+
+    def test_final_capacity_cannot_truncate_or_delete_original_selection(self):
+        for target, text in [('first', 'long replacement'), ('notes', 'First\n\nSecond')]:
+            with self.subTest(target=target):
+                self.main_world('('+target+'.focus(),'+target+'.setSelectionRange(6,10),'+target+'.maxLength=18,true)')
+                lease = self.prepare()
+                self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                before = self.main_world('beforeEdits')
+                result = self.request_input('commit', lease=lease, text=text)
+                self.assertFalse(result['ok'], result)
+                self.assertEqual(result['code'], 'rejected')
+                self.assertEqual(self.main_world('beforeEdits'), before)
+                self.assertEqual(self.main_world(target+'.value'), 'alpha beta gamma')
+                self.main_world('('+target+'.removeAttribute("maxlength"),true)')
+
+    def test_paragraph_handler_capacity_change_interrupts_remaining_edit(self):
+        self.main_world('(notes.focus(),notes.setSelectionRange(6,10),true)')
+        lease = self.prepare()
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.main_world("(notes.addEventListener('input',()=>notes.maxLength=2,{once:true}),true)")
+        result = self.request_input('commit', lease=lease, text='First\nSecond')
+        self.assertFalse(result['ok'], result)
+        self.assertEqual(result['code'], 'text_input_changed')
+        self.assertEqual(self.main_world('notes.value'), 'alpha First gamma')
+        self.assertEqual(self.main_world('second.value'), 'second')
+        self.assertTrue(self.main_world("document.execCommand('undo')"))
+        self.assertEqual(self.main_world('notes.value'), 'alpha beta gamma')
+
+    def test_control_characters_never_delete_the_original_selection(self):
+        for target, values in [('first', ['a\nb', '\n\n']),
+                               ('notes', []), ('rich', [])]:
+            for text in values + ['a\rb', 'a\tb', 'a\x00b', 'a\x1bb', 'a\x85b']:
+                with self.subTest(target=target, text=repr(text)):
+                    self.main_world("(()=>{const e=" + target + ";e.focus();if(e.setSelectionRange)e.setSelectionRange(6,10);else{const r=document.createRange();r.selectNodeContents(e.querySelector('b'));getSelection().removeAllRanges();getSelection().addRange(r)}return true})()")
+                    lease = self.prepare()
+                    self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                    before = self.main_world('beforeEdits')
+                    result = self.request_input('commit', lease=lease, text=text)
+                    self.assertEqual(self.main_world('beforeEdits'), before)
+                    self.assertFalse(result['ok'], result)
+                    self.assertEqual(result['code'], 'rejected')
+                    expression = target + ('.innerText' if target == 'rich' else '.value')
+                    self.assertEqual(self.main_world(expression), 'alpha beta gamma')
+
+    def test_single_line_kinds_reject_paragraphs_before_page_handlers(self):
+        for kind, value in [('text', 'original'), ('search', 'original'),
+                            ('email', 'public@example.test'), ('number', '123.5')]:
+            for text in ['first\nsecond', '\n\n']:
+                with self.subTest(kind=kind, text=repr(text)):
+                    self.native_field(kind, value)
+                    lease = self.native_prepare()
+                    self.assertTrue(self.request_input('start', lease=lease)['ok'])
+                    before = self.main_world('beforeEdits')
+                    result = self.request_input('commit', lease=lease, text=text)
+                    self.assertFalse(result['ok'], result)
+                    self.assertEqual(result['code'], 'rejected')
+                    self.assertEqual(self.main_world('nativeField.value'), value)
+                    self.assertEqual(self.main_world('beforeEdits'), before)
 
     def test_native_email_number_replace_cancel_repeat_and_history(self):
         for kind, value, replacement in [('email', 'public@example.test', 'café@example.test'),
@@ -239,7 +414,7 @@ class GuardedTextInput(unittest.TestCase):
     def test_focused_iframe_original_ack_unicode_and_native_undo(self):
         self.frame_field()
         lease = self.prepare()
-        self.assertEqual(self.request_input('start', lease=lease)['data'], {'lease': lease})
+        self.assertEqual(self.request_input('start', lease=lease)['data'], {'lease': lease, 'multiline': False})
         self.assertTrue(self.request_input('commit', lease=lease, text='日本語 café العربية')['ok'])
         self.assertEqual(self.main_world("editorFrame.contentDocument.getElementById('first').value"), 'alpha 日本語 café العربية gamma')
         self.assertEqual(self.main_world('first.value'), 'alpha beta gamma')
@@ -253,7 +428,7 @@ class GuardedTextInput(unittest.TestCase):
             lease = self.prepare()
             self.assertTrue(self.request_input('start', lease=lease)['ok'])
             self.main_world("(()=>{let n=document.createElement('aside');n.textContent='notification';document.body.append(n);n.remove();return true})()")
-            self.assertEqual(self.request_input('check', lease=lease)['data'], {'lease': lease})
+            self.assertEqual(self.request_input('check', lease=lease)['data'], {'lease': lease, 'multiline': False})
             self.assertTrue(self.request_input('commit', lease=lease, text='original field')['ok'])
             if frame:
                 self.assertEqual(self.main_world("editorFrame.contentDocument.getElementById('first').value"), 'alpha original field gamma')
@@ -334,7 +509,7 @@ class GuardedTextInput(unittest.TestCase):
         started = time.monotonic()
         print('LEASE lifetime: explicit original session acknowledged', flush=True)
         wait_until(prepared + 181)
-        self.assertEqual(self.request_input('check', lease=lease)['data'], {'lease': lease})
+        self.assertEqual(self.request_input('check', lease=lease)['data'], {'lease': lease, 'multiline': False})
         self.assertFalse(self.request_input('start', lease=lease)['ok'])
         print('LEASE lifetime: original survives warm expiry; replay cannot extend it', flush=True)
         wait_until(started + 181)
@@ -358,7 +533,7 @@ class GuardedTextInput(unittest.TestCase):
 
     def test_explicit_start_is_one_shot_and_preserves_the_original_selection(self):
         lease = self.prepare()
-        self.assertEqual(self.request_input('start', lease=lease)['data'], {'lease': lease})
+        self.assertEqual(self.request_input('start', lease=lease)['data'], {'lease': lease, 'multiline': False})
         self.assertFalse(self.request_input('start', lease=lease)['ok'])
         self.assertTrue(self.request_input('check', lease=lease)['ok'])
         self.assertTrue(self.request_input('commit', lease=lease, text='consented')['ok'])
@@ -376,7 +551,7 @@ class GuardedTextInput(unittest.TestCase):
 
     def test_private_lease_check_observes_the_original_edit_stamp(self):
         lease = self.prepare()
-        self.assertEqual(self.request_input('check', lease=lease)['data'], {'lease': lease})
+        self.assertEqual(self.request_input('check', lease=lease)['data'], {'lease': lease, 'multiline': False})
         self.main_world("(first.setSelectionRange(0,5),true)")
         self.assertFalse(self.request_input('check', lease=lease)['ok'])
         self.assertFalse(self.request_input('commit', lease=lease, text='stale')['ok'])
@@ -456,7 +631,7 @@ class GuardedTextInput(unittest.TestCase):
             result = self.request_input('prepare')
             self.assertTrue(result['ok'], result)
             self.assertEqual(result['history'], flags)
-            self.assertEqual(set(result['data']), {'lease'}, 'history exports no field content')
+            self.assertEqual(set(result['data']), {'lease', 'multiline'}, 'history exports no field content')
             lease = result['data']['lease']
             check = self.request_input('check', lease=lease)
             self.assertTrue(check['ok'], check)
@@ -558,7 +733,7 @@ class GuardedTextInput(unittest.TestCase):
         # Rejection must not leave a lease that blocks a supported successor.
         self.main_world('(first.focus(),first.setSelectionRange(6,10),true)')
         lease = self.prepare()
-        self.assertEqual(self.request_input('start', lease=lease)['data'], {'lease': lease})
+        self.assertEqual(self.request_input('start', lease=lease)['data'], {'lease': lease, 'multiline': False})
         self.assertTrue(self.request_input('commit', lease=lease, text='recovered')['ok'])
         self.assertEqual(self.main_world('first.value'), 'alpha recovered gamma')
         self.assertEqual(self.main_world('second.value'), 'second')
