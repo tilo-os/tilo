@@ -40,7 +40,7 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    for output in &outputs {
+    for output in outputs {
         println!(
             "drm_backend_boot: output {} {}x{} at {:?} scale {}",
             output.id.0, output.size.0, output.size.1, output.position, output.scale
