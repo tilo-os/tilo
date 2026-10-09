@@ -4937,7 +4937,10 @@ impl App {
         )?;
 
         let (surface_id, initial_frame_seq) = loop {
-            ensure_before(deadline, "app did not present before the flight deadline")?;
+            ensure_before(
+                deadline,
+                "app surface was not observed before the flight deadline",
+            )?;
             let value = control_json(
                 &mut remote,
                 &slot,
@@ -4952,7 +4955,7 @@ impl App {
         let launch_time = launched_at.elapsed();
         if launch_time > maximum_launch {
             return Err(flight_failure(format!(
-                "{desktop_id} presented after {:.1} ms, over the {:.1} ms launch ceiling",
+                "{desktop_id} surface observed after {:.1} ms, over the {:.1} ms launch ceiling",
                 launch_time.as_secs_f64() * 1000.0,
                 maximum_launch.as_secs_f64() * 1000.0
             )));
@@ -4987,7 +4990,7 @@ impl App {
         let final_frame_seq = loop {
             ensure_before(
                 deadline,
-                "focused app did not present a frame after injected input",
+                "focused app frame did not advance after injected input",
             )?;
             let value = control_json(
                 &mut remote,
@@ -5017,13 +5020,19 @@ impl App {
             "surface_id": surface_id,
             "initial_frame_seq": initial_frame_seq,
             "final_frame_seq": final_frame_seq,
+            "request_to_surface_observed_ms": launch_time.as_secs_f64() * 1000.0,
+            // Legacy field retained for clients; its metric is surface adoption, not KMS.
             "request_to_presented_ms": launch_time.as_secs_f64() * 1000.0,
+            "request_to_presented_ms_deprecated": true,
+            "request_to_presented_ms_scope": "surface_observation_only",
+            "input_effect_verified": false,
+            "physical_presentation_verified": false,
             "worst_control_ms": worst_control.as_secs_f64() * 1000.0,
             "typed": type_text,
         });
         Ok(Outcome::new(
             format!(
-                "PASS {desktop_id}: surface {surface_id} presented in {:.1} ms, accepted input (frame {initial_frame_seq} -> {final_frame_seq}); worst control round trip {:.1} ms",
+                "PASS {desktop_id}: surface {surface_id} observed in {:.1} ms, frame advanced ({initial_frame_seq} -> {final_frame_seq}); input effect and physical presentation unverified; worst control round trip {:.1} ms",
                 launch_time.as_secs_f64() * 1000.0,
                 worst_control.as_secs_f64() * 1000.0
             ),

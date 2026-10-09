@@ -245,10 +245,9 @@ It rejects undrawn/pending/hidden/wrong/unchanged panes and missing origins or
 feedback. Renderer/presentation stages overlap; do not add their durations.
 
 Ctrl+K palette activation is compositor-consumed and does not deliver that key to
-the native Settings worker. This native analyser cannot qualify it. Pointer
-motion has no immutable native Wayland origin stamp yet, so neither native hover
-nor compositor palette hover is qualified by this increment. Those require their
-own exact origin and actually drawn state witness. No synthetic event, nearest
+the native Settings worker. This native analyser cannot qualify it. Native sidebar pointer motion uses the separate immutable wire origin and drawn
+hover witness described below. Compositor palette hover requires its own Shell
+witness and is not qualified by the native Settings analyser. No synthetic event, nearest
 timestamp, CLI RTT or headless GPU test is physical latency certification. No
 Yoga measurement is included here; opt-in diagnostic overhead remains a limit.
 
@@ -346,3 +345,40 @@ transport may instead produce `controlled_input` with no trusted kernel origin:
 that is an explicit submission-to-KMS measurement, never physical latency.
 Neither result measures hover. One successful activation proves attribution;
 it does not establish the p50 <20ms / p99 <50ms target or whole-search latency.
+
+### Settings CPU, GPU and exact physical presentation stages
+
+The existing native stage runner accepts the same strict Settings keyboard and
+hover witnesses; no synthetic native scenario or control acknowledgement replaces
+ordinary forwarded input. Save the exact owned-worker cohort in `timeline.log`
+under a private capture directory, preserving the actual runtime/cohort hash,
+boot ID, host PID/start time, worker UUID and preparation input boundary in the
+operator receipt. Include the bounded compositor capture from that same boot and
+session. Never read the live flight-recorder pipe. Activate diagnostics through
+`session-diagnostics` on the accepted cohort before measuring; timestamp queries
+are startup-only, so the current renderer must have been created with them.
+
+```bash
+python3 scripts/perf/physical_notes_stages.py \
+  --capture target/settings-hover-capture --settings-hover bluetooth \
+  --compositor-log target/settings-hover-capture/compositor.log \
+  --require-foreign-capture --require-gpu-stages \
+  --out target/settings-hover-capture/stages.json
+```
+
+Use `--settings-pane bluetooth` instead for an isolated ordinary native key that
+actually changes the mounted pane. Neither Settings mode requires Notes scratch
+metadata. Missing, unchanged, coalesced, stale or foreign-worker state fails.
+GPU qualification requires complete exact-owned native pass/dispatch samples,
+compositor recording envelopes and capture-generation/presenter joins. The report
+keeps device GPU durations separate from overlapping CPU and fence-wait intervals;
+never sum them as a single pipeline. It remains `performance_certified=false`:
+these diagnostic samples establish attribution, not normal-mode 120 Hz performance
+or panel pixel response. The generic `tilo-vm flight app` reports surface/frame
+observation only and explicitly marks input effect and physical presentation as
+unverified; it cannot substitute for this benchmark.
+
+For JSON consumers, `request_to_presented_ms` in the generic app flight is a
+deprecated compatibility alias of `request_to_surface_observed_ms`; its explicit
+`request_to_presented_ms_scope` is `surface_observation_only`. It does not carry
+a hardware presentation or same-input effect proof.

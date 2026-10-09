@@ -2,6 +2,7 @@
 import json
 from render_boundaries import _interval
 from runtime_benchmark import distribution
+from input_latency import _pointer_identity
 
 PREFIXES = ('tilo-foreign-capture ', 'tilo-compositor-feedback ', 'tilo-present-pipe ')
 MAX_RECORDS = 10000
@@ -60,7 +61,9 @@ def summarize_foreign_capture(lines, compositor_frames, samples, displays, deliv
         serial = phase['serial']
         display = displays[cpu]
         event = events[sample['input_id']]
-        delivery = deliveries[event['wayland_serial']]
+        key = (_pointer_identity(event) if event.get('kind') == 'pointer_motion'
+               else event['wayland_serial'])
+        delivery = deliveries[key]
         surface = number(delivery, 'surface_id')
         matches = [row for row in completed if row.get('pipe_serial') == serial
                    and row.get('surface_id') == surface

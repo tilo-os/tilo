@@ -1,4 +1,4 @@
-"""Join Linux client CPU stages to verified physical Notes presentations.
+"""Join Linux client CPU stages to verified physical native presentations.
 
 This attributes elapsed CPU/queue time, including scheduler preemption. It
 does not certify performance. Optional native Vello samples are device-relative
@@ -13,7 +13,9 @@ from pathlib import Path
 
 from foreign_capture import summarize_foreign_capture
 from compositor_phases import capture_lines, summarize_compositor_phases
-from input_latency import summarize_physical_notes_latency
+from input_latency import (summarize_physical_notes_latency,
+                           summarize_physical_settings_latency,
+                           summarize_physical_settings_hover_latency, _pointer_identity)
 from main_stages import POINTS, STAGES
 from native_delivery import rows
 from native_gpu_evidence import summarize_native_gpu
@@ -32,7 +34,20 @@ def bracket(row, prefix):
 
 
 def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, require_capture=False):
-    latency = summarize_physical_notes_latency(lines, scratch_page)
+    return _summarize_stages(lines, summarize_physical_notes_latency(lines, scratch_page),
+                             compositor_lines, require_capture)
+
+
+def summarize_physical_settings_stages(lines, expected_pane, compositor_lines=None,
+                                      require_capture=False, *, hover=False):
+    """Exact changed native Settings pane or hover; synthetic origins never qualify."""
+    summarize = (summarize_physical_settings_hover_latency if hover
+                 else summarize_physical_settings_latency)
+    return _summarize_stages(lines, summarize(lines, expected_pane),
+                             compositor_lines, require_capture, pointer=hover)
+
+
+def _summarize_stages(lines, latency, compositor_lines, require_capture, pointer=False):
     inputs = rows(lines, 'tilo-physical-input ')
     producer = inputs[0]['process_id'], inputs[0]['observer_session']
 
@@ -43,7 +58,7 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, 
                 continue
             cpu = row.get('cpu_frame_id')
             if cpu is None:
-                continue  # Auxiliary frames are not the changed Notes body.
+                continue  # Auxiliary frames are not the changed native state.
             if type(cpu) is not int or cpu < 0 or cpu in result:
                 raise ValueError('Invalid or duplicate Linux stage frame identity')
             result[cpu] = row
@@ -55,18 +70,19 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, 
     mains = owned('tilo-native-main-stages ')
     feedback = owned('tilo-display-frame ')
     events = {row['id']: row for row in inputs}
-    deliveries = {row['wayland_serial']: row
-                  for row in rows(lines, 'tilo-physical-delivery ')}
+    marker = 'tilo-physical-pointer-delivery ' if pointer else 'tilo-physical-delivery '
+    deliveries = {(_pointer_identity(row, delivery=True) if pointer else row['wayland_serial']): row
+                  for row in rows(lines, marker)}
     frames = []
     seen_workers = set()
     for sample in latency['samples']:
         cpu = sample['cpu_frame_id']
         if any(cpu not in group for group in (sends, workers, presents, feedback)):
-            raise ValueError('Missing render stages for a verified Notes frame')
+            raise ValueError('Missing render stages for a verified native frame')
         send, worker, present, display = [group[cpu] for group in
                                            (sends, workers, presents, feedback)]
         if send.get('send_ok') is not True or worker.get('outcome') != 'Presented':
-            raise ValueError('Notes frame was not successfully sent and presented')
+            raise ValueError('Native frame was not successfully sent and presented')
         for row in (worker, present, display):
             if any(type(row.get(key)) is not int or row[key] < 0
                    for key in ('worker_id', 'worker_frame_ix')):
@@ -86,7 +102,8 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, 
         event = events[sample['input_id']]
         entry = [event['dispatch_lo_s'], event['dispatch_hi_s']]
         shown = [display['presented_time_ns'] / 1e9] * 2
-        delivery = deliveries[sample['wayland_serial']]
+        key = _pointer_identity(event) if pointer else sample['wayland_serial']
+        delivery = deliveries[key]
         kernel = [delivery['input_time_ns'] / 1e9] * 2
         delivered = [delivery['delivery_time_ns'] / 1e9] * 2
         _ordered(kernel, delivered, entry, before, receive, start,
@@ -116,7 +133,7 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, 
                          present_wrapper_after_native=(native_after, present_after))
         if mains:
             if cpu not in mains:
-                raise ValueError('Partial Notes main-thread stage evidence')
+                raise ValueError('Partial native main-thread stage evidence')
             points = [bracket(mains[cpu], point) for point in POINTS]
             _ordered(entry, *points, before)
             pairs.update(zip(STAGES, zip(points, points[1:])))
@@ -134,7 +151,7 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, 
     compositor = summarize_compositor_phases(phase_lines, latency['samples'], feedback)
     capture = summarize_foreign_capture(phase_lines, compositor['frames'], latency['samples'],
                                         feedback, deliveries, events, presents, require_capture)
-    return dict(available=True, performance_certified=False,
+    return dict(available=True, performance_certified=False, metric=latency['metric'],
                 main_stages_available=bool(mains),
                 clock='CLOCK_MONOTONIC', process_id=producer[0],
                 observer_session=producer[1], frames=frames, stages=stages,
@@ -146,6 +163,16 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, 
                              'KMS timestamps do not measure panel pixel response.'])
 
 
+def require_gpu_stages(report):
+    """GPU execution attribution requires complete exact-owned samples, never CPU fence time."""
+    compositor = report['compositor']
+    if (not report['native_gpu']['complete'] or not compositor['complete']
+            or not report['foreign_capture']['complete']
+            or any(not frame.get('submission_gpu', {}).get('available')
+                   for frame in compositor['frames'])):
+        raise ValueError('Incomplete exact native/compositor GPU or capture coverage')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--capture', type=Path, required=True,
@@ -155,18 +182,29 @@ def main():
                         help='bounded lifecycle capture from the same boot/presenter; defaults to timeline.log')
     parser.add_argument('--require-foreign-capture', action='store_true',
                         help='fail unless every physical sample has exact capture/paint/presenter stages')
+    settings = parser.add_mutually_exclusive_group()
+    settings.add_argument('--settings-pane', help='expected pane changed by an ordinary native key')
+    settings.add_argument('--settings-hover', help='expected sidebar pane hovered by an ordinary motion')
+    parser.add_argument('--require-gpu-stages', action='store_true',
+                        help='fail unless exact native GPU and compositor GPU coverage are complete')
     options = parser.parse_args()
-    capture = json.loads((options.capture / 'capture.json').read_text())
-    report = summarize_physical_notes_stages(
-        capture_lines(options.capture / 'timeline.log'),
-        capture['scratch_page'],
-        capture_lines(options.compositor_log) if options.compositor_log else None,
-        options.require_foreign_capture)
+    lines = capture_lines(options.capture / 'timeline.log')
+    compositor = capture_lines(options.compositor_log) if options.compositor_log else None
+    if options.settings_pane or options.settings_hover:
+        report = summarize_physical_settings_stages(
+            lines, options.settings_pane or options.settings_hover, compositor,
+            options.require_foreign_capture, hover=bool(options.settings_hover))
+    else:
+        report = summarize_physical_notes_stages(
+            lines, json.loads((options.capture / 'capture.json').read_text())['scratch_page'],
+            compositor, options.require_foreign_capture)
+    if options.require_gpu_stages:
+        require_gpu_stages(report)
     descriptor = os.open(options.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, 'w') as output:
         json.dump(report, output, indent=2)
         output.write('\n')
-    print('Verified Linux Notes frames:', len(report['frames']))
+    print('Verified Linux native frames:', len(report['frames']))
     gpu = report['native_gpu']
     print('Exact native GPU evidence:', sum(frame['complete'] for frame in gpu['frames']),
           '/', len(gpu['frames']), 'frames complete; optional device durations only')

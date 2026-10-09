@@ -525,3 +525,139 @@ class ForeignCaptureJoin(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PhysicalSettingsStages(unittest.TestCase):
+    def fixture(self, hover=False):
+        baseline = PhysicalNotesStages().fixture()
+        family = (physical_fixture.PhysicalSettingsHoverLatency if hover
+                  else physical_fixture.PhysicalSettingsLatency)().timeline()
+        for prefix, row in family:
+            if prefix == 'tilo-display-frame ':
+                row.update(worker_id=8, worker_frame_ix=row['cpu_frame_id'])
+        return family + [(prefix, row) for prefix, row in baseline
+                         if prefix.startswith('tilo-native-')
+                         and (not hover or row['cpu_frame_id'] == 1)]
+
+    def report(self, records, hover=False):
+        from physical_notes_stages import summarize_physical_settings_stages
+        return summarize_physical_settings_stages(
+            [prefix + json.dumps(row) for prefix, row in records], 'bluetooth', hover=hover)
+
+    def test_keyboard_and_pointer_keep_exact_cpu_and_physical_frame_join(self):
+        for hover, count in ((False, 3), (True, 1)):
+            with self.subTest(hover=hover):
+                result = self.report(self.fixture(hover), hover)
+                self.assertEqual(len(result['frames']), count)
+                self.assertEqual(result['observer_session'], '2bd78136-4c17-4853-9d7c-7442274a7059')
+                self.assertAlmostEqual(result['stages']['kernel_to_delivery']['upper']['p50_ms'], 1)
+                self.assertAlmostEqual(result['stages']['worker_render_cpu']['upper']['p50_ms'], 3)
+                self.assertEqual(result['latency']['p50_ms'], 10)
+                self.assertFalse(result['performance_certified'])
+
+    def test_unchanged_render_missing_gpu_or_foreign_worker_never_qualify(self):
+        from physical_notes_stages import require_gpu_stages
+        for hover in (False, True):
+            records = self.fixture(hover)
+            for prefix, row in records:
+                if prefix == 'tilo-physical-input ':
+                    row['before'] = copy.deepcopy(row['after'])
+            with self.subTest(hover=hover), self.assertRaises(ValueError):
+                self.report(records, hover)
+            records = self.fixture(hover)
+            next(row for prefix, row in records if prefix == 'tilo-native-worker ')['observer_session'] = 'other'
+            with self.assertRaises(ValueError):
+                self.report(records, hover)
+            with self.assertRaisesRegex(ValueError, 'coverage'):
+                require_gpu_stages(self.report(self.fixture(hover), hover))
+
+    def test_settings_cli_uses_strict_native_pipeline_without_notes_metadata(self):
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory)
+            capture.joinpath('timeline.log').write_text('\n'.join(
+                prefix + json.dumps(row) for prefix, row in self.fixture(True)))
+            output = capture / 'report.json'
+            script = Path(__file__).with_name('physical_notes_stages.py')
+            args = [sys.executable, str(script), '--capture', str(capture), '--out', str(output),
+                    '--settings-hover', 'bluetooth']
+            result = subprocess.run(args, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(json.loads(output.read_text())['frames']), 1)
+            required = args.copy()
+            required[required.index('--out') + 1] = str(capture / 'gpu-report.json')
+            result = subprocess.run(required + ['--require-gpu-stages'],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Incomplete exact native/compositor GPU or capture coverage', result.stderr)
+            self.assertFalse((capture / 'gpu-report.json').exists())
+
+    def test_pointer_capture_joins_wire_identity_not_nonexistent_key_serial(self):
+        fixture = ForeignCaptureJoin()
+        event = dict(kind='pointer_motion', pointer_id=17, pointer_enter_serial=29,
+                     pointer_motion_ordinal=1, pointer_time_ms=31, wayland_serial=None)
+        result = fixture.report(fixture.fixture(),
+                                deliveries={(17, 29, 1, 31): dict(surface_id=42)}, events={1: event})
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['frames'][0]['capture_seq'], 3)
+        event['pointer_motion_ordinal'] = 2
+        with self.assertRaises(KeyError):
+            fixture.report(fixture.fixture(), deliveries={(17, 29, 1, 31): dict(surface_id=42)},
+                           events={1: event})
+
+    def test_required_gpu_path_accepts_only_same_frame_capture_and_recording(self):
+        from physical_notes_stages import summarize_physical_settings_stages, require_gpu_stages
+        from compositor_submission_test import gpu_record
+        records = self.fixture(True)
+        next(row for prefix,row in records if prefix == 'tilo-display-frame ')['sequence'] = 1
+        records += [NativeGpuJoin().gpu(1, kind, event)
+                    for kind in ('passes', 'dispatches') for event in ('attempt', 'completed')]
+        phase = CompositorPhaseJoin().line(physical_presented_time_ns=110000000,
+                                           physical_sequence=1, revision=9)
+        capture = ForeignCaptureJoin().fixture()
+        for prefix, row in capture:
+            for key in list(row):
+                if key.endswith('_ns') and type(row[key]) is int:
+                    row[key] += 108190000
+            if prefix == 'tilo-compositor-feedback ':
+                row.update(physical_sequence=1)
+                if row['event'] == 'completed':
+                    row.update(physical_presented_time_ns=110000000,event_time_ns=110000001)
+        lines = [prefix + json.dumps(row) for prefix, row in records]
+        compositor = [phase, gpu_record()] + [prefix + json.dumps(row) for prefix, row in capture]
+        report = summarize_physical_settings_stages(lines, 'bluetooth', compositor, True, hover=True)
+        require_gpu_stages(report)
+        self.assertTrue(report['foreign_capture']['complete'])
+        self.assertTrue(report['native_gpu']['complete'])
+        self.assertEqual(report['compositor']['frames'][0]['submission_gpu']['renderer_generation'], 7)
+        with self.assertRaises(ValueError):
+            summarize_physical_settings_stages(lines, 'bluetooth',
+                [phase.replace('physical_sequence=1', 'physical_sequence=2')] + compositor[1:], True, hover=True)
+
+    def test_actual_cli_refuses_missing_samples_synthetic_origins_and_missing_frames(self):
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+        script = Path(__file__).with_name('physical_notes_stages.py')
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory)
+            for case in ('empty', 'synthetic', 'missing_frame'):
+                records = self.fixture(True)
+                if case == 'empty':
+                    records = []
+                elif case == 'synthetic':
+                    next(row for prefix, row in records if prefix == 'tilo-physical-pointer-delivery ')['input_time_ns'] = None
+                else:
+                    records = [(prefix,row) for prefix,row in records if prefix != 'tilo-physical-frame ']
+                capture.joinpath('timeline.log').write_text('\n'.join(
+                    prefix + json.dumps(row) for prefix,row in records))
+                output = capture / (case + '.json')
+                result = subprocess.run([sys.executable,str(script),'--capture',str(capture),
+                    '--out',str(output),'--settings-hover','bluetooth'], capture_output=True,text=True)
+                with self.subTest(case=case):
+                    self.assertNotEqual(result.returncode,0)
+                    self.assertFalse(output.exists())
