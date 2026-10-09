@@ -232,6 +232,7 @@ pub struct CollaboratorsOverlay {
     row_rects: Vec<Rect>,
     roster_offset: usize,
     roster_range: std::ops::Range<usize>,
+    roster_page_size: usize,
     previous_people: Rect,
     next_people: Rect,
     keyboard_focus: Option<CollaboratorsHit>,
@@ -300,6 +301,7 @@ impl CollaboratorsOverlay {
         let previous_focus_rect = self.focused_rect();
         let previous_panel = self.panel;
         let previous_host = self.host;
+        self.keyboard_focus = focus;
         self.measure_controls(text_renderer, theme, model);
         self.layout(
             model.host,
@@ -1276,48 +1278,50 @@ impl CollaboratorsOverlay {
         use crate::i18n::{t, t_args};
         use ui::a11y::{AccessNode, AccessState, Role};
 
+        let total_people = self.accessibility_rows.len();
         let people = self
-            .accessibility_rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let mut details = Vec::new();
-                if row.is_agent {
-                    details.push(t("a11y-shell-people-agent"));
-                }
-                if row.invited {
-                    details.push(t("a11y-shell-people-invited"));
-                } else {
-                    details.push(t("a11y-shell-people-present"));
-                }
-                if let Some(activity) = &row.activity {
-                    details.push(t_args(
-                        "a11y-shell-people-now",
-                        &[("activity", activity.into())],
-                    ));
-                }
-                if let Some(authority) = &row.authority {
-                    details.push(authority.clone());
-                } else if let Some(role) = &row.role {
-                    details.push(role.clone());
-                }
-                if let Some(status) = &row.status {
-                    details.push(if status.automatic {
-                        t_args(
-                            "a11y-shell-people-intent-inferred",
-                            &[("status", (&status.text).into())],
-                        )
+            .roster_range
+            .clone()
+            .filter_map(|index| {
+                self.accessibility_rows.get(index).map(|row| {
+                    let mut details = Vec::new();
+                    if row.is_agent {
+                        details.push(t("a11y-shell-people-agent"));
+                    }
+                    if row.invited {
+                        details.push(t("a11y-shell-people-invited"));
                     } else {
-                        t_args(
-                            "a11y-shell-people-intent",
-                            &[("status", (&status.text).into())],
-                        )
-                    });
-                }
-                AccessNode::new(Role::ListItem)
-                    .with_name(row.label.clone())
-                    .with_description(details.join("; "))
-                    .with_position(index.saturating_add(1), self.accessibility_rows.len())
+                        details.push(t("a11y-shell-people-present"));
+                    }
+                    if let Some(activity) = &row.activity {
+                        details.push(t_args(
+                            "a11y-shell-people-now",
+                            &[("activity", activity.into())],
+                        ));
+                    }
+                    if let Some(authority) = &row.authority {
+                        details.push(authority.clone());
+                    } else if let Some(role) = &row.role {
+                        details.push(role.clone());
+                    }
+                    if let Some(status) = &row.status {
+                        details.push(if status.automatic {
+                            t_args(
+                                "a11y-shell-people-intent-inferred",
+                                &[("status", (&status.text).into())],
+                            )
+                        } else {
+                            t_args(
+                                "a11y-shell-people-intent",
+                                &[("status", (&status.text).into())],
+                            )
+                        });
+                    }
+                    AccessNode::new(Role::ListItem)
+                        .with_name(row.label.clone())
+                        .with_description(details.join("; "))
+                        .with_position(index.saturating_add(1), total_people)
+                })
             })
             .collect();
         let mut children = vec![
@@ -1474,7 +1478,14 @@ impl CollaboratorsOverlay {
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         match path {
             [] | [0] => Some(self.panel_rect()),
-            [0, row] => self.row_rects.get(*row).map(|rect| self.view_rect(*rect)),
+            [0, row] => self
+                .roster_range
+                .start
+                .checked_add(*row)
+                .filter(|index| *index < self.roster_range.end)
+                .and_then(|index| self.row_rects.get(index))
+                .filter(|rect| rect.area() > 0.0)
+                .map(|rect| self.view_rect(*rect)),
             [control] if *control > 0 => self
                 .focus_order()
                 .get(control.saturating_sub(1))
@@ -1513,16 +1524,6 @@ impl CollaboratorsOverlay {
         has_exposure: bool,
     ) {
         self.host = host;
-        if self.roster_offset >= member_count {
-            self.roster_offset = 0;
-        }
-        let paged = member_count > ROSTER_PAGE_SIZE;
-        let end = self
-            .roster_offset
-            .saturating_add(ROSTER_PAGE_SIZE)
-            .min(member_count);
-        self.roster_range = self.roster_offset..end;
-        let rows = row_count_as_f64(self.roster_range.len().max(1));
         let warning_h = if unavailable {
             self.warning_height.max(24.0)
         } else {
@@ -1533,28 +1534,54 @@ impl CollaboratorsOverlay {
         } else {
             0.0
         };
-        let pager_h = if paged {
-            (self.control_height + 8.0).max(ROSTER_PAGER_H)
-        } else {
-            0.0
-        };
+        let pager_h = (self.control_height + 8.0).max(ROSTER_PAGER_H);
         let exposure_h = if has_exposure {
             self.exposure_height.max(44.0)
         } else {
             0.0
         };
         let footer_h = (self.activity_height + 8.0).max(FOOTER_H);
-        let height = self.header_height.max(48.0)
+        let fixed_height = self.header_height.max(48.0)
             + self.status_block_height.max(92.0)
             + exposure_h
             + warning_h
-            + rows * self.row_height.max(64.0)
-            + pager_h
             + 16.0
             + actions_h
             + footer_h;
-        let x1 = host.x1 - 16.0 - self.scroll_gutter;
         let y0 = host.y0 + 48.0;
+        let available = (host.y1 - y0 - 8.0).max(1.0);
+        self.roster_page_size =
+            self.page_size_for_height(member_count, available, fixed_height, pager_h);
+        let focused_person = match self.keyboard_focus {
+            Some(CollaboratorsHit::ToggleFollow(index) | CollaboratorsHit::OpenSettings(index)) => {
+                Some(index)
+            }
+            _ => None,
+        };
+        if let Some(index) = focused_person.filter(|index| *index < member_count) {
+            self.roster_offset = index
+                .checked_div(self.roster_page_size)
+                .unwrap_or(0)
+                .saturating_mul(self.roster_page_size);
+        } else if self.roster_offset >= member_count {
+            self.roster_offset = 0;
+        } else {
+            self.roster_offset = self
+                .roster_offset
+                .checked_div(self.roster_page_size)
+                .unwrap_or(0)
+                .saturating_mul(self.roster_page_size);
+        }
+        let paged = member_count > self.roster_page_size;
+        let end = self
+            .roster_offset
+            .saturating_add(self.roster_page_size)
+            .min(member_count);
+        self.roster_range = self.roster_offset..end;
+        let rows = row_count_as_f64(self.roster_range.len().max(1));
+        let height =
+            fixed_height + rows * self.row_height.max(64.0) + if paged { pager_h } else { 0.0 };
+        let x1 = host.x1 - 16.0 - self.scroll_gutter;
         self.panel = Rect::new(x1 - (320.0 - self.scroll_gutter), y0, x1, y0 + height);
         self.activity = Rect::new(
             self.panel.x0 + 8.0,
@@ -1693,14 +1720,35 @@ impl CollaboratorsOverlay {
         .collect();
     }
 
+    fn page_size_for_height(
+        &self,
+        member_count: usize,
+        available: f64,
+        fixed_height: f64,
+        pager_height: f64,
+    ) -> usize {
+        let largest = member_count.clamp(1, ROSTER_PAGE_SIZE);
+        (1..=largest)
+            .rev()
+            .find(|page_size| {
+                let paged = member_count > *page_size;
+                let height = fixed_height
+                    + row_count_as_f64(*page_size) * self.row_height.max(64.0)
+                    + if paged { pager_height } else { 0.0 };
+                height <= available + 0.5
+            })
+            .unwrap_or(1)
+    }
+
     pub fn change_people_page(&mut self, forward: bool, member_count: usize) {
         self.targets.cancel_pointer_press();
+        let page_size = self.roster_page_size.max(1);
         if forward {
-            if self.roster_offset.saturating_add(ROSTER_PAGE_SIZE) < member_count {
-                self.roster_offset = self.roster_offset.saturating_add(ROSTER_PAGE_SIZE);
+            if self.roster_offset.saturating_add(page_size) < member_count {
+                self.roster_offset = self.roster_offset.saturating_add(page_size);
             }
         } else {
-            self.roster_offset = self.roster_offset.saturating_sub(ROSTER_PAGE_SIZE);
+            self.roster_offset = self.roster_offset.saturating_sub(page_size);
         }
         self.keyboard_focus = self.keyboard_focus.filter(|hit| {
             matches!(
@@ -1719,7 +1767,7 @@ impl CollaboratorsOverlay {
         member_count: usize,
         cursor: Option<Point>,
     ) {
-        if member_count <= ROSTER_PAGE_SIZE {
+        if member_count <= self.roster_page_size.max(1) {
             return;
         }
         let label = format!(

@@ -2840,12 +2840,121 @@ fn left_button_released() -> WindowEvent {
 
 /// Paint one frame, which is what populates every cached hit rect.
 fn paint(h: &mut Harness) {
-    let theme = Theme::dark();
+    paint_with_theme(h, &Theme::dark());
+}
+
+fn paint_with_theme(h: &mut Harness, theme: &Theme) {
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::empty();
     h.host
-        .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        .draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+}
+
+fn people_control_path(h: &Harness, name: &str) -> usize {
+    h.host
+        .collaborators_overlay
+        .accessibility_snapshot()
+        .children
+        .iter()
+        .position(|node| node.name.as_deref() == Some(name))
+        .expect("named People control is published")
+}
+
+fn people_control_rect(h: &Harness, name: &str) -> Rect {
+    h.host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[people_control_path(h, name)])
+        .expect("named People control has painted geometry")
+}
+
+fn release_people_submit(h: &mut Harness, key: NamedKey) {
+    let mods = Modifiers::default();
+    let mut release = key_press(Key::Named(key));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut release {
+        event.state = ElementState::Released;
+    }
+    assert!(pump(h, &release, mods));
+}
+
+fn assert_complete_people_controls(h: &Harness) {
+    let panel = h.host.collaborators_overlay.panel_rect();
+    assert!(
+        h.host.rect.contains(panel.origin())
+            && h.host.rect.contains(Point::new(panel.x1, panel.y1)),
+        "People panel remains inside the compact viewport: {panel:?}"
+    );
+    let snapshot = h.host.collaborators_overlay.accessibility_snapshot();
+    let visible_people = snapshot.children.first().expect("People list");
+    assert!(
+        !visible_people.children.is_empty(),
+        "the current page exposes its people"
+    );
+    for (row, person) in visible_people.children.iter().enumerate() {
+        let name = person.name.as_deref().expect("fixture person is named");
+        let expected_position = [("Ada", 1), ("Bob", 2), ("Cy", 3)]
+            .into_iter()
+            .find_map(|(candidate, position)| (candidate == name).then_some(position))
+            .expect("compact fixture person is known");
+        assert_eq!(person.set_size, Some(3));
+        assert_eq!(person.pos_in_set, Some(expected_position));
+        let rect = h
+            .host
+            .collaborators_overlay
+            .accessibility_rect_for_path(&[0, row])
+            .expect("visible person has painted geometry");
+        assert!(
+            panel.contains(rect.origin()) && panel.contains(Point::new(rect.x1, rect.y1)),
+            "visible person {name} is complete inside People: {rect:?} / {panel:?}"
+        );
+        let follow = person.name.as_ref().map(|name| format!("Follow {name}"));
+        assert!(
+            snapshot
+                .children
+                .iter()
+                .any(|control| control.name.as_ref() == follow.as_ref()),
+            "each semantic list item has its visible Follow control"
+        );
+    }
+    assert!(
+        h.host
+            .collaborators_overlay
+            .accessibility_rect_for_path(&[0, visible_people.children.len()])
+            .is_none(),
+        "the next off-page person has no stale bounds"
+    );
+    for path in 1..snapshot.children.len() {
+        let rect = h
+            .host
+            .collaborators_overlay
+            .accessibility_rect_for_path(&[path])
+            .expect("focusable People control has geometry");
+        assert!(
+            panel.contains(rect.origin()) && panel.contains(Point::new(rect.x1, rect.y1)),
+            "control {} is complete inside People: {rect:?} / {panel:?}",
+            snapshot.children[path].name.as_deref().unwrap_or("unnamed")
+        );
+    }
+}
+
+fn activate_people_page(h: &mut Harness, theme: &Theme, name: &str) {
+    let path = people_control_path(h, name);
+    assert!(
+        h.host
+            .collaborators_overlay
+            .focus_accessibility_path(&[path])
+    );
+    assert!(pump(
+        h,
+        &key_press(Key::Named(NamedKey::Enter)),
+        Modifiers::default()
+    ));
+    let mut release = key_press(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut release {
+        event.state = ElementState::Released;
+    }
+    assert!(pump(h, &release, Modifiers::default()));
+    paint_with_theme(h, theme);
 }
 
 #[test]
@@ -3712,12 +3821,13 @@ fn roster_follow_fixture() -> Harness {
 #[test]
 fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
-    let target = h
-        .host
-        .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
-        .expect("painted Ada Follow");
+    let ada = people_control_path(&h, "Follow Ada");
+    assert!(
+        h.host
+            .collaborators_overlay
+            .focus_accessibility_path(&[ada])
+    );
+    let target = people_control_rect(&h, "Follow Ada");
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -3746,7 +3856,12 @@ fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
 #[test]
 fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    let ada = people_control_path(&h, "Follow Ada");
+    assert!(
+        h.host
+            .collaborators_overlay
+            .focus_accessibility_path(&[ada])
+    );
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -3773,7 +3888,12 @@ fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
 #[test]
 fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    let ada = people_control_path(&h, "Follow Ada");
+    assert!(
+        h.host
+            .collaborators_overlay
+            .focus_accessibility_path(&[ada])
+    );
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -3788,19 +3908,23 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     let mods = Modifiers::default();
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
+    release_people_submit(&mut h, NamedKey::Enter);
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), mods));
     assert!(
         h.host.followed_peer.is_none(),
         "a second explicit activation stops Ada"
     );
+    release_people_submit(&mut h, NamedKey::Space);
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
     paint(&mut h);
     assert!(
         h.host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[5])
-            .is_none()
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .all(|node| !matches!(node.name.as_deref(), Some("Follow Ada" | "Follow Bob")))
     );
 
     h.chrome.borrow_mut().overlays.collaborators = true;
@@ -3810,12 +3934,13 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
         h.host.followed_peer.is_none(),
         "reopening must not resurrect old focus"
     );
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
-    let target = h
-        .host
-        .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
-        .expect("Bob Follow after reordering");
+    let bob = people_control_path(&h, "Follow Bob");
+    assert!(
+        h.host
+            .collaborators_overlay
+            .focus_accessibility_path(&[bob])
+    );
+    let target = people_control_rect(&h, "Follow Bob");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &left_button_pressed(), mods));
     assert!(h.host.followed_peer.is_none());
@@ -3840,11 +3965,7 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
 #[test]
 fn people_completed_click_defers_follow_until_release() {
     let mut h = roster_follow_fixture();
-    let target = h
-        .host
-        .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
-        .expect("painted Ada Follow");
+    let target = people_control_rect(&h, "Follow Ada");
     let mods = Modifiers::default();
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &left_button_pressed(), mods));
@@ -3861,11 +3982,7 @@ fn people_completed_click_defers_follow_until_release() {
 fn people_completed_click_cancels_after_reorder_and_focus_loss() {
     for lose_focus in [false, true] {
         let mut h = roster_follow_fixture();
-        let target = h
-            .host
-            .collaborators_overlay
-            .accessibility_rect_for_path(&[5])
-            .expect("painted Ada Follow");
+        let target = people_control_rect(&h, "Follow Ada");
         let mods = Modifiers::default();
         assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
         assert!(pump(&mut h, &left_button_pressed(), mods));
@@ -3903,7 +4020,12 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
 #[test]
 fn people_completed_submit_repeat_cannot_resume_follow_after_local_handoff() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[5]));
+    let ada = people_control_path(&h, "Follow Ada");
+    assert!(
+        h.host
+            .collaborators_overlay
+            .focus_accessibility_path(&[ada])
+    );
     let mods = Modifiers::default();
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
@@ -3982,11 +4104,7 @@ fn people_completed_submit_release_stays_owned_after_activity_opens() {
 fn people_completed_cancel_survives_dismissal_reopen_and_a_fresh_click() {
     let mut h = roster_follow_fixture();
     let mods = Modifiers::default();
-    let target = h
-        .host
-        .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
-        .expect("Ada");
+    let target = people_control_rect(&h, "Follow Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &left_button_pressed(), mods));
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
@@ -4005,11 +4123,7 @@ fn people_completed_cancel_survives_dismissal_reopen_and_a_fresh_click() {
 fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
     let mut h = roster_follow_fixture();
     let mods = Modifiers::default();
-    let target = h
-        .host
-        .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
-        .expect("Ada");
+    let target = people_control_rect(&h, "Follow Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &left_button_pressed(), mods));
     let ada = {
@@ -4042,20 +4156,12 @@ fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
 fn people_completed_resize_does_not_move_an_armed_click() {
     let mut h = roster_follow_fixture();
     let mods = Modifiers::default();
-    let target = h
-        .host
-        .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
-        .expect("Ada");
+    let target = people_control_rect(&h, "Follow Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &left_button_pressed(), mods));
     h.host.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
     paint(&mut h);
-    let moved = h
-        .host
-        .collaborators_overlay
-        .accessibility_rect_for_path(&[5])
-        .expect("Ada after resize");
+    let moved = people_control_rect(&h, "Follow Ada");
     assert_ne!(target, moved);
     assert!(pump(&mut h, &cursor_moved_at(moved.center()), mods));
     assert!(pump(&mut h, &left_button_released(), mods));
@@ -4283,9 +4389,108 @@ fn people_viewport_probe_end_focus_is_reachable_on_a_narrow_output() {
 }
 
 #[test]
+fn compact_two_x_people_pages_complete_controls_without_clipping() {
+    let mut h = roster_follow_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+    h.chrome
+        .borrow_mut()
+        .tree_mut()
+        .desktop
+        .active_workspace_mut()
+        .expect("fixture workspace")
+        .collaborators
+        .push(crate::shell::state::Collaborator::new("cy", "Cy"));
+    let theme = Theme::high_contrast().with_text_scale(2.0);
+    paint_with_theme(&mut h, &theme);
+    assert_complete_people_controls(&h);
+
+    for key in [NamedKey::End, NamedKey::Home] {
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(key)),
+            Modifiers::default()
+        ));
+        let snapshot = h.host.collaborators_overlay.accessibility_snapshot();
+        let focused = if key == NamedKey::End {
+            snapshot.children.last().expect("Activity control")
+        } else {
+            &snapshot.children[1]
+        };
+        assert!(focused.state.focused, "the requested endpoint owns focus");
+        let focused_name = focused.name.clone();
+        let mut release = key_press(Key::Named(key));
+        if let WindowEvent::KeyboardInput { event, .. } = &mut release {
+            event.state = ElementState::Released;
+        }
+        assert!(
+            !pump(&mut h, &release, Modifiers::default()),
+            "Home and End releases are not submit events"
+        );
+        let after_release = h.host.collaborators_overlay.accessibility_snapshot();
+        let focused_after_release = after_release
+            .children
+            .iter()
+            .filter(|node| node.state.focused)
+            .collect::<Vec<_>>();
+        assert_eq!(focused_after_release.len(), 1);
+        assert_eq!(focused_after_release[0].name, focused_name);
+        paint_with_theme(&mut h, &theme);
+        assert_complete_people_controls(&h);
+    }
+
+    for _ in 0..2 {
+        let snapshot = h.host.collaborators_overlay.accessibility_snapshot();
+        if snapshot
+            .children
+            .iter()
+            .any(|node| node.name.as_deref() == Some("Follow Cy"))
+        {
+            break;
+        }
+        activate_people_page(&mut h, &theme, "Next people");
+        assert_complete_people_controls(&h);
+    }
+    assert!(
+        h.host
+            .collaborators_overlay
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .any(|node| node.name.as_deref() == Some("Follow Cy")),
+        "the third collaborator is reachable through the real pager"
+    );
+    for _ in 0..2 {
+        let snapshot = h.host.collaborators_overlay.accessibility_snapshot();
+        if snapshot
+            .children
+            .iter()
+            .any(|node| node.name.as_deref() == Some("Follow Ada"))
+        {
+            break;
+        }
+        activate_people_page(&mut h, &theme, "Previous people");
+        assert_complete_people_controls(&h);
+    }
+    assert!(
+        h.host
+            .collaborators_overlay
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .any(|node| node.name.as_deref() == Some("Follow Ada")),
+        "Previous people returns to the first collaborator"
+    );
+}
+
+#[test]
 fn people_viewport_probe_keyboard_paging_keeps_a_usable_pager_focus() {
     let mut h = people_viewport_probe_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[8]));
+    let next = people_control_path(&h, "Next people");
+    assert!(
+        h.host
+            .collaborators_overlay
+            .focus_accessibility_path(&[next])
+    );
     assert_eq!(
         h.host
             .collaborators_overlay
@@ -4342,16 +4547,40 @@ fn people_viewport_keyboard_visits_every_page_and_returns_to_status() {
     h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
     paint(&mut h);
     let mods = Modifiers::default();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[8]));
-    for page in 1..=4 {
-        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
-        let mut release = key_press(Key::Named(NamedKey::Enter));
-        if let WindowEvent::KeyboardInput { event, .. } = &mut release {
-            event.state = ElementState::Released;
-        }
-        assert!(pump(&mut h, &release, mods));
-        paint(&mut h);
+    let next = people_control_path(&h, "Next people");
+    assert!(
+        h.host
+            .collaborators_overlay
+            .focus_accessibility_path(&[next])
+    );
+    let member_count = h
+        .chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .expect("fixture workspace")
+        .collaborators
+        .len();
+    let expected = (1..=member_count)
+        .map(|index| format!("Follow Participant {index}"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut reached_last_page = false;
+    for _ in 0..member_count {
         let tree = h.host.collaborators_overlay.accessibility_snapshot();
+        let visible = tree
+            .children
+            .iter()
+            .filter_map(|node| node.name.clone())
+            .filter(|name| expected.contains(name))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(!visible.is_empty(), "each page publishes a collaborator");
+        assert!(
+            seen.is_disjoint(&visible),
+            "responsive pages must not repeat collaborators: {seen:?} / {visible:?}"
+        );
+        seen.extend(visible);
         let focused = tree
             .children
             .iter()
@@ -4363,18 +4592,46 @@ fn people_viewport_keyboard_visits_every_page_and_returns_to_status() {
             .accessibility_rect_for_path(&[focused])
             .expect("focused target");
         assert!(h.host.rect.contains(rect.center()));
-        let expected = if page == 4 {
-            CollaboratorsHit::PreviousPeople
+        let selected = h
+            .host
+            .collaborators_overlay
+            .key(&Key::Named(NamedKey::Enter), false);
+        let has_next = tree
+            .children
+            .iter()
+            .any(|node| node.name.as_deref() == Some("Next people"));
+        if has_next {
+            assert_eq!(
+                selected,
+                Some(CollaboratorsHit::NextPeople),
+                "unseen collaborators keep exact Next focus"
+            );
+            assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+            let mut release = key_press(Key::Named(NamedKey::Enter));
+            if let WindowEvent::KeyboardInput { event, .. } = &mut release {
+                event.state = ElementState::Released;
+            }
+            assert!(pump(&mut h, &release, mods));
+            paint(&mut h);
         } else {
-            CollaboratorsHit::NextPeople
-        };
-        assert_eq!(
-            h.host
-                .collaborators_overlay
-                .key(&Key::Named(NamedKey::Enter), false),
-            Some(expected)
-        );
+            assert_eq!(seen, expected, "Previous appears only after every member");
+            assert_eq!(
+                selected,
+                Some(CollaboratorsHit::PreviousPeople),
+                "the final page retains exact Previous focus"
+            );
+            reached_last_page = true;
+            break;
+        }
     }
+    assert!(
+        reached_last_page,
+        "every responsive People page is reachable"
+    );
+    assert_eq!(
+        seen, expected,
+        "every collaborator is published exactly once"
+    );
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Home)), mods));
     let rect = h
         .host
