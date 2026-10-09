@@ -436,6 +436,26 @@ pub enum NeighbourMsg {
     },
 }
 
+impl NeighbourMsg {
+    /// Postcard variant index of [`NeighbourMsg::AppDocument`]. Variant order
+    /// is wire-frozen (peers and hosts persist and exchange these frames), and
+    /// a unit test pins this value to a real encoding.
+    pub const APP_DOCUMENT_TAG: u8 = 12;
+
+    /// Whether `bytes` encode an [`NeighbourMsg::AppDocument`], reading only
+    /// the postcard variant tag and not the variant's fields.
+    ///
+    /// Postcard writes a variant index as a varint `u32` before the fields.
+    /// An index below `0x80` is that single byte with its continuation bit
+    /// clear, so a first byte equal to [`Self::APP_DOCUMENT_TAG`] is exactly
+    /// that index and nothing longer. The fields are not checked: a frame
+    /// tagged `AppDocument` whose fields do not decode still answers `true`.
+    pub fn is_app_document(bytes: &[u8]) -> bool {
+        const _: () = assert!(NeighbourMsg::APP_DOCUMENT_TAG < 0x80);
+        bytes.first() == Some(&Self::APP_DOCUMENT_TAG)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,6 +854,30 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{case} failed to decode: {error}"));
             assert_eq!(message, decoded, "{case} changed in transit");
         }
+    }
+
+    /// The tag peek agrees with a full decode on a real encoding of every
+    /// variant, and the pinned tag is the varint postcard writes for
+    /// `AppDocument`.
+    #[test]
+    fn app_document_tag_matches_encoding() {
+        let mut app_documents = 0;
+        for (case, message) in fixtures() {
+            let bytes = postcard::to_allocvec(&message).unwrap();
+            let is_app_document = matches!(message, NeighbourMsg::AppDocument { .. });
+            assert_eq!(
+                NeighbourMsg::is_app_document(&bytes),
+                is_app_document,
+                "{case}"
+            );
+            if is_app_document {
+                app_documents += 1;
+                let (tag, _) = postcard::take_from_bytes::<u32>(&bytes).unwrap();
+                assert_eq!(tag, u32::from(NeighbourMsg::APP_DOCUMENT_TAG), "{case}");
+            }
+        }
+        assert!(app_documents > 0, "no AppDocument fixture was classified");
+        assert!(!NeighbourMsg::is_app_document(&[]));
     }
 
     /// Names every variant through an exhaustive match, so adding a variant

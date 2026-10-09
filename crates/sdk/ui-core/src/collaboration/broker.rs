@@ -3913,7 +3913,19 @@ async fn ensure_sdk_route(
         // agent cannot start deciding against stale local fallback data.
         spawn_action_catalogue_stream(&channel, inbound_tx).await?;
     }
-    let committed = committed_document::install(&channel, spec, inbound_tx).await?;
+    let committed = committed_document::install(
+        &channel,
+        spec,
+        inbound_tx,
+        committed_document::NativeReadJoin {
+            client: client.clone(),
+            presentation: identity_bytes.to_vec(),
+            participant_handle: participant_handle.unwrap_or("").into(),
+            participant_kind: participant_kind.into(),
+            record_kind: record_kind.into(),
+        },
+    )
+    .await?;
     if committed {
         // This reply contains only the original host-retained launch instance;
         // a record label or app environment never becomes private authority.

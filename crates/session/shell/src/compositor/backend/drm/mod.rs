@@ -88,7 +88,7 @@ impl DrmBackend {
         let mut inner = runtime::DrmRuntime::new()?;
         let commands = inner.commands.take();
         let signal_reports = inner.signal_reports.take();
-        let outputs = Self::refresh_outputs(&inner);
+        let outputs = Self::refresh_outputs(&inner.dispatch);
         // The loop ticks at the *fastest* connected mode. Each output renders only once its own
         // previous flip has retired, so a slower output skips the frames it cannot show rather
         // than throttling the fast panel down (`DrmPresenter::retire_direct_flips`).
@@ -120,8 +120,8 @@ impl DrmBackend {
 
     /// Collect the current public [`Output`] list from the runtime's dispatch state, primary first
     /// (see `DrmDispatchState::output_table`).
-    fn refresh_outputs(inner: &runtime::DrmRuntime) -> Vec<Output> {
-        inner.dispatch.output_table()
+    fn refresh_outputs(dispatch: &runtime::DrmDispatchState) -> Vec<Output> {
+        dispatch.output_table()
     }
 
     /// The cadence to pace to: the fastest connected mode. Read from the loop thread's record of
@@ -180,6 +180,72 @@ pub struct DrmPresenter {
     readback_presenting: Arc<AtomicBool>,
     /// Signalling facts learned while presenting, for the loop thread.
     signal_reports: Option<Sender<SignalReport>>,
+}
+
+/// Everything the render thread takes over from the backend in
+/// [`Backend::take_presenter`].
+///
+/// Deliberately carries no vello bridge: wgpu/Vulkan devices must be created on
+/// the thread which will drive them. An inline frame can initialise the
+/// backend's bridge before the split (for example during startup or a backend
+/// probe), and moving that live device to the render thread wedges Mesa
+/// software adapters after the first submissions. [`DrmPresenter::new`] starts
+/// without one and `paint_scanouts` constructs a fresh bridge on the
+/// presentation thread. Handing a bridge across means adding a field here.
+struct PresenterParts {
+    scanouts: Vec<ScanoutEntry>,
+    outputs: Vec<Output>,
+    pointer: (f64, f64),
+    shared_pointer: Arc<Mutex<(f64, f64)>>,
+    cpu: Option<cpu_present::CpuRenderer>,
+    blanked: bool,
+    paused: bool,
+    /// The scanouts and the commands addressed to them travel together:
+    /// whoever owns one owns the other.
+    commands: Option<Receiver<ScanoutCommand>>,
+    present_gate: Option<Arc<Mutex<()>>>,
+    profile_phases: bool,
+    readback_presenting: Arc<AtomicBool>,
+    signal_reports: Option<Sender<SignalReport>>,
+}
+
+impl DrmPresenter {
+    /// The presenter for `parts`, with no GPU bridge yet: the first frame
+    /// builds one on the thread that will drive it (see [`PresenterParts`]).
+    fn new(parts: PresenterParts) -> Self {
+        let PresenterParts {
+            scanouts,
+            outputs,
+            pointer,
+            shared_pointer,
+            cpu,
+            blanked,
+            paused,
+            commands,
+            present_gate,
+            profile_phases,
+            readback_presenting,
+            signal_reports,
+        } = parts;
+        Self {
+            scanouts,
+            outputs,
+            pointer,
+            shared_pointer,
+            paint: None,
+            cpu,
+            blanked,
+            paused,
+            commands,
+            present_gate,
+            profile_phases,
+            profile_seq: 0,
+            frame_phases: None,
+            phase_window: PhaseWindow::default(),
+            readback_presenting,
+            signal_reports,
+        }
+    }
 }
 
 /// Publish whether any powered output presents through the combined readback.
@@ -3238,7 +3304,7 @@ impl Backend for DrmBackend {
         }
         // A hotplug rewrote the output table on the loop thread; publish it so `outputs()` (which the compositor reads to size its scene / advertise `wl_output` globals) reflects the change.
         if std::mem::take(&mut self.inner.dispatch.outputs_changed) {
-            self.outputs = Self::refresh_outputs(&self.inner);
+            self.outputs = Self::refresh_outputs(&self.inner.dispatch);
             // The cadence is the fastest connected mode, and "connected" just changed — unplugging the 144
             // Hz panel of a pair must not leave the compositor pacing to a rate the remaining display can't present at.
             self.refresh = self.recompute_refresh();
@@ -3272,33 +3338,23 @@ impl Backend for DrmBackend {
         *shared_pointer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = self.inner.dispatch.pointer;
-        Some(Box::new(DrmPresenter {
+        // Any inline bridge in `self.paint` stays behind and is dropped with
+        // the backend: `PresenterParts` has no field to carry it across.
+        Some(Box::new(DrmPresenter::new(PresenterParts {
             scanouts,
             outputs: self.outputs.clone(),
             pointer: self.inner.dispatch.pointer,
             shared_pointer,
-            // wgpu/Vulkan devices must be created on the thread which will
-            // drive them.  An inline frame can initialise `self.paint`
-            // before this split (for example during startup or a future
-            // backend probe); moving that live device to the render thread
-            // wedges Mesa software adapters after the first submissions.
-            // Drop any inline bridge here and let `paint_scanouts` construct
-            // a fresh one on the dedicated presentation thread.
-            paint: None,
             cpu: self.cpu.take(),
             blanked: self.blanked,
             paused: self.paused,
-            // The scanouts and the commands addressed to them travel together: whoever owns one owns the other.
             commands: self.commands.take(),
             present_gate: self.inner.dispatch.present_gate.clone(),
             profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some()
                 || std::env::var_os("TILO_PROFILE_GPU_STAGES").is_some_and(|value| value == "1"),
-            frame_phases: None,
-            profile_seq: 0,
-            phase_window: PhaseWindow::default(),
             readback_presenting: Arc::clone(&self.readback_presenting),
             signal_reports: self.signal_reports.take(),
-        }))
+        })))
     }
 
     /// Power **every** connected output on/off, delegating to [`scanout::DrmScanout::set_dpms`]
@@ -3670,94 +3726,52 @@ mod tests {
     }
 
     #[test]
-    fn drm_backend_construction_and_output_publication() {
-        // Phase `drm_backend_new_returns_err_when_no_seat_available`.
-        // The DRM backend's construction must surface a real error (`Box<dyn Error>`) on any dev
-        // machine off a free TTY. Exact text varies; we only assert `Err`, not a panic, so this test is portable across CI.
-        // On the dev machine this runs under, a Wayland/X11 compositor already holds the seat; libseat refuses with an error — exactly the contract we want.
-        match DrmBackend::new() {
-            Ok(_) => {
-                // If construction unexpectedly succeeds (e.g. a bare TTY in CI), that's also fine — the assert
-                // below converts it into a benign skip rather than gating on `is_err()`, so a real hardware run wouldn't fail it.
-            }
-            Err(e) => {
-                let msg = format!("{e}");
-                assert!(
-                    !msg.is_empty(),
-                    "DrmBackend error message must be non-empty (got: {msg:?})"
-                );
-            }
-        }
-        // Phase `drm_backend_outputs_returns_populated_list_when_runtime_has_outputs`.
-        // Verify `outputs()` returns the populated list when the runtime has synthesised outputs. Can't
-        // call `DrmRuntime::new` from a dev machine, so exercise `refresh_outputs` directly on a synthesised dispatch state.
-        {
-            let synthesized = vec![
-                (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
-                (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
-            ];
-            let dispatch = runtime::DrmRuntime::synthesize_for_tests(synthesized);
+    fn the_backend_publishes_the_runtime_output_table() {
+        // `DrmRuntime::new` needs a seat, so drive `refresh_outputs` on the dispatch state it reads:
+        // the external monitor enumerated first, yet the built-in panel is published first, the
+        // order everything downstream takes as primary.
+        let dispatch = runtime::DrmRuntime::synthesize_for_tests(&[
+            ("DP-2", (2560, 1440)),
+            ("eDP-1", (1920, 1080)),
+        ]);
+        let outputs = DrmBackend::refresh_outputs(&dispatch);
+        assert_eq!(
+            outputs
+                .iter()
+                .map(|output| (output.id, output.size))
+                .collect::<Vec<_>>(),
+            [(OutputId(1), (1920, 1080)), (OutputId(0), (2560, 1440))],
+        );
+    }
 
-            // Mirror what `refresh_outputs` does: we can't easily build a full `DrmRuntime`, so copy that helper's sort/shape policy here for the test.
-            let mut outs: Vec<Output> = dispatch.output_meta.values().cloned().collect();
-            outs.sort_by_key(|o| o.id.0);
-
-            assert_eq!(
-                outs.len(),
-                2,
-                "two synthesised outputs must surface as two entries"
-            );
-            assert_eq!(outs[0].id, OutputId(0));
-            assert_eq!(outs[0].size, (1920, 1080));
-            assert_eq!(outs[1].id, OutputId(1));
-            assert_eq!(outs[1].size, (1280, 720));
-        }
-        // Phase `drm_backend_does_not_warn_about_vello_anymore`.
-        // The bridge field must exist and the legacy "scene discarded" warn-and-latch field must not,
-        // so a future refactor re-adding a fail-silent path has to re-design this test. Verified via the production type's shape (not a `tracing` capture) to keep the test fast and dependency-free.
-        {
-            // Pull the struct's field list via raw source text, anchored on `pub struct DrmBackend {` … the first following `}`, so neither the test body nor doc-comments interfere.
-            let src = include_str!("mod.rs");
-            let start = src
-                .find("pub struct DrmBackend {")
-                .expect("struct DrmBackend must exist in mod.rs");
-            let after = &src[start..];
-            let end = after.find("\n}").expect("struct must close") + start;
-            let struct_def = &src[start..=end + 1];
-            assert!(
-                struct_def.contains("paint:"),
-                "Phase 5.2: DrmBackend struct must carry a `paint:` field for the bridge. Got:\n{struct_def}"
-            );
-            assert!(
-                !struct_def.contains("warned_about_vello"),
-                "Phase 5.2: DrmBackend struct must drop the legacy latch field. Got:\n{struct_def}"
-            );
-        }
-        // Phase `drm_presenter_starts_without_a_cross_thread_gpu_device`.
-        {
-            // `take_presenter` is the ownership boundary.  Constructing the
-            // bridge before this point and moving it with the scanouts can wedge
-            // software Vulkan adapters after their first submissions.  Keep the
-            // invariant visible in the production initializer without requiring
-            // a DRM seat or a wgpu adapter in this unit test.
-            let src = include_str!("mod.rs");
-            let start = src
-                .find("fn take_presenter(&mut self)")
-                .expect("DRM backend must expose its presenter");
-            let body = &src[start..];
-            let initializer = body
-                .split("fn set_dpms")
-                .next()
-                .expect("presenter initializer must precede set_dpms");
-            assert!(
-                initializer.contains("paint: None"),
-                "the render thread must construct its own wgpu bridge"
-            );
-            assert!(
-                !initializer.contains("paint: self.paint.take()"),
-                "a live wgpu bridge must never cross the thread boundary"
-            );
-        }
+    #[test]
+    fn presenter_starts_without_a_bridge() {
+        // `take_presenter` is the ownership boundary: a bridge built before it and moved with the
+        // scanouts can wedge software Vulkan adapters after their first submissions. The render
+        // thread must build its own on the first frame.
+        let (_commands, receiver) = std::sync::mpsc::channel();
+        let presenter = DrmPresenter::new(PresenterParts {
+            scanouts: Vec::new(),
+            outputs: vec![Output::new(OutputId(0), (1920, 1080), 1.0)],
+            pointer: (0.0, 0.0),
+            shared_pointer: Arc::new(Mutex::new((0.0, 0.0))),
+            cpu: None,
+            blanked: false,
+            paused: false,
+            commands: Some(receiver),
+            present_gate: Some(Arc::new(Mutex::new(()))),
+            profile_phases: false,
+            readback_presenting: Arc::new(AtomicBool::new(true)),
+            signal_reports: None,
+        });
+        assert!(
+            presenter.paint.is_none(),
+            "the render thread must construct its own wgpu bridge"
+        );
+        assert!(
+            presenter.commands.is_some(),
+            "the scanouts' command channel travels with them"
+        );
     }
 }
 
