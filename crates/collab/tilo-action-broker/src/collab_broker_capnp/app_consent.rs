@@ -16,7 +16,7 @@ use collab_types::caps::{CapOverride, Expiry, Scope, Subject};
 use runtime_collab::raw::channel_handle;
 use tilo_actions::remote::{Caller, CallerPrincipal, InvokeRequest, RemoteActionMessage};
 
-use super::action_host::ConnectionActionHost;
+use super::action_host::{ConnectionActionHost, RowScope};
 use super::{Actor, CapnpBrokerState, Verb, permission_verb};
 use crate::app_actions::{AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest};
 
@@ -105,7 +105,7 @@ impl CapnpBrokerState {
         let room = person.room()?;
         let grants = self.services.app_action_grants.as_ref()?;
         let row = self
-            .eager_catalogue(person, true)
+            .eager_catalogue(person, RowScope::Provider(&request.target.provider))
             .0
             .into_iter()
             .find(|row| {
