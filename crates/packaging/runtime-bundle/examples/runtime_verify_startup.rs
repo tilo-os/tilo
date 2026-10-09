@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use runtime_bundle::{
     BuildOptions, Identity, PayloadCheck, VerifyOptions, build_bundle_with, enable_bundle_verity,
-    verify_bundle_verity_with, verify_bundle_with,
+    verify_bundle_metadata_with, verify_bundle_verity_with, verify_bundle_with,
 };
 
 const DYLIB_SIZE: usize = 256 << 20;
@@ -70,6 +70,12 @@ fn main() -> Result<(), Error> {
     println!("full hash (launch before TIL-594):  {full:?}");
     let (unsealed, check) = timed_verity(&bundle, &policy)?;
     println!("verity path, unsealed (fallback):   {unsealed:?}  {check:?}");
+    // Manifest, signatures and one stat per file: the sealed path's work
+    // without its one FS_IOC_MEASURE_VERITY per file, on any filesystem.
+    let metadata = median(RUNS, || {
+        verify_bundle_metadata_with(&bundle, &policy).map(|_| ())
+    })?;
+    println!("manifest + signatures + stats only: {metadata:?}");
 
     let manifest = verify_bundle_with(&bundle, &policy)?;
     match enable_bundle_verity(&bundle, &manifest) {
