@@ -1632,9 +1632,16 @@ The compositor starts on a Bazzite host without `/var/workspace`, `/etc/tilo`,
 - **No `/etc/tilo/desktop.toml`.** The host package omits it, so the compositor
   uses its defaults unless `~/.config/tilo-desktop/desktop.toml` exists.
 
-`/var/workspace` is a FUSE mount `fs.service` makes on the Tilo image; there is
-no such unit here, so the permission UI will talk about a path that is not
-mounted.
+`/var/workspace` is the image's `fs.service` mount. The Fedora host payload
+instead packages the existing daemon/admin tool and the user service
+`tilo-files-workspace.service`, using `~/.local/state/tilo/files/mount` on the
+standard XDG profile. It starts only for saved, signed and Files-authorized
+primary state; package installation never substitutes an empty namespace for
+missing recovery data. The host shell exports that root only through the
+launcher's existing capability filter. See [host Files preparation and
+recovery](os/docs/peer-sync.md#fedora-primary-files-service-and-explicit-first-run).
+The Settings Storage pane's host socket wiring is still pending; its image
+socket does not address this user service.
 
 Alongside Tilo packages, the shell scans `$XDG_DATA_HOME/applications`, each
 `$XDG_DATA_DIRS` entry's `applications`, and both Flatpak export directories
