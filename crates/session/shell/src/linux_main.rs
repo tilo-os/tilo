@@ -481,6 +481,11 @@ pub fn run() -> std::process::ExitCode {
         println!("{version}");
         return std::process::ExitCode::SUCCESS;
     }
+    if let Err(error) = shell::shell::install_approved_checks_from_args(std::env::args_os().skip(1))
+    {
+        eprintln!("approved project check configuration refused: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
     if !early_args.iter().any(|arg| {
         matches!(
             arg.as_str(),

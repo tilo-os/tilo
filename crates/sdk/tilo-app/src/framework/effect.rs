@@ -314,6 +314,7 @@ pub struct EffectCx<R: Resource, H = ()> {
     heads: Vec<ui_core::automerge::ChangeHash>,
     custody: Option<ResourceInvocationScope>,
     worker_custody: Option<ResourceEffectScope>,
+    target: Option<ui_core::host_operation::OperationTarget>,
 }
 
 /// The resource as it was at a past version a view asked for: its
@@ -335,6 +336,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             heads: Vec::new(),
             custody: None,
             worker_custody: None,
+            target: None,
         }
     }
 
@@ -415,6 +417,33 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// caller. Its source identity may differ from the local reply operation.
     pub fn invocation(&self) -> Option<InvocationId> {
         self.invocation
+    }
+
+    /// Run an approved project check through this effect's admitted host channel.
+    /// Commands, source paths and resource bounds are chosen by the project host.
+    /// Pass the returned future to the existing effect job with [`Self::spawn`].
+    ///
+    /// # Errors
+    /// Refuses projection drains, absent original custody or unavailable transport.
+    pub fn approved_check(
+        &self,
+        check_id: &str,
+    ) -> Result<ui_core::invocation_scope::ApprovedCheckFuture, String> {
+        if let Some(custody) = &self.custody {
+            return custody.approved_check(check_id);
+        }
+        let target = self
+            .target
+            .as_ref()
+            .ok_or("approved checks require an exact dispatched record target")?;
+        if target.route().app_id != self.env.dispatch.app_id() {
+            return Err("approved check dispatch app changed".into());
+        }
+        target.approved_check(
+            self.invocation
+                .ok_or("approved checks require a dispatched invocation")?,
+            check_id,
+        )
     }
 
     /// Wakes the app from another thread, to draw what a worker changed.
@@ -1216,6 +1245,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         let job = declaration.is_some_and(|decl| decl.is_job());
         let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation))
             .with_custody(custody.cloned())?;
+        cx.target = op.target().cloned();
         // Keep an immutable snapshot for this effect invocation, including any
         // pending edits. The effect may also read a historical version; neither
         // read borrows the author's document mutably.

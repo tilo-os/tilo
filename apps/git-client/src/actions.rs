@@ -63,6 +63,12 @@ pub const GIT_CLIENT_ACTION_TYPE: &str = "git_client.action";
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
 #[effect(operation = "git_client.effect", device_only)]
 pub enum GitClientEffect {
+    /// Run approved project check
+    #[effect(job, cancellable, returns, untrusted, device_only = false)]
+    RunApprovedCheck {
+        #[param("Check ID approved by this exact project host")]
+        check_id: String,
+    },
     /// Show changes
     #[effect(view)]
     ShowChanges,
