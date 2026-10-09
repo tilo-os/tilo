@@ -37,7 +37,13 @@ fn bound(room: String, command: DesktopCommand) -> BoundCommand {
 fn open(desktop: &mut LocalDesktop, room: String, app: &str) {
     desktop
         .apply(
-            &bound(room, DesktopCommand::OpenApp { app: app.into() }),
+            &bound(
+                room,
+                DesktopCommand::OpenApp {
+                    app: app.into(),
+                    beside: None,
+                },
+            ),
             None,
         )
         .unwrap();
@@ -201,6 +207,7 @@ fn the_owner_reduces_opens_closes_and_renames_in_their_own_room() {
             second,
             DesktopCommand::OpenApp {
                 app: "so.tilo.nope".into(),
+                beside: None,
             },
         ),
         None,
@@ -214,6 +221,7 @@ fn an_open_on_a_record_shows_that_record_in_a_new_selected_window() {
     let room = room_of(&desktop.admission().unwrap().tree, 0);
     let open = DesktopCommand::OpenApp {
         app: "so.tilo.ebook".into(),
+        beside: None,
     };
     desktop
         .apply(

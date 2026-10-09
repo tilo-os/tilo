@@ -526,6 +526,7 @@ impl NativeLauncher {
         &self,
         app: &str,
         workspace: &tilo_desktop_model::Workspace,
+        place: &LaunchPlace,
     ) -> Option<Result<(), String>> {
         let resource = format!(
             "{}{app}",
@@ -540,13 +541,32 @@ impl NativeLauncher {
                 tilo_desktop_model::commands::APP_ID,
                 &resource,
                 tilo_desktop_model::commands::OPEN_APP_ACTION,
-                None,
+                self.beside_group(workspace, place)
+                    .map(|group| serde_json::json!({ "beside": group })),
             );
         Some(match answer.wait_timeout(GOVERNED_OPEN_TIMEOUT) {
             Ok(Some(result)) => result.map(drop),
             Ok(None) => Err("the workspace host stopped before opening the app".into()),
             Err(_) => Err("the workspace host did not open the app in time".into()),
         })
+    }
+
+    /// The group of `workspace` an open at `place` goes beside, as the
+    /// governor of a room names it: the view the actor works in.
+    fn beside_group(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        place: &LaunchPlace,
+    ) -> Option<u64> {
+        let LaunchPlace::Beside { app_id } = place else {
+            return None;
+        };
+        let tree = self.0.as_ref()?.read();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.room == workspace.room)
+            .and_then(|workspace| super::placement::group_showing(workspace, app_id))
     }
 
     /// Note where `app`'s window lands when it arrives: at `place` in
@@ -657,7 +677,7 @@ impl LauncherServices for NativeLauncher {
                 },
             );
         }
-        if let Some(opened) = self.open_through_governor(app, workspace) {
+        if let Some(opened) = self.open_through_governor(app, workspace, place) {
             return opened;
         }
         self.place(app, workspace, place);
@@ -800,7 +820,7 @@ impl LauncherServices for NativeLauncher {
             return launch_host_application(desktop_id, workspace, content);
         }
         if content.hash.is_empty()
-            && let Some(opened) = self.open_through_governor(app, workspace)
+            && let Some(opened) = self.open_through_governor(app, workspace, place)
         {
             return opened;
         }

@@ -135,9 +135,12 @@ pub enum DesktopCommand {
     /// agent, the command palette). The owner places it in its own turn, as
     /// a new group at the end of its last strip, or as the first strip of an
     /// empty workspace. Placement-independent, so a stale source revision
-    /// does not refuse it. Appended last: existing encodings are unchanged.
+    /// does not refuse it. `beside` names the group of the view the actor
+    /// that needs this one works in: it opens right after that group, on
+    /// whichever strip holds it, when the owner still has it.
     OpenApp {
         app: String,
+        beside: Option<u64>,
     },
     /// Save a shortcut in the workspace, replacing the shortcut with the same
     /// id. The shortcut travels as its JSON: its inputs and bindings carry

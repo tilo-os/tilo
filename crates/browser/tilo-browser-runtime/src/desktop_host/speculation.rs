@@ -364,7 +364,7 @@ impl Speculations {
         }
         let room = bound.source.room.clone();
         let open = match &bound.command {
-            DesktopCommand::OpenApp { app } => {
+            DesktopCommand::OpenApp { app, .. } => {
                 if self.namespace.is_none() || crate::desktop::definition(app).is_none() {
                     return false;
                 }
@@ -516,7 +516,7 @@ impl Speculations {
                 return true;
             }
             let rendered = match (entry.open.as_mut(), &entry.command) {
-                (Some(state), DesktopCommand::OpenApp { app }) => {
+                (Some(state), DesktopCommand::OpenApp { app, .. }) => {
                     let admitted = state
                         .bound
                         .is_some_and(|bound| locate(tree, &entry.room, bound.tab).is_some());
@@ -1027,7 +1027,13 @@ mod open_tests {
         }
     }
     fn open_app(tree: &DesktopTree, app: &str) -> BoundCommand {
-        bound(tree, DesktopCommand::OpenApp { app: app.into() })
+        bound(
+            tree,
+            DesktopCommand::OpenApp {
+                app: app.into(),
+                beside: None,
+            },
+        )
     }
     /// The owner's own turn: `open_app_placement` over its namespace, its
     /// mint formula, and a checked record tile. Returns the committed window.

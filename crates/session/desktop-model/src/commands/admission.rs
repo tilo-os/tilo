@@ -20,10 +20,16 @@ pub fn resolve_open_app(
     owned: impl Fn(u64) -> bool,
 ) -> Result<DesktopCommand, String> {
     Ok(match command {
-        DesktopCommand::OpenApp { app } => DesktopCommand::OpenTab {
-            app,
-            placement: open_app_placement(workspace, &OpenContext::default(), owned)?,
-        },
+        DesktopCommand::OpenApp { app, beside } => {
+            let at = beside
+                .filter(|group| owned(*group))
+                .and_then(|group| OpenContext::beside(workspace, group))
+                .unwrap_or_default();
+            DesktopCommand::OpenTab {
+                app,
+                placement: open_app_placement(workspace, &at, owned)?,
+            }
+        }
         other => other,
     })
 }

@@ -70,12 +70,17 @@ pub fn placement_at(tree: &WorkspaceTree, room: RoomId, place: &LaunchPlace) -> 
 
 /// The group of `workspace` whose shown tab is a window of `package_id`,
 /// else any group holding one.
-fn group_showing(workspace: &tilo_desktop_model::Workspace, package_id: &str) -> Option<GroupId> {
+pub(crate) fn group_showing(
+    workspace: &tilo_desktop_model::Workspace,
+    package_id: &str,
+) -> Option<GroupId> {
     let shows = |tile: &TileContent| match tile {
         TileContent::Foreign { app_id, .. } => {
             crate::shell::launcher::app_id_matches_package(app_id, package_id)
         }
-        TileContent::LocalApp { app_id, .. } => app_id == package_id,
+        TileContent::LocalApp { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
+            app_id == package_id
+        }
         _ => false,
     };
     let groups = || workspace.strips.iter().flat_map(|s| &s.window_groups);

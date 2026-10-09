@@ -1215,7 +1215,10 @@ impl DesktopRoot {
                                 room,
                                 heads: self.source_heads.clone(),
                             },
-                            command: DesktopCommand::OpenApp { app: app.into() },
+                            command: DesktopCommand::OpenApp {
+                                app: app.into(),
+                                beside: None,
+                            },
                         },
                         None,
                     )
@@ -1683,6 +1686,7 @@ impl DesktopRoot {
                     },
                     command: tilo_desktop_model::commands::DesktopCommand::OpenApp {
                         app: app.into(),
+                        beside: None,
                     },
                 },
                 record.as_deref(),
@@ -2183,7 +2187,10 @@ impl DesktopRoot {
             add(
                 format!("open-{app}"),
                 format!("Open {label}"),
-                DesktopCommand::OpenApp { app: app.into() },
+                DesktopCommand::OpenApp {
+                    app: app.into(),
+                    beside: None,
+                },
             );
         }
         let strip = tree

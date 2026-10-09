@@ -2446,7 +2446,7 @@ fn real_caller_palette_enqueues_bound_command_without_mutating_canonical_tree() 
     assert!(!requests[0].0.is_nil());
     assert_eq!(requests[0].1.source.heads, vec![[7; 32]]);
     assert!(
-        matches!(&requests[0].1.command, tilo_desktop_model::commands::DesktopCommand::OpenApp { app } if app == "so.tilo.notes")
+        matches!(&requests[0].1.command, tilo_desktop_model::commands::DesktopCommand::OpenApp { app, .. } if app == "so.tilo.notes")
     );
     assert!(
         frame.take_caller_operation().is_none(),
@@ -2484,7 +2484,7 @@ fn empty_workspace_palette_enqueues_durable_notes_command() {
     // The owner places the parity open: an empty workspace gets a strip.
     assert!(matches!(
         &requests[0].1.command,
-        tilo_desktop_model::commands::DesktopCommand::OpenApp { app } if app == "so.tilo.notes"
+        tilo_desktop_model::commands::DesktopCommand::OpenApp { app, .. } if app == "so.tilo.notes"
     ));
 }
 fn browser_semantic_route(frame: &ui::headless::FrameHarness, label: &str) -> (String, String) {
@@ -6308,7 +6308,10 @@ fn invoke_open(root: &mut DesktopRoot, room: &str, app: &str) -> uuid::Uuid {
             room: room.into(),
             heads: vec![[8; 32]],
         },
-        command: tilo_desktop_model::commands::DesktopCommand::OpenApp { app: app.into() },
+        command: tilo_desktop_model::commands::DesktopCommand::OpenApp {
+            app: app.into(),
+            beside: None,
+        },
     })
     .unwrap();
     let output = root
@@ -6512,6 +6515,6 @@ fn a_refused_optimistic_open_snaps_back_and_focus_returns() {
     // The durable request is still the one the bridge sends.
     assert!(matches!(
         &handle.session_requests.borrow()[0].1.command,
-        tilo_desktop_model::commands::DesktopCommand::OpenApp { app } if app == "so.tilo.calculator"
+        tilo_desktop_model::commands::DesktopCommand::OpenApp { app, .. } if app == "so.tilo.calculator"
     ));
 }
