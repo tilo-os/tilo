@@ -393,6 +393,14 @@ pub struct Namespace {
     /// that state lives beside the document, so its heads alone miss it.
     /// Drawn from a process-wide counter so no two instances share a value.
     verified_generation: u64,
+    /// Changes whenever changes another replica made are merged into the
+    /// document. Concurrent edits, and so content conflicts, can only arrive
+    /// that way: this replica's own changes are causally ordered. Drawn from
+    /// the same process-wide counter as `verified_generation`.
+    merge_generation: u64,
+    /// Calls of [`crate::conflict::detect`] on this namespace.
+    #[cfg(test)]
+    conflict_scans: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     record_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
@@ -513,6 +521,9 @@ impl Namespace {
             #[cfg(test)]
             record_index_rebuilds: 0,
             verified_generation: next_verified_generation(),
+            merge_generation: next_verified_generation(),
+            #[cfg(test)]
+            conflict_scans: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
@@ -578,6 +589,9 @@ impl Namespace {
             #[cfg(test)]
             record_index_rebuilds: 0,
             verified_generation: next_verified_generation(),
+            merge_generation: next_verified_generation(),
+            #[cfg(test)]
+            conflict_scans: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
@@ -737,7 +751,9 @@ impl Namespace {
     ///
     /// Returns an error if `data` is not a valid incremental automerge change set for this document.
     pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
+        let before = self.doc.get_heads();
         self.doc.load_incoming(data)?;
+        self.note_merge(&before);
         self.ensure_record_ids();
         self.rebuild_record_index();
         Ok(())
@@ -778,7 +794,9 @@ impl Namespace {
     ///
     /// Returns an error if `other`'s document cannot be merged into this one.
     pub fn merge_doc(&mut self, other: &mut Namespace) -> Result<(), automerge::AutomergeError> {
+        let before = self.doc.get_heads();
         self.doc.merge_incoming(&mut other.doc)?;
+        self.note_merge(&before);
         self.ensure_record_ids();
         self.rebuild_record_index();
         Ok(())
@@ -793,7 +811,9 @@ impl Namespace {
         &mut self,
         data: &[u8],
     ) -> Result<Vec<u8>, automerge::AutomergeError> {
+        let before = self.doc.get_heads();
         self.doc.load_incoming(data)?;
+        self.note_merge(&before);
         self.ensure_record_ids();
         let _ = self.doc.save_incremental();
         self.resolve();
@@ -809,12 +829,44 @@ impl Namespace {
         data: &[u8],
     ) -> Result<Vec<u8>, automerge::AutomergeError> {
         let mut other = AutoCommit::load(data)?;
+        let before = self.doc.get_heads();
         self.doc.merge_incoming(&mut other)?;
+        self.note_merge(&before);
         self.ensure_record_ids();
         let _ = self.doc.save_incremental();
         self.resolve();
         self.rebuild_record_index();
         Ok(self.doc.save_incremental())
+    }
+
+    /// Moves [`Self::merge_generation`] on when a merge since `before`
+    /// brought changes.
+    fn note_merge(&mut self, before: &[automerge::ChangeHash]) {
+        if self.doc.get_heads() != before {
+            self.merge_generation = next_verified_generation();
+        }
+    }
+
+    /// Changes whenever changes another replica made were merged in, and
+    /// only then: equal values mean no new content conflict can have
+    /// arrived, so a reconciler can skip [`crate::conflict::detect`].
+    #[must_use]
+    pub fn merge_generation(&self) -> u64 {
+        self.merge_generation
+    }
+
+    /// Counts a [`crate::conflict::detect`] scan.
+    #[cfg(test)]
+    pub(crate) fn note_conflict_scan(&self) {
+        self.conflict_scans
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Calls of [`crate::conflict::detect`] on this namespace.
+    #[cfg(test)]
+    pub(crate) fn conflict_scans(&self) -> u64 {
+        self.conflict_scans
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The sync state an exchange with the device `peer` begins at: where
@@ -896,6 +948,7 @@ impl Namespace {
         // Most sync rounds carry heads and bloom filters, not changes; the
         // indexes are rebuilt only when the document actually changed.
         if self.doc.get_heads() != before {
+            self.merge_generation = next_verified_generation();
             self.ensure_record_ids();
             self.rebuild_record_index();
         }

@@ -509,6 +509,8 @@ impl RecordPublisher {
     ) -> Result<bool, RecordPublisherError> {
         const DOMAIN: &[u8] = b"tilo.fs.record.concurrent-head-conflict.v1\0";
 
+        #[cfg(test)]
+        self.repository.note_concurrent_head_check();
         let _guard = self
             .publish_lock
             .lock()
