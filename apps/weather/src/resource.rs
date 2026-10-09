@@ -56,9 +56,8 @@ impl Weather {
             .map(|(id, _)| id.clone());
         let id = existing.unwrap_or_else(|| {
             // Places are keyed by uuid, the form the window and its fetches
-            // name them by; this one is minted from the action like any id.
-            let minted = u128::from_str_radix(cx.id().as_str(), 16).unwrap_or_default();
-            let id = Weather::item(uuid::Uuid::from_u128(minted));
+            // name them by.
+            let id = Weather::item(cx.uuid());
             self.places.push(
                 id.clone(),
                 Place {
