@@ -2744,6 +2744,9 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
             .await
             .map(Link::Iroh)
             .map_err(|error| match error {
+                ClientError::UnsupportedProtocol => {
+                    LinkError::Unavailable("host does not speak tilo-relay/1".into())
+                }
                 ClientError::Iroh(reason) => LinkError::Unavailable(reason),
                 ClientError::Sign(reason) => LinkError::Sign(reason),
                 other => LinkError::Refused(other.to_string()),
