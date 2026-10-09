@@ -63,7 +63,7 @@ use wayland_protocols::wp::primary_selection::zv1::client::{
 use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface},
     xdg_toplevel::{self, XdgToplevel},
-    xdg_wm_base::{self, XdgWmBase},
+    xdg_wm_base::XdgWmBase,
 };
 
 /// The mime type Tilo offers text selections as. Must match
@@ -2438,20 +2438,7 @@ impl Dispatch<WlTouch, ()> for ClientState {
     }
 }
 
-impl Dispatch<XdgWmBase, ()> for ClientState {
-    fn event(
-        _: &mut Self,
-        wm_base: &XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            wm_base.pong(serial);
-        }
-    }
-}
+crate::support::wayland::test_client!(ClientState: ping);
 
 impl Dispatch<XdgSurface, ()> for ClientState {
     fn event(

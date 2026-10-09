@@ -25,18 +25,19 @@ use shell::compositor::state::{ClientState, State};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_shm_pool,
-    wl_surface,
+    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3, zwp_text_input_v3,
 };
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_keyboard_grab_v2, zwp_input_method_manager_v2, zwp_input_method_v2,
     zwp_input_popup_surface_v2,
 };
+
+use crate::support::wayland::{Globals as _, foreign_id};
 
 /// Everything either connection observed.
 #[derive(Default)]
@@ -56,25 +57,7 @@ struct Peer {
     popup_rectangles: Vec<(i32, i32, i32, i32)>,
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Peer {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
-    }
-}
+crate::support::wayland::test_client!(Peer);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Peer {
     fn event(
@@ -172,36 +155,6 @@ impl Dispatch<zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2, ()> for Peer {
     }
 }
 
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Peer {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Peer {
-    fn event(
-        _: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-        }
-    }
-}
-
 delegate_noop!(Peer: ignore wl_compositor::WlCompositor);
 delegate_noop!(Peer: ignore wl_surface::WlSurface);
 delegate_noop!(Peer: ignore wl_seat::WlSeat);
@@ -226,14 +179,9 @@ impl Connected {
     where
         Peer: Dispatch<I, ()>,
     {
-        let (name, _, advertised) = self
-            .peer
-            .globals
-            .iter()
-            .find(|(_, name, _)| name == interface)?
-            .clone();
+        let (name, version) = self.peer.global(interface, version)?;
         let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        Some(registry.bind(name, version.min(advertised), &self.queue.handle(), ()))
+        Some(registry.bind(name, version, &self.queue.handle(), ()))
     }
 
     fn sees(&self, interface: &str) -> bool {
@@ -324,26 +272,6 @@ impl Harness {
             }
         }
     }
-}
-
-fn foreign_id(state: &State, app_id: &str) -> u64 {
-    state
-        .workspace_tree
-        .read()
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .find_map(|tab| match &tab.tile {
-            shell::shell::state::TileContent::Foreign {
-                app_id: actual,
-                surface_id,
-            } if actual == app_id => Some(*surface_id),
-            _ => None,
-        })
-        .expect("foreign surface was adopted")
 }
 
 /// Attach an opaque `width`×`height` shm buffer to `surface` and commit.

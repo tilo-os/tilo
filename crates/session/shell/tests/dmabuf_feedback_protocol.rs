@@ -34,10 +34,12 @@ use shell::compositor::state::{ClientState, State};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, protocol::wl_registry};
+use wayland_client::{
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop, protocol::wl_registry,
+};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_feedback_v1::{self, ZwpLinuxDmabufFeedbackV1},
-    zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
+    zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,17 +86,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
     }
 }
 
-impl Dispatch<ZwpLinuxDmabufV1, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &ZwpLinuxDmabufV1,
-        _: zwp_linux_dmabuf_v1::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(ClientAppState: ignore ZwpLinuxDmabufV1);
 
 impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for ClientAppState {
     fn event(

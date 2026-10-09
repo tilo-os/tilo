@@ -30,14 +30,14 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 
 use wayland_client::{
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, QueueHandle, delegate_noop,
     protocol::{wl_compositor, wl_registry, wl_surface},
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
-    wp_fractional_scale_manager_v1::{self, WpFractionalScaleManagerV1},
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
 };
-use wayland_protocols::wp::viewporter::client::wp_viewporter::{self, WpViewporter};
+use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 // Client-side state: registry advertisements + the per-surface preferred scale.
 
@@ -93,53 +93,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
     }
 }
 
-impl Dispatch<wl_compositor::WlCompositor, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &wl_compositor::WlCompositor,
-        _: wl_compositor::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<wl_surface::WlSurface, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &wl_surface::WlSurface,
-        _: wl_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<WpFractionalScaleManagerV1, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &WpFractionalScaleManagerV1,
-        _: wp_fractional_scale_manager_v1::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<WpViewporter, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &WpViewporter,
-        _: wp_viewporter::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(ClientAppState: ignore wl_compositor::WlCompositor);
+delegate_noop!(ClientAppState: ignore wl_surface::WlSurface);
+delegate_noop!(ClientAppState: ignore WpFractionalScaleManagerV1);
+delegate_noop!(ClientAppState: ignore WpViewporter);
 
 impl Dispatch<WpFractionalScaleV1, ()> for ClientAppState {
     fn event(

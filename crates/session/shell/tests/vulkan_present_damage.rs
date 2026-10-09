@@ -204,20 +204,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Peer {
         }
     }
 }
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Peer {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
+crate::support::wayland::test_client!(Peer: ping);
+
 impl Dispatch<xdg_surface::XdgSurface, ()> for Peer {
     fn event(
         peer: &mut Self,
