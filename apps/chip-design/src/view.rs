@@ -188,10 +188,10 @@ impl ResourceApp for ChipDesignShell {
                 })
             })
         });
-        let import = Box::new(cx.effect_button(&tr("chip-import"), &ChipEffect::ImportFile));
+        let import = Box::new(cx.effect_button(tr("chip-import"), &ChipEffect::ImportFile));
         let all =
-            Box::new(cx.effect_button(&tr("chip-show-all"), &ChipEffect::Inspect { report: None }));
-        let graph = Box::new(cx.effect_button(&tr("chip-graph-title"), &ChipEffect::OperatorGraph));
+            Box::new(cx.effect_button(tr("chip-show-all"), &ChipEffect::Inspect { report: None }));
+        let graph = Box::new(cx.effect_button(tr("chip-graph-title"), &ChipEffect::OperatorGraph));
         let search = Box::new(cx.search_button(ui::search::SearchRequest::this_app()));
         Box::new(
             NavShell::new()
@@ -280,7 +280,7 @@ fn evidence_body(
             .push(Box::new(Text::new(&tr("chip-imported-evidence"))))
             .push(Box::new(report_properties(id, report)))
             .push(Box::new(
-                cx.button(&tr("chip-remove"), REMOVE.with(id.clone())),
+                cx.button(tr("chip-remove"), REMOVE.with(id.clone())),
             ));
     }
     for (id, record) in verifications {
@@ -311,7 +311,7 @@ fn evidence_body(
             ))))
             .push(Box::new(verification_properties(id, record)))
             .push(Box::new(
-                cx.button(&tr("chip-remove"), REMOVE_VERIFICATION.with(id.clone())),
+                cx.button(tr("chip-remove"), REMOVE_VERIFICATION.with(id.clone())),
             ));
     }
     Box::new(Scrollable::new_vertical().with_child(Box::new(body)))

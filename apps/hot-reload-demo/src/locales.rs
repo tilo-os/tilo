@@ -11,3 +11,72 @@ pub fn install() {
         eprintln!("localization catalog: {error}");
     }
 }
+
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const DATA_ACCESSIBLE_NAME: LabelKey = LabelKey::new("data-accessible-name");
+    pub const DATA_ACTIONS_COLUMN: LabelKey = LabelKey::new("data-actions-column");
+    pub const DATA_NAME_COLUMN: LabelKey = LabelKey::new("data-name-column");
+    pub const DATA_NONE_OPENED: LabelKey = LabelKey::new("data-none-opened");
+    pub const DATA_OPEN: LabelKey = LabelKey::new("data-open");
+    pub const DATA_RECENT: LabelKey = LabelKey::new("data-recent");
+    pub const DOCUMENT_BODY_LABEL: LabelKey = LabelKey::new("document-body-label");
+    pub const DOCUMENT_BODY_PLACEHOLDER: LabelKey = LabelKey::new("document-body-placeholder");
+    pub const DOCUMENT_EDIT_HEADING: LabelKey = LabelKey::new("document-edit-heading");
+    pub const DOCUMENT_HEADING: LabelKey = LabelKey::new("document-heading");
+    pub const DOCUMENT_PREVIEW_EMPTY: LabelKey = LabelKey::new("document-preview-empty");
+    pub const DOCUMENT_PREVIEW_HEADING: LabelKey = LabelKey::new("document-preview-heading");
+    pub const DOCUMENT_TITLE_LABEL: LabelKey = LabelKey::new("document-title-label");
+    pub const DOCUMENT_TITLE_PLACEHOLDER: LabelKey = LabelKey::new("document-title-placeholder");
+    pub const GRAPH_CREATE: LabelKey = LabelKey::new("graph-create");
+    pub const GRAPH_CREATE_TOOLTIP: LabelKey = LabelKey::new("graph-create-tooltip");
+    pub const GRAPH_PROJECT_NAME: LabelKey = LabelKey::new("graph-project-name");
+    pub const LIST_ACCESSIBLE_NAME: LabelKey = LabelKey::new("list-accessible-name");
+    pub const LIST_LAST_OPENED: LabelKey = LabelKey::new("list-last-opened");
+    pub const LIST_LOADING: LabelKey = LabelKey::new("list-loading");
+    pub const LIST_NONE_OPENED: LabelKey = LabelKey::new("list-none-opened");
+    pub const LIST_OPEN: LabelKey = LabelKey::new("list-open");
+    pub const QR_INPUT_LABEL: LabelKey = LabelKey::new("qr-input-label");
+    pub const QR_INPUT_PLACEHOLDER: LabelKey = LabelKey::new("qr-input-placeholder");
+    pub const QR_OUTPUT_ALT: LabelKey = LabelKey::new("qr-output-alt");
+    pub const QR_RESET: LabelKey = LabelKey::new("qr-reset");
+    pub const QR_TITLE: LabelKey = LabelKey::new("qr-title");
+    pub const STARTER_GREETING: LabelKey = LabelKey::new("starter-greeting");
+    pub const STARTER_NAME_LABEL: LabelKey = LabelKey::new("starter-name-label");
+    pub const STARTER_NAME_PLACEHOLDER: LabelKey = LabelKey::new("starter-name-placeholder");
+    pub const STARTER_PROFILE_TITLE: LabelKey = LabelKey::new("starter-profile-title");
+    pub const STARTER_REFRESH_LABEL: LabelKey = LabelKey::new("starter-refresh-label");
+    pub const STARTER_REGION_LABEL: LabelKey = LabelKey::new("starter-region-label");
+    pub const STARTER_RESET: LabelKey = LabelKey::new("starter-reset");
+    pub const STARTER_TITLE: LabelKey = LabelKey::new("starter-title");
+    pub const STARTER_UPDATES_LABEL: LabelKey = LabelKey::new("starter-updates-label");
+    pub const STARTER_VOLUME_LABEL: LabelKey = LabelKey::new("starter-volume-label");
+    pub const TASK_CANCEL: LabelKey = LabelKey::new("task-cancel");
+    pub const TASK_FOLDER_LABEL: LabelKey = LabelKey::new("task-folder-label");
+    pub const TASK_IDLE: LabelKey = LabelKey::new("task-idle");
+    pub const TASK_LOADING: LabelKey = LabelKey::new("task-loading");
+    pub const TASK_READY: LabelKey = LabelKey::new("task-ready");
+    pub const TASK_RUN: LabelKey = LabelKey::new("task-run");
+    pub const TASK_TITLE: LabelKey = LabelKey::new("task-title");
+    pub const TREE_ACCESSIBLE_NAME: LabelKey = LabelKey::new("tree-accessible-name");
+    pub const TREE_PINNED: LabelKey = LabelKey::new("tree-pinned");
+    pub const TREE_ROW_ACTION: LabelKey = LabelKey::new("tree-row-action");
+    pub const WORKSPACE_ARCHIVE: LabelKey = LabelKey::new("workspace-archive");
+    pub const WORKSPACE_BACK: LabelKey = LabelKey::new("workspace-back");
+    pub const WORKSPACE_DESIGN_SYSTEM: LabelKey = LabelKey::new("workspace-design-system");
+    pub const WORKSPACE_DESKTOP_APP: LabelKey = LabelKey::new("workspace-desktop-app");
+    pub const WORKSPACE_FIRST_PROTOTYPE: LabelKey = LabelKey::new("workspace-first-prototype");
+    pub const WORKSPACE_NAVIGATION_HEADING: LabelKey =
+        LabelKey::new("workspace-navigation-heading");
+    pub const WORKSPACE_NOTES_LABEL: LabelKey = LabelKey::new("workspace-notes-label");
+    pub const WORKSPACE_NOTES_PLACEHOLDER: LabelKey = LabelKey::new("workspace-notes-placeholder");
+    pub const WORKSPACE_PREVIEW_HEADING: LabelKey = LabelKey::new("workspace-preview-heading");
+    pub const WORKSPACE_PROJECTS: LabelKey = LabelKey::new("workspace-projects");
+    pub const WORKSPACE_ROOT: LabelKey = LabelKey::new("workspace-root");
+    pub const WORKSPACE_SHARE: LabelKey = LabelKey::new("workspace-share");
+    pub const WORKSPACE_TITLE_LABEL: LabelKey = LabelKey::new("workspace-title-label");
+    pub const WORKSPACE_TITLE_PLACEHOLDER: LabelKey = LabelKey::new("workspace-title-placeholder");
+    pub const WORKSPACE_TREE_NAME: LabelKey = LabelKey::new("workspace-tree-name");
+    pub const WORKSPACE_UNKNOWN_ITEM: LabelKey = LabelKey::new("workspace-unknown-item");
+}

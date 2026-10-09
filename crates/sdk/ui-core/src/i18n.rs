@@ -47,6 +47,72 @@ impl From<std::borrow::Cow<'_, str>> for ArgValue {
     }
 }
 
+/// The Fluent message a label, placeholder or button shows: looked up in
+/// the active locale when drawn, shown verbatim when no catalog has it.
+///
+/// `tilo-app` generates one constant per message of an app's
+/// `locales/en-US.ftl` in its locale registry (`locales::keys::NOTES_ADD`),
+/// so a misspelt key in an app that uses them does not compile. A plain
+/// string converts too, for text that is not a catalog message.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LabelKey(std::borrow::Cow<'static, str>);
+
+impl LabelKey {
+    /// The message `key`.
+    #[must_use]
+    pub const fn new(key: &'static str) -> Self {
+        Self(std::borrow::Cow::Borrowed(key))
+    }
+
+    /// The message id.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for LabelKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for LabelKey {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&LabelKey> for LabelKey {
+    fn from(key: &LabelKey) -> Self {
+        key.clone()
+    }
+}
+
+impl From<&str> for LabelKey {
+    fn from(key: &str) -> Self {
+        Self(std::borrow::Cow::Owned(key.to_owned()))
+    }
+}
+
+impl From<String> for LabelKey {
+    fn from(key: String) -> Self {
+        Self(std::borrow::Cow::Owned(key))
+    }
+}
+
+impl From<&String> for LabelKey {
+    fn from(key: &String) -> Self {
+        Self(std::borrow::Cow::Owned(key.clone()))
+    }
+}
+
+impl From<LabelKey> for String {
+    fn from(key: LabelKey) -> Self {
+        key.0.into_owned()
+    }
+}
+
 /// Widening conversions into `f64` — exact for every value of `$t`.
 macro_rules! arg_from_number_lossless {
     ($($t:ty),*) => {$(

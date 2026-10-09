@@ -630,7 +630,7 @@ impl SlidesApp {
             notes_preview: TextInput::local()
                 .multiline(true)
                 .with_text_role(ui::TextRole::Body)
-                .with_placeholder(&tr("slides-notes-placeholder"))
+                .with_placeholder(tr("slides-notes-placeholder"))
                 .with_id("slides-speaker-notes-preview"),
             notes,
             notes_slide,

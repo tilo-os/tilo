@@ -490,7 +490,7 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let title = TextInput::from_state(&choices.title)
         .with_id("canvas-new-title")
-        .with_placeholder(&lookup("canvas-untitled"))
+        .with_placeholder(lookup("canvas-untitled"))
         .with_accessible_name(lookup("canvas-artwork-title"));
     let starts = {
         let choices = choices.clone();

@@ -11,3 +11,46 @@ pub fn install() {
         eprintln!("localization catalog: {error}");
     }
 }
+
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const PUBLISHER_APPLY: LabelKey = LabelKey::new("publisher-apply");
+    pub const PUBLISHER_CHECK_STATUS: LabelKey = LabelKey::new("publisher-check-status");
+    pub const PUBLISHER_CONTACT_HELP: LabelKey = LabelKey::new("publisher-contact-help");
+    pub const PUBLISHER_CONTACT_LABEL: LabelKey = LabelKey::new("publisher-contact-label");
+    pub const PUBLISHER_CONTACT_PLACEHOLDER: LabelKey =
+        LabelKey::new("publisher-contact-placeholder");
+    pub const PUBLISHER_COPY_PROOF: LabelKey = LabelKey::new("publisher-copy-proof");
+    pub const PUBLISHER_COPY_SECRET: LabelKey = LabelKey::new("publisher-copy-secret");
+    pub const PUBLISHER_CREATE_KEY: LabelKey = LabelKey::new("publisher-create-key");
+    pub const PUBLISHER_DOMAIN_HELP: LabelKey = LabelKey::new("publisher-domain-help");
+    pub const PUBLISHER_DOMAIN_LABEL: LabelKey = LabelKey::new("publisher-domain-label");
+    pub const PUBLISHER_DOMAIN_PLACEHOLDER: LabelKey =
+        LabelKey::new("publisher-domain-placeholder");
+    pub const PUBLISHER_FAILED_TITLE: LabelKey = LabelKey::new("publisher-failed-title");
+    pub const PUBLISHER_FORGE_HELP: LabelKey = LabelKey::new("publisher-forge-help");
+    pub const PUBLISHER_FORGE_LABEL: LabelKey = LabelKey::new("publisher-forge-label");
+    pub const PUBLISHER_FORGE_PLACEHOLDER: LabelKey = LabelKey::new("publisher-forge-placeholder");
+    pub const PUBLISHER_KEY_CREATED: LabelKey = LabelKey::new("publisher-key-created");
+    pub const PUBLISHER_KEY_CREATED_DETAIL: LabelKey =
+        LabelKey::new("publisher-key-created-detail");
+    pub const PUBLISHER_KEY_HEADING: LabelKey = LabelKey::new("publisher-key-heading");
+    pub const PUBLISHER_KEY_UNREADABLE: LabelKey = LabelKey::new("publisher-key-unreadable");
+    pub const PUBLISHER_KEY_UNREADABLE_TITLE: LabelKey =
+        LabelKey::new("publisher-key-unreadable-title");
+    pub const PUBLISHER_NAMESPACE_HEADING: LabelKey = LabelKey::new("publisher-namespace-heading");
+    pub const PUBLISHER_NAMESPACE_HELP: LabelKey = LabelKey::new("publisher-namespace-help");
+    pub const PUBLISHER_NO_APPLICATION: LabelKey = LabelKey::new("publisher-no-application");
+    pub const PUBLISHER_NO_KEY: LabelKey = LabelKey::new("publisher-no-key");
+    pub const PUBLISHER_PROOF_COPIED: LabelKey = LabelKey::new("publisher-proof-copied");
+    pub const PUBLISHER_PROOF_HELP: LabelKey = LabelKey::new("publisher-proof-help");
+    pub const PUBLISHER_PROOF_LABEL: LabelKey = LabelKey::new("publisher-proof-label");
+    pub const PUBLISHER_PUBLIC_KEY_LABEL: LabelKey = LabelKey::new("publisher-public-key-label");
+    pub const PUBLISHER_REGISTRY_LABEL: LabelKey = LabelKey::new("publisher-registry-label");
+    pub const PUBLISHER_SECRET_COPIED: LabelKey = LabelKey::new("publisher-secret-copied");
+    pub const PUBLISHER_SECRET_COPIED_DETAIL: LabelKey =
+        LabelKey::new("publisher-secret-copied-detail");
+    pub const PUBLISHER_STATUS: LabelKey = LabelKey::new("publisher-status");
+    pub const PUBLISHER_VERBATIM: LabelKey = LabelKey::new("publisher-verbatim");
+}

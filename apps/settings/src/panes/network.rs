@@ -2321,7 +2321,7 @@ impl NetworkModel {
             Box::new(
                 TextInput::from_state(&self.hotspot_name)
                     .with_id("network.hotspot.ssid")
-                    .with_placeholder(&t("net-hotspot-name")),
+                    .with_placeholder(t("net-hotspot-name")),
             ),
             Box::new(
                 TextInput::local()
@@ -2329,7 +2329,7 @@ impl NetworkModel {
                     .with_external_buffer(Arc::clone(&self.hotspot_password))
                     .with_initial_value(&hotspot_secret)
                     .with_secret(true)
-                    .with_placeholder(&t("net-hotspot-password")),
+                    .with_placeholder(t("net-hotspot-password")),
             ),
             choice_row(
                 &t("net-band"),
@@ -2810,7 +2810,7 @@ impl NetworkModel {
             .with_id(&format!("settings.network.password.{ssid}"))
             .with_external_buffer(buffer)
             .with_secret(true)
-            .with_placeholder(&t("net-password"));
+            .with_placeholder(t("net-password"));
         Box::new(
             Row::new()
                 .push(Box::new(field))

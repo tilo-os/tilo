@@ -1725,7 +1725,7 @@ impl FileExplorerWidget {
             rename_input: TextInput::local()
                 .with_kind(ui::widget::TextInputKind::Name)
                 .with_id("files.rename_input")
-                .with_placeholder(&t("files-new-name-placeholder")),
+                .with_placeholder(t("files-new-name-placeholder")),
             rename_rect: Rc::new(Cell::new(None)),
             rename_select_pending: false,
             rect: vello::kurbo::Rect::ZERO,

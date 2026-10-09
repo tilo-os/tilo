@@ -1414,21 +1414,21 @@ impl AgentModelsModel {
                     .with_id(&format!("agent-models-label-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.label))
                     .with_initial_value(&label)
-                    .with_placeholder(&t("agent-placeholder-name")),
+                    .with_placeholder(t("agent-placeholder-name")),
             ));
             body.push(Box::new(
                 TextInput::local()
                     .with_id(&format!("agent-models-url-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.endpoint))
                     .with_initial_value(&endpoint)
-                    .with_placeholder(&t("agent-placeholder-url")),
+                    .with_placeholder(t("agent-placeholder-url")),
             ));
             body.push(Box::new(
                 TextInput::local()
                     .with_id(&format!("agent-models-model-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.model))
                     .with_initial_value(&model)
-                    .with_placeholder(&t("agent-placeholder-model")),
+                    .with_placeholder(t("agent-placeholder-model")),
             ));
             let alternate_protocol = match profile.protocol {
                 ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
@@ -1521,7 +1521,7 @@ impl AgentModelsModel {
                             .with_external_buffer(buffer)
                             .with_initial_value(&initial)
                             .with_secret(true)
-                            .with_placeholder(&t("agent-placeholder-key")),
+                            .with_placeholder(t("agent-placeholder-key")),
                     ))
                     .push(Box::new(self.cx.bind_invocation(
                         Button::new(
@@ -1659,7 +1659,7 @@ impl AgentModelsModel {
                             .with_accessible_name(t(label))
                             .with_external_buffer(buffer)
                             .with_initial_value(&initial)
-                            .with_placeholder(&t("agent-context-unknown")),
+                            .with_placeholder(t("agent-context-unknown")),
                     ));
                 }
                 let provider = profile.id.clone();

@@ -2596,8 +2596,10 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         let object = doc
             .put_object(&automerge::ROOT, "legacy", ObjType::Text)
             .unwrap();
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let captured = std::rc::Rc::clone(&changes);
         let mut input = TextInput::local()
-            .on_change(|_| panic!("legacy callback must be suppressed"))
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()))
             .on_action(crate::widget::test_string_action_binding());
         input.bind_text(object.clone());
         crate::widget::controls::refresh_control_action_availability(
@@ -2626,9 +2628,45 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
                 .arguments["value"],
             "Project Atlas"
         );
+        assert_eq!(
+            *changes.borrow(),
+            ["Project Atlas"],
+            "the local callback runs beside the bound action"
+        );
         doc.splice_text(&object, 0, 0, "Remote title").unwrap();
         Widget::sync(&mut input, &doc, &automerge::ROOT);
         assert_eq!(input.value(), "Remote title");
+        assert_eq!(changes.borrow().len(), 1, "remote text is not a user edit");
+    }
+
+    // Case `change_callback_and_action_both_fire_in_either_order`.
+    {
+        let mut doc = AutoCommit::new();
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut input = TextInput::local()
+            .on_action(crate::widget::test_string_action_binding())
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+        crate::widget::controls::refresh_control_action_availability(
+            &mut input,
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::perform_action(
+            &mut input,
+            &crate::a11y::Action::SetValue("Atlas".into()),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert_eq!(
+            crate::widget::controls::take_control_invocation(&mut input)
+                .unwrap()
+                .arguments["value"],
+            "Atlas"
+        );
+        assert_eq!(*changes.borrow(), ["Atlas"]);
     }
 }
 

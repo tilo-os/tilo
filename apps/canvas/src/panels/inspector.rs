@@ -1206,16 +1206,16 @@ fn path_tools(cx: &ViewCx<ArtworkResource>, ids: &[String], size: f64) -> Elemen
         .with_gap(ui::tokens::Spacing::BASE.s2)
         .no_wrap()
         .push(Box::new(cx.button(
-            &lookup("canvas-stroke-smooth"),
+            lookup("canvas-stroke-smooth"),
             ArtworkResource::SMOOTH.with((ids.to_vec(), 0.5)),
         )))
         .push(Box::new(cx.button(
-            &lookup("canvas-stroke-simplify"),
+            lookup("canvas-stroke-simplify"),
             ArtworkResource::SIMPLIFY.with((ids.to_vec(), (size * 0.15).clamp(0.5, 6.0))),
         )));
     if ids.len() > 1 {
         row = row.push(Box::new(cx.button(
-            &lookup("canvas-stroke-join"),
+            lookup("canvas-stroke-join"),
             ArtworkResource::MERGE.with((ids.to_vec(), true)),
         )));
     }

@@ -1184,7 +1184,7 @@ impl SpeakersModel {
     fn build_name(&self) -> Vec<Box<dyn Widget>> {
         let name = TextInput::from_state(&self.name_state)
             .with_id("speakers.name")
-            .with_placeholder(&t("speakers-name-placeholder"))
+            .with_placeholder(t("speakers-name-placeholder"))
             .with_accessible_name(t("speakers-name"));
         let mut body = vec![choice_row_described(
             &t("speakers-name"),

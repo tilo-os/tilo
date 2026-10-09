@@ -431,7 +431,8 @@ Examples:
 
 #[derive(clap::Args)]
 struct LintScope {
-    /// Run only the lints (currently `portability`); nothing is built or run.
+    /// Run only the lints (`portability` and the app contract); nothing is
+    /// built or run.
     #[arg(long)]
     lint: bool,
 
@@ -2192,6 +2193,7 @@ fn run_check(args: CheckArgs) -> Result<Value> {
             json!({"stages": stages}),
         ));
     }
+    check_contract(&path, &mut stages)?;
     if args.lints.lint {
         return Ok(json!({"stages": stages}));
     }
@@ -2268,6 +2270,24 @@ fn run_check(args: CheckArgs) -> Result<Value> {
     }
     println!("All app checks passed");
     Ok(json!({"stages": stages}))
+}
+
+/// The app contract stage of `check`: verb determinism, label keys and
+/// complete translations.
+fn check_contract(path: &Path, stages: &mut Vec<Value>) -> Result<()> {
+    println!("[check] {}", tilo_app_cli::contract::CHECK);
+    let contract = tilo_app_cli::contract::check_app(path)?;
+    print!("{}", contract.render());
+    stages.push(
+        json!({"stage": "contract", "passed": contract.passed(), "report": contract.to_json()}),
+    );
+    if !contract.passed() {
+        return Err(failed(
+            format!("{} failed", tilo_app_cli::contract::CHECK),
+            json!({"stages": stages}),
+        ));
+    }
+    Ok(())
 }
 
 /// `check --target`: the SDK targets' declared platforms, capabilities and
@@ -2378,12 +2398,28 @@ fn lint_workspace(start: &Path) -> Result<Value> {
         println!("{}", report.render());
         failures.push(app.display().to_string());
     }
-    let summary = json!({"apps": reports});
+    let mut contracts = Vec::new();
+    for app in &apps {
+        let report = tilo_app_cli::contract::check_app(app)?;
+        contracts.push(json!({"app": app, "findings": report.to_json()}));
+        if report.passed() {
+            continue;
+        }
+        println!(
+            "[check] {} in {}",
+            tilo_app_cli::contract::CHECK,
+            app.display()
+        );
+        print!("{}", report.render());
+        failures.push(app.display().to_string());
+    }
+    let summary = json!({"apps": reports, "contracts": contracts});
     if !failures.is_empty() {
         return Err(failed(
             format!(
-                "lint `{}` failed for {} of {} app(s): {}",
+                "lint `{}` or the {} failed for {} of {} app(s): {}",
                 tilo_app_cli::portability::LINT,
+                tilo_app_cli::contract::CHECK,
                 failures.len(),
                 apps.len(),
                 failures.join(", ")
@@ -2392,8 +2428,9 @@ fn lint_workspace(start: &Path) -> Result<Value> {
         ));
     }
     println!(
-        "lint `{}` passed for {} app(s)",
+        "lint `{}` and the {} passed for {} app(s)",
         tilo_app_cli::portability::LINT,
+        tilo_app_cli::contract::CHECK,
         apps.len()
     );
     Ok(summary)

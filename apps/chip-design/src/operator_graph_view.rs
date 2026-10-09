@@ -74,7 +74,7 @@ pub fn body(cx: &ViewCx<ChipProject>, state: &OperatorState, selection: &Selecti
             y: (n / 4).saturating_mul(320),
         };
         add = add.push(Box::new(cx.button(
-            &format!("{} {}", tr("chip-graph-add"), tr(kind.key())),
+            format!("{} {}", tr("chip-graph-add"), tr(kind.key())),
             invoke(OperatorAction::AddNode { node }),
         )));
     }
@@ -104,7 +104,7 @@ pub fn body(cx: &ViewCx<ChipProject>, state: &OperatorState, selection: &Selecti
         ))
         .push(Box::new(add))
         .push(Box::new(cx.effect_button(
-            &tr("chip-graph-clear-output"),
+            tr("chip-graph-clear-output"),
             &ChipEffect::InspectOperator { node: None },
         )));
     if let Some((node, port)) = &selection.output {
@@ -266,7 +266,7 @@ fn inspector(cx: &ViewCx<ChipProject>, node: &OperatorNode, state: &OperatorStat
         ),
     ] {
         moves = moves.push(Box::new(cx.button(
-            &tr(key),
+            tr(key),
             invoke(OperatorAction::MoveNode {
                 node: node.id.clone(),
                 x,
@@ -281,7 +281,7 @@ fn inspector(cx: &ViewCx<ChipProject>, node: &OperatorNode, state: &OperatorStat
         .filter(|edge| edge.to_node == node.id)
     {
         column = column.push(Box::new(cx.button(
-            &format!(
+            format!(
                 "{} {}",
                 tr("chip-graph-disconnect"),
                 tr(&format!("chip-port-{}", edge.to_port))
@@ -293,7 +293,7 @@ fn inspector(cx: &ViewCx<ChipProject>, node: &OperatorNode, state: &OperatorStat
         )));
     }
     Box::new(column.push(Box::new(cx.button(
-        &tr("chip-graph-remove"),
+        tr("chip-graph-remove"),
         invoke(OperatorAction::RemoveNode {
             node: node.id.clone(),
         }),

@@ -26457,7 +26457,7 @@ impl ShellOverlayHost {
     fn new_wifi_password_input() -> TextInput {
         TextInput::local()
             .with_id("qs-wifi-password")
-            .with_placeholder(&t("portal-network-password"))
+            .with_placeholder(t("portal-network-password"))
             .with_secret(true)
             .with_enter_submits(true)
     }

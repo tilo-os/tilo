@@ -1454,7 +1454,7 @@ impl HistoryHost {
                                 .with_spellcheck(false)
                                 .with_autocorrect(false)
                                 .with_id(&format!("{id}-phrase"))
-                                .with_placeholder(&I18nManager::format(
+                                .with_placeholder(I18nManager::format(
                                     "history-mode-type-to-confirm",
                                     &[("phrase", expected.into())],
                                 ))

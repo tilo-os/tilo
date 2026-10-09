@@ -41,7 +41,7 @@ mod dialog;
 mod doc;
 mod http;
 mod kv;
-mod locales;
+pub mod locales;
 mod model;
 mod palette;
 mod request;

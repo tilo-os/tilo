@@ -2378,7 +2378,7 @@ impl MouseKeyboardPane {
                     TextInput::from_state(&self.dictionary_word)
                         .with_id("dictionary.word")
                         .with_accessible_name(t("input-dictionary-word"))
-                        .with_placeholder(&t("input-dictionary-word-placeholder"))
+                        .with_placeholder(t("input-dictionary-word-placeholder"))
                         .with_spellcheck(false)
                         .with_autocorrect(false),
                 ),
@@ -2389,7 +2389,7 @@ impl MouseKeyboardPane {
                     TextInput::from_state(&self.dictionary_language)
                         .with_id("dictionary.language")
                         .with_accessible_name(t("input-dictionary-language"))
-                        .with_placeholder(&t("input-dictionary-all-languages"))
+                        .with_placeholder(t("input-dictionary-all-languages"))
                         .with_spellcheck(false)
                         .with_autocorrect(false),
                 ),
@@ -2471,7 +2471,7 @@ impl MouseKeyboardPane {
                     TextInput::from_state(&language)
                         .with_id(&format!("dictionary.{index}.language"))
                         .with_accessible_name(t("input-dictionary-language"))
-                        .with_placeholder(&t("input-dictionary-all-languages"))
+                        .with_placeholder(t("input-dictionary-all-languages"))
                         .with_spellcheck(false)
                         .with_autocorrect(false),
                 ))

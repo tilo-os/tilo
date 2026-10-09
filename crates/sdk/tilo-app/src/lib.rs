@@ -141,6 +141,16 @@ pub mod feedback_composer;
 /// would fail on the web.
 pub use tilo_files as files;
 
+/// What a hand-written [`Widget`](ui_core::widget::Widget) draws and lays
+/// out with: the renderer's scene and transforms, the layout tree and the
+/// windowing events. Views built from [`framework::ViewCx`] never name them.
+pub mod advanced {
+    pub use ui_core::taffy::{NodeId, TaffyTree};
+    pub use ui_core::vello::Scene;
+    pub use ui_core::vello::kurbo::Affine;
+    pub use ui_core::winit::event::WindowEvent;
+}
+
 /// The usual imports for application code.
 pub mod prelude {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
@@ -155,7 +165,8 @@ pub mod prelude {
     };
     pub use tilo_resource::{
         self, ActionCx, ActionDecl, Atom, Collection, Delta, Demand, Effect, Id, Invoke, Json,
-        Model, PermissionRequirement, PlainText, Refusal, Replica, Resource, TextEdit, resource,
+        Model, PermissionRequirement, PlainText, Refusal, Replica, Resource, SearchEntry, TextEdit,
+        resource,
     };
 
     pub use ui_core::application::{
@@ -167,12 +178,10 @@ pub mod prelude {
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordSaveStatus};
     pub use ui_core::storage::{Scope, SettingsSchema};
-    pub use ui_core::taffy::{NodeId, TaffyTree};
     pub use ui_core::tilo_actions;
     pub use ui_core::tilo_actions::{ActionError, ActionRegistry, ExecutionLocus};
     pub use ui_core::tokens::TextRole;
-    pub use ui_core::vello::Scene;
-    pub use ui_core::vello::kurbo::{Affine, Point, Rect, Size};
+    pub use ui_core::vello::kurbo::{Point, Rect, Size};
     pub use ui_core::widget::data_table::{
         ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
     };
@@ -191,7 +200,6 @@ pub mod prelude {
         SearchResultsView, Slider, Spacer, Spinner, Stack, Text, TextInput, Toggle, TreeNode,
         TreeView, Widget, labeled_check, labeled_field,
     };
-    pub use ui_core::winit::event::WindowEvent;
     pub use ui_core::{
         LatestRequest, LatestTask, LocalState, PresenceCtx, RevisionHistory, SearchRegistry, State,
         TextRenderer, Theme, UndoAccess, UndoRequest, UndoStatus, collaboration, column,

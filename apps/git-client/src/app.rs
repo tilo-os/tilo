@@ -434,33 +434,33 @@ impl GitClientApp {
         let commit_input = TextInput::local()
             .with_id("git.commit-message")
             .with_accessible_name(t("git-commit-message"))
-            .with_placeholder(&t("git-commit-message"));
+            .with_placeholder(t("git-commit-message"));
         let branch_input = TextInput::local()
             .with_id("git.branch-name")
             .with_accessible_name(t("git-new-branch-name"))
             .with_kind(TextInputKind::Name)
-            .with_placeholder(&t("git-branch-name"));
+            .with_placeholder(t("git-branch-name"));
         let worktree_branch_input = TextInput::local()
             .with_id("git.worktree-branch")
             .with_accessible_name(t("git-worktree-branch"))
             .with_kind(TextInputKind::Name)
-            .with_placeholder(&t("git-worktree-branch"));
+            .with_placeholder(t("git-worktree-branch"));
         let worktree_path_input = TextInput::local()
             .with_id("git.worktree-path")
             .with_accessible_name(t("git-worktree-path"))
             .with_kind(TextInputKind::Path)
-            .with_placeholder(&t("git-worktree-path"));
+            .with_placeholder(t("git-worktree-path"));
         let mut worktree_start_input = TextInput::local()
             .with_id("git.worktree-start")
             .with_accessible_name(t("git-worktree-start"))
             .with_kind(TextInputKind::Code)
-            .with_placeholder(&t("git-worktree-start"));
+            .with_placeholder(t("git-worktree-start"));
         worktree_start_input.set_text("HEAD");
         let open_input = TextInput::local()
             .with_id("git.repository-path")
             .with_accessible_name(t("git-repository-path"))
             .with_kind(TextInputKind::Path)
-            .with_placeholder(&t("git-repository-path"));
+            .with_placeholder(t("git-repository-path"));
         let syntax_pressed = Rc::new(Cell::new(false));
         let pressed = Rc::clone(&syntax_pressed);
         let syntax_tool =

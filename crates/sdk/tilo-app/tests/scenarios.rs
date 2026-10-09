@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
 use tilo_app::headless::FrameHarness;
 use tilo_app::prelude::*;
 use tilo_app::winit::event::ElementState;

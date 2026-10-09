@@ -222,13 +222,13 @@ impl PairingPromptView {
                 .with_kind(TextInputKind::Code)
                 .with_char_filter(|c| c.is_ascii_graphic())
                 .with_accessible_name(t("bluetooth-prompt-pin-label"))
-                .with_placeholder(&t("bluetooth-prompt-pin-placeholder"))
+                .with_placeholder(t("bluetooth-prompt-pin-placeholder"))
         } else {
             field
                 .with_kind(TextInputKind::Number)
                 .with_char_filter(|c| c.is_ascii_digit())
                 .with_accessible_name(t("bluetooth-prompt-code-label"))
-                .with_placeholder(&t("bluetooth-prompt-code-placeholder"))
+                .with_placeholder(t("bluetooth-prompt-code-placeholder"))
         }
     }
 

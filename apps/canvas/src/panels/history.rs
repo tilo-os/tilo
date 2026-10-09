@@ -159,7 +159,7 @@ fn checkpoint_controls(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             .push(Box::new(
                 TextInput::from_state(&name)
                     .with_id("canvas-checkpoint-label")
-                    .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+                    .with_placeholder(ui::i18n::I18nManager::lookup_plain(
                         "canvas-checkpoint-label",
                     ))
                     .with_accessible_name(ui::i18n::I18nManager::lookup_plain(

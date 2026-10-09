@@ -244,7 +244,7 @@ fn inspector(
         let mut body = Column::new().push(Box::new(PropertyList::new(properties)));
         if target.is_some() {
             body = body.push(Box::new(cx.effect_button(
-                &tr("chip-flow-open-subflow"),
+                tr("chip-flow-open-subflow"),
                 &ChipEffect::OpenEvidenceSubflow {
                     report: report.into(),
                     id: id.into(),

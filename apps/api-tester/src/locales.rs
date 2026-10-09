@@ -9,3 +9,10 @@ pub fn install() {
         eprintln!("localization catalog: {error}");
     }
 }
+
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const API_VARIABLES_RESOLVED: LabelKey = LabelKey::new("api-variables-resolved");
+    pub const API_VARIABLES_UNRESOLVED: LabelKey = LabelKey::new("api-variables-unresolved");
+}

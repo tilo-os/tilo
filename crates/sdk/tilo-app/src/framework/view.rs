@@ -9,6 +9,7 @@ use std::rc::{Rc, Weak};
 use tilo_actions::ActionBinding;
 use tilo_resource::{ActionDecl, Binds, Collection, Effect, Id, Invoke, Resource};
 use ui_core::LocalState;
+use ui_core::i18n::LabelKey;
 use ui_core::record::RecordSaveStatus;
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
 
@@ -548,7 +549,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// with the new value.
     pub fn checkbox(
         &self,
-        label: impl Into<String>,
+        label: impl Into<LabelKey>,
         read: impl Fn(&T) -> bool + 'static,
         action: impl Binds<R, bool>,
     ) -> Checkbox {
@@ -557,6 +558,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let sink = state.clone();
         let initial = self.follow(read, move |value| sink.set(value));
         state.set(initial);
+        let label: LabelKey = label.into();
         let checkbox = Checkbox::from_state(&state).with_id(&id).with_label(label);
         match self.binding(action) {
             Some(binding) => checkbox.on_action(binding),
@@ -565,9 +567,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     }
 
     /// A button that invokes one fully specified action.
-    pub fn button(&self, label: &str, invoke: Invoke<R>) -> Button {
+    pub fn button(&self, label: impl Into<LabelKey>, invoke: Invoke<R>) -> Button {
         let id = self.control_id(invoke.id);
-        let button = Button::new(&id, label);
+        let button = Button::new(&id, label.into().as_str());
         match self.actions().invocation(invoke) {
             Some(binding) => button.on_action(binding),
             None => disabled(button),
@@ -856,10 +858,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
 
     /// A button that invokes one effect, through the same door (and the
     /// same confirmation, for a destructive one) as the palette.
-    pub fn effect_button<E: Effect>(&self, label: &str, effect: &E) -> Button {
+    pub fn effect_button<E: Effect>(&self, label: impl Into<LabelKey>, effect: &E) -> Button {
         let id = self.control_id(effect.id());
         self.actions()
-            .bind_effect_invocation(Button::new(&id, label), effect)
+            .bind_effect_invocation(Button::new(&id, label.into().as_str()), effect)
     }
 }
 

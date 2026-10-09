@@ -1425,7 +1425,7 @@ fn device_sync_settings(
                 TextInput::local()
                     .with_id("grayjay_pairing_invite")
                     .with_external_buffer(input)
-                    .with_placeholder(&t("tube-pair-placeholder"))
+                    .with_placeholder(t("tube-pair-placeholder"))
                     .with_accessible_name(t("tube-pair-name"))
                     .with_enter_submits(true),
             ))

@@ -14,6 +14,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::Stamped;
 

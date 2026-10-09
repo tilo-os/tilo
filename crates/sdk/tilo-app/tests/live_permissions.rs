@@ -10,6 +10,7 @@ use tilo_app::framework::{Participant, resource_kind};
 use tilo_app::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
 use tilo_app::prelude::*;
 
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Memo {
     pub title: String,

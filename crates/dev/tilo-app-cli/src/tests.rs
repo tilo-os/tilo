@@ -1722,7 +1722,10 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
 
         std::fs::create_dir_all(app.join("locales")).unwrap();
         std::fs::write(app.join("locales/en-US.ftl"), STARTER_APP_CATALOG).unwrap();
-        let registry = locale_registry_source(&["en-US".to_owned()]);
+        let registry = locale_registry_source(
+            &["en-US".to_owned()],
+            &catalog_message_ids(&parse_fluent_catalog(STARTER_APP_CATALOG).unwrap()),
+        );
         std::fs::write(app.join("src/locales.rs"), &registry).unwrap();
         let preview = add_app_artifact(AddRequest {
             start: app.clone(),
@@ -1999,9 +2002,16 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         })
         .unwrap();
         assert_eq!(preserved.checked, ["de-DE"]);
+        let registry_path = app.join("src/locales.rs");
         assert_eq!(
             preserved.files.as_slice(),
-            std::slice::from_ref(&translation_path)
+            [translation_path.clone(), registry_path.clone()],
+            "a new source message also becomes a label key"
+        );
+        assert!(
+            std::fs::read_to_string(&registry_path).unwrap().contains(
+                "pub const SETTINGS_TITLE: LabelKey = LabelKey::new(\"settings-title\");"
+            )
         );
         assert!(
             preserved

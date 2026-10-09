@@ -69,7 +69,7 @@ impl ExpandModal {
             .map(|name| Field {
                 input: TextInput::local()
                     .with_id(&format!("snippets.expand.field.{name}"))
-                    .with_placeholder(&crate::tr("snippets-expand-value"))
+                    .with_placeholder(crate::tr("snippets-expand-value"))
                     .with_text_role(TextRole::Code),
                 name,
             })

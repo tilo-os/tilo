@@ -392,7 +392,7 @@ impl ProjectionOverlay {
             fps_rect: Rect::ZERO,
             credential_input: TextInput::local()
                 .with_id("projection-airplay-credential")
-                .with_placeholder(&t("wireless-credential-placeholder"))
+                .with_placeholder(t("wireless-credential-placeholder"))
                 .with_secret(true)
                 .with_enter_submits(true),
             credential_rect: Rect::ZERO,

@@ -1634,7 +1634,7 @@ impl PhotosApp {
                 .with_id("photos-people-name")
                 .with_kind(TextInputKind::Name)
                 .with_enter_submits(true)
-                .with_placeholder(&tr("photos-people-name-placeholder")),
+                .with_placeholder(tr("photos-people-name-placeholder")),
             people_name_bounds: Rect::ZERO,
             people_layout: PeopleLayout::default(),
             people_controls: Vec::new(),
@@ -1736,7 +1736,7 @@ impl PhotosApp {
                 MetadataEditorHit::ClearLocation,
                 &metadata_editor_pending,
             )
-            .with_placeholder(&tr("photos-metadata-place-placeholder")),
+            .with_placeholder(tr("photos-metadata-place-placeholder")),
             metadata_latitude_input: TextInput::local().with_id("photos-metadata-latitude"),
             metadata_longitude_input: TextInput::local().with_id("photos-metadata-longitude"),
             metadata_location_map: crate::places::MapViewport::default(),

@@ -5,6 +5,7 @@
 
 use std::rc::Rc;
 
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
 use tilo_app::application_view::{
     ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
 };

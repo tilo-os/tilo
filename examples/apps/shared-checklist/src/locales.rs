@@ -11,3 +11,19 @@ pub fn install() {
         eprintln!("localization catalog: {error}");
     }
 }
+
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const CHECKLIST_ADD: LabelKey = LabelKey::new("checklist-add");
+    pub const CHECKLIST_CLEAR_DONE: LabelKey = LabelKey::new("checklist-clear-done");
+    pub const CHECKLIST_DONE_LABEL: LabelKey = LabelKey::new("checklist-done-label");
+    pub const CHECKLIST_DRAFT_LABEL: LabelKey = LabelKey::new("checklist-draft-label");
+    pub const CHECKLIST_DRAFT_PLACEHOLDER: LabelKey = LabelKey::new("checklist-draft-placeholder");
+    pub const CHECKLIST_EMPTY: LabelKey = LabelKey::new("checklist-empty");
+    pub const CHECKLIST_NAME_LABEL: LabelKey = LabelKey::new("checklist-name-label");
+    pub const CHECKLIST_NAME_PLACEHOLDER: LabelKey = LabelKey::new("checklist-name-placeholder");
+    pub const CHECKLIST_PROGRESS: LabelKey = LabelKey::new("checklist-progress");
+    pub const CHECKLIST_TITLE_PLACEHOLDER: LabelKey = LabelKey::new("checklist-title-placeholder");
+    pub const CHECKLIST_UNTITLED: LabelKey = LabelKey::new("checklist-untitled");
+}
