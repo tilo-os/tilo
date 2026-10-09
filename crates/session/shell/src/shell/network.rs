@@ -1583,6 +1583,10 @@ pub struct InboundAppPresence {
     /// this one is load-bearing: it becomes the `user_id` the
     /// receiving app attributes the caret and its colour to.
     pub peer: u64,
+    /// The person the publisher's admitted identity certifies (hex of their
+    /// user root), when the transport authenticated one: the only person an
+    /// agent, Shortcut or app in its presence may be said to act for.
+    pub person: Option<String>,
     pub app_id: String,
     pub cluster_id: String,
     pub presence: collab_types::PeerPresence,
@@ -3242,6 +3246,7 @@ impl ShellNetwork {
         for presence in inbound.updates {
             self.handle_typed_app_presence_message(
                 peer,
+                None,
                 inbound.app_id.clone(),
                 cluster_id.clone(),
                 presence,
@@ -3278,6 +3283,7 @@ impl ShellNetwork {
     pub fn handle_typed_app_presence_message(
         &self,
         peer: u64,
+        person: Option<String>,
         app_id: String,
         cluster_id: String,
         presence: collab_types::PeerPresence,
@@ -3285,6 +3291,7 @@ impl ShellNetwork {
         if let Ok(mut buf) = self.inbound_app_presence.lock() {
             buf.push(InboundAppPresence {
                 peer,
+                person,
                 app_id,
                 cluster_id,
                 presence,
@@ -6931,6 +6938,7 @@ impl ShellNetwork {
             if let Some(presence) = crate::shell::collab_presence::to_peer(&key, &payload) {
                 self.handle_typed_app_presence_message(
                     host_peer,
+                    None,
                     String::new(),
                     room.to_string(),
                     presence,
@@ -7062,6 +7070,7 @@ impl ShellNetwork {
             {
                 self.dispatch_app_presence_v2(
                     *publisher,
+                    self.certified_person(&peer),
                     app_id.clone(),
                     cluster_id.clone(),
                     presence.clone(),
@@ -7211,6 +7220,7 @@ impl ShellNetwork {
                 colour,
             } => self.dispatch_app_presence_v2(
                 peer_hash,
+                self.certified_person(&peer),
                 app_id,
                 cluster_id,
                 presence,
@@ -7581,6 +7591,7 @@ impl ShellNetwork {
     fn dispatch_app_presence_v2(
         &self,
         peer_hash: u64,
+        person: Option<String>,
         app_id: String,
         cluster_id: String,
         presence: collab_types::PeerPresence,
@@ -7588,8 +7599,16 @@ impl ShellNetwork {
     ) {
         if peer_hash != self.local_peer_hash && self.is_in_room(&cluster_id) {
             self.note_peer_colour(peer_hash, colour);
-            self.handle_typed_app_presence_message(peer_hash, app_id, cluster_id, presence);
+            self.handle_typed_app_presence_message(peer_hash, person, app_id, cluster_id, presence);
         }
+    }
+
+    /// The person `peer`'s admitted identity certifies, as a policy
+    /// principal id (hex of their user root).
+    fn certified_person(&self, peer: &iroh::EndpointId) -> Option<String> {
+        self.peer_identities
+            .get(&crate::shell::state::PeerOrigin::peer(peer))
+            .map(|identity| hex::encode(identity.user_pubkey))
     }
 
     /// `ScrollbackRequest`: skip self-echoes, otherwise queue for the

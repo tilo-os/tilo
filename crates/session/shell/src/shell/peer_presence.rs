@@ -290,16 +290,15 @@ fn fold_typed_presence(
     let changed = !updates.is_empty();
     for (user, key, payload) in updates {
         if let PresencePayload::Interaction(update) = payload {
-            let kind = update.actor.kind;
+            // The broker and the network's ingress deliver an actor they
+            // vouch for under its own id; anything else is its sender.
+            let actor = if update.actor.id == user {
+                update.actor.clone()
+            } else {
+                tilo_actions::InteractionActor::new(user, update.actor.kind)
+            };
             let sequence = update.sequence;
-            let update = (*update).normalized_by_broker(
-                tilo_actions::InteractionActor {
-                    id: user,
-                    kind,
-                    for_person: None,
-                },
-                sequence,
-            );
+            let update = (*update).normalized_by_broker(actor, sequence);
             let _ = presence.observe_interaction(update);
         } else if matches!(payload, PresencePayload::Left) && matches!(key, PresenceKey::Tab { .. })
         {
@@ -1167,6 +1166,46 @@ mod tests {
             anchor: tilo_actions::InteractionAnchor::Resource,
             group: None,
         }))
+    }
+
+    /// An actor the broker or the network's ingress vouched for arrives
+    /// under its own id and keeps whom it acts for; one that names someone
+    /// other than its sender does not.
+    #[test]
+    fn a_vouched_agent_keeps_whom_it_acts_for() {
+        let resource = PresenceKey::Resource {
+            app: "org.tilo.Writer".into(),
+            id: "report:q3".into(),
+            kind: "document".into(),
+        };
+        let agent = |for_person: &str| {
+            let PresencePayload::Interaction(mut update) = interaction("agent:claude") else {
+                unreachable!("interaction() builds an interaction")
+            };
+            update.actor =
+                tilo_actions::InteractionActor::new("agent:claude", tilo_actions::ActorKind::Agent)
+                    .acting_for(for_person);
+            PresencePayload::Interaction(update)
+        };
+        let mut presence = PresenceCtx::default();
+        assert!(fold_typed_presence(
+            vec![
+                ("agent:claude".into(), resource.clone(), agent("ada")),
+                ("peer@9".into(), resource, agent("bob")),
+            ],
+            &mut presence,
+        ));
+        let visible = presence.visible_interactions(Instant::now());
+        let claude = visible
+            .iter()
+            .find(|update| update.actor.id == "agent:claude")
+            .expect("the vouched agent");
+        assert_eq!(claude.actor.for_person.as_deref(), Some("ada"));
+        let forged = visible
+            .iter()
+            .find(|update| update.actor.id == "peer@9")
+            .expect("attributed to its sender");
+        assert_eq!(forged.actor.for_person, None);
     }
 
     #[test]
