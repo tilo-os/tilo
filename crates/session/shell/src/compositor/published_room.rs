@@ -13,19 +13,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-enum Request {
-    /// Name this room, or remove the file while no workspace is active.
-    Publish(Option<String>),
-    /// Answer once every earlier request is on disk.
-    #[cfg(test)]
-    Settle(mpsc::SyncSender<()>),
-}
-
 /// The newest room the frame loop asked for, published by a writer thread.
 /// Dropping it waits for the writer and removes the file it wrote.
 pub struct PublishedRoom {
     room: Option<String>,
-    requests: Option<mpsc::Sender<Request>>,
+    /// Each request names a room, or `None` while no workspace is active.
+    requests: Option<mpsc::Sender<Option<String>>>,
     writer: Option<JoinHandle<()>>,
 }
 
@@ -58,18 +51,7 @@ impl PublishedRoom {
         }
         self.room.clone_from(&room);
         if let Some(requests) = &self.requests {
-            let _ = requests.send(Request::Publish(room));
-        }
-    }
-
-    /// Wait until every room asked for so far is on disk.
-    #[cfg(test)]
-    fn settle(&self) {
-        let (done, wait) = mpsc::sync_channel(1);
-        if let Some(requests) = &self.requests
-            && requests.send(Request::Settle(done)).is_ok()
-        {
-            let _ = wait.recv();
+            let _ = requests.send(room);
         }
     }
 }
@@ -86,26 +68,11 @@ impl Drop for PublishedRoom {
 
 /// The writer thread: skip to the newest request, replace or remove the
 /// file, and remove it when the session ends.
-fn write_requests(path: &Path, received: &mpsc::Receiver<Request>) {
+fn write_requests(path: &Path, received: &mpsc::Receiver<Option<String>>) {
     let mut written = false;
     while let Ok(first) = received.recv() {
-        let mut room = None;
-        #[cfg(test)]
-        let mut settled = Vec::new();
-        for request in std::iter::once(first).chain(received.try_iter()) {
-            match request {
-                Request::Publish(next) => room = Some(next),
-                #[cfg(test)]
-                Request::Settle(done) => settled.push(done),
-            }
-        }
-        if let Some(room) = room {
-            written = publish(path, room.as_deref());
-        }
-        #[cfg(test)]
-        for done in settled {
-            let _ = done.send(());
-        }
+        let room = received.try_iter().last().unwrap_or(first);
+        written = publish(path, room.as_deref());
     }
     if written {
         let _ = std::fs::remove_file(path);
@@ -134,6 +101,24 @@ fn publish(path: &Path, room: Option<&str>) -> bool {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    /// Wait for the writer thread to leave `path` reading `expected`
+    /// (`None`: absent); fail after a few seconds.
+    fn eventually(path: &Path, expected: Option<&str>) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let found = std::fs::read_to_string(path).ok();
+            if found.as_deref() == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "workspace-id reads {found:?}, expected {expected:?}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 
     #[test]
     fn the_room_in_front_is_published_off_the_caller_thread_and_removed_at_the_end() {
@@ -143,12 +128,8 @@ mod tests {
 
         published.follow(Some("room-a".into()));
         published.follow(Some("room-b".into()));
-        published.settle();
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("published"),
-            "room-b",
-            "the newest room wins"
-        );
+        // The newest room wins.
+        eventually(&path, Some("room-b"));
         let mode = std::fs::metadata(&path)
             .expect("metadata")
             .permissions()
@@ -156,8 +137,8 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600, "the room is the session's alone");
 
         published.follow(None);
-        published.settle();
-        assert!(!path.exists(), "no active workspace, no file");
+        // No active workspace, no file.
+        eventually(&path, None);
 
         published.follow(Some("room-c".into()));
         drop(published);
