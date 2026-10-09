@@ -39,7 +39,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 const W: f32 = 1600.0;
 const H: f32 = 900.0;
@@ -51,21 +51,9 @@ fn cursor_at(p: Point) -> WindowEvent {
     }
 }
 
-fn left_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
-fn left_release() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_release;
 
 fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
@@ -165,8 +153,8 @@ fn dispatch_to_host(host: &mut ShellOverlayHost, event: &WindowEvent) {
 /// the rect.
 fn click(host: &mut ShellOverlayHost, rect: vello::kurbo::Rect) {
     dispatch_to_host(host, &cursor_at(rect.center()));
-    dispatch_to_host(host, &left_press());
-    dispatch_to_host(host, &left_release());
+    dispatch_to_host(host, &mouse_press());
+    dispatch_to_host(host, &mouse_release());
 }
 
 /// Re-render so the host's control-rect caches match the current state.

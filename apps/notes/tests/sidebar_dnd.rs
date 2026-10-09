@@ -20,12 +20,7 @@ use ui::framework::testing::TestApp;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 
 fn mouse(state: ElementState, button: MouseButton) -> WindowEvent {
     WindowEvent::MouseInput {
