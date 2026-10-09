@@ -46,6 +46,7 @@ impl ConnectionWait {
     ///
     /// # Errors
     /// The socket cannot be duplicated or the nudge socket created.
+    #[cfg(feature = "client")]
     pub fn for_connection(
         connection: &wayland_client::Connection,
     ) -> std::io::Result<(Self, Nudge)> {
