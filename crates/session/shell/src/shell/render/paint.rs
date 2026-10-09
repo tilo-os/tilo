@@ -2567,6 +2567,16 @@ impl VelloDrmBridge {
         }
     }
 
+    /// The final pass `output` needs exists and writes its orientation with the next
+    /// submission: the PQ encode for an HDR target, the oriented copy for a rotated SDR one.
+    fn prepare_final_pass(&mut self, output: OutputTarget<'_>, hdr: bool, sdr_white_nits: f32) {
+        if hdr {
+            self.prepare_hdr_encoder(output.format, sdr_white_nits, output.orientation);
+        } else {
+            self.prepare_oriented_copy(output.orientation);
+        }
+    }
+
     /// The SDR final pass of a rotated output exists and writes `orientation` with the next
     /// submission. An unrotated output keeps the plain blit.
     fn prepare_oriented_copy(&mut self, orientation: OutputTransform) {
@@ -2605,16 +2615,7 @@ impl VelloDrmBridge {
             let (width, height) = self.target.size;
             self.reconstruct_target(width, height)?;
         }
-        if output.surface_size() != self.target.size {
-            return Err(BridgeError::InvalidSize(format!(
-                "imported scanout target is {}x{} {:?}, expected {}x{} turned that way",
-                output.size.0,
-                output.size.1,
-                output.orientation,
-                self.target.size.0,
-                self.target.size.1
-            )));
-        }
+        output.check_shows(self.target.size)?;
         // Frames this output skipped while its flip was pending left their damage owed: the
         // retained pixels already claim those revisions, so this render repairs it too.
         let repaired = self.target.take_owed_damage(damage.regions);
@@ -2644,11 +2645,7 @@ impl VelloDrmBridge {
         } else {
             damage
         };
-        if hdr {
-            self.prepare_hdr_encoder(output.format, sdr_white_nits, output.orientation);
-        } else {
-            self.prepare_oriented_copy(output.orientation);
-        }
+        self.prepare_final_pass(output, hdr, sdr_white_nits);
         let encode = self
             .hdr_encoders
             .iter()

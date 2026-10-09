@@ -158,6 +158,21 @@ impl<'a> OutputTarget<'a> {
     pub fn surface_size(&self) -> (u32, u32) {
         turned(self.size, self.orientation)
     }
+
+    /// Whether this target, turned upright, is a surface of `surface` pixels.
+    ///
+    /// # Errors
+    ///
+    /// [`BridgeError::InvalidSize`] when it is not.
+    pub(super) fn check_shows(&self, surface: (u32, u32)) -> Result<(), BridgeError> {
+        if self.surface_size() == surface {
+            return Ok(());
+        }
+        Err(BridgeError::InvalidSize(format!(
+            "imported scanout target is {}x{} {:?}, expected {}x{} turned that way",
+            self.size.0, self.size.1, self.orientation, surface.0, surface.1
+        )))
+    }
 }
 
 /// One output's retained pixels and the revision they hold: the parts of

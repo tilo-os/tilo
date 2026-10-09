@@ -191,8 +191,8 @@ impl OrientedCopy {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // The triangle covers every pixel.
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    // The triangle writes every pixel, so nothing needs clearing first.
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
