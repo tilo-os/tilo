@@ -3398,17 +3398,7 @@ mod write_stage_tests {
     use iroh::endpoint::{Endpoint, presets};
     use iroh::protocol::Router;
 
-    fn pseudo(len: usize, seed: u64) -> Vec<u8> {
-        let mut x = seed | 1;
-        (0..len)
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                x.to_le_bytes()[0]
-            })
-            .collect()
-    }
+    use crate::test_bytes::pseudo;
 
     /// A peer serving committed content, and a mount on another endpoint
     /// that knows the files by namespace entry only.
