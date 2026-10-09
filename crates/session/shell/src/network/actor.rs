@@ -944,12 +944,12 @@ pub struct WireTally {
 
 impl WireTally {
     fn note(&self, kind: &'static str) {
-        let mut counts = self
-            .counts
+        self.counts
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = counts.entry(kind).or_default();
-        *count = count.saturating_add(1);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(kind)
+            .and_modify(|count| *count = count.saturating_add(1))
+            .or_insert(1);
     }
 
     /// The counts so far, by message kind.
