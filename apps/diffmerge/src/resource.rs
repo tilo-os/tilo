@@ -1,86 +1,260 @@
-//! Diff & Merge as a [`tilo_resource::Resource`]: the open comparison, the
-//! open merge and its merged result, shown by [`DiffMergeApp`].
+//! The session's verbs, the places derived from it, and the app.
+//!
+//! Typing in the merged result is the built-in field edit of its path
+//! (`Session::paths().merged.splice(..)`); opening inputs and taking a side
+//! for a change are verbs. The merge's changes and the comparison's change
+//! blocks are derived from the session and published as places that offer
+//! the verbs (or the view) that act on them. The merge is recomputed inside a
+//! verb from the inputs the record holds, a pure function of them, so every
+//! peer composes the same result.
 
 use crate::chrome::Chrome;
 use std::rc::Rc;
 use ui::widget::NavShell;
 
-use automerge::transaction::Transactable;
-use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
-};
-use ui::tilo_actions::Resource as PublishedResource;
-use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, PlainText, Resource};
+use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::i18n::EmbeddedCatalog;
+use ui::tilo_resource::{self, Atom, Derived, Invoke, Refusal, resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    DIFFMERGE_ACTION_TYPE, DiffmergeAction, DiffmergeEffect, declarations, document_children,
-    merged_resource_id, register, sample_actions,
+    CONTEXTUAL_CHILD_LIMIT, DiffmergeEffect, compose_choice, compose_custom,
+    diff_block_fingerprint, diff_block_resource_id, hunk_preview, hunk_resource_id,
 };
 use crate::app::DiffMergeApp;
-use crate::doc::{MergeDoc, MergeState, keys};
+use crate::doc::{Comparison, HunkChoice, MergeInputs, Session};
+use crate::model::{BlockKind, MergeModel};
 
-/// The diff/merge workspace resource.
-pub struct Diffmerge;
-
-impl Resource for Diffmerge {
-    const KIND: &'static str = "diffmerge.workspace";
-    const LABEL: &'static str = "Diff & Merge";
-    const ACTION_TYPE: &'static str = DIFFMERGE_ACTION_TYPE;
-
-    type State = MergeState;
-    type Action = DiffmergeAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
+#[resource(kind = "diffmerge.session", label = "Diff & Merge", children = Session::places)]
+impl Session {
+    /// Compare two texts.
+    #[action]
+    pub fn open_comparison(
+        &mut self,
+        #[param("Name of the left side")] left_label: String,
+        #[param("The left text")] left: String,
+        #[param("Name of the right side")] right_label: String,
+        #[param("The right text")] right: String,
+    ) {
+        self.comparison = Some(Comparison {
+            left_label: Atom(left_label),
+            left: Atom(left),
+            right_label: Atom(right_label),
+            right: Atom(right),
+        });
     }
 
-    fn read(doc: &Doc) -> Result<MergeState, ModelError> {
-        Ok(MergeState::from_doc(doc))
+    /// Merge three texts.
+    ///
+    /// The merged result starts with no side taken, and no side is recorded.
+    #[action]
+    pub fn open_merge(
+        &mut self,
+        #[param("Name of the common base")] base_label: String,
+        #[param("The common base text")] base: String,
+        #[param("Name of our side")] ours_label: String,
+        #[param("Our text")] ours: String,
+        #[param("Name of their side")] theirs_label: String,
+        #[param("Their text")] theirs: String,
+    ) {
+        let inputs = MergeInputs {
+            base_label: Atom(base_label),
+            base: Atom(base),
+            ours_label: Atom(ours_label),
+            ours: Atom(ours),
+            theirs_label: Atom(theirs_label),
+            theirs: Atom(theirs),
+        };
+        self.merged = inputs.model().merged_text();
+        self.merge = Some(inputs);
+        self.resolutions.clear();
     }
 
-    /// A new workspace starts with the merged result's text, so two people
-    /// who open it before syncing type into the same text.
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        if MergeDoc::merged_text_id(doc).is_none() {
-            doc.put_object(automerge::ROOT, keys::MERGED, automerge::ObjType::Text)
-                .map_err(|error| ModelError::invalid(error.to_string()))?;
+    /// Take ours for a change.
+    #[action]
+    pub fn take_ours(&mut self, #[param("The change's hunk")] hunk: u64) -> Result<(), Refusal> {
+        self.take(hunk, HunkChoice::Ours)
+    }
+
+    /// Take theirs for a change.
+    #[action]
+    pub fn take_theirs(&mut self, #[param("The change's hunk")] hunk: u64) -> Result<(), Refusal> {
+        self.take(hunk, HunkChoice::Theirs)
+    }
+
+    /// Take both sides for a change.
+    #[action]
+    pub fn take_both(&mut self, #[param("The change's hunk")] hunk: u64) -> Result<(), Refusal> {
+        self.take(hunk, HunkChoice::Both)
+    }
+
+    /// Resolve a change with custom text.
+    #[action]
+    pub fn resolve(
+        &mut self,
+        #[param("The change's hunk")] hunk: u64,
+        #[param("The resolved line(s)")] text: String,
+    ) -> Result<(), Refusal> {
+        let (model, index) = self.change(hunk)?;
+        self.merged = compose_custom(&model, index, &text);
+        Ok(())
+    }
+}
+
+impl Session {
+    /// The merge and the index of its change `hunk`, refused when no merge
+    /// is open, the merge has no such change, or the merged result was edited
+    /// by hand (which a recomposition would overwrite).
+    fn change(&self, hunk: u64) -> Result<(MergeModel, usize), Refusal> {
+        if self.merge.is_none() {
+            return Err(Refusal::new("no merge is open"));
         }
+        let model = self.merge_model();
+        let index = usize::try_from(hunk).unwrap_or(usize::MAX);
+        if !model.hunks.get(index).is_some_and(|h| h.is_change) {
+            return Err(Refusal::new(format!(
+                "the merge has no change {}",
+                hunk.saturating_add(1)
+            )));
+        }
+        if !self.composed(&model) {
+            return Err(Refusal::new(
+                "the merged output was edited by hand; resolve the rest in it",
+            ));
+        }
+        Ok((model, index))
+    }
+
+    /// Record `choice` for change `hunk` and recompose the merged result.
+    fn take(&mut self, hunk: u64, choice: HunkChoice) -> Result<(), Refusal> {
+        let (model, index) = self.change(hunk)?;
+        self.merged = compose_choice(&model, index, choice);
+        self.resolutions.insert(index.to_string(), choice);
         Ok(())
     }
 
-    /// Typing in the merged result is one undo step a word at a time, as in
-    /// every plain text.
-    fn coalesces(previous: &DiffmergeAction, next: &DiffmergeAction) -> bool {
-        match (previous, next) {
-            (DiffmergeAction::EditMerged(previous), DiffmergeAction::EditMerged(next)) => {
-                PlainText::coalesces(previous, next)
-            }
-            _ => false,
+    /// The places derived from the session: the merge's changes while sides
+    /// can still be taken, each offering its sides and a custom resolution,
+    /// and the open comparison with its change blocks, each shown on demand.
+    fn places(&self) -> Vec<Derived<Self>> {
+        let model = self.merge_model();
+        let mut places = Vec::new();
+        if self.composed(&model) {
+            places.extend(Self::change_places(&model));
         }
+        if let Some(comparison) = &self.comparison {
+            places.push(Self::comparison_place(comparison));
+        }
+        places
     }
 
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        declarations()
+    /// Each change of `model` as a place, under an id derived from its
+    /// content so a recomputed merge never points an old address at a
+    /// different change.
+    fn change_places(model: &MergeModel) -> Vec<Derived<Self>> {
+        let mut places = Vec::new();
+        let mut ordinal = 0usize;
+        let mut identities = std::collections::BTreeMap::<String, usize>::new();
+        for (index, h) in model.hunks.iter().enumerate() {
+            if !h.is_change {
+                continue;
+            }
+            ordinal += 1;
+            let tag = if h.resolution.is_conflict() {
+                "Conflict"
+            } else {
+                "Change"
+            };
+            let preview = hunk_preview(h);
+            let label = if preview.is_empty() {
+                format!("{tag} {ordinal}")
+            } else {
+                format!("{tag} {ordinal}: {preview}")
+            };
+            let occurrence = identities.entry(hunk_resource_id(h, 0)).or_default();
+            let id = hunk_resource_id(h, *occurrence);
+            *occurrence = occurrence.saturating_add(1);
+            let hunk = u64::try_from(index).unwrap_or(u64::MAX);
+            places.push(
+                Derived::new(label)
+                    .of_kind("change")
+                    .identified(id)
+                    .with(Self::TAKE_OURS.bind(session::TakeOurs::paths().hunk, hunk))
+                    .with(Self::TAKE_THEIRS.bind(session::TakeTheirs::paths().hunk, hunk))
+                    .with(Self::TAKE_BOTH.bind(session::TakeBoth::paths().hunk, hunk))
+                    .with(Self::RESOLVE.bind(session::Resolve::paths().hunk, hunk)),
+            );
+        }
+        places
     }
 
-    fn children(state: &MergeState) -> Vec<PublishedResource> {
-        document_children(state)
+    /// The open comparison, with one place per change block (bounded) that
+    /// shows it.
+    fn comparison_place(comparison: &Comparison) -> Derived<Self> {
+        let model = comparison.model();
+        let mut place = Derived::new(comparison.title())
+            .of_kind("comparison")
+            .identified("comparison");
+        let mut occurrences = std::collections::HashMap::<String, usize>::new();
+        for (index, block) in model.blocks.iter().take(CONTEXTUAL_CHILD_LIMIT).enumerate() {
+            let kind = match block.kind {
+                BlockKind::Added => "Added",
+                BlockKind::Removed => "Removed",
+                BlockKind::Modified => "Modified",
+            };
+            let label = format!(
+                "{kind} lines {}–{}",
+                block.first_row.saturating_add(1),
+                block.last_row.saturating_add(1)
+            );
+            let Some(fingerprint) = diff_block_fingerprint(&model, index) else {
+                continue;
+            };
+            let occurrence = occurrences
+                .entry(fingerprint.clone())
+                .and_modify(|count| *count += 1)
+                .or_insert(0);
+            place = place.with_child(
+                Derived::new(label)
+                    .of_kind("change-block")
+                    .identified(diff_block_resource_id(block, &fingerprint, *occurrence))
+                    .with_effect(&DiffmergeEffect::Show {
+                        block: u64::try_from(index).unwrap_or(u64::MAX),
+                        fingerprint,
+                    }),
+            );
+        }
+        place
     }
 }
 
-/// Edits of the merged result through the workspace's dispatcher: each one a
-/// [`DiffmergeAction::EditMerged`], addressed to the child
-/// [`Diffmerge::children`] publishes.
-pub(crate) fn merged_dispatcher(dispatcher: &Dispatcher<Diffmerge>) -> Dispatcher<PlainText> {
-    dispatcher.child::<PlainText>(&merged_resource_id(), DiffmergeAction::EditMerged)
+/// The bundled sample comparison and merge, as the verbs that open them.
+pub fn sample_invocations() -> [Invoke<Session>; 2] {
+    let (left, right) = crate::samples::diff_pair();
+    let (base, ours, theirs) = crate::samples::merge_triple();
+    [
+        Session::OPEN_COMPARISON.with(session::OpenComparison {
+            left_label: left.label,
+            left: left.text,
+            right_label: right.label,
+            right: right.text,
+        }),
+        Session::OPEN_MERGE.with(session::OpenMerge {
+            base_label: base.label,
+            base: base.text,
+            ours_label: ours.label,
+            ours: ours.text,
+            theirs_label: theirs.label,
+            theirs: theirs.text,
+        }),
+    ]
 }
 
-/// Framework app: the diff/merge widget over [`Diffmerge`].
+/// Framework app: the diff/merge widget over [`Session`].
 pub struct DiffmergeShell;
 
 impl ResourceApp for DiffmergeShell {
-    type Resource = Diffmerge;
+    type Resource = Session;
     const ID: &'static str = "so.tilo.diffmerge";
     const TITLE: &'static str = "Diff & Merge";
     const ICON: Option<&'static str> = Some("diffmerge");
@@ -88,11 +262,11 @@ impl ResourceApp for DiffmergeShell {
         (1280, 800)
     }
 
-    fn label(state: &MergeState) -> String {
-        state.title.clone()
+    fn label(state: &Session) -> String {
+        state.title()
     }
 
-    fn view(cx: &mut ViewCx<Diffmerge>) -> Element {
+    fn view(cx: &mut ViewCx<Session>) -> Element {
         let chrome = Chrome::new();
         let mut comparison = DiffMergeApp::new();
         comparison.attach_chrome(chrome.clone());
@@ -105,28 +279,29 @@ impl ResourceApp for DiffmergeShell {
         )
     }
 
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(crate::i18n::catalogs())
+    }
+
     fn scenarios() -> &'static [&'static str] {
         &["empty", "diff", "merge", "error", "status"]
     }
 
     /// Every scenario but the empty one shows the bundled samples.
-    fn scenario(name: Option<&str>) -> Vec<Invoke<Diffmerge>> {
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Session>> {
         if name == Some("empty") {
             return Vec::new();
         }
-        sample_actions()
-            .iter()
-            .filter_map(|action| Invoke::<Diffmerge>::apply(action).ok())
-            .collect()
+        sample_invocations().into()
     }
 }
 
-impl ResourceSurface<Diffmerge, DiffmergeEffect> for DiffMergeApp {
-    fn present(&mut self, state: &Rc<MergeState>) {
+impl ResourceSurface<Session, DiffmergeEffect> for DiffMergeApp {
+    fn present(&mut self, state: &Rc<Session>) {
         self.present_state(state);
     }
 
-    fn attach(&mut self, cx: SurfaceCx<Diffmerge>) {
+    fn attach(&mut self, cx: SurfaceCx<Session>) {
         self.attach_dispatcher(cx.dispatcher());
         self.attach_waker(cx.waker());
     }
@@ -142,111 +317,11 @@ impl ResourceSurface<Diffmerge, DiffmergeEffect> for DiffMergeApp {
     fn effect(
         &mut self,
         effect: DiffmergeEffect,
-        cx: &mut EffectCx<Diffmerge, Self>,
+        cx: &mut EffectCx<Session, Self>,
     ) -> EffectAnswer {
         self.answer_effect(effect, cx)
     }
 }
 
 #[cfg(test)]
-mod header_tests {
-    use super::*;
-    #[test]
-    fn twenty_megabyte_sources_open_through_the_actual_resource_and_stay_scrollable() {
-        use std::time::Instant;
-        let (left, right) = crate::diff_view::performance_tests::unique_sources();
-        let bytes = left.len();
-        let mut app = ui::framework::testing::HeadlessApp::<DiffmergeShell>::new().unwrap();
-        let open =
-            ui::tilo_resource::Invoke::<Diffmerge>::apply(&DiffmergeAction::OpenComparison {
-                left_label: "large-before.rs".into(),
-                left,
-                right_label: "large-after.rs".into(),
-                right,
-            })
-            .unwrap();
-        let started = Instant::now();
-        app.invoke(open.clone()).unwrap();
-        let opened = started.elapsed();
-        let state = app.state();
-        assert_eq!(state.comparison.as_ref().unwrap().left.len(), bytes);
-        let started = Instant::now();
-        app.effect(&DiffmergeEffect::NextChange).unwrap();
-        let jump = started.elapsed();
-        let started = Instant::now();
-        app.effect(&DiffmergeEffect::ShowMerge).unwrap();
-        app.effect(&DiffmergeEffect::ShowDiff).unwrap();
-        let switch = started.elapsed();
-        let started = Instant::now();
-        app.invoke(open).unwrap();
-        let reopened = started.elapsed();
-        app.harness().send(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(480.0, 400.0),
-        });
-        let digests = crate::model::digest_passes();
-        let started = Instant::now();
-        for _ in 0..8 {
-            app.harness().scroll(0.0, -3.0);
-        }
-        let scroll = started.elapsed();
-        assert_eq!(
-            crate::model::digest_passes(),
-            digests,
-            "ordinary wheel frames do not hash the unchanged 40 MB comparison"
-        );
-        assert_eq!(app.state().comparison.as_ref().unwrap().left.len(), bytes);
-        let audit = app.harness().native_app_audit();
-        assert!(
-            audit.is_certified(),
-            "the real large comparison publishes its controls: {audit:#?}"
-        );
-        eprintln!(
-            "hosted large comparison bytes={bytes} canonical_open_and_frame={opened:?} next_change_and_frame={jump:?} mode_round_trip={switch:?} repeated_open={reopened:?} eight_wheel_frames={scroll:?}"
-        );
-    }
-
-    /// The header's controls are the shared widgets, reached the way a person
-    /// reaches them: the shell's header holds the mode switch, change
-    /// navigation and file actions, and pressing the mode switch changes
-    /// what the comparison shows.
-    #[test]
-    fn the_header_controls_drive_the_comparison_through_the_shell() {
-        use ui::framework::testing::HeadlessApp;
-        use ui::headless::{Control, ControlInput};
-
-        let mut app =
-            HeadlessApp::<DiffmergeShell>::capture(Some("diff")).expect("the diff stages");
-        let find = |app: &mut HeadlessApp<DiffmergeShell>, name: &str| -> Option<Control> {
-            app.harness()
-                .controls()
-                .into_iter()
-                .find(|control| control.name.as_deref().is_some_and(|n| n.starts_with(name)))
-        };
-        for name in [
-            "Diff",
-            "3-way merge",
-            "Previous change",
-            "Next change",
-            "Load sample",
-            "Open files",
-        ] {
-            assert!(find(&mut app, name).is_some(), "the header offers {name}");
-        }
-        assert!(
-            find(&mut app, "Take ours for change").is_none(),
-            "the diff is showing, not the merge"
-        );
-
-        let merge = find(&mut app, "3-way merge").expect("the mode switch");
-        app.harness()
-            .operate_control(&merge.id, &ControlInput::Press)
-            .expect("the mode switch answers a press");
-        app.harness().relayout();
-        assert!(
-            find(&mut app, "Take ours for change").is_some(),
-            "choosing the 3-way merge shows its resolutions"
-        );
-        assert!(find(&mut app, "Diff between").is_none());
-    }
-}
+mod tests;

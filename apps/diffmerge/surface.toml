@@ -1,0 +1,269 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "diffmerge.session"
+label = "Diff & Merge"
+version = 1
+
+[[resources.fields]]
+owner = "session"
+path = "comparison"
+readonly = true
+stored = "record"
+title = "Comparison"
+type = "Option<Comparison>"
+
+[[resources.fields]]
+owner = "comparison"
+path = "comparison.left_label"
+stored = "value"
+title = "Left name"
+type = "Atom"
+
+[[resources.fields]]
+owner = "comparison"
+path = "comparison.left"
+stored = "value"
+title = "Left text"
+type = "Atom"
+
+[[resources.fields]]
+owner = "comparison"
+path = "comparison.right_label"
+stored = "value"
+title = "Right name"
+type = "Atom"
+
+[[resources.fields]]
+owner = "comparison"
+path = "comparison.right"
+stored = "value"
+title = "Right text"
+type = "Atom"
+
+[[resources.fields]]
+owner = "session"
+path = "merge"
+readonly = true
+stored = "record"
+title = "Merge"
+type = "Option<MergeInputs>"
+
+[[resources.fields]]
+owner = "merge-inputs"
+path = "merge.base_label"
+stored = "value"
+title = "Base name"
+type = "Atom"
+
+[[resources.fields]]
+owner = "merge-inputs"
+path = "merge.base"
+stored = "value"
+title = "Base text"
+type = "Atom"
+
+[[resources.fields]]
+owner = "merge-inputs"
+path = "merge.ours_label"
+stored = "value"
+title = "Our name"
+type = "Atom"
+
+[[resources.fields]]
+owner = "merge-inputs"
+path = "merge.ours"
+stored = "value"
+title = "Our text"
+type = "Atom"
+
+[[resources.fields]]
+owner = "merge-inputs"
+path = "merge.theirs_label"
+stored = "value"
+title = "Their name"
+type = "Atom"
+
+[[resources.fields]]
+owner = "merge-inputs"
+path = "merge.theirs"
+stored = "value"
+title = "Their text"
+type = "Atom"
+
+[[resources.fields]]
+owner = "session"
+path = "merged"
+stored = "value"
+title = "Merged result"
+type = "String"
+
+[[resources.fields]]
+owner = "session"
+path = "resolutions"
+readonly = true
+stored = "value"
+title = "Sides taken"
+type = "BTreeMap<String, HunkChoice>"
+
+[[resources.verbs]]
+description = "Compare two texts."
+id = "open-comparison"
+kind = "undoable"
+label = "Compare two texts"
+
+[[resources.verbs.params]]
+name = "left_label"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name of the left side"
+type = "string"
+
+[[resources.verbs.params]]
+name = "left"
+required = true
+
+[resources.verbs.params.schema]
+description = "The left text"
+type = "string"
+
+[[resources.verbs.params]]
+name = "right_label"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name of the right side"
+type = "string"
+
+[[resources.verbs.params]]
+name = "right"
+required = true
+
+[resources.verbs.params.schema]
+description = "The right text"
+type = "string"
+
+[[resources.verbs]]
+description = "Merge three texts.  The merged result starts with no side taken, and no side is recorded."
+id = "open-merge"
+kind = "undoable"
+label = "Merge three texts"
+
+[[resources.verbs.params]]
+name = "base_label"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name of the common base"
+type = "string"
+
+[[resources.verbs.params]]
+name = "base"
+required = true
+
+[resources.verbs.params.schema]
+description = "The common base text"
+type = "string"
+
+[[resources.verbs.params]]
+name = "ours_label"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name of our side"
+type = "string"
+
+[[resources.verbs.params]]
+name = "ours"
+required = true
+
+[resources.verbs.params.schema]
+description = "Our text"
+type = "string"
+
+[[resources.verbs.params]]
+name = "theirs_label"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name of their side"
+type = "string"
+
+[[resources.verbs.params]]
+name = "theirs"
+required = true
+
+[resources.verbs.params.schema]
+description = "Their text"
+type = "string"
+
+[[resources.verbs]]
+description = "Take ours for a change."
+id = "take-ours"
+kind = "undoable"
+label = "Take ours for a change"
+
+[[resources.verbs.params]]
+name = "hunk"
+required = true
+
+[resources.verbs.params.schema]
+description = "The change's hunk"
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Take theirs for a change."
+id = "take-theirs"
+kind = "undoable"
+label = "Take theirs for a change"
+
+[[resources.verbs.params]]
+name = "hunk"
+required = true
+
+[resources.verbs.params.schema]
+description = "The change's hunk"
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Take both sides for a change."
+id = "take-both"
+kind = "undoable"
+label = "Take both sides for a change"
+
+[[resources.verbs.params]]
+name = "hunk"
+required = true
+
+[resources.verbs.params.schema]
+description = "The change's hunk"
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Resolve a change with custom text."
+id = "resolve"
+kind = "undoable"
+label = "Resolve a change with custom text"
+
+[[resources.verbs.params]]
+name = "hunk"
+required = true
+
+[resources.verbs.params.schema]
+description = "The change's hunk"
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+description = "The resolved line(s)"
+type = "string"

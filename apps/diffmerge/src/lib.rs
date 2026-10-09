@@ -50,10 +50,11 @@ pub mod resource;
 pub mod samples;
 mod scroll;
 
-pub use actions::{DIFFMERGE_ACTION_TYPE, DiffmergeAction, DiffmergeEffect, HunkChoice};
+pub use actions::DiffmergeEffect;
 pub use app::{DiffMergeApp, Mode};
+pub use doc::{HunkChoice, Session};
 pub use model::{DiffModel, MergeModel, Resolution};
-pub use resource::{Diffmerge, DiffmergeShell};
+pub use resource::DiffmergeShell;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
