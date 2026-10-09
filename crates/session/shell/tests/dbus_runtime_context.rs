@@ -84,7 +84,7 @@ fn dbus_clients_work_from_threads_without_a_runtime() {
     assert!(mpris::pause_named("org.mpris.MediaPlayer2.probe"));
     expect_connection(&events, "MPRIS pause of a named player");
 
-    // Handoff discovery: the periodic player scan.
+    // Handoff discovery: starting the signal-driven player observer.
     mpris::refresh_handoff_reports();
     expect_connection(&events, "MPRIS handoff discovery");
 

@@ -548,12 +548,7 @@ impl Widget for PeerView {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        let new_rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        let new_rect = ui::widget::placed(l, origin);
         // Rect changed → the placement matrix in `draw` changes too. Exact
         // equality is safe: taffy produces integer-valued logical pixels.
         if new_rect != self.rect {
@@ -939,29 +934,10 @@ mod tests {
 
         fn wheel_and_composed_text_go_to_the_window_under_focus() {
             let mut view = PeerView::new(42, 9);
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            let send = |view: &mut PeerView, event: WindowEvent| {
-                let mut doc = automerge::AutoCommit::new();
-                let mut handled = false;
-                let mut focus = None;
-                view.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-                handled
-            };
+            let send =
+                |view: &mut PeerView, event: WindowEvent| ui::testing::dispatch(view, &event);
             let wheel = || WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
                 phase: winit::event::TouchPhase::Moved,
             };

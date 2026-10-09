@@ -200,13 +200,7 @@ impl DirBackend {
     fn bump_generation(&self, index: &mut Index, current: Option<u64>) {
         // From an unknown generation, start somewhere no other backend can have kept: the clock.
         let next = current.map_or_else(
-            || {
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map_or(1, |since| {
-                        u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
-                    })
-            },
+            || tilo_clock::try_unix_now_ns().unwrap_or(1),
             |current| current.wrapping_add(1),
         );
         let path = self.root.join(GENERATION_FILE);

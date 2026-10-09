@@ -28,7 +28,6 @@ use tilo_actions::{ActionAddress, ActionRegistry, LocalTransport, Resource};
 use tilo_agent::wire::Link;
 use ui::collaboration::{
     CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation, ExportedAction,
-    ExportedInput,
 };
 
 const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
@@ -182,41 +181,12 @@ pub fn document_mutation(event: &CollabEvent) -> Option<DocumentMutation> {
     event.document_mutation()?.ok()
 }
 
-/// Serialize the same resource descriptors the toolkit publishes for a
-/// windowed application.
-///
-/// # Panics
-///
-/// Panics if a production action descriptor cannot be serialized for the
-/// broker wire, which is an invalid test fixture.
+/// The same resource descriptors the toolkit publishes for a windowed
+/// application.
 pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
     tilo_actions::door::survey(resources)
         .into_iter()
-        .map(|descriptor| ExportedAction {
-            semantic_identity: descriptor.semantic_identity.clone(),
-            resource: descriptor.address.resource,
-            action: descriptor.address.action,
-            resource_kind: descriptor.resource_kind,
-            resource_label: descriptor.resource_label,
-            action_label: descriptor.action_label,
-            description: descriptor.description,
-            operation_kind: descriptor.kind.as_str().to_string(),
-            params_json: serde_json::to_string(&descriptor.params).unwrap(),
-            contract_json: serde_json::to_string(&descriptor.contract).unwrap(),
-            view: descriptor.view,
-            input: match descriptor.input {
-                tilo_actions::InputSpec::None => ExportedInput::None,
-                tilo_actions::InputSpec::Text {
-                    prompt,
-                    placeholder,
-                    collects,
-                } => ExportedInput::Text {
-                    prompt,
-                    placeholder,
-                    wants_content: collects == tilo_actions::Collects::Content,
-                },
-            },
-        })
+        .map(|descriptor| ExportedAction::from(&descriptor))
         .collect()
 }
 
@@ -341,8 +311,7 @@ pub fn service_document_invocation(
         actor: actor.as_bytes(),
         ambient: context,
     };
-    let mut registry = ActionRegistry::new();
-    register(&mut registry);
+    let registry = ActionRegistry::with(register);
     let mut transport = LocalTransport::new();
     let before = replica.get_heads();
     let result = if let Some(json) =
@@ -395,6 +364,10 @@ pub fn service_document_invocation(
     }
 }
 
+/// The word processor's document, the resource its editing actions are on.
+pub const WP_DOCUMENT: &str =
+    <word_processor::framework::Document as ui::tilo_resource::Resource>::KIND;
+
 /// # Panics
 ///
 /// Panics if the typed collaboration service cannot bind `path`.
@@ -402,22 +375,12 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
     spawn_with_agent_actions(
         path,
         &[
-            ("so.tilo.word-processor", "align-center"),
-            ("so.tilo.word-processor", "delete"),
-            ("so.tilo.word-processor", "insert-table"),
-            ("so.tilo.word-processor", "place-image"),
-            ("dev.tilo.word-processor", "align-center"),
-            ("dev.tilo.word-processor", "delete"),
-            ("dev.tilo.word-processor", "insert-table"),
-            ("dev.tilo.word-processor", "place-image"),
-            ("dev.tilo.photos", "rotate-right"),
-            ("dev.tilo.photos", "export-edited-content"),
-            ("so.tilo.word-processor", "align-center"),
-            ("so.tilo.word-processor", "delete"),
-            ("so.tilo.word-processor", "insert-table"),
-            ("so.tilo.word-processor", "place-image"),
-            ("so.tilo.photos", "rotate-right"),
-            ("so.tilo.photos", "export-edited-content"),
+            ("dev.tilo.word-processor", WP_DOCUMENT, "align-center"),
+            ("dev.tilo.word-processor", WP_DOCUMENT, "insert-table"),
+            ("dev.tilo.word-processor", WP_DOCUMENT, "place-image"),
+            ("so.tilo.word-processor", WP_DOCUMENT, "align-center"),
+            ("so.tilo.word-processor", WP_DOCUMENT, "insert-table"),
+            ("so.tilo.word-processor", WP_DOCUMENT, "place-image"),
         ],
     )
 }
@@ -437,7 +400,7 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
 )]
 pub fn spawn_with_agent_actions(
     path: &Path,
-    actions: &[(&str, &str)],
+    actions: &[(&str, &str, &str)],
 ) -> shell::shell::collab_broker::BrokerHandle {
     let parent = path.parent().expect("typed broker socket has a parent");
     shell::shell::collab_broker_capnp::tests::secure_socket_parent(parent)
@@ -474,7 +437,7 @@ pub fn spawn_with_agent_actions(
             ),
         )
         .expect("the harness owner lets the test agent answer in documents");
-    for (app, action) in actions {
+    for (app, resource, action) in actions {
         workspace
             .grant_as(
                 &principal,
@@ -482,6 +445,7 @@ pub fn spawn_with_agent_actions(
                     ui::permissions::Subject::agent("scribe"),
                     ui::permissions::Scope::Action {
                         app: (*app).to_string(),
+                        resource: (*resource).to_string(),
                         action: (*action).to_string(),
                     },
                     ui::permissions::Verb::Write,

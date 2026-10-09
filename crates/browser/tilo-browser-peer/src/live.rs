@@ -73,7 +73,7 @@ impl LiveState {
 
     /// [`Self::new`] at the current wall-clock time.
     pub fn starting_now() -> Self {
-        Self::new(crate::clock::now_ms())
+        Self::new(tilo_clock::unix_now_ms())
     }
 
     /// A member joined or left the room's live plane.

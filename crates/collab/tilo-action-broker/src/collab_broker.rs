@@ -577,6 +577,13 @@ impl AppActionBroker {
         self.state.take_finished_shortcut_runs()
     }
 
+    /// Whether a finished shortcut run is waiting to be taken, without
+    /// taking it: a frame can ask every tick.
+    #[must_use]
+    pub fn has_finished_shortcut_runs(&self) -> bool {
+        self.state.has_finished_shortcut_runs()
+    }
+
     /// Run saved shortcut `shortcut` in `room` for `caller`, who is at the
     /// screen; its confirmations and questions wait for the compositor's
     /// sheet ([`Self::take_step_prompt`]). Answers with the broker job the
@@ -648,6 +655,22 @@ impl AppActionBroker {
     #[must_use]
     pub fn statuses_generation(&self) -> u64 {
         self.state.invocations_generation()
+    }
+
+    /// Sees every invocation status change after this call — what
+    /// [`Self::statuses_generation`] counts — so a waiter can sleep until
+    /// one happens instead of polling for it.
+    #[must_use]
+    pub fn invocation_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.state.invocation_changes()
+    }
+
+    /// Sees every published-surface change after this call — what
+    /// [`Self::surfaces_generation`] counts — so a waiter for a listing of
+    /// these actions can sleep until one happens.
+    #[must_use]
+    pub fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.state.surface_changes()
     }
 
     /// One invocation's current status, only when `actor` owns it.

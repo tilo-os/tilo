@@ -589,6 +589,7 @@ mod tests {
     use super::*;
     use tilo_resource::Resource as _;
     include!("in_process_files_clipboard_tests.rs");
+    include!("in_process_publication_tests.rs");
 
     const ROOM: &str = "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc";
     const TAB: u64 = 41;
@@ -1286,6 +1287,7 @@ mod tests {
                     context: None,
                     confirmation: None,
                     revision: Some(listed.revision),
+                    wait_ms: None,
                 },
             );
             let mut outcome = None;

@@ -628,10 +628,8 @@ impl MigrationStore {
     }
 
     fn save_issues(&self, operation: &OperationRecord) -> Result<String, String> {
-        let stamp = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_nanos();
+        let stamp = ui::time::try_unix_now_ns()
+            .ok_or_else(|| "system time is before the Unix epoch".to_string())?;
         let name = format!("{}.{stamp}.issues", operation.id);
         let mut temporary =
             OwnedTemporary::create(&self.root, OsStr::new(&name)).map_err(|e| e.to_string())?;

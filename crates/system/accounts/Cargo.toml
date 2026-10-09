@@ -25,11 +25,10 @@ tilo-secret-vault = { version = "0.1.0", path = "../secret-vault" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-# Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
-# Settings app does, so every app agrees on one directory.
-tilo-xdg-paths = { version = "0.1.0", path = "../xdg-paths" }
 # The vault in a browser page, which has no native config directory.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
+# Settings app does, so every app agrees on one directory.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 
 # getrandom's `SysRng` draws generated passwords from the OS CSPRNG;

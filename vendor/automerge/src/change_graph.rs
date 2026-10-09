@@ -7,16 +7,16 @@ use std::ops::RangeBounds;
 
 use crate::storage::BundleMetadata;
 use crate::{
+    Change, ChangeHash,
     author::Authors,
     clock::{Clock, SeqClock},
     error::AutomergeError,
-    op_set2::{change::BuildChangeMetadata, ActorIdx, ValueMeta},
-    storage::columns::compression::Uncompressed,
+    op_set2::{ActorIdx, ValueMeta, change::BuildChangeMetadata},
     storage::columns::BadColumnLayout,
+    storage::columns::compression::Uncompressed,
     storage::document::ReconstructError as LoadError,
     storage::{Columns, Document, RawColumn, RawColumns},
     types::OpId,
-    Change, ChangeHash,
 };
 
 /// The graph of changes
@@ -199,6 +199,11 @@ impl ChangeGraph {
 
     pub(crate) fn index_to_hash(&self, index: usize) -> Option<&ChangeHash> {
         self.hashes.get(index)
+    }
+
+    /// Every change's hash, by node index: the order the changes were added.
+    pub(crate) fn hashes(&self) -> &[ChangeHash] {
+        &self.hashes
     }
 
     pub(crate) fn max_op(&self) -> u64 {
@@ -857,11 +862,18 @@ impl ChangeGraph {
         changes: &mut BTreeSet<ChangeHash>,
         heads: &[ChangeHash],
     ) {
+        // Tilo patch: stop once nothing is left to remove. Every received
+        // sync message calls this with the hashes sent so far, which an
+        // idle exchange leaves empty; walking all of `heads`' ancestry for
+        // nothing made every such message O(history).
+        if changes.is_empty() {
+            return;
+        }
         let nodes = self.heads_to_nodes(heads);
         self.traverse_ancestors(nodes.collect(), |idx| {
             let hash = &self.hashes[idx.0 as usize];
             changes.remove(hash);
-            true
+            !changes.is_empty()
         });
     }
 
@@ -1059,11 +1071,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        make_rng,
-        op_set2::{change::build_change, op_set::ResolvedAction, OpSet, TxOp},
+        ActorId, AutoCommit, Automerge, ROOT, TextEncoding, make_rng,
+        op_set2::{OpSet, TxOp, change::build_change, op_set::ResolvedAction},
         transaction::Transactable,
         types::{ObjMeta, OpId, OpType},
-        ActorId, AutoCommit, Automerge, TextEncoding, ROOT,
     };
     use rand::RngExt;
 
@@ -1595,8 +1606,8 @@ mod tests {
     /// order).
     #[test]
     fn bundle_size_is_independent_of_input_hash_order() {
-        use crate::transaction::Transactable;
         use crate::ROOT;
+        use crate::transaction::Transactable;
 
         let mut doc = Automerge::new();
         doc.set_actor(crate::ActorId::from(b"alice" as &[u8]));

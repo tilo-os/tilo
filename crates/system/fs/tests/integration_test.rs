@@ -203,6 +203,33 @@ fn read_cap(who: [u8; 32], path: &str) -> CapOverride {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn normal_permissions_scope_enforces_native_namespace_paths() {
+    let scoped = read_cap(ALICE, "/var/workspace/w/docs");
+    let f = cap_fixture(ALICE, &[scoped], Some(1_000)).await;
+    assert_eq!(f.fs.check_access(f.docs_child, Access::Read), Ok(()));
+    assert_eq!(
+        f.fs.check_access(f.docs_child, Access::Write),
+        Err(libc::EROFS)
+    );
+    assert_eq!(
+        f.fs.check_access(f.other_child, Access::Read),
+        Err(libc::ENOENT)
+    );
+    assert_eq!(
+        f.fs.check_access(f.look_alike_child, Access::Read),
+        Err(libc::ENOENT)
+    );
+    f.shutdown().await;
+    let mut root = read_cap(ALICE, "/var/workspace");
+    root.verb = Verb::Write;
+    let f = cap_fixture(ALICE, &[root], Some(1_000)).await;
+    assert_eq!(f.fs.check_access(ROOT_INO, Access::Read), Ok(()));
+    assert_eq!(f.fs.check_access(f.docs_child, Access::Write), Ok(()));
+    assert_eq!(f.fs.check_access(f.other_child, Access::Write), Ok(()));
+    f.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
@@ -1194,7 +1221,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             let workspace_id = uuid::Uuid::new_v4();
             let signer = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
             let person = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
-            let actor = collab_types::FileActor {
+            let actor = fs_protocol::FileActor {
                 person: Ed25519PublicKey::from_bytes(person.verifying_key().to_bytes()),
                 device: Ed25519PublicKey::from_bytes(signer.verifying_key().to_bytes()),
             };

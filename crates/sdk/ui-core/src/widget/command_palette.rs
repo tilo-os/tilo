@@ -2104,25 +2104,18 @@ impl Widget for CommandPalette {
         // `desired_size` is the single source of truth so a hand-placed
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(px(width)),
                 height: Dimension::length(px(height)),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -2660,27 +2653,17 @@ impl CommandPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use taffy::TaffyTree;
     use winit::event::Modifiers;
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
+    use winit::keyboard::SmolStr;
 
-    /// winit 0.30 keeps `KeyEventExtra` `pub(crate)`, so a `KeyEvent` can't
-    /// be built through a struct literal — this zero-inits instead.
     fn key_press(logical_key: Key) -> WindowEvent {
-        // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero bit
-        // pattern; `handle_event` only inspects `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     #[test]
@@ -2859,27 +2842,7 @@ mod tests {
             assert_eq!(p.visible_entries().len(), total);
 
             let event = key_press(Key::Character(SmolStr::new("h")));
-            let mut doc = automerge::AutoCommit::new();
-            let doc_root = automerge::ROOT.clone();
-            let modifiers = Modifiers::default();
-            let mut handled = false;
-            let mut focus: Option<NodeId> = None;
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.leaf_node(Style::default());
-
-            p.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &doc_root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let handled = dispatch(&mut p, &event);
 
             assert_eq!(p.query(), "h", "typing must update the query string");
             assert!(
@@ -2945,7 +2908,7 @@ mod tests {
 
             assert!(p.handle_overlay_key(
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(row.center().x, row.center().y),
                 },
                 &modifiers,
@@ -2959,7 +2922,7 @@ mod tests {
             );
             assert!(p.handle_overlay_key(
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -3067,13 +3030,7 @@ mod tests {
             let mut palette = CommandPalette::commands();
             palette.open_action_argument(entry, Some("Project Atlas".into()));
 
-            let mut handled = false;
-            dispatch_h(
-                &mut palette,
-                &key_press(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                &mut handled,
-            );
+            let handled = dispatch(&mut palette, &key_press(Key::Named(NamedKey::Enter)));
             assert!(handled);
             assert!(palette.take_outcome().is_none());
             let invocation =
@@ -3116,13 +3073,7 @@ mod tests {
             let mut palette = CommandPalette::commands();
             palette.open_action_argument(entry, Some("B12".into()));
 
-            let mut handled = false;
-            dispatch_h(
-                &mut palette,
-                &key_press(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                &mut handled,
-            );
+            dispatch(&mut palette, &key_press(Key::Named(NamedKey::Enter)));
             let invocation =
                 crate::widget::controls::take_control_invocation(&mut palette).unwrap();
             assert_eq!(invocation.arguments["reference"], "B12");
@@ -3336,17 +3287,9 @@ mod tests {
             p.set_focus(true);
             p.set_query("hello");
             assert_eq!(p.query_selection.cursor, 5);
-            dispatch(
-                &mut p,
-                &key_press(Key::Named(NamedKey::ArrowLeft)),
-                Modifiers::default(),
-            );
+            dispatch(&mut p, &key_press(Key::Named(NamedKey::ArrowLeft)));
             assert_eq!(p.query_selection.cursor, 4);
-            dispatch(
-                &mut p,
-                &key_press(Key::Named(NamedKey::Home)),
-                Modifiers::default(),
-            );
+            dispatch(&mut p, &key_press(Key::Named(NamedKey::Home)));
             assert_eq!(p.query_selection.cursor, 0);
         }
 
@@ -3356,11 +3299,7 @@ mod tests {
             p.set_query("abc");
             p.query_selection.cursor = 1;
             p.query_selection.anchor = 1;
-            dispatch(
-                &mut p,
-                &key_press(Key::Named(NamedKey::Backspace)),
-                Modifiers::default(),
-            );
+            dispatch(&mut p, &key_press(Key::Named(NamedKey::Backspace)));
             assert_eq!(p.query(), "bc");
             assert_eq!(p.query_selection.cursor, 0);
         }
@@ -3371,11 +3310,7 @@ mod tests {
             p.set_query("ac");
             p.query_selection.cursor = 1;
             p.query_selection.anchor = 1;
-            dispatch(
-                &mut p,
-                &key_press(Key::Character(SmolStr::new("b"))),
-                Modifiers::default(),
-            );
+            dispatch(&mut p, &key_press(Key::Character(SmolStr::new("b"))));
             assert_eq!(p.query(), "abc");
             assert_eq!(p.query_selection.cursor, 2);
         }
@@ -3386,11 +3321,9 @@ mod tests {
             p.set_query("hello");
             let mut mods_state = winit::keyboard::ModifiersState::empty();
             mods_state.set(winit::keyboard::ModifiersState::CONTROL, true);
-            dispatch(
-                &mut p,
-                &key_press(Key::Character(SmolStr::new("a"))),
-                Modifiers::from(mods_state),
-            );
+            Dispatch::new()
+                .modifiers(mods_state)
+                .send(&mut p, &key_press(Key::Character(SmolStr::new("a"))));
             assert_eq!(p.query_selection.anchor, 0);
             assert_eq!(p.query_selection.cursor, 5);
         }
@@ -3401,11 +3334,7 @@ mod tests {
             p.set_query("hello");
             p.query_selection.anchor = 1;
             p.query_selection.cursor = 4;
-            dispatch(
-                &mut p,
-                &key_press(Key::Character(SmolStr::new("i"))),
-                Modifiers::default(),
-            );
+            dispatch(&mut p, &key_press(Key::Character(SmolStr::new("i"))));
             assert_eq!(p.query(), "hio");
             assert_eq!(p.query_selection.cursor, 2);
         }
@@ -3416,28 +3345,6 @@ mod tests {
         typing_inserts_at_caret();
         ctrl_a_selects_query();
         typing_replaces_selection();
-    }
-
-    fn dispatch(p: &mut CommandPalette, event: &WindowEvent, modifiers: Modifiers) {
-        let mut doc = automerge::AutoCommit::new();
-        let doc_root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &doc_root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
     }
 
     #[test]
@@ -3578,47 +3485,17 @@ mod tests {
             let mut p = seeded_command_palette();
             assert_eq!(p.selected_id(), Some("goto"));
 
-            let mut doc = automerge::AutoCommit::new();
-            let root = automerge::ROOT.clone();
             for _ in 0..2 {
-                let mut handled = false;
-                let mut focus = None;
-                let mut taffy: TaffyTree<()> = TaffyTree::new();
-                let node = taffy.leaf_node(Style::default());
-                p.handle_event(
-                    &key_press(Key::Named(NamedKey::ArrowDown)),
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
+                let handled = dispatch(&mut p, &key_press(Key::Named(NamedKey::ArrowDown)));
                 assert!(handled, "ArrowDown must be consumed by the palette");
             }
             assert_eq!(p.selected_id(), Some("export"), "cursor advanced two rows");
 
-            let mut handled = false;
-            dispatch_h(
-                &mut p,
-                &key_press(Key::Named(NamedKey::ArrowUp)),
-                Modifiers::default(),
-                &mut handled,
-            );
+            let handled = dispatch(&mut p, &key_press(Key::Named(NamedKey::ArrowUp)));
             assert!(handled);
             assert_eq!(p.selected_id(), Some("sum"));
 
-            let mut handled = false;
-            dispatch_h(
-                &mut p,
-                &key_press(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                &mut handled,
-            );
+            let handled = dispatch(&mut p, &key_press(Key::Named(NamedKey::Enter)));
             assert!(handled, "Enter is consumed");
             let outcome = p.take_outcome().expect("Enter emits an outcome");
             assert_eq!(outcome.id, "sum");
@@ -3686,13 +3563,7 @@ mod tests {
             let mut p = seeded_command_palette();
             assert_eq!(p.selected_id(), Some("goto"));
 
-            let mut handled = false;
-            dispatch_h(
-                &mut p,
-                &key_press(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                &mut handled,
-            );
+            let handled = dispatch(&mut p, &key_press(Key::Named(NamedKey::Enter)));
             assert!(handled);
             assert!(
                 p.in_argument_mode(),
@@ -3705,24 +3576,12 @@ mod tests {
             );
 
             for ch in ["B", "1", "2"] {
-                let mut h = false;
-                dispatch_h(
-                    &mut p,
-                    &key_press(Key::Character(SmolStr::new(ch))),
-                    Modifiers::default(),
-                    &mut h,
-                );
+                let h = dispatch(&mut p, &key_press(Key::Character(SmolStr::new(ch))));
                 assert!(h, "typing in the arg field is consumed");
             }
             assert_eq!(p.argument_buffer(), Some("B12"));
 
-            let mut handled = false;
-            dispatch_h(
-                &mut p,
-                &key_press(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                &mut handled,
-            );
+            let handled = dispatch(&mut p, &key_press(Key::Named(NamedKey::Enter)));
             assert!(handled);
             let outcome = p.take_outcome().expect("confirming emits an outcome");
             assert_eq!(outcome.id, "goto");
@@ -3741,13 +3600,7 @@ mod tests {
             assert!(p.is_open());
             assert!(p.in_argument_mode());
             assert_eq!(p.argument_buffer(), Some("42"));
-            let mut handled = false;
-            dispatch_h(
-                &mut p,
-                &key_press(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                &mut handled,
-            );
+            let handled = dispatch(&mut p, &key_press(Key::Named(NamedKey::Enter)));
             assert!(handled);
             assert_eq!(
                 p.take_outcome(),
@@ -3762,13 +3615,7 @@ mod tests {
         fn escape_closes_a_direct_argument_prompt() {
             let mut p = CommandPalette::commands();
             p.open_argument("goto-line", "Go to line", "Line number…", None);
-            let mut handled = false;
-            dispatch_h(
-                &mut p,
-                &key_press(Key::Named(NamedKey::Escape)),
-                Modifiers::default(),
-                &mut handled,
-            );
+            let handled = dispatch(&mut p, &key_press(Key::Named(NamedKey::Escape)));
             assert!(handled);
             assert!(!p.is_open());
             assert!(!p.in_argument_mode());
@@ -3776,21 +3623,9 @@ mod tests {
 
         fn command_mode_escape_from_argument_returns_to_list() {
             let mut p = seeded_command_palette();
-            let mut h = false;
-            dispatch_h(
-                &mut p,
-                &key_press(Key::Named(NamedKey::Enter)),
-                Modifiers::default(),
-                &mut h,
-            );
+            dispatch(&mut p, &key_press(Key::Named(NamedKey::Enter)));
             assert!(p.in_argument_mode());
-            let mut h = false;
-            dispatch_h(
-                &mut p,
-                &key_press(Key::Named(NamedKey::Escape)),
-                Modifiers::default(),
-                &mut h,
-            );
+            let h = dispatch(&mut p, &key_press(Key::Named(NamedKey::Escape)));
             assert!(h, "Escape is consumed");
             assert!(!p.in_argument_mode(), "Escape leaves the argument step");
             assert!(p.is_open(), "…but the palette is still open on the list");
@@ -3935,32 +3770,6 @@ mod tests {
         a_scrolled_list_hit_tests_the_row_it_painted();
         no_painted_row_overlaps_the_footer();
         an_empty_result_set_still_gets_a_readable_card();
-    }
-
-    fn dispatch_h(
-        p: &mut CommandPalette,
-        event: &WindowEvent,
-        modifiers: Modifiers,
-        handled: &mut bool,
-    ) {
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut focus: Option<NodeId> = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
     }
 }
 

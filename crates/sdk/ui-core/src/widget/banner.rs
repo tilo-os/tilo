@@ -163,13 +163,7 @@ pub struct BannerHit {
 /// The node's box in absolute coordinates.
 fn layout_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
     let l = taffy.layout(node).copied().unwrap_or_default();
-    Rect::from_origin_size(
-        (
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-        ),
-        (f64::from(l.size.width), f64::from(l.size.height)),
-    )
+    crate::widget::placed(&l, origin)
 }
 
 /// The face of a banner's action: the main one a secondary control, the
@@ -571,16 +565,15 @@ impl Widget for BannerBody {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = theme.clone();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: percent(1.0_f32),
                 height: auto(),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

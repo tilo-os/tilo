@@ -29,11 +29,20 @@ use wgpu::util::TextureBlitter;
 
 use super::hdr_composite::{HdrCompositor, HdrPass};
 use super::hdr_encode::HdrEncodePipeline;
+use super::orientation::OrientedCopy;
 use super::xrgb_history::XrgbWritePlan;
 pub use super::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbHistoryTransaction, XrgbTargetHistory,
 };
 use crate::shell::hdr_surface::HdrLayer;
+use settings_store::hardware::OutputTransform;
+
+mod output_view;
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod window_cycle_memory_tests;
+use output_view::OutputSurface;
+pub use output_view::{OutputSignal, OutputTarget, OutputView};
 
 /// Errors the bridge can return; each variant maps to an operator-visible message and the DRM backend logs+skips the frame.
 #[derive(Debug, thiserror::Error)]
@@ -82,6 +91,25 @@ pub enum BridgeError {
 
     #[error("XRGB destination-history transaction does not match this scene damage")]
     XrgbHistoryMismatch,
+
+    /// Submitted GPU work did not complete within its Linux allowance. This, and only this,
+    /// starts the recovery back-off: the work is still queued on the device, so another frame
+    /// would only queue behind it.
+    #[error("GPU completion timed out during {phase:?}")]
+    CompletionTimeout { phase: CompletionPhase },
+}
+
+/// The completion wait a [`BridgeError::CompletionTimeout`] ran out in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionPhase {
+    /// The device fence for the submitted frame.
+    Fence,
+    /// The framebuffer `map_async` callback after the fence signalled.
+    MapCallback,
+    /// The Vello bump-counter readback that decides whether the frame overflowed.
+    CounterSettlement,
+    /// The frame's one budget across every attempt and band ran out between its waits.
+    FrameBudget,
 }
 
 /// One-shot latch so the "CPU fallback active" warning fires once per process; shared across all bridges since the message is process-global.
@@ -209,6 +237,20 @@ pub struct SceneDamage<'a> {
     pub regions: Option<&'a [vello::FineDamageRect]>,
 }
 
+impl<'a> SceneDamage<'a> {
+    /// The same frame with `regions` in place of its own, when there are any.
+    fn with_regions<'b>(self, regions: Option<&'b [vello::FineDamageRect]>) -> SceneDamage<'b>
+    where
+        'a: 'b,
+    {
+        SceneDamage {
+            revision: self.revision,
+            previous_revision: self.previous_revision,
+            regions: regions.or(self.regions),
+        }
+    }
+}
+
 /// Mapped readback layout needed by the direct XRGB swizzle.
 #[derive(Clone, Copy)]
 struct MappedXrgbSource<'a> {
@@ -280,12 +322,45 @@ pub struct SegmentOrderReplayDiagnostic {
 
 #[derive(Clone, Copy, Debug)]
 enum CompletionPolicy {
+    /// One caller deadline for the whole frame; running out is [`BridgeError::DeadlineExceeded`].
     Absolute(Instant),
-    LinuxPerPhase,
+    /// Each Linux completion phase gets its own allowance, all of them clamped to the one
+    /// `frame_deadline` every attempt and band of the frame shares; running out is
+    /// [`BridgeError::CompletionTimeout`].
+    LinuxPerPhase { frame_deadline: Instant },
+}
+
+impl CompletionPolicy {
+    /// The error for a completion wait under this policy that ran out of time.
+    fn timed_out(self, phase: CompletionPhase) -> BridgeError {
+        match self {
+            Self::Absolute(_) => BridgeError::DeadlineExceeded,
+            Self::LinuxPerPhase { .. } => BridgeError::CompletionTimeout { phase },
+        }
+    }
+
+    fn deadline(self) -> Instant {
+        match self {
+            Self::Absolute(deadline) => deadline,
+            Self::LinuxPerPhase { frame_deadline } => frame_deadline,
+        }
+    }
 }
 const LINUX_FENCE_WAIT: Duration = Duration::from_secs(1);
 const LINUX_MAP_CALLBACK_WAIT: Duration = Duration::from_secs(1);
 const BUMP_SETTLEMENT_WAIT: Duration = Duration::from_secs(1);
+/// Bound on everything one Linux frame blocks the present thread for, across all of its
+/// recovery attempts and bands. The per-phase allowances above stay as they are -- a software
+/// Vulkan frame can legitimately need each of them -- but without a frame bound they multiply:
+/// three phases × [`RESILIENT_RENDER_ATTEMPTS`] × bands, 12 s and more. This leaves room for
+/// two attempts at their full allowances and most of a third; past it the frame fails as a
+/// completion timeout and the recovery back-off takes over.
+const LINUX_FRAME_BUDGET: Duration = Duration::from_secs(8);
+/// Rounds of "poll the counters, block on the submission" before settlement gives up. wgpu
+/// runs every callback of a submission before its `Wait` returns, so one round settles the
+/// counters; the bound only keeps a pending readback whose submission already completed from
+/// spinning until the deadline.
+const COUNTER_SETTLEMENT_ROUNDS: usize = 8;
 /// Bound on the construction-time warm-up frames, which include pipeline compilation on CPU
 /// Vulkan drivers and so are not frame work.
 const PIPELINE_WARMUP: Duration = Duration::from_secs(60);
@@ -307,10 +382,15 @@ struct CompletionTest {
     callback_elapsed: Duration,
     pending_elapsed: Duration,
     waits: Vec<(WaitPhase, Duration)>,
+    /// Remaining settlement time at each bump-counter poll: one entry per poll.
     counter_remaining: Vec<Duration>,
+    /// The timeout of each blocking wait settlement issued on the counters' submission.
+    counter_waits: Vec<Duration>,
     counters: std::collections::VecDeque<Result<vello::BumpBudgetPoll, vello::BumpBudgetError>>,
     failure: Option<WaitPhase>,
     destroy_at_marker: bool,
+    /// Drop the framebuffer map callback's sender before it reports, as a lost device does.
+    disconnect_map_callback: bool,
 }
 
 #[cfg(test)]
@@ -462,6 +542,10 @@ pub struct RetainedGpuTarget {
     /// Revision associated with the complete retained frame. Legacy full-render APIs do not
     /// carry a revision, so they intentionally clear this even though their target is complete.
     last_successful_revision: Option<u64>,
+    /// Damage of frames an output skipped while its page flip was pending, in target pixels.
+    /// `last_successful_revision` already names the newest of them; the next direct render
+    /// repairs these regions with its own (see [`VelloDrmBridge::defer_output`]).
+    owed_damage: Vec<vello::FineDamageRect>,
     /// Total Vello submissions used by the latest paint, including sparse work and bounded
     /// bump-budget recovery retries.
     last_render_attempts: usize,
@@ -614,6 +698,7 @@ impl RetainedGpuTarget {
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             retained_target_valid: false,
             last_successful_revision: None,
+            owed_damage: Vec::new(),
             last_render_attempts: 0,
             last_sparse_render_attempts: 0,
             last_full_render_attempts: 0,
@@ -756,6 +841,19 @@ impl RetainedGpuTarget {
     fn invalidate(&mut self) {
         self.retained_target_valid = false;
         self.last_successful_revision = None;
+        self.owed_damage.clear();
+    }
+
+    /// `regions` together with the damage owed by frames skipped since the last render,
+    /// which this takes; `None` when nothing is owed or the frame renders in full anyway.
+    fn take_owed_damage(
+        &mut self,
+        regions: Option<&[vello::FineDamageRect]>,
+    ) -> Option<Vec<vello::FineDamageRect>> {
+        let owed = std::mem::take(&mut self.owed_damage);
+        regions
+            .filter(|_| !owed.is_empty())
+            .map(|regions| [regions, owed.as_slice()].concat())
     }
 
     fn check_health(&self) -> Result<(), BridgeError> {
@@ -770,10 +868,8 @@ impl RetainedGpuTarget {
 
     fn check_live(&self, policy: CompletionPolicy) -> Result<(), BridgeError> {
         self.check_health()?;
-        if let CompletionPolicy::Absolute(deadline) = policy
-            && self.now() >= deadline
-        {
-            return Err(BridgeError::DeadlineExceeded);
+        if self.now() >= policy.deadline() {
+            return Err(policy.timed_out(CompletionPhase::FrameBudget));
         }
         Ok(())
     }
@@ -790,17 +886,36 @@ impl RetainedGpuTarget {
         Instant::now()
     }
 
-    /// The allowance for one Linux completion phase: `nominal` outside correctness fixtures.
+    /// A Linux allowance: `nominal` outside correctness fixtures.
     #[allow(
         clippy::unused_self,
         reason = "correctness fixtures replace the allowance on this actual target instance"
     )]
-    fn linux_phase_wait(&self, nominal: Duration) -> Duration {
+    fn linux_allowance(&self, nominal: Duration) -> Duration {
         #[cfg(test)]
         if let Some(wait) = self.phase_wait_override {
             return wait;
         }
         nominal
+    }
+
+    /// The Linux policy for a frame starting now: its per-phase allowances share one
+    /// [`LINUX_FRAME_BUDGET`] across every attempt and band.
+    fn linux_frame_policy(&self) -> Result<CompletionPolicy, BridgeError> {
+        self.now()
+            .checked_add(self.linux_allowance(LINUX_FRAME_BUDGET))
+            .map(|frame_deadline| CompletionPolicy::LinuxPerPhase { frame_deadline })
+            .ok_or_else(|| BridgeError::DevicePoll("frame deadline out of range".to_owned()))
+    }
+
+    /// How long one completion phase may block now: its own allowance on Linux, never past
+    /// the frame's deadline.
+    fn phase_wait(&self, policy: CompletionPolicy, nominal: Duration) -> Duration {
+        let remaining = policy.deadline().saturating_duration_since(self.now());
+        match policy {
+            CompletionPolicy::Absolute(_) => remaining,
+            CompletionPolicy::LinuxPerPhase { .. } => self.linux_allowance(nominal).min(remaining),
+        }
     }
 
     fn eligible_sparse_damage(
@@ -1006,13 +1121,8 @@ impl RetainedGpuTarget {
                     antialiasing_method: AaConfig::Area,
                 };
                 let loss = self.loss.clone();
-                let before_submit = || {
-                    loss.reason().is_none()
-                        && match policy {
-                            CompletionPolicy::Absolute(deadline) => Instant::now() < deadline,
-                            CompletionPolicy::LinuxPerPhase => true,
-                        }
-                };
+                let before_submit =
+                    || loss.reason().is_none() && Instant::now() < policy.deadline();
                 let append = |encoder: &mut wgpu::CommandEncoder| {
                     encoder.copy_texture_to_texture(
                         band_texture.as_image_copy(),
@@ -1068,9 +1178,11 @@ impl RetainedGpuTarget {
                 self.check_live(policy)?;
                 let map_started = timing.as_ref().map(|_| Instant::now());
                 let mapped = match output {
-                    FrameOutput::Xrgb { buffer, .. } if last => Some(self.map_framebuffer(buffer)?),
+                    FrameOutput::Xrgb { buffer, .. } if last => {
+                        Some(self.map_framebuffer(buffer, policy)?)
+                    }
                     FrameOutput::GpuOnly if matches!(policy, CompletionPolicy::Absolute(_)) => {
-                        self.wait_submission(submission, policy)?;
+                        self.wait_submission(submission.clone(), policy)?;
                         None
                     }
                     // Counter settlement below waits on this band's submission.
@@ -1082,10 +1194,12 @@ impl RetainedGpuTarget {
                         .saturating_add(started.elapsed().as_micros());
                 }
                 let settle_started = timing.as_ref().map(|_| Instant::now());
-                let settled = self.settle_counters(policy).and_then(|overflowed| {
-                    self.check_live(policy)?;
-                    Ok(overflowed)
-                });
+                let settled =
+                    self.settle_counters(policy, Some(&submission))
+                        .and_then(|overflowed| {
+                            self.check_live(policy)?;
+                            Ok(overflowed)
+                        });
                 if let (Some(timing), Some(started)) = (timing.as_deref_mut(), settle_started) {
                     timing.settle_us = timing
                         .settle_us
@@ -1202,11 +1316,7 @@ impl RetainedGpuTarget {
                 let now = gate_now.unwrap_or_else(Instant::now);
                 #[cfg(not(test))]
                 let now = Instant::now();
-                loss.reason().is_none()
-                    && match policy {
-                        CompletionPolicy::Absolute(deadline) => now < deadline,
-                        CompletionPolicy::LinuxPerPhase => true,
-                    }
+                loss.reason().is_none() && now < policy.deadline()
             };
             let append = |encoder: &mut wgpu::CommandEncoder| {
                 output.append(encoder, &self.texture, self.size, regions.as_deref());
@@ -1292,13 +1402,13 @@ impl RetainedGpuTarget {
                 FrameOutput::GpuOnly => {
                     // The sparse path does not report its submission; an
                     // empty submit queued behind it completes no earlier.
-                    let submission = submission_index.unwrap_or_else(|| {
+                    let submission = submission_index.clone().unwrap_or_else(|| {
                         self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>())
                     });
                     self.wait_submission(submission, policy)?;
                     None
                 }
-                FrameOutput::Xrgb { buffer, .. } => Some(self.map_framebuffer(buffer)?),
+                FrameOutput::Xrgb { buffer, .. } => Some(self.map_framebuffer(buffer, policy)?),
             };
             if let (Some(timing), Some(started)) = (timing.as_deref_mut(), map_started) {
                 timing.completed_readback_map_us = timing
@@ -1306,10 +1416,13 @@ impl RetainedGpuTarget {
                     .saturating_add(started.elapsed().as_micros());
             }
             let settle_started = timing.as_ref().map(|_| Instant::now());
-            let settled = self.settle_counters(policy).and_then(|overflowed| {
-                self.check_live(policy)?;
-                Ok(overflowed)
-            });
+            // Without the sparse path's index, settlement waits on the latest submission.
+            let settled = self
+                .settle_counters(policy, submission_index.as_ref())
+                .and_then(|overflowed| {
+                    self.check_live(policy)?;
+                    Ok(overflowed)
+                });
             if let (Some(timing), Some(started)) = (timing.as_deref_mut(), settle_started) {
                 timing.settle_us = timing
                     .settle_us
@@ -1374,15 +1487,23 @@ impl RetainedGpuTarget {
             reason = "tests inject elapsed time at the real framebuffer waits"
         )
     )]
-    fn map_framebuffer(&mut self, buffer: &wgpu::Buffer) -> Result<wgpu::BufferView, BridgeError> {
+    fn map_framebuffer(
+        &mut self,
+        buffer: &wgpu::Buffer,
+        policy: CompletionPolicy,
+    ) -> Result<wgpu::BufferView, BridgeError> {
         let slice = buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        let fence_wait = self.linux_phase_wait(LINUX_FENCE_WAIT);
-        let callback_wait = self.linux_phase_wait(LINUX_MAP_CALLBACK_WAIT);
+        #[cfg(test)]
+        let rx = match self.completion_test.as_ref() {
+            Some(test) if test.disconnect_map_callback => std::sync::mpsc::channel().1,
+            _ => rx,
+        };
         let result = (|| {
+            let fence_wait = self.phase_wait(policy, LINUX_FENCE_WAIT);
             #[cfg(test)]
             self.before_wait(WaitPhase::Fence, fence_wait)?;
             let waited = self.device.poll(wgpu::PollType::Wait {
@@ -1390,17 +1511,28 @@ impl RetainedGpuTarget {
                 timeout: Some(fence_wait),
             });
             self.check_health()?;
-            waited.map_err(|error| {
-                BridgeError::Map(format!("LinuxPerPhase fence wait: {error:?}"))
+            waited.map_err(|error| match error {
+                wgpu::PollError::Timeout => policy.timed_out(CompletionPhase::Fence),
+                other @ wgpu::PollError::WrongSubmissionIndex(..) => {
+                    BridgeError::Map(format!("fence wait: {other:?}"))
+                }
             })?;
-            // A fresh one-second callback allowance follows the independent one-second fence.
+            // A fresh callback allowance follows the independent fence allowance.
+            let callback_wait = self.phase_wait(policy, LINUX_MAP_CALLBACK_WAIT);
             #[cfg(test)]
             self.before_wait(WaitPhase::MapCallback, callback_wait)?;
             rx.recv_timeout(callback_wait)
-                .map_err(|error| {
-                    BridgeError::Map(format!("LinuxPerPhase map_async channel: {error}"))
+                .map_err(|error| match error {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => {
+                        policy.timed_out(CompletionPhase::MapCallback)
+                    }
+                    // The callback can no longer report: wgpu dropped it, as a lost device does.
+                    // Nothing is left to drain, so this fails closed instead of backing off.
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                        BridgeError::Map("map_async callback dropped without reporting".to_owned())
+                    }
                 })?
-                .map_err(|error| BridgeError::Map(format!("LinuxPerPhase map_async: {error:?}")))?;
+                .map_err(|error| BridgeError::Map(format!("map_async: {error:?}")))?;
             self.check_health()?;
             Ok(slice.get_mapped_range())
         })();
@@ -1410,17 +1542,22 @@ impl RetainedGpuTarget {
         result
     }
 
-    fn settle_counters(&mut self, policy: CompletionPolicy) -> Result<bool, BridgeError> {
-        let deadline = match policy {
-            CompletionPolicy::Absolute(deadline) => deadline,
-            CompletionPolicy::LinuxPerPhase => self
-                .now()
-                .checked_add(self.linux_phase_wait(BUMP_SETTLEMENT_WAIT))
-                .ok_or_else(|| {
-                    BridgeError::BumpReadback("counter deadline out of range".to_owned())
-                })?,
-        };
-        loop {
+    /// Wait until Vello's bump counters for the frame just submitted are read back, and report
+    /// whether it overflowed.
+    ///
+    /// Each round polls the counters once and, while they are pending, blocks on `submission`
+    /// (the latest submission when `None`) for the rest of the phase allowance: the device
+    /// wakes this thread when the work completes, rather than a sleep loop sampling it.
+    fn settle_counters(
+        &mut self,
+        policy: CompletionPolicy,
+        submission: Option<&wgpu::SubmissionIndex>,
+    ) -> Result<bool, BridgeError> {
+        let deadline = self
+            .now()
+            .checked_add(self.phase_wait(policy, BUMP_SETTLEMENT_WAIT))
+            .ok_or_else(|| BridgeError::BumpReadback("counter deadline out of range".to_owned()))?;
+        for _ in 0..COUNTER_SETTLEMENT_ROUNDS {
             self.check_health()?;
             if self.now() >= deadline {
                 tracing::warn!(
@@ -1428,12 +1565,7 @@ impl RetainedGpuTarget {
                     phase = "counter settlement",
                     "completion deadline exceeded"
                 );
-                return Err(match policy {
-                    CompletionPolicy::Absolute(_) => BridgeError::DeadlineExceeded,
-                    CompletionPolicy::LinuxPerPhase => BridgeError::BumpReadback(
-                        "LinuxPerPhase counter settlement timeout (1s)".to_owned(),
-                    ),
-                });
+                return Err(policy.timed_out(CompletionPhase::CounterSettlement));
             }
             let result = self.renderer.poll_bump_budget(&self.device);
             #[cfg(test)]
@@ -1458,20 +1590,57 @@ impl RetainedGpuTarget {
             })? {
                 vello::BumpBudgetPoll::Complete { overflowed } => return Ok(overflowed),
                 vello::BumpBudgetPoll::Pending => {
-                    let delay = Duration::from_millis(1)
-                        .min(deadline.saturating_duration_since(self.now()));
-                    #[cfg(test)]
-                    if let Some(test) = self.completion_test.as_mut() {
-                        test.advance(
-                            test.pending_elapsed
-                                .min(deadline.saturating_duration_since(test.now())),
-                        );
-                        continue;
-                    }
-                    std::thread::sleep(delay);
+                    self.wait_counters(policy, submission, deadline)?;
                 }
             }
         }
+        self.check_health()?;
+        if self.now() >= deadline {
+            return Err(policy.timed_out(CompletionPhase::CounterSettlement));
+        }
+        // Every round's wait completed yet the readback stayed pending: nothing is left in
+        // flight to drain, so this is not a timeout.
+        Err(BridgeError::BumpReadback(format!(
+            "counter readback still pending after {COUNTER_SETTLEMENT_ROUNDS} completed waits"
+        )))
+    }
+
+    /// Block until `submission` completes (wgpu runs its map callbacks, the counters' among
+    /// them, before returning) or the settlement `deadline` passes.
+    #[cfg_attr(
+        not(test),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "tests inject elapsed time at the real counter wait"
+        )
+    )]
+    fn wait_counters(
+        &mut self,
+        policy: CompletionPolicy,
+        submission: Option<&wgpu::SubmissionIndex>,
+        deadline: Instant,
+    ) -> Result<(), BridgeError> {
+        let remaining = deadline.saturating_duration_since(self.now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Some(test) = self.completion_test.as_mut() {
+            test.counter_waits.push(remaining);
+            test.advance(test.pending_elapsed.min(remaining));
+        }
+        let waited = self.device.poll(wgpu::PollType::Wait {
+            submission_index: submission.cloned(),
+            timeout: Some(remaining),
+        });
+        self.check_health()?;
+        waited.map_err(|error| match error {
+            wgpu::PollError::Timeout => policy.timed_out(CompletionPhase::CounterSettlement),
+            other @ wgpu::PollError::WrongSubmissionIndex(..) => {
+                BridgeError::DevicePoll(format!("{policy:?} counter settlement: {other:?}"))
+            }
+        })?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1486,12 +1655,12 @@ impl RetainedGpuTarget {
             if test.failure == Some(phase) {
                 return Err(match phase {
                     WaitPhase::Marker => BridgeError::DeadlineExceeded,
-                    WaitPhase::Fence => {
-                        BridgeError::Map("LinuxPerPhase fence wait: Timeout".to_owned())
-                    }
-                    WaitPhase::MapCallback => {
-                        BridgeError::Map("LinuxPerPhase map_async channel: timeout".to_owned())
-                    }
+                    WaitPhase::Fence => BridgeError::CompletionTimeout {
+                        phase: CompletionPhase::Fence,
+                    },
+                    WaitPhase::MapCallback => BridgeError::CompletionTimeout {
+                        phase: CompletionPhase::MapCallback,
+                    },
                 });
             }
             test.advance(
@@ -1686,6 +1855,10 @@ impl RetainedGpuTarget {
     pub fn memory_stats(&self) -> vello::RendererMemoryStats {
         self.renderer.memory_stats()
     }
+    /// The image atlas and the CPU pixels its residents keep alive.
+    pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
+        self.renderer.image_cache_stats()
+    }
     /// Existing opt-in timestamp status.
     pub fn gpu_timestamp_status(&mut self) -> vello::GpuTimestampStatus {
         self.renderer.gpu_timestamp_status()
@@ -1810,6 +1983,8 @@ pub struct VelloDrmBridge {
     dispatch_stage_observer: Option<DispatchStageObserver>,
     /// SDR → PQ encode passes, one per HDR scanout format in use.
     hdr_encoders: Vec<HdrEncodePipeline>,
+    /// The SDR final pass of rotated outputs; built with the first one.
+    oriented_copy: Option<OrientedCopy>,
     /// Composites HDR layers; built with the first frame that has any.
     hdr_compositor: Option<HdrCompositor>,
     dev_id: usize,
@@ -1836,17 +2011,9 @@ pub struct VelloDrmBridge {
     /// compositor's normal cadence would otherwise queue one more llvmpipe frame every tick.
     recovery_not_before: Option<Instant>,
     recovery_backoff: Duration,
-    /// Desktop pixels from before the current overview fade. Composite the
-    /// panel over this instead of rendering both outputs again.
-    overview_base: Vec<u8>,
-    overview_generation: u64,
-    /// Workspace whose pixels are on the scanouts, and up to two retained
-    /// images so switching back does not render both outputs again.
-    shown_workspace: Option<u64>,
-    workspace_snapshots: Vec<(u64, Vec<u8>)>,
-    /// Fixed-size renderer for the overview panel. Created once so a fade
-    /// does not compile pipelines on the first animated frame.
-    panel_renderer: Option<ui::offscreen::OffscreenRenderer>,
+    /// One retained surface per output that is not the whole scene, for
+    /// [`Self::paint_output_until`]. They share `target`'s renderer and device.
+    output_surfaces: Vec<(super::OutputId, OutputSurface)>,
     /// Narrow fault injection for the tracked-swizzle cleanup test. It is absent from ordinary
     /// binaries and shortens only the test's mapped source view after GPU completion.
     #[cfg(test)]
@@ -1914,6 +2081,7 @@ impl VelloDrmBridge {
                 .is_some_and(|value| value == "1")
                 .then(DispatchStageObserver::default),
             hdr_encoders: Vec::new(),
+            oriented_copy: None,
             hdr_compositor: None,
             dev_id,
 
@@ -1931,11 +2099,7 @@ impl VelloDrmBridge {
             xrgb_history_epoch: Some(1),
             recovery_not_before: None,
             recovery_backoff: RECOVERY_BACKOFF_INITIAL,
-            overview_base: Vec::new(),
-            overview_generation: 0,
-            shown_workspace: None,
-            workspace_snapshots: Vec::new(),
-            panel_renderer: None,
+            output_surfaces: Vec::new(),
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
         })
@@ -1964,46 +2128,71 @@ impl VelloDrmBridge {
             .then_some(self.readback.as_slice())
     }
 
-    /// Render `scene` and copy only `clip` into the encoded desktop.
-    ///
-    /// The combined framebuffer is not mapped. Callers publish `clip` onto
-    /// the virtual head it meets.
+    /// Bring the encoded desktop up to `scene` inside `regions`: one render
+    /// of the scene repairing only those regions (sparse when the target
+    /// retains the previous one), then a readback of each region alone into
+    /// the tight image. The combined framebuffer is not mapped; pixels
+    /// outside `regions` stay as the previous frame encoded them.
     ///
     /// # Errors
-    /// The desktop image is missing, `clip` leaves it, or the clip copy fails.
-    pub(crate) fn refresh_encoded_clip(
+    /// The desktop image is missing, `regions` is empty or one leaves it, or a
+    /// render or region copy fails. The tight image is then partly stale:
+    /// the caller must present a full frame instead.
+    pub(crate) fn refresh_encoded_regions(
         &mut self,
         scene: &Scene,
-        clip: vello::FineDamageRect,
+        regions: &[vello::FineDamageRect],
     ) -> Result<(), BridgeError> {
-        // A stale full-frame profile must not be reported for this clip.
+        // A stale full-frame profile must not be reported for these regions.
         self.last_phase_timing = None;
-        self.render_encoded_clip(scene, clip)?;
-        let tight = self.read_encoded_clip(clip)?;
-        self.patch_encoded_clip(clip, &tight)
+        let started = Instant::now();
+        self.render_encoded_regions(scene, regions)?;
+        let rendered = Instant::now();
+        let mut bytes = 0_u64;
+        let mut patch_us = 0_u128;
+        for &clip in regions {
+            let tight = self.read_encoded_clip(clip)?;
+            let patch_started = Instant::now();
+            self.patch_encoded_clip(clip, &tight)?;
+            patch_us = patch_us.saturating_add(patch_started.elapsed().as_micros());
+            bytes = bytes.saturating_add(u64::try_from(tight.len()).unwrap_or(u64::MAX));
+        }
+        if self.phase_timing_enabled {
+            self.last_phase_timing = Some(BridgePhaseTiming {
+                submit_us: rendered.saturating_duration_since(started).as_micros(),
+                completed_readback_map_us: rendered.elapsed().as_micros().saturating_sub(patch_us),
+                cpu_copy_swizzle_us: patch_us,
+                readback_bytes: bytes,
+                cpu_output_bytes: bytes,
+                ..BridgePhaseTiming::default()
+            });
+        }
+        Ok(())
     }
 
-    fn render_encoded_clip(
+    fn render_encoded_regions(
         &mut self,
         scene: &Scene,
-        clip: vello::FineDamageRect,
+        regions: &[vello::FineDamageRect],
     ) -> Result<(), BridgeError> {
         if !self.has_complete_readback() {
             return Err(BridgeError::InvalidSize(
-                "no encoded desktop for the clip".to_owned(),
+                "no encoded desktop for the regions".to_owned(),
             ));
         }
         let (width, height) = self.target.size;
-        let inside = clip.width > 0
-            && clip.height > 0
-            && clip.x.checked_add(clip.width).is_some_and(|x1| x1 <= width)
-            && clip
-                .y
-                .checked_add(clip.height)
-                .is_some_and(|y1| y1 <= height);
-        if !inside {
+        let inside = |clip: &vello::FineDamageRect| {
+            clip.width > 0
+                && clip.height > 0
+                && clip.x.checked_add(clip.width).is_some_and(|x1| x1 <= width)
+                && clip
+                    .y
+                    .checked_add(clip.height)
+                    .is_some_and(|y1| y1 <= height)
+        };
+        if regions.is_empty() || !regions.iter().all(inside) {
             return Err(BridgeError::InvalidSize(
-                "clip is outside the encoded desktop".to_owned(),
+                "a region is outside the encoded desktop".to_owned(),
             ));
         }
         let revision = self
@@ -2011,11 +2200,10 @@ impl VelloDrmBridge {
             .last_successful_revision
             .map_or(1, |revision| revision.saturating_add(1));
         let previous = self.target.last_successful_revision;
-        let regions = [clip];
         let damage = SceneDamage {
             revision,
             previous_revision: previous,
-            regions: Some(&regions),
+            regions: Some(regions),
         };
         let deadline = Instant::now()
             .checked_add(Duration::from_secs(1))
@@ -2121,178 +2309,6 @@ impl VelloDrmBridge {
         Ok(())
     }
 
-    /// Fast overview clips stay under this edge. A 1080p panel plus its
-    /// shadow outset is taller than 1024, and rejecting that clip made the
-    /// fade GPU-read both outputs.
-    pub(crate) const OVERVIEW_PANEL_EDGE: u32 = 2048;
-
-    /// Whether `width`×`height` can be composited without a combined readback.
-    pub(crate) fn overview_clip_fits_fast_target(width: u32, height: u32) -> bool {
-        width > 0
-            && height > 0
-            && width <= Self::OVERVIEW_PANEL_EDGE
-            && height <= Self::OVERVIEW_PANEL_EDGE
-    }
-
-    /// Panel-sized overview frame over the desktop image captured before this fade.
-    ///
-    /// # Errors
-    /// The panel is larger than the fixed fast target, or no desktop image exists yet.
-    /// A missing desktop image may seed one full readback. A clip that merely
-    /// exceeds an old 1024px cap must not: a 1080p panel plus its shadow is
-    /// taller than that, and falling through read both outputs back.
-    pub(crate) fn composite_overview_frame(
-        &mut self,
-        patch: &crate::shell::overlay_host::OverviewFastPatch,
-    ) -> Result<Vec<u8>, BridgeError> {
-        if !Self::overview_clip_fits_fast_target(patch.panel.width, patch.panel.height) {
-            return Err(BridgeError::InvalidSize(format!(
-                "overview panel {}x{} exceeds the fast target",
-                patch.panel.width, patch.panel.height
-            )));
-        }
-        let generation_matches = self.overview_generation == patch.generation;
-        let base_matches = self.overview_base.len() == self.readback.len();
-        let base_ready = generation_matches && base_matches && self.has_complete_readback();
-        if !base_ready {
-            if !self.has_complete_readback() {
-                return Err(BridgeError::InvalidSize(
-                    "no desktop image to composite the overview over".to_owned(),
-                ));
-            }
-            self.overview_base.clone_from(&self.readback);
-            self.overview_generation = patch.generation;
-        }
-        let mut frame = self.overview_base.clone();
-        let stride = self.target.size.0;
-        blend_scrim_rect(&mut frame, stride, patch.panel, patch.scrim);
-        if patch.draw_panel {
-            let panel = self.render_overview_panel(&patch.panel_scene, patch.panel_size)?;
-            blit_straight(&mut frame, stride, patch.panel, &panel, patch.panel_size);
-        }
-        Ok(frame)
-    }
-
-    pub(crate) fn shown_workspace(&self) -> Option<u64> {
-        self.shown_workspace
-    }
-
-    pub(crate) fn has_workspace_snapshot(&self, id: u64) -> bool {
-        self.snapshot_index(id).is_some()
-    }
-
-    /// Keep the image of the workspace currently on screen, before a render
-    /// replaces it.
-    pub(crate) fn retain_shown_workspace(&mut self) {
-        if let Some(prev) = self.shown_workspace {
-            self.store_workspace_snapshot(prev);
-        }
-    }
-
-    /// Remember `id` as what the scanouts show. The image is kept once, when
-    /// this workspace first lands or replaces another — not on every repaint.
-    pub(crate) fn note_shown_workspace(&mut self, id: u64) {
-        let changed = self.shown_workspace != Some(id);
-        self.shown_workspace = Some(id);
-        if changed || !self.has_workspace_snapshot(id) {
-            self.store_workspace_snapshot(id);
-        }
-    }
-
-    /// Leave the workspace on screen and return a retained image of `id`,
-    /// when switching back to one this bridge already rendered.
-    pub(crate) fn replay_workspace(&mut self, id: u64) -> Option<Vec<u8>> {
-        if self.shown_workspace == Some(id) {
-            return None;
-        }
-        self.retain_shown_workspace();
-        let index = self.snapshot_index(id)?;
-        let bytes = self.workspace_snapshots.get(index)?.1.clone();
-        self.readback.clone_from(&bytes);
-        self.shown_workspace = Some(id);
-        Some(bytes)
-    }
-
-    fn store_workspace_snapshot(&mut self, id: u64) {
-        if !self.has_complete_readback() {
-            return;
-        }
-        if let Some(pos) = self
-            .workspace_snapshots
-            .iter()
-            .position(|(stored, _)| *stored == id)
-        {
-            {
-                let Some(entry) = self.workspace_snapshots.get_mut(pos) else {
-                    return;
-                };
-                entry.1.clone_from(&self.readback);
-            }
-            // Most recently kept, so the next eviction drops the other one.
-            let entry = self.workspace_snapshots.remove(pos);
-            self.workspace_snapshots.push(entry);
-            return;
-        }
-        if self.workspace_snapshots.len() >= 2 {
-            self.workspace_snapshots.remove(0);
-        }
-        self.workspace_snapshots.push((id, self.readback.clone()));
-    }
-
-    fn expected_readback_len(&self) -> usize {
-        let (width, height) = self.target.size;
-        usize::try_from(width)
-            .unwrap_or(0)
-            .saturating_mul(usize::try_from(height).unwrap_or(0))
-            .saturating_mul(4)
-    }
-
-    fn snapshot_index(&self, id: u64) -> Option<usize> {
-        let needed = self.expected_readback_len();
-        self.workspace_snapshots
-            .iter()
-            .position(|(stored, image)| *stored == id && needed > 0 && image.len() == needed)
-    }
-
-    fn render_overview_panel(
-        &mut self,
-        scene: &Scene,
-        size: (u32, u32),
-    ) -> Result<Vec<u8>, BridgeError> {
-        if self.panel_renderer.is_none() {
-            self.panel_renderer = Some(
-                ui::offscreen::OffscreenRenderer::try_new(
-                    Self::OVERVIEW_PANEL_EDGE,
-                    Self::OVERVIEW_PANEL_EDGE,
-                )
-                .map_err(|error| {
-                    BridgeError::Render(format!("overview panel renderer: {error}"))
-                })?,
-            );
-        }
-        let Some(renderer) = self.panel_renderer.as_mut() else {
-            return Err(BridgeError::Render(
-                "overview panel renderer missing".to_owned(),
-            ));
-        };
-        let panel_pixels = renderer.render_rgba_resilient(scene);
-        let stride = usize::try_from(renderer.width).unwrap_or(0);
-        let width = usize::try_from(size.0).unwrap_or(0);
-        let height = usize::try_from(size.1).unwrap_or(0);
-        if stride < width || panel_pixels.len() < stride.saturating_mul(height).saturating_mul(4) {
-            return Err(BridgeError::InvalidSize(
-                "overview panel render is smaller than the clip".to_owned(),
-            ));
-        }
-        let mut cropped = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
-        for row in 0..height {
-            let start = row.saturating_mul(stride).saturating_mul(4);
-            let end = start.saturating_add(width.saturating_mul(4));
-            cropped.extend_from_slice(panel_pixels.get(start..end).unwrap_or_default());
-        }
-        Ok(cropped)
-    }
-
     /// Override the per-frame clear color; matches the winit backend API so callers can swap themes uniformly.
     pub fn set_base_color(&mut self, color: Color) {
         if self.target.base_color == color {
@@ -2302,6 +2318,7 @@ impl VelloDrmBridge {
         // Sparse rendering never clears pixels outside its rectangles. A new clear color is a
         // full-frame change even if the scene recording itself is unchanged.
         self.invalidate_retained();
+        self.invalidate_output_surfaces();
         self.bump_xrgb_history_epoch();
     }
 
@@ -2339,6 +2356,9 @@ impl VelloDrmBridge {
     /// plain copy; an HDR target receives the PQ BT.2020 encode with SDR white at
     /// `sdr_white_nits`, compositing `hdr_layers` at full precision in linear light.
     ///
+    /// The one-output case of [`Self::paint_output_until`]: the scene is the output, so the
+    /// bridge's own target is the output's retained surface.
+    ///
     /// # Errors
     ///
     /// Fails when the target size does not match this bridge, rendering or
@@ -2353,6 +2373,81 @@ impl VelloDrmBridge {
         sdr_white_nits: f32,
         hdr_layers: &[HdrLayer],
     ) -> Result<GpuFrameStats, BridgeError> {
+        self.paint_final_pass(
+            scene,
+            damage,
+            OutputTarget::imported(target),
+            deadline,
+            OutputSignal {
+                sdr_white_nits,
+                hdr_layers,
+            },
+        )
+    }
+
+    /// The PQ encode pipeline for `format` exists and encodes SDR white at `sdr_white_nits`
+    /// into a target turned by `orientation`.
+    fn prepare_hdr_encoder(
+        &mut self,
+        format: wgpu::TextureFormat,
+        sdr_white_nits: f32,
+        orientation: OutputTransform,
+    ) {
+        if !self
+            .hdr_encoders
+            .iter()
+            .any(|pipeline| pipeline.format() == format)
+        {
+            self.hdr_encoders
+                .push(HdrEncodePipeline::new(&self.target.device, format));
+        }
+        if let Some(pipeline) = self
+            .hdr_encoders
+            .iter()
+            .find(|pipeline| pipeline.format() == format)
+        {
+            pipeline.set_params(&self.target.queue, sdr_white_nits, orientation);
+        }
+    }
+
+    /// The final pass `output` needs exists and writes its orientation with the next
+    /// submission: the PQ encode for an HDR target, the oriented copy for a rotated SDR one.
+    fn prepare_final_pass(&mut self, output: OutputTarget<'_>, hdr: bool, sdr_white_nits: f32) {
+        if hdr {
+            self.prepare_hdr_encoder(output.format, sdr_white_nits, output.orientation);
+        } else {
+            self.prepare_oriented_copy(output.orientation);
+        }
+    }
+
+    /// The SDR final pass of a rotated output exists and writes `orientation` with the next
+    /// submission. An unrotated output keeps the plain blit.
+    fn prepare_oriented_copy(&mut self, orientation: OutputTransform) {
+        if orientation == OutputTransform::Normal {
+            return;
+        }
+        let device = &self.target.device;
+        self.oriented_copy
+            .get_or_insert_with(|| OrientedCopy::new(device))
+            .set_orientation(&self.target.queue, orientation);
+    }
+
+    /// Render `scene` into the target currently swapped into `self.target`, then run the
+    /// final pass into `output`: a copy for `Bgra8Unorm`, the PQ encode (and the HDR
+    /// composite when there are layers) otherwise, each turned by `output.orientation`.
+    /// Waits for the completion marker.
+    fn paint_final_pass(
+        &mut self,
+        scene: &Scene,
+        damage: SceneDamage<'_>,
+        output: OutputTarget<'_>,
+        deadline: Instant,
+        signal: OutputSignal<'_>,
+    ) -> Result<GpuFrameStats, BridgeError> {
+        let OutputSignal {
+            sdr_white_nits,
+            hdr_layers,
+        } = signal;
         self.last_phase_timing = None;
         if let Some(error) = self.take_device_error() {
             return Err(error);
@@ -2363,13 +2458,12 @@ impl VelloDrmBridge {
             let (width, height) = self.target.size;
             self.reconstruct_target(width, height)?;
         }
-        if (target.width, target.height) != self.target.size {
-            return Err(BridgeError::InvalidSize(format!(
-                "imported scanout target is {}x{}, expected {}x{}",
-                target.width, target.height, self.target.size.0, self.target.size.1
-            )));
-        }
-        let hdr = target.format != wgpu::TextureFormat::Bgra8Unorm;
+        output.check_shows(self.target.size)?;
+        // Frames this output skipped while its flip was pending left their damage owed: the
+        // retained pixels already claim those revisions, so this render repairs it too.
+        let repaired = self.target.take_owed_damage(damage.regions);
+        let damage = damage.with_regions(repaired.as_deref());
+        let hdr = output.format != wgpu::TextureFormat::Bgra8Unorm;
         let composite = hdr && !hdr_layers.is_empty();
         if composite {
             let (device, queue) = (&self.target.device, &self.target.queue);
@@ -2379,8 +2473,9 @@ impl VelloDrmBridge {
             self.target.hdr_pass = Some(compositor.prepare(
                 self.target.size,
                 hdr_layers,
-                Some((target.format, sdr_white_nits)),
+                Some((output.format, sdr_white_nits)),
             ));
+            compositor.set_orientation(output.orientation);
         }
         // The substituted layer images are not what the retained target holds
         // from an earlier frame, so a composited frame renders densely.
@@ -2393,25 +2488,18 @@ impl VelloDrmBridge {
         } else {
             damage
         };
-        if hdr
-            && !self
-                .hdr_encoders
-                .iter()
-                .any(|pipeline| pipeline.format() == target.format)
-        {
-            self.hdr_encoders
-                .push(HdrEncodePipeline::new(&self.target.device, target.format));
-        }
+        self.prepare_final_pass(output, hdr, sdr_white_nits);
         let encode = self
             .hdr_encoders
             .iter()
-            .find(|pipeline| hdr && pipeline.format() == target.format);
-        if let Some(pipeline) = encode {
-            pipeline.set_sdr_white(&self.target.queue, sdr_white_nits);
-        }
+            .find(|pipeline| hdr && pipeline.format() == output.format);
+        let oriented = self
+            .oriented_copy
+            .as_ref()
+            .filter(|_| !hdr && output.orientation != OutputTransform::Normal);
         let blitter = &self.bgra_blitter;
-        let view = &target.view;
-        let format = target.format;
+        let view = output.view;
+        let format = output.format;
         let compositor = self.hdr_compositor.as_ref().filter(|_| composite);
         let previous_dispatch_submission = self.dispatch_stage_observer.as_ref().and_then(|_| {
             self.target
@@ -2425,10 +2513,11 @@ impl VelloDrmBridge {
             FrameOutput::GpuOnly,
             CompletionPolicy::Absolute(deadline),
             timing.as_mut(),
-            |device, encoder, source| match (compositor, encode) {
-                (Some(compositor), _) => compositor.encode(encoder, source, view, format),
-                (None, Some(pipeline)) => pipeline.encode(device, encoder, source, view),
-                (None, None) => blitter.copy(device, encoder, source, view),
+            |device, encoder, source| match (compositor, encode, oriented) {
+                (Some(compositor), _, _) => compositor.encode(encoder, source, view, format),
+                (None, Some(pipeline), _) => pipeline.encode(device, encoder, source, view),
+                (None, None, Some(copy)) => copy.copy(device, encoder, source, view),
+                (None, None, None) => blitter.copy(device, encoder, source, view),
             },
         );
         self.target.hdr_pass = None;
@@ -2560,20 +2649,10 @@ impl VelloDrmBridge {
         Ok(())
     }
 
-    /// `LinuxPerPhase` timeout errors are recoverable, but only after an explicit cool-down. Other
-    /// errors retain their existing fail-closed behaviour and may be retried on the next frame.
+    /// Completion timeouts are recoverable, but only after an explicit cool-down. Other errors
+    /// retain their existing fail-closed behaviour and may be retried on the next frame.
     fn note_render_failure(&mut self, error: &BridgeError) {
-        let timed_out = match error {
-            BridgeError::Map(message) => {
-                message.contains("LinuxPerPhase fence wait")
-                    || message.contains("LinuxPerPhase map_async channel")
-            }
-            BridgeError::BumpReadback(message) => {
-                message.contains("LinuxPerPhase counter settlement timeout")
-            }
-            _ => false,
-        };
-        if !timed_out {
+        if !matches!(error, BridgeError::CompletionTimeout { .. }) {
             self.recovery_not_before = None;
             self.recovery_backoff = RECOVERY_BACKOFF_INITIAL;
             return;
@@ -2586,6 +2665,7 @@ impl VelloDrmBridge {
             .min(RECOVERY_BACKOFF_MAX);
         tracing::warn!(
             ?delay,
+            %error,
             "DRM paint completion timed out; preserving the last scanout and backing off renderer recovery"
         );
     }
@@ -2790,15 +2870,6 @@ impl VelloDrmBridge {
 
         if self.readback.len() == needed {
             self.mark_retained_complete(None);
-        }
-        // Compile the panel renderer on a full frame, not on the first
-        // overview sample. A fade must not pay pipeline creation.
-        if self.panel_renderer.is_none() {
-            self.panel_renderer = ui::offscreen::OffscreenRenderer::try_new(
-                Self::OVERVIEW_PANEL_EDGE,
-                Self::OVERVIEW_PANEL_EDGE,
-            )
-            .ok();
         }
 
         Ok(&self.readback)
@@ -3674,6 +3745,7 @@ impl VelloDrmBridge {
         self.retained_staging_valid = false;
         self.staging_content = None;
         self.target.last_successful_revision = None;
+        self.target.owed_damage.clear();
     }
 
     #[inline]
@@ -4007,18 +4079,20 @@ impl VelloDrmBridge {
                     self.target.geometry_generation,
                     self.target.last_successful_revision,
                 ));
-        let result = self.target.render(
-            scene,
-            damage,
-            FrameOutput::Xrgb {
-                buffer: &self.readback_buf,
-                stride: self.padded_bytes_per_row,
-                partial,
-            },
-            CompletionPolicy::LinuxPerPhase,
-            timing,
-            |_, _, _| {},
-        );
+        let result = self.target.linux_frame_policy().and_then(|policy| {
+            self.target.render(
+                scene,
+                damage,
+                FrameOutput::Xrgb {
+                    buffer: &self.readback_buf,
+                    stride: self.padded_bytes_per_row,
+                    partial,
+                },
+                policy,
+                timing,
+                |_, _, _| {},
+            )
+        });
         // The bridge publishes only after CPU output succeeds as well. A swizzle error remains
         // its deliberately stricter invalidate-both boundary, independent of GPU completion.
         self.invalidate_retained();
@@ -4058,6 +4132,7 @@ impl VelloDrmBridge {
         target.set_base_color(color);
         target.present_generation = self.target.present_generation;
         self.target = target;
+        self.invalidate_output_surfaces();
         (self.readback_buf, self.padded_bytes_per_row) =
             Self::allocate_staging(&self.target.device, width, height);
         self.readback.clear();
@@ -4163,11 +4238,20 @@ impl VelloDrmBridge {
             submission_index: None,
             timeout: Some(std::time::Duration::from_secs(1)),
         });
+        // Timeouts are typed the same as on the frame path, so a caller that feeds them to the
+        // recovery back-off backs off for the same reasons.
         if let Err(e) = waited {
             // Cancels an in-flight map request (or releases a map that raced to completion) so
             // the next production frame can retry instead of seeing this buffer as pending.
             readback_buf.unmap();
-            return Err(BridgeError::Map(format!("fence wait: {e:?}")));
+            return Err(match e {
+                wgpu::PollError::Timeout => BridgeError::CompletionTimeout {
+                    phase: CompletionPhase::Fence,
+                },
+                other @ wgpu::PollError::WrongSubmissionIndex(..) => {
+                    BridgeError::Map(format!("fence wait: {other:?}"))
+                }
+            });
         }
         match rx.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(Ok(())) => {}
@@ -4175,9 +4259,17 @@ impl VelloDrmBridge {
                 readback_buf.unmap();
                 return Err(BridgeError::Map(format!("{e:?}")));
             }
-            Err(e) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 readback_buf.unmap();
-                return Err(BridgeError::Map(format!("map_async channel: {e}")));
+                return Err(BridgeError::CompletionTimeout {
+                    phase: CompletionPhase::MapCallback,
+                });
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                readback_buf.unmap();
+                return Err(BridgeError::Map(
+                    "map_async callback dropped without reporting".to_owned(),
+                ));
             }
         }
         Ok(slice.get_mapped_range())
@@ -4372,6 +4464,7 @@ impl VelloDrmBridge {
         // that changed its output model but failed to complete reallocation from reusing an
         // ambiguous target on the next frame.
         self.invalidate_retained();
+        self.invalidate_output_surfaces();
         self.bump_xrgb_history_epoch();
         // A poisoned target refuses to resize; rebuilding it at the new size is what a failed
         // frame followed by a display change needs. Refusing instead left the presenter asking
@@ -4389,14 +4482,6 @@ impl VelloDrmBridge {
             Self::allocate_staging(&self.target.device, width, height);
         // Reset the tight buffer for the next `paint`; the new size may be larger, so clearing is cleaner than keeping capacity.
         self.readback.clear();
-        // Stale images no longer match the framebuffer. The next settled
-        // paint records the workspace again; replaying the old bytes would
-        // upload the wrong size, and rejecting them made the close render
-        // both outputs.
-        self.workspace_snapshots.clear();
-        self.shown_workspace = None;
-        self.overview_base.clear();
-        self.overview_generation = 0;
         Ok(())
     }
 
@@ -4421,6 +4506,16 @@ impl VelloDrmBridge {
     /// full-render API and for conservative versioned fallbacks.
     pub fn last_sparse_render_attempts(&self) -> usize {
         self.target.last_sparse_render_attempts
+    }
+
+    /// The image atlas and the CPU pixels its residents keep alive.
+    pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
+        self.target.image_cache_stats()
+    }
+
+    /// GPU allocations the renderer accounts for, the image atlas included.
+    pub fn renderer_memory_stats(&self) -> vello::RendererMemoryStats {
+        self.target.memory_stats()
     }
 
     /// Dense Vello submissions used by the latest paint, including bump-budget retries.
@@ -5204,6 +5299,632 @@ mod tests {
         bridge
     }
 
+    /// A frame that renders in full.
+    fn full_frame(revision: u64) -> SceneDamage<'static> {
+        SceneDamage {
+            revision,
+            previous_revision: None,
+            regions: None,
+        }
+    }
+
+    /// One output's frame through the production per-output path, into an offscreen
+    /// stand-in for its imported scanout target, read back as BGRA bytes.
+    fn paint_output_pixels(
+        bridge: &mut VelloDrmBridge,
+        scene: &Scene,
+        view: &OutputView,
+        revision: u64,
+    ) -> Vec<u8> {
+        paint_output_damage(bridge, scene, view, full_frame(revision)).1
+    }
+
+    /// [`paint_output_pixels`] for a frame carrying `damage`, with the frame's stats.
+    fn paint_output_damage(
+        bridge: &mut VelloDrmBridge,
+        scene: &Scene,
+        view: &OutputView,
+        damage: SceneDamage<'_>,
+    ) -> (GpuFrameStats, Vec<u8>) {
+        let (texture, stats) = paint_output_offscreen(bridge, scene, view, damage);
+        (stats, read_target(bridge, &texture))
+    }
+
+    /// The bytes of a 4-byte-per-pixel scanout stand-in, rows tight.
+    fn read_target(bridge: &VelloDrmBridge, texture: &wgpu::Texture) -> Vec<u8> {
+        let (width, height) = (texture.width(), texture.height());
+        let (device, queue) = bridge.gpu();
+        let (device, queue) = (device.clone(), queue.clone());
+        let (buffer, stride) = VelloDrmBridge::allocate_staging(&device, width, height);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        VelloDrmBridge::append_full_copy(&mut encoder, texture, &buffer, stride, width, height);
+        queue.submit([encoder.finish()]);
+        let mapped =
+            VelloDrmBridge::map_device_readback(&device, &buffer).expect("scanout stand-in maps");
+        let mut pixels = Vec::new();
+        for row in mapped.chunks(stride as usize).take(height as usize) {
+            pixels.extend_from_slice(&row[..(width as usize).saturating_mul(4)]);
+        }
+        drop(mapped);
+        buffer.unmap();
+        pixels
+    }
+
+    /// One output's frame through the production per-output path into an offscreen
+    /// stand-in for its imported scanout target, which is returned unread.
+    fn paint_output_offscreen(
+        bridge: &mut VelloDrmBridge,
+        scene: &Scene,
+        view: &OutputView,
+        damage: SceneDamage<'_>,
+    ) -> (wgpu::Texture, GpuFrameStats) {
+        paint_output_offscreen_as(bridge, scene, view, damage, wgpu::TextureFormat::Bgra8Unorm)
+    }
+
+    /// [`paint_output_offscreen`] into a stand-in of `format`: `Bgra8Unorm` for an SDR
+    /// scanout, `Rgb10a2Unorm` for an `XBGR2101010` HDR one.
+    fn paint_output_offscreen_as(
+        bridge: &mut VelloDrmBridge,
+        scene: &Scene,
+        view: &OutputView,
+        damage: SceneDamage<'_>,
+        format: wgpu::TextureFormat,
+    ) -> (wgpu::Texture, GpuFrameStats) {
+        let (width, height) = view.target_size();
+        let (device, _) = bridge.gpu();
+        let device = device.clone();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("output-view-test-scanout"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let stats = bridge
+            .paint_output_into(
+                scene,
+                view,
+                damage,
+                OutputTarget {
+                    view: &target_view,
+                    format,
+                    size: (width, height),
+                    orientation: view.orientation,
+                },
+                Instant::now()
+                    .checked_add(tilo_test_env::hang_bound())
+                    .expect("the hang bound fits in an Instant"),
+                OutputSignal {
+                    sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                    hdr_layers: &[],
+                },
+            )
+            .expect("the output's frame renders");
+        (texture, stats)
+    }
+
+    #[test]
+    fn output_view_renders_its_subrect() {
+        // A 200x100 desktop of two 100x100 outputs side by side: red on the
+        // left output, blue on the right.
+        let mut bridge = required_bridge(200, 100);
+        let mut scene = Scene::new();
+        for (x, color) in [
+            (0.0, Color::from_rgb8(255, 0, 0)),
+            (100.0, Color::from_rgb8(0, 0, 255)),
+        ] {
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                color,
+                None,
+                &vello::kurbo::Rect::new(x, 0.0, x + 100.0, 100.0),
+            );
+        }
+        let right = OutputView {
+            id: crate::shell::render::OutputId(1),
+            transform: Affine::translate((-100.0, 0.0)),
+            size: (100, 100),
+            orientation: OutputTransform::Normal,
+        };
+        let left = OutputView::at(crate::shell::render::OutputId(0), (0, 0), (100, 100));
+        // The scanout stand-in is BGRA.
+        let blue: [u8; 4] = [255, 0, 0, 255];
+        let red: [u8; 4] = [0, 0, 255, 255];
+        for (view, expected, name) in [(right, blue, "right"), (left, red, "left")] {
+            let pixels = paint_output_pixels(&mut bridge, &scene, &view, 1);
+            assert_eq!(pixels.len(), 100 * 100 * 4);
+            let wrong = pixels
+                .chunks_exact(4)
+                .filter(|pixel| *pixel != expected)
+                .count();
+            assert_eq!(
+                wrong, 0,
+                "every pixel of the {name} output is its half of the scene"
+            );
+        }
+        assert_eq!(
+            bridge.output_surfaces.len(),
+            2,
+            "each output keeps its own retained surface"
+        );
+        assert_eq!(
+            bridge.size(),
+            (200, 100),
+            "the scene's own target is untouched by the outputs"
+        );
+    }
+
+    const ORIENTATIONS: [OutputTransform; 4] = [
+        OutputTransform::Normal,
+        OutputTransform::Rotate90,
+        OutputTransform::Rotate180,
+        OutputTransform::Rotate270,
+    ];
+
+    /// A desktop of `size` in which every turn of a pixel shows: a distinct colour in two
+    /// corners, an anti-aliased diagonal, a translucent circle and a scaled image.
+    fn asymmetric_scene(size: (u32, u32)) -> Scene {
+        use vello::kurbo::{BezPath, Circle, Rect};
+        use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+        let (w, h) = (f64::from(size.0), f64::from(size.1));
+        let mut scene = Scene::new();
+        for (color, rect) in [
+            (Color::from_rgb8(30, 60, 90), Rect::new(0.0, 0.0, w, h)),
+            (
+                Color::from_rgb8(230, 20, 40),
+                Rect::new(0.0, 0.0, w / 3.0, h / 4.0),
+            ),
+            (
+                Color::from_rgb8(20, 210, 70),
+                Rect::new(w * 0.6, h * 0.7, w, h),
+            ),
+        ] {
+            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+        }
+        let mut wedge = BezPath::new();
+        wedge.move_to((0.0, h));
+        wedge.line_to((w * 0.8, 0.0));
+        wedge.line_to((w, h * 0.2));
+        wedge.close_path();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(250, 200, 20, 180),
+            None,
+            &wedge,
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(120, 80, 250, 200),
+            None,
+            &Circle::new((w * 0.3, h * 0.6), h * 0.21),
+        );
+        let texels: Vec<u8> = (0_u8..12)
+            .flat_map(|i| {
+                [
+                    i.wrapping_mul(21),
+                    255_u8.wrapping_sub(i.wrapping_mul(19)),
+                    i.wrapping_mul(7),
+                    255,
+                ]
+            })
+            .collect();
+        let image = ImageData {
+            data: Blob::new(std::sync::Arc::new(texels)),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width: 4,
+            height: 3,
+        };
+        scene.fill(
+            Fill::NonZero,
+            // Five times its size, at (w/2, h/10).
+            Affine::new([5.0, 0.0, 0.0, 5.0, w * 0.5, h * 0.1]),
+            &ImageBrush::new(image),
+            None,
+            &Rect::new(0.0, 0.0, 4.0, 3.0),
+        );
+        scene
+    }
+
+    /// BGRA scanout bytes as the RGBA source the readback kernels take.
+    fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
+        bgra.chunks_exact(4)
+            .flat_map(|pixel| [pixel[2], pixel[1], pixel[0], pixel[3]])
+            .collect()
+    }
+
+    /// Pixels whose colour channels differ between a GPU `Bgra8Unorm` target and the CPU
+    /// kernel's `XRGB8888` bytes. The X byte is padding KMS ignores.
+    fn differing_pixels(gpu: &[u8], cpu: &[u8]) -> usize {
+        assert_eq!(gpu.len(), cpu.len());
+        gpu.chunks_exact(4)
+            .zip(cpu.chunks_exact(4))
+            .filter(|(g, c)| g[..3] != c[..3])
+            .count()
+    }
+
+    #[test]
+    fn a_rotated_lone_output_matches_the_readback_byte_for_byte() {
+        // The output is the desktop: the direct path renders into the bridge's own target,
+        // which is what the readback presenter renders too, and turns it on the GPU. The
+        // readback turns the same render on the CPU (`paint_one_scanout` without ICC or HDR).
+        let size = (90, 52);
+        let mut bridge = required_bridge(size.0, size.1);
+        let scene = asymmetric_scene(size);
+        let rgba = bridge.paint(&scene).expect("the dense render").to_vec();
+        for (revision, transform) in (1..).zip(ORIENTATIONS) {
+            let view =
+                OutputView::at(crate::shell::render::OutputId(0), (0, 0), size).oriented(transform);
+            assert!(bridge.view_is_whole_scene(&view));
+            let gpu = paint_output_pixels(&mut bridge, &scene, &view, revision);
+            let (pw, ph) = view.target_size();
+            let mut cpu = vec![0_u8; (pw * ph * 4) as usize];
+            swizzle_subrect_rgba_to_xrgb8888_composited(
+                SubrectSource {
+                    src_rgba: &rgba,
+                    src_w: size.0 as usize,
+                    src_h: size.1 as usize,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut cpu,
+                (pw * 4) as usize,
+                (pw as usize, ph as usize),
+                transform,
+                None,
+            );
+            assert_eq!(
+                differing_pixels(&gpu, &cpu),
+                0,
+                "{transform:?}: the GPU turn is the readback's, byte for byte"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rotated_output_beside_another_turns_its_own_surface() {
+        // Two 90x52 outputs side by side; the right one is rotated and renders into its own
+        // surface. Its scanout must be its unrotated image turned exactly as the readback
+        // kernel turns it.
+        let output = (90, 52);
+        let mut bridge = required_bridge(output.0 * 2, output.1);
+        let scene = asymmetric_scene((output.0 * 2, output.1));
+        let id = crate::shell::render::OutputId(1);
+        let upright = OutputView::at(id, (90, 0), output);
+        let unrotated = bgra_to_rgba(&paint_output_pixels(&mut bridge, &scene, &upright, 1));
+        for (revision, transform) in (2..).zip(ORIENTATIONS) {
+            let view = upright.oriented(transform);
+            assert!(!bridge.view_is_whole_scene(&view));
+            let gpu = paint_output_pixels(&mut bridge, &scene, &view, revision);
+            let (pw, ph) = view.target_size();
+            let mut cpu = vec![0_u8; (pw * ph * 4) as usize];
+            swizzle_subrect_rgba_to_xrgb8888_transformed(
+                SubrectSource {
+                    src_rgba: &unrotated,
+                    src_w: output.0 as usize,
+                    src_h: output.1 as usize,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut cpu,
+                (pw * 4) as usize,
+                pw as usize,
+                ph as usize,
+                transform,
+            );
+            assert_eq!(
+                differing_pixels(&gpu, &cpu),
+                0,
+                "{transform:?}: the surface is turned on the GPU exactly as on the CPU"
+            );
+        }
+        assert_eq!(
+            bridge.output_surfaces.len(),
+            1,
+            "the rotated output keeps one surface in scene orientation, whatever its turn"
+        );
+    }
+
+    #[test]
+    fn a_rotated_hdr_output_matches_the_readback_pq_encode() {
+        // The readback encodes and turns on the CPU (`SdrToPqEncoder`); the direct path on the
+        // GPU. The encodes differ by at most 2 of 1023 code values
+        // (`gpu_encode_matches_the_cpu_reference`); the turn must add nothing to that.
+        let size = (90, 52);
+        let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+        let mut bridge = required_bridge(size.0, size.1);
+        let scene = asymmetric_scene(size);
+        let rgba = bridge.paint(&scene).expect("the dense render").to_vec();
+        let encoder = crate::shell::color_pipeline::SdrToPqEncoder::new(white);
+        for (revision, transform) in (1..).zip(ORIENTATIONS) {
+            let view =
+                OutputView::at(crate::shell::render::OutputId(0), (0, 0), size).oriented(transform);
+            let (texture, _) = paint_output_offscreen_as(
+                &mut bridge,
+                &scene,
+                &view,
+                full_frame(revision),
+                wgpu::TextureFormat::Rgb10a2Unorm,
+            );
+            let gpu = read_target(&bridge, &texture);
+            let (pw, ph) = view.target_size();
+            let mut cpu = vec![0_u8; (pw * ph * 4) as usize];
+            encode_subrect_rgba_to_xbgr2101010_transformed(
+                SubrectSource {
+                    src_rgba: &rgba,
+                    src_w: size.0 as usize,
+                    src_h: size.1 as usize,
+                    src_x: 0,
+                    src_y: 0,
+                },
+                &mut cpu,
+                (pw * 4) as usize,
+                (pw as usize, ph as usize),
+                transform,
+                &encoder,
+                None,
+            );
+            let word = |bytes: &[u8]| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let max_delta = gpu
+                .chunks_exact(4)
+                .zip(cpu.chunks_exact(4))
+                .flat_map(|(g, c)| {
+                    let (g, c) = (word(g), word(c));
+                    [0, 10, 20].map(|shift| {
+                        (i64::from((g >> shift) & 0x3FF) - i64::from((c >> shift) & 0x3FF)).abs()
+                    })
+                })
+                .max()
+                .unwrap_or(0);
+            assert!(
+                max_delta <= 2,
+                "{transform:?}: the GPU PQ encode differs from the readback's by {max_delta} code values"
+            );
+        }
+    }
+
+    #[test]
+    fn dropped_direct_frame_makes_the_output_render_in_full() {
+        // Two 100x100 outputs side by side; damage falls only on the left one.
+        let mut bridge = required_bridge(200, 100);
+        let scene = Scene::new();
+        let left = OutputView::at(crate::shell::render::OutputId(0), (0, 0), (100, 100));
+        let right = OutputView::at(crate::shell::render::OutputId(1), (100, 0), (100, 100));
+        paint_output_pixels(&mut bridge, &scene, &left, 1);
+        paint_output_pixels(&mut bridge, &scene, &right, 1);
+        let left_only = [vello::FineDamageRect {
+            x: 10,
+            y: 10,
+            width: 20,
+            height: 20,
+        }];
+        let damage = |revision| SceneDamage {
+            revision,
+            previous_revision: Some(revision - 1),
+            regions: Some(&left_only),
+        };
+        assert!(
+            !bridge.keep_unchanged_output(&left, damage(2)),
+            "the damaged output renders"
+        );
+        assert!(
+            bridge.keep_unchanged_output(&right, damage(2)),
+            "an undamaged output holding the previous revision keeps its image"
+        );
+        // A busy flip dropped the right output's frame: its surface is ahead of KMS.
+        bridge.invalidate_output_view(&right);
+        assert!(
+            !bridge.keep_unchanged_output(&right, damage(3)),
+            "after a dropped flip the output must not count as unchanged"
+        );
+    }
+
+    #[test]
+    fn per_output_view_never_bands_two_4k_heads() {
+        // Two 3840x2160 heads side by side span 7680x2160: 30x9 = 270 Vello bins, past the
+        // 256 one render can address, so the combined target rendered in two bands. While
+        // both render direct the bridge's target is the head at the origin (the DRM
+        // presenter's `bridge_extent`), and each head is one render.
+        let head = (3840, 2160);
+        assert_eq!(
+            RetainedGpuTarget::band_rows((7680, 2160)),
+            Some(2048),
+            "the combined desktop is past the bin limit"
+        );
+        assert_eq!(
+            RetainedGpuTarget::band_rows(head),
+            None,
+            "one head fits one render"
+        );
+        let mut bridge = required_bridge(head.0, head.1);
+        let mut scene = Scene::new();
+        // A window spanning both heads.
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(40, 120, 200),
+            None,
+            &vello::kurbo::Rect::new(3000.0, 400.0, 4800.0, 1600.0),
+        );
+        let views = [
+            OutputView::at(crate::shell::render::OutputId(0), (0, 0), head),
+            OutputView::at(crate::shell::render::OutputId(1), (3840, 0), head),
+        ];
+        for (index, view) in views.iter().enumerate() {
+            let (_, stats) = paint_output_offscreen(&mut bridge, &scene, view, full_frame(1));
+            assert_eq!(
+                (stats.render_attempts, bridge.last_render_attempts()),
+                (1, 1),
+                "head {index} renders in one pass, not in bands"
+            );
+        }
+        assert!(
+            bridge.view_is_whole_scene(&views[0]),
+            "the head at the origin renders straight into the bridge's target"
+        );
+        assert!(bridge.target.band.is_none(), "no band target was needed");
+        assert!(
+            bridge
+                .output_surfaces
+                .iter()
+                .all(|(_, surface)| surface.size == head && surface.band.is_none()),
+            "the other head's surface is its own size and never banded"
+        );
+        assert_eq!(bridge.size(), head, "no target spans both heads");
+    }
+
+    #[test]
+    fn an_undamaged_origin_output_keeps_its_image_in_the_bridge_target() {
+        // The bridge's target is the left output's: damage on the right one leaves it as it is.
+        let mut bridge = required_bridge(100, 100);
+        let scene = Scene::new();
+        let left = OutputView::at(crate::shell::render::OutputId(0), (0, 0), (100, 100));
+        let right = OutputView::at(crate::shell::render::OutputId(1), (100, 0), (100, 100));
+        assert!(bridge.view_is_whole_scene(&left));
+        paint_output_pixels(&mut bridge, &scene, &left, 1);
+        paint_output_pixels(&mut bridge, &scene, &right, 1);
+        let right_only = [vello::FineDamageRect {
+            x: 120,
+            y: 10,
+            width: 20,
+            height: 20,
+        }];
+        let damage = SceneDamage {
+            revision: 2,
+            previous_revision: Some(1),
+            regions: Some(&right_only),
+        };
+        assert!(
+            bridge.keep_unchanged_output(&left, damage),
+            "damage on the other output neither renders nor flips this one"
+        );
+        assert!(
+            !bridge.keep_unchanged_output(&right, damage),
+            "the damaged output renders"
+        );
+        assert_eq!(
+            bridge.target.last_successful_revision,
+            Some(2),
+            "the kept target holds the new revision, so the next frame repairs it sparsely"
+        );
+    }
+
+    #[test]
+    fn a_deferred_output_repairs_its_owed_damage_sparsely() {
+        // The right output skips revision 2 (its flip is pending), whose damage falls on it.
+        // Revision 3 damages only the left output; the right one must still show revision 2.
+        let mut bridge = required_bridge(100, 100);
+        let right = OutputView::at(crate::shell::render::OutputId(1), (100, 0), (100, 100));
+        let blue = Color::from_rgb8(0, 0, 255);
+        let red = Color::from_rgb8(255, 0, 0);
+        let mut before = Scene::new();
+        before.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            blue,
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, 200.0, 100.0),
+        );
+        let mut after = Scene::new();
+        after.append(&before, None);
+        after.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            red,
+            None,
+            &vello::kurbo::Rect::new(110.0, 10.0, 130.0, 30.0),
+        );
+        paint_output_pixels(&mut bridge, &before, &right, 1);
+        let on_right = [vello::FineDamageRect {
+            x: 110,
+            y: 10,
+            width: 20,
+            height: 20,
+        }];
+        assert!(
+            bridge.defer_output(
+                &right,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&on_right),
+                },
+            ),
+            "a surface holding the previous revision records the skipped damage"
+        );
+        let on_left = [vello::FineDamageRect {
+            x: 10,
+            y: 50,
+            width: 10,
+            height: 10,
+        }];
+        let next = SceneDamage {
+            revision: 3,
+            previous_revision: Some(2),
+            regions: Some(&on_left),
+        };
+        assert!(
+            !bridge.keep_unchanged_output(&right, next),
+            "owed damage makes the output render although this frame's damage is elsewhere"
+        );
+        let (stats, pixels) = paint_output_damage(&mut bridge, &after, &right, next);
+        assert_eq!(
+            (stats.sparse_attempts, stats.full_attempts),
+            (1, 0),
+            "the owed damage is repaired sparsely"
+        );
+        let pixel = |x: usize, y: usize| {
+            pixels
+                .chunks_exact(4)
+                .nth(y.saturating_mul(100).saturating_add(x))
+                .expect("the pixel lies on the output")
+                .to_vec()
+        };
+        // The scanout stand-in is BGRA.
+        assert_eq!(
+            pixel(20, 20),
+            [0, 0, 255, 255],
+            "the skipped frame's change shows"
+        );
+        assert_eq!(pixel(60, 60), [255, 0, 0, 255], "the rest is unchanged");
+
+        // Pixels that do not hold the previous revision cannot owe a frame: the output's next
+        // render is full.
+        assert!(!bridge.defer_output(
+            &right,
+            SceneDamage {
+                revision: 9,
+                previous_revision: Some(7),
+                regions: Some(&on_right),
+            },
+        ));
+        let (stats, _) = paint_output_damage(
+            &mut bridge,
+            &after,
+            &right,
+            SceneDamage {
+                revision: 10,
+                previous_revision: Some(9),
+                regions: Some(&on_left),
+            },
+        );
+        assert_eq!(
+            stats.sparse_attempts, 0,
+            "an output that lost its debt renders in full"
+        );
+    }
+
     impl VelloDrmBridge {
         /// Test-only CPU oracle from the exact staging image settled by the preceding render.
         /// It adds no GPU render or copy, and is deliberately unavailable to normal callers.
@@ -5249,6 +5970,85 @@ mod tests {
         let rect = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
         scene
+    }
+
+    /// A sparse frame on the combined readback (an overview fade, a hover)
+    /// renders the scene once inside its damage and reads back only the
+    /// damage, never the combined desktop. The encoded desktop it leaves is
+    /// the one a full render of the same scene gives.
+    #[test]
+    fn encoded_regions_read_back_only_the_damage() {
+        let (w, h) = (256_u32, 128_u32);
+        let backdrop = Color::from_rgb8(0x20, 0x40, 0x60);
+        let frame = |shade: u8| {
+            let mut scene = rect_scene(w, h, backdrop);
+            let panel = vello::kurbo::Rect::new(40.0, 20.0, 88.0, 44.0);
+            let color = Color::from_rgba8(0xf0, shade, 0x10, 0xa0);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &panel);
+            scene
+        };
+        let damage = [
+            vello::FineDamageRect {
+                x: 32,
+                y: 16,
+                width: 64,
+                height: 32,
+            },
+            vello::FineDamageRect {
+                x: 192,
+                y: 96,
+                width: 16,
+                height: 16,
+            },
+        ];
+        let damage_bytes = (64 * 32 + 16 * 16) * 4;
+        let mut bridge = required_bridge(w, h);
+        bridge.set_phase_timing_enabled(true);
+        bridge.paint(&frame(0x10)).expect("full frame");
+        let full = bridge.last_phase_timing().expect("full frame timing");
+        assert_eq!(full.cpu_output_bytes, u64::from(w * h * 4));
+
+        for shade in [0x60, 0xb0] {
+            let scene = frame(shade);
+            bridge
+                .refresh_encoded_regions(&scene, &damage)
+                .expect("sparse frame");
+            let timing = bridge.last_phase_timing().expect("sparse frame timing");
+            assert_eq!(
+                timing.readback_bytes, damage_bytes,
+                "only the damage is read"
+            );
+            assert_eq!(
+                timing.cpu_output_bytes, damage_bytes,
+                "only the damage is copied"
+            );
+            let encoded = bridge.encoded_rgba().expect("encoded desktop").to_vec();
+            let mut reference = required_bridge(w, h);
+            let dense = reference.paint(&scene).expect("reference frame").to_vec();
+            assert!(encoded == dense, "the repaired desktop is the full render");
+        }
+        assert_eq!(
+            (
+                bridge.last_sparse_render_attempts(),
+                bridge.last_full_render_attempts()
+            ),
+            (1, 0),
+            "a frame after a repaired one renders only its damage on the GPU"
+        );
+        assert!(
+            bridge
+                .refresh_encoded_regions(
+                    &frame(0),
+                    &[vello::FineDamageRect {
+                        x: 200,
+                        y: 0,
+                        width: 64,
+                        height: 8,
+                    }],
+                )
+                .is_err(),
+            "a region leaving the desktop is not repaired"
+        );
     }
 
     /// Scratch pooled for a full frame or an old size is released once the
@@ -5940,10 +6740,175 @@ mod tests {
             pending_elapsed: Duration::from_millis(200),
             waits: Vec::new(),
             counter_remaining: Vec::new(),
+            counter_waits: Vec::new(),
             counters: std::collections::VecDeque::new(),
             failure: None,
             destroy_at_marker: false,
+            disconnect_map_callback: false,
         }
+    }
+
+    /// Recovery back-off is chosen by the error's type, never its wording: a message that reads
+    /// like a timeout does not start it, and a typed timeout does whatever it says.
+    #[test]
+    fn only_typed_timeouts_start_backoff() {
+        let mut bridge = required_bridge(64, 64);
+        for phase in [
+            CompletionPhase::Fence,
+            CompletionPhase::MapCallback,
+            CompletionPhase::CounterSettlement,
+            CompletionPhase::FrameBudget,
+        ] {
+            bridge.recovery_not_before = None;
+            bridge.note_render_failure(&BridgeError::CompletionTimeout { phase });
+            assert!(
+                bridge.recovery_not_before.is_some(),
+                "{phase:?} timeout starts the back-off"
+            );
+        }
+        for error in [
+            BridgeError::Map("LinuxPerPhase map_async channel: disconnected".to_owned()),
+            BridgeError::Map("LinuxPerPhase fence wait: Timeout".to_owned()),
+            BridgeError::BumpReadback("LinuxPerPhase counter settlement timeout (1s)".to_owned()),
+            BridgeError::DevicePoll("Timeout".to_owned()),
+            BridgeError::DeadlineExceeded,
+        ] {
+            bridge.recovery_not_before = Some(Instant::now() + Duration::from_secs(1));
+            bridge.note_render_failure(&error);
+            assert!(
+                bridge.recovery_not_before.is_none(),
+                "{error:?} is not a completion timeout and fails closed"
+            );
+            assert_eq!(bridge.recovery_backoff, RECOVERY_BACKOFF_INITIAL);
+        }
+    }
+
+    /// A map callback that can never report (its sender dropped, as on device loss) is a
+    /// failure to fail closed on, not a timeout to wait out: the next frame is not held back.
+    #[test]
+    fn disconnected_map_channel_is_not_a_timeout() {
+        let mut bridge = required_bridge(128, 128);
+        let mut test = completion_clock();
+        test.disconnect_map_callback = true;
+        bridge.target.completion_test = Some(test);
+        let mut bytes = vec![0xAB; 128 * 128 * 4];
+        let result = bridge.paint_damage_into_xrgb8888(
+            &Scene::new(),
+            version(1, None, None),
+            &mut bytes,
+            512,
+        );
+        assert!(
+            matches!(result, Err(BridgeError::Map(_))),
+            "a dropped callback is a mapping failure: {result:?}"
+        );
+        assert!(bridge.recovery_not_before.is_none(), "no back-off");
+        assert!(bytes.iter().all(|byte| *byte == 0xAB), "nothing published");
+        let test = bridge.target.completion_test.as_ref().unwrap();
+        assert_eq!(
+            test.waits.last().map(|(phase, _)| *phase),
+            Some(WaitPhase::MapCallback),
+            "the failure is the callback wait's own"
+        );
+        // The next frame renders at once on a rebuilt target.
+        bridge
+            .paint_damage_into_xrgb8888(&Scene::new(), version(2, None, None), &mut bytes, 512)
+            .expect("no back-off holds the next frame");
+    }
+
+    /// Pending counters are settled by one blocking wait on their submission for the whole
+    /// remaining allowance, not sampled in millisecond sleeps until the deadline.
+    #[test]
+    fn counter_settlement_waits_on_the_submission_not_a_sleep_loop() {
+        let mut target = required_target(128, 128);
+        let params = RenderParams {
+            base_color: Color::BLACK,
+            width: 128,
+            height: 128,
+            antialiasing_method: AaConfig::Area,
+        };
+        let scene = rect_scene(128, 128, Color::WHITE);
+        // A real submission whose counter readback is still in flight when settlement starts.
+        let submission = target
+            .renderer
+            .render_to_texture_with_post_render_checked_indexed(
+                &target.device,
+                &target.queue,
+                &scene,
+                &target.view,
+                &params,
+                |_| {},
+                || true,
+            )
+            .expect("submitted");
+        let mut test = completion_clock();
+        test.pending_elapsed = Duration::from_millis(1);
+        // However the real readback stands, the first poll reports it pending.
+        test.counters.push_back(Ok(vello::BumpBudgetPoll::Pending));
+        let frame_deadline = test.start + LINUX_FRAME_BUDGET;
+        target.completion_test = Some(test);
+        let overflowed = target
+            .settle_counters(
+                CompletionPolicy::LinuxPerPhase { frame_deadline },
+                Some(&submission),
+            )
+            .expect("the submission completes and its counters settle");
+        assert!(!overflowed);
+        let test = target.completion_test.as_ref().unwrap();
+        assert_eq!(
+            test.counter_waits,
+            [BUMP_SETTLEMENT_WAIT],
+            "one wait for the whole allowance"
+        );
+        assert_eq!(
+            test.counter_remaining.len(),
+            2,
+            "pending, then complete once the submission's callbacks ran"
+        );
+    }
+
+    /// Recovery attempts share the frame's one Linux budget: three slow overflowing attempts
+    /// fail as a completion timeout at the budget instead of a fourth taking the frame past it.
+    #[test]
+    fn linux_recovery_attempts_share_one_frame_budget() {
+        let mut bridge = required_bridge(128, 128);
+        let mut test = completion_clock();
+        test.fence_elapsed = Duration::from_secs(1);
+        test.callback_elapsed = Duration::from_secs(1);
+        // Each attempt's counters stay pending for 800 ms of its 1 s allowance, then overflow.
+        test.counters = (0..3)
+            .flat_map(|_| {
+                [
+                    Ok(vello::BumpBudgetPoll::Pending),
+                    Ok(vello::BumpBudgetPoll::Pending),
+                    Ok(vello::BumpBudgetPoll::Pending),
+                    Ok(vello::BumpBudgetPoll::Pending),
+                    Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
+                ]
+            })
+            .collect();
+        bridge.target.completion_test = Some(test);
+        let mut bytes = vec![0xAB; 128 * 128 * 4];
+        let result = bridge.paint_damage_into_xrgb8888(
+            &Scene::new(),
+            version(1, None, None),
+            &mut bytes,
+            512,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(BridgeError::CompletionTimeout {
+                    phase: CompletionPhase::CounterSettlement
+                })
+            ),
+            "the third attempt's settlement runs out of frame budget: {result:?}"
+        );
+        assert_eq!(bridge.last_render_attempts(), 3);
+        let test = bridge.target.completion_test.as_ref().unwrap();
+        assert_eq!(test.elapsed, LINUX_FRAME_BUDGET);
+        assert!(bridge.recovery_not_before.is_some(), "a timeout backs off");
+        assert!(bytes.iter().all(|byte| *byte == 0xAB), "nothing published");
     }
 
     /// A GPU reset under a live session (amdgpu cancelled the context during a window-switch
@@ -6438,7 +7403,9 @@ mod tests {
         let scene = rect_scene(128, 128, Color::WHITE);
         assert!(matches!(
             bridge.paint_damage_into_xrgb8888(&scene, version(1, None, None), &mut left, 512),
-            Err(BridgeError::Map(_))
+            Err(BridgeError::CompletionTimeout {
+                phase: CompletionPhase::Fence
+            })
         ));
         assert!(bridge.target.poisoned);
         let attempts = bridge.last_render_attempts();
@@ -8344,7 +9311,9 @@ mod tests {
         let mut pixels = vec![0; 128 * 128 * 4];
         assert!(matches!(
             bridge.paint_into_xrgb8888(&rect_scene(128, 128, Color::WHITE), &mut pixels, 512),
-            Err(BridgeError::Map(_))
+            Err(BridgeError::CompletionTimeout {
+                phase: CompletionPhase::Fence
+            })
         ));
         assert!(
             bridge.target.poisoned,
@@ -8899,154 +9868,5 @@ mod tests {
             adapter.max_storage_buffer_binding_size
         );
         assert_eq!(device.max_buffer_size, adapter.max_buffer_size);
-    }
-}
-
-fn src_over(src: [u8; 4], dst: [u8; 4]) -> [u8; 4] {
-    let [sr, sg, sb, sa_byte] = src;
-    let [dr, dg, db, _] = dst;
-    let sa = u32::from(sa_byte);
-    let inv = 255u32.saturating_sub(sa);
-    let mix = |source: u8, behind: u8| -> u8 {
-        let mixed = u32::from(source)
-            .saturating_mul(sa)
-            .saturating_add(u32::from(behind).saturating_mul(inv));
-        u8::try_from(mixed.saturating_div(255)).unwrap_or(255)
-    };
-    [mix(sr, dr), mix(sg, dg), mix(sb, db), 255]
-}
-
-/// The toolkit's scrim (`ui::chrome::fill_scrim`) composited over a cached
-/// frame: `scrim` is the theme's scrim hue with the strength as its alpha
-/// byte, and each channel takes the same tone and level stages the shader
-/// does, so the fast overview frame matches the full one.
-fn blend_scrim_rect(
-    pixels: &mut [u8],
-    stride_px: u32,
-    rect: vello::FineDamageRect,
-    scrim: [u8; 4],
-) {
-    let stride = usize::try_from(stride_px).unwrap_or(0).saturating_mul(4);
-    let x = usize::try_from(rect.x).unwrap_or(0);
-    let y = usize::try_from(rect.y).unwrap_or(0);
-    let width = usize::try_from(rect.width).unwrap_or(0);
-    let height = usize::try_from(rect.height).unwrap_or(0);
-    let [sr, sg, sb, sa_byte] = scrim;
-    let sa = u32::from(sa_byte);
-    if sa == 0 || stride == 0 {
-        return;
-    }
-    for row in y..y.saturating_add(height) {
-        for col in x..x.saturating_add(width) {
-            let at = row
-                .saturating_mul(stride)
-                .saturating_add(col.saturating_mul(4));
-            let Some(pixel) = pixels.get(at..at.saturating_add(4)) else {
-                continue;
-            };
-            let Ok(existing) = <[u8; 4]>::try_from(pixel) else {
-                continue;
-            };
-            let strength = f32::from(sa_byte) / 255.0;
-            let [er, eg, eb, ea] = existing;
-            let mixed = [
-                ui::chrome::scrim_channel(er, strength, sr),
-                ui::chrome::scrim_channel(eg, strength, sg),
-                ui::chrome::scrim_channel(eb, strength, sb),
-                ea,
-            ];
-            if let Some(slot) = pixels.get_mut(at..at.saturating_add(4)) {
-                slot.copy_from_slice(&mixed);
-            }
-        }
-    }
-}
-
-fn blit_straight(
-    destination: &mut [u8],
-    stride_px: u32,
-    rect: vello::FineDamageRect,
-    source: &[u8],
-    source_size: (u32, u32),
-) {
-    let stride = usize::try_from(stride_px).unwrap_or(0).saturating_mul(4);
-    let src_stride = usize::try_from(source_size.0)
-        .unwrap_or(0)
-        .saturating_mul(4);
-    let x = usize::try_from(rect.x).unwrap_or(0);
-    let y = usize::try_from(rect.y).unwrap_or(0);
-    let width = usize::try_from(source_size.0.min(rect.width)).unwrap_or(0);
-    let height = usize::try_from(source_size.1.min(rect.height)).unwrap_or(0);
-    for row in 0..height {
-        for col in 0..width {
-            let src_at = row
-                .saturating_mul(src_stride)
-                .saturating_add(col.saturating_mul(4));
-            let dst_at = (y.saturating_add(row))
-                .saturating_mul(stride)
-                .saturating_add((x.saturating_add(col)).saturating_mul(4));
-            let Some(src) = source.get(src_at..src_at.saturating_add(4)) else {
-                continue;
-            };
-            let Some(dst) = destination.get_mut(dst_at..dst_at.saturating_add(4)) else {
-                continue;
-            };
-            let Ok(src_px) = <[u8; 4]>::try_from(src) else {
-                continue;
-            };
-            let Ok(dst_px) = <[u8; 4]>::try_from(&dst[..]) else {
-                continue;
-            };
-            let mixed = src_over(src_px, dst_px);
-            dst.copy_from_slice(&mixed);
-        }
-    }
-}
-
-#[cfg(test)]
-mod overview_composite {
-    use super::{blend_scrim_rect, blit_straight};
-
-    #[test]
-    fn scrim_and_panel_stay_inside_the_clip() {
-        let mut pixels = vec![0u8; 8 * 4 * 4];
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&[10, 20, 30, 255]);
-        }
-        blend_scrim_rect(
-            &mut pixels,
-            8,
-            vello::FineDamageRect {
-                x: 1,
-                y: 1,
-                width: 2,
-                height: 1,
-            },
-            [0, 0, 0, 255],
-        );
-        assert_eq!(&pixels[0..4], &[10, 20, 30, 255]);
-        let scrimmed = [
-            ui::chrome::scrim_channel(10, 1.0, 0),
-            ui::chrome::scrim_channel(20, 1.0, 0),
-            ui::chrome::scrim_channel(30, 1.0, 0),
-            255,
-        ];
-        assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &scrimmed);
-        assert!(scrimmed[2] < 30, "the scrim darkens what it covers");
-        let panel = [255u8, 0, 0, 255];
-        blit_straight(
-            &mut pixels,
-            8,
-            vello::FineDamageRect {
-                x: 1,
-                y: 1,
-                width: 1,
-                height: 1,
-            },
-            &panel,
-            (1, 1),
-        );
-        assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &[255, 0, 0, 255]);
-        assert_eq!(&pixels[(8 + 2) * 4..(8 + 2) * 4 + 4], &scrimmed);
     }
 }

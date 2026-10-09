@@ -57,12 +57,12 @@ struct Authority {
     b: Arc<AtomicBool>,
 }
 impl LiveAuthority for Authority {
-    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission> {
+    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied> {
         let (publisher, publish, active) = match token {
             b"grant-a" => (A, true, Arc::new(AtomicBool::new(true))),
             b"grant-b" => (B, true, self.b.clone()),
             b"grant-viewer" => (C, false, Arc::new(AtomicBool::new(true))),
-            _ => return Err(Admission::Denied),
+            _ => return Err(Denied),
         };
         Ok(Arc::new(Session {
             publisher,
@@ -155,7 +155,6 @@ async fn open(f: &Fixture, token: &[u8], id: u8) -> ([u8; 16], Stream) {
         .live
         .relay
         .fallback_open(token, [id; 16])
-        .await
         .expect("fallback admitted");
     let mut stream = Stream {
         inner: stream,
@@ -187,7 +186,7 @@ fn frames_round_trip_and_session_ids_are_exact_lowercase_hex() {
 async fn unknown_tokens_and_sessions_are_refused() {
     let f = fixture();
     assert_eq!(
-        f.live.relay.fallback_open(b"forged", [1; 16]).await.err(),
+        f.live.relay.fallback_open(b"forged", [1; 16]).err(),
         Some(FallbackError::Denied)
     );
     assert_eq!(

@@ -479,7 +479,8 @@ impl Checker<'_> {
         if !grant_permits(
             &self.shortcut.grant,
             app_id,
-            action,
+            &descriptor.address,
+            &descriptor.resource_kind,
             descriptor.contract.permission,
         ) {
             self.fail(

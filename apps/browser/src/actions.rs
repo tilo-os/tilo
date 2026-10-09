@@ -409,9 +409,7 @@ mod tests {
     }
 
     fn registry() -> ActionRegistry {
-        let mut registry = ActionRegistry::new();
-        register(&mut registry);
-        registry
+        ActionRegistry::with(register)
     }
 
     fn encode(action: &BrowserAction) -> tilo_actions::EncodedAction {

@@ -2565,7 +2565,7 @@ fn power_detail(state: &QuickSettingsState) -> String {
     let power = if state.battery.present {
         t_args(
             "qs-power-battery",
-            &[("percent", state.battery.capacity.into())],
+            &[("percent", state.battery.percent.into())],
         )
     } else {
         t("qs-power-ac")

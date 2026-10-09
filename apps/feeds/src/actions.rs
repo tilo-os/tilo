@@ -190,6 +190,7 @@ impl Action for FeedsAction {
                         folder: parse_opt_id(folder),
                         order: *order,
                         kind: FeedKind::from_key(kind),
+                        certificate_pin: None,
                     };
                     FeedsDoc::upsert_feed(doc, &feed);
                 }
@@ -839,9 +840,7 @@ mod tests {
     use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// The bundled sample library written into a fresh document, as the
@@ -892,6 +891,7 @@ mod tests {
                 folder: None,
                 order: u32::try_from(feed_index).unwrap(),
                 kind: FeedKind::Rss,
+                certificate_pin: None,
             });
             for article_index in 0..3 {
                 store.articles.push(Article {

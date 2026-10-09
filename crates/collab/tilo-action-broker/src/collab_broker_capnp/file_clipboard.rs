@@ -85,39 +85,45 @@ impl CapnpChannelHandle {
                 .checked_policy_time(original.as_ref().and_then(|p| p.policy_time.as_ref()))?
                 .1
                 / 1_000_000_000;
-            let tree = state
+            let membership = state
                 .membership
-                .as_ref()
-                .ok_or("clipboard workspace authority unavailable")?
-                .snapshot()?;
+                .clone()
+                .ok_or("clipboard workspace authority unavailable")?;
             drop(state);
-            let space = tree
-                .workspaces
-                .iter()
-                .find(|w| w.room.to_string() == route.cluster_id)
-                .ok_or("clipboard workspace ended")?;
             let action = original
                 .as_ref()
                 .and_then(|p| p.original.as_ref())
                 .map_or(local_action.as_str(), |data| data.clipboard_action());
+            // Local Files controls operate on the framework root resource.
+            // Continued actions retain their originally addressed resource.
+            let resource = original
+                .as_ref()
+                .and_then(|p| p.original.as_ref())
+                .map_or("files.folder", |data| data.clipboard_resource());
             let verb = match needed {
                 PermissionRequirement::Read => Verb::Read,
                 PermissionRequirement::Write => Verb::Write,
                 _ => return Err("unsupported clipboard permission".into()),
             };
-            if space.decide_at(
-                &actor.policy_in(space, now),
-                &ResourceRef::Action {
-                    app: route.app_id.clone(),
-                    action: action.into(),
-                },
-                verb,
-                now,
-            ) != CapDecision::Allow
-            {
-                return Err("clipboard caller no longer has the required permission".into());
-            }
-            Ok(())
+            membership
+                .decide_in_room(&route.cluster_id, |space| {
+                    let space = space.ok_or("clipboard workspace ended")?;
+                    if space.decide_at(
+                        &actor.policy_in(space, now),
+                        &ResourceRef::Action {
+                            app: route.app_id.clone(),
+                            resource: resource.into(),
+                            action: action.into(),
+                        },
+                        verb,
+                        now,
+                    ) != CapDecision::Allow
+                    {
+                        return Err("clipboard caller no longer has the required permission");
+                    }
+                    Ok(())
+                })?
+                .map_err(str::to_owned)
         });
         Ok(FileClipboardContext {
             peer: self.peer_id,

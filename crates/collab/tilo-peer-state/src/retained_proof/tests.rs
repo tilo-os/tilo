@@ -748,3 +748,61 @@ fn incoming_snapshot_obsolescence_needs_exact_signed_route_integrity_and_selecte
     let malformed = signed(&key, &DocumentMutation::Snapshot(bytes), envelope.seq, now);
     assert!(!selected.covers_incoming_snapshot(source, channel, &encoded(&malformed).1));
 }
+
+#[test]
+fn hostile_tail_is_rejected_without_in_process_decode() {
+    let (key, authority, mut peer, now) = fixture();
+    let batch = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let room = room_proof(&authority, &batch[0], RoomInput::Checkpoint, None);
+    let proof = snapshot(&room, &batch[1]);
+    let source = authority.governor().device_public_key;
+    let seq = proof.coverage().sequence + 1;
+    let mut branch = AutoCommit::load(&peer.document(APP, "one").unwrap()).unwrap();
+    let heads = branch.get_heads();
+    branch.put(ROOT, "next", true).unwrap();
+    branch.commit();
+    let valid = branch.save_after(&heads);
+    assert_eq!(valid[8], 1, "the tail is one change chunk");
+
+    // A change header declaring a body of 2^40 bytes that never arrives.
+    let mut huge = vec![0x85, 0x6f, 0x4a, 0x83, 0, 0, 0, 0, 1];
+    huge.extend([0x80, 0x80, 0x80, 0x80, 0x80, 0x20]);
+    huge.extend([0xff; 16]);
+    // Well framed, so only an Automerge decode (in the isolate) can refuse these.
+    let mut checksum = valid.clone();
+    checksum[4] ^= 1;
+    let mut body = valid.clone();
+    *body.last_mut().unwrap() ^= 0xff;
+
+    let unknown = TailDecision {
+        coverage: CoverageDecision::Unknown,
+        floor: FloorSafety::Unknown,
+    };
+    let (channel, accepted) = encoded(&signed(
+        &key,
+        &DocumentMutation::Incremental(valid),
+        seq,
+        now,
+    ));
+    for (case, hostile) in [("huge", huge), ("checksum", checksum), ("body", body)] {
+        let (_, hostile) = encoded(&signed(
+            &key,
+            &DocumentMutation::Incremental(hostile),
+            seq,
+            now,
+        ));
+        assert_eq!(
+            proof.classify_tail(source, channel, &hostile),
+            unknown,
+            "{case}"
+        );
+        assert!(
+            !proof.tail_ready_after_snapshot(source, channel, &hostile),
+            "{case}"
+        );
+        let mut cursor = proof.ordered_tail_readiness();
+        assert!(!cursor.append(source, channel, &hostile), "{case}");
+        // A refused increment leaves the cursor where it was.
+        assert!(cursor.append(source, channel, &accepted), "{case}");
+    }
+}

@@ -59,6 +59,7 @@ pub(crate) fn capability_fixture() -> CapOverride {
         Subject::Principal(Principal::Person("person 🦀\n\"named\"\\".into())),
         Scope::Action {
             app: "so.tilo.chat".into(),
+            resource: "chat.channel:\u{0002}general".into(),
             action: "message.\u{0001}send".into(),
         },
         Verb::Write,

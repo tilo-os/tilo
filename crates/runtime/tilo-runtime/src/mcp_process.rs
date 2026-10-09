@@ -9,11 +9,10 @@ use std::{
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::mpsc,
     time::Duration,
 };
 
-use crate::RuntimeServices;
+use crate::{RuntimeServices, mcp::McpServer};
 
 pub(crate) const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
@@ -316,16 +315,21 @@ fn launch_apps<S: RuntimeServices>(
     Ok(children)
 }
 
-enum InputEvent {
+/// What a connection's reader thread hands its serving loop.
+pub(crate) enum InputEvent {
     Frame(Frame),
     Error(String),
 }
 
-fn spawn_reader(reader: impl Read + Send + 'static) -> io::Result<mpsc::Receiver<InputEvent>> {
+/// Read `reader`'s frames on a thread of their own, so a connection's
+/// serving loop writes replies while the next request has yet to arrive.
+pub(crate) fn spawn_reader(
+    reader: impl Read + Send + 'static,
+) -> io::Result<tokio::sync::mpsc::Receiver<InputEvent>> {
     // Bounds aggregate buffered input as well as each individual request.
-    let (sender, receiver) = mpsc::sync_channel(16);
+    let (sender, receiver) = tokio::sync::mpsc::channel(16);
     std::thread::Builder::new()
-        .name("tilo-runtime-mcp-stdin".into())
+        .name("tilo-runtime-mcp-reader".into())
         .spawn(move || {
             let mut reader = BufReader::new(reader);
             loop {
@@ -335,17 +339,137 @@ fn spawn_reader(reader: impl Read + Send + 'static) -> io::Result<mpsc::Receiver
                 };
                 let terminal =
                     matches!(event, InputEvent::Frame(Frame::Eof) | InputEvent::Error(_));
-                if sender.send(event).is_err() || terminal {
+                if sender.blocking_send(event).is_err() || terminal {
                     return;
                 }
             }
         })
-        .map_err(|error| io::Error::other(format!("failed to start stdin reader: {error}")))?;
+        .map_err(|error| io::Error::other(format!("failed to start MCP reader: {error}")))?;
     Ok(receiver)
 }
 
 fn protocol_error(code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":null,"error":{"code":code,"message":message}})
+}
+
+/// A line's reply, or `None` for a notification.
+type Reply = io::Result<Option<Value>>;
+
+/// How a line is answered, relative to the lines after it.
+pub(crate) enum Answer<'a> {
+    /// Before the next line is read, by the connection's own thread:
+    /// `initialize`, whose run id and page detail every later call of the
+    /// session reads, and a daemon's own native requests.
+    InOrder(std::pin::Pin<Box<dyn std::future::Future<Output = Reply> + 'a>>),
+    /// On the runtime, beside the session's other requests: a `tilo_cancel`
+    /// or `tilo_status` answers while the `tilo_invoke` it is about waits.
+    /// The session bounds how many of these work at once.
+    Overlapping(std::pin::Pin<Box<dyn std::future::Future<Output = Reply> + Send>>),
+}
+
+/// `request` answered by `server`, as an MCP request on a line-framed
+/// connection is.
+pub(crate) fn mcp_answer<H>(
+    server: &std::sync::Arc<McpServer<H>>,
+    request: Value,
+) -> Answer<'static>
+where
+    H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
+{
+    let server = std::sync::Arc::clone(server);
+    let initialize = request.get("method").and_then(Value::as_str) == Some("initialize");
+    let reply = Box::pin(async move { Ok::<_, io::Error>(server.handle(request).await) });
+    if initialize {
+        Answer::InOrder(reply)
+    } else {
+        Answer::Overlapping(reply)
+    }
+}
+
+/// How often the stdio host checks its app children.
+const CHECK_EVERY: Duration = Duration::from_millis(25);
+
+/// Answer one newline-framed connection until its input ends.
+///
+/// `answer` answers each request; an overlapping one runs on `runtime`
+/// beside the others in flight, and its reply is written, whole and on its
+/// own line, as soon as it is ready. JSON-RPC ids pair replies with
+/// requests, so they may come out of order. Only this loop writes, so lines
+/// never interleave. At end of input the requests in flight are answered
+/// before it returns. `check`, when given, runs every [`CHECK_EVERY`] and
+/// ends the loop with its error.
+///
+/// # Errors
+///
+/// Returns a read, write or `check` error, or that a request's task failed.
+pub(crate) fn serve_lines<'a>(
+    runtime: &tilo_rt::AppRuntime,
+    mut input: tokio::sync::mpsc::Receiver<InputEvent>,
+    writer: &mut impl Write,
+    mut answer: impl FnMut(Value) -> Answer<'a>,
+    mut check: Option<&mut dyn FnMut() -> io::Result<()>>,
+) -> io::Result<()> {
+    let handle = runtime.handle().clone();
+    runtime
+        .block_on(async move {
+            // Dropped with the connection, which aborts what still runs.
+            let mut running = tokio::task::JoinSet::new();
+            let mut open = true;
+            let mut checks = tokio::time::interval(CHECK_EVERY);
+            checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            while open || !running.is_empty() {
+                tokio::select! {
+                    event = input.recv(), if open => {
+                        let request = match event {
+                            Some(InputEvent::Frame(Frame::Line(bytes))) => {
+                                serde_json::from_slice::<Value>(&bytes)
+                            }
+                            Some(InputEvent::Frame(Frame::Eof)) => {
+                                open = false;
+                                continue;
+                            }
+                            Some(InputEvent::Frame(Frame::TooLong)) => {
+                                let reply = protocol_error(-32700, "request line exceeds 1 MiB");
+                                write_reply(writer, &reply)?;
+                                continue;
+                            }
+                            Some(InputEvent::Error(message)) => {
+                                return Err(io::Error::new(io::ErrorKind::InvalidData, message));
+                            }
+                            None => {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    "MCP reader ended without EOF",
+                                ));
+                            }
+                        };
+                        match request.map(&mut answer) {
+                            Ok(Answer::InOrder(reply)) => {
+                                if let Some(reply) = reply.await? {
+                                    write_reply(writer, &reply)?;
+                                }
+                            }
+                            Ok(Answer::Overlapping(reply)) => {
+                                running.spawn_on(reply, &handle);
+                            }
+                            Err(_) => write_reply(writer, &protocol_error(-32700, "Parse error"))?,
+                        }
+                    }
+                    Some(done) = running.join_next() => {
+                        if let Some(reply) = done.map_err(io::Error::other)?? {
+                            write_reply(writer, &reply)?;
+                        }
+                    }
+                    _ = checks.tick(), if check.is_some() => {
+                        if let Some(check) = check.as_mut() {
+                            check()?;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })
+        .map_err(io::Error::other)?
 }
 
 /// Own one MCP connection, one production service session and its app children.
@@ -377,45 +501,17 @@ where
 {
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let session = S::start_reporting(profile, &mut |_| {})?;
-    let mut server = session.mcp_session_factory(session.room())?()?;
+    let server = session.mcp_session_factory(session.room())?()?;
     let mut children = launch_apps(&session, profile, manifest)?;
     let input = spawn_reader(reader)?;
-    loop {
-        children.check()?;
-        let event = match input.recv_timeout(Duration::from_millis(25)) {
-            Ok(event) => event,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "stdin reader ended without EOF",
-                ));
-            }
-        };
-        match event {
-            InputEvent::Frame(Frame::Eof) => return Ok(()),
-            InputEvent::Frame(Frame::TooLong) => {
-                write_reply(
-                    &mut writer,
-                    &protocol_error(-32700, "request line exceeds 1 MiB"),
-                )?;
-            }
-            InputEvent::Frame(Frame::Line(bytes)) => match serde_json::from_slice(&bytes) {
-                Ok(request) => {
-                    if let Some(reply) = runtime
-                        .block_on(server.handle(request))
-                        .map_err(io::Error::other)?
-                    {
-                        write_reply(&mut writer, &reply)?;
-                    }
-                }
-                Err(_) => write_reply(&mut writer, &protocol_error(-32700, "Parse error"))?,
-            },
-            InputEvent::Error(message) => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, message));
-            }
-        }
-    }
+    let server = std::sync::Arc::new(server);
+    serve_lines(
+        runtime,
+        input,
+        &mut writer,
+        |request| mcp_answer(&server, request),
+        Some(&mut || children.check()),
+    )
 }
 
 /// Load a validated manifest and serve with the caller's configured profile environment.

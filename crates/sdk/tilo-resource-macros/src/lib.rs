@@ -130,6 +130,8 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 let mut reads = Vec::new();
                 let mut missing = Vec::new();
                 let mut writes = Vec::new();
+                let mut changed_writes = Vec::new();
+                let mut same = Vec::new();
                 let mut refreshes = Vec::new();
                 let mut texts = Vec::new();
                 let mut shapes = Vec::new();
@@ -151,6 +153,10 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
                     ));
                     writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
+                    changed_writes.push(quote!(
+                        #krate::write_key_changed::<#ty>(doc, obj, #key, &self.#ident, &before.#ident, dirty)?;
+                    ));
+                    same.push(quote!(#krate::Model::stores_as(&self.#ident, &before.#ident)));
                     refreshes.push(
                         quote!(#krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;),
                     );
@@ -209,6 +215,20 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                             let obj = slot.object(doc, #krate::__private::ObjType::Map)?;
                             <Self as #krate::Fields>::write_fields(self, doc, &obj)
                         }
+                        fn stores_as(&self, before: &Self) -> bool {
+                            let _ = before;
+                            true #(&& #same)*
+                        }
+                        fn store_changed(
+                            &self,
+                            before: &Self,
+                            doc: &mut #krate::Doc,
+                            slot: #krate::Slot<'_>,
+                            dirty: &#krate::Delta,
+                        ) -> ::core::result::Result<(), #krate::ModelError> {
+                            let obj = slot.object(doc, #krate::__private::ObjType::Map)?;
+                            <Self as #krate::Fields>::write_changed_fields(self, before, doc, &obj, dirty)
+                        }
                         fn refresh(
                             &mut self,
                             doc: &#krate::Doc,
@@ -243,6 +263,17 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         ) -> ::core::result::Result<(), #krate::ModelError> {
                             let _ = (&doc, &obj);
                             #(#writes)*
+                            ::core::result::Result::Ok(())
+                        }
+                        fn write_changed_fields(
+                            &self,
+                            before: &Self,
+                            doc: &mut #krate::Doc,
+                            obj: &#krate::__private::ObjId,
+                            dirty: &#krate::Delta,
+                        ) -> ::core::result::Result<(), #krate::ModelError> {
+                            let _ = (&before, &doc, &obj, &dirty);
+                            #(#changed_writes)*
                             ::core::result::Result::Ok(())
                         }
 
@@ -290,6 +321,18 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                             slot: #krate::Slot<'_>,
                         ) -> ::core::result::Result<(), #krate::ModelError> {
                             #krate::Model::store(&self.0, doc, slot)
+                        }
+                        fn stores_as(&self, before: &Self) -> bool {
+                            #krate::Model::stores_as(&self.0, &before.0)
+                        }
+                        fn store_changed(
+                            &self,
+                            before: &Self,
+                            doc: &mut #krate::Doc,
+                            slot: #krate::Slot<'_>,
+                            dirty: &#krate::Delta,
+                        ) -> ::core::result::Result<(), #krate::ModelError> {
+                            #krate::Model::store_changed(&self.0, &before.0, doc, slot, dirty)
                         }
                         fn refresh(
                             &mut self,
@@ -369,6 +412,9 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     ) -> ::core::result::Result<(), #krate::ModelError> {
                         let text = match self { #(Self::#idents => #names,)* };
                         slot.put_scalar(doc, #krate::__private::ScalarValue::Str(text.into()))
+                    }
+                    fn stores_as(&self, before: &Self) -> bool {
+                        ::core::mem::discriminant(self) == ::core::mem::discriminant(before)
                     }
                 }
             })
@@ -1036,6 +1082,12 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
                 #cx_binding: &mut #krate::ActionCx,
             ) -> ::core::result::Result<(), #krate::Refusal> {
                 #body
+            }
+            fn snapshot(record: &#self_ty) -> ::core::option::Option<#self_ty> {
+                // A copy where the record is `Clone`, none where it is not.
+                #[allow(unused_imports, reason = "only one of the two snapshot traits applies to a given record")]
+                use #krate::__private::{SnapshotByClone as _, SnapshotUnavailable as _};
+                (&&#krate::__private::Snapshot(record)).snapshot()
             }
             #risk
             #change_kind

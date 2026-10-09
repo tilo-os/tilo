@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use collab_types::{FileMutationTransaction, FileRecordId};
+use fs_protocol::{FileMutationTransaction, FileRecordId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -126,7 +126,7 @@ impl RecordTransactionJournalEntry {
             && self.namespace_delta.is_some()
             && !matches!(
                 self.transaction.manifest.operation,
-                collab_types::FileMutationOperation::RestoreContent { .. }
+                fs_protocol::FileMutationOperation::RestoreContent { .. }
             )
             || self.phase >= RecordTransactionPhase::NamespaceCommitted
                 && self.namespace_delta.is_none()
@@ -188,7 +188,7 @@ impl RecordTransactionJournal {
         if let Err(error) = persist_entry(&self.root, &entry) {
             if matches!(
                 entry.transaction.manifest.operation,
-                collab_types::FileMutationOperation::RestoreContent { .. }
+                fs_protocol::FileMutationOperation::RestoreContent { .. }
             ) {
                 self.entries.insert(id, entry);
             }
@@ -334,7 +334,7 @@ impl RecordTransactionJournal {
         // as a new authored operation. Ordinary transactions retain old cleanup.
         if matches!(
             entry.transaction.manifest.operation,
-            collab_types::FileMutationOperation::RestoreContent { .. }
+            fs_protocol::FileMutationOperation::RestoreContent { .. }
         ) {
             return Ok(());
         }
@@ -478,8 +478,9 @@ pub enum RecordTransactionJournalError {
 
 #[cfg(test)]
 mod tests {
-    use collab_types::{
-        CONTENT_REVISION_VERSION, ContentHash, Ed25519PublicKey, FILE_BINDING_VERSION,
+    use collab_types::Ed25519PublicKey;
+    use fs_protocol::{
+        CONTENT_REVISION_VERSION, ContentHash, FILE_BINDING_VERSION,
         FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileMutationOperation,
         FileMutationParticipant, FileMutationParticipantRole, FileMutationTransactionManifest,
         FileNodeKind, FileProvenance, FileVersionId, FileVersionV1,
@@ -531,7 +532,7 @@ mod tests {
                     actor,
                     observed_at_ms: 10,
                 },
-                proposed_content_revision: Some(collab_types::ContentRevisionV1 {
+                proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
                     schema_version: CONTENT_REVISION_VERSION,
                     record_id,
                     version_id: version.id,
@@ -681,7 +682,7 @@ mod tests {
     }
 
     fn legacy_entry() -> LegacyRestoreEntry {
-        use collab_types::files::{
+        use fs_protocol::files::{
             CheckedHistoryOperationV1, CheckedHistoryRequestV1, FileRestoreReceiptV1,
             FileRestoreReviewV1,
         };
@@ -718,7 +719,7 @@ mod tests {
                 selected_version: selected,
                 prior_revision: prior,
                 prior_reference:
-                    collab_types::files::FileRestorePriorReferenceV1::LegacyContentRepresentative,
+                    fs_protocol::files::FileRestorePriorReferenceV1::LegacyContentRepresentative,
                 restored_revision: participant.proposed_content_revision.unwrap(),
                 compensates: None,
             },

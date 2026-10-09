@@ -9,6 +9,7 @@ include!("deferred_remote_tests.rs");
 use super::*;
 use crate::a11y_tree::{SemanticActionKind, SemanticId};
 use crate::state::State;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use automerge::transaction::Transactable;
@@ -401,11 +402,7 @@ impl Widget for CounterCard {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let kid = self.button.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &[kid])
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(
@@ -2353,3 +2350,7 @@ fn a_needle_finds_an_action_by_its_parameters() {
         .collect::<Vec<_>>();
     assert_eq!(found, [("test.counter", Some("set-label"))], "{page:?}");
 }
+
+#[cfg(all(target_os = "linux", feature = "native"))]
+#[path = "native_pty_wake_tests.rs"]
+mod native_pty_wake_tests;

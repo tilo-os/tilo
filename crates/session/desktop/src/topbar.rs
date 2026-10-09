@@ -8,7 +8,7 @@
 //! back as a [`ChromeIntent`]; it never probes or changes the system itself.
 
 use std::collections::HashMap;
-use ui::clock::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
@@ -1022,9 +1022,7 @@ impl TopBarChrome {
 
     /// Wake again when the time reading just drawn goes stale.
     fn schedule_time_wake(&mut self) {
-        let since_epoch = ui::clock::SystemTime::now()
-            .duration_since(ui::clock::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
+        let since_epoch = Duration::from_nanos(ui::time::unix_now_ns());
         let bucket = time_bucket_secs(self.activity_is_visible(), self.center_widget);
         self.time_wake = Instant::now().checked_add(until_next_time_bucket(since_epoch, bucket));
     }
@@ -5014,12 +5012,7 @@ impl Widget for TopBarChrome {
             tracing::warn!("topbar: layout lookup failed for node {node:?}");
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if let Some(at) = self.placement {
             self.rect = Rect::new(at.x0, at.y0, at.x1, at.y0 + self.rect.height());
         }
@@ -6029,15 +6022,11 @@ mod tests {
     }
 
     fn press_named_key(bar: &mut TopBarChrome, key: winit::keyboard::NamedKey) -> bool {
-        let mut key_event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        key_event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let key_event = ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(key),
+            None,
+            winit::event::ElementState::Pressed,
         );
-        key_event.logical_key = winit::keyboard::Key::Named(key);
-        key_event.text = None;
-        key_event.location = winit::keyboard::KeyLocation::Standard;
-        key_event.state = winit::event::ElementState::Pressed;
-        key_event.repeat = false;
         let event = WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event: key_event,
@@ -6049,25 +6038,7 @@ mod tests {
     }
 
     fn dispatch_topbar_event(bar: &mut TopBarChrome, event: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).expect("test leaf");
-        let mut state = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        bar.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut state),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::dispatch(bar, event)
     }
 
     #[test]
@@ -6076,7 +6047,7 @@ mod tests {
         lay_out_and_draw(&mut bar, 1280.0);
         bar.last_cursor = Some(bar.center_rect.center());
         let secondary = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: winit::event::ElementState::Pressed,
             button: winit::event::MouseButton::Right,
         };
@@ -6094,9 +6065,11 @@ mod tests {
             })
         }));
 
-        let mut key_event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        key_event.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
-        key_event.state = winit::event::ElementState::Pressed;
+        let key_event = ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+            None,
+            winit::event::ElementState::Pressed,
+        );
         let escape = WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event: key_event,
@@ -6110,7 +6083,7 @@ mod tests {
         lay_out_and_draw(&mut bar, 1280.0);
         bar.last_cursor = Some(Point::new(2.0, 2.0));
         let outside = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: winit::event::ElementState::Pressed,
             button: winit::event::MouseButton::Left,
         };

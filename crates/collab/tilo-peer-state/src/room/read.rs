@@ -337,10 +337,10 @@ mod tests {
     fn compare_governance_entries(doc: &automerge::AutoCommit) -> usize {
         let expected = super::super::governance_of(Some(doc));
         let expected_count = [
-            usize::from(expected.0.is_some()),
-            expected.1.len(),
-            expected.2.len(),
-            expected.3.len(),
+            usize::from(expected.owner.is_some()),
+            expected.capabilities.len(),
+            expected.peers.len(),
+            expected.identities.len(),
         ]
         .into_iter()
         .try_fold(0usize, usize::checked_add)
@@ -355,15 +355,18 @@ mod tests {
         visit_governance_entries(&read, |entry| {
             count = count.checked_add(1).unwrap();
             match entry {
-                GovernanceEntry::Owner(value) => assert_eq!(Some(value), expected.0.as_deref()),
+                GovernanceEntry::Owner(value) => assert_eq!(Some(value), expected.owner.as_deref()),
                 GovernanceEntry::Capability { key, bytes } => {
-                    assert_eq!(expected.1.get(key).map(Vec::as_slice), Some(bytes));
+                    assert_eq!(
+                        expected.capabilities.get(key).map(Vec::as_slice),
+                        Some(bytes)
+                    );
                 }
                 GovernanceEntry::Peer { key, name } => {
-                    assert_eq!(expected.2.get(key).map(String::as_str), Some(name));
+                    assert_eq!(expected.peers.get(key).map(String::as_str), Some(name));
                 }
                 GovernanceEntry::Identity { key, bytes } => {
-                    assert_eq!(expected.3.get(key).map(Vec::as_slice), Some(bytes));
+                    assert_eq!(expected.identities.get(key).map(Vec::as_slice), Some(bytes));
                 }
             }
             Ok::<_, ()>(())
@@ -402,9 +405,12 @@ mod tests {
             .unwrap();
             doc.commit();
             let legacy = super::super::governance_of(Some(&doc));
-            assert!(legacy.1.is_empty());
-            assert!(legacy.2.is_empty());
-            assert_eq!(legacy.3.get("later valid row"), Some(&vec![7, 8, 9]));
+            assert!(legacy.capabilities.is_empty());
+            assert!(legacy.peers.is_empty());
+            assert_eq!(
+                legacy.identities.get("later valid row"),
+                Some(&vec![7, 8, 9])
+            );
             assert_eq!(compare_governance_entries(&doc), 2);
         }
     }

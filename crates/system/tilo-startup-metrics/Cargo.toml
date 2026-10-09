@@ -12,6 +12,7 @@ description = "Lightweight startup-timing capture for Tilo apps."
 test-support = []
 
 [dependencies]
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 web-time = { version = "1", features = ["serde"] }
 serde.workspace = true
@@ -20,6 +21,10 @@ tracing.workspace = true
 
 [lints]
 workspace = true
+
+# CLOCK_BOOTTIME, the clock `/proc/self/stat`'s process start time counts on.
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["time"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

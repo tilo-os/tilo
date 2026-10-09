@@ -20,11 +20,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -35,6 +31,7 @@ pub mod document;
 pub mod export;
 pub mod history;
 pub mod model;
+pub mod restore;
 pub mod schema;
 pub mod semantic_read;
 pub mod sheet;

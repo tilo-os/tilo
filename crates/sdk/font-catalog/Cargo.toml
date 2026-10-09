@@ -21,6 +21,11 @@ tempfile.workspace = true
 [lints]
 workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# `fstatvfs` and `geteuid`: whether a catalog file sits on read-only storage
+# this user cannot change (`Trust`).
+libc.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }

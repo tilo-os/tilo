@@ -49,7 +49,8 @@ python3 "$repo_root/dist/rpm/test-rpmlint-config.py"
 
 # A production import entry must name an installed native executable. This
 # fails before the import payload is added, and must remain in every builder.
-for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD; do
+python3 "$repo_root/tools/tests/test_rpm_build_graph.py"
+for builder in dist/build-binaries.sh dist/arch/PKGBUILD; do
     grep -Eq 'cargo build .*-p imager.*--bin imager' "$repo_root/$builder" || {
         echo "$builder does not build the delivered folder import UI" >&2
         exit 1

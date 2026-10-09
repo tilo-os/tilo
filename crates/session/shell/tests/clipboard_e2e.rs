@@ -63,7 +63,7 @@ use wayland_protocols::wp::primary_selection::zv1::client::{
 use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface},
     xdg_toplevel::{self, XdgToplevel},
-    xdg_wm_base::{self, XdgWmBase},
+    xdg_wm_base::XdgWmBase,
 };
 
 /// The mime type Tilo offers text selections as. Must match
@@ -788,6 +788,20 @@ impl Compositor {
 
 impl Drop for Compositor {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            // Observe the owned child before cleanup kills it. A client's
+            // BrokenPipe alone cannot distinguish a compositor exit from a
+            // closed Wayland connection. Keep the original panic and never
+            // make diagnostics a second panic during unwinding.
+            use std::io::Write as _;
+            let status = self.child.try_wait();
+            let log: String = self.recent_log().chars().take(16_384).collect();
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "owned compositor status before failure cleanup: {status:?}\n\
+                 compositor log tail (at most 40 lines / 16384 characters):\n{log}"
+            );
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.runtime_dir);
@@ -1735,11 +1749,13 @@ fn native_borrowed_display_pastes_the_compositors_current_selection() {
     client.roundtrip();
     let payload = "https://example.com/native-paste";
     compositor.chrome_copy(payload, false);
-    client.roundtrip();
-    assert_eq!(
-        clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-        Some(payload),
-        "the actual native reader lost a selection published by the compositor"
+    // Each read is bounded by the UI's short read budget; a loaded runner can
+    // need several before the compositor serves the selection.
+    wait_for_clipboard_before(
+        &mut client,
+        || clipboard.text(ClipboardTarget::Clipboard).as_deref() == Some(payload),
+        "the actual native reader lost a selection published by the compositor",
+        tilo_test_env::hang_deadline(),
     );
     assert_eq!(
         clipboard
@@ -2424,20 +2440,7 @@ impl Dispatch<WlTouch, ()> for ClientState {
     }
 }
 
-impl Dispatch<XdgWmBase, ()> for ClientState {
-    fn event(
-        _: &mut Self,
-        wm_base: &XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            wm_base.pong(serial);
-        }
-    }
-}
+crate::support::wayland::test_client!(ClientState: ping);
 
 impl Dispatch<XdgSurface, ()> for ClientState {
     fn event(

@@ -546,10 +546,12 @@ impl CaptureExecutor {
         for command in frame_builder.host_mut().take_screenshot_markup_commands() {
             let outcome = match command {
                 ui::widget::ScreenshotMarkupCommand::Save(export) => {
-                    let path = next_screenshot_path(self.sequence);
+                    let saved = next_screenshot_path(self.sequence).and_then(|path| {
+                        write_png(&path, export.width, export.height, &export.rgba).map(|()| path)
+                    });
                     self.sequence = self.sequence.saturating_add(1);
-                    match write_png(&path, export.width, export.height, &export.rgba) {
-                        Ok(()) => {
+                    match saved {
+                        Ok(path) => {
                             self.last_screenshot = Some(path.clone());
                             frame_builder.host_mut().close_screenshot_markup();
                             CaptureOutcome::Saved(path)
@@ -887,7 +889,7 @@ impl CaptureExecutor {
         let encoder =
             super::mp4_recording::recording_encoder(width, height, 30, 8_000_000, 60, true)?;
         let codec = encoder.codec();
-        let path = next_recording_path(self.sequence, intent.audio != AudioCaptureMode::None);
+        let path = next_recording_path(self.sequence, intent.audio != AudioCaptureMode::None)?;
         self.sequence = self.sequence.saturating_add(1);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {
@@ -1080,7 +1082,7 @@ impl CaptureExecutor {
             return Err("recent capture is still warming up".into());
         }
         let include_audio = !replay.audio_tracks.is_empty();
-        let path = next_replay_path(sequence, include_audio);
+        let path = next_replay_path(sequence, include_audio)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("create replay folder {}: {error}", parent.display()))?;
@@ -1287,7 +1289,7 @@ impl CaptureExecutor {
                 }
             }
             CaptureDestination::File | CaptureDestination::FileAndClipboard => {
-                let path = next_screenshot_path(self.sequence);
+                let path = next_screenshot_path(self.sequence)?;
                 self.sequence = self.sequence.saturating_add(1);
                 write_png(&path, width, height, &rgba)?;
                 self.last_screenshot = Some(path.clone());
@@ -1916,38 +1918,38 @@ fn output_dimensions(width: f64, height: f64) -> Result<(u32, u32, f64), String>
     Ok((width, height, scale))
 }
 
-fn next_screenshot_path(sequence: u64) -> PathBuf {
-    let root = xdg_paths::picture_dir()
-        .or_else(xdg_paths::home)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Screenshots");
+/// The person's own folder for captures. Without one a capture fails rather
+/// than landing in the shared temp directory, where other users could read it.
+fn capture_folder(user_dir: Option<PathBuf>, name: &str) -> Result<PathBuf, String> {
+    user_dir
+        .or_else(tilo_paths::home)
+        .map(|root| root.join(name))
+        .ok_or_else(|| format!("no home folder to save {name} in"))
+}
+
+fn next_screenshot_path(sequence: u64) -> Result<PathBuf, String> {
+    let root = capture_folder(tilo_paths::picture_dir(), "Screenshots")?;
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let suffix = if sequence == 0 {
         String::new()
     } else {
         format!("-{sequence}")
     };
-    root.join(format!("Tilo Screenshot {stamp}{suffix}.png"))
+    Ok(root.join(format!("Tilo Screenshot {stamp}{suffix}.png")))
 }
 
-fn next_recording_path(sequence: u64, include_audio: bool) -> PathBuf {
-    let root = xdg_paths::video_dir()
-        .or_else(xdg_paths::home)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Screen Recordings");
+fn next_recording_path(sequence: u64, include_audio: bool) -> Result<PathBuf, String> {
+    let root = capture_folder(tilo_paths::video_dir(), "Screen Recordings")?;
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let extension = if include_audio { "mov" } else { "mp4" };
-    root.join(format!("Tilo Recording {stamp}-{sequence}.{extension}"))
+    Ok(root.join(format!("Tilo Recording {stamp}-{sequence}.{extension}")))
 }
 
-fn next_replay_path(sequence: u64, include_audio: bool) -> PathBuf {
-    let root = xdg_paths::video_dir()
-        .or_else(xdg_paths::home)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Screen Recordings");
+fn next_replay_path(sequence: u64, include_audio: bool) -> Result<PathBuf, String> {
+    let root = capture_folder(tilo_paths::video_dir(), "Screen Recordings")?;
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let extension = if include_audio { "mov" } else { "mp4" };
-    root.join(format!("Tilo Recent {stamp}-{sequence}.{extension}"))
+    Ok(root.join(format!("Tilo Recent {stamp}-{sequence}.{extension}")))
 }
 
 // The fixed 6-by-4 preview grid takes four sub-samples per cell. Dimensions
@@ -2042,6 +2044,7 @@ mod tests {
     use super::*;
     use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
     use ui::Widget;
+    use ui::widget::TaffyTreeExt;
     use vello::kurbo::RoundedRect;
     use vello::peniko::{Color, Fill};
 
@@ -2074,17 +2077,14 @@ mod tests {
             _theme: &ui::theme::Theme,
             node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
-            let node = taffy
-                .new_leaf(taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..taffy::Style::default()
-                })
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..taffy::Style::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(

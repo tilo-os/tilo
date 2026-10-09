@@ -829,10 +829,7 @@ mod tests {
         let absent = format!(
             "tilo-missing-container-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            ui::time::try_unix_now_ns().unwrap()
         );
         // This exercises the actual Podman command, including missing binary,
         // lost engine and nonexistent target refusals. None is a success.

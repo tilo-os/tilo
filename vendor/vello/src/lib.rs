@@ -108,6 +108,8 @@
 
 #[cfg(feature = "wgpu")]
 mod bump_budget;
+#[cfg(feature = "wgpu")]
+mod image_source;
 mod debug;
 mod recording;
 mod render;
@@ -144,7 +146,10 @@ use peniko::ImageData;
 #[cfg(feature = "wgpu")]
 pub use wgpu;
 
+#[cfg(feature = "wgpu")]
+pub use image_source::ImageSource;
 pub use scene::{DrawGlyphs, Scene};
+pub use vello_encoding::ImageCacheStats;
 pub use vello_encoding::{FontEmbolden, Glyph, NormalizedCoord};
 
 use low_level::ShaderId;
@@ -1789,6 +1794,13 @@ impl Renderer {
     /// past its memory limit.
     pub fn set_image_atlas_max(&mut self, max_size: u32) {
         self.resolver.set_image_atlas_max(max_size);
+    }
+
+    /// The image atlas's side and the images resident in it, with the CPU
+    /// pixels they keep alive. The atlas texture itself is in
+    /// [`Self::memory_stats`]' `image_bytes`.
+    pub fn image_cache_stats(&self) -> ImageCacheStats {
+        self.resolver.image_cache_stats()
     }
 
     /// Grow the bump buffers at most once, straight to the
@@ -3532,6 +3544,43 @@ impl Renderer {
             Some(texture) => self.engine.image_overrides.insert(image.data.id(), texture),
             None => self.engine.image_overrides.remove(&image.data.id()),
         }
+    }
+
+    /// Draw `image` from `source` (Tilo patch): its pixels are drawn into the
+    /// atlas slot through a render pass whenever the image is written there,
+    /// so `source` may be any colour format the device samples (a `Bgra8Unorm`
+    /// Wayland client buffer, imported as it is) and may be drawn opaque.
+    /// `None` stops drawing it from a source. Takes precedence over
+    /// [`override_image`](Self::override_image). Returns the previous source.
+    ///
+    /// `source.texture` must have the [`wgpu::TextureUsages::TEXTURE_BINDING`]
+    /// flag and hold the image's extent at `source.origin`. It is read only
+    /// while the image is written into the atlas: on its first draw, after
+    /// this call, and when the atlas is repacked. Keep it readable while any
+    /// scene that draws `image` can still be rendered.
+    pub fn draw_image_from(
+        &mut self,
+        image: &ImageData,
+        source: Option<ImageSource>,
+    ) -> Option<ImageSource> {
+        self.resolver.mark_image_dirty(image);
+        match source {
+            Some(source) => self
+                .engine
+                .image_sources
+                .sources
+                .insert(image.data.id(), source),
+            None => self.engine.image_sources.sources.remove(&image.data.id()),
+        }
+    }
+
+    /// Images drawn into the atlas from an [`ImageSource`] since this renderer
+    /// was made, and the bytes those draws wrote (Tilo patch).
+    pub fn image_source_writes(&self) -> (u64, u64) {
+        (
+            self.engine.image_sources.writes,
+            self.engine.image_sources.bytes,
+        )
     }
 
     /// Marks `image` as dirty in the atlas cache, so its override texture will be recopied on

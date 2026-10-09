@@ -7647,34 +7647,30 @@ impl Widget for BlockEditor {
             self.replace_button_node = Some(button);
             self.replace_all_node = Some(all);
         }
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                align_items: Some(taffy::AlignItems::Stretch),
-                gap: taffy::Size {
-                    width: length(0.0_f32),
-                    height: length(0.0_f32),
-                },
-                // The drag handles stand in the editor's own leading column,
-                // so a host leaves no gutter for them and they are never
-                // clipped by the window edge at any text scale.
-                padding: taffy::Rect {
-                    left: length(self.handle_column() as f32),
-                    right: length(0.0_f32),
-                    top: length(0.0_f32),
-                    bottom: length(0.0_f32),
-                },
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            align_items: Some(taffy::AlignItems::Stretch),
+            gap: taffy::Size {
+                width: length(0.0_f32),
+                height: length(0.0_f32),
             },
-            &layout_children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            // The drag handles stand in the editor's own leading column,
+            // so a host leaves no gutter for them and they are never
+            // clipped by the window edge at any text scale.
+            padding: taffy::Rect {
+                left: length(self.handle_column() as f32),
+                right: length(0.0_f32),
+                top: length(0.0_f32),
+                bottom: length(0.0_f32),
+            },
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &layout_children, node_map, self)
     }
 
     #[expect(
@@ -7684,13 +7680,7 @@ impl Widget for BlockEditor {
         reason = "the five-pass widget contract applies one index-aligned layout projection with finite pixel dimensions"
     )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(content) = self.content_node {
             let width = taffy.unrounded_layout(content).size.width;
@@ -8882,6 +8872,22 @@ impl Widget for BlockEditor {
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Some(winit::window::ImePurpose::Normal)
+    }
+
+    fn ime_multiline(&self) -> bool {
+        self.is_focused
+            && !self.read_only
+            && !self.find_visible
+            && !self.link_popover.is_visible()
+            && !self.slash_menu.is_visible()
+            && self.visual_formula_focus.is_none()
+            && self.ime_cursor_rect().is_some()
+            && self
+                .focused
+                .and_then(|index| self.blocks.get(index))
+                .is_some_and(|block| {
+                    block.kind.is_editable() && !matches!(block.kind, BlockKind::Table { .. })
+                })
     }
 
     /// Block contents are not surfaced as a `value` — a screen reader
@@ -11742,6 +11748,43 @@ impl BlockEditor {
         // Code indentation owns whole selected lines before generic replacement.
         if self.handle_code_keyboard(event, ctx) {
             return;
+        }
+
+        // Paragraph commits belong to the document transaction, even when
+        // the original selection is entirely inside one single-line child.
+        if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = event
+            && self.ime_multiline()
+            && text.contains('\n')
+            && text.chars().all(|c| c == '\n' || !c.is_control())
+        {
+            if let Some(index) = self.focused
+                && let Some(block) = self.blocks.get_mut(index)
+            {
+                let (start, end) = block
+                    .line
+                    .selection_range()
+                    .unwrap_or_else(|| (block.line.cursor_pos(), block.line.cursor_pos()));
+                block.line.handle_event(
+                    &WindowEvent::Ime(winit::event::Ime::Preedit(String::new(), None)),
+                    ctx,
+                );
+                if self.document_selection.is_none() {
+                    self.document_selection = Some(DocumentSelection {
+                        anchor: DocumentPosition {
+                            block: index,
+                            byte: start,
+                        },
+                        cursor: DocumentPosition {
+                            block: index,
+                            byte: end,
+                        },
+                    });
+                }
+            }
+            if self.replace_document_selection(text) {
+                *ctx.handled = true;
+                return;
+            }
         }
 
         // A cross-block selection belongs to the document, not any one child

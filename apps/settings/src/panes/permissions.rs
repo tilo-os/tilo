@@ -321,12 +321,17 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         }
         // Another app's action this app may use: the consent sheet grants
         // these; the workspace's own Settings lists them under App actions.
-        Scope::Action { app, action } => (
+        Scope::Action {
+            app,
+            resource,
+            action,
+        } => (
             "App action",
             t_args(
                 "perm-action-detail",
                 &[
                     ("action", action.as_str().into()),
+                    ("resource", resource.as_str().into()),
                     ("app", app.as_str().into()),
                 ],
             ),
@@ -765,13 +770,20 @@ mod tests {
                 Subject::app("so.tilo.shortcuts"),
                 Scope::Action {
                     app: "so.tilo.agent".into(),
+                    resource: "agent.transform:freeform".into(),
                     action: "freeform".into(),
                 },
                 Verb::Write,
             ))
             .unwrap();
             assert_eq!(action.kind, "App action");
-            assert!(action.detail.contains("freeform") && action.detail.contains("so.tilo.agent"));
+            assert!(
+                action.detail.contains("freeform")
+                    && action.detail.contains("agent.transform:freeform")
+                    && action.detail.contains("so.tilo.agent"),
+                "{}",
+                action.detail
+            );
             // Read vs write is reflected in the file detail.
             let rw = cap_view(&CapOverride::grant(
                 Subject::app("a"),

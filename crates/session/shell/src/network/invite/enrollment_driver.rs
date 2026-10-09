@@ -157,7 +157,7 @@ impl Registry {
                     biased;
                     _ = receiver.changed() => Err("native enrollment cancelled".into()),
                     value = tokio::time::timeout(Duration::from_secs(60), tilo_joined_room::enroll::prepare_and_complete(
-                        tilo_relay::workspace_join::WorkspaceJoinClient::new(endpoint), identity, attempt.identity_topic,
+                        tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint), identity, attempt.identity_topic,
                         Some(attempt.local), invitation, attempt.owner.clone())) => value.unwrap_or_else(|_| Err("native enrollment deadline elapsed; proof retained for exact retry".into())),
                 }
             };

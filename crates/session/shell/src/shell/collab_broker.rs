@@ -142,17 +142,6 @@ pub struct BrokerHandle {
     drain_thread: Option<JoinHandle<()>>,
     drain_quit: Arc<AtomicBool>,
     drain_wake: Option<std::sync::Arc<crate::idle_wake::DrainPark>>,
-    /// Trusted shell-only MLS lifecycle transaction boundary. This is never
-    /// exposed through the app-facing Cap'n Proto service.
-    mls_authority: Option<
-        Arc<
-            Mutex<
-                crate::shell::collab_mls_authority::MlsAuthorityCoordinator<
-                    crate::shell::collab_mls_authority::SecretServiceMlsVault,
-                >,
-            >,
-        >,
-    >,
     /// End-to-end encryption of this device's collaboration channels.
     channel_encryption: Option<crate::shell::channel_encryption::ChannelKeyAccess>,
     peer_departures: Option<Arc<crate::shell::network::PeerDepartureHistory>>,
@@ -200,32 +189,6 @@ impl BrokerHandle {
         &self,
     ) -> Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge> {
         self.realtime_fabric.clone()
-    }
-
-    /// Apply a typed, handle-only MLS membership transaction at the trusted
-    /// workspace lifecycle boundary. Apps cannot call this interface.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when lifecycle authority is unavailable or rejects the
-    /// transaction.
-    pub fn apply_mls_authority_transaction(
-        &self,
-        transaction: runtime_collab::MlsAuthorityTransaction,
-    ) -> Result<[u8; 32], crate::shell::collab_mls_authority::MlsAuthorityError> {
-        let authority = self.mls_authority.as_ref().ok_or_else(|| {
-            crate::shell::collab_mls_authority::MlsAuthorityError::VaultUnavailable(
-                "Secret Service MLS lifecycle authority is unavailable".into(),
-            )
-        })?;
-        authority
-            .lock()
-            .map_err(|_| {
-                crate::shell::collab_mls_authority::MlsAuthorityError::Persistence(
-                    "MLS lifecycle authority lock poisoned".into(),
-                )
-            })?
-            .apply(transaction)
     }
 
     /// Recent authenticated peer departures observed by the attached network.
@@ -716,7 +679,7 @@ fn spawn_inner(
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
     // A configured peer broker runs without the session's vault.
-    let (mls_authority, channel_encryption) =
+    let channel_encryption =
         open_session_services(membership.as_ref(), peer_sync, &channels, config.is_none());
     // Who is waiting on a cooperative scrollback answer, keyed by
     // artifact — a `ScrollbackResponse` off gossip carries an
@@ -785,6 +748,13 @@ fn spawn_inner(
         tilo_action_broker::services::HostServices::default()
     };
     services.record_content = record_content;
+    // The same service the identity broker answers key requests from: its
+    // changes tell each route's endpoint when to ask again.
+    services.channel_keys = channel_encryption.clone().map(|access| {
+        let keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
+        keys.set(Some(access));
+        keys
+    });
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));
@@ -896,27 +866,15 @@ fn spawn_inner(
         drain_thread,
         drain_quit,
         drain_wake: peer_sync.map(|net| std::sync::Arc::clone(&net.drain_wake)),
-        mls_authority,
         channel_encryption,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),
     })
 }
 
-/// The broker's session services: the durable history store, the MLS
-/// lifecycle authority and the channel encryption service. Tests run with
-/// none of them, since each needs the session's state root and vault.
-type SessionServices = (
-    Option<
-        Arc<
-            Mutex<
-                crate::shell::collab_mls_authority::MlsAuthorityCoordinator<
-                    crate::shell::collab_mls_authority::SecretServiceMlsVault,
-                >,
-            >,
-        >,
-    >,
-    Option<crate::shell::channel_encryption::ChannelKeyAccess>,
-);
+/// The broker's session services: the durable history store and the
+/// channel encryption service, which is all a caller keeps. Tests run with
+/// neither, since each needs the session's state root and vault.
+type SessionServices = Option<crate::shell::channel_encryption::ChannelKeyAccess>;
 
 #[cfg(test)]
 fn open_session_services(
@@ -925,7 +883,7 @@ fn open_session_services(
     _: &Arc<Mutex<BrokerChannels>>,
     _: bool,
 ) -> SessionServices {
-    (None, None)
+    None
 }
 
 #[cfg(not(test))]
@@ -935,7 +893,6 @@ fn open_session_services(
     channels: &Arc<Mutex<BrokerChannels>>,
     open_vault: bool,
 ) -> SessionServices {
-    let mut mls_authority = None;
     let mut channel_encryption = None;
     match crate::shell::collab_history::CollabHistoryStore::open_for_session() {
         Ok(history) => {
@@ -948,14 +905,10 @@ fn open_session_services(
         }
     }
     if !open_vault {
-        return (mls_authority, channel_encryption);
+        return channel_encryption;
     }
-    match crate::shell::collab_mls_authority::SecretServiceMlsVault::open_for_session() {
+    match crate::shell::mls_vault::SecretServiceMlsVault::open_for_session() {
         Ok(vault) => {
-            let vault = Arc::new(vault);
-            if let Ok(mut state) = channels.lock() {
-                state.install_mls_vault(vault.clone());
-            }
             if let Some(workspaces) = membership.cloned() {
                 channel_encryption = open_channel_encryption(
                     &vault,
@@ -964,23 +917,12 @@ fn open_session_services(
                     Arc::clone(channels),
                 );
             }
-            if let Some(workspaces) = membership.cloned() {
-                match crate::shell::collab_mls_authority::MlsAuthorityCoordinator::open(
-                    vault.authority_root(),
-                    vault,
-                    workspaces,
-                    Arc::clone(channels),
-                ) {
-                    Ok(authority) => mls_authority = Some(Arc::new(Mutex::new(authority))),
-                    Err(error) => tracing::warn!(%error, "MLS lifecycle authority unavailable"),
-                }
-            }
         }
         Err(error) => {
             tracing::warn!(%error, "MLS collaboration unavailable: no system secret store answered");
         }
     }
-    (mls_authority, channel_encryption)
+    channel_encryption
 }
 
 /// Start this device's channel encryption service over the session's
@@ -988,7 +930,7 @@ fn open_session_services(
 /// stay closed to this device rather than falling back to plaintext.
 #[cfg(not(test))]
 fn open_channel_encryption(
-    vault: &crate::shell::collab_mls_authority::SecretServiceMlsVault,
+    vault: &crate::shell::mls_vault::SecretServiceMlsVault,
     workspaces: crate::shell::state::WorkspaceTreeHandle,
     net: Option<Arc<ShellNetwork>>,
     channels: Arc<Mutex<BrokerChannels>>,
@@ -1035,6 +977,11 @@ pub(crate) fn answer_remote_actions(
     host: Option<&crate::shell::remote_actions::BrokerActionHost>,
     requests: Vec<crate::shell::remote_action_link::InboundRemoteAction>,
 ) {
+    // A waiting request parks on the broker's change signal, a task on the
+    // session runtime; without one it is answered at once, as before.
+    let _runtime = crate::session_runtime::runtime()
+        .ok()
+        .map(tokio::runtime::Runtime::enter);
     for request in requests {
         // A record is read from where this device keeps it, by the device
         // itself; no action host is asked.

@@ -159,8 +159,7 @@ fn hosted_directory_sync_contract_and_hierarchy_changes_invalidate_revision() {
         if change == "hierarchy" {
             assert_eq!(current.rows.len(), 2);
         } else {
-            let contract: tilo_actions::ActionContract =
-                serde_json::from_str(&current.rows[0].visibility_contract_json).unwrap();
+            let contract = &current.rows[0].visibility.as_ref().unwrap().contract;
             assert_eq!(
                 contract.confirmation,
                 tilo_actions::ConfirmationPolicy::Confirm
@@ -638,7 +637,7 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
         assert_ne!(app.action_directory_revision(), page.revision);
         assert!(!matches!(
             app.resolve_action_directory(&page.revision, "declared:0", "inspect"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
     }
 }

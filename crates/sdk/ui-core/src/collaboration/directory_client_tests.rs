@@ -18,12 +18,11 @@ fn directory_test_row() -> runtime_collab::ActionDirectoryRow {
         resource: "notes/block".into(),
         resource_kind: "notes.block".into(),
         resource_label: "Link".into(),
-        resource_presentation_json: String::new(),
+        presentation: None,
         action: Some("open-link".into()),
         descriptor: None,
         has_children: false,
-        visibility_action: None,
-        visibility_contract_json: String::new(),
+        visibility: None,
     }
 }
 
@@ -54,8 +53,10 @@ macro_rules! directory_fake_methods {
                 page.set_next_cursor(b"cursor-2");
                 page.set_exhausted(false);
                 page.set_budget_exhausted(true);
-                write_directory_row(page.init_rows(1).get(0), &directory_test_row());
-                Ok(())
+                runtime_collab::write_action_directory_row(
+                    page.init_rows(1).get(0),
+                    &directory_test_row(),
+                )
             })();
             if self.captures.lock().unwrap().directory.pending_method == Some("query") {
                 return Promise::from_future(std::future::pending());
@@ -75,11 +76,10 @@ macro_rules! directory_fake_methods {
                     request.get_resource()?.to_str()?.into(),
                     request.get_action()?.to_str()?.into(),
                 ));
-                write_directory_row(
+                runtime_collab::write_action_directory_row(
                     results.get().init_resolution().init_found(),
                     &directory_test_row(),
-                );
-                Ok(())
+                )
             })();
             if self.captures.lock().unwrap().directory.pending_method == Some("resolve") {
                 return Promise::from_future(std::future::pending());
@@ -238,7 +238,7 @@ fn sdk_lazy_directory_query_resolve_and_invoke_use_exact_runtime_methods() {
         matches!(&replies[0], CollabEvent::ActionDirectoryPage {request_id:11,result:Ok(page)} if page.rows==vec![directory_test_row()] && page.revision=="revision-7" && page.next_cursor==b"cursor-2" && page.budget_exhausted)
     );
     assert!(
-        matches!(&replies[1], CollabEvent::PublishedActionResolution {request_id:12,result:Ok(runtime_collab::ActionDirectoryResolution::Found(row))} if **row==directory_test_row())
+        matches!(&replies[1], CollabEvent::PublishedActionResolution {request_id:12,result:Ok(runtime_collab::ActionDirectoryResolution::Found { row, revision: None })} if **row==directory_test_row())
     );
     assert!(
         matches!(&replies[2], CollabEvent::PublishedInvocationResult {request_id:13,result:Ok((47,tilo_actions::InvocationUpdate::Accepted { invocation }))} if invocation.0==Uuid::from_u128(47))

@@ -10,7 +10,6 @@
 //!   * [`load_luma`]     — decode + downscale an image for the code scanner.
 
 use std::path::{Path, PathBuf};
-use ui::time::UNIX_EPOCH;
 
 use crate::frame::{self, FrameBuf};
 use crate::model::PhotoFormat;
@@ -122,11 +121,9 @@ fn valid_frame(frame: &FrameBuf) -> bool {
 /// A filesystem-safe, sortable timestamp `YYYYMMDD_HHMMSS_mmm`. Shared by the
 /// photo and video writers so capture file names are consistent.
 pub fn timestamp_name() -> String {
-    let now = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let millis = now.subsec_millis();
+    let now_ms = ui::time::unix_now_ms();
+    let secs = now_ms / 1_000;
+    let millis = now_ms % 1_000;
     // Civil-date conversion (proleptic Gregorian) — avoids pulling in chrono.
     let days = (secs / 86_400) as i64;
     let rem = (secs % 86_400) as u32;

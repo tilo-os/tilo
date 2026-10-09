@@ -204,7 +204,7 @@ impl Widget for ShortcutRecorder {
         self.reset_edge = crate::widget::ControlSize::Small.height(theme);
         self.gap = f64::from(theme.tokens.spacing.s2);
         self.layout_theme = Some(theme.clone());
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(crate::num::f32_of_f64(self.content_width())),
                 height: Dimension::length(crate::num::f32_of_f64(self.height)),
@@ -212,9 +212,8 @@ impl Widget for ShortcutRecorder {
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn adjust_layout_with_measure(
@@ -240,13 +239,7 @@ impl Widget for ShortcutRecorder {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -518,18 +511,7 @@ fn chord_from_event(key: &Key, modifiers: winit::event::Modifiers) -> Option<Str
 }
 
 impl crate::widget::controls::ActionControls for ShortcutRecorder {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         match &self.action {
             Some(action) => vec![action.metadata(&self.id)],
@@ -537,14 +519,6 @@ impl crate::widget::controls::ActionControls for ShortcutRecorder {
                 control_id: self.id.clone(),
                 kind: ControlBindingKind::SemanticAction(self.id.clone()),
             }],
-        }
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
         }
     }
 }

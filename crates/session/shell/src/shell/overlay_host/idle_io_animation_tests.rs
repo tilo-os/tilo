@@ -7,23 +7,7 @@ fn blocked_quick_settings_read_does_not_turn_waiting_into_animation() {
     host.qs_refresh.kick_fast_with(move || {
         let _ = release_rx.recv();
         crate::shell::quick_settings::refresh::QsReading::Fast(Box::new(
-            crate::shell::quick_settings::refresh::FastReading {
-                brightness: None,
-                displays: Vec::new(),
-                volume: None,
-                wifi: None,
-                bluetooth: None,
-                bluetooth_available: false,
-                power: None,
-                power_profiles: None,
-                wired: None,
-                battery: crate::shell::quick_settings::actions::BatteryInfo::from_root(
-                    std::path::Path::new("/nonexistent"),
-                ),
-                radios: None,
-                privacy: crate::shell::quick_settings::actions::PrivacyStatus::default(),
-                vpns: None,
-            },
+            crate::shell::quick_settings::refresh::FastReading::empty(),
         ))
     });
     assert!(host.qs_refresh.is_in_flight());
@@ -43,23 +27,7 @@ fn a_reading_with_no_audio_device_leaves_no_volume_slider() {
         ShellOverlayHost::new(Box::new(ui::widget::Container::new())).with_chrome(chrome.clone());
     host.qs_refresh.kick_fast_with(|| {
         crate::shell::quick_settings::refresh::QsReading::Fast(Box::new(
-            crate::shell::quick_settings::refresh::FastReading {
-                brightness: None,
-                displays: Vec::new(),
-                volume: None,
-                wifi: None,
-                bluetooth: None,
-                bluetooth_available: false,
-                power: None,
-                power_profiles: None,
-                wired: None,
-                battery: crate::shell::quick_settings::actions::BatteryInfo::from_root(
-                    std::path::Path::new("/nonexistent"),
-                ),
-                radios: None,
-                privacy: crate::shell::quick_settings::actions::PrivacyStatus::default(),
-                vpns: None,
-            },
+            crate::shell::quick_settings::refresh::FastReading::empty(),
         ))
     });
     let deadline = tilo_test_env::hang_deadline();
@@ -429,23 +397,12 @@ fn successful_radio_reading_refreshes_the_recovered_public_action_availability()
     }));
     host.qs_refresh.kick_fast_with(|| {
         QsReading::Fast(Box::new(FastReading {
-            brightness: None,
-            displays: Vec::new(),
-            volume: None,
-            wifi: Some(true),
-            bluetooth: None,
-            bluetooth_available: false,
-            power: None,
-            power_profiles: None,
-            wired: None,
-            battery: os_actions::BatteryInfo::from_root(std::path::Path::new("/nonexistent")),
             radios: Some(os_actions::RadioState {
                 wifi_available: true,
                 wifi_enabled: true,
                 ..os_actions::RadioState::default()
             }),
-            privacy: os_actions::PrivacyStatus::default(),
-            vpns: None,
+            ..FastReading::empty()
         }))
     });
     wake_rx

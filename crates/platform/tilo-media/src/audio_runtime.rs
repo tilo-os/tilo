@@ -220,6 +220,13 @@ impl PersistentAudioPolicy {
         self.echo_session.is_some()
     }
 
+    /// When a backed-off echo-cancellation restart falls due. Nothing in the
+    /// graph changes at that moment, so an event-driven owner must reconcile
+    /// again by then on its own.
+    pub fn next_retry(&self) -> Option<std::time::Instant> {
+        self.echo_retry_at
+    }
+
     fn reconcile_output(
         &mut self,
         preferences: PersistentAudioPreferences,

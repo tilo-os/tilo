@@ -52,6 +52,7 @@ pub struct ContinuityPolicySnapshot {
     wifi_settings: bool,
     media: bool,
     display_input: bool,
+    automatic_display_input: bool,
     file_transfer: bool,
     realtime_sessions: bool,
     typed_gamepad: bool,
@@ -73,6 +74,7 @@ impl ContinuityPolicySnapshot {
             wifi_settings: flag("wifi_settings"),
             media: flag("media"),
             display_input: flag("display_input"),
+            automatic_display_input: flag("automatic_display_input"),
             file_transfer: flag("file_transfer"),
             realtime_sessions: flag("realtime_sessions"),
             typed_gamepad: flag("typed_gamepad"),
@@ -83,6 +85,12 @@ impl ContinuityPolicySnapshot {
     #[must_use]
     pub fn load() -> Self {
         Self::from_document(&settings_store::load())
+    }
+
+    /// Automatic leases require a separate literal device-local opt-in.
+    #[must_use]
+    pub const fn automatic_display_input(self) -> bool {
+        self.automatic_display_input
     }
 
     #[must_use]
@@ -157,7 +165,12 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::BluetoothHandoffAccepted { .. }
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
-            | PersonalFabricAction::BluetoothHandoffCancel { .. } => ContinuityCapability::Media,
+            | PersonalFabricAction::BluetoothHandoffCancel { .. }
+            // A media handoff's local file travels on the transfer lane.
+            | PersonalFabricAction::NearbyTransferOffer {
+                kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                ..
+            } => ContinuityCapability::Media,
             PersonalFabricAction::SetDisplayPlacement { .. }
             | PersonalFabricAction::SetDisplayPlacementChecked { .. }
             | PersonalFabricAction::DeviceHealthProbe { .. }
@@ -202,12 +215,55 @@ impl ContinuityPolicySnapshot {
         })
     }
 
+    /// Whether `action` may be processed now. Transfer continuations carry
+    /// no kind, so they pass while either transfer switch is on; the transfer
+    /// state machine then enforces the switch of the transfer's own kind.
     #[must_use]
     pub const fn permits_action(self, action: &PersonalFabricAction) -> bool {
+        if matches!(
+            action,
+            PersonalFabricAction::NearbyTransferReady { .. }
+                | PersonalFabricAction::NearbyTransferCancel { .. }
+                | PersonalFabricAction::NearbyTransferRestart { .. }
+                | PersonalFabricAction::NearbyTransferResult { .. }
+        ) {
+            return self.permits(ContinuityCapability::FileTransfer)
+                || self.permits(ContinuityCapability::Media);
+        }
         match Self::capability_for_action(action) {
             Some(capability) => self.permits(capability),
             None => true,
         }
+    }
+}
+
+/// The policy in a live settings document, parsed once per settings
+/// generation — for a per-tick reader that must not read the file.
+pub struct ContinuityPolicyCache {
+    settings: settings_store::live::LiveSettings,
+    seen: u64,
+    policy: ContinuityPolicySnapshot,
+}
+
+impl ContinuityPolicyCache {
+    #[must_use]
+    pub fn new(settings: &settings_store::live::LiveSettings) -> Self {
+        let snapshot = settings.snapshot();
+        Self {
+            settings: settings.clone(),
+            seen: snapshot.generation,
+            policy: ContinuityPolicySnapshot::from_document(&snapshot.document),
+        }
+    }
+
+    /// The current policy: one atomic load unless the settings changed.
+    pub fn current(&mut self) -> ContinuityPolicySnapshot {
+        if self.settings.generation() != self.seen {
+            let snapshot = self.settings.snapshot();
+            self.seen = snapshot.generation;
+            self.policy = ContinuityPolicySnapshot::from_document(&snapshot.document);
+        }
+        self.policy
     }
 }
 
@@ -216,8 +272,55 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn the_cached_policy_follows_each_settings_generation() {
+        use settings_store::SettingsSource as _;
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(Map::new(), |_| Ok(())));
+        let settings = settings_store::live::LiveSettings::start_from(source.clone(), || {});
+        let mut cache = ContinuityPolicyCache::new(&settings);
+        assert!(!cache.current().permits(ContinuityCapability::TypedGamepad));
+
+        let seen = settings.generation();
+        source
+            .update_section(
+                "continuity",
+                document(&json!({"enabled": true, "typed_gamepad": true})),
+            )
+            .unwrap();
+        let _ = settings.wait_for_change(seen, tilo_test_env::hang_bound());
+        assert!(cache.current().permits(ContinuityCapability::TypedGamepad));
+    }
+
     fn document(value: &Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn automatic_display_input_requires_a_literal_separate_opt_in() {
+        for value in [
+            json!(null),
+            json!(false),
+            json!(1),
+            json!("true"),
+            json!({}),
+        ] {
+            let policy = ContinuityPolicySnapshot::from_document(&document(
+                &json!({"continuity": {"enabled":true, "display_input":true, "automatic_display_input":value}}),
+            ));
+            assert!(!policy.automatic_display_input());
+        }
+        let absent = ContinuityPolicySnapshot::from_document(&document(
+            &json!({"continuity": {"enabled":true,"display_input":true}}),
+        ));
+        assert!(!absent.automatic_display_input());
+        let explicit = ContinuityPolicySnapshot::from_document(&document(
+            &json!({"continuity": {"automatic_display_input":true}}),
+        ));
+        assert!(explicit.automatic_display_input());
+        assert!(
+            !explicit.permits(ContinuityCapability::DisplayInput),
+            "the separate choice cannot enable its master capability"
+        );
     }
 
     #[test]
@@ -409,5 +512,50 @@ mod tests {
         assert!(!display_only.permits_action(&clock_report));
         assert!(display_only.permits_action(&health_probe));
         assert!(display_only.permits_action(&health_report));
+    }
+
+    #[test]
+    fn the_transfer_lane_answers_to_the_switch_of_each_transfer_kind() {
+        use crate::shell::nearby_transfer::TransferKind;
+
+        let offer = |kind| PersonalFabricAction::NearbyTransferOffer {
+            transfer_id: [1; 16],
+            name: "film.mkv".into(),
+            kind,
+            total_bytes: 4,
+            content_hash: [2; 32],
+        };
+        let media_offer = offer(TransferKind::MediaHandoff);
+        let file_offer = offer(TransferKind::File);
+        let ready = PersonalFabricAction::NearbyTransferReady {
+            request_id: [3; 16],
+            transfer_id: [1; 16],
+            committed_offset: 0,
+            prefix_hash: [4; 32],
+        };
+        assert_eq!(
+            ContinuityPolicySnapshot::capability_for_action(&media_offer),
+            Some(ContinuityCapability::Media)
+        );
+        assert_eq!(
+            ContinuityPolicySnapshot::capability_for_action(&file_offer),
+            Some(ContinuityCapability::FileTransfer)
+        );
+
+        let media_only = policy(true, false);
+        assert!(media_only.permits_action(&media_offer));
+        assert!(!media_only.permits_action(&file_offer));
+        assert!(media_only.permits_action(&ready));
+
+        let file_only = ContinuityPolicySnapshot::from_document(&document(&json!({
+            "continuity": {"enabled": true, "file_transfer": true}
+        })));
+        assert!(!file_only.permits_action(&media_offer));
+        assert!(file_only.permits_action(&file_offer));
+        assert!(file_only.permits_action(&ready));
+
+        let neither = policy(false, true);
+        assert!(!neither.permits_action(&media_offer));
+        assert!(!neither.permits_action(&ready));
     }
 }

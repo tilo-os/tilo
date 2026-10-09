@@ -35,10 +35,7 @@ pub fn read(path: &std::path::Path, max_bytes: usize) -> std::io::Result<Option<
 mod tests {
     #[test]
     fn action_authority_source_observes_atomic_replacement_deletion_and_byte_bound() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let unique = tilo_clock::try_unix_now_ns().unwrap();
         let root =
             std::env::temp_dir().join(format!("tilo-authority-{}-{unique}", std::process::id()));
         std::fs::create_dir(&root).unwrap();

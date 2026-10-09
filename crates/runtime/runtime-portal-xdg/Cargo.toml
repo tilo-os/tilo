@@ -23,6 +23,7 @@ ashpd = { workspace = true, features = ["notification", "screencast", "secret"] 
 # The sync wrappers wait on the process's shared app runtime; async callers
 # use the `*_async` variants directly.
 tilo-rt.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 thiserror.workspace = true
 workspace-hack = { version = "0.1" }
 

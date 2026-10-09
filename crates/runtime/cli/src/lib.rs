@@ -42,11 +42,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -141,7 +137,7 @@ pub fn ensure_dir(dir: &Path) -> Result<()> {
 pub fn data_home() -> PathBuf {
     // An empty or relative XDG_DATA_HOME is invalid by the spec, not a path
     // to resolve against the working directory.
-    if let Some(xdg) = xdg_paths::env_dir("XDG_DATA_HOME") {
+    if let Some(xdg) = tilo_paths::env_dir("XDG_DATA_HOME") {
         return xdg;
     }
     #[cfg(windows)]
@@ -153,13 +149,13 @@ pub fn data_home() -> PathBuf {
             return Path::new(&profile).join("AppData/Local");
         }
     }
-    if let Some(home) = xdg_paths::home() {
+    if let Some(home) = tilo_paths::home() {
         return home.join(".local/share");
     }
     // Temporary storage is not persistent and is used when the platform's
     // home/data environment is unavailable. The page has neither: a bare
     // relative path fails every file operation there instead of panicking.
-    xdg_paths::temp_dir().unwrap_or_default()
+    tilo_paths::temp_dir().unwrap_or_default()
 }
 
 /// The XDG data dir fallback for state outside Tilo; public so an app can

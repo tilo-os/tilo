@@ -232,6 +232,7 @@ fn rule(action: &str, verb: collab_types::Verb) -> Value {
     serde_json::to_value(collab_types::PermissionProfileRule::grant(
         collab_types::Scope::Action {
             app: NOTES.into(),
+            resource: INBOX.into(),
             action: action.into(),
         },
         verb,

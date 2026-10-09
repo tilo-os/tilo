@@ -278,6 +278,14 @@ pub enum DeviceShellOperation {
     Read { session: String },
 }
 
+/// Sanitized host network hints. Unknown is distinct from known unmetered;
+/// this carries no connection name, device, address or network permission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostNetworkStatus {
+    pub available: Option<bool>,
+    pub metered: Option<bool>,
+}
+
 /// Shell → app lifecycle. The shell supplies one authoritative combined
 /// desktop coordinate space and explicitly acknowledges ownership changes;
 /// transports must not infer either from timing.
@@ -357,6 +365,9 @@ pub enum FloatingSurfaceHostMessage {
         /// through their private sandbox configuration directory.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         theme: Option<crate::theme_document::ThemeDocument>,
+        /// Absent on older hosts or launches without network access.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        network_status: Option<HostNetworkStatus>,
         /// OKLCH degrees; absent while the workspace has no temperature.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_hue: Option<f32>,
@@ -372,6 +383,7 @@ impl FloatingSurfaceHostMessage {
     pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
         Self::Appearance {
             theme: None,
+            network_status: None,
             workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
             your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
         }
@@ -452,6 +464,9 @@ pub struct FloatingSurfaceServiceClient {
 impl FloatingSurfaceServiceClient {
     /// Discover the optional session service. Outside Tilo (or on an older
     /// shell) this returns `None`; apps retain their ordinary attached UI.
+    /// The inherited descriptor belongs to one app launch. Transport loss is
+    /// terminal for this client; only a fresh launcher-mediated launch supplies
+    /// a new connection. Discovery never opens a privileged host socket.
     #[cfg(feature = "local-daemons")]
     pub fn discover() -> Option<Self> {
         let fd = runtime_portal::service_fd(FLOATING_SURFACE_SERVICE)?;

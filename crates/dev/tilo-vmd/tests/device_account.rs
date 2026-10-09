@@ -14,6 +14,7 @@
     reason = "one end-to-end scenario; helpers fail the test on setup errors"
 )]
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::Parser as _;
@@ -246,4 +247,131 @@ fn a_device_reached_as_its_owner_runs_everything_through_sudo() {
         }
     }
     assert!(commands >= 8, "{log}");
+}
+
+/// Exercise the actual swap command twice against an isolated daemon. The
+/// builder stands in for Cargo with one deterministic, source-bound layer;
+/// no desktop, signing identity or application state is involved.
+#[test]
+fn repeated_remote_swap_reuses_verified_component_without_archive_transfer() {
+    let device = Device::new();
+    let source = device.dir.path().join("source");
+    std::fs::create_dir_all(source.join("os")).unwrap();
+    std::fs::write(
+        source.join("os/components.toml"),
+        "[[component]]\nname = \"cli-shim\"\npackages = [\"cli-shim\"]\nscope = \"session\"\n",
+    )
+    .unwrap();
+    std::fs::write(source.join("Cargo.lock"), "fixture lock").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "os/components.toml", "Cargo.lock"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "source fixture",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_VM_SSH", device.bin.join("ssh"))
+        .remove("TILO_VM")
+        .remove("TILO_VM_SLOT")
+        .remove("TILO_VM_CONFIG");
+    assert!(
+        !device
+            .run(&["vm", "add", "fixture", "--ssh", "me@device"])
+            .unwrap()
+            .failed
+    );
+    assert!(
+        !device
+            .run(&["slot", "create", "mine", "--headless"])
+            .unwrap()
+            .failed
+    );
+    script(
+        &device.bin.join("metadata"),
+        "#!/bin/sh\nprintf '%s' '{\"packages\":[],\"target_directory\":\"target\"}'\n",
+    );
+    env.set("TILO_VM_CARGO", device.bin.join("metadata"));
+    let builder = device.bin.join("fixture-builder.py");
+    std::fs::write(&builder, r"
+import base64,hashlib,io,json,sys,tarfile
+args=sys.argv[1:]
+inventory=args[args.index('--source-inventory')+1]
+source=hashlib.sha256(open(inventory,'rb').read()).hexdigest()
+payload=b'fixture payload'*8192
+sha=hashlib.sha256(payload).hexdigest()
+hash=hashlib.sha256(b'x\0usr/bin/cli-shim\0'+sha.encode()+b'\0').hexdigest()
+cached=[args[i+1] for i,v in enumerate(args) if v=='--cached-layer']
+reused=hash in cached
+print('tilo-vm-layer-begin '+json.dumps({'component':'cli-shim','target':__import__('platform').machine()+'-unknown-linux-gnu','source_digest':source,'layer_hash':hash,'reused':reused}),flush=True)
+data=b''
+if not reused:
+ stream=io.BytesIO()
+ with tarfile.open(fileobj=stream,mode='w') as tar:
+  directory=tarfile.TarInfo('usr');directory.type=tarfile.DIRTYPE;directory.mode=0o755;tar.addfile(directory)
+  entry=tarfile.TarInfo('usr/bin/cli-shim');entry.mode=0o755;entry.size=len(payload);tar.addfile(entry,io.BytesIO(payload))
+ data=stream.getvalue()
+ print('tilo-vm-layer-data '+base64.b64encode(data).decode(),flush=True)
+print('tilo-vm-layer-end '+hashlib.sha256(data).hexdigest()+' '+str(len(data)),flush=True)
+").unwrap();
+    let registry = device.dir.path().join("vms.toml");
+    let mut config = std::fs::read_to_string(&registry).unwrap();
+    write!(
+        config,
+        "\n[remote_builders]\n{} = [\"python3\", \"{}\"]\n",
+        std::env::consts::ARCH,
+        builder.display()
+    )
+    .unwrap();
+    std::fs::write(&registry, config).unwrap();
+    let mut receipts = Vec::new();
+    for _ in 0..2 {
+        let cli = Cli::try_parse_from([
+            "tilo-vm",
+            "swap",
+            "cli-shim",
+            "--slot",
+            "mine",
+            "--builder",
+            "remote",
+        ])
+        .unwrap();
+        let mut app = device.app();
+        app.worktree = Some(tilo_vm::context::Worktree {
+            root: source.clone(),
+            branch: Some("fixture".into()),
+        });
+        let outcome = app.run(cli.command).unwrap();
+        assert!(!outcome.failed, "{}", outcome.text);
+        let path = app.receipt.finish(Ok(&outcome.data)).unwrap();
+        receipts.push(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap(),
+        );
+    }
+    assert_ne!(receipts[0]["upload"], "skipped");
+    assert_eq!(receipts[1]["upload"], "skipped");
+    assert!(
+        receipts[1]["layer_reused"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64)
+    );
+    println!(
+        "isolated repeated-swap receipts: {}",
+        serde_json::to_string(&receipts).unwrap()
+    );
 }

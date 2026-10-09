@@ -795,6 +795,11 @@ mod tests {
             ssid: ssid.into(),
             signal: 3,
             secure,
+            security: if secure {
+                os_actions::WifiSecurity::Wpa2
+            } else {
+                os_actions::WifiSecurity::Open
+            },
             connected: false,
         }
     }

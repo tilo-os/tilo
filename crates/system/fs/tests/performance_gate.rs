@@ -6,10 +6,12 @@
 //! no polling, sleeps, peer discovery, or remote requests.
 
 use std::io::Cursor;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fs::{ContentStore, Hydrator, Namespace, ROOT_INO, ThumbProvider};
+use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO, ThumbProvider};
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use thumbnail::FileCategory;
@@ -20,18 +22,46 @@ const DIRECTORY_ENTRIES: usize = 1_000;
 const LARGE_FILE_BYTES: usize = 64 * 1024 * 1024;
 const RANGE_BYTES: u64 = 256 * 1024;
 const RANGE_READS: usize = 64;
+/// Remote renames a sync peer applies while the mount serves ranged reads.
+const REMOTE_APPLY_DELTAS: usize = 512;
 const WARM_DIRECTORY_PASSES: usize = 8;
 const WARM_THUMB_LOOKUPS: usize = 1_000;
 
-// These are release ceilings, not claims about typical latency. They are
-// deliberately generous enough for the shared, unpinned Forgejo runner while
-// still catching order-of-magnitude regressions and accidentally blocking UI
-// paths. Keep fixture sizes stable when revising a ceiling.
-const COLD_METADATA_SLO: Duration = Duration::from_secs(2);
-const WARM_DIRECTORY_SLO: Duration = Duration::from_secs(4);
-const RANGED_READ_SLO: Duration = Duration::from_secs(4);
-const COLD_THUMBNAIL_SLO: Duration = Duration::from_secs(3);
-const WARM_THUMBNAIL_SLO: Duration = Duration::from_millis(500);
+// Release ceilings, not claims about typical latency. Each is twice the
+// nearest-rank p99 of the `real-fuse` job of ci-filesystem.yml (debug test
+// profile, shared `runner` class), rounded up to 10 ms (1 ms below 10 ms).
+// Measured 2026-10-09 over 56 runs, main pushes and pull requests between
+// 3bc23c4b40 and b0aee36a66 plus the eight TIL-595 cites; at that N the p99
+// is the slowest run, so every ceiling is 2x the worst run seen. The trailing
+// comment is that p99 and the median. Revise by the same rule, and keep
+// fixture sizes stable when you do; tools/perf/kpi-budgets.toml mirrors them.
+//
+// The local ranged read has a heavy tail (two of 56 runs at 4x and 7x its
+// median), so its ceiling stops a regression in the worst case, not a 10x one
+// in the typical case; the nightly relative comparison (tools/perf/compare.py)
+// covers that.
+const COLD_METADATA_SLO: Duration = Duration::from_millis(360); // p99 179.5, p50 92.8
+const WARM_DIRECTORY_SLO: Duration = Duration::from_millis(470); // p99 233.6, p50 122.9
+const RANGED_READ_SLO: Duration = Duration::from_millis(400); // p99 197.7, p50 27.2
+/// The same reads through the mount while a peer's changes are applied.
+const REMOTE_APPLY_RANGED_READ_SLO: Duration = Duration::from_millis(680); // p99 337.2, p50 231.1
+const COLD_THUMBNAIL_SLO: Duration = Duration::from_millis(550); // p99 271.3, p50 171.0
+const WARM_THUMBNAIL_SLO: Duration = Duration::from_millis(12); // p99 5.76, p50 2.85
+
+/// Namespace changes behind the two writers of the idle anti-entropy pass.
+const IDLE_SYNC_HISTORY: u64 = 50_000;
+/// One idle pass between two writers in sync, both directions together.
+/// Independent of history: a pass resumes where the last one left off.
+/// Twice the 148 B every one of 41 CI runs sent: the byte count does not
+/// depend on the runner, so this is the idle pass's tight gate.
+const IDLE_SYNC_BYTES: usize = 296;
+/// The pass takes 0.015 ms (p99 0.052 ms over 41 runs). A ceiling under one
+/// scheduler time slice would fail whenever the runner preempts the pass, so
+/// time only bounds a stall here; `IDLE_SYNC_BYTES` catches a regression.
+const IDLE_SYNC_SLO: Duration = Duration::from_millis(5);
+/// The device keys the two writers know each other by.
+const IDLE_SYNC_HOST: [u8; 32] = [1; 32];
+const IDLE_SYNC_DEVICE: [u8; 32] = [2; 32];
 
 fn require_enabled() -> bool {
     if let Ok("1") = std::env::var(ENABLE_ENV).as_deref() {
@@ -95,6 +125,187 @@ fn thumbnail_fixture() -> Vec<u8> {
         "encode deterministic image fixture"
     );
     encoded
+}
+
+/// One exchange of sync messages as a session runs it (the client writes,
+/// the server answers, until neither has anything to send) between two
+/// namespaces in sync. Returns the bytes both sent and the time both spent
+/// generating and applying them, or `None` if the exchange failed.
+fn idle_namespace_pass(
+    (client, client_state): (&mut Namespace, &mut automerge::sync::State),
+    (server, server_state): (&mut Namespace, &mut automerge::sync::State),
+) -> Option<(usize, Duration)> {
+    let started = Instant::now();
+    let mut bytes = 0_usize;
+    for _ in 0..64 {
+        let message = client.sync_generate(client_state);
+        if let Some(message) = &message {
+            bytes = bytes.saturating_add(message.len());
+            server.sync_receive(server_state, message).ok()?;
+        }
+        let reply = server.sync_generate(server_state);
+        if let Some(reply) = &reply {
+            bytes = bytes.saturating_add(reply.len());
+            client.sync_receive(client_state, reply).ok()?;
+        }
+        if message.is_none() && reply.is_none() {
+            return Some((bytes, started.elapsed()));
+        }
+    }
+    None
+}
+
+/// TIL-584: the anti-entropy pass every writer runs with every peer every
+/// few seconds, with nothing changed. Starting each pass from a fresh sync
+/// state sent a Bloom filter over the namespace's whole history; resuming
+/// from the last completed pass sends heads, at any history length.
+#[test]
+fn idle_namespace_anti_entropy_performance_gate() {
+    if !require_enabled() {
+        return;
+    }
+    let mut host = Namespace::new("perf-idle-host").unwrap();
+    let mut file = ROOT_INO;
+    for change in 0..IDLE_SYNC_HISTORY {
+        if change.is_multiple_of(100) {
+            file = host
+                .create_file(ROOT_INO, format!("file-{change}"), None, 0, change)
+                .expect("create history fixture entry");
+        } else {
+            let content = iroh_blobs::Hash::new(change.to_le_bytes());
+            assert!(host.set_content(file, Some(&content), change, change));
+        }
+        // Reading the heads commits the edit as one change.
+        host.heads();
+    }
+    let mut device =
+        Namespace::from_bytes("perf-idle-device", &host.save()).expect("open in-sync device");
+
+    let (fresh_bytes, fresh_time) = idle_namespace_pass(
+        (&mut device, &mut automerge::sync::State::new()),
+        (&mut host, &mut automerge::sync::State::new()),
+    )
+    .expect("fresh idle pass");
+    eprintln!(
+        "PERF idle-namespace-pass-fresh-state-50k: {fresh_bytes} B, {:.3} ms (before TIL-584)",
+        fresh_time.as_secs_f64() * 1_000.0
+    );
+
+    // The production path: each side begins where its last completed
+    // exchange with the other left off. The first is a full exchange.
+    let mut resumed = None;
+    for _ in 0..3 {
+        let mut device_state = device.begin_sync_with(&IDLE_SYNC_HOST);
+        let mut host_state = host.begin_sync_with(&IDLE_SYNC_DEVICE);
+        let pass = idle_namespace_pass(
+            (&mut device, &mut device_state),
+            (&mut host, &mut host_state),
+        )
+        .expect("resumed idle pass");
+        device.finish_sync_with(IDLE_SYNC_HOST, &device_state);
+        host.finish_sync_with(IDLE_SYNC_DEVICE, &host_state);
+        resumed = Some(pass);
+    }
+    let (bytes, time) = resumed.expect("a resumed pass ran");
+    eprintln!("PERF idle-namespace-pass-resumed-50k: {bytes} B (budget {IDLE_SYNC_BYTES} B)");
+    assert!(
+        bytes <= IDLE_SYNC_BYTES,
+        "an idle pass sent {bytes} B over {IDLE_SYNC_HISTORY} changes"
+    );
+    report("idle-namespace-pass-resumed-50k", time, IDLE_SYNC_SLO);
+}
+
+/// The ranged reads of the local-residency scenario, through the mount's
+/// read path, while a sync peer's remote namespace changes are applied under
+/// the namespace lock that read path shares.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mount_ranged_read_under_remote_apply_performance_gate() {
+    if !require_enabled() {
+        return;
+    }
+    let store = Arc::new(ContentStore::memory());
+    let large_file = deterministic_bytes(LARGE_FILE_BYTES);
+    let manifest = store
+        .write_content(&large_file)
+        .await
+        .expect("write chunked fixture")
+        .expect("non-empty fixture has a manifest");
+    let endpoint = Endpoint::bind(presets::Minimal)
+        .await
+        .expect("bind local hydration endpoint");
+    let router = Router::builder(endpoint.clone()).spawn();
+    let hydrator = Arc::new(Hydrator::new(endpoint, store));
+
+    let mut source = Namespace::new("perf-source").unwrap();
+    source
+        .create_file(
+            ROOT_INO,
+            "large.dat",
+            Some(&manifest),
+            LARGE_FILE_BYTES as u64,
+            1_700_000_000,
+        )
+        .expect("create large file entry");
+    source
+        .create_file(ROOT_INO, "churn-0", None, 0, 1_700_000_000)
+        .expect("create churn entry");
+    let namespace = Arc::new(Mutex::new(
+        Namespace::from_bytes("perf-mount", &source.save()).expect("open mount namespace"),
+    ));
+    let deltas: Vec<Vec<u8>> = (0..REMOTE_APPLY_DELTAS)
+        .map(|index| {
+            let (from, to) = (format!("churn-{index}"), format!("churn-{}", index + 1));
+            assert!(source.rename(ROOT_INO, from, ROOT_INO, to, 1_700_000_001));
+            source.save_incremental()
+        })
+        .collect();
+    let mount = QuickFS::new(
+        Arc::clone(&namespace),
+        Arc::clone(&hydrator),
+        Arc::new(Heuristics::new(Arc::clone(&hydrator))),
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let applier = {
+        let (namespace, stop) = (Arc::clone(&namespace), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            let mut applied = 0_usize;
+            for delta in &deltas {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .apply_remote_and_resolve(delta)
+                    .expect("apply remote namespace delta");
+                applied += 1;
+            }
+            applied
+        })
+    };
+    let started = Instant::now();
+    for index in 0..RANGE_READS {
+        let max_offset = (LARGE_FILE_BYTES as u64) - RANGE_BYTES;
+        let offset = ((index as u64 * 1_000_003) % max_offset) & !4095;
+        let bytes = mount
+            .read_path_range(Path::new("large.dat"), offset, RANGE_BYTES)
+            .expect("read locally resident range through the mount");
+        let start = usize::try_from(offset).expect("fixture offset fits usize");
+        let end =
+            usize::try_from(offset.saturating_add(RANGE_BYTES)).expect("fixture end fits usize");
+        assert_eq!(bytes, large_file[start..end]);
+    }
+    let under_apply = started.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    let applied_deltas = applier.join().expect("remote apply thread");
+    eprintln!("PERF remote deltas applied during the mount reads: {applied_deltas}");
+    report(
+        "mount-64x256k-ranged-read-under-remote-apply",
+        under_apply,
+        REMOTE_APPLY_RANGED_READ_SLO,
+    );
+    drop(mount);
+    router.shutdown().await.expect("stop local endpoint");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

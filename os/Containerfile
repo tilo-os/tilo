@@ -74,7 +74,7 @@ ARG ENV_RUNTIME_REF=scratch
 # boot-test while the engine's own build is being repaired.
 ARG TILO_WITH_BROWSER=1
 # The engine runtime's version: ui::webview::chromium::runtime::RUNTIME_VERSION.
-ARG CHROMIUM_RUNTIME_VERSION=2026.10.4-chromium
+ARG CHROMIUM_RUNTIME_VERSION=2026.10.9-chromium
 # The pinned builder bootc-builder compiles the image's bootc in, the one
 # os/Containerfile.bootc-helper uses.
 ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
@@ -351,6 +351,7 @@ COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_u
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
 COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py
+COPY tools/font-catalog.py /build/tools/font-catalog.py
 COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY scripts/browser/build-host.py scripts/browser/cef-lock.json /build/scripts/browser/
@@ -392,6 +393,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
+        bash-devel readline-devel \
         libxkbcommon-devel wayland-devel \
         libseat-devel libinput-devel systemd-devel libdrm-devel \
         mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
@@ -512,6 +514,8 @@ FROM builder-base AS builder
 # instruction here commits a layer of this multi-gigabyte stage, and rootless
 # podman commits one by walking the whole tree, minutes apiece.
 COPY --from=builder-sources /build/ /build/
+# The cooperative editor stays an OS-owned asset, outside app/runtime grants.
+RUN python3 crates/runtime/ush/native/build.py --out /out/ush-editor/bash-editor.so
 
 # Compile the binaries the OS images need. Cache mounts persist cargo's
 # registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
@@ -922,16 +926,21 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
       && /out/tilo-runtime-bundle verify \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
+      && python3 /build/tools/font-catalog.py verify \
+        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)/lib/fonts" --scope product \
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)"; \
     else \
-      /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
+      python3 /build/tools/font-catalog.py prepare \
+        /build/crates/sdk/ui-core/assets/fonts /out/fonts --scope product \
+      && /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
       && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
       && [ -n "${RUST_LIBSTD}" ] \
       && /bin/bash -eu -o pipefail -c ' \
         args=(/out/tilo-runtime-bundle build \
           --release "${RUNTIME_RELEASE}" --arch "$(uname -m)" --from / \
           --include /out/libruntime_dylib.so \
+          --include /out/fonts \
           --include "$1" \
           --identity /out/runtime-bundle-identity.json \
           --out-root /usr/lib/tilo-runtime \
@@ -952,7 +961,11 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/thin-apps/* \
       && rm -f /out/runtime-bundle-identity.json; \
-    fi
+    fi \
+    && fonts="/usr/lib/tilo-runtime/$(cat /out/runtime-version)/lib/fonts" \
+    && catalog="$(sha256sum "$fonts/manifest.toml" | cut -d ' ' -f1)" \
+    && python3 /build/tools/font-catalog.py stage "$fonts" \
+        "/usr/share/tilo/font-catalogs/$catalog" --scope product
 
 # ---- The browser engine runtime ---------------------------------------------
 # The Chromium engine is its own signed runtime bundle, apart from the Browser
@@ -1009,6 +1022,7 @@ RUN --mount=type=secret,id=browser_runtime_identity \
 RUN export TILO_IMAGE_BUILD=1 \
     && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
+    COHORT_TAPP_DIR=/usr/share/tilo-apps/cohort \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/tilo-app-package \
     INSTALL_BIN=/out/tilo-install \
@@ -1035,6 +1049,7 @@ RUN --mount=type=bind,from=env-runtime,source=/,target=/tilo-env-runtime,ro \
 FROM scratch AS native-builder-payload
 COPY --from=builder /out/ /out/
 COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+COPY --from=builder /usr/share/tilo/font-catalogs/ /usr/share/tilo/font-catalogs/
 COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
 
 # The browser engine runtime as the registry package that offers it
@@ -1486,8 +1501,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rm -rf /var/cache/swcatalog
 
 # Flatpak applies predefined remotes to the default system installation offline,
-# importing their embedded GPG key. Its applied-remotes history preserves an
-# owner's disabled or removed default instead of recreating it on each boot.
+# importing their embedded GPG key. The root initializer completes this before
+# login, so the first Store discovery sees defaults instead of racing lazy
+# initialization. Flatpak's applied-remotes history preserves disabled/removed
+# defaults; the initializer never uses unconditional remote-add.
 COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
@@ -1970,6 +1987,8 @@ COPY \
     os/usr/lib/systemd/user/tilo-model-gateway.service \
     os/usr/lib/systemd/user/tilo-model-gateway.socket \
     os/usr/lib/systemd/user/tilo-app-host.socket \
+    os/usr/lib/systemd/user/tilo-projector.service \
+    os/usr/lib/systemd/user/tilo-projector.socket \
     /usr/lib/systemd/user/
 COPY \
     os/usr/lib/systemd/system/tilo-relay.service \
@@ -2087,6 +2106,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
     os/usr/lib/systemd/system/tilo-firstboot-user.service \
+    os/usr/lib/systemd/system/tilo-flatpak-defaults.service \
     os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
     os/usr/lib/systemd/system/tilo-session-recovery.service \
     /usr/lib/systemd/system/
@@ -2449,6 +2469,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-windows-vm-network.service \
     os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.service \
     os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.timer \
+    os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.path \
+    os/usr/lib/systemd/system/tilo-windows-vm-egress-lease.path \
     /usr/lib/systemd/system/
 COPY \
     docs/windows-vm.md \
@@ -2456,7 +2478,7 @@ COPY \
     /usr/share/doc/tilo/
 RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-provision /usr/libexec/tilo-windows-owner \
               /usr/libexec/tilo-windows-recovery-console \
-    && systemctl enable tilo-windows-vm-egress-reaper.timer
+    && systemctl enable tilo-windows-vm-egress-reaper.path tilo-windows-vm-egress-lease.path
 
 # ---------------------------------------------------------------------------
 # Enable services
@@ -2491,6 +2513,7 @@ RUN systemctl enable greetd.service && \
        /etc/systemd/system/graphical.target.wants/power-profiles-daemon.service \
        /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
+    systemctl enable tilo-flatpak-defaults.service && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \
@@ -2499,6 +2522,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-system-extension-boot-pack-stage.path && \
     systemctl --global enable tilo-models.socket && \
     systemctl --global enable tilo-model-gateway.socket && \
+    systemctl --global enable tilo-projector.socket && \
     systemctl --global enable tilo-app-host.socket && \
     systemctl --global enable tilo-ush.socket && \
     systemctl --global enable tilo-fs-recipient.socket && \
@@ -2667,9 +2691,11 @@ ARG KERNEL_RPMS_REF
 # The Lenovo profile needs the Adreno SQE firmware from Fedora's qcom-firmware
 # RPM. Keep it in the frozen ARM package set, but install it only in that image.
 # tilo-rpm-snapshot-package[aarch64]: qcom-firmware
+# Hash only this profile's firmware. Later board imports must not rebuild the
+# generic kernel/initramfs when the runner seed publishes the same rootfs.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
-    --mount=type=bind,source=os/hardware/firmware,target=/run/tilo-hardware-firmware \
+    --mount=type=bind,source=os/hardware/firmware/${TILO_HARDWARE_PROFILE},target=/run/tilo-hardware-firmware \
     --mount=type=bind,source=os/dev/prepare-hardware-profile.py,target=/run/tilo-prepare-hardware-profile.py \
     --mount=type=bind,source=os/scripts/build-initramfs.sh,target=/run/tilo-build-initramfs.sh \
     --mount=type=bind,source=os/scripts/verify-board-initramfs.py,target=/run/verify-board-initramfs.py \
@@ -2745,7 +2771,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     python3 -B /run/tilo-prepare-hardware-profile.py \
         --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
         --profiles-dir /run/tilo-hardware-profiles \
-        --firmware-dir "/run/tilo-hardware-firmware/$TILO_HARDWARE_PROFILE" \
+        --firmware-dir "/run/tilo-hardware-firmware" \
         --target-update-ref "$TILO_TARGET_IMGREF"; \
     # The initramfs recipe and its checks, shared with the dev image's board
     # layer.
@@ -2923,6 +2949,7 @@ COPY --from=native-builder-payload \
     /out/runtime-bundle-publisher.hex \
     /out/browser-runtime-publisher.hex \
     /out/registry-runtime-publisher.hex \
+    /out/app-publisher.hex \
     /usr/share/tilo/
 # ---- Preinstalled application store -----------------------------------------
 # The registry + unpacked payloads the builder produced with `tilo-app-package pack` and
@@ -2941,7 +2968,7 @@ COPY --from=native-builder-payload \
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
 COPY --from=native-builder-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
-COPY --from=native-builder-payload /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
+COPY --from=native-builder-payload /usr/share/tilo/font-catalogs/ /usr/share/tilo/font-catalogs/
 # The shell and the browser engine must resolve every library they load from
 # this rootfs: a gap is a loader error at the first launch, on a device.
 ARG CHROMIUM_RUNTIME_VERSION
@@ -3118,13 +3145,18 @@ RUN test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
 # everything else, so no stage of this build reaches the network. The UKI is
 # self-contained: its EFI stub comes from this stage's systemd-boot and does not
 # have to match the systemd in the rootfs.
+#
+# Every sealed image (this file, os/Containerfile.board,
+# os/Containerfile.dev-installer-base) carries this stage and the `uki` stage
+# below with the same instructions; tools/policy/check_uki_pipeline.py fails
+# when one copy changes alone. Only the FROM line may differ.
 FROM ${BASE_REF} AS uki-tools
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        systemd-ukify \
-        systemd-boot-unsigned \
-        binutils \
+COPY os/dev/uki-tools.packages /usr/local/share/tilo/uki-tools.packages
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    grep -v '^#' /usr/local/share/tilo/uki-tools.packages \
+    | xargs dnf install -y --setopt=reposdir=/repo \
     && dnf clean all
 COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
 

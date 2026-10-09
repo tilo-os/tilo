@@ -168,8 +168,10 @@ pub trait RunHooks: Sync {
     fn ask(&self, request: AskRequest) -> Pending<Option<Value>>;
 
     /// Resolve when the running invocation `invocation` is worth observing
-    /// again (the host pushed an update, or a poll interval passed).
-    /// Abandoning the answer stops the run.
+    /// again — after a poll interval. Only called for a host whose
+    /// [`ActionHost::next_change`](tilo_actions::remote::ActionHost::next_change)
+    /// cannot tell when the invocation changes. Abandoning the answer stops
+    /// the run.
     fn settle(&self, invocation: InvocationId) -> Pending<()>;
 }
 
@@ -617,7 +619,8 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         if !grant_permits(
             &self.shortcut.grant,
             app_id,
-            action,
+            &descriptor.address,
+            &descriptor.resource_kind,
             descriptor.contract.permission,
         ) {
             return Err(StepFailure::OutsideGrant {
@@ -670,6 +673,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 // after the catalogue moved on; the host re-resolves the
                 // target itself.
                 revision: None,
+                wait_ms: None,
             },
             result: descriptor.contract.result.clone(),
         })
@@ -828,7 +832,13 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     return Err(StepFailure::Cancelled { message });
                 }
                 ReceiptStatus::Accepted => {
-                    self.hooks.settle(id).await.ok_or(StepFailure::Abandoned)?;
+                    // Wake when the host says the invocation may have moved;
+                    // only a host that cannot tell falls back to the hooks'
+                    // poll interval.
+                    match self.host.next_change(&self.caller, &id) {
+                        Some(change) => change.await.ok_or(StepFailure::Abandoned)?,
+                        None => self.hooks.settle(id).await.ok_or(StepFailure::Abandoned)?,
+                    }
                     self.host
                         .observe(&self.caller, &id)
                         .ok_or_else(|| StepFailure::Host {

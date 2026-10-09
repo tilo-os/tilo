@@ -37,6 +37,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::ObjId;
@@ -172,9 +173,8 @@ pub struct ImagerApp {
     startup_write_state_reconciled: bool,
     // ---- composition ----
     seeded: bool,
-    rect: Rect,
     /// The page the controls below were composed for.
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     /// What the composed page shows; a change composes the page again.
     view_key: Option<String>,
     structure_dirty: bool,
@@ -241,8 +241,7 @@ impl ImagerApp {
             shot_focus: None,
             startup_write_state_reconciled: false,
             seeded: false,
-            rect: Rect::ZERO,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             view_key: None,
             structure_dirty: true,
             commands: Rc::new(RefCell::new(Vec::new())),
@@ -2202,16 +2201,14 @@ impl Widget for ImagerApp {
             self.export_config();
         }
         self.refresh_view();
-        if let Some(composed) = &mut self.composed {
-            composed.sync(_state, _path);
-        }
+        self.composed.sync(_state, _path);
         self.dirty = true;
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.refresh_view();
         self.composed
-            .as_mut()
+            .element_mut()
             .is_some_and(|view| view.update(state, path))
     }
 
@@ -2224,7 +2221,7 @@ impl Widget for ImagerApp {
         // A page composed again keeps keyboard focus on the same control.
         let focused = self
             .composed
-            .as_deref()
+            .element()
             .and_then(page::focused_id)
             .or_else(|| self.shot_focus.take().map(str::to_string));
         let mut composed = self.build_composition();
@@ -2232,42 +2229,24 @@ impl Widget for ImagerApp {
             page::refocus(composed.as_mut(), &id);
         }
         let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        self.composed.replace(composed);
         self.view_key = Some(self.view_key());
         self.structure_dirty = false;
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    flex_grow: 1.0,
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            flex_grow: 1.0,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child) = children.first()
-        {
-            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
+        self.composed.apply_layout(taffy, node, origin);
     }
 
     fn draw(
@@ -2280,10 +2259,10 @@ impl Widget for ImagerApp {
     ) {
         if self.export_dialog.is_open() {
             self.export_dialog
-                .layout_in(self.rect, theme, text_renderer);
+                .layout_in(self.composed.rect(), theme, text_renderer);
         }
         // The framework paints the window ground; the page is toolkit widgets.
-        if let Some(composed) = &mut self.composed {
+        if let Some(composed) = self.composed.element_mut() {
             composed.draw(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -2299,7 +2278,7 @@ impl Widget for ImagerApp {
             *ctx.handled = true;
             return;
         }
-        if let Some(composed) = &mut self.composed
+        if let Some(composed) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = children.first()
         {
@@ -2342,7 +2321,7 @@ impl Widget for ImagerApp {
         }
     }
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
-        if let Some(view) = &mut self.composed {
+        if let Some(view) = self.composed.element_mut() {
             view.settle(edits, path);
         }
         if self.drain_commands() {
@@ -2350,19 +2329,11 @@ impl Widget for ImagerApp {
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|child| child.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn name(&self) -> &'static str {
@@ -2370,15 +2341,11 @@ impl Widget for ImagerApp {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.composed.rect()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|child| child.take_structure_dirty())
+        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
     }
 
     /// Keep the event loop ticking while a job or file picker is in flight, so
@@ -2389,7 +2356,7 @@ impl Widget for ImagerApp {
             || self.release_download.is_some()
             || self
                 .composed
-                .as_ref()
+                .element()
                 .is_some_and(|child| child.needs_animation_frame())
     }
 
@@ -2618,7 +2585,6 @@ mod tests {
             assert!(app.releases().is_empty(), "no fabricated Tilo releases");
 
             // ...and nothing on the Source step is clickable that would select one.
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
             let offered = ids(&app).iter().any(|id| id.starts_with("imager.release."));
             assert!(
                 !offered,
@@ -2633,9 +2599,8 @@ mod tests {
         // Phase `demo_document_offers_its_seeded_releases`.
         // The gate is a gate, not a deletion: the demo document still offers them.
         {
-            let (mut app, _doc) = seeded_app();
+            let (app, _doc) = seeded_app();
             assert_eq!(app.releases().len(), 2);
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
             let offered = ids(&app)
                 .iter()
                 .filter(|id| id.starts_with("imager.release."))
@@ -3047,7 +3012,6 @@ mod tests {
         // Phase `active_release_download_replaces_selection_with_an_accessible_cancel_action`.
         {
             let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
             app.release_download = Some(ReleaseDownload {
                 index: 0,
                 control: crate::release::DownloadControl::default(),

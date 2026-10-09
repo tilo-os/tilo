@@ -1589,30 +1589,20 @@ impl Widget for DesktopSurface {
             .chain(activity)
             .chain(notices)
             .collect();
-        let node = taffy.parent_node(
-            Style {
-                display: ui::taffy::Display::Flex,
-                flex_direction: ui::taffy::FlexDirection::Column,
-                size: ui::taffy::Size {
-                    width: ui::taffy::Dimension::percent(1.0),
-                    height: ui::taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            display: ui::taffy::Display::Flex,
+            flex_direction: ui::taffy::FlexDirection::Column,
+            size: ui::taffy::Size {
+                width: ui::taffy::Dimension::percent(1.0),
+                height: ui::taffy::Dimension::percent(1.0),
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let nodes = taffy.children(node).unwrap_or_default();
         let has_row = self.shown_row().is_some();
