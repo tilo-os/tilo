@@ -248,6 +248,18 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         ) -> ::core::result::Result<(), #krate::ModelError> {
                             #krate::Model::store(&self.0, doc, slot)
                         }
+                        fn stores_as(&self, before: &Self) -> bool {
+                            #krate::Model::stores_as(&self.0, &before.0)
+                        }
+                        fn store_changed(
+                            &self,
+                            before: &Self,
+                            doc: &mut #krate::Doc,
+                            slot: #krate::Slot<'_>,
+                            dirty: &#krate::Delta,
+                        ) -> ::core::result::Result<(), #krate::ModelError> {
+                            #krate::Model::store_changed(&self.0, &before.0, doc, slot, dirty)
+                        }
                         fn refresh(
                             &mut self,
                             doc: &#krate::Doc,
@@ -359,6 +371,9 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         let text = match self { #(Self::#idents => #names,)* };
                         out.push(::std::string::String::from(text));
                     }
+                    fn stores_as(&self, before: &Self) -> bool {
+                        ::core::mem::discriminant(self) == ::core::mem::discriminant(before)
+                    }
                 }
             })
         }
@@ -407,6 +422,8 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut reads = Vec::new();
     let mut missing = Vec::new();
     let mut writes = Vec::new();
+    let mut changed_writes = Vec::new();
+    let mut same = Vec::new();
     let mut refreshes = Vec::new();
     let mut texts = Vec::new();
     let mut value_schemas = Vec::new();
@@ -506,6 +523,15 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 #key,
                 &#krate::Atom(::core::clone::Clone::clone(&self.#ident)),
             )?;));
+            changed_writes.push(quote!(#krate::write_key_changed::<#atom>(
+                doc,
+                obj,
+                #key,
+                &#krate::Atom(::core::clone::Clone::clone(&self.#ident)),
+                &#krate::Atom(::core::clone::Clone::clone(&before.#ident)),
+                dirty,
+            )?;));
+            same.push(quote!(self.#ident == before.#ident));
             refreshes.push(quote! {
                 let mut atom = #krate::Atom(::core::mem::take(&mut self.#ident));
                 let refreshed = #krate::refresh_key::<#atom>(&mut atom, doc, obj, #key, delta);
@@ -526,12 +552,20 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
             ));
             writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
+            changed_writes.push(quote!(
+                #krate::write_key_changed::<#ty>(doc, obj, #key, &self.#ident, &before.#ident, dirty)?;
+            ));
+            same.push(quote!(#krate::Model::stores_as(&self.#ident, &before.#ident)));
         } else {
             reads.push(quote!(#ident: #krate::read_key::<#ty>(doc, obj, #key)?));
             missing.push(quote!(
                 #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
             ));
             writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
+            changed_writes.push(quote!(
+                #krate::write_key_changed::<#ty>(doc, obj, #key, &self.#ident, &before.#ident, dirty)?;
+            ));
+            same.push(quote!(#krate::Model::stores_as(&self.#ident, &before.#ident)));
             refreshes.push(
                 quote!(#krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;),
             );
@@ -1005,6 +1039,20 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 let obj = slot.object(doc, #krate::__private::ObjType::Map)?;
                 <Self as #krate::Fields>::write_fields(self, doc, &obj)
             }
+            fn stores_as(&self, before: &Self) -> bool {
+                let _ = before;
+                true #(&& #same)*
+            }
+            fn store_changed(
+                &self,
+                before: &Self,
+                doc: &mut #krate::Doc,
+                slot: #krate::Slot<'_>,
+                dirty: &#krate::Delta,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                let obj = slot.object(doc, #krate::__private::ObjType::Map)?;
+                <Self as #krate::Fields>::write_changed_fields(self, before, doc, &obj, dirty)
+            }
             fn refresh(
                 &mut self,
                 doc: &#krate::Doc,
@@ -1044,6 +1092,17 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             ) -> ::core::result::Result<(), #krate::ModelError> {
                 let _ = (&doc, &obj);
                 #(#writes)*
+                ::core::result::Result::Ok(())
+            }
+            fn write_changed_fields(
+                &self,
+                before: &Self,
+                doc: &mut #krate::Doc,
+                obj: &#krate::__private::ObjId,
+                dirty: &#krate::Delta,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                let _ = (&before, &doc, &obj, &dirty);
+                #(#changed_writes)*
                 ::core::result::Result::Ok(())
             }
 

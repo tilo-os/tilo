@@ -1575,6 +1575,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     )),
                 }
             }
+            fn snapshot(record: &#self_ty) -> ::core::option::Option<#self_ty> {
+                // A copy where the record is `Clone`, none where it is not.
+                #[allow(unused_imports, reason = "only one of the two snapshot traits applies to a given record")]
+                use #krate::__private::{SnapshotByClone as _, SnapshotUnavailable as _};
+                (&&#krate::__private::Snapshot(record)).snapshot()
+            }
             #risk
             #change_kind
             #compensation_fns

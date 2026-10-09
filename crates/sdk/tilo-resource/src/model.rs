@@ -379,6 +379,40 @@ pub trait Model: Sized {
     /// Returns the document's write error.
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError>;
 
+    /// Whether writing `self` over a slot that holds `before`, as a
+    /// [`store`](Self::store) left it, would change nothing: an in-memory
+    /// comparison, so an action that changed one item of a long collection
+    /// does not visit the others. Must only answer `true` when `store` would
+    /// write no operation; the default answers `false` (unknown).
+    fn stores_as(&self, before: &Self) -> bool {
+        let _ = before;
+        false
+    }
+
+    /// Write `self` into `slot`, which holds `before`: exactly the operations
+    /// [`store`](Self::store) would write, found by comparing with `before`
+    /// where `store` would read the document.
+    ///
+    /// `before` is what [`load`](Self::load) reads from the slot now, and the
+    /// slot is as a `store` left it except where `dirty` (changes written by
+    /// someone else since) says otherwise: a slot `dirty` touched is written
+    /// as `store` would. The default is `store`. An action's write is
+    /// replayed on every replica, so an override that writes anything else
+    /// forks the document.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        let _ = (before, dirty);
+        self.store(doc, slot)
+    }
+
     /// Bring a value read earlier up to date after the changes in `delta`,
     /// re-reading only what they touched. `value` and `id` are what the
     /// parent's slot holds now — the same object as when `self` was read, or
@@ -454,6 +488,25 @@ pub trait Fields: Model {
     ) -> Result<(), ModelError> {
         let _ = (doc, obj, path, cx);
         Err(ModelError::unsupported(op))
+    }
+
+    /// Write the fields to the map `obj`, which holds `before`: the
+    /// operations [`write_fields`](Self::write_fields) would write, with
+    /// each field compared to its value in `before` rather than read back
+    /// (see [`Model::store_changed`]). `#[derive(Model)]` writes only the
+    /// fields that changed; the default writes every field.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    fn write_changed_fields(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        obj: &ObjId,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        let _ = (before, dirty);
+        self.write_fields(doc, obj)
     }
 
     /// Bring fields read earlier from the map `obj` up to date after the
@@ -614,6 +667,29 @@ macro_rules! json_model {
     )*};
 }
 
+/// Write `value` under `key` of the map `obj`, which holds `before`: the
+/// operations [`write_key`] would write, without reading back what did not
+/// change. See [`Model::store_changed`].
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+pub fn write_key_changed<T: Model>(
+    doc: &mut Doc,
+    obj: &ObjId,
+    key: &str,
+    value: &T,
+    before: &T,
+    dirty: &Delta,
+) -> Result<(), ModelError> {
+    match dirty.key(obj, key) {
+        Touch::Written => write_key(doc, obj, key, value),
+        Touch::Untouched if value.stores_as(before) => Ok(()),
+        Touch::Untouched | Touch::Below => value
+            .store_changed(before, doc, Slot::Key(obj, key), dirty)
+            .map_err(|error| error.at(key)),
+    }
+}
+
 fn scalar<'v>(value: &'v Value<'_>) -> Option<&'v ScalarValue> {
     match value {
         Value::Scalar(scalar) => Some(scalar.as_ref()),
@@ -649,6 +725,9 @@ impl Model for bool {
     }
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Boolean(*self))
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
     }
 }
 
@@ -696,6 +775,9 @@ macro_rules! integer_model {
                     .map_err(|_| ModelError::invalid("integer out of range"))?;
                 slot.put_scalar(doc, value)
             }
+            fn stores_as(&self, before: &Self) -> bool {
+                self == before
+            }
         }
     )*};
 }
@@ -739,6 +821,9 @@ impl Model for f64 {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::F64(*self))
     }
+    fn stores_as(&self, before: &Self) -> bool {
+        self.to_bits() == before.to_bits()
+    }
 }
 
 impl Settable for f32 {}
@@ -769,6 +854,9 @@ impl Model for f32 {
     }
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         f64::from(*self).store(doc, slot)
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self.to_bits() == before.to_bits()
     }
 }
 
@@ -835,6 +923,24 @@ impl Model for String {
         let current = doc.text(&text)?;
         if current != *self {
             splice_changed_span(doc, &text, &current, self)?;
+        }
+        Ok(())
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
+    }
+    /// The one splice [`store`](Model::store) makes, found from `before`
+    /// instead of reading the whole text back.
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        _dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        let text = slot.object(doc, ObjType::Text)?;
+        if before != self {
+            splice_changed_span(doc, &text, before, self)?;
         }
         Ok(())
     }
@@ -933,6 +1039,9 @@ impl Model for Atom {
             out.push(self.0.clone());
         }
     }
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
+    }
 }
 
 impl Settable for uuid::Uuid {}
@@ -962,6 +1071,9 @@ impl Model for uuid::Uuid {
     }
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Str(self.to_string().into()))
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
     }
 }
 
@@ -1063,6 +1175,25 @@ impl<T: Model> Model for Option<T> {
             None => slot.remove(doc),
         }
     }
+    fn stores_as(&self, before: &Self) -> bool {
+        match (self, before) {
+            (Some(value), Some(before)) => value.stores_as(before),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        match (self, before) {
+            (Some(value), Some(before)) => value.store_changed(before, doc, slot, dirty),
+            _ => self.store(doc, slot),
+        }
+    }
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -1157,6 +1288,18 @@ impl<T: Model> Model for Box<T> {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         (**self).store(doc, slot)
     }
+    fn stores_as(&self, before: &Self) -> bool {
+        (**self).stores_as(before)
+    }
+    fn store_changed(
+        &self,
+        before: &Self,
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        dirty: &Delta,
+    ) -> Result<(), ModelError> {
+        (**self).store_changed(before, doc, slot, dirty)
+    }
     fn refresh(
         &mut self,
         doc: &Doc,
@@ -1237,6 +1380,13 @@ impl<T: Model> Model for Vec<T> {
             doc.delete(&list, index)?;
         }
         Ok(())
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self.len() == before.len()
+            && self
+                .iter()
+                .zip(before)
+                .all(|(value, before)| value.stores_as(before))
     }
     fn collect_text(&self, out: &mut Vec<String>) {
         for item in self {
@@ -1449,6 +1599,13 @@ impl<T: Model> Model for BTreeMap<String, T> {
             write_key(doc, &map, key, value)?;
         }
         Ok(())
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        self.len() == before.len()
+            && self
+                .iter()
+                .zip(before)
+                .all(|((key, value), (was, before))| key == was && value.stores_as(before))
     }
     fn refresh(
         &mut self,

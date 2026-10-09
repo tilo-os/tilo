@@ -98,6 +98,7 @@
 extern crate self as tilo_resource;
 
 pub mod action;
+mod apply_cache;
 pub mod batch;
 pub mod child;
 pub mod collection;
@@ -147,6 +148,7 @@ pub use keyed::{Identified, Keyed};
 pub use kind::{Kinds, ResourceKind};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key,
+    write_key_changed,
 };
 pub use ordered::Ordered;
 pub use path::{Edit, EditOp, Operations, Path, Segment, Settable};
@@ -177,6 +179,36 @@ pub mod __private {
         ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, ChangeKind, OperationKind,
         PROMPTED_PARAM, ParamType, Resource, ResourceViewSpec, RiskLevel,
     };
+
+    pub use crate::apply_cache::forget_all;
+
+    /// A record to copy, if its type can be copied: `#[resource]` asks for
+    /// `(&&Snapshot(record)).snapshot()`, which method resolution answers
+    /// with [`SnapshotByClone`] for a `Clone` record and with
+    /// [`SnapshotUnavailable`] otherwise.
+    pub struct Snapshot<'a, T>(pub &'a T);
+
+    /// A copy of a `Clone` record.
+    pub trait SnapshotByClone<T> {
+        fn snapshot(&self) -> Option<T>;
+    }
+
+    impl<T: Clone> SnapshotByClone<T> for &Snapshot<'_, T> {
+        fn snapshot(&self) -> Option<T> {
+            Some(self.0.clone())
+        }
+    }
+
+    /// No copy of a record that cannot be cloned.
+    pub trait SnapshotUnavailable<T> {
+        fn snapshot(&self) -> Option<T>;
+    }
+
+    impl<T> SnapshotUnavailable<T> for Snapshot<'_, T> {
+        fn snapshot(&self) -> Option<T> {
+            None
+        }
+    }
 
     /// A parameter's schema: its type's, described, with an example.
     #[must_use]
