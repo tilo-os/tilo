@@ -26,6 +26,61 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_accessible_names_decodes_serialized_wire_labels_and_refuses_malformed(self):
+        tree = {"/send": "(<'Send message'>,)", "/queue": "(<'Queue task'>,)"}
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF, "accessible_subtree", return_value=tree):
+            self.assertEqual(PROOF.accessible_names({"bus": "owned", "window": "/window"}),
+                             {"Send message", "Queue task"})
+        for malformed in ("Send message", "(uint32 7,)", "PRIVATE malformed reply"):
+            with self.subTest(malformed=malformed), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                    patch.object(PROOF, "accessible_subtree", return_value={"/node": malformed}):
+                with self.assertRaisesRegex(RuntimeError, "node name is unobservable") as error:
+                    PROOF.accessible_names({"bus": "owned", "window": "/window"})
+                self.assertNotIn(malformed, str(error.exception))
+
+    def test_read_only_and_restricted_views_cannot_hide_serialized_mutable_controls(self):
+        client = PROOF.atspi.AtspiClient("address", "owned")
+        revoked = "This agent is no longer available here. Your draft is kept on this device."
+        restricted = "You cannot send messages in this conversation."
+        for mode, notice in (("revoked", revoked), ("restricted", restricted)):
+            base = {"/heading": "(<'Tide, agent'>,)", "/notice": f"(<'{notice}'>,)",
+                    "/return": "(<'Return conversation'>,)", "/draft": "(<'PRIVATE-DRAFT'>,)"}
+            for forbidden in (None, "Send message", "Queue task", "Send direction", "Stop current task"):
+                tree = dict(base)
+                if forbidden is not None:
+                    tree["/mutable"] = f"(<'{forbidden}'>,)"
+                with self.subTest(mode=mode, forbidden=forbidden), \
+                        patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                        patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                        patch.object(PROOF.atspi, "bus_pids", return_value={"owned": 7}), \
+                        patch.object(PROOF.atspi, "app_process", return_value=7), \
+                        patch.object(PROOF, "process_program", return_value="chat"), \
+                        patch.object(client, "call", return_value="['/window']"), \
+                        patch.object(client, "interfaces", return_value="([],)"), \
+                        patch.object(PROOF, "accessible_subtree", return_value=tree):
+                    result = PROOF.agent_read_only_accessibility("Tide", detached=True) \
+                        if mode == "revoked" else PROOF.agent_write_restricted_accessibility(
+                            "Tide", "PRIVATE-DRAFT")
+                    self.assertEqual(result is not None, forbidden is None)
+                    if result is not None:
+                        self.assertEqual(result["mutable_controls"], 0)
+                        self.assertNotIn("PRIVATE-DRAFT", json.dumps(result))
+            with self.subTest(mode=mode, malformed=True), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                    patch.object(PROOF.atspi, "bus_pids", return_value={"owned": 7}), \
+                    patch.object(PROOF.atspi, "app_process", return_value=7), \
+                    patch.object(PROOF, "process_program", return_value="chat"), \
+                    patch.object(client, "call", return_value="['/window']"), \
+                    patch.object(PROOF, "accessible_subtree", return_value={**base, "/bad": "bare name"}):
+                with self.assertRaisesRegex(RuntimeError, "node name is unobservable"):
+                    if mode == "revoked":
+                        PROOF.agent_read_only_accessibility("Tide", detached=True)
+                    else:
+                        PROOF.agent_write_restricted_accessibility("Tide", "PRIVATE-DRAFT")
+
     def test_managed_agent_restart_failure_path_reaches_original_terminal_observation(self):
         offered = {"operation": "start-agent"}
         failed = {"update": {"invocation": "public-start", "state": "failed",

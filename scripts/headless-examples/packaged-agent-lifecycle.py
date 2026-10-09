@@ -604,7 +604,8 @@ def agent_read_only_accessibility(agent_name, *, detached=False):
                     "This agent is no longer available here. Your draft is kept on this device.",
                 )
                 controls = client.named(tree, control_name)
-                mutable = [path for path, name in tree.items() if name in forbidden]
+                mutable = [path for path, name in decoded_accessible_names(tree).items()
+                           if name in forbidden]
                 editable = [path for path in tree
                             if "org.a11y.atspi.EditableText" in client.interfaces(path)]
                 if (len(headings) == 1 and len(notices) == 1 and len(controls) == 1
@@ -1258,12 +1259,23 @@ def wait_for_private_selection(socket, access, expected, selection, process, out
         raise
 
 
+def decoded_accessible_names(tree):
+    """Decode actual AT-SPI property replies before exact name comparisons."""
+    decoded = {}
+    for path, reply in tree.items():
+        name = atspi.property_text(reply)
+        if name is None:
+            raise RuntimeError("the accessibility node name is unobservable")
+        decoded[path] = name
+    return decoded
+
+
 def accessible_names(access):
     """Read only the bounded names in one already-matched Chat window."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
-    return set(accessible_subtree(
+    return set(decoded_accessible_names(accessible_subtree(
         client, access["window"], atspi.APP_TREE_NODE_LIMIT
-    ).values())
+    )).values())
 
 
 def activate_named_agent_control(access, label):
@@ -1308,7 +1320,8 @@ def agent_write_restricted_accessibility(agent_name, expected):
                     tree, "You cannot send messages in this conversation."
                 )
                 retained = client.named(tree, expected)
-                mutable = [path for path, name in tree.items() if name in forbidden]
+                mutable = [path for path, name in decoded_accessible_names(tree).items()
+                           if name in forbidden]
                 editable = [path for path in tree
                             if "org.a11y.atspi.EditableText" in client.interfaces(path)]
                 if (len(headings) == 1 and len(notices) == 1 and len(retained) == 1
