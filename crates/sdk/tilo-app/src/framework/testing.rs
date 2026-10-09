@@ -439,7 +439,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         capture: Option<(Capture, (u32, u32))>,
         configure: impl FnOnce(&mut HostContext),
     ) -> Result<Self, LaunchError> {
-        super::controls::strict_bindings();
+        strict_bindings();
         let (profile, private, private_arguments) = private_launch::<A>(profile, arguments)?;
         let (arguments, options) = split_command_line(&private_arguments, A::OPTIONS, A::FLAGS);
         let arguments = arguments.as_slice();
@@ -1610,7 +1610,7 @@ fn split_command_line(
 /// record, binds to something the resource does not publish.
 #[must_use]
 pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
-    let collecting = super::controls::collect_unbound();
+    let collecting = collect_unbound();
     let built = TestApp::<A>::new().map(drop);
     let (unbound, opened) = collecting.finish();
     let mut resources = vec![<A::Resource as Resource>::surface()];
@@ -1620,4 +1620,42 @@ pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
         "unbound": unbound,
         "view": built.err().map(|error| error.to_string()),
     })
+}
+
+/// Collects the controls bound to something the resource does not publish
+/// until [`Self::finish`], instead of failing on the first.
+struct Collecting(());
+
+/// Start collecting unbound controls on this thread.
+fn collect_unbound() -> Collecting {
+    super::controls::UNBOUND.with(|unbound| *unbound.borrow_mut() = Some(Vec::new()));
+    super::controls::OPENED.with(|opened| *opened.borrow_mut() = Some(Vec::new()));
+    Collecting(())
+}
+
+impl Collecting {
+    /// What was collected: one sentence per unbound control, and the
+    /// surfaces of the other records the views opened.
+    fn finish(self) -> (Vec<String>, Vec<tilo_resource::Surface>) {
+        let unbound = super::controls::UNBOUND
+            .with(|unbound| unbound.borrow_mut().take().unwrap_or_default());
+        let opened =
+            super::controls::OPENED.with(|opened| opened.borrow_mut().take().unwrap_or_default());
+        drop(self);
+        (unbound, opened)
+    }
+}
+
+impl Drop for Collecting {
+    fn drop(&mut self) {
+        super::controls::UNBOUND.with(|unbound| *unbound.borrow_mut() = None);
+        super::controls::OPENED.with(|opened| *opened.borrow_mut() = None);
+    }
+}
+
+/// Make a control bound to an action the resource does not publish a panic
+/// on this thread, as [`TestApp`](super::testing::HeadlessApp) and
+/// `tilo-app check` do: a typo in a binding must fail, not grey a button.
+fn strict_bindings() {
+    super::controls::STRICT.with(|strict| strict.set(true));
 }

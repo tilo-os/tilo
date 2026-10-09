@@ -1055,7 +1055,7 @@ mod tests {
         let mint = |doc: &mut automerge::AutoCommit, payload: &[u8]| {
             let mut replica = doc.fork();
             replica.set_actor(doc.get_actor().clone());
-            let cx = tilo_resource::ActionCx::for_apply(&mut replica, payload, 0);
+            let cx = tilo_resource::ActionCx::for_apply(&replica, payload, 0);
             let mut ids = crate::model::IdGen::for_action(cx);
             let mut dm = DocMut {
                 doc: &mut replica,

@@ -62,13 +62,13 @@ action_control! {
 thread_local! {
     /// Whether a control bound to something the resource does not publish
     /// is a failure rather than a disabled control: in tests and checks.
-    static STRICT: Cell<bool> = const { Cell::new(false) };
+    pub(super) static STRICT: Cell<bool> = const { Cell::new(false) };
     /// Such controls, while a surface report collects them.
-    static UNBOUND: std::cell::RefCell<Option<Vec<String>>> =
+    pub(super) static UNBOUND: std::cell::RefCell<Option<Vec<String>>> =
         const { std::cell::RefCell::new(None) };
     /// The surfaces of the other records the views open (the person's own),
     /// while a surface report collects them.
-    static OPENED: std::cell::RefCell<Option<Vec<tilo_resource::Surface>>> =
+    pub(super) static OPENED: std::cell::RefCell<Option<Vec<tilo_resource::Surface>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -84,46 +84,10 @@ pub(crate) fn opened<P: Resource>() {
     });
 }
 
-/// Collects the controls bound to something the resource does not publish
-/// until [`Self::finish`], instead of failing on the first.
-pub(crate) struct Collecting(());
-
-/// Start collecting unbound controls on this thread.
-pub(crate) fn collect_unbound() -> Collecting {
-    UNBOUND.with(|unbound| *unbound.borrow_mut() = Some(Vec::new()));
-    OPENED.with(|opened| *opened.borrow_mut() = Some(Vec::new()));
-    Collecting(())
-}
-
-impl Collecting {
-    /// What was collected: one sentence per unbound control, and the
-    /// surfaces of the other records the views opened.
-    pub(crate) fn finish(self) -> (Vec<String>, Vec<tilo_resource::Surface>) {
-        let unbound = UNBOUND.with(|unbound| unbound.borrow_mut().take().unwrap_or_default());
-        let opened = OPENED.with(|opened| opened.borrow_mut().take().unwrap_or_default());
-        drop(self);
-        (unbound, opened)
-    }
-}
-
-impl Drop for Collecting {
-    fn drop(&mut self) {
-        UNBOUND.with(|unbound| *unbound.borrow_mut() = None);
-        OPENED.with(|opened| *opened.borrow_mut() = None);
-    }
-}
-
-/// Make a control bound to an action the resource does not publish a panic
-/// on this thread, as [`TestApp`](super::testing::HeadlessApp) and
-/// `tilo-app check` do: a typo in a binding must fail, not grey a button.
-pub(crate) fn strict_bindings() {
-    STRICT.with(|strict| strict.set(true));
-}
-
 /// A control could not be bound to `what` because of `why`.
 ///
 /// # Panics
-/// Panics where bindings are strict ([`strict_bindings`]).
+/// Panics where bindings are strict (`testing::strict_bindings`).
 pub(crate) fn unbound<R: Resource>(what: &str, why: &str) {
     let collected = UNBOUND.with(|unbound| {
         unbound.borrow_mut().as_mut().map(|unbound| {

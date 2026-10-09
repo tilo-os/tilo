@@ -848,7 +848,7 @@ impl SlidesAction {
     /// deterministic context, and a z above the slide's top element.
     fn created_element(
         &self,
-        doc: &mut Doc,
+        doc: &Doc,
         deck: &crate::model::Deck,
         index: usize,
         element: &NewElement,
