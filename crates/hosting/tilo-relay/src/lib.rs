@@ -73,6 +73,8 @@ pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
 #[cfg(not(target_arch = "wasm32"))]
+mod authority_epoch;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compaction;
