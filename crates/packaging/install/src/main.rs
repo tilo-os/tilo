@@ -1178,7 +1178,21 @@ fn stage_runtime_bundle(
 fn seal_runtime_bundle(tree: &Path, manifest: &runtime_bundle::BundleManifest) {
     match runtime_bundle::enable_bundle_verity(tree, manifest) {
         Ok(0) => {}
-        Ok(sealed) => println!("  sealed   : {sealed} file(s) with fs-verity"),
+        Ok(sealed) => {
+            println!("  sealed   : {sealed} file(s) with fs-verity");
+            // What a launch will do: a file the kernel measures differently
+            // from its signed digest is hashed at every launch, so say so.
+            let options = runtime_bundle::VerifyOptions::default();
+            if let Ok((_, check)) = runtime_bundle::verify_bundle_verity_with(tree, &options)
+                && check.hashed > 0
+            {
+                println!(
+                    "  warning  : {} file(s) do not measure their signed fs-verity digest; each \
+                     launch hashes them",
+                    check.hashed
+                );
+            }
+        }
         Err(error) => {
             println!("  sealed   : no ({error}); each launch hashes the runtime instead");
         }
