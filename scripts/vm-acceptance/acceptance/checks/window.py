@@ -3,12 +3,13 @@ shortcuts, touch and touchpad gestures, animation pacing."""
 
 from __future__ import annotations
 
+import json
 import re
 import time
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import VmError
+from ..vm import VmError, wait_until
 
 AREA = "window"
 
@@ -415,8 +416,57 @@ def _lock_auth(st) -> dict:
     return st["chrome"].get("lock_auth") or {}
 
 
-@check("W21", AREA, "Touch unlock: the lock screen draws its own keyboard on touch, and tapping the "
-                    "passcode on it unlocks the session")
+def _locked(ctx):
+    """Whether the session is locked: True or False, or None when no state dump answers."""
+    try:
+        return bool(ctx.state()["chrome"].get("session_locked"))
+    except (VmError, KeyError, TypeError):
+        return None
+
+
+def _expect_snapshot_refused_while_locked(ctx) -> None:
+    """A security property, not a picture: while locked the compositor refuses every
+    control-socket snapshot with `session_locked`, so no socket client reads the desktop the
+    lock hides. One attempt, no retry, to a scratch file that never becomes evidence and is
+    deleted whatever happened."""
+    probe = ctx.out / "scratch" / "W21-locked-snapshot.png"
+    try:
+        ctx.vm.snapshot_once(probe)
+    except VmError as exc:
+        if "session_locked" not in str(exc):
+            raise Unobservable("a snapshot while locked failed, but not as refused by the lock: "
+                               f"{exc.reason()}") from exc
+        return
+    finally:
+        probe.unlink(missing_ok=True)
+    raise CheckFailed("a control-socket snapshot succeeded while the session was locked: the lock "
+                      "screen lets a socket client read the desktop it hides")
+
+
+def _ensure_unlocked(ctx, passcode: str) -> str:
+    """Leave the session unlocked on every exit path, and say how. First the way a person
+    does it: clear the lock's field (Escape), type the passcode on the real keyboard, Return.
+    Still locked after that, restart the slot's session (a fresh compositor starts unlocked).
+    Never raises, so it cannot replace the failure that brought it here."""
+    if _locked(ctx) is False:
+        return "none"
+    try:
+        ctx.vm.key("Escape")
+        ctx.vm.input("type", passcode)
+        ctx.vm.key("Return")
+        if wait_until(lambda: _locked(ctx) is False, 20, interval=0.5):
+            return "passcode typed on the real keyboard"
+    except VmError:
+        pass
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        return f"failed: still locked, and restarting the slot session failed: {exc.reason()}"
+    return "slot session restarted" if _locked(ctx) is False else "failed: still locked after a slot restart"
+
+
+@check("W21", AREA, "Touch unlock: the lock screen draws its own keyboard on touch, refuses to be "
+                    "snapshotted, and tapping the passcode on it unlocks the session")
 def touch_unlock(ctx, res):
     ctx.reset()
     # The slot user's account password is what the lock verifies (PAM through
@@ -425,33 +475,43 @@ def touch_unlock(ctx, res):
     uid = ctx.vm.slot_uid()
     ctx.vm.root_exec(f'user=$(getent passwd {uid} | cut -d: -f1) && '
                      f'echo "$user:{passcode}" | chpasswd')
-    ctx.vm.key("super+l")
-    ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, "the session locked")
-    expect(not _lock_auth(ctx.state()).get("keyboard"),
-           "no keyboard on the lock screen before a touch")
-    # A touch near the top wakes the lock screen and brings its keyboard up;
-    # that touch itself types nothing.
-    d0 = core.display_rects(ctx.state())[0]
-    ctx.vm.input("touch", "tap", str(int(d0[0] + d0[2] / 2)), str(int(d0[1] + d0[3] * 0.08)))
-    st = ctx.wait_state(lambda s: _lock_auth(s).get("keyboard"), 10,
-                        "the lock screen's keyboard shown after a touch")
-    expect(_lock_auth(st).get("password_len") == 0, "the touch that showed the keyboard typed nothing")
-    keys = {k["key"]: k for k in _lock_auth(st)["keyboard"]}
-    ctx.shot("W21-lock-keyboard")
+    # Every later check shares this session, so whatever fails in here, it ends unlocked
+    # (and run_check fails any check that leaves it locked, then restarts the session).
+    try:
+        ctx.vm.key("super+l")
+        ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, "the session locked")
+        expect(not _lock_auth(ctx.state()).get("keyboard"),
+               "no keyboard on the lock screen before a touch")
+        # A touch near the top wakes the lock screen and brings its keyboard up;
+        # that touch itself types nothing.
+        d0 = core.display_rects(ctx.state())[0]
+        ctx.vm.input("touch", "tap", str(int(d0[0] + d0[2] / 2)), str(int(d0[1] + d0[3] * 0.08)))
+        st = ctx.wait_state(lambda s: _lock_auth(s).get("keyboard"), 10,
+                            "the lock screen's keyboard shown after a touch")
+        expect(_lock_auth(st).get("password_len") == 0,
+               "the touch that showed the keyboard typed nothing")
+        keys = {k["key"]: k for k in _lock_auth(st)["keyboard"]}
+        # No picture of a locked session may be taken, and the next line holds the lock to
+        # that; the evidence is the lock's own state: its keys and where they are.
+        _expect_snapshot_refused_while_locked(ctx)
+        ctx.write("W21-lock-keyboard.json", json.dumps(_lock_auth(st), indent=1))
 
-    def tap(name):
-        k = keys[name]
-        ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] / 2)), str(int(k["y"] + k["h"] / 2)))
-        ctx.settle(0.3)
+        def tap(name):
+            k = keys[name]
+            ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] / 2)), str(int(k["y"] + k["h"] / 2)))
+            ctx.settle(0.3)
 
-    for c in passcode:
-        tap(c)
-    ctx.wait_state(lambda s: _lock_auth(s).get("password_len") == len(passcode), 10,
-                   f"{len(passcode)} characters typed on the lock screen's keyboard")
-    tap("enter")
-    ctx.wait_state(lambda s: not s["chrome"].get("session_locked"), 20,
-                   "the session unlocked with the passcode typed by touch")
-    res.metrics["keys"] = len(keys)
+        for c in passcode:
+            tap(c)
+        ctx.wait_state(lambda s: _lock_auth(s).get("password_len") == len(passcode), 10,
+                       f"{len(passcode)} characters typed on the lock screen's keyboard")
+        tap("enter")
+        ctx.wait_state(lambda s: not s["chrome"].get("session_locked"), 20,
+                       "the session unlocked with the passcode typed by touch")
+        res.metrics["keys"] = len(keys)
+    finally:
+        res.metrics["unlock_recovery"] = _ensure_unlocked(ctx, passcode)
+    ctx.shot("W21-unlocked")
 
 
 def _strip_scroll(st, sid):
