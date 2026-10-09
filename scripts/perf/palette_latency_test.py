@@ -170,7 +170,7 @@ class PaletteLatency(unittest.TestCase):
                 report(records)
 
     def test_stale_coalesced_wrong_revision_and_ordered_frame_refuse(self):
-        for changes in (dict(input_ids=[1, 2]), dict(input_ids=[]), dict(scene_revision=10),
+        for changes in (dict(input_ids=[1, 2]), dict(input_ids=[]), dict(scene_revision=0), dict(scene_revision=10),
                         dict(draw_time_ns=2000000), dict(submit_time_ns=7000000),
                         dict(clock_id=0), dict(process_id=43), dict(pipe_serial=42)):
             records = fixture()
@@ -182,6 +182,15 @@ class PaletteLatency(unittest.TestCase):
         extra.update(pipe_serial=42, input_ids=[8])
         with self.assertRaises(ValueError):
             report(records + [('tilo-palette-frame ', extra)])
+
+    def test_early_stale_query_frame_is_explicitly_unsupported(self):
+        records = fixture('query')
+        early = copy.deepcopy(records[1][1])
+        early.update(pipe_serial=40, scene_revision=8)
+        early['state'].update(query_current=False, query_hash='c'*64)
+        records.insert(1, ('tilo-palette-frame ', early))
+        with self.assertRaisesRegex(ValueError, 'early stale query frames are unsupported'):
+            report(records, 'query')
 
     def test_no_positive_kms_and_incomplete_cpu_phase_refuse(self):
         for changes in (dict(physical_presented_time_ns='none', physical_sequence='none'),

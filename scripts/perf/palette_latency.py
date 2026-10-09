@@ -2,6 +2,9 @@
 
 No synthetic Wayland feedback is manufactured. CPU wall intervals are kept
 separate from device-relative GPU intervals; this does not certify 120 Hz.
+A selected capture must contain exactly one palette frame for each non-click
+input. Early stale query frames followed by a later publication fail explicitly;
+this analyzer does not infer an authoritative frame from temporal proximity.
 """
 import argparse
 import json
@@ -232,13 +235,13 @@ def summarize_palette_latency(lines, *, mode, process_id, observer_session,
             candidates = [r for r in frames.values() if input_id in r.get('input_ids', [])]
             if (len(candidates) != 1 or candidates[0].get('input_ids') != [input_id]
                     or type(candidates[0]['input_ids'][0]) is not int):
-                raise ValueError('Missing, duplicate or coalesced palette input-to-frame mapping')
+                raise ValueError('Missing, duplicate or coalesced palette input-to-frame mapping; early stale query frames are unsupported')
             frame = candidates[0]
             serial = frame['pipe_serial']
             if serial in mapped:
                 raise ValueError('Palette frame credited more than once')
             mapped.add(serial)
-            revision = number(frame.get('scene_revision'))
+            revision = number(frame.get('scene_revision'), 1)
             state = snapshot(frame.get('state'))
             if (not state['visible'] or not state['mounted'] or not state['query_current']
                     or state['query_hash'] != expected_query_hash
@@ -308,6 +311,7 @@ def summarize_palette_latency(lines, *, mode, process_id, observer_session,
             'CPU intervals include scheduling/logging overhead; completion wait is not GPU execution.',
             'GPU durations are device-relative, exclude queue wait/query resolve, and nested intervals overlap.',
             'This capture does not establish sustained native-resolution 120 Hz or device-to-photon latency.',
+            'Exactly one observed palette frame per input is required; earlier stale query frames are unsupported.',
             'Caller must pin the authenticated session, worker, source cohort and runtime before capture.'])
 
 
