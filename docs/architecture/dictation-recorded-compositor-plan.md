@@ -2,8 +2,11 @@
 
 This is the next assembled acceptance journey for the held dictation candidate.
 It requires no physical microphone, account, paid API, persistent permission,
-trust-store installation, component deployment, VM swap or reboot. It is prepared,
-not a claim that the current source head has passed the assembled journey.
+trust-store installation, component deployment, VM swap or reboot. The recorded Whisper Base control passed on 9 October with the guarded
+native-history release fix. The exact sources, binaries, inputs, limits, failed
+traces and successful milestones are in
+[`dictation-recorded-compositor-evidence.json`](dictation-recorded-compositor-evidence.json).
+This is not Whistle-specific or physical-microphone acceptance.
 
 ## Target and isolation
 
@@ -34,7 +37,7 @@ A pressure refusal is a failure receipt, not permission to retry in a loop.
 
 For the existing assembled Whisper control, use the maintained
 `local-model-service` example `speech_qualify --hold-fixture` with an already
-reviewed Tiny artifact. Its source verifies the exact allowed digest and size,
+reviewed Base artifact. Its source verifies the exact allowed digest and size,
 creates disposable signed catalogue/licence/store inputs, and removes them on
 owner EOF. Bind these into the child's production paths only. The source worker
 must run non-root through `/usr/bin/tilo-speech-worker`; do not introduce a
@@ -105,15 +108,52 @@ when the source/session and approved model/runtime are concrete. No broad
 microphone grant, auto-confirmation, default-source fallback or account permission
 is part of this plan.
 
-## Current input preflight (9 October)
+## Executed control (9 October)
 
-The task's builder contains Shell, the SDK browser example, speech witness and
-worker binaries, the verified public benchmark manifest and the new CEF host.
-These existence checks do not establish current-source binary provenance.
-The old `target/speech-benchmark-v2/tiny.bin` and `target/audio-fixture-tools`
-server/tool staging are absent in this tree. Host PipeWire, WirePlumber and
-bubblewrap exist; `pw-record` and `pw-play` do not. Restore the already verified
-Tiny artifact and signature-checked audio tools only inside the disposable
-fixture (or use the held Whistle witness plus the same isolated audio tools)
-and rebuild the current Rust binaries before executing this plan. This is a
-fixture-input prerequisite, not a microphone or persistent-access approval.
+The old Tiny staging was absent. The maintained speech witness explicitly accepts
+this already-reviewed Whisper Base model instead: 147,951,465 bytes, SHA-256
+`60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe`, from the
+pinned whisper.cpp model revision recorded in the evidence. The public FLEURS
+`en_us-0` waveform was independently hash-checked before playback. Attribution:
+Google FLEURS contributors, [CC-BY-4.0 dataset card](https://huggingface.co/datasets/google/fleurs/blob/70bb2e84b976b7e960aa89f1c648e09c59f894dd/README.md).
+The reviewed normalization is mono 16 kHz WAV; the quoted result is actual
+recognition output, rather than a copied reference transcription.
+
+The matching official Fedora 44 `pipewire-utils-1.6.9-1.fc44.x86_64.rpm` was
+verified against the image's existing Fedora 44 public key in a disposable RPM
+database, then extracted only into fixture staging. No package or trust-store
+transaction occurred. The raw CMake output included a setuid helper; the fixture
+now uses the maintained `build-host.py` runtime projection, which excludes it.
+Chromium's user-namespace sandbox stays enabled. Its `/proc` is writable inside
+the already-private disposable PID namespace so it can establish UID/GID maps;
+no host process namespace is exposed.
+
+The rootless runtime did not enforce its requested swap setting as expected, so
+the driver writes zero to only its own cgroup's `memory.swap.max`, verifies RAM,
+CPU and task limits, then releases a startup gate. Two-CPU process affinity keeps
+software renderer thread pools from using the builder's larger CPU count; the
+rootless cpuset controller is unavailable. No limit or sandbox was relaxed.
+
+The initial assembled run inserted actual public speech but failed Ctrl+Z.
+Typed fixture diagnostics identified a canceled queued original-page history
+request: the toolkit consumes the shortcut press, then WebView incorrectly
+retired the request on its release. The shared widget now invalidates on a mapped
+key press, while release handlers remain subject to renderer original-field and
+selection checks. The regression covers release preservation, new-press and
+focus retirement, and acknowledged/refused history completion.
+
+With the repair, actual selected-range insertion, native Ctrl+Z/Ctrl+Shift+Z,
+cancellation during playback, worker teardown before restart, and focus away/back
+all passed. The original first field ended as
+`alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma`;
+Undo restored `alpha beta gamma`, Redo restored the dictated value, and the
+successor field remained `second`. The public player was still active when
+cancellation and focus retirement were invoked; neither session inserted text.
+
+The whole disposable run took 53.183 seconds, its inner compositor journey
+37.951 seconds, and its first insertion occurred 25.162 seconds after inner
+startup, including the 10.56-second waveform. Limits were two CPUs, 3 GiB RAM,
+zero swap, 256 processes/threads and 240 seconds. Sampled peak memory reached the
+3 GiB cap and sampled peak tasks were 150. This includes copying an unstripped
+CEF runtime and debug executables; it is not a production memory/latency claim.
+All owned processes exited and the ephemeral signed model witness was removed.

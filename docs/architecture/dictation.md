@@ -2436,3 +2436,24 @@ The complete guarded CEF suite passes all 56 tests on this final rich-selection
 revision (247.630 seconds), including the real-clock fixed expiry case. This
 result is retained in the rich-island receipt and is distinct from the previous
 49-test boundary checkpoint.
+
+
+## Recorded compositor history repair (9 October)
+
+The hardware-disabled recorded Whisper Base compositor control now passes
+selected original-field insertion, actual native Ctrl+Z/Ctrl+Shift+Z, cancellation
+during public playback, restart after worker exit, and permanent retirement on
+focus away/back. A release edge after a host-consumed Undo press had canceled
+WebView's queued history before it reached Chromium. The shared widget now
+invalidates on mapped presses; original-field checks still guard release-handler
+mutations and deferred history. The regression also retains press/focus refusal
+and waits for an actual history acknowledgement.
+
+See `dictation-recorded-compositor-evidence.json` for failed traces, verified
+public model/audio/tool provenance, exact source/binary hashes and actual output;
+`dictation-recorded-compositor-plan.md` records the repaired journey and limits.
+The first successful bounded run took 53.183 seconds overall, with a 37.951-second
+inner journey under two CPUs, 3 GiB RAM, no swap and 256 tasks. Sampled memory hit
+the cap with debug-runtime staging; this is not production footprint evidence.
+The control is Whisper Base, not Whistle-specific runtime/accuracy or physical
+microphone acceptance. The PR and real-OS deployment remain held.

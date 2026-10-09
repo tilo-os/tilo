@@ -762,7 +762,14 @@ impl Widget for WebView {
                     return;
                 }
                 if let Some(key) = Self::map_key(&key_event.logical_key) {
-                    self.text_input.invalidate(&self.engine);
+                    // A host shortcut consumes its press but its release still
+                    // reaches the page. Retiring here canceled queued Undo/Redo
+                    // before the next sync could send it to the original editor.
+                    // Release handlers remain subject to the renderer's field
+                    // and selection checks before deferred history is applied.
+                    if key_event.state == ElementState::Pressed {
+                        self.text_input.invalidate(&self.engine);
+                    }
                     crate::webview::profile::record_input("key");
                     let m = ctx.modifiers.state();
                     self.engine.send(WebViewCommand::Key {
@@ -907,13 +914,20 @@ mod tests {
                 Some(receipt)
             }
         }
-        for (changed, acknowledged) in [(false, true), (false, false), (true, true)] {
+        for (changed, acknowledged, key_edge) in [
+            (false, true, None),
+            (false, false, None),
+            (true, true, None),
+            (false, true, Some(ElementState::Released)),
+            (false, true, Some(ElementState::Pressed)),
+        ] {
+            let native = TestEngine::new();
             let engine = Arc::new(Acknowledged {
-                inner: TestEngine::new(),
+                inner: native.clone(),
                 transactions: Default::default(),
                 edits: Default::default(),
             });
-            let mut page = WebView::new(engine.clone());
+            let (mut page, tree, node) = laid_out(engine.clone());
             page.focused = true;
             let edit = crate::host_chrome::edit::edit_resource(&crate::undo::UndoStatus {
                 can_undo: true,
@@ -956,12 +970,28 @@ mod tests {
             if changed {
                 page.focused = false;
             }
+            if let Some(edge) = key_edge {
+                dispatch(
+                    &mut page,
+                    &tree,
+                    node,
+                    &crate::synthetic_input::key_event(
+                        &winit::keyboard::Key::Character("z".into()),
+                        edge,
+                    ),
+                );
+                assert!(native.commands().iter().any(|command| {
+                    matches!(command, WebViewCommand::Key { down, .. }
+                        if *down == (edge == ElementState::Pressed))
+                }));
+            }
+            let retired = changed || key_edge == Some(ElementState::Pressed);
             page.sync(&doc, &automerge::ROOT);
             let edits = engine.edits.lock().unwrap();
-            if changed {
+            if retired {
                 assert!(
                     edits.is_empty(),
-                    "changed focus cannot receive the original edit"
+                    "changed focus or a new press cannot receive the original edit"
                 );
             } else {
                 assert_eq!(edits.len(), 1);
@@ -978,7 +1008,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 matches!(terminal, tilo_actions::InvocationUpdate::Succeeded { .. }),
-                !changed && acknowledged
+                !retired && acknowledged
             );
             assert!(
                 page.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)

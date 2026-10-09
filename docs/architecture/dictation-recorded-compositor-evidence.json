@@ -1,0 +1,449 @@
+{
+  "engine": "Whisper Base",
+  "acceptance": "recorded public audio; physical microphone false; Whistle acceptance false",
+  "successful_run": {
+    "source_head": "b21d60d2914b704c982e99727f2a42a38d158ebc",
+    "source_state": "uncommitted guarded native-history key-release fix",
+    "binaries": {
+      "shell": {
+        "bytes": 1166969696,
+        "sha256": "23f1d4aed0ee2762b7b69aacc8279ffd327f72c9d1ead766c4f4ba7ba3dbf656"
+      },
+      "browser_fixture": {
+        "bytes": 374386368,
+        "sha256": "8f60277be7390d8d0466abc6cf52ae464bd8433d431a1bf45623ef383d0e75b6"
+      },
+      "worker": {
+        "bytes": 25425224,
+        "sha256": "88cb2259d227691f5cdb857e6441d1214244ccffb6737751bac4c0e18c74191e"
+      },
+      "witness": {
+        "bytes": 43881704,
+        "sha256": "745ec6ad3bf0e9f302d83675f2c63afbe163b33286a23b3b9361c37777fca8d6"
+      }
+    },
+    "sources": {
+      "crates/sdk/ui-core/src/app/host_commands.rs": "18a5ebd644c9bf06cd34d6f9f6086cbea8289cc1858cec292d5c8bd7ea721b74",
+      "crates/sdk/ui-core/src/widget/webview.rs": "6d7d4defe38218916fb7ff9387d9e0ea398818146b851a105eace711b8788453",
+      "Cargo.lock": "c7643d8357fe7e391ad26c76b75aaade29f27744f78402967a4f03425f8c156e",
+      "apps/notes/src/app.rs": "fc8eeb9eca9725b1dca8fd475f93c948f487841b7121263409f0793a412796d2",
+      "crates/session/shell/src/compositor/dictation.rs": "747fad0ec43f45568e9b592ddea76742fa42aedbc36dae31997dbbe7b94d4ad0",
+      "crates/session/shell/src/compositor/dictation/runtime.rs": "44c47aa4aba6bb8d1f08541784dce35daaf44f4a77481f1540a46e867651b783",
+      "crates/session/shell/src/compositor/audio_capture.rs": "d6fa0c1af5475bfd2a832e47b49ae20bff4708e0f2fee5e16d2087b9f6e6d097",
+      "crates/sdk/ui-core/examples/browser_text_input_qualification.rs": "29afbea403bb06ee2b1e87c37166335cc9e95125871947a8022f501392a00a4a",
+      "crates/sdk/ui-core/src/webview/text_input.rs": "fcbf336b945368e2c552894d59a324625b1b914275b050477ec425931e10cf80",
+      "apps/browser/chromium/src/page_automation.js": "b16375c598cc6c4f85793fbcbfbfab3ce96accea03783b914b00b249dd16e911"
+    },
+    "live_microphone": false,
+    "installed": false,
+    "limits": {
+      "cpus": 2,
+      "memory_bytes": 3221225472,
+      "pids": 256,
+      "runtime_seconds": 240
+    },
+    "driver_hashes": {
+      "recorded-inner.py": "2649cabab11ec211c7895ca1d4f2eaa48621b6c2e0033fb5542948f43770c809",
+      "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157"
+    },
+    "cpu_affinity": [
+      0,
+      1
+    ],
+    "container_scope": {
+      "OciVersion": "1.2.1",
+      "Status": "running",
+      "Running": true,
+      "Paused": false,
+      "Restarting": false,
+      "OOMKilled": false,
+      "Dead": false,
+      "Pid": 3957128,
+      "ConmonPid": 3957104,
+      "ExitCode": 0,
+      "Error": "",
+      "StartedAt": "2026-10-09T10:14:40.128173765Z",
+      "FinishedAt": "0001-01-01T00:00:00Z",
+      "CgroupPath": "/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-2b1d69303f025bdd8ce9b468efc81dea5cfecefa8994011659523a61779d6085.scope",
+      "CheckpointedAt": "0001-01-01T00:00:00Z",
+      "RestoredAt": "0001-01-01T00:00:00Z"
+    },
+    "image": "a3f63d1003795b29af6e512fde6a3f37c7942b986d7a57e4fe4fd9f32c204d9e",
+    "observed_scope_controls": {
+      "memory.max": "3221225472",
+      "cpu.max": "200000 100000",
+      "pids.max": "256"
+    },
+    "sampling_scope_removed_before_cli_exit": true,
+    "exit": 0,
+    "sampled_peak_memory_bytes": 3221225472,
+    "sampled_peak_process_threads": 150,
+    "observed_cpu_affinity": [
+      0,
+      1
+    ],
+    "elapsed_seconds": 53.18280093300564,
+    "log_sha256": "ca7bdc46031bd8e4fee2f5570e9169b3a574d2d126fe364dbe58bf0fb2746a7f",
+    "complete": true
+  },
+  "milestones": [
+    "CPU_AFFINITY [0, 1]",
+    "PASS isolated virtual audio graph with hardware disabled",
+    "PASS assembled current headless compositor and sandboxed native Chromium loopback page",
+    "PASS native browser Wayland, DOM focus and selected original range before guarded admission",
+    "PASS actual original-field Prepare ACK before synthetic consent",
+    "PASS actual worker Start ACK and capture from isolated virtual source",
+    "ACTUAL_FINAL {\"value\": \"alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma\", \"elapsed_seconds\": 25.162}",
+    "PASS assembled public speech capture, private final receipt and selected-range insertion into original browser field",
+    "PASS original browser native Undo/Redo through actual keyboard route",
+    "PASS repeated session Cancel removes recorder and leaves prior field unchanged",
+    "PASS canceled session model worker also terminated before successor request",
+    "PASS restart after observed canceled worker exit",
+    "PASS active public speech stimulus before successor field focus",
+    "PASS focus away/back retires recorder and worker permanently with unchanged fields",
+    "JOURNEY_COMPLETE {\"elapsed_seconds\": 37.951, \"final\": \"alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma\", \"source\": \"virtual-public-audio\", \"microphone\": false}",
+    "OUTER_JOURNEY {\"exit\": 0, \"elapsed_seconds\": 38.31, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}",
+    "PASS ephemeral model witness removed; no installed store/catalogue changed"
+  ],
+  "audio_tools": {
+    "url": "https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/Packages/p/pipewire-utils-1.6.9-1.fc44.x86_64.rpm",
+    "sha256": "59ed2e78d3595525b3faa8f07a060971104fb264d4f092f79fc180ef9be8e2c2",
+    "bytes": 630196,
+    "key_sha256": "93642aec521a1e5e96dd715f7ae0ec0850ebc9de09a94ce03cae5263f26cc18a",
+    "signature": "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-recorded-compositor-20261009/pipewire-utils-1.6.9-1.fc44.x86_64.rpm:\n    Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: 36f612dcf27f7d1a48a835e4dbfcf71c6d9f90a6: OK\n    Header SHA256 digest: OK\n    Payload SHA256 digest: OK\n",
+    "metadata": "pipewire-utils 1.6.9-1.fc44 x86_64 MIT\n",
+    "installed": false,
+    "extracted_files": {
+      "notices/COPYING": "8909c319a7e27dbb33a15b9035f89ab3b7b2f6a12f8bcddc755206a8db1ada44",
+      "notices/LICENSE": "be4be5d77424833edf31f53fc1f1cecb6996b9e2d747d9e6fb8f878362ebc92b",
+      "usr/bin/pw-cat": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/bin/pw-cli": "89b6f193d8bd9e5254eac3ac76c69501f0b57125902e7902b77f8401c432b19a",
+      "usr/bin/pw-config": "b84ecfac156d8f08bffecd582ada3afc854885e858aae3eeb6b1c11c7d4a0db4",
+      "usr/bin/pw-container": "34e544ba0049c11ed3a4511e7a84e526d301f33f0b99f87c0b4ed960e262a146",
+      "usr/bin/pw-dot": "2aea6786831a9afd1fd8317d4abc7f8d59f417c593d8b6ce4c7a5f0f1f9c877e",
+      "usr/bin/pw-dump": "f0245d6f1fe1106cd16d7faf376d6977a05cd0b631269166dc7c46f5240aa5cd",
+      "usr/bin/pw-link": "5127b6018c89c6d16203515f2de5afe4d6541632ce79acbc61915f0dcea712ad",
+      "usr/bin/pw-loopback": "89147496b428a0f572b5ae487d49d9fbcdb59f12b9b69c18c93961f0d28dbfde",
+      "usr/bin/pw-metadata": "26fdd245623057cbb422a5cfabe62d714be50f363dd63a52e4cd038ff944bca7",
+      "usr/bin/pw-mididump": "9fec33f119e4e46eaa6422e5db49fc10e008f3ea9a834060e0e5c856088da4ef",
+      "usr/bin/pw-mon": "9ec4e0981735d4c67ff4ae778d909564d68ae4f32a7df676535c7c647794e5ee",
+      "usr/bin/pw-profiler": "f5421aa57d53820d0e90b90eb5209aec0bf9a368d188857dd72219a56547ffd0",
+      "usr/bin/pw-reserve": "facf3410ed2d0248d6f2d102d5bddc94a66cd354e5db2d1a4b2ff2bc22a32431",
+      "usr/bin/pw-top": "5cc9cc23ab621e7fa74b5bf0344e0baa13b52fc2566c433dfec194380b0fcd15",
+      "usr/bin/spa-acp-tool": "195fd6e9e8935fbb05a6143a7b50a299d39f63dd83e020a9e4084f52a378bac5",
+      "usr/bin/spa-inspect": "99e2c21b8ba80f949b0d4f91fd54b92de4c8bf82dfe0a33c51b128edced8a0b2",
+      "usr/bin/spa-json-dump": "cfcc46f3e91ea7115b4c583d7873286bab50509f4ad73ff0d10e855f17da9812",
+      "usr/bin/spa-monitor": "4ef18bd56cb97189ba135632c86f01be480aae9287fac53c3fd32584d3d347d9",
+      "usr/bin/spa-resample": "ae2dcdd149e905fa6fdbcccdab5e7e443e9dbb5b849ab1428ca0edb8ff94d56c",
+      "usr/bin/pw-play": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/bin/pw-record": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/bin/pw-sysex": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/bin/pw-dsdplay": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/bin/pw-encplay": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/bin/pw-midi2play": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/bin/pw-midi2record": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/bin/pw-midirecord": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/bin/pw-midiplay": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/share/man/man1/pw-cat.1.gz": "c8e9077f80ff98c81fdca1b9dba0fcea9a29f94a4135cfa2c790f87692b30b9c",
+      "usr/share/man/man1/pw-cli.1.gz": "a92f4317e484ad491a2d37c37263bd380fd0e3fcc7a0292ec3939b08069d915f",
+      "usr/share/man/man1/pw-config.1.gz": "f35d16efc42250da016b8006b7294cea835284001711acace159fdaba9fc9a1d",
+      "usr/share/man/man1/pw-container.1.gz": "63ea7504609a79bd5284705e91d23b7b8d2026c7fc95f4f27626e7635633abb1",
+      "usr/share/man/man1/pw-dot.1.gz": "3fbe42f28d944e2f9d908f887ab37a3fc83117f0f332d18234a0b6e179b01e57",
+      "usr/share/man/man1/pw-dump.1.gz": "46df0d078b4a23774c1ab9233c83cce6690e3d5baca9100c397f5d5a8b6b2eea",
+      "usr/share/man/man1/pw-link.1.gz": "6ab110a7f08e7c8ed7f17ff279ef509e437218495ad0f267d23523863bff7a7a",
+      "usr/share/man/man1/pw-loopback.1.gz": "90ff91010842d04fa8c623e69099553fbc4f239049fc16b6ad445d633dde2aab",
+      "usr/share/man/man1/pw-metadata.1.gz": "107d7b9225e43f707ae977cb70601752b9a1387b7c5be900ced35b2161311a8c",
+      "usr/share/man/man1/pw-mididump.1.gz": "6f58531b5fa31320a2c20d72f7d198af42ddbe5660d691c9e3a276b7876263cb",
+      "usr/share/man/man1/pw-mon.1.gz": "f63b31371bf5c166555538bcba5fc4b1b814a115618fad2b033168d37b104794",
+      "usr/share/man/man1/pw-profiler.1.gz": "9f6df6faaba331fed1eb41301dc0b89f2acc060a5e52cba9c98c2ecf02030bd0",
+      "usr/share/man/man1/pw-reserve.1.gz": "6ed7310e13a6d5927e6e74bd936b7ab5827a78806ab4108d18a9ef6eaa41c7a7",
+      "usr/share/man/man1/pw-top.1.gz": "cf7cab45365dd658205908c4d2add0c44b1477465fe7050b4586bdcea63c1a95",
+      "usr/share/man/man1/spa-acp-tool.1.gz": "cd7b100a7428471a86009f51619423c95f4e0d1e3d138d39ed07c64669b790df",
+      "usr/share/man/man1/spa-inspect.1.gz": "a7ac3cc42098ae6fa4f393981718dd0e29410872e8660f3ebc02afd77733b0d0",
+      "usr/share/man/man1/spa-json-dump.1.gz": "be628ae3fb4f0dcfa03e4f57855d7117fb8aea5375c9057851e0c2392796ba56",
+      "usr/share/man/man1/spa-monitor.1.gz": "7e1b3b1cb4b8e06a673dfcb5a9674a3c7d0bde5333bbdec60fb71bc5ba2bed2a",
+      "usr/share/man/man1/spa-resample.1.gz": "90a6a59542bff19e5eb49559efc5d61ef73889092a49d4d8792f2b793906d384",
+      "usr/lib/.build-id/12/80603580547a8688c6c6b86ebf5369a5b9ea29": "cfcc46f3e91ea7115b4c583d7873286bab50509f4ad73ff0d10e855f17da9812",
+      "usr/lib/.build-id/26/b07c86b9d6c01128cdd6a3bab2ac6b36462a70": "4ef18bd56cb97189ba135632c86f01be480aae9287fac53c3fd32584d3d347d9",
+      "usr/lib/.build-id/2f/0a10c05f7de51ee5f0cc9e0b5581d33ab6563c": "34e544ba0049c11ed3a4511e7a84e526d301f33f0b99f87c0b4ed960e262a146",
+      "usr/lib/.build-id/45/62f35b6201b8adf44c71f319ec434d0fb856b7": "9ec4e0981735d4c67ff4ae778d909564d68ae4f32a7df676535c7c647794e5ee",
+      "usr/lib/.build-id/47/58522d61a09ad9f0273373e520ffa60df79418": "89147496b428a0f572b5ae487d49d9fbcdb59f12b9b69c18c93961f0d28dbfde",
+      "usr/lib/.build-id/61/e966b0c3d9e9d654191a0f135b2d3b59df332c": "f5421aa57d53820d0e90b90eb5209aec0bf9a368d188857dd72219a56547ffd0",
+      "usr/lib/.build-id/6a/05d75a9001e260dfe39baf72acc198756a805c": "9fec33f119e4e46eaa6422e5db49fc10e008f3ea9a834060e0e5c856088da4ef",
+      "usr/lib/.build-id/6b/daf19913b8020280a9f1fd067183593a938ca0": "f0245d6f1fe1106cd16d7faf376d6977a05cd0b631269166dc7c46f5240aa5cd",
+      "usr/lib/.build-id/6d/0c7ad226f28544ace0c12a10829c8f74a732c9": "facf3410ed2d0248d6f2d102d5bddc94a66cd354e5db2d1a4b2ff2bc22a32431",
+      "usr/lib/.build-id/79/f743efc20babafcf0b7b4367f6e07bf5e0eebb": "5127b6018c89c6d16203515f2de5afe4d6541632ce79acbc61915f0dcea712ad",
+      "usr/lib/.build-id/8f/55c29207d28d5bed81a7d12aed040b5dbce012": "99e2c21b8ba80f949b0d4f91fd54b92de4c8bf82dfe0a33c51b128edced8a0b2",
+      "usr/lib/.build-id/a1/8ca3ea51b6675e781666b37add989c1166a539": "b84ecfac156d8f08bffecd582ada3afc854885e858aae3eeb6b1c11c7d4a0db4",
+      "usr/lib/.build-id/a8/b891fcaba8ecf54aacd04bb64038410a8a59e8": "ae2dcdd149e905fa6fdbcccdab5e7e443e9dbb5b849ab1428ca0edb8ff94d56c",
+      "usr/lib/.build-id/bf/49127249e58fd37345c210b7aae4d4f352cb04": "2aea6786831a9afd1fd8317d4abc7f8d59f417c593d8b6ce4c7a5f0f1f9c877e",
+      "usr/lib/.build-id/cc/579c972eae4decd61b752444c089e532fe3ca8": "98ff3fb066f51728805867e22511e8acd7cc21346fbdf5804c742c6e1d50e884",
+      "usr/lib/.build-id/d9/ac2294bab50339d7ebaa34c2057c1068f04fac": "5cc9cc23ab621e7fa74b5bf0344e0baa13b52fc2566c433dfec194380b0fcd15",
+      "usr/lib/.build-id/da/a499610c6f8e754f01d06258c752f7b7bb0681": "89b6f193d8bd9e5254eac3ac76c69501f0b57125902e7902b77f8401c432b19a",
+      "usr/lib/.build-id/e1/4e1c2e6fcdd9f2ef3f73bd069079c2fd57d789": "26fdd245623057cbb422a5cfabe62d714be50f363dd63a52e4cd038ff944bca7",
+      "usr/lib/.build-id/f5/4eeb9979b022137676a1759137abaae10a5127": "195fd6e9e8935fbb05a6143a7b50a299d39f63dd83e020a9e4084f52a378bac5"
+    },
+    "extracted": true
+  },
+  "prior_attempts": [
+    {
+      "complete": false,
+      "exit": 1,
+      "elapsed_seconds": 7.1777598680055235,
+      "log_sha256": "67b9798f51d57f84b78863f8592b007556f36fa2ac1f1bf33743ed202a1894d6",
+      "driver_hashes": {
+        "recorded-inner.py": "8b6bc08566cdb9b3ed800c73be35f58b2024e6fd7c3f9ac62ee4e74d7764ab94",
+        "recorded-outer.py": "98a62f9d391616e2f7e3c63c76b620b0091a000dd38f553c9c151fed56bf2a1c"
+      },
+      "attempt": "r0",
+      "failure_trace": [
+        "OUTER_JOURNEY {\"exit\": 1, \"elapsed_seconds\": 0.008, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}"
+      ]
+    },
+    {
+      "complete": false,
+      "exit": 1,
+      "elapsed_seconds": 38.15522145599243,
+      "log_sha256": "148301d196118318c96b6f84e6abed219c7b558a3f8bfee7cac145f9a404cf06",
+      "driver_hashes": {
+        "recorded-inner.py": "8b6bc08566cdb9b3ed800c73be35f58b2024e6fd7c3f9ac62ee4e74d7764ab94",
+        "recorded-outer.py": "ac955256e2bf0b2a233d3f376c9f7f1672647ec869aecff2f6fa59460da003f3"
+      },
+      "attempt": "r1",
+      "failure_trace": [
+        "AssertionError: [270:270:1009/092645.283124:FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /fixture-cef/chrome-sandbox is owned by root and has mode 4755.",
+        "OUTER_JOURNEY {\"exit\": 1, \"elapsed_seconds\": 31.164, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}"
+      ]
+    },
+    {
+      "complete": false,
+      "failure": "",
+      "elapsed_seconds": 5.423192605012446,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "driver_hashes": {
+        "recorded-inner.py": "8b6bc08566cdb9b3ed800c73be35f58b2024e6fd7c3f9ac62ee4e74d7764ab94",
+        "recorded-outer.py": "4e51655656888057c7ce199f41d9db82fe8c04ffb1e9ecec105776922c51607b"
+      },
+      "attempt": "r2",
+      "failure_trace": []
+    },
+    {
+      "complete": false,
+      "failure": "AssertionError: expected memory.swap.max=0, observed 3221225472",
+      "elapsed_seconds": 5.390497119995416,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "driver_hashes": {
+        "recorded-inner.py": "8b6bc08566cdb9b3ed800c73be35f58b2024e6fd7c3f9ac62ee4e74d7764ab94",
+        "recorded-outer.py": "4e51655656888057c7ce199f41d9db82fe8c04ffb1e9ecec105776922c51607b"
+      },
+      "attempt": "r3",
+      "failure_trace": []
+    },
+    {
+      "complete": false,
+      "failure": "AssertionError: expected memory.swap.max=0, observed 6442450944",
+      "elapsed_seconds": 5.32915935300116,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "driver_hashes": {
+        "recorded-inner.py": "8b6bc08566cdb9b3ed800c73be35f58b2024e6fd7c3f9ac62ee4e74d7764ab94",
+        "recorded-outer.py": "4e51655656888057c7ce199f41d9db82fe8c04ffb1e9ecec105776922c51607b"
+      },
+      "attempt": "r4",
+      "failure_trace": []
+    },
+    {
+      "complete": false,
+      "exit": 1,
+      "elapsed_seconds": 37.01596048800275,
+      "log_sha256": "356bc83ca4731e2c492e99fb9c857af790783de0f8d6475020cc2f176bd8617b",
+      "driver_hashes": {
+        "recorded-inner.py": "8b6bc08566cdb9b3ed800c73be35f58b2024e6fd7c3f9ac62ee4e74d7764ab94",
+        "recorded-outer.py": "4e51655656888057c7ce199f41d9db82fe8c04ffb1e9ecec105776922c51607b"
+      },
+      "attempt": "r5",
+      "failure_trace": [
+        "AssertionError: [273:273:1009/094028.609273:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:129] No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro that has disabled unprivileged user namespaces with AppArmor, see https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md. Otherwise see https://chromium.googlesource.com/chromium/src/+/main/docs/linux/suid_sandbox_development.md for more information on developing with the (older) SUID sandbox. If you want to live dangerously and need an immediate workaround, you can try using --no-sandbox.",
+        "OUTER_JOURNEY {\"exit\": 1, \"elapsed_seconds\": 30.665, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}"
+      ]
+    },
+    {
+      "complete": false,
+      "exit": 1,
+      "elapsed_seconds": 40.84033634599473,
+      "log_sha256": "6e3ce72a8b4d32c22910697d8a315de2c2dd8100ad4e75164388d9a2f82dfb4d",
+      "driver_hashes": {
+        "recorded-inner.py": "8b6bc08566cdb9b3ed800c73be35f58b2024e6fd7c3f9ac62ee4e74d7764ab94",
+        "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157"
+      },
+      "attempt": "r6",
+      "failure_trace": [
+        "AssertionError: [272:287:1009/094550.264885:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory",
+        "OUTER_JOURNEY {\"exit\": 1, \"elapsed_seconds\": 30.662, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}"
+      ]
+    },
+    {
+      "complete": false,
+      "failure": "CalledProcessError: Command '['podman', 'inspect', 'bc3e63dd5ce3b0a22a0ceb872cabfcd69adde85da1739acc56d8e5ed111878cd']' returned non-zero exit status 125.",
+      "elapsed_seconds": 0.18154401000356302,
+      "log_sha256": "380876f42a18bfab9e4201f2379298c013ef5c0e02bc25a93feceb8e96af1f63",
+      "driver_hashes": {
+        "recorded-inner.py": "8b6bc08566cdb9b3ed800c73be35f58b2024e6fd7c3f9ac62ee4e74d7764ab94",
+        "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157"
+      },
+      "attempt": "r7",
+      "failure_trace": []
+    },
+    {
+      "complete": false,
+      "failure": "FileNotFoundError: [Errno 2] No such file or directory: '/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-f04c0b246a03480fbafa95699c4111ff98a097a0712f0a18e3919321c04a8b18.scope/cpuset.cpus.effective'",
+      "elapsed_seconds": 5.283601866001845,
+      "log_sha256": "7a191940f8b1bbc6dd5d5940bfc84c0d46078d8669f0453c09b4ddb5cd90c665",
+      "driver_hashes": {
+        "recorded-inner.py": "8b6bc08566cdb9b3ed800c73be35f58b2024e6fd7c3f9ac62ee4e74d7764ab94",
+        "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157"
+      },
+      "attempt": "r8",
+      "failure_trace": []
+    },
+    {
+      "complete": false,
+      "exit": 1,
+      "elapsed_seconds": 43.162076963999425,
+      "log_sha256": "91eadedef44c91362e80761170eeb4d667b790544b274b9157acd740a42985e6",
+      "driver_hashes": {
+        "recorded-inner.py": "8b6bc08566cdb9b3ed800c73be35f58b2024e6fd7c3f9ac62ee4e74d7764ab94",
+        "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157"
+      },
+      "attempt": "r9",
+      "failure_trace": [
+        "ACTUAL_FINAL {\"value\": \"alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma\", \"elapsed_seconds\": 23.99}",
+        "AssertionError: ('native Undo did not restore original field', {'focus': ['true'], 'active': ['first'], 'width': ['868'], 'height': ['772'], 'second': ['second'], 'value': ['alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma'], 'pointer': ['100,80,true,first,ctrl=false,shift=false,button=0,buttons=1'], 'start': ['109'], 'end': ['109'], 'ratio': ['1']})",
+        "OUTER_JOURNEY {\"exit\": 1, \"elapsed_seconds\": 34.405, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}"
+      ]
+    },
+    {
+      "complete": false,
+      "exit": 1,
+      "elapsed_seconds": 48.72447253999417,
+      "log_sha256": "84d15e1c4f6aacac1077e938f1232072cc8d0dd2ba64f71977b95a2b34445e78",
+      "driver_hashes": {
+        "recorded-inner.py": "2eb44b40d720704f999776b6384dbf6ca28cd7ec5d52cae2d1aa62790dc5f6fd",
+        "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157"
+      },
+      "attempt": "r10",
+      "failure_trace": [
+        "ACTUAL_FINAL {\"value\": \"alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma\", \"elapsed_seconds\": 25.691}",
+        "AssertionError: ('native Undo did not restore original field', {'focus': ['true'], 'active': ['first'], 'width': ['868'], 'height': ['772'], 'second': ['second'], 'value': ['alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma'], 'key': ['unseen'], 'pointer': ['100,80,true,first,ctrl=false,shift=false,button=0,buttons=1'], 'start': ['109'], 'end': ['109'], 'ratio': ['1']})",
+        "OUTER_JOURNEY {\"exit\": 1, \"elapsed_seconds\": 36.227, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}"
+      ]
+    },
+    {
+      "complete": false,
+      "exit": 1,
+      "elapsed_seconds": 49.90764923799725,
+      "log_sha256": "5a27fb92f03e9d847cc61c25fb281e15702f4f8a7aa8eee48ecfbcca765aa56c",
+      "driver_hashes": {
+        "recorded-inner.py": "710de72de2081876ad553d846fb66480719a4389b629ae11aebb7583cf1eb926",
+        "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157"
+      },
+      "attempt": "r11",
+      "failure_trace": [
+        "ACTUAL_FINAL {\"value\": \"alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma\", \"elapsed_seconds\": 24.49}",
+        "AssertionError: ('native Undo did not restore original field', {'focus': ['true'], 'active': ['first'], 'width': ['868'], 'height': ['772'], 'second': ['second'], 'value': ['alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma'], 'key': ['unseen'], 'pointer': ['100,80,true,first,ctrl=false,shift=false,button=0,buttons=1'], 'start': ['109'], 'end': ['109'], 'ratio': ['1']})",
+        "OUTER_JOURNEY {\"exit\": 1, \"elapsed_seconds\": 35.143, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}"
+      ]
+    },
+    {
+      "complete": false,
+      "exit": 1,
+      "elapsed_seconds": 44.65600230099517,
+      "log_sha256": "07d76f71355cc084265274d97dfe6551ee7c119ecb29f3f43730dc4adb84759f",
+      "driver_hashes": {
+        "recorded-inner.py": "a0f7f4bbb9343944509b095bf42bc36e36821aae1d11089b547a1b37c7caf963",
+        "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157"
+      },
+      "source_state": "uncommitted public-fixture typed undo diagnostics",
+      "attempt": "r12",
+      "failure_trace": [
+        "ACTUAL_FINAL {\"value\": \"alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma\", \"elapsed_seconds\": 23.676}",
+        "DICTATION_FIXTURE_UNDO host request=Undo",
+        "DICTATION_FIXTURE_UNDO webview focused=true guarded=true ready=true history=Some(UndoStatus { can_undo: true, can_redo: false, undo_summary: None, redo_summary: None })",
+        "AssertionError: ('native Undo did not restore original field', {'focus': ['true'], 'active': ['first'], 'width': ['868'], 'height': ['772'], 'second': ['second'], 'value': ['alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma'], 'key': ['unseen'], 'pointer': ['100,80,true,first,ctrl=false,shift=false,button=0,buttons=1'], 'start': ['109'], 'end': ['109'], 'ratio': ['1']})",
+        "OUTER_JOURNEY {\"exit\": 1, \"elapsed_seconds\": 34.181, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}"
+      ]
+    },
+    {
+      "complete": false,
+      "exit": 1,
+      "elapsed_seconds": 26.309863838992896,
+      "log_sha256": "de64117cb3ea3dd97c8b46f7a777bf9f1f477f210aff262749289cc63b2b9f13",
+      "driver_hashes": {
+        "recorded-inner.py": "a0f7f4bbb9343944509b095bf42bc36e36821aae1d11089b547a1b37c7caf963",
+        "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157"
+      },
+      "source_state": "uncommitted public-fixture typed undo diagnostics",
+      "attempt": "r13",
+      "failure_trace": [
+        "AssertionError: ('original DOM range was not selected', {'focus': ['true'], 'active': ['first'], 'width': ['868'], 'height': ['772'], 'second': ['second'], 'value': ['alpha beta gamma'], 'key': ['unseen'], 'pointer': ['unseen'], 'start': ['0'], 'end': ['0'], 'ratio': ['1']})",
+        "OUTER_JOURNEY {\"exit\": 1, \"elapsed_seconds\": 14.446, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}"
+      ]
+    },
+    {
+      "complete": false,
+      "exit": 1,
+      "elapsed_seconds": 43.11958941500052,
+      "log_sha256": "e4c1debdd90a4eb70c3096e6a5bb32a396e35646c78cf44d9346b7598531f925",
+      "driver_hashes": {
+        "recorded-inner.py": "2e3a1d977537705b184eb63c8d6356c198da334be2ca2b06e41f9c0d5e8a00e7",
+        "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157"
+      },
+      "source_state": "uncommitted public-fixture typed undo diagnostics",
+      "attempt": "r14",
+      "failure_trace": [
+        "ACTUAL_FINAL {\"value\": \"alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma\", \"elapsed_seconds\": 23.507}",
+        "DICTATION_FIXTURE_UNDO host request=Undo",
+        "DICTATION_FIXTURE_UNDO webview focused=true guarded=true ready=true history=Some(UndoStatus { can_undo: true, can_redo: false, undo_summary: None, redo_summary: None })",
+        "DICTATION_FIXTURE_UNDO receipt operation=cancel ok=true failure=None",
+        "AssertionError: ('native Undo did not restore original field', {'focus': ['true'], 'active': ['first'], 'width': ['868'], 'height': ['772'], 'second': ['second'], 'value': ['alpha However, due to the slow communication channels, styles in the West could lag behind by 25 to 30 years. gamma'], 'key': ['unseen'], 'pointer': ['100,80,true,first,ctrl=false,shift=false,button=0,buttons=1'], 'start': ['109'], 'end': ['109'], 'ratio': ['1']})",
+        "OUTER_JOURNEY {\"exit\": 1, \"elapsed_seconds\": 34.294, \"model_sha256\": \"60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe\", \"audio_sha256\": \"b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7\", \"ephemeral\": true}"
+      ]
+    }
+  ],
+  "inputs": {
+    "model": {
+      "name": "Whisper Base",
+      "bytes": 147951465,
+      "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
+      "license": "MIT"
+    },
+    "audio": {
+      "dataset": "google/fleurs",
+      "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+      "case": "en_us-0",
+      "bytes": 337964,
+      "seconds": 10.56,
+      "sha256": "b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7",
+      "attribution": "Google FLEURS contributors",
+      "license": "CC-BY-4.0",
+      "source": "https://huggingface.co/datasets/google/fleurs/blob/70bb2e84b976b7e960aa89f1c648e09c59f894dd/README.md",
+      "source_id": 1904,
+      "source_file": "1003119935936341070.wav",
+      "source_sha256": "33aca50159ec2e3cbcc894eb26faa916d6badb1b49fb75994973561540a7f012",
+      "changes": "Reviewed normalized mono 16kHz WAV, streamed into a synthetic PipeWire source; actual recognition output is included for qualification."
+    }
+  },
+  "diagnosis": "The native host consumes the Ctrl+Z press and queues guarded page history. WebView receives the corresponding key release and previously invalidated that queued transaction before sync; it sent Cancel rather than History. Invalidate on mapped key presses only; renderer checks still reject changed original fields or selection.",
+  "limitations": [
+    "Whisper Base control only, not Whistle runtime or accuracy acceptance",
+    "No physical microphone or installed signed-app acceptance",
+    "No persistent deployment, catalogue, trust, store, account or permission change",
+    "Resource samples include debug executables and unstripped CEF staging; memory reached the enforced 3GiB cap, so these are not production footprint measurements"
+  ],
+  "driver_snapshot_sha256": {
+    "recorded-inner.py": "2649cabab11ec211c7895ca1d4f2eaa48621b6c2e0033fb5542948f43770c809",
+    "recorded-outer.py": "7afeed204dbf1e3d69a0cfe8551f31c69cc618dbd6d96909a52d80f38735a157",
+    "run-qualified.py": "f4c2f7b5d948e06239901eac88ebb39d5c4f39f55ac859b9b87848040d7449ee"
+  },
+  "driver_snapshot_directory": "tools/release/fixtures/recorded_dictation_20261009"
+}
