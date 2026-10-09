@@ -2406,3 +2406,5 @@ settings-default-apps-handlers = Changed a default app
 settings-shared-display-prefs-arrangement = Changed the display arrangement
 settings-osk-source-settings-layout = Changed the on-screen keyboard layout
 settings-osk-source-settings-layouts = Changed the on-screen keyboard layouts
+settings-choose-theme = Chose the theme { $theme }
+settings-set-key-repeat = Changed the key repeat

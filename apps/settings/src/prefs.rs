@@ -276,7 +276,21 @@ impl ui::storage::SettingsSchema for InputPrefs {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.input", label = "Input")]
-impl InputPrefs {}
+impl InputPrefs {
+    /// Set how fast held keys repeat, from slow (0) to fast (1); an exact
+    /// delay and rate taken from another system no longer apply.
+    #[action]
+    pub fn set_key_repeat(
+        &mut self,
+        #[param("From 0 (slow) to 1 (fast)")] rate: f64,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        within(rate, 0.0..=1.0, "the key repeat")?;
+        self.key_repeat = rate;
+        self.key_repeat_delay_ms = None;
+        self.key_repeat_rate_hz = None;
+        Ok(())
+    }
+}
 
 impl InputPrefs {
     /// Decode the input object while preserving the pre-split global scrolling

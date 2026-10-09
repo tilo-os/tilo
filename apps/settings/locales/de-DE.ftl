@@ -2406,3 +2406,5 @@ settings-default-apps-handlers = Eine Standard-App geändert
 settings-shared-display-prefs-arrangement = Bildschirmanordnung geändert
 settings-osk-source-settings-layout = Belegung der Bildschirmtastatur geändert
 settings-osk-source-settings-layouts = Belegungen der Bildschirmtastatur geändert
+settings-choose-theme = Design { $theme } gewählt
+settings-set-key-repeat = Tastenwiederholung geändert

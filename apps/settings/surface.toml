@@ -319,7 +319,6 @@ type = "ScreenReaderVoice"
 [[resources]]
 kind = "settings.input"
 label = "Input"
-verbs = []
 version = 1
 
 [[resources.fields]]
@@ -563,6 +562,20 @@ title = "Per-tablet mapping, pressure and buttons, keyed by device identity"
 type = """
 std::collections::BTreeMap<String, settings_store::hardware ::
 TabletConfig>"""
+
+[[resources.verbs]]
+description = "Set how fast held keys repeat, from slow (0) to fast (1); an exact delay and rate taken from another system no longer apply."
+id = "set-key-repeat"
+kind = "undoable"
+label = "Set how fast held keys repeat, from slow (0) to fast (1); an exact"
+
+[[resources.verbs.params]]
+name = "rate"
+required = true
+
+[resources.verbs.params.schema]
+description = "From 0 (slow) to 1 (fast)"
+type = "number"
 
 [[resources]]
 kind = "settings.text-assistance"
