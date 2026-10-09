@@ -151,6 +151,29 @@ command is limited to declared read-only operations.
 The providers on a stock build are `actions` (the shell's own chrome),
 `applications`, `host-applications`, `notes`, `files`, `records` and `editor`.
 
+The answer is one page of the listing: up to 200 rows unless the request names
+a `limit` (at most 2,000). Every answer says where it is:
+
+```json
+{"answer":{"query":"","count":200,"total":431,"truncated":true,
+           "next_cursor":"200.5f0c3d2a9e81b7c4","actions":[...]}}
+```
+
+While `truncated`, ask again with `cursor` set to `next_cursor` for the next
+page; the last page has `"next_cursor":null`. If the listing changed between
+pages, the request is refused with `stale_cursor`; list again from the start.
+`"detail":"compact"` leaves each row's `contract` out, which is most of a row's
+size; `params` stay, so a compact row can still be invoked:
+
+```json
+{"op":"actions_enumerate","query":"","limit":100,"cursor":"200.5f0c3d2a9e81b7c4","detail":"compact"}
+```
+
+A client that predates paging gets the first page, with `truncated` saying
+whether there is more. `tilo-control actions list` takes `--limit ROWS` and
+`--cursor NEXT`, asks for compact rows unless `--json`, and prints the next
+page's cursor on stderr.
+
 An empty `query` lists every provider's default set rather than guessing a
 needle. The descriptors come from the same provider registry that backs the
 Ctrl+K command palette — the palette renders these as rows, enumeration renders
