@@ -26,6 +26,83 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_restored_return_checks_exact_semantic_name_before_one_action(self):
+        access = {"bus": "owned", "control": "/return"}
+        client = PROOF.atspi.AtspiClient("address", "owned")
+        stale = PROOF.atspi.GateError("known retired object")
+        for name in ("(<'Queue task'>,)", "bare malformed name", stale):
+            with self.subTest(name=type(name).__name__), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(client, "call", return_value="(['click'],)") as actions, \
+                    patch.object(client, "property", side_effect=name if isinstance(name, Exception) else None,
+                                 return_value=name):
+                with self.assertRaises((RuntimeError, PROOF.atspi.GateError)):
+                    PROOF.activate_agent_conversation_control(
+                        access, "Return", expected_name="Return conversation")
+                self.assertEqual(actions.call_args_list, [
+                    call("/return", "org.a11y.atspi.Action.GetActions", check=False)])
+        with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(client, "call", side_effect=["(['click'],)", "(true,)"]) as actions, \
+                patch.object(client, "property", return_value="(<'Return conversation'>,)"):
+            PROOF.activate_agent_conversation_control(access, "Return", expected_name="Return conversation")
+            self.assertEqual(actions.call_args_list, [
+                call("/return", "org.a11y.atspi.Action.GetActions", check=False),
+                call("/return", "org.a11y.atspi.Action.DoAction", "0", check=False)])
+
+    def test_restored_return_fresh_owner_and_native_withdrawal_are_exact_and_closed(self):
+        owner = {"process": 7, "bus": "owned", "agent": "Tide", "detached": True}
+        before = {"draft_matches": True, "caret": 3, "selection": [3, 7]}
+        for current in (None, {**owner, "process": 8}, {**owner, "bus": "foreign"}):
+            with patch.object(PROOF, "agent_conversation_accessibility", return_value=current), \
+                    patch.object(PROOF, "private_editor_observation") as read:
+                with self.assertRaises(RuntimeError):
+                    PROOF.current_restored_return_access(owner, "PRIVATE-DRAFT", before)
+                read.assert_not_called()
+        child = {"app_id": "so.tilo.chat", "floating_id": "PRIVATE-CHILD", "surface_id": 9,
+                 "presented": True, "suspended": False, "transferring": False}
+        primary = {"app_id": "so.tilo.chat", "floating_id": None, "surface_id": 7, "presented": True}
+        def response(rows):
+            return {"ok": True, "frames": rows}
+        with patch.object(PROOF, "foreign_frames", side_effect=lambda value: value["frames"]):
+            initial = PROOF.restored_return_observation(response([child, primary]), child, primary)
+            pending = {**child, "presented": False, "suspended": True, "transferring": True}
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "call", return_value=response([pending, primary])) as calls:
+                output = pathlib.Path(directory)
+                result = PROOF.wait_for_restored_return_withdrawal(
+                    "socket", output, child, primary, None, initial)
+                self.assertTrue(result["withdrawn"])
+                self.assertTrue(result["child_return_transfer_pending"])
+                receipt = json.loads((output / "revocation-return-withdrawal-observations.json").read_text())
+                self.assertNotIn("PRIVATE", json.dumps(receipt))
+                calls.assert_called_once_with("socket", {"op": "foreign_frames"})
+            for rows in ([child], [{**child, "surface_id": 99}, primary],
+                         [{**child, "suspended": None}, primary]):
+                with self.assertRaises(RuntimeError):
+                    PROOF.restored_return_observation(response(rows), child, primary)
+
+    def test_canonical_read_refusal_records_only_closed_class_then_rethrows_without_retry(self):
+        read = {"application": "so.tilo.chat", "room": "room", "record": "record",
+                "operation": "read-messages", "provider": "PRIVATE-PROVIDER", "id": "PRIVATE-ID"}
+        for code, expected in (("not_permitted", "not_permitted"), ("PRIVATE-ERROR", "other")):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "actions", return_value=[read]), \
+                    patch.object(PROOF, "call", return_value={"err": {
+                        "code": code, "message": "PRIVATE-PROMPT"}}) as calls:
+                path = pathlib.Path(directory) / "refusal.json"
+                with self.assertRaises(PROOF.ActionInvocationRefusal) as raised:
+                    PROOF.canonical_physical_message("socket", "room", "record", "PRIVATE-DRAFT", None,
+                                                     diagnostic_path=path)
+                self.assertEqual(raised.exception.closed_code, expected)
+                receipt = json.loads(path.read_text())
+                self.assertEqual(receipt["refusal_code"], expected)
+                self.assertTrue(receipt["read_messages_operation"])
+                self.assertTrue(receipt["exact_route_matches"])
+                self.assertNotIn("PRIVATE", json.dumps(receipt))
+                self.assertEqual(calls.call_count, 1)
+
     def test_selection_requires_focus_only_when_explicitly_requested(self):
         pending = {"selection": [4, 9], "caret": 4, "draft_matches": True,
                    "accessibility_focused": False}

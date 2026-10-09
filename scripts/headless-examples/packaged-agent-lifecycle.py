@@ -1342,7 +1342,7 @@ def agent_write_restricted_accessibility(agent_name, expected):
     return next(iter(matches.values())) if matches else None
 
 
-def activate_agent_conversation_control(access, label):
+def activate_agent_conversation_control(access, label, *, expected_name=None):
     """Activate the exact control paired with the observed private editor."""
     client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
     actions = client.call(
@@ -1350,6 +1350,9 @@ def activate_agent_conversation_control(access, label):
     )
     if "'click'" not in actions:
         raise RuntimeError(f"the actual {label} control has no accessibility action")
+    if expected_name is not None and atspi.property_text(
+            client.property(access["control"], "Name")) != expected_name:
+        raise RuntimeError("the current conversation control semantic name differs")
     result = client.call(
         access["control"], "org.a11y.atspi.Action.DoAction", "0", check=False
     )
@@ -3835,11 +3838,22 @@ def actions(socket, query=""):
     return response["answer"]["actions"]
 
 
+class ActionInvocationRefusal(RuntimeError):
+    """Retain only a fixed public transport class for targeted diagnostics."""
+    def __init__(self, action, code):
+        self.closed_code = code if isinstance(code, str) and code in {
+            "not_permitted", "not_found", "unknown_action", "unknown_provider",
+            "invalid_arguments", "invalid_request", "action_failed", "stale_revision",
+            "unavailable", "timeout", "internal_error",
+        } else "other"
+        super().__init__(f"ordinary action {action} refused: {self.closed_code}")
+
+
 def invoke(socket, action, args=None):
     response = call(socket, {"op": "actions_invoke", "provider": action["provider"],
                              "id": action["id"], "args": args or {}})
     if "err" in response:
-        raise RuntimeError(f"ordinary action {action['id']} refused: {response['err']['code']}")
+        raise ActionInvocationRefusal(action["id"], response["err"].get("code"))
     if not isinstance(response.get("answer"), dict):
         raise RuntimeError("ordinary semantic action acknowledgement is absent")
     return response["answer"]
@@ -5322,14 +5336,25 @@ def wait_for_direct_message_terminal(socket, receipt, process, output):
         raise
 
 
-def canonical_physical_message(socket, room, record, expected, process):
+def canonical_physical_message(socket, room, record, expected, process, *, diagnostic_path=None):
     """Derive the original from an actual saved row; keep fixture text in memory."""
     saved = {}
     for read in actions(socket):
         if read.get("application") != "so.tilo.chat" or read.get("room") != room \
                 or read.get("record") != record or read.get("operation") != "read-messages":
             continue
-        receipt = wait_terminal(socket, invoke(socket, read, {"pageSize": 32}), process)
+        try:
+            receipt = wait_terminal(socket, invoke(socket, read, {"pageSize": 32}), process)
+        except ActionInvocationRefusal as error:
+            if diagnostic_path is not None:
+                diagnostic_path.write_text(json.dumps({
+                    "refusal_code": error.closed_code,
+                    "read_messages_operation": read.get("operation") == "read-messages",
+                    "exact_route_matches": read.get("application") == "so.tilo.chat"
+                        and read.get("room") == room and read.get("record") == record,
+                    "private_content_recorded": False,
+                }, indent=2) + "\n")
+            raise
         content = terminal_value(receipt).get("content")
         messages = content.get("messages") if isinstance(content, dict) else None
         if not isinstance(messages, list):
@@ -5570,12 +5595,16 @@ def wait_for_owned_physical_send_control(socket, output, owner, draft, primary, 
     return wait_for("physical Send's exact owned enabled control", observe, process)
 
 
-def wait_for_physical_message_admission(socket, room, record, draft, process, identity):
+def wait_for_physical_message_admission(socket, room, record, draft, process, identity, *,
+                                      diagnostic_path=None):
     """Observe the saved canonical projection without changing Send or admission."""
     def observe():
         if owned_agent_identity(process.pid) != identity:
             raise RuntimeError("physical Message admission replaced the managed Agent")
-        return canonical_physical_message(socket, room, record, draft, process)
+        if diagnostic_path is None:
+            return canonical_physical_message(socket, room, record, draft, process)
+        return canonical_physical_message(socket, room, record, draft, process,
+                                          diagnostic_path=diagnostic_path)
 
     return wait_for("physical Message's original saved owner projection", observe, process)
 
@@ -5650,7 +5679,8 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
         # may legitimately lag it; require mounted progress before release,
         # not as new authority to admit model execution.
         return wait_for_physical_message_admission(
-            socket, room, record, draft, process, identity)
+            socket, room, record, draft, process, identity,
+            diagnostic_path=output / "physical-send-admission-read-refusal.json")
 
     provider.require_fourth_message_admission(admission)
     access = wait_for("returned physical Send editor",
@@ -5681,7 +5711,8 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
         return owned_chat_message_progress(access, progress_chat_identity, process, identity, output)
 
     original = wait_for("physical Send's actual canonical request",
-                        lambda: canonical_physical_message(socket, room, record, draft, process), process)
+                        lambda: canonical_physical_message(socket, room, record, draft, process,
+                            diagnostic_path=output / "physical-send-canonical-read-refusal.json"), process)
     wait_for("new authenticated model request after Stop", lambda: provider.request_count() == 4, process)
     admitted = provider.owner_admission(4)
     (output / "physical-send-admission-observation.json").write_text(json.dumps({
@@ -5779,6 +5810,61 @@ def wait_for_restored_agent_offers(socket, room, record, provider, process, expe
                 json.dumps(evidence, indent=2) + "\n")
 
     return wait_for("re-admission's actual current Message and Queue offers", observe, process)
+
+
+def restored_return_observation(response, child, primary):
+    """Observe exact native withdrawal; never infer unseen handoff state."""
+    rows = foreign_frames(response)
+    children = [row for row in rows if row.get("app_id") == child["app_id"]
+                and row.get("floating_id") == child["floating_id"]]
+    primaries = [row for row in rows if row.get("app_id") == primary["app_id"]
+                and row.get("floating_id") is None
+                and row.get("surface_id") == native_surface_id(primary)]
+    if len(children) > 1 or len(primaries) != 1 \
+            or children and children[0].get("surface_id") != native_surface_id(child):
+        raise RuntimeError("restored Return lost its exact native owner route")
+    current = children[0] if children else None
+    if type(primaries[0].get("presented")) is not bool or current is not None \
+            and any(type(current.get(field)) is not bool
+                    for field in ("presented", "suspended", "transferring")):
+        raise RuntimeError("restored Return native presentation is unobservable")
+    ordinary = all(row.get("input_route") is None and row.get("input_source_surface_id") is None
+                   for row in primaries + children)
+    if not ordinary or any(row.get("last_error") is not None for row in primaries + children):
+        raise RuntimeError("restored Return native owner route differs or has an error")
+    return {"exact_owner_route": True, "exact_child_exists": current is not None,
+            "child_presented": current["presented"] if current is not None else None,
+            "child_suspended": current["suspended"] if current is not None else None,
+            "child_transferring": current["transferring"] if current is not None else None,
+            "child_return_transfer_pending": current["suspended"] and current["transferring"]
+                if current is not None else None,
+            "primary_presented": primaries[0]["presented"],
+            "ordinary_owner_route": ordinary,
+            "withdrawn": current is None or current["presented"] is False}
+
+
+def wait_for_restored_return_withdrawal(socket, output, child, primary, process, initial):
+    evidence = {"observation_count": 0, "initial": initial, "last": initial}
+
+    def observe():
+        sample = restored_return_observation(call(socket, {"op": "foreign_frames"}), child, primary)
+        evidence["observation_count"] += 1
+        evidence["last"] = sample
+        (output / "revocation-return-withdrawal-observations.json").write_text(
+            json.dumps(evidence, indent=2) + "\n")
+        return sample if sample["withdrawn"] else None
+
+    return wait_for("revocation proof Float withdrawal", observe, process)
+
+
+def current_restored_return_access(owner, draft, before):
+    current = current_owned_conversation_accessibility(owner)
+    if current is None or current.get("detached") is not True:
+        raise RuntimeError("restored Return's current owned control is unobservable")
+    observed = private_editor_observation(current, draft)
+    if any(observed[field] != before[field] for field in ("draft_matches", "caret", "selection")):
+        raise RuntimeError("restored Return changed private editor content, caret or selection")
+    return current
 
 
 def native_agent_membership_revocation(
@@ -5901,10 +5987,17 @@ def native_agent_membership_revocation(
     )
     if before_restored_return is None:
         raise RuntimeError("Chat's primary presentation disappeared before restored Return")
-    activate_agent_conversation_control(restored_access, "Return")
-    wait_for("revocation proof Float withdrawal", lambda: not floating_surface_presenting(
-        call(socket, {"op": "foreign_frames"}), "so.tilo.chat", frame["floating_id"]
-    ), process)
+    restored_access = current_restored_return_access(restored_access, draft, before)
+    initial_return = restored_return_observation(
+        call(socket, {"op": "foreign_frames"}), frame, before_restored_return)
+    if not initial_return["exact_child_exists"] or initial_return["child_presented"] is not True:
+        raise RuntimeError("restored Return's original detached child is not presented")
+    (output / "revocation-return-withdrawal-observations.json").write_text(json.dumps({
+        "observation_count": 0, "initial": initial_return, "last": initial_return,
+    }, indent=2) + "\n")
+    activate_agent_conversation_control(restored_access, "Return", expected_name="Return conversation")
+    wait_for_restored_return_withdrawal(
+        socket, output, frame, before_restored_return, process, initial_return)
 
     def restored_primary_repainted():
         primary = presented_primary_frame(
