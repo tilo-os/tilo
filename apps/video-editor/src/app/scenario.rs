@@ -284,7 +284,6 @@ pub(crate) fn composed_project() -> Project {
         duration: 8.0,
         palette: 4,
         path: String::new(),
-        hydration: crate::media::Hydration::Local,
         text: Some(crate::model::TextSource {
             content: "COASTLINE\nepisode two".into(),
             size: 0.14,
@@ -990,7 +989,6 @@ impl VideoEditorApp {
                     fps: self.project.fps,
                     palette: 4,
                     path: String::new(),
-                    hydration: crate::media::Hydration::Local,
                     text: Some(TextSource {
                         content: "Coastline".into(),
                         size: 0.16,

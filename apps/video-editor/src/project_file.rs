@@ -10,8 +10,8 @@
 //! ## The payload is the CRDT document
 //!
 //! A project file is a header followed by a serialized Automerge document
-//! carrying exactly the maps [`crate::doc`] defines — `project`, `media`,
-//! `tracks`, `clips`. That choice is not incidental:
+//! holding the [`Project`] model exactly as the editor stores it. That
+//! choice is not incidental:
 //!
 //!   * **It round-trips losslessly.** The document shape *is* the editor's
 //!     storage shape, so saving is not a lossy projection into some other
@@ -431,7 +431,6 @@ mod tests {
             fps: 24.0,
             palette: 2,
             path: "media/Drone.mov".into(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();

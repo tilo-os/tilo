@@ -1509,7 +1509,6 @@ mod tests {
             fps: 0.0,
             palette: 0,
             path: tone.to_string_lossy().into_owned(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();
@@ -2110,7 +2109,6 @@ mod tests {
             fps: 30.0,
             palette: 3,
             path: path.to_string(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();
@@ -2160,7 +2158,6 @@ mod tests {
                 fps: 30.0,
                 palette: 3,
                 path: String::new(),
-                hydration: crate::media::Hydration::Local,
                 text: Some(TextSource::new("EXPORT")),
                 ..Default::default()
             });
@@ -2490,7 +2487,6 @@ mod tests {
             fps: f64::from(generated_clip::FPS),
             palette: 3,
             path: path.to_string_lossy().into_owned(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();

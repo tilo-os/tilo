@@ -11,7 +11,7 @@ use ui::tilo_resource::{self, Id, Identified, Keyed, Model, Ordered};
 use uuid::Uuid;
 
 use crate::curve::Curve;
-use crate::media::{self, Hydration};
+use crate::media;
 use crate::param::{ClipAnimation, Interp, Param};
 
 pub type MediaId = Uuid;
@@ -72,6 +72,7 @@ pub struct ClipEffect {
     /// Immutable instance identity. Unlike the kind, this distinguishes two
     /// copies of the same effect and survives reordering, so a resource/action
     /// can target the exact durable stack entry rather than a mutable index.
+    #[model(readonly)]
     pub id: Uuid,
     pub kind: EffectKind,
     pub amount: f64,
@@ -652,9 +653,11 @@ impl Mask {
 /// seconds so they travel with the footage.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Marker {
+    #[model(readonly)]
     pub id: Uuid,
     /// Seconds. Absolute for a project marker, clip-local for a clip one.
     pub t: f64,
+    #[model(label)]
     pub name: String,
     /// Palette slot, resolved to a real colour by the theme — the model
     /// never stores raw RGB, so markers restyle with the OS.
@@ -904,7 +907,9 @@ impl Transition {
 /// full source length; clips reference a sub-range of it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct MediaItem {
+    #[model(readonly)]
     pub id: MediaId,
+    #[model(label)]
     pub name: String,
     pub kind: MediaKind,
     pub duration: f64,
@@ -920,12 +925,6 @@ pub struct MediaItem {
     /// replicates; the decode path hydrates the bytes on demand. See
     /// [`crate::media`] for the seam.
     pub path: String,
-    /// Whether the source bytes are hydrated locally yet. Defaults to
-    /// `Projected`; the decode path flips it to `Local` once the FUSE
-    /// resolves real bytes. View-derived, but persisted so a re-opened
-    /// project remembers what was already fetched.
-    #[serde(default = "default_hydration", with = "hydration_serde")]
-    pub hydration: Hydration,
     /// The title's text and styling, for a [`MediaKind::Text`] item. `None`
     /// for every decoded source — a title is the one media whose picture
     /// comes out of the document instead of out of a file.
@@ -959,28 +958,8 @@ impl Default for MediaItem {
             fps: 30.0,
             palette: 0,
             path: String::new(),
-            hydration: Hydration::Projected,
             text: None,
         }
-    }
-}
-
-fn default_hydration() -> Hydration {
-    Hydration::Projected
-}
-
-mod hydration_serde {
-    use super::Hydration;
-    use serde::{Deserialize, Deserializer, Serializer};
-    #[expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "serde's `serialize_with` hands the field over by reference"
-    )]
-    pub fn serialize<S: Serializer>(h: &Hydration, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(h.as_str())
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Hydration, D::Error> {
-        Ok(Hydration::from_name(&String::deserialize(d)?))
     }
 }
 
@@ -997,7 +976,9 @@ impl MediaItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 #[model(check = Track::valid)]
 pub struct Track {
+    #[model(readonly)]
     pub id: TrackId,
+    #[model(label)]
     pub name: String,
     pub kind: TrackKind,
     pub index: u32,
@@ -1150,6 +1131,7 @@ impl Track {
 /// `[in_point, out_point]` window of that media.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct Clip {
+    #[model(readonly)]
     pub id: ClipId,
     pub track: TrackId,
     pub media: MediaId,
@@ -1391,8 +1373,7 @@ impl Clip {
     }
 
     /// Move the named effect instance one slot toward the beginning/end of
-    /// the stack. The identity and its positional animation curve move
-    /// together.
+    /// the stack. Its animation curve names it by id, so it moves along.
     pub fn move_effect_id(&mut self, id: Uuid, up: bool) -> bool {
         let Some(index) = self.effect_index(id) else {
             return false;
@@ -1406,14 +1387,13 @@ impl Clip {
             return false;
         };
         self.effects.swap(index, target);
-        self.anim.swap_effect_slots(index as u32, target as u32);
         true
     }
     /// Remove the effect at `idx` (no-op if out of range).
     pub fn remove_effect(&mut self, idx: usize) {
         if idx < self.effects.len() {
-            self.effects.remove(idx);
-            self.anim.remove_effect_slot(idx as u32);
+            let removed = self.effects.remove(idx);
+            self.anim.forget_effect(removed.id);
         }
     }
     /// Move the effect at `idx` one slot earlier (toward the start of the
@@ -1421,14 +1401,12 @@ impl Clip {
     pub fn move_effect_up(&mut self, idx: usize) {
         if idx > 0 && idx < self.effects.len() {
             self.effects.swap(idx, idx - 1);
-            self.anim.swap_effect_slots(idx as u32, (idx - 1) as u32);
         }
     }
     /// Move the effect at `idx` one slot later. No-op at the bottom / out of range.
     pub fn move_effect_down(&mut self, idx: usize) {
         if idx + 1 < self.effects.len() {
             self.effects.swap(idx, idx + 1);
-            self.anim.swap_effect_slots(idx as u32, (idx + 1) as u32);
         }
     }
 
@@ -1490,7 +1468,7 @@ impl Clip {
             Param::MaskRotation => self.mask.rotation,
             Param::MaskFeather => self.mask.feather,
             Param::CurveMix => self.curves.mix,
-            Param::EffectAmount(i) => self.effects.get(i as usize)?.amount,
+            Param::EffectAmount(id) => self.effects.iter().find(|e| e.id == id)?.amount,
         })
     }
 
@@ -1524,8 +1502,8 @@ impl Clip {
             Param::MaskRotation => self.mask.rotation = v,
             Param::MaskFeather => self.mask.feather = v,
             Param::CurveMix => self.curves.mix = v,
-            Param::EffectAmount(i) => {
-                if let Some(e) = self.effects.get_mut(i as usize) {
+            Param::EffectAmount(id) => {
+                if let Some(e) = self.effects.iter_mut().find(|e| e.id == id) {
                     e.amount = v;
                 }
             }
@@ -1746,11 +1724,10 @@ impl Clip {
         }
         self.effects
             .iter()
-            .enumerate()
-            .map(|(i, e)| ClipEffect {
+            .map(|e| ClipEffect {
                 id: e.id,
                 kind: e.kind,
-                amount: self.param_at(Param::EffectAmount(i as u32), playhead),
+                amount: self.param_at(Param::EffectAmount(e.id), playhead),
             })
             .collect()
     }
@@ -3742,14 +3719,17 @@ mod tests {
         // Case `an_effects_intensity_can_be_keyed_and_a_missing_effect_is_ignored`.
         {
             let (mut p, cid) = speed_fixture();
-            {
+            let orphan = Uuid::from_u128(7);
+            let vignette = {
                 let c = p.clip_mut(cid).unwrap();
                 c.add_effect(EffectKind::Vignette);
-                c.set_key_at(Param::EffectAmount(0), 0.0, 0.0, Interp::Linear);
-                c.set_key_at(Param::EffectAmount(0), 4.0, 1.0, Interp::Linear);
+                let vignette = c.effects[0].id;
+                c.set_key_at(Param::EffectAmount(vignette), 0.0, 0.0, Interp::Linear);
+                c.set_key_at(Param::EffectAmount(vignette), 4.0, 1.0, Interp::Linear);
                 // A curve on an effect the stack does not have.
-                c.set_key_at(Param::EffectAmount(7), 0.0, 0.5, Interp::Linear);
-            }
+                c.set_key_at(Param::EffectAmount(orphan), 0.0, 0.5, Interp::Linear);
+                vignette
+            };
             let c = p.clip(cid).unwrap();
             let mid = c.effects_at(2.0);
             assert_eq!(mid.len(), 1, "the orphan curve adds no effect");
@@ -3758,10 +3738,25 @@ mod tests {
                 "the real one animates: {mid:?}"
             );
             assert_eq!(
-                c.param_const(Param::EffectAmount(7)),
+                c.param_const(Param::EffectAmount(orphan)),
                 None,
                 "and has no constant either"
             );
+
+            // Reordering the stack keeps each curve on its own effect;
+            // removing an effect takes its curve with it.
+            let c = p.clip_mut(cid).unwrap();
+            c.add_effect(EffectKind::Vignette);
+            let second = c.effects[1].id;
+            c.set_key_at(Param::EffectAmount(second), 0.0, 0.25, Interp::Linear);
+            assert!(c.move_effect_id(second, true));
+            assert_eq!(c.effects[0].id, second);
+            let moved = c.effects_at(2.0);
+            assert!((moved[0].amount - 0.25).abs() < 1e-9, "{moved:?}");
+            assert!((moved[1].amount - 0.5).abs() < 1e-9, "{moved:?}");
+            assert!(c.remove_effect_id(vignette));
+            assert!(!c.anim.is_animated(Param::EffectAmount(vignette)));
+            assert!(c.anim.is_animated(Param::EffectAmount(second)));
         }
         // Case `a_key_control_can_tell_its_three_states_apart`.
         {
@@ -3986,7 +3981,6 @@ mod tests {
             fps: 30.0,
             palette: 0,
             path: media::workspace_path("src.mov"),
-            hydration: Hydration::Projected,
             ..Default::default()
         };
         let mid = m.id;

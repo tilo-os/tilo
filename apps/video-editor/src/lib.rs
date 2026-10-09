@@ -8,8 +8,9 @@
 //!     compositor reads; the fine half of the colour grade.
 //!   * [`media`]   — the FUSE-media seam: clips reference workspace paths
 //!     (`/var/workspace/…`); bytes hydrate on demand.
-//!   * [`doc`]     — Automerge projection of the project (the collaborative,
-//!     undoable source of truth) + the demo project seed.
+//!   * [`resource`] — the project's verbs and the app: the
+//!     collaborative, undoable source of truth is [`model::Project`] itself,
+//!     stored by `#[derive(Model)]`; [`seed`] holds the demo project.
 //!   * [`project_file`] — the versioned `.qvp` file behind Save / Save As /
 //!     Open: the same Automerge document, framed and stamped,
 //!     so a project can be copied and handed to someone.

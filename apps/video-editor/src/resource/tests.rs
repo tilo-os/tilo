@@ -16,7 +16,6 @@ use ui::tilo_resource::{Replica, Resource};
 use super::*;
 use crate::actions::{VideoEditorEffect, VideoResourceCtx, surface_declarations};
 use crate::app::VideoEditorApp;
-use crate::media::Hydration;
 use crate::model::{
     ChromaKey, Clip, ClipEffect, MAX_GAIN_DB, Mask, MaskShape, Speed, TextAlign, Transform,
     Transition,
@@ -50,7 +49,6 @@ fn one_clip() -> (Project, Uuid) {
         fps: 30.0,
         has_audio: true,
         path: "media/v.mp4".into(),
-        hydration: Hydration::Local,
         ..Default::default()
     });
     let tid = Uuid::new_v4();
@@ -572,7 +570,6 @@ fn clipped_mix(over_db: f64) -> (Project, crate::audio::MixSnapshot, Vec<Uuid>) 
         kind: MediaKind::Audio,
         duration: 30.0,
         path: "media/a.wav".into(),
-        hydration: Hydration::Local,
         ..Default::default()
     });
     let mut lanes = Vec::new();
@@ -1075,5 +1072,80 @@ fn the_sample_project_round_trips_through_its_document() {
     assert!(
         Project::read(&doc).unwrap().clips.is_empty(),
         "a fresh document is an empty project"
+    );
+}
+
+/// What an agent does to the project is history a person reads: the
+/// editor's sentence for each field edit and verb, naming the track as it
+/// was called.
+#[test]
+fn an_agents_edits_render_as_the_editors_sentences() {
+    use ui::tilo_actions::{ActionInvoker, ActorKind};
+
+    let (project, clip) = one_clip();
+    let track = project.clip(clip).unwrap().track;
+    let mut app = ui::framework::testing::TestApp::<crate::VideoEditor>::new().unwrap();
+    app.invoke_confirmed(Invoke::edit(&load_project(&project)).unwrap())
+        .unwrap();
+    let agent = ActionInvoker::actor("agent:claude")
+        .with_kind(ActorKind::Agent)
+        .acting_for("ada");
+    let kind = <Project as Resource>::KIND;
+    let clip_paths = Project::paths().clips.item(&id(clip));
+    let track_paths = Project::paths().tracks.item(&id(track));
+    for edit in [
+        serde_json::to_value(clip_paths.opacity.set(0.5)).unwrap(),
+        serde_json::to_value(track_paths.muted.set(true)).unwrap(),
+        serde_json::to_value(clip_paths.transform.rotation.set(90.0)).unwrap(),
+    ] {
+        app.call_by(
+            agent.clone(),
+            kind,
+            "field-edit",
+            serde_json::json!({ "edit": edit }),
+        )
+        .unwrap();
+    }
+    for (verb, args) in [
+        (
+            "split-clip",
+            serde_json::json!({ "clip": clip.to_string(), "at": 10.0 }),
+        ),
+        (
+            "set-speed",
+            serde_json::json!({ "clip": clip.to_string(), "rate": 2.0 }),
+        ),
+        ("add-track", serde_json::json!({ "kind": TrackKind::Audio })),
+        ("set-frame-rate", serde_json::json!({ "fps": 25.0 })),
+    ] {
+        app.call_by(agent.clone(), kind, verb, args)
+            .unwrap_or_else(|error| panic!("{verb}: {error:?}"));
+    }
+
+    let catalogue = tilo_history::Catalogue::new("en-US", &[LOCALES[0].1]);
+    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+    let sentences: Vec<String> = app
+        .versions()
+        .into_iter()
+        .filter_map(|version| version.context)
+        .filter(|entry| {
+            entry
+                .invoker
+                .as_ref()
+                .is_some_and(|invoker| invoker.actor == "agent:claude")
+        })
+        .map(|entry| reader.sentence(&entry))
+        .collect();
+    assert_eq!(
+        sentences,
+        [
+            "Changed a clip's opacity",
+            "Muted V1",
+            "Rotated a clip",
+            "Split a clip",
+            "Set a clip's speed to 2\u{d7}",
+            "Added a sound track",
+            "Set the frame rate to 25 fps",
+        ]
     );
 }

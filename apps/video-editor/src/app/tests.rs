@@ -1629,7 +1629,6 @@ fn bin_discloses_missing_unknown_and_refused_media() {
             height: 0,
             fps: 0.0,
             path: f.to_string_lossy().into_owned(),
-            hydration: crate::media::Hydration::Local,
             ..base
         };
         write_project(&mut doc, &Project::new("Loaded"));
@@ -1897,7 +1896,7 @@ fn imports_add_real_clips_through_the_document() {
             "a still gets the default timeline duration",
         );
         assert!(
-            m.hydration.is_local(),
+            m.source().hydration.is_local(),
             "the imported bytes are local/decodable"
         );
         // It replicated through the document (a peer would load it).
@@ -1941,7 +1940,7 @@ fn imports_add_real_clips_through_the_document() {
         assert_eq!(m.name, f.file_name().unwrap().to_string_lossy());
         assert_eq!((m.width, m.height), (480, 270), "real probed dimensions");
         assert!(
-            m.hydration.is_local(),
+            m.source().hydration.is_local(),
             "the imported bytes are local/decodable"
         );
 
@@ -2449,7 +2448,6 @@ fn seed_media(app: &mut VideoEditorApp, doc: &mut AutoCommit, w: u32, h: u32, fp
         height: h,
         fps,
         path: "media/Phone.mp4".into(),
-        hydration: crate::media::Hydration::Local,
         ..Default::default()
     };
     let id = item.id;
@@ -2826,6 +2824,7 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
         app.selection.select_only(cid);
         app.playhead = 23.0;
         app.edit_selected(|c| c.add_effect(EffectKind::Sepia));
+        let sepia = Param::EffectAmount(app.project.clip(cid).unwrap().effects[0].id);
         app.collapsed.remove(&Section::Effects);
 
         let r = app.regions();
@@ -2840,13 +2839,11 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
             );
         }
         assert!(
-            l.keys
-                .iter()
-                .any(|(p, rect)| *p == Param::EffectAmount(0) && *rect == key),
+            l.keys.iter().any(|(p, rect)| *p == sepia && *rect == key),
             "and it is in the panel's own list of key controls",
         );
 
-        assert_eq!(app.key_state(Param::EffectAmount(0)), KeyState::Off);
+        assert_eq!(app.key_state(sepia), KeyState::Off);
         reveal_inspector_rect_for_test(&mut app, &r, key);
         let r = app.regions();
         let row = *app
@@ -2857,14 +2854,14 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
         let (key, ..) = VideoEditorApp::effect_row_parts(row);
         app.press_inspector(&r, key.center());
         assert_eq!(
-            app.key_state(Param::EffectAmount(0)),
+            app.key_state(sepia),
             KeyState::OnKey,
             "one click plants a key on the intensity",
         );
         // And the curve really drives the effect the compositor is handed.
         app.edit_selected(|c| {
-            c.set_key_at(Param::EffectAmount(0), 23.0, 0.1, Interp::Linear);
-            c.set_key_at(Param::EffectAmount(0), 25.0, 0.9, Interp::Linear);
+            c.set_key_at(sepia, 23.0, 0.1, Interp::Linear);
+            c.set_key_at(sepia, 25.0, 0.9, Interp::Linear);
         });
         let clip = app.project.clip(cid).unwrap();
         let early = clip.effects_at(23.0)[0].amount;
@@ -7184,7 +7181,6 @@ fn waveforms_are_warmed_for_sources_that_carry_sound() {
             fps: 0.0,
             palette: 5,
             path: f.to_string_lossy().into_owned(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         };
         let mid = m.id;

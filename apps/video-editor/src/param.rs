@@ -100,14 +100,12 @@ impl Keyframe {
 
 /// Which knob a curve drives.
 ///
-/// `EffectAmount(i)` addresses the effect at index `i` in the clip's
-/// stack. Stack mutations must call [`ClipAnimation::swap_effect_slots`],
-/// [`ClipAnimation::remove_effect_slot`], or
-/// [`ClipAnimation::clear_effect_slots`] in the same edit so the curve follows
-/// the durable effect instance rather than whichever effect inherits its old
-/// position.
+/// `EffectAmount(id)` addresses one effect instance of the clip's stack by
+/// its id, so its curve stays with it however the stack is reordered, here
+/// or concurrently on a peer.
 ///
-/// Written as its name ([`Param::as_str`]): `opacity`, `pos_x`, `effect0`.
+/// Written as its name ([`Param::as_str`]): `opacity`, `pos_x`,
+/// `effect:<id>`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Param {
     Opacity,
@@ -142,7 +140,7 @@ pub enum Param {
     /// animation of one — so this single knob is what a ramp on or off a
     /// grade drives.
     CurveMix,
-    EffectAmount(u32),
+    EffectAmount(uuid::Uuid),
 }
 
 impl Serialize for Param {
@@ -162,11 +160,11 @@ impl<'de> Deserialize<'de> for Param {
 impl ui::tilo_resource::JsonSchema for Param {
     fn json_schema() -> serde_json::Value {
         let mut names: Vec<String> = Param::SIMPLE.iter().map(|p| p.as_str()).collect();
-        names.push("effect0".into());
+        names.push("effect:<effect id>".into());
         serde_json::json!({
             "type": "string",
-            "description": "An animatable value by name; `effectN` is the strength of the \
-                            effect at position N (from 0) of the clip's stack",
+            "description": "An animatable value by name; `effect:<id>` is the strength of \
+                            the clip's effect with that id",
             "examples": names,
         })
     }
@@ -219,7 +217,7 @@ impl Param {
             Param::MaskRotation => "mask_rotation".into(),
             Param::MaskFeather => "mask_feather".into(),
             Param::CurveMix => "curve_mix".into(),
-            Param::EffectAmount(i) => format!("effect{i}"),
+            Param::EffectAmount(id) => format!("effect:{id}"),
         }
     }
 
@@ -245,7 +243,7 @@ impl Param {
             Param::MaskRotation => "Mask rotation".into(),
             Param::MaskFeather => "Mask feather".into(),
             Param::CurveMix => "Curve amount".into(),
-            Param::EffectAmount(i) => format!("Effect {} amount", i + 1),
+            Param::EffectAmount(_) => "Effect amount".into(),
         }
     }
 
@@ -272,8 +270,8 @@ impl Param {
             "mask_feather" => Param::MaskFeather,
             "curve_mix" => Param::CurveMix,
             other => {
-                let n = other.strip_prefix("effect")?;
-                Param::EffectAmount(n.parse().ok()?)
+                let id = other.strip_prefix("effect:")?;
+                Param::EffectAmount(id.parse().ok()?)
             }
         })
     }
@@ -487,28 +485,10 @@ impl ClipAnimation {
         self.tracks.retain(|t| t.param != param);
     }
 
-    /// Move the two indexed effect curves with the two effect instances.
-    pub fn swap_effect_slots(&mut self, a: u32, b: u32) {
-        for track in &mut self.tracks {
-            track.param = match track.param {
-                Param::EffectAmount(i) if i == a => Param::EffectAmount(b),
-                Param::EffectAmount(i) if i == b => Param::EffectAmount(a),
-                other => other,
-            };
-        }
-    }
-
-    /// Remove one effect's curve and close the indexed gap after it.
-    pub fn remove_effect_slot(&mut self, removed: u32) {
+    /// Drop the curve of the effect `id`, which left the stack.
+    pub fn forget_effect(&mut self, id: uuid::Uuid) {
         self.tracks
-            .retain(|track| !matches!(track.param, Param::EffectAmount(i) if i == removed));
-        for track in &mut self.tracks {
-            if let Param::EffectAmount(i) = track.param
-                && i > removed
-            {
-                track.param = Param::EffectAmount(i - 1);
-            }
-        }
+            .retain(|track| track.param != Param::EffectAmount(id));
     }
 
     /// Drop all animation belonging to a stack that is being cleared.
@@ -664,35 +644,32 @@ mod tests {
             a.clear(Param::Opacity);
             assert!(!a.is_animated(Param::Opacity));
         }
-        // Case `effect_stack_edits_carry_their_animation_tracks`.
+        // Case `effect_curves_are_named_by_the_effect_and_leave_with_it`.
         {
+            let [first, second, third] = [1, 2, 3].map(uuid::Uuid::from_u128);
             let mut animation = ClipAnimation::default();
             animation
-                .ensure(Param::EffectAmount(0))
+                .ensure(Param::EffectAmount(first))
                 .set_key(0.0, 0.2, Interp::Linear);
             animation
-                .ensure(Param::EffectAmount(1))
+                .ensure(Param::EffectAmount(second))
                 .set_key(0.0, 0.8, Interp::Linear);
             animation
-                .ensure(Param::EffectAmount(2))
+                .ensure(Param::EffectAmount(third))
                 .set_key(0.0, 0.4, Interp::Linear);
             animation
                 .ensure(Param::Opacity)
                 .set_key(0.0, 0.6, Interp::Linear);
 
-            animation.swap_effect_slots(0, 1);
-            assert_eq!(animation.sample(Param::EffectAmount(0), 0.0), Some(0.8));
-            assert_eq!(animation.sample(Param::EffectAmount(1), 0.0), Some(0.2));
-
-            animation.remove_effect_slot(1);
-            assert_eq!(animation.sample(Param::EffectAmount(0), 0.0), Some(0.8));
-            assert_eq!(animation.sample(Param::EffectAmount(1), 0.0), Some(0.4));
-            assert_eq!(animation.sample(Param::EffectAmount(2), 0.0), None);
+            animation.forget_effect(second);
+            assert_eq!(animation.sample(Param::EffectAmount(first), 0.0), Some(0.2));
+            assert_eq!(animation.sample(Param::EffectAmount(second), 0.0), None);
+            assert_eq!(animation.sample(Param::EffectAmount(third), 0.0), Some(0.4));
             assert_eq!(animation.sample(Param::Opacity, 0.0), Some(0.6));
 
             animation.clear_effect_slots();
-            assert_eq!(animation.sample(Param::EffectAmount(0), 0.0), None);
-            assert_eq!(animation.sample(Param::EffectAmount(1), 0.0), None);
+            assert_eq!(animation.sample(Param::EffectAmount(first), 0.0), None);
+            assert_eq!(animation.sample(Param::EffectAmount(third), 0.0), None);
             assert_eq!(animation.sample(Param::Opacity, 0.0), Some(0.6));
         }
         // Case `key_times_are_merged_across_params`.
@@ -704,13 +681,14 @@ mod tests {
             a.ensure(Param::ScaleX).set_key(2.0, 2.0, Interp::Linear);
             assert_eq!(a.key_times(), vec![1.0, 2.0, 3.0]);
         }
-        // Case `param_names_round_trip_including_indexed_effects`.
+        // Case `param_names_round_trip_including_effects_by_id`.
         {
             for p in Param::SIMPLE {
                 assert_eq!(Param::from_name(&p.as_str()), Some(p), "{p:?}");
             }
-            let e = Param::EffectAmount(3);
+            let e = Param::EffectAmount(uuid::Uuid::from_u128(3));
             assert_eq!(Param::from_name(&e.as_str()), Some(e));
+            assert_eq!(Param::from_name("effect3"), None);
             assert_eq!(Param::from_name("nonsense"), None);
         }
         // Case `interp_names_round_trip`.
