@@ -46,13 +46,7 @@ fn cursor_at(p: vello::kurbo::Point) -> winit::event::WindowEvent {
     }
 }
 
-fn left_press() -> winit::event::WindowEvent {
-    winit::event::WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: winit::event::ElementState::Pressed,
-        button: winit::event::MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
 fn key_press(ch: char) -> winit::event::WindowEvent {
     use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey, SmolStr};
@@ -111,7 +105,7 @@ fn dispatch(host: &mut ShellOverlayHost, event: &winit::event::WindowEvent) {
 
 fn click_at(host: &mut ShellOverlayHost, p: vello::kurbo::Point) {
     dispatch(host, &cursor_at(p));
-    dispatch(host, &left_press());
+    dispatch(host, &mouse_press());
 }
 
 fn host_with_portal(

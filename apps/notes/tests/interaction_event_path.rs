@@ -913,20 +913,9 @@ use vello::kurbo::{Affine, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{ModifiersState, NamedKey};
 
-fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 
-fn mouse_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
 fn mouse_press_right() -> WindowEvent {
     WindowEvent::MouseInput {
@@ -936,13 +925,7 @@ fn mouse_press_right() -> WindowEvent {
     }
 }
 
-fn mouse_release() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_release;
 
 use ui::synthetic_input::char_key;
 

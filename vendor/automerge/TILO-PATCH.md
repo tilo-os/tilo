@@ -29,3 +29,16 @@ and commits before every frame, so `committed_heads`, `committed_diff`,
 `committed_fork_at` and `committed_document` read the committed document
 from `&self` (an open transaction is not part of it). Pinned by
 `crates/doc/tilo-automerge/tests/committed_readers.rs`.
+
+# Tilo patch: an idle sync message does not walk the whole history
+
+Receiving a sync message trims the hashes sent so far to those the peer has
+not seen (`Automerge::filter_changes` → `ChangeGraph::remove_ancestors`), by
+walking every ancestor of the peer's heads. Between two peers that resume
+from persisted sync states and have nothing to send, that set is empty, yet
+the walk visited the document's whole change graph on every message: about
+2 ms at 50,000 changes, more than the rest of the exchange together. tilo-fs
+runs such an exchange with every peer every few seconds. `remove_ancestors`
+now returns at once for an empty set and stops walking once it has removed
+everything; the set it leaves is unchanged. Pinned by
+`crates/doc/tilo-automerge/tests/idle_sync.rs`.

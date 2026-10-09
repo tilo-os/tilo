@@ -2091,7 +2091,7 @@ mod tests {
             let cy = row.center().y;
             // Press on the row (arms the swipe), drag left past the commit
             // threshold, release (commits the primary action = Delete).
-            feed(&mut app, &mut doc, &cursor(row.center().x, cy));
+            feed(&mut app, &mut doc, &cursor_moved(row.center().x, cy));
             feed(
                 &mut app,
                 &mut doc,
@@ -2099,7 +2099,7 @@ mod tests {
             );
             assert!(app.swipe.is_some(), "pressing a channel row arms a swipe");
             let past_commit = row.center().x - (app.chrome.swipe_commit + 20.0);
-            feed(&mut app, &mut doc, &cursor(past_commit, cy));
+            feed(&mut app, &mut doc, &cursor_moved(past_commit, cy));
             feed(
                 &mut app,
                 &mut doc,
@@ -3161,7 +3161,7 @@ mod tests {
 
             let x = editor.x0 + 18.0;
             let y = editor.y0 + 14.0;
-            feed(&mut app, &mut doc, &cursor(x, y));
+            feed(&mut app, &mut doc, &cursor_moved(x, y));
             feed(
                 &mut app,
                 &mut doc,
@@ -3308,7 +3308,7 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(pointer_origin.x, pointer_origin.y),
+                &cursor_moved(pointer_origin.x, pointer_origin.y),
             );
             feed(
                 &mut app,
@@ -3318,7 +3318,7 @@ mod tests {
             assert!(Widget::wants_pointer_capture(&app));
 
             let outside = Point::new(1300.0, pointer_origin.y + 40.0);
-            feed(&mut app, &mut doc, &cursor(outside.x, outside.y));
+            feed(&mut app, &mut doc, &cursor_moved(outside.x, outside.y));
             assert!(matches!(
                 app.call.placement.attachment(),
                 Attachment::Desktop { .. }
@@ -3403,7 +3403,7 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(returned_pointer.x, returned_pointer.y),
+                &cursor_moved(returned_pointer.x, returned_pointer.y),
             );
             assert!(app.call.placement.is_return_pending());
             let final_shell_rect = app.call_video_rect();
@@ -3436,7 +3436,7 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(continued_pointer.x, continued_pointer.y),
+                &cursor_moved(continued_pointer.x, continued_pointer.y),
             );
             assert_eq!(
                 app.call_video_rect(),
@@ -3467,11 +3467,11 @@ mod tests {
             feed(
                 &mut app,
                 &mut doc,
-                &cursor(leave.center().x, leave.center().y),
+                &cursor_moved(leave.center().x, leave.center().y),
             );
             assert!(matches!(app.call_hovered, Some(Hit::CallLeave)));
 
-            feed(&mut app, &mut doc, &cursor(2.0, 2.0));
+            feed(&mut app, &mut doc, &cursor_moved(2.0, 2.0));
             assert!(app.call_hovered.is_none());
         }
     }
@@ -3811,7 +3811,7 @@ mod tests {
     }
 
     fn click_point(app: &mut ChatApp, doc: &mut AutoCommit, point: Point) {
-        feed(app, doc, &cursor(point.x, point.y));
+        feed(app, doc, &cursor_moved(point.x, point.y));
         feed(app, doc, &mouse(ElementState::Pressed, MouseButton::Left));
         feed(app, doc, &mouse(ElementState::Released, MouseButton::Left));
     }
@@ -3871,7 +3871,7 @@ mod tests {
             "the final recorded dispatch is accessible"
         );
         let point = app.thread_body.center();
-        feed(&mut app, &mut doc, &cursor(point.x, point.y));
+        feed(&mut app, &mut doc, &cursor_moved(point.x, point.y));
         feed(&mut app, &mut doc, &wheel(2.0));
         assert!(
             f64::from(app.thread_scroll.offset_y()) < region.metrics.max_scroll(),
@@ -3880,12 +3880,7 @@ mod tests {
         assert!((app.scroll - timeline_offset).abs() < 0.01);
     }
 
-    fn cursor(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use ui::synthetic_input::cursor_moved;
     fn mouse(state: ElementState, button: MouseButton) -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),

@@ -1956,6 +1956,7 @@ mod a11y_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthetic_input::mouse_press;
     use crate::synthetic_input::named_key;
     use automerge::AutoCommit;
     use std::sync::Arc;
@@ -2139,13 +2140,6 @@ mod tests {
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
     fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
             device_id: winit::event::DeviceId::dummy(),
@@ -2194,7 +2188,7 @@ mod tests {
             let row0_y = r.y0 + PADDING + ROW_HEIGHT / 2.0;
             let p = Point::new(r.x0 + 20.0, row0_y);
             dispatch(&mut m, &cursor_at(p));
-            let handled = dispatch(&mut m, &left_press());
+            let handled = dispatch(&mut m, &mouse_press());
             assert!(handled, "a row click is consumed");
             assert_eq!(
                 fired.load(Ordering::SeqCst),
@@ -2211,7 +2205,7 @@ mod tests {
             let r = m.get_rect();
             let p = Point::new(r.x1 + 50.0, r.y1 + 50.0);
             dispatch(&mut m, &cursor_at(p));
-            let handled = dispatch(&mut m, &left_press());
+            let handled = dispatch(&mut m, &mouse_press());
             assert!(handled, "outside click is swallowed (not passed through)");
             assert!(!m.is_open(), "outside click dismisses the menu");
             assert_eq!(
@@ -2300,7 +2294,7 @@ mod tests {
 
             dispatch(&mut menu, &cursor_at(point));
             assert_eq!(menu.hovered(), None, "disabled rows are not hover targets");
-            assert!(dispatch(&mut menu, &left_press()));
+            assert!(dispatch(&mut menu, &mouse_press()));
             assert_eq!(fired.load(Ordering::SeqCst), 0);
             assert_eq!(menu.take_selection(), None);
             assert!(menu.is_open(), "a rejected activation keeps the menu open");
@@ -2406,7 +2400,7 @@ mod tests {
             let last = menu.item_rect(19).unwrap().center();
             assert_eq!(menu.item_at([last.x, last.y]), Some(19));
             dispatch(&mut menu, &cursor_at(last));
-            dispatch(&mut menu, &left_press());
+            dispatch(&mut menu, &mouse_press());
             assert_eq!(menu.take_selection(), Some(19));
             assert_eq!(menu.take_selection(), None);
             menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
@@ -2683,13 +2677,7 @@ mod nested_and_anchored_tests {
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
     use crate::synthetic_input::named_key;
     fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
@@ -2768,7 +2756,7 @@ mod nested_and_anchored_tests {
             .and_then(|(_, menu)| menu.item_rect(1))
             .unwrap();
         dispatch(&mut m, &cursor_at(nested_row.center()));
-        dispatch(&mut m, &left_press());
+        dispatch(&mut m, &mouse_press());
         assert_eq!(fired.load(Ordering::SeqCst), 1);
         assert_eq!(m.take_submenu_selection(), Some((1, 1)));
         assert!(!m.is_open());

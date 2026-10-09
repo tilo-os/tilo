@@ -1796,7 +1796,7 @@ fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsE
 mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{ElementState, Modifiers, MouseButton};
+    use winit::event::Modifiers;
 
     use automerge::{ROOT, ReadDoc as _};
     use ui::tilo_actions::Action as _;
@@ -1957,13 +1957,7 @@ mod tests {
         }
     }
 
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
     /// Pump one event through the production `Widget::handle_event`, returning
     /// whether it was consumed.
@@ -2279,7 +2273,7 @@ mod tests {
                 let p = app.diagnostics.row_rect(i).center();
                 send(&mut app, &mut doc, &cursor(p));
                 assert!(
-                    send(&mut app, &mut doc, &press()),
+                    send(&mut app, &mut doc, &mouse_press()),
                     "diagnostic row click consumed"
                 );
                 assert_eq!(

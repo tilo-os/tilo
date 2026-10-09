@@ -41,6 +41,12 @@ impl Composed {
         self.element.insert(element).as_mut()
     }
 
+    /// Take the composition out, for an owner that keeps it across layouts
+    /// and lays it out again with [`Self::build_layout`].
+    pub fn take(&mut self) -> Option<Element> {
+        self.element.take()
+    }
+
     /// Drop the composition until the next layout builds a fresh one.
     pub fn clear(&mut self) {
         self.element = None;

@@ -2297,8 +2297,8 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use std::cell::Cell;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+
+    use winit::event::{Modifiers, WindowEvent};
 
     /// A desktop of `workspaces` workspaces numbered from 1, counting
     /// every change the wheel asks of it.
@@ -2371,20 +2371,9 @@ mod tests {
         d.rect.x1 - 2.0
     }
 
-    fn cursor_event(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(x, y),
-        }
-    }
+    use ui::synthetic_input::cursor_moved;
 
-    fn press_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
     /// `lines` is in `LineDelta` units; the widget scales by 16 px.
     fn wheel_event(lines: f32) -> WindowEvent {
@@ -2395,13 +2384,7 @@ mod tests {
         }
     }
 
-    fn release_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_release;
 
     fn pump(d: &mut SidebarWheelDisc, ev: &WindowEvent) -> bool {
         use automerge::AutoCommit;
@@ -2647,7 +2630,7 @@ mod tests {
                 // The handler ignores wheel events not over the disc.
                 let cx = drag_anchor_x(&d);
                 let cy = f64::midpoint(d.rect.y0, d.rect.y1);
-                pump(&mut d, &cursor_event(cx, cy));
+                pump(&mut d, &cursor_moved(cx, cy));
 
                 for dir in [-1.0_f32, 1.0] {
                     for _ in 0..60 {
@@ -2837,14 +2820,14 @@ mod tests {
             {
                 let mut d = mk(&["Home", "Research", "Design"]);
                 let c = d.center();
-                pump(&mut d, &cursor_event(c.x, c.y));
+                pump(&mut d, &cursor_moved(c.x, c.y));
                 assert!(
                     d.drag_from.is_none(),
                     "off-screen cursor must not seed a drag anchor; drag_from={:?}",
                     d.drag_from
                 );
                 assert!(
-                    !pump(&mut d, &press_event()),
+                    !pump(&mut d, &mouse_press()),
                     "press at off-screen-left location must NOT be handled by the disc"
                 );
                 assert!(
@@ -2930,9 +2913,9 @@ mod tests {
 
                 let expected = before + step + 1;
                 let p = d.plus_rect.center();
-                pump(&mut d, &cursor_event(p.x, p.y));
+                pump(&mut d, &cursor_moved(p.x, p.y));
                 assert!(
-                    pump(&mut d, &press_event()),
+                    pump(&mut d, &mouse_press()),
                     "a press on the add button at {}° was not handled — a label \
                      sweeping over it has taken the press",
                     d.rotation_deg
@@ -2943,7 +2926,7 @@ mod tests {
                     "the press at {}° did not create a workspace",
                     d.rotation_deg
                 );
-                pump(&mut d, &release_event());
+                pump(&mut d, &mouse_release());
             }
         }
 
@@ -2978,9 +2961,9 @@ mod tests {
 
             // The press handler hit-tests against the cached
             // `last_cursor_pos`, not the event (which has no position field).
-            pump(&mut d, &cursor_event(slot_center_x, slot_center_y));
+            pump(&mut d, &cursor_moved(slot_center_x, slot_center_y));
             assert!(
-                pump(&mut d, &press_event()),
+                pump(&mut d, &mouse_press()),
                 "press on plus slot must be handled"
             );
 
@@ -3027,7 +3010,7 @@ mod tests {
                 let mut d = mk(&["Home", "Research", "Design"]);
                 let cy = d.diameter_px / 2.0;
                 let cx = drag_anchor_x(&d);
-                pump(&mut d, &cursor_event(cx, cy));
+                pump(&mut d, &cursor_moved(cx, cy));
                 assert!(
                     d.drag_from.is_none(),
                     "hover must not seed `drag_from`; got {:?}",
@@ -3049,13 +3032,13 @@ mod tests {
                 let mut d = mk(&["Home", "Research", "Design"]);
                 let cy = d.diameter_px / 2.0;
                 let cx = drag_anchor_x(&d);
-                pump(&mut d, &cursor_event(cx, cy));
-                assert!(pump(&mut d, &press_event()));
+                pump(&mut d, &cursor_moved(cx, cy));
+                assert!(pump(&mut d, &mouse_press()));
                 assert!(
                     d.wants_pointer_capture(),
                     "press inside disc must capture pointer"
                 );
-                assert!(pump(&mut d, &release_event()));
+                assert!(pump(&mut d, &mouse_release()));
                 assert!(
                     d.drag_from.is_none(),
                     "release must clear `drag_from`; got {:?}",
@@ -3083,11 +3066,11 @@ mod tests {
                     "a painted, untouched disc is clean — otherwise this test proves nothing"
                 );
 
-                pump(&mut d, &cursor_event(x, cy));
-                assert!(pump(&mut d, &press_event()), "press inside the arc grabs");
+                pump(&mut d, &cursor_moved(x, cy));
+                assert!(pump(&mut d, &mouse_press()), "press inside the arc grabs");
                 let before = d.rotation_deg;
 
-                pump(&mut d, &cursor_event(x, cy + 60.0));
+                pump(&mut d, &cursor_moved(x, cy + 60.0));
                 assert_ne!(
                     d.rotation_deg, before,
                     "the drag moved the rim, so the next frame would differ"
@@ -3282,8 +3265,8 @@ mod tests {
 
             let start_y = diameter / 2.0;
             let cx = drag_anchor_x(&d);
-            pump(&mut d, &cursor_event(cx, start_y));
-            assert!(pump(&mut d, &press_event()));
+            pump(&mut d, &cursor_moved(cx, start_y));
+            assert!(pump(&mut d, &mouse_press()));
             assert!(d.drag_from.is_some(), "press inside disc must start drag");
             assert!(d.wants_pointer_capture());
 
@@ -3291,11 +3274,11 @@ mod tests {
             // Dragged UPWARD: workspace 0 is the first, so pulling down pulls
             // against the top end instead of reaching a neighbour.
             let drag_dy = f64::from(gap / DRAG_FACTOR) + 30.0;
-            pump(&mut d, &cursor_event(cx, start_y - drag_dy));
+            pump(&mut d, &cursor_moved(cx, start_y - drag_dy));
             assert!(d.rotation_deg < 0.0);
 
             let before_idx = d.active_idx;
-            assert!(pump(&mut d, &release_event()));
+            assert!(pump(&mut d, &mouse_release()));
             assert!(d.drag_from.is_none());
             let ratio = d.rotation_deg / gap;
             assert!(
@@ -3329,12 +3312,12 @@ mod tests {
             let diameter = d.diameter_px;
             let start_y = diameter / 2.0;
             let cx = drag_anchor_x(&d);
-            pump(&mut d, &cursor_event(cx, start_y));
-            assert!(pump(&mut d, &press_event()));
+            pump(&mut d, &cursor_moved(cx, start_y));
+            assert!(pump(&mut d, &mouse_press()));
 
             let idx_before = d.active_idx;
             // 37 px * DRAG_FACTOR = 5.55° — not a multiple of the 15° gap.
-            pump(&mut d, &cursor_event(cx, start_y + 37.0));
+            pump(&mut d, &cursor_moved(cx, start_y + 37.0));
             let gap = d.spoke_gap_deg();
             let ratio = d.rotation_deg / gap;
             assert!(
@@ -3355,17 +3338,17 @@ mod tests {
             let start_y = diameter / 2.0;
             let cx = drag_anchor_x(&d);
 
-            pump(&mut d, &cursor_event(cx, start_y));
-            assert!(pump(&mut d, &press_event()));
+            pump(&mut d, &cursor_moved(cx, start_y));
+            assert!(pump(&mut d, &mouse_press()));
             // Drag a huge distance in either direction.
-            pump(&mut d, &cursor_event(cx, start_y + 10_000.0));
-            assert!(pump(&mut d, &release_event()));
+            pump(&mut d, &cursor_moved(cx, start_y + 10_000.0));
+            assert!(pump(&mut d, &mouse_release()));
             assert_eq!(d.active_idx, 0);
 
-            pump(&mut d, &cursor_event(cx, start_y));
-            assert!(pump(&mut d, &press_event()));
-            pump(&mut d, &cursor_event(cx, start_y - 10_000.0));
-            assert!(pump(&mut d, &release_event()));
+            pump(&mut d, &cursor_moved(cx, start_y));
+            assert!(pump(&mut d, &mouse_press()));
+            pump(&mut d, &cursor_moved(cx, start_y - 10_000.0));
+            assert!(pump(&mut d, &mouse_release()));
             assert_eq!(d.active_idx, 0);
         }
 
@@ -3384,9 +3367,9 @@ mod tests {
             let start_y = diameter / 2.0;
             let cx = drag_anchor_x(&d);
 
-            pump(&mut d, &cursor_event(cx, start_y));
-            assert!(pump(&mut d, &press_event()));
-            pump(&mut d, &cursor_event(cx, start_y - drag_px));
+            pump(&mut d, &cursor_moved(cx, start_y));
+            assert!(pump(&mut d, &mouse_press()));
+            pump(&mut d, &cursor_moved(cx, start_y - drag_px));
             let pre_snap_deg = d.rotation_deg;
             assert!(pre_snap_deg < 0.0);
             // Let the follow spring actually reach the drag target before
@@ -3401,7 +3384,7 @@ mod tests {
                 (visual_at_release - pre_snap_deg).abs() < 1e-2,
                 "follow spring should have caught up to the drag target {pre_snap_deg} (got {visual_at_release})"
             );
-            assert!(pump(&mut d, &release_event()));
+            assert!(pump(&mut d, &mouse_release()));
 
             // Immediately after release: spring is live and unsettled.
             let spring = d
@@ -3510,10 +3493,10 @@ mod tests {
             let start_y = diameter / 2.0;
             let cx = drag_anchor_x(&d);
             let drag_dy = f64::from(d.spoke_gap_deg() / DRAG_FACTOR) + 100.0;
-            pump(&mut d, &cursor_event(cx, start_y));
-            assert!(pump(&mut d, &press_event()));
-            pump(&mut d, &cursor_event(cx, start_y - drag_dy));
-            assert!(pump(&mut d, &release_event()));
+            pump(&mut d, &cursor_moved(cx, start_y));
+            assert!(pump(&mut d, &mouse_press()));
+            pump(&mut d, &cursor_moved(cx, start_y - drag_dy));
+            assert!(pump(&mut d, &mouse_release()));
 
             assert_ne!(
                 d.selected_idx(),
@@ -3542,11 +3525,11 @@ mod tests {
             let start_y = diameter / 2.0;
             let cx = drag_anchor_x(&d);
             let drag_dy = f64::from(d.spoke_gap_deg() / DRAG_FACTOR) + 100.0;
-            pump(&mut d, &cursor_event(cx, start_y));
-            assert!(pump(&mut d, &press_event()));
+            pump(&mut d, &cursor_moved(cx, start_y));
+            assert!(pump(&mut d, &mouse_press()));
             // Upward — workspace 0 is the top of a finite list.
-            pump(&mut d, &cursor_event(cx, start_y - drag_dy));
-            assert!(pump(&mut d, &release_event()));
+            pump(&mut d, &cursor_moved(cx, start_y - drag_dy));
+            assert!(pump(&mut d, &mouse_release()));
             assert_ne!(d.selected_idx(), idx_before);
         }
 
@@ -3570,12 +3553,12 @@ mod tests {
             let before = host.changes.get();
             let cx = drag_anchor_x(&d);
             let start_y = d.diameter_px / 2.0;
-            pump(&mut d, &cursor_event(cx, start_y));
-            assert!(pump(&mut d, &press_event()));
+            pump(&mut d, &cursor_moved(cx, start_y));
+            assert!(pump(&mut d, &mouse_press()));
             // A pull against the top end, which can only come back to where
             // it began.
             drag_to(&mut d, cx, start_y, 400.0, 30);
-            assert!(pump(&mut d, &release_event()));
+            assert!(pump(&mut d, &mouse_release()));
             assert_eq!(
                 d.selected_idx(),
                 0,
@@ -3596,8 +3579,8 @@ mod tests {
                 d.visual_rotation_deg().abs() < 0.1,
                 "the bounce has not finished"
             );
-            pump(&mut d, &cursor_event(cx, start_y));
-            assert!(pump(&mut d, &press_event()));
+            pump(&mut d, &cursor_moved(cx, start_y));
+            assert!(pump(&mut d, &mouse_press()));
             // A clear detent and a bit, in gaps rather than pixels — pixel
             // cost per detent depends on the layout geometry.
             let gap = f64::from(d.spoke_gap_deg());
@@ -3608,7 +3591,7 @@ mod tests {
                 -(1.3 * gap / f64::from(DRAG_FACTOR)),
                 30,
             );
-            assert!(pump(&mut d, &release_event()));
+            assert!(pump(&mut d, &mouse_release()));
             assert_ne!(d.selected_idx(), 0);
             assert_ne!(
                 host.changes.get(),
@@ -3688,7 +3671,7 @@ mod tests {
     /// Drag by `dy` px from the current origin without releasing, then
     /// let `settle_frames` of motion play so the rim catches up.
     fn drag_to(d: &mut SidebarWheelDisc, cx: f64, start_y: f64, dy: f64, settle_frames: usize) {
-        pump(d, &cursor_event(cx, start_y + dy));
+        pump(d, &cursor_moved(cx, start_y + dy));
         frames(d, settle_frames);
     }
 
@@ -3711,8 +3694,8 @@ mod tests {
                 let start_y = d.diameter_px / 2.0;
                 // Start in the middle so there's room to travel without
                 // meeting an end.
-                pump(&mut d, &cursor_event(cx, start_y));
-                assert!(pump(&mut d, &press_event()));
+                pump(&mut d, &cursor_moved(cx, start_y));
+                assert!(pump(&mut d, &mouse_press()));
 
                 // One detent is `gap / DRAG_FACTOR` px; walk three in small
                 // steps, sampling the indicator continuously.
@@ -3756,8 +3739,8 @@ mod tests {
                 let mut d = mk(&["A", "B", "C", "D"]);
                 let cx = drag_anchor_x(&d);
                 let start_y = d.diameter_px / 2.0;
-                pump(&mut d, &cursor_event(cx, start_y));
-                assert!(pump(&mut d, &press_event()));
+                pump(&mut d, &cursor_moved(cx, start_y));
+                assert!(pump(&mut d, &mouse_press()));
                 // Just past halfway, then release — a plain one-detent settle
                 // with no fling. Stated as a fraction of the gap so retuning
                 // the geometry can't turn "past halfway" into two detents.
@@ -3769,7 +3752,7 @@ mod tests {
                     -(0.6 * gap / f64::from(DRAG_FACTOR)),
                     40,
                 );
-                assert!(pump(&mut d, &release_event()));
+                assert!(pump(&mut d, &mouse_release()));
 
                 let target = d.rotation_deg;
                 let start = d.visual_rotation_deg();
@@ -3821,13 +3804,13 @@ mod tests {
                         gaps_per_frame * f64::from(d.spoke_gap_deg()) / f64::from(DRAG_FACTOR);
                     let cx = drag_anchor_x(&d);
                     let start_y = d.diameter_px / 2.0;
-                    pump(&mut d, &cursor_event(cx, start_y));
-                    assert!(pump(&mut d, &press_event()));
+                    pump(&mut d, &cursor_moved(cx, start_y));
+                    assert!(pump(&mut d, &mouse_press()));
                     // Long enough for the follow spring to reach steady state.
                     let mut dy = 0.0;
                     for _ in 0..40 {
                         dy -= px_per_frame;
-                        pump(&mut d, &cursor_event(cx, start_y + dy));
+                        pump(&mut d, &cursor_moved(cx, start_y + dy));
                         d.advance(1.0 / 60.0);
                     }
                     (d.rotation_deg - d.visual_rotation_deg()).abs()
@@ -3862,18 +3845,18 @@ mod tests {
                         gaps_per_frame * f64::from(d.spoke_gap_deg()) / f64::from(DRAG_FACTOR);
                     let cx = drag_anchor_x(&d);
                     let start_y = d.diameter_px / 2.0;
-                    pump(&mut d, &cursor_event(cx, start_y));
-                    assert!(pump(&mut d, &press_event()));
+                    pump(&mut d, &cursor_moved(cx, start_y));
+                    assert!(pump(&mut d, &mouse_press()));
                     let mut dy = 0.0;
                     for _ in 0..24 {
                         dy -= px_per_frame;
-                        pump(&mut d, &cursor_event(cx, start_y + dy));
+                        pump(&mut d, &cursor_moved(cx, start_y + dy));
                         d.advance(1.0 / 60.0);
                     }
                     // A pause before release bleeds the velocity off, which is
                     // what separates "thrown" from "placed".
                     frames(&mut d, pause_frames);
-                    assert!(pump(&mut d, &release_event()));
+                    assert!(pump(&mut d, &mouse_release()));
                     d.selected_idx()
                 };
 
@@ -3897,8 +3880,8 @@ mod tests {
                 let mut d = mk(&["A", "B", "C"]);
                 let cx = drag_anchor_x(&d);
                 let start_y = d.diameter_px / 2.0;
-                pump(&mut d, &cursor_event(cx, start_y));
-                assert!(pump(&mut d, &press_event()));
+                pump(&mut d, &cursor_moved(cx, start_y));
+                assert!(pump(&mut d, &mouse_press()));
 
                 // Pulls are evenly spaced so successive gains are directly
                 // comparable — uneven steps wouldn't test "each extra 100 px
@@ -3943,7 +3926,7 @@ mod tests {
                     d.rotation_deg
                 );
 
-                assert!(pump(&mut d, &release_event()));
+                assert!(pump(&mut d, &mouse_release()));
                 assert_eq!(
                     d.rotation_deg, 0.0,
                     "release past an end must return to the end itself, not to a detent \
@@ -3963,14 +3946,14 @@ mod tests {
                 let mut d = mk(&["A", "B", "C"]);
                 let cx = drag_anchor_x(&d);
                 let start_y = d.diameter_px / 2.0;
-                pump(&mut d, &cursor_event(cx, start_y));
-                assert!(pump(&mut d, &press_event()));
+                pump(&mut d, &cursor_moved(cx, start_y));
+                assert!(pump(&mut d, &mouse_press()));
                 drag_to(&mut d, cx, start_y, -10_000.0, 60);
                 assert_eq!(
                     d.active_idx, 2,
                     "dragging past the last workspace wrapped round to the start"
                 );
-                assert!(pump(&mut d, &release_event()));
+                assert!(pump(&mut d, &mouse_release()));
                 assert_eq!(d.selected_idx(), 2);
             }
 
@@ -3981,7 +3964,7 @@ mod tests {
                 let mut d = mk(&["A", "B", "C"]);
                 let cx = drag_anchor_x(&d);
                 let mid_y = d.diameter_px / 2.0;
-                pump(&mut d, &cursor_event(cx, mid_y));
+                pump(&mut d, &cursor_moved(cx, mid_y));
 
                 for _ in 0..6 {
                     pump(&mut d, &wheel_event(4.0));
@@ -4020,7 +4003,7 @@ mod tests {
                 let mut d = mk(&["A", "B", "C", "D", "E"]);
                 let cx = drag_anchor_x(&d);
                 let mid_y = d.diameter_px / 2.0;
-                pump(&mut d, &cursor_event(cx, mid_y));
+                pump(&mut d, &cursor_moved(cx, mid_y));
                 // One wheel click is 16 px; the detent is 48.
                 for click in 1..=3 {
                     pump(&mut d, &wheel_event(-1.0));
