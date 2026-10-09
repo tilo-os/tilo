@@ -5,10 +5,10 @@
 //! None of these is a document change. Each is one typed [`VpnEffect`],
 //! answered by [`crate::app::VpnApp`] as a job off the UI thread; what an
 //! effect changes in the shared fleet (a profile imported here joins it, a
-//! deleted one leaves it) it changes afterwards with an ordinary
-//! [`crate::actions::VpnAction`]. A saved profile offers its own effects as a
-//! live row merged into its published child, with this device's availability:
-//! a profile nobody set up here cannot be connected here.
+//! deleted one leaves it) it changes afterwards with an ordinary field edit
+//! of the [`Vpn`](crate::model::Vpn) record. A saved profile offers its own
+//! effects as a live row, with this device's availability: a profile nobody
+//! set up here cannot be connected here.
 
 use ui::framework::LiveRow;
 use ui::tilo_actions::Availability;
