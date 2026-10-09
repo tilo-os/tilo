@@ -23,8 +23,8 @@ use ui::widget::{
     TreeRowDecoration, TreeRowTone, TreeView, Widget,
 };
 
-use crate::doc::PolicyField;
 use crate::i18n;
+use crate::model::PolicyField;
 use crate::model::{
     Catalog, DestKind, Destination, Filter, Health, Retention, Schedule, SnapFile, SnapStatus,
     SnapType, Snapshot, Source, SourceKind,

@@ -1,20 +1,25 @@
 //! Pure data model for the VPN client.
 //!
-//! Everything here is plain Rust with no rendering or IO. The live
-//! source of truth is the Automerge document (see [`crate::doc`]); this
-//! module defines the in-memory shapes the UI reads/writes and the
-//! sample fleet the `--shots` scenarios show.
+//! Everything here is plain Rust with no rendering or IO. What is shared is
+//! the [`Vpn`] record: each profile's name, protocol and Tor preference,
+//! never credentials or endpoints. [`Vault`] is the window's view of it,
+//! joined with this device's live tunnel state, and the sample fleet the
+//! `--shots` scenarios show.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Collection, Id, Model, Refusal};
 use uuid::Uuid;
 
 /// Stable identifier for one saved connection.
 pub type ConnId = Uuid;
 
 /// Tunnel protocol.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnKind {
+    #[default]
+    #[model(rename = "wireguard")]
     WireGuard,
+    #[model(rename = "openvpn")]
     OpenVpn,
 }
 
@@ -161,6 +166,55 @@ pub fn draft_connection(name: &str, kind: ConnKind) -> Connection {
     c
 }
 
+/// One shared tunnel profile: what a person's devices agree on. Its id is
+/// the collaborative uuid the profile was imported under.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+#[model(check = Profile::valid)]
+pub struct Profile {
+    /// Name
+    #[model(label)]
+    pub name: String,
+    /// The protocol the profile was imported with.
+    #[model(readonly)]
+    pub kind: ConnKind,
+    /// Route over Tor
+    pub tor: bool,
+}
+
+impl Profile {
+    /// A profile has a name.
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.name.trim().is_empty() {
+            return Err(Refusal::new("a profile has a name"));
+        }
+        Ok(())
+    }
+
+    /// The shared part of `connection`.
+    pub fn of(connection: &Connection) -> Self {
+        Self {
+            name: connection.name.clone(),
+            kind: connection.kind,
+            tor: connection.tor,
+        }
+    }
+}
+
+/// The shared tunnel profiles. Each is added, renamed, rerouted and
+/// removed with field edits at its path; importing and setting a profile up
+/// on a device are [`VpnEffect`](crate::effects::VpnEffect)s.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct Vpn {
+    pub connections: Collection<Profile>,
+}
+
+impl Vpn {
+    /// The item id of the profile with collaborative uuid `id`.
+    pub fn item(id: ConnId) -> Id {
+        Id::from_raw(id.to_string())
+    }
+}
+
 /// The whole saved fleet plus this window's selection.
 #[derive(Clone, Debug, Default)]
 pub struct Vault {
@@ -169,6 +223,35 @@ pub struct Vault {
 }
 
 impl Vault {
+    /// The fleet `record` holds, before this device's live state joins it:
+    /// connected first, then by name.
+    pub fn of(record: &Vpn) -> Self {
+        let mut connections: Vec<Connection> = record
+            .connections
+            .iter()
+            .filter_map(|(id, profile)| {
+                Some(Connection {
+                    id: id.as_str().parse().ok()?,
+                    name: profile.name.clone(),
+                    kind: profile.kind,
+                    status: ConnStatus::Disconnected,
+                    last_handshake_secs: None,
+                    last_used: "Never on this device".into(),
+                    tor: profile.tor,
+                })
+            })
+            .collect();
+        connections.sort_by(|a, b| {
+            b.is_connected()
+                .cmp(&a.is_connected())
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        Self {
+            connections,
+            selected: None,
+        }
+    }
+
     pub fn get(&self, id: ConnId) -> Option<&Connection> {
         self.connections.iter().find(|c| c.id == id)
     }

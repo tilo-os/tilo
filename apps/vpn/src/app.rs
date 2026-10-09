@@ -1,10 +1,9 @@
 //! Resource-native VPN runtime with the retained unified connection views.
-use crate::actions;
 use crate::config::{self, CommandPlan};
 use crate::device::{DeviceFacts, VpnDevice};
 use crate::effects::{self, VpnEffect};
 use crate::import::{self, Import, Imported};
-use crate::model::{ConnId, ConnKind, ConnStatus, Connection, LocalProfileDetails, Vault};
+use crate::model::{ConnId, ConnKind, ConnStatus, Connection, LocalProfileDetails, Profile, Vault};
 use crate::net::Transfer;
 use crate::probe::{self, Prober};
 use crate::resource::Vpn;
@@ -23,6 +22,7 @@ use ui::framework::{
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_resource::Invoke;
 use ui::time::Instant;
 use ui::widget::{AppModel, Column, ModalDialog, ModelPath, NavPane, NavShell, Widget};
 use vello::Scene;
@@ -617,7 +617,7 @@ impl VpnApp {
     pub(crate) fn toggle_conn_tor(&self, id: ConnId) {
         let next = self.vault.get(id).is_none_or(|c| !c.tor);
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(&actions::set_conn_tor_action(id, next));
+            dispatcher.submit(Vpn::paths().connections.item(&Vpn::item(id)).tor.set(next));
         }
     }
 
@@ -824,7 +824,14 @@ impl VpnApp {
                 // `NetworkManager` holds the profile now; the shared fleet
                 // learns its secret-free identity, as the palette would add it.
                 if target.is_none() {
-                    cx.apply(&actions::add_connection_action(connection));
+                    let added = Vpn::paths().connections.insert_as(
+                        &Vpn::item(id),
+                        usize::MAX,
+                        &Profile::of(&connection),
+                    );
+                    if let Ok(added) = Invoke::edit(&added) {
+                        cx.invoke(added);
+                    }
                 }
                 let mut saved = Ok(());
                 if !details.network_manager_uuid.is_empty() {
@@ -1017,7 +1024,9 @@ impl VpnApp {
             return Err("NetworkManager deleted the profile but local cleanup failed".into());
         }
         // The local profile is gone; the shared fleet forgets it too.
-        cx.apply(&actions::remove_connection_action(id));
+        if let Ok(removed) = Invoke::edit(&Vpn::paths().connections.remove(&Vpn::item(id))) {
+            cx.invoke(removed);
+        }
         self.local_selected = None;
         self.live_status.remove(&id);
         self.operation_error = None;
@@ -1614,9 +1623,13 @@ mod tests {
     }
     fn live_with_sample() -> TestApp<VpnShell> {
         let mut app = TestApp::<VpnShell>::new().unwrap();
-        for connection in sample_vault().connections {
-            app.invoke(Invoke::apply(&actions::add_connection_action(connection)).unwrap())
-                .unwrap();
+        for (at, connection) in sample_vault().connections.iter().enumerate() {
+            let added = Vpn::paths().connections.insert_as(
+                &Vpn::item(connection.id),
+                at,
+                &Profile::of(connection),
+            );
+            app.invoke(Invoke::edit(&added).unwrap()).unwrap();
         }
         app.settle();
         app
@@ -1654,7 +1667,7 @@ mod tests {
         {
             let app = TestApp::<VpnShell>::new().unwrap();
             assert!(
-                app.state().connections.is_empty(),
+                Vault::of(&app.state()).connections.is_empty(),
                 "the live app fabricates no tunnels"
             );
         }
@@ -1703,12 +1716,11 @@ mod tests {
             "disconnect",
             "delete-connection",
             "toggle-tor-global",
-            "rename-connection",
+            "field-edit",
         ] {
             assert!(vault.iter().any(|action| action == id), "{id}: {vault:?}");
         }
-        let home = app
-            .state()
+        let home = Vault::of(&app.state())
             .connections
             .iter()
             .find(|c| c.name == "Home")
@@ -1716,7 +1728,6 @@ mod tests {
             .id;
         let row = actions_on(&effects::connection_resource_id(home));
         for id in [
-            "toggle-tor",
             "provision-local",
             "connect",
             "disconnect",
@@ -1776,27 +1787,19 @@ mod tests {
     #[test]
     fn a_profiles_tor_preference_and_name_are_shared_edits() {
         let mut app = live_with_sample();
-        let relay = app
-            .state()
+        let relay = Vault::of(&app.state())
             .connections
             .iter()
             .find(|c| c.name == "Cloud Relay")
             .unwrap()
             .clone();
-        app.call_on(
-            &effects::connection_resource_id(relay.id),
-            "toggle-tor",
-            serde_json::json!({}),
-        )
-        .unwrap();
-        app.call(
-            "rename-connection",
-            serde_json::json!({ "connection": relay.id.to_string(), "name": "Relay" }),
-        )
-        .unwrap();
+        let profile = Vpn::paths().connections.item(&Vpn::item(relay.id));
+        for edit in [profile.tor.set(!relay.tor), profile.name.replace("Relay")] {
+            app.call("field-edit", serde_json::json!({ "edit": edit }))
+                .unwrap();
+        }
         app.settle();
-        let after = app
-            .state()
+        let after = Vault::of(&app.state())
             .connections
             .into_iter()
             .find(|c| c.id == relay.id)
@@ -1819,7 +1822,7 @@ mod tests {
                 "Import WireGuard tunnel"
             );
             app.settle();
-            let state = app.state();
+            let state = Vault::of(&app.state());
             assert_eq!(state.connections.len(), 1);
             let profile = &state.connections[0];
             assert!(profile.name.starts_with("home-"), "{}", profile.name);
@@ -1836,9 +1839,8 @@ mod tests {
         // Case `setting_up_a_shared_profile_keeps_its_id_and_adds_nothing`.
         {
             let mut app = live_with_sample();
-            let before = app.state().connections.len();
-            let home = app
-                .state()
+            let before = Vault::of(&app.state()).connections.len();
+            let home = Vault::of(&app.state())
                 .connections
                 .iter()
                 .find(|c| c.name == "Home")
@@ -1854,7 +1856,7 @@ mod tests {
             });
             assert!(set_up.is_ok(), "{set_up:?}");
             app.settle();
-            let state = app.state();
+            let state = Vault::of(&app.state());
             assert_eq!(state.connections.len(), before, "no second shared profile");
             assert!(state.get(home).is_some(), "the original stable id remains");
             let saved = app.read_document(|doc| doc.clone().save());
@@ -1873,7 +1875,7 @@ mod tests {
                 matches!(&cancelled, Err(error) if error.to_string().contains("cancelled")),
                 "{cancelled:?}"
             );
-            assert!(app.state().connections.is_empty());
+            assert!(Vault::of(&app.state()).connections.is_empty());
         }
     }
     #[test]
@@ -1881,7 +1883,11 @@ mod tests {
         for scenario in VpnShell::scenarios() {
             let app = TestApp::<VpnShell>::capture(Some(scenario)).unwrap();
             let expected = if *scenario == "empty" { 0 } else { 4 };
-            assert_eq!(app.state().connections.len(), expected, "{scenario}");
+            assert_eq!(
+                Vault::of(&app.state()).connections.len(),
+                expected,
+                "{scenario}"
+            );
         }
 
         // The stand-in device's tunnel states are what the list shows.
@@ -1892,8 +1898,7 @@ mod tests {
 
         // 'Home' is not set up on the stand-in device: it cannot connect.
         let mut unprovisioned = TestApp::<VpnShell>::capture(Some("unprovisioned")).unwrap();
-        let home = unprovisioned
-            .state()
+        let home = Vault::of(&unprovisioned.state())
             .connections
             .iter()
             .find(|c| c.name == "Home")
@@ -2171,6 +2176,6 @@ mod tests {
             .map(str::to_owned)
             .collect();
         assert_eq!(filters, ["OpenVPN (.ovpn)", "All files"]);
-        assert!(app.state().connections.is_empty());
+        assert!(Vault::of(&app.state()).connections.is_empty());
     }
 }

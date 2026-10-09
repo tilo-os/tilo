@@ -297,6 +297,14 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let receipts = serde_json::to_string(&fixture.membership.as_ref().unwrap().read().workspaces[0].effect_receipts).unwrap();
         assert!(!receipts.contains("private"));
         assert!(receipts.contains("succeeded"));
+        let recorded = fixture.membership.as_ref().unwrap().read().workspaces[0].effect_receipts[0]
+            .context
+            .what
+            .clone();
+        assert!(
+            matches!(&recorded, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == request.action),
+            "the receipt records the effect it was: {recorded:?}"
+        );
         // Losing a private response and reconnecting queries the same key.
         let _lost_reply = send(&caller, room, 52, invoke(&request));
         caller.close().await;
