@@ -86,38 +86,30 @@ impl Drop for PresentationLease {
     }
 }
 
-/// Ephemeral CRDT state, admitted only into a private component host.
+/// Ephemeral CRDT state, admitted only into a private component host. Its
+/// fields are edited at their paths; the effects review and send it.
 #[derive(Clone, Debug, Default, PartialEq, Model)]
+#[model(check = FeedbackDraft::valid)]
 pub struct FeedbackDraft {
+    /// The issue, in the person's words.
     pub issue: String,
+    /// Whether contextual information is included.
     pub include_context: bool,
+    /// Whether a single masked app screenshot is included.
     pub include_screenshot: bool,
 }
 
-#[resource(kind = "tilo.feedback-draft", label = "Feedback")]
 impl FeedbackDraft {
-    /// Describe the issue.
-    #[action]
-    pub fn describe(&mut self, issue: String) -> Result<(), &'static str> {
-        if issue.len() > 8_000 {
-            return Err("feedback-issue-too-long");
+    fn valid(&self) -> Result<(), tilo_resource::Refusal> {
+        if self.issue.len() > 8_000 {
+            return Err(tilo_resource::Refusal::new("feedback-issue-too-long"));
         }
-        self.issue = issue;
         Ok(())
     }
-
-    /// Explicitly include or exclude contextual information.
-    #[action]
-    pub fn context(&mut self, include: bool) {
-        self.include_context = include;
-    }
-
-    /// Explicitly request or exclude a single masked app screenshot.
-    #[action]
-    pub fn screenshot(&mut self, include: bool) {
-        self.include_screenshot = include;
-    }
 }
+
+#[resource(kind = "tilo.feedback-draft", label = "Feedback")]
+impl FeedbackDraft {}
 
 #[derive(Clone, Debug, Effect)]
 #[effect(operation = "feedback.compose", device_only)]
@@ -264,19 +256,14 @@ impl ResourceApp for FeedbackComposer {
         Box::new(
             crate::column![
                 Text::new("feedback-title"),
-                cx.input_with(|draft| draft.issue.clone(), FeedbackDraft::DESCRIBE)
+                cx.input(FeedbackDraft::paths().issue)
                     .with_id("feedback-issue")
                     .with_placeholder("feedback-describe")
                     .multiline(true),
-                cx.checkbox_with(
-                    "feedback-context",
-                    |draft| draft.include_context,
-                    FeedbackDraft::CONTEXT
-                ),
-                cx.checkbox_with(
+                cx.checkbox("feedback-context", FeedbackDraft::paths().include_context),
+                cx.checkbox(
                     "feedback-screenshot",
-                    |draft| draft.include_screenshot,
-                    FeedbackDraft::SCREENSHOT
+                    FeedbackDraft::paths().include_screenshot
                 ),
                 Text::new("feedback-privacy"),
                 cx.effect_button("feedback-review", &FeedbackEffect::Review),
@@ -453,6 +440,20 @@ mod tests {
         }
     }
 
+    /// The arguments of the field edit `edit`, as the door takes them.
+    fn edit(edit: &tilo_resource::Edit<FeedbackDraft>) -> serde_json::Value {
+        json!({ tilo_resource::EDIT_PARAM: edit })
+    }
+
+    /// Type the issue, as the composer's text field does.
+    fn describe(frame: &mut FrameHarness, issue: &str) -> Result<(), tilo_actions::DoorError> {
+        call(
+            frame,
+            tilo_resource::FIELD_EDIT,
+            &edit(&FeedbackDraft::paths().issue.replace(issue)),
+        )
+    }
+
     fn call(
         frame: &mut FrameHarness,
         action: &str,
@@ -501,8 +502,12 @@ mod tests {
         .expect("production component");
         call(
             &mut frame,
-            "describe",
-            &json!({"issue":"Opening the book failed"}),
+            tilo_resource::FIELD_EDIT,
+            &edit(
+                &FeedbackDraft::paths()
+                    .issue
+                    .replace("Opening the book failed"),
+            ),
         )
         .expect("describe");
         call(&mut frame, "review", &json!({})).expect("review");
@@ -573,12 +578,8 @@ mod tests {
         )
         .expect("production component");
         assert!(transport.borrow().submissions.is_empty());
-        call(
-            &mut frame,
-            "describe",
-            &json!({"issue": "Opening the book failed; token=secret12345"}),
-        )
-        .expect("describe through public action");
+        describe(&mut frame, "Opening the book failed; token=secret12345")
+            .expect("describe through public action");
         frame.relayout();
         assert!(
             frame.capture_protected(),
@@ -658,8 +659,13 @@ mod tests {
     }
     fn assert_literal_second_review(frame: &mut FrameHarness, transport: &Rc<RefCell<Transport>>) {
         transport.borrow_mut().receipt = None;
-        call(frame, "describe", &json!({"issue": "feedback-title"})).expect("second issue");
-        call(frame, "context", &json!({"include": true})).expect("explicit context opt-in");
+        describe(frame, "feedback-title").expect("second issue");
+        call(
+            frame,
+            tilo_resource::FIELD_EDIT,
+            &edit(&FeedbackDraft::paths().include_context.set(true)),
+        )
+        .expect("explicit context opt-in");
         call(frame, "review", &json!({})).expect("new review after durable receipt");
         frame.relayout();
         let inspection = frame.inspection();

@@ -194,6 +194,11 @@ fn mount(inputs: &crate::shell::hosted_inputs::HostedTileInputs) -> FrameHarness
     .unwrap()
 }
 
+/// The composer's field edit that includes the screenshot or leaves it out.
+fn screenshot(include: bool) -> serde_json::Value {
+    json!({"edit": {"path": [{"field": "include_screenshot"}], "op": "set", "value": include}})
+}
+
 #[test]
 fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_receipt() {
     let root = tempfile::tempdir().unwrap();
@@ -219,15 +224,15 @@ fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_re
     assert!(frame.capture_protected());
     call(
         &mut frame,
-        "describe",
-        &json!({"issue":"The book failed; token=secret12345"}),
+        "field-edit",
+        &json!({"edit": {"path": [{"field": "issue"}], "op": "replace", "text": "The book failed; token=secret12345"}}),
     )
     .unwrap();
     assert!(call(&mut frame, "submit", &json!({})).is_err());
-    call(&mut frame, "screenshot", &json!({"include":true})).unwrap();
+    call(&mut frame, "field-edit", &screenshot(true)).unwrap();
     assert!(call(&mut frame, "review", &json!({})).is_err());
     assert!(owner.borrow().sends.is_empty());
-    call(&mut frame, "screenshot", &json!({"include":false})).unwrap();
+    call(&mut frame, "field-edit", &screenshot(false)).unwrap();
     call(&mut frame, "review", &json!({})).unwrap();
     // Approval may still be Saving when the action returns. Observe the
     // production controller's later transport refusal after local durability.
@@ -318,8 +323,8 @@ fn unconfigured_native_feedback_cannot_review_send_or_create_shared_drafts() {
     let mut frame = mount(&inputs);
     call(
         &mut frame,
-        "describe",
-        &json!({"issue":"Unconfigured private draft"}),
+        "field-edit",
+        &json!({"edit": {"path": [{"field": "issue"}], "op": "replace", "text": "Unconfigured private draft"}}),
     )
     .unwrap();
     assert!(call(&mut frame, "review", &json!({})).is_err());
