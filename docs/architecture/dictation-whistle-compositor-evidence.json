@@ -1350,7 +1350,7 @@
         "PASS ephemeral model witness removed; no installed store/catalogue changed"
       ],
       "observed_failures": [
-        "bwrap: Can't find source path /srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-compositor-20261009/recorded-inner.py: Permission denied",
+        "bwrap: Can't find source path ${BUILD_ROOT}/target/dictation-whistle-compositor-20261009/recorded-inner.py: Permission denied",
         "RuntimeError: assembled recorded-audio journey failed"
       ],
       "driver_sha256": "17b631ca37834dfa677f40d5d5278d82d9e2e3f7b0c1fab7b4939a607877fa1d",
@@ -3160,5 +3160,15 @@
     "The earlier Whisper Base worker-exit helper skipped PermissionError on executable links; retain it as the speech/insertion/history control, but not strict worker-exit proof. Whistle observes each live fixed-worker argv0 before requiring absence, and unreadable command lines fail.",
     "No model/runtime publication, persistent installation, trust grant, physical microphone, deployment or reboot.",
     "Older x86-64, ARM, physical-device journeys and arbitrary complex editors remain unqualified."
-  ]
+  ],
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "c8ba0c95208dd7e10329f993d5df9c4ac20adadd",
+    "original_sha256": "d7d29b809e3db3d1a2867e14e7cde8909f1ae28450b8c6c7dce94c4bc6655380",
+    "original_path": "docs/architecture/dictation-whistle-compositor-evidence.json",
+    "normalized_string_fields": [
+      "$.failure_ledger[4].observed_failures[0]"
+    ]
+  }
 }

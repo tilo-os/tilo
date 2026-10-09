@@ -104,14 +104,14 @@
       "-Wextra",
       "-Werror",
       "-isystem",
-      "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/headers",
-      "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/whistle_v8_review.cpp",
-      "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/libnode.so.127",
+      "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/headers",
+      "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/whistle_v8_review.cpp",
+      "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/libnode.so.127",
       "-Wl,-rpath,$ORIGIN",
-      "-Wl,-rpath-link,/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868",
+      "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868",
       "-pthread",
       "-o",
-      "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/v8-review"
+      "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/v8-review"
     ],
     "installed": false
   },
@@ -2496,5 +2496,19 @@
       "count": 11,
       "all": "inactive"
     }
+  },
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "fcfbb509609c4474de3bfaac96ed3f7a7f5cff98",
+    "original_sha256": "05b263dec3a73ba403bf5b515458f7467614d7fd4ae5c0460461d35ae414c959",
+    "original_path": "docs/architecture/dictation-whistle-v8-review.json",
+    "normalized_string_fields": [
+      "$.adapter.command[7]",
+      "$.adapter.command[8]",
+      "$.adapter.command[9]",
+      "$.adapter.command[11]",
+      "$.adapter.command[14]"
+    ]
   }
 }

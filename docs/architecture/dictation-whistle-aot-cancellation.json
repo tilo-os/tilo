@@ -5,7 +5,7 @@
   "source_build": {
     "source_commit": "3c8a3e79aa3188a1a12b3aebbaa097abccceac92",
     "version": "49.0.2",
-    "runtime_build": "RCARGO_IMAGE=localhost/rcargo-image:829fe8206c9212a2 rcargo --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
+    "runtime_build": "${CARGO_DROP_IN}_IMAGE=${QUALIFIED_CONTAINER_IMAGE} ${CARGO_DROP_IN} --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
     "source_lock_sha256": "8d101c4b678ed2a178820a60be3726fcd15de1351b3320ce7f1e59266004521b",
     "compiler": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
     "native_commands": [
@@ -17,13 +17,13 @@
         "-Wextra",
         "-Werror",
         "-isystem",
-        "/srv/rcargo/p/72c38ccc0464/w/86b2119ce60b/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
-        "-L/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+        "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
+        "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
         "-lwasmtime",
         "-Wl,-rpath,$ORIGIN",
         "-o",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
       ],
       [
         "g++",
@@ -35,13 +35,13 @@
         "-fPIC",
         "-shared",
         "-isystem",
-        "/srv/rcargo/p/72c38ccc0464/w/86b2119ce60b/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
-        "-L/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+        "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
+        "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
         "-lwasmtime",
         "-Wl,-rpath,$ORIGIN",
         "-o",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
       ]
     ],
     "files": {
@@ -269,11 +269,30 @@
       "sha256": "3dcf06a83bf93cdbe66124bea03fd186b3f6c4ce5addb2a21b84ac30c97dcee3"
     }
   },
-  "raw_directory": "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-aot-cancel-public-20261009-403f",
+  "raw_directory": "${BUILD_ROOT}/target/dictation-whistle-aot-cancel-public-20261009-403f",
   "limits_unchanged": true,
   "live_microphone": false,
   "production_owner_cancellation": "separately tested; this harness pins, kills and reaps its exact child through a pidfd",
   "historical_attempts": [
     "First scope failed before child launch because the private copy lacked three receipt-listed C++ inputs; retained as failed-missing-custody-input.log."
-  ]
+  ],
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "639d5507063736be0810e14261f1a0bec6ca5621",
+    "original_sha256": "054099ca49f7f75961c42e3704d959b50bd7a13f3d1aa31c0e5e573aa78bc468",
+    "original_path": "docs/architecture/dictation-whistle-aot-cancellation.json",
+    "normalized_string_fields": [
+      "$.source_build.runtime_build",
+      "$.source_build.native_commands[0][7]",
+      "$.source_build.native_commands[0][8]",
+      "$.source_build.native_commands[0][9]",
+      "$.source_build.native_commands[0][13]",
+      "$.source_build.native_commands[1][9]",
+      "$.source_build.native_commands[1][10]",
+      "$.source_build.native_commands[1][11]",
+      "$.source_build.native_commands[1][15]",
+      "$.raw_directory"
+    ]
+  }
 }

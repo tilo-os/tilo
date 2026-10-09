@@ -5,7 +5,7 @@
   "runtime": {
     "source_commit": "3c8a3e79aa3188a1a12b3aebbaa097abccceac92",
     "version": "49.0.2",
-    "runtime_build": "RCARGO_IMAGE=localhost/rcargo-image:829fe8206c9212a2 rcargo --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
+    "runtime_build": "${CARGO_DROP_IN}_IMAGE=${QUALIFIED_CONTAINER_IMAGE} ${CARGO_DROP_IN} --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
     "source_lock_sha256": "8d101c4b678ed2a178820a60be3726fcd15de1351b3320ce7f1e59266004521b",
     "compiler": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
     "native_commands": [
@@ -17,13 +17,13 @@
         "-Wextra",
         "-Werror",
         "-isystem",
-        "/srv/rcargo/p/72c38ccc0464/w/86b2119ce60b/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
-        "-L/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+        "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
+        "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
         "-lwasmtime",
         "-Wl,-rpath,$ORIGIN",
         "-o",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
       ],
       [
         "g++",
@@ -35,13 +35,13 @@
         "-fPIC",
         "-shared",
         "-isystem",
-        "/srv/rcargo/p/72c38ccc0464/w/86b2119ce60b/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
-        "-L/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+        "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
+        "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
         "-lwasmtime",
         "-Wl,-rpath,$ORIGIN",
         "-o",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
       ]
     ],
     "files": {
@@ -93,7 +93,7 @@
     "source_build": {
       "source_commit": "3c8a3e79aa3188a1a12b3aebbaa097abccceac92",
       "version": "49.0.2",
-      "runtime_build": "RCARGO_IMAGE=localhost/rcargo-image:829fe8206c9212a2 rcargo --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
+      "runtime_build": "${CARGO_DROP_IN}_IMAGE=${QUALIFIED_CONTAINER_IMAGE} ${CARGO_DROP_IN} --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
       "source_lock_sha256": "8d101c4b678ed2a178820a60be3726fcd15de1351b3320ce7f1e59266004521b",
       "compiler": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
       "native_commands": [
@@ -105,13 +105,13 @@
           "-Wextra",
           "-Werror",
           "-isystem",
-          "/srv/rcargo/p/72c38ccc0464/w/86b2119ce60b/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
-          "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
-          "-L/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+          "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
+          "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
           "-lwasmtime",
           "-Wl,-rpath,$ORIGIN",
           "-o",
-          "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
         ],
         [
           "g++",
@@ -123,13 +123,13 @@
           "-fPIC",
           "-shared",
           "-isystem",
-          "/srv/rcargo/p/72c38ccc0464/w/86b2119ce60b/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
-          "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
-          "-L/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+          "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
+          "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
           "-lwasmtime",
           "-Wl,-rpath,$ORIGIN",
           "-o",
-          "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
         ]
       ],
       "files": {
@@ -208,7 +208,7 @@
     "source_build": {
       "source_commit": "3c8a3e79aa3188a1a12b3aebbaa097abccceac92",
       "version": "49.0.2",
-      "runtime_build": "RCARGO_IMAGE=localhost/rcargo-image:829fe8206c9212a2 rcargo --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
+      "runtime_build": "${CARGO_DROP_IN}_IMAGE=${QUALIFIED_CONTAINER_IMAGE} ${CARGO_DROP_IN} --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
       "source_lock_sha256": "8d101c4b678ed2a178820a60be3726fcd15de1351b3320ce7f1e59266004521b",
       "compiler": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
       "native_commands": [
@@ -220,13 +220,13 @@
           "-Wextra",
           "-Werror",
           "-isystem",
-          "/srv/rcargo/p/72c38ccc0464/w/86b2119ce60b/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
-          "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
-          "-L/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+          "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
+          "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
           "-lwasmtime",
           "-Wl,-rpath,$ORIGIN",
           "-o",
-          "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
         ],
         [
           "g++",
@@ -238,13 +238,13 @@
           "-fPIC",
           "-shared",
           "-isystem",
-          "/srv/rcargo/p/72c38ccc0464/w/86b2119ce60b/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
-          "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
-          "-L/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+          "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
+          "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
           "-lwasmtime",
           "-Wl,-rpath,$ORIGIN",
           "-o",
-          "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
         ]
       ],
       "files": {
@@ -820,7 +820,7 @@
       "sha256": "f1892233a099ba5a6546ecfa31f9b6690b709b9b40424ac839d83bce60bcdf25"
     }
   },
-  "raw_directory": "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+  "raw_directory": "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
   "public_fixture_revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
   "not_qualified": [
     "live microphone",
@@ -848,5 +848,42 @@
     "staged_checks": "passed: exact staged formatting, 10601 source blobs, repository contracts, parameter limits and unexplained allows",
     "affected_plan": "inspected after committing; exact selection reported in held PR",
     "ci": "unreported at candidate publication; consult held PR current-head checks"
+  },
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "29e0b8a68f3b56c320ca218727560177c6b01fc4",
+    "original_sha256": "00c360f87236bd126e6d881c559506276ee8a70527b91194cce0d2dfb616ccd8",
+    "original_path": "docs/architecture/dictation-whistle-aot-review.json",
+    "normalized_string_fields": [
+      "$.runtime.runtime_build",
+      "$.runtime.native_commands[0][7]",
+      "$.runtime.native_commands[0][8]",
+      "$.runtime.native_commands[0][9]",
+      "$.runtime.native_commands[0][13]",
+      "$.runtime.native_commands[1][9]",
+      "$.runtime.native_commands[1][10]",
+      "$.runtime.native_commands[1][11]",
+      "$.runtime.native_commands[1][15]",
+      "$.factory.source_build.runtime_build",
+      "$.factory.source_build.native_commands[0][7]",
+      "$.factory.source_build.native_commands[0][8]",
+      "$.factory.source_build.native_commands[0][9]",
+      "$.factory.source_build.native_commands[0][13]",
+      "$.factory.source_build.native_commands[1][9]",
+      "$.factory.source_build.native_commands[1][10]",
+      "$.factory.source_build.native_commands[1][11]",
+      "$.factory.source_build.native_commands[1][15]",
+      "$.first_confined_batch.source_build.runtime_build",
+      "$.first_confined_batch.source_build.native_commands[0][7]",
+      "$.first_confined_batch.source_build.native_commands[0][8]",
+      "$.first_confined_batch.source_build.native_commands[0][9]",
+      "$.first_confined_batch.source_build.native_commands[0][13]",
+      "$.first_confined_batch.source_build.native_commands[1][9]",
+      "$.first_confined_batch.source_build.native_commands[1][10]",
+      "$.first_confined_batch.source_build.native_commands[1][11]",
+      "$.first_confined_batch.source_build.native_commands[1][15]",
+      "$.raw_directory"
+    ]
   }
 }

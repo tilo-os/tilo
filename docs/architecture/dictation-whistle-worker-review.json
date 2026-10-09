@@ -35,13 +35,13 @@
       "-fPIC",
       "-shared",
       "-isystem",
-      "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/headers",
-      "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-worker-public-20261009-7bd8/whistle_v8_worker.cpp",
-      "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-worker-public-20261009-7bd8/libnode.so.127",
-      "-Wl,-rpath-link,/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-worker-public-20261009-7bd8",
+      "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/headers",
+      "${BUILD_ROOT}/target/dictation-whistle-worker-public-20261009-7bd8/whistle_v8_worker.cpp",
+      "${BUILD_ROOT}/target/dictation-whistle-worker-public-20261009-7bd8/libnode.so.127",
+      "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-whistle-worker-public-20261009-7bd8",
       "-pthread",
       "-o",
-      "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-worker-public-20261009-7bd8/worker-bridge.so"
+      "${BUILD_ROOT}/target/dictation-whistle-worker-public-20261009-7bd8/worker-bridge.so"
     ],
     "rust_sources": {
       "crates/agent/local-model-service/examples/whistle_v8_worker_review.rs": "8f3f9d90fa71982e7c271585a0b071c2775315a9d8ad4399ea6da18a12f06346",
@@ -128,5 +128,19 @@
     "javascript_syntax": "passed",
     "worker_qualification": "failed before readiness; zero replies",
     "shell_tests_compile": "passed, 1 minute 13 seconds"
+  },
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "af29f47396f0b835609ba8480cfd6de5917685be",
+    "original_sha256": "2364fd3d032630501ad72ea81236ab0ce1bb6c883ba4e4fccd09465833db5dc7",
+    "original_path": "docs/architecture/dictation-whistle-worker-review.json",
+    "normalized_string_fields": [
+      "$.adapter.command[9]",
+      "$.adapter.command[10]",
+      "$.adapter.command[11]",
+      "$.adapter.command[12]",
+      "$.adapter.command[15]"
+    ]
   }
 }

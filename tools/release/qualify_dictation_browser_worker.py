@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import selectors
 import subprocess
@@ -187,7 +188,11 @@ def main():
     parser.add_argument('--browser-host', type=Path, required=True)
     parser.add_argument('--browser-receipt', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--container-image', required=True,
+                        help='Immutable OCI image ID or repository digest for the reviewed browser environment')
     args = parser.parse_args()
+    if not re.fullmatch(r'(?:[a-z0-9][a-z0-9./:_-]*@)?sha256:[0-9a-f]{64}', args.container_image):
+        parser.error('an immutable container image ID or repository digest is required')
     if os.getuid() == 0 or args.output.exists():
         parser.error('unprivileged owned preparation and fresh output required')
     receipt = validate_browser(args.browser_host, args.browser_receipt)
@@ -199,7 +204,7 @@ def main():
                '--user', f'{os.getuid()}:{os.getgid()}', '--memory=3g', '--cpus=2',
                '--pids-limit=256', '--security-opt', 'label=disable',
                '--volume', f'{base}:{base}:ro', '--workdir', str(PROJECT), '--entrypoint', 'python3',
-               'localhost/rcargo-image:829fe8206c9212a2', '-c', BROWSER,
+               args.container_image, '-c', BROWSER,
                str(PROJECT / 'apps/browser/chromium/tests'), str(args.browser_host)]
     browser = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, bufsize=1)
@@ -214,6 +219,7 @@ def main():
             row['target'] = target
             results.append(row)
             args.output.write_text(json.dumps(dict(complete=False, cases=results, browser=receipt,
+                container_image=args.container_image,
                 live_microphone=False, compositor_journey=False, installed=False), indent=2) + '\n')
             result = args.review_dir / 'fr_fr-0-complete-1-result.json'
             if result.exists():
@@ -224,6 +230,7 @@ def main():
             print('CONCURRENT_BROWSER_CASE ' + json.dumps({key: row[key] for key in
                   ['mode', 'target', 'cancelled', 'scope_exit', 'decoder_exit', 'seconds', 'final']}), flush=True)
         args.output.write_text(json.dumps(dict(complete=True, cases=results, browser=receipt,
+                container_image=args.container_image,
             live_microphone=False, compositor_journey=False, installed=False), indent=2) + '\n')
     finally:
         browser.stdin.close()
