@@ -11,10 +11,12 @@
 #   enforce                  true: a ceiling miss fails the run at once;
 #                            false (default): it is reported as a target not
 #                            yet met (marketing targets that are not true yet)
-#   p50_tolerance, p99_tolerance, baseline_runs, min_delta
+#   p50_tolerance, p99_tolerance, baseline_runs, baseline_min_runs, min_delta
 #                            override [defaults]; min_delta is the absolute
 #                            change (in the unit) below which a ratio never
-#                            counts as a regression
+#                            counts as a regression; baseline_min_runs is how
+#                            many stored runs a baseline needs before a run is
+#                            compared with it (an accepted run counts at once)
 #   source                   where the number comes from
 #
 # A KPI with a budget whose group ran but produced no record fails the run, so
@@ -24,6 +26,7 @@
 p50_tolerance = 1.10
 p99_tolerance = 1.20
 baseline_runs = 5
+baseline_min_runs = 1
 min_delta = 0.0
 
 # tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs), a
@@ -197,27 +200,35 @@ source = "KPI document: MCP tool call <= local invoke + 2 ms"
 # This lane has no panel, so they are reported, never enforced; the relative
 # rule catches regressions of the compositor's own work. A dropped-frame count
 # whose baseline is zero has no ratio, so one frame either way is not a change.
+# Each needs three stored runs before it is compared: on identical code the
+# dropped-frame p99 has ranged from 0 to 4 and the pointer p99 from 7 to 13 ms
+# between nights (TIL-700), as other jobs on the shared host slow the debug
+# build's frame loop, so one night is not a baseline.
 
 [kpi."latency.input_to_frame.pointer"]
 unit = "ms"
 p50 = 24.7
 p99 = 41.3
+baseline_min_runs = 3
 source = "KPI document: Input→photon latency (compositor side, headless)"
 
 [kpi."latency.workspace_switch.first_frame"]
 unit = "ms"
 p99 = 16.7
+baseline_min_runs = 3
 source = "KPI document: Workspace switch, first frame (compositor side, headless)"
 
 [kpi."latency.workspace_switch.settled"]
 unit = "ms"
 max = 300.0
+baseline_min_runs = 3
 source = "KPI document: Workspace switch, total (compositor side, headless)"
 
 [kpi."latency.workspace_switch.dropped_frames"]
 unit = "count"
 max = 0.0
 min_delta = 1.0
+baseline_min_runs = 3
 source = "KPI document: Workspace switch, dropped frames (compositor side, headless)"
 
 # Idle wakeups (crates/session/shell/tests/idle_wakeups.rs, TIL-614): a
