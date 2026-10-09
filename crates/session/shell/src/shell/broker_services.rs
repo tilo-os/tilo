@@ -1125,22 +1125,8 @@ fn govern_elsewhere(
     let command = match operation {
         // A grant is the room's policy, which the governor decides as it
         // would for a person at its own screen.
-        Operation::Grant {
-            subject,
-            node,
-            kinds,
-            answer,
-            lifetime,
-        } => {
-            let grant = tilo_action_policy::Grant::new(
-                format!("grant:{}", uuid::Uuid::new_v4()),
-                subject,
-                tilo_action_policy::TreePath::room(room.to_string()).join(&node),
-                kinds,
-                answer,
-                tilo_action_policy::Subject::Person(String::new()),
-            )
-            .with_lifetime(lifetime.unwrap_or(tilo_action_policy::Lifetime::UntilRevoked));
+        operation @ Operation::Grant { .. } => {
+            let grant = governed_grant(room, operation)?;
             return govern_membership(
                 network,
                 room,
@@ -1231,6 +1217,33 @@ fn govern_elsewhere(
         Ok(None) => Err("the workspace host stopped before applying the change".into()),
         Err(_) => Err("the workspace host did not apply the change in time".into()),
     }
+}
+
+/// The grant a governance `operation` gives in `room`; the governor records
+/// who gave it.
+fn governed_grant(
+    room: super::state::RoomId,
+    operation: tilo_desktop::workspace_settings::GovernanceOperation,
+) -> Result<tilo_action_policy::Grant, String> {
+    let tilo_desktop::workspace_settings::GovernanceOperation::Grant {
+        subject,
+        node,
+        kinds,
+        answer,
+        lifetime,
+    } = operation
+    else {
+        return Err("not a grant".into());
+    };
+    Ok(tilo_action_policy::Grant::new(
+        format!("grant:{}", uuid::Uuid::new_v4()),
+        subject,
+        tilo_action_policy::TreePath::room(room.to_string()).join(&node),
+        kinds,
+        answer,
+        tilo_action_policy::Subject::Person(String::new()),
+    )
+    .with_lifetime(lifetime.unwrap_or(tilo_action_policy::Lifetime::UntilRevoked)))
 }
 
 /// Have the governor of `room` apply the membership action `action` of the

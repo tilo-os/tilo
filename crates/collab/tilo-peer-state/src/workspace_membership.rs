@@ -67,13 +67,12 @@ impl WorkspaceMembershipCommand {
     /// # Errors
     /// Refuses empty, unbounded, unnormalised or control-containing identifiers.
     pub fn validate(&self) -> Result<(), String> {
-        if let Self::GrantForTask { task, .. } | Self::RevokeForTask { task, .. } = self {
-            if !task.starts_with("task:")
+        if let Self::GrantForTask { task, .. } | Self::RevokeForTask { task, .. } = self
+            && (!task.starts_with("task:")
                 || task.len() > 128
-                || task.chars().any(|c| c.is_control() || c.is_whitespace())
-            {
-                return Err("invalid workspace task identifier".into());
-            }
+                || task.chars().any(|c| c.is_control() || c.is_whitespace()))
+        {
+            return Err("invalid workspace task identifier".into());
         }
         if let Self::GrantForTask { node, .. } = self
             && node.room_id().is_some()
