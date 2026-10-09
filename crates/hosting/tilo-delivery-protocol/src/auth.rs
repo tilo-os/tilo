@@ -1,4 +1,4 @@
-//! Mutually signed delivery-v3 transcript and opaque verified sessions.
+//! Mutually signed delivery transcript and opaque verified sessions.
 //!
 //! This is not an ingress or a signed-bootstrap verifier. Callers supply an
 //! independently authority-validated binding, enforce TLS/origin policy, and
@@ -10,7 +10,10 @@ use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 
-use super::framing::{MAX_AUTH_BYTES, VERSION};
+/// Delivery protocol major version, bound into every descriptor and transcript.
+pub const VERSION: u16 = 3;
+/// Maximum encoded authentication payload, including all routing fields.
+pub const MAX_AUTH_BYTES: usize = 8 * 1024;
 
 const DOMAIN: &[u8] = b"tilo-delivery-v3\0";
 const SESSION_NS: u64 = 15 * 60 * 1_000_000_000;
@@ -666,7 +669,7 @@ fn bounded_origin<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<S
     validate_origin(origin).map_err(serde::de::Error::custom)?;
     Ok(origin.to_owned())
 }
-pub(super) fn validate_origin(origin: &str) -> Result<(), AuthError> {
+fn validate_origin(origin: &str) -> Result<(), AuthError> {
     if origin.len() > MAX_ORIGIN_BYTES || !origin.is_ascii() {
         return Err(AuthError::InvalidBinding);
     }
