@@ -295,8 +295,9 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
                 .collect()
         );
         let stored = names(&data_dir.join("payload-blobs"));
-        let (twins, blobs): (BTreeSet<String>, BTreeSet<String>) =
-            stored.into_iter().partition(|name| name.ends_with(".zst"));
+        let (twins, blobs): (BTreeSet<String>, BTreeSet<String>) = stored
+            .into_iter()
+            .partition(|name| Path::new(name).extension().is_some_and(|ext| ext == "zst"));
         assert_eq!(
             blobs.len(),
             MAX_ENTRY_VERSIONS + 1,
