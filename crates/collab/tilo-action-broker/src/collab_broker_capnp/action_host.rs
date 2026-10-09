@@ -76,9 +76,13 @@ impl BrokerActor {
             CallerPrincipal::Person(id) => Self::person(id.clone()),
             CallerPrincipal::Agent(id) => {
                 let agent = Self::agent(format!("agent:{id}"));
-                match caller.user_public_key() {
-                    Some(root) => agent.for_person(super::principal_id_for_root(*root)),
-                    None => agent,
+                // A person's own device handed this connection to the agent
+                // (`Caller::delegated_to`); a delegated agent device acts for
+                // the person its certificate chains to.
+                match (caller.acting_for_person(), caller.user_public_key()) {
+                    (Some(person), _) => agent.for_person(person).session_delegated(),
+                    (None, Some(root)) => agent.for_person(super::principal_id_for_root(*root)),
+                    (None, None) => agent,
                 }
             }
             CallerPrincipal::App(id) => Self::agent(format!("app:{id}")),

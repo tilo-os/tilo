@@ -44,18 +44,26 @@ pub struct ExecutionActivity {
 pub(super) struct ExecutionScope {
     lifetime: ExecutionLease,
     principal: String,
+    /// The run is an agent's its person's device handed it to.
+    agent: bool,
     execution: uuid::Uuid,
     invocation: InvocationId,
 }
 impl ExecutionScope {
     pub(super) fn for_call(caller: &Caller, invocation: InvocationId) -> Option<Self> {
-        let CallerPrincipal::Person(principal) = caller.principal() else {
-            return None;
+        // A person's run, or an agent's their own device handed it to.
+        let (principal, agent) = match caller.principal() {
+            CallerPrincipal::Person(principal) => (principal.clone(), false),
+            CallerPrincipal::Agent(_) if caller.acting_for_person().is_some() => {
+                (BrokerActor::for_caller(caller).id().to_owned(), true)
+            }
+            CallerPrincipal::Agent(_) | CallerPrincipal::App(_) => return None,
         };
         let lifetime = caller.execution_lease()?;
         Some(Self {
             lifetime,
-            principal: principal.clone(),
+            principal,
+            agent,
             execution: caller.execution_id()?,
             invocation,
         })
@@ -76,7 +84,7 @@ impl ExecutionScope {
         if !self.lifetime.is_live() {
             return Err("execution session ended".into());
         }
-        if actor.is_agent || actor.id != self.principal {
+        if actor.is_agent != self.agent || actor.id != self.principal {
             return Err("execution principal mismatch".into());
         }
         Ok(tilo_actions::ParticipantId::for_execution(self.execution))

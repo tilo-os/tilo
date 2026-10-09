@@ -380,12 +380,29 @@ impl Drop for Running<'_> {
     }
 }
 
+/// The agent an MCP connection is: one per connection, named after its run.
+#[must_use]
+pub fn agent_id(caller: &Caller) -> String {
+    let run = caller
+        .execution_id()
+        .unwrap_or_else(uuid::Uuid::new_v4)
+        .simple()
+        .to_string();
+    format!("mcp-{}", run.get(..12).unwrap_or(&run))
+}
+
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+    /// An MCP client of `actor`'s on this device, in `room`. The client is
+    /// an agent acting for the person ([`agent_id`]): what it does is the
+    /// agent's, for them, within what both the person and the delegation a
+    /// device gives its agents allow.
     #[must_use]
     pub fn new(host: H, room: String, actor: String) -> Self {
         let caller = Caller::local_person(actor.clone())
             .in_room(room.clone())
             .in_new_execution();
+        let agent = agent_id(&caller);
+        let caller = caller.delegated_to(agent);
         Self::from_caller(host, room, actor, caller)
     }
 
@@ -436,7 +453,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
         }
     }
-    pub(crate) fn execution_caller(&self) -> Caller {
+    /// The caller this connection's actions run as: the agent it is, acting
+    /// for the person.
+    #[must_use]
+    pub fn execution_caller(&self) -> Caller {
         self.caller.clone()
     }
 

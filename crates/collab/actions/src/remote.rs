@@ -272,6 +272,22 @@ impl Caller {
         self
     }
 
+    /// This person's own device hands the connection to agent `agent_id`,
+    /// acting for them: an MCP client, a local assistant. The agent is the
+    /// principal (its edits, presence and history are the agent's, for the
+    /// person) and it may do only what both the person and the delegation a
+    /// device gives its agents allow. A caller that is not a person is
+    /// returned as it is. Set only by the host that admitted the person.
+    #[must_use]
+    pub fn delegated_to(mut self, agent_id: impl Into<String>) -> Self {
+        let CallerPrincipal::Person(person) = &self.principal else {
+            return self;
+        };
+        self.acting_for = Some(person.clone());
+        self.principal = CallerPrincipal::Agent(agent_id.into());
+        self
+    }
+
     /// The person this caller acts for, when it is not that person.
     #[must_use]
     pub fn acting_for_person(&self) -> Option<&str> {

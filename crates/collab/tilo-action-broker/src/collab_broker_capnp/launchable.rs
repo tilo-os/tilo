@@ -783,6 +783,67 @@ mod tests {
         );
     }
 
+    /// An MCP client on the person's device is an agent acting for them,
+    /// bounded by the delegation a device gives its agents: it does what the
+    /// person may do in the document, an outside action stays the person's to
+    /// allow, and the view shows the agent, for the person.
+    #[test]
+    fn a_client_the_person_delegates_to_acts_as_their_agent() {
+        let (state, room, fanout) = broker_with_fanout(&workspace());
+        let mut published = surface(5, &room);
+        let mut send = action("send", tilo_actions::ConfirmationPolicy::None);
+        send.contract.kind = tilo_actions::ActionKind::Outside;
+        published.actions.push(send);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(5, published);
+        let mut app = state.capture_invocations_for_test(5);
+        let (seen, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fanout.subscribe_rooms(
+            vec![room.clone()],
+            Box::new(move |event, _| {
+                let _ = seen.send(event.clone());
+            }),
+        );
+        let client = Caller::local_person("owner")
+            .in_room(&room)
+            .in_new_execution()
+            .delegated_to("mcp-1");
+
+        invoke(&state, &client, "5", "new-window", None).expect("within the delegation");
+        let delivered = app.try_recv().expect("delivered");
+        assert_eq!(delivered.actor, "agent:mcp-1");
+        let invoker = delivered
+            .context()
+            .and_then(|context| context.invoker.clone())
+            .expect("the host records the invoker");
+        assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
+        assert_eq!(invoker.on_behalf_of.as_deref(), Some("owner"));
+        let Ok(ui::collaboration::CollabEvent::RemotePresenceUpdate {
+            payload: ui::collaboration::PresencePayload::Interaction(interaction),
+            ..
+        }) = heard.try_recv()
+        else {
+            panic!("the agent shows in the view");
+        };
+        assert_eq!(
+            interaction.actor,
+            tilo_actions::InteractionActor::new("agent:mcp-1", tilo_actions::ActorKind::Agent)
+                .acting_for("owner")
+        );
+
+        assert!(
+            invoke(&state, &client, "5", "send", None).is_err(),
+            "an outside action is the person's to allow"
+        );
+        assert!(app.try_recv().is_err(), "nothing outside ran");
+        let owner = Caller::local_person("owner").in_room(&room);
+        invoke(&state, &owner, "5", "send", None).expect("the person may");
+        assert_eq!(app.try_recv().expect("delivered").actor, "owner");
+    }
+
     /// An application target reaches an app that never ran in the workspace:
     /// it launches the app and delivers once the app offers the action, and
     /// reaches the running app without launching it again.

@@ -557,6 +557,10 @@ struct AdmittedJoinIdentity {
     /// Delegated agent principal for this channel. The certified device still
     /// proves which person launched it, while policy uses this revocable id.
     agent_id: Option<String>,
+    /// The agent is one this person's own device handed the session to (an
+    /// MCP client): it carries the delegation a device gives its agents,
+    /// not grants the room holds for it.
+    session_delegated: bool,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -568,6 +572,10 @@ pub struct BrokerActor {
     /// The person an agent acts for, when one delegated it: the agent then
     /// may do only what both may.
     for_person: Option<String>,
+    /// The person's own device delegated the agent for this session: it
+    /// carries the delegation a device gives its agents (read and undoable
+    /// actions, outside ones asking first, no governance).
+    session_delegated: bool,
 }
 
 impl BrokerActor {
@@ -578,6 +586,7 @@ impl BrokerActor {
             is_agent: false,
             capped: false,
             for_person: None,
+            session_delegated: false,
         }
     }
 
@@ -588,6 +597,7 @@ impl BrokerActor {
             is_agent: true,
             capped: false,
             for_person: None,
+            session_delegated: false,
         }
     }
 
@@ -595,6 +605,14 @@ impl BrokerActor {
     #[must_use]
     pub fn for_person(mut self, person: impl Into<String>) -> Self {
         self.for_person = Some(person.into());
+        self
+    }
+
+    /// The same agent, delegated by its person's own device for this
+    /// session.
+    #[must_use]
+    pub fn session_delegated(mut self) -> Self {
+        self.session_delegated = true;
         self
     }
 
@@ -622,16 +640,36 @@ impl BrokerActor {
     /// to `foreign_bound` from a device not theirs); an agent's bounded by
     /// the person it acts for; an application, or an agent nobody delegated,
     /// only what the room grants it.
-    pub(crate) fn authority_in<'w>(
+    pub(crate) fn with_authority_in<T>(
         &self,
-        workspace: &'w tilo_desktop_model::Workspace,
-        foreign_bound: &'w [Grant],
-    ) -> Authority<'w> {
+        workspace: &tilo_desktop_model::Workspace,
+        foreign_bound: &[Grant],
+        decide: impl FnOnce(&Authority<'_>) -> T,
+    ) -> T {
         match (self.delegate(), &self.for_person) {
-            (None, _) => workspace.person_authority_on(&self.id, self.capped, foreign_bound),
-            (Some(delegate), Some(person)) => workspace.delegated_authority(person, delegate, &[]),
-            (Some(delegate), None) => workspace.subject_authority(delegate),
+            (None, _) => {
+                decide(&workspace.person_authority_on(&self.id, self.capped, foreign_bound))
+            }
+            (Some(delegate), Some(person)) => {
+                let carried = self.session_grants(&workspace.room.to_string(), person);
+                decide(
+                    &workspace
+                        .person_authority_on(person, self.capped, foreign_bound)
+                        .bounded_by(workspace.policy.party_of(delegate).with_grants(&carried)),
+                )
+            }
+            (Some(delegate), None) => decide(&workspace.subject_authority(delegate)),
         }
+    }
+
+    /// The delegation a session-delegated agent carries in `room`, given by
+    /// `person`; nothing for any other actor.
+    fn session_grants(&self, room: &str, person: &str) -> Vec<Grant> {
+        if !self.session_delegated {
+            return Vec::new();
+        }
+        let agent = self.id.strip_prefix("agent:").unwrap_or(&self.id);
+        roles::AgentPreset::Operator.grants(room, agent, &Subject::Person(person.to_owned()))
     }
 
     /// Whether this actor is a person acting from their own device: the one
@@ -656,9 +694,11 @@ impl BrokerActor {
         now: u64,
     ) -> Answer {
         let bound = roles::foreign_device_bound();
-        self.authority_in(workspace, &bound)
-            .decide(node, kind, &tilo_desktop_model::context_at(now))
-            .answer
+        self.with_authority_in(workspace, &bound, |authority| {
+            authority
+                .decide(node, kind, &tilo_desktop_model::context_at(now))
+                .answer
+        })
     }
 
     /// Whether this actor may take an action of `kind` at `node` in
@@ -706,10 +746,28 @@ pub(crate) fn app_node(workspace: &tilo_desktop_model::Workspace, app: &str) -> 
 }
 
 impl AdmittedJoinIdentity {
+    /// This admission handed to `agent` by the person's own device, if any.
+    fn delegated_to(mut self, agent: Option<&str>) -> Self {
+        if let Some(agent) = agent {
+            self.agent_id = Some(agent.to_owned());
+            self.session_delegated = true;
+        }
+        self
+    }
+
     fn broker_actor(&self) -> BrokerActor {
         match &self.agent_id {
             Some(agent) => {
-                BrokerActor::agent(format!("agent:{agent}")).for_person(self.principal_id.clone())
+                let actor = BrokerActor {
+                    capped: self.verified.capped,
+                    ..BrokerActor::agent(format!("agent:{agent}"))
+                        .for_person(self.principal_id.clone())
+                };
+                if self.session_delegated {
+                    actor.session_delegated()
+                } else {
+                    actor
+                }
             }
             None => BrokerActor {
                 capped: self.verified.capped,
@@ -777,9 +835,12 @@ impl AdmittedJoinIdentity {
         decide: impl FnOnce(&Authority<'_>) -> T,
     ) -> Result<T, String> {
         let bound = roles::foreign_device_bound();
-        if self.agent_id.is_none() && self.verified.owns_person_room(room) {
+        if (self.agent_id.is_none() || self.session_delegated)
+            && self.verified.owns_person_room(room)
+        {
             // The person room's devices are its owner's; a foreign one is
-            // held to the foreign-device bound there as anywhere.
+            // held to the foreign-device bound there as anywhere, and an
+            // agent one of them was handed to, to that delegation too.
             let policy = RoomPolicy::new(room, self.principal_id.clone());
             let authority = Authority::person(policy.party(&self.principal_id));
             let authority = if self.verified.capped {
@@ -790,6 +851,14 @@ impl AdmittedJoinIdentity {
             } else {
                 authority
             };
+            let actor = self.broker_actor();
+            let carried = actor.session_grants(room, &self.principal_id);
+            let authority = match actor.delegate() {
+                Some(delegate) => {
+                    authority.bounded_by(tilo_action_policy::Party::new(vec![delegate], &carried))
+                }
+                None => authority,
+            };
             return Ok(decide(&authority));
         }
         let workspace = tree
@@ -798,7 +867,9 @@ impl AdmittedJoinIdentity {
             .iter()
             .find(|workspace| workspace.room.to_string() == room)
             .ok_or("the identity's workspace is no longer hosted")?;
-        Ok(decide(&self.broker_actor().authority_in(workspace, &bound)))
+        Ok(self
+            .broker_actor()
+            .with_authority_in(workspace, &bound, decide))
     }
 }
 
@@ -867,6 +938,7 @@ fn admit_verified_join_at(
             role,
             display_handle: None,
             agent_id: None,
+            session_delegated: false,
         });
     }
     let workspace = workspace
@@ -886,6 +958,7 @@ fn admit_verified_join_at(
         role,
         display_handle: None,
         agent_id: None,
+        session_delegated: false,
     })
 }
 
@@ -1317,6 +1390,15 @@ pub struct InvocationEnvelope {
     context: Option<tilo_actions::ActionContext>,
 }
 
+impl InvocationEnvelope {
+    /// The context the host set for the invocation: who invoked it, of what
+    /// kind, for whom, in which run.
+    #[must_use]
+    pub fn context(&self) -> Option<&tilo_actions::ActionContext> {
+        self.context.as_ref()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct TaskRunEnvelope {
     task_id: String,
@@ -1406,9 +1488,21 @@ pub(crate) struct VerifiedActionCaller {
     network: Option<tilo_relay_session::client::CertifiedAction>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
     admitted: AdmittedJoinIdentity,
+    /// The agent this person's own device handed the session to, kept
+    /// across every re-verification of the person's admission.
+    delegated: Option<String>,
 }
 
 impl VerifiedActionCaller {
+    /// The same admission, handed by the person's own device to agent
+    /// `agent`: it acts for the person with the delegation a device gives
+    /// its agents.
+    fn delegated_to(mut self, agent: &str) -> Self {
+        self.delegated = Some(agent.to_owned());
+        self.admitted = self.admitted.delegated_to(self.delegated.as_deref());
+        self
+    }
+
     fn owner(&self) -> InvocationOwner {
         InvocationOwner::Certified {
             root: self.admitted.verified.user_public_key,
@@ -1745,6 +1839,7 @@ impl CapnpBrokerState {
             network: None,
             policy_time: self.registered_policy_time()?,
             admitted,
+            delegated: None,
         })
     }
 
@@ -1801,7 +1896,7 @@ impl CapnpBrokerState {
         if current.owner() != caller.owner() {
             return Err("certified caller changed".into());
         }
-        Ok(current.admitted)
+        Ok(current.admitted.delegated_to(caller.delegated.as_deref()))
     }
 
     fn caller_key(
@@ -13588,6 +13683,7 @@ pub mod tests {
                     display_handle: None,
                     role: CapRole::Editor,
                     agent_id: None,
+                    session_delegated: false,
                 },
                 record_kind: None,
                 lease: None,
@@ -13626,6 +13722,20 @@ pub mod tests {
                 .try_recv()
                 .ok()
                 .map(|invocation| invocation.actor)
+        }
+
+        /// The next delivered invocation's actor and the invoker the host
+        /// recorded for it.
+        pub fn take_invocation_invoker(
+            &mut self,
+        ) -> Option<(String, Option<tilo_actions::ActionInvoker>)> {
+            self.invocation_rx.try_recv().ok().map(|invocation| {
+                let invoker = invocation
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.invoker.clone());
+                (invocation.actor, invoker)
+            })
         }
 
         pub fn take_invocation_argument(&mut self) -> Option<Option<String>> {
@@ -18087,6 +18197,7 @@ mod host_worker_capacity_tests {
             display_handle: None,
             role: CapRole::Owner,
             agent_id: None,
+            session_delegated: false,
         }
     }
     fn retained(state: &CapnpBrokerState) -> usize {

@@ -734,9 +734,17 @@ fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
         let callers = host.callers.lock().unwrap().clone();
         assert_eq!(callers.len(), 1);
         assert_eq!(callers[0].room(), Some(room));
+        assert!(
+            matches!(
+                callers[0].principal(),
+                tilo_actions::remote::CallerPrincipal::Agent(_)
+            ),
+            "the MCP client is an agent"
+        );
         assert_eq!(
-            callers[0].principal(),
-            &tilo_actions::remote::CallerPrincipal::Person("profile-actor".into())
+            callers[0].acting_for_person(),
+            Some("profile-actor"),
+            "acting for the host-selected person"
         );
         assert!(callers[0].execution_id().is_some());
     });
@@ -1519,7 +1527,16 @@ fn continued_history_and_client_names_cannot_select_execution_identity() {
         }
         assert_ne!(executions[0], executions[1]);
         let callers = callers.lock().unwrap().clone();
-        assert_eq!(callers[0].principal(), callers[1].principal());
+        assert_eq!(
+            callers[0].acting_for_person(),
+            callers[1].acting_for_person(),
+            "both connections act for the same person"
+        );
+        assert_ne!(
+            callers[0].principal(),
+            callers[1].principal(),
+            "each connection is its own agent"
+        );
         assert_ne!(callers[0].execution_id(), callers[1].execution_id());
         for (caller, execution) in callers.iter().zip(executions) {
             assert_eq!(caller.execution_id().unwrap().to_string(), execution);
