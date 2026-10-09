@@ -295,6 +295,15 @@ echo '{"op":"snapshot","path":"/tmp/after-add-workspace.png"}' | nc -U $XDG_RUNT
 kill %1
 ```
 
+To time what an agent waits for on this socket, run
+`scripts/perf/agent_rtt.py`. It measures actions list, state dump, a no-op
+invoke (accepted, and completed through `wait_ms`), throughput under
+concurrent clients and the same no-op through the MCP server. Give it
+`--socket PATH` for a running desktop, or `--spawn SHELL` to start a
+compositor through `spawn-headless.sh`. A spawned compositor is removed on
+exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set. A
+release build serves the socket only with `--features dev-overrides`.
+
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash
 TILO_HEADLESS_SIZE=1920x1080 cargo run --bin shell -- --backend headless
