@@ -1965,22 +1965,11 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut nodes = HashMap::new();
         let node = app.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(doc)
+            .layout(&taffy, node)
+            .send(app, ev)
+            .handled
     }
 
     /// Run one real draw pass so retained control geometry is measured,
@@ -2157,22 +2146,12 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut nodes = HashMap::new();
         let node = app.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .doc(doc)
+            .layout(&taffy, node)
+            .send(app, ev)
+            .handled
     }
 
     fn unique_dir(tag: &str) -> PathBuf {

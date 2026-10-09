@@ -27,9 +27,8 @@ use std::time::Duration;
 use shell::shell::chrome_state::{ChromeState, OverlayFlags, PendingPrompt};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{Capability, GRANT_ONCE, Workspace, WorkspaceId, WorkspaceTree};
-use ui::widget::{PermissionPrompt, PromptChoice, Widget};
+use ui::widget::PromptChoice;
 
-use automerge::AutoCommit;
 use taffy::{Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
@@ -42,30 +41,7 @@ fn cursor_at(p: Point) -> WindowEvent {
 }
 
 use ui::synthetic_input::mouse_press;
-
-/// Drive an event through a [`PermissionPrompt`], mirroring the shell's own
-/// `pump_permission_prompt`.
-fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
-    let mut tree = TaffyTree::<()>::new();
-    let node = tree.new_leaf(Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus_target = None;
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    p.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &tree,
-        },
-    );
-}
+use ui::testing::dispatch;
 
 /// One workspace plus the requested app's pending grant. The workspace is
 /// handed to the local user because an ownerless room has no administrators,

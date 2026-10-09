@@ -27,11 +27,10 @@ mod tests {
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
 
-    use automerge::{AutoCommit, ROOT};
+    use automerge::AutoCommit;
     use portable_pty::{MasterPty, PtySize};
     use std::sync::mpsc::Receiver;
-    use taffy::{NodeId, TaffyTree};
-    use winit::event::{Modifiers, WindowEvent};
+    use winit::event::WindowEvent;
 
     use ui::widget::Widget;
 
@@ -111,22 +110,7 @@ mod tests {
 
     /// Pump one event through the production `Widget::handle_event`.
     fn send(widget: &mut TerminalWidget, doc: &mut AutoCommit, ev: &WindowEvent) {
-        let taffy = TaffyTree::<()>::new();
-        let mut handled = false;
-        let mut focus = None;
-        widget.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: NodeId::new(0),
-                taffy: &taffy,
-            },
-        );
+        ui::testing::Dispatch::new().doc(doc).send(widget, ev);
     }
 
     /// Keystrokes reach the shell and change no document.

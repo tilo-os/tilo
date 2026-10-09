@@ -323,25 +323,14 @@ mod tests {
         let mut taffy = TaffyTree::new();
         let mut node_map = HashMap::new();
         let node = choice.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let mut keys = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node);
         for (key, expected) in [
             (NamedKey::ArrowRight, "xfs"),
             (NamedKey::ArrowLeft, "btrfs"),
         ] {
-            let mut handled = false;
-            let mut focus_target = None;
-            choice.handle_event(
-                &named_key(key),
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut doc),
-                    path: &ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let handled = keys.send(&mut choice, &named_key(key)).handled;
             assert!(handled);
             let press = presses.take().expect("a segment action");
             assert_eq!(press.address.action, "set-filesystem");

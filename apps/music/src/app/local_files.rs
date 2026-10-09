@@ -392,20 +392,11 @@ mod tests {
                         button: winit::event::MouseButton::Left,
                     },
                 ];
+                let mut sending = ui::testing::Dispatch::new()
+                    .doc(&mut doc)
+                    .layout(&tree, node);
                 for event in events {
-                    app.handle_event(
-                        &event,
-                        &mut ui::widget::EventCtx {
-                            scale_factor: 1.0,
-                            modifiers: &winit::event::Modifiers::default(),
-                            state: ui::widget::Edits::lend(&mut doc),
-                            path: &automerge::ROOT,
-                            handled: &mut false,
-                            focus_target: &mut None,
-                            node_id: node,
-                            taffy: &tree,
-                        },
-                    );
+                    sending.send(&mut app, &event);
                 }
                 let intent = ui::widget::controls::take_control_invocation(&mut app)
                     .expect("visible shared button intent");

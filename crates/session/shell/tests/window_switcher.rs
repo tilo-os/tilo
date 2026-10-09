@@ -19,7 +19,7 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// Tabs 1..=4 in single-tab groups 10..=40 along one strip. 1 and 3 are
@@ -85,23 +85,11 @@ impl Harness {
     }
 
     fn event(&mut self, event: &WindowEvent, mods: ModifiersState) -> bool {
-        let mut doc = automerge::AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::from(mods),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.node,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .layout(&self.taffy, self.node)
+            .send(&mut self.host, event)
+            .handled
     }
 
     /// `mods` is the modifier state with this key applied, as the
