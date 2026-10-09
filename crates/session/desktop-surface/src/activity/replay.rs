@@ -79,8 +79,14 @@ impl RoomActivityPane {
         let mut checkpoints = std::mem::take(&mut self.replay_checkpoints);
         let mut frames = Vec::with_capacity(ordered.len().min(REPLAY_FRAMES));
         for entry in ordered.into_iter().skip(skip) {
+            // The entry's heads come from the history log, which read them
+            // with the change: looking them up in the document lists every
+            // change of the room again.
             let checkpoint = checkpoints.entry(entry.id).or_insert_with(|| {
-                replay_checkpoint(baseline.get_or_insert_with(|| tree.clone()), &entry.id)
+                replay_checkpoint(
+                    baseline.get_or_insert_with(|| tree.clone()),
+                    self.history_log.heads_for_entry(&entry.id),
+                )
             });
             let Some(snapshot) = checkpoint.as_ref() else {
                 self.replay_unavailable = self.replay_unavailable.saturating_add(1);
@@ -118,15 +124,16 @@ impl RoomActivityPane {
     }
 }
 
-/// The desktop at history entry `entry` of `baseline`'s document: a fork
-/// constrained to that entry's heads, read back through the activity cache.
+/// The desktop at a history entry of `baseline`'s document: a fork
+/// constrained to the entry's `heads`, read back through the activity cache.
+/// `None` heads (an entry that is not a change of the document) has none.
 fn replay_checkpoint<T: ActivityTree>(
     baseline: &mut T,
-    entry: &HistoryEntryId,
+    heads: Option<Vec<automerge::ChangeHash>>,
 ) -> ReplayCheckpoint {
     #[cfg(test)]
     REPLAY_CHECKPOINT_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
-    let heads = ui::heads_for_entry(baseline.document_mut(), entry)?;
+    let heads = heads?;
     // Automerge 0.8's `fork_at` collector can traverse a valid merged
     // graph in non-topological order and panic on a dependency that
     // appears later. Clone the complete graph, then constrain reads to
