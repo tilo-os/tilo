@@ -422,3 +422,14 @@ Browser fresh-open attribution uses the new tab's public
 is not its record instance. Unrelated existing pages publishing late do not
 become candidates, and missing/foreign launch associations fail without another
 Open or navigation of an existing page.
+
+When the published base disk uses a different management protocol, CI builds a
+second `tilo-vm` from that exact base commit. It creates and starts the throwaway
+VM with that client, then runs the ordinary `swap vmd --slot vm --builder host`
+from the clean target checkout. The target client must read back the VM-wide
+management layer before any session is created. P01 records this explicit
+management swap even with `swap=none`; equal-protocol `swap=none` tests the base
+without a management swap. Failures abort P00 instead of relaxing the protocol
+check. For a local older fixture, pass `--bootstrap-tilo-vm <matching-client>`
+and `--bootstrap-from <clean-target-checkout>` together. This bootstrap uses
+the existing layer admission and activation path, and does not reboot.

@@ -1,5 +1,11 @@
 //! Peer pointers, from an app in a room to the compositor drawing it.
 //!
+//! The one pointer pipeline for both ways the shell runs: the native
+//! compositor attaches it to its frame loop, and the hosted shell (the shell
+//! as a window) to its frame tick. Both publish the same tile-anchored key,
+//! accept the same keys, and hand the overlay the same store, timing and
+//! glide ([`ui::presence::PresenceCtx::pointer_position_at`]).
+//!
 //! Outbound: a [`RoomSubscription`] republishes each local app's
 //! surface-local pointer as this session's cursor — per session, not per
 //! connection, so one person stays one cursor across windows.
@@ -83,6 +89,77 @@ pub fn place_pointer(tiles: &TabTiles, anchor: PointerAnchor) -> Option<(f64, f6
         .map(|(_, rect)| (rect.x0 + anchor.x, rect.y0 + anchor.y))
 }
 
+/// What a window-hosted shell shows and where its own pointer is, in the
+/// host's scene coordinates — the two things the native frame loop reads
+/// off its host and seat each frame ([`crate::shell::frame::FrameBuilder::note_local_pointer`]).
+/// The hosted shell's frame tick is handed only the presence store, not the
+/// host, so the host keeps this current instead: its tiles after every
+/// layout, its pointer on every move
+/// ([`crate::shell::overlay_host::ShellOverlayHost::share_desk`]).
+#[derive(Clone, Default)]
+pub struct SharedDesk(Arc<Mutex<Desk>>);
+
+/// A [`SharedDesk`] as of one moment.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Desk {
+    /// Each tile shown, with the tab it shows.
+    pub tiles: Vec<(u64, vello::kurbo::Rect)>,
+    /// The pointer, or `None` before it has moved or after it left the
+    /// window.
+    pub pointer: Option<(f64, f64)>,
+}
+
+impl SharedDesk {
+    fn with(&self, edit: impl FnOnce(&mut Desk)) {
+        edit(
+            &mut self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+
+    /// Replace the tiles shown with `tiles`.
+    pub fn set_tiles(&self, tiles: Vec<(u64, vello::kurbo::Rect)>) {
+        self.with(|desk| desk.tiles = tiles);
+    }
+
+    /// Record where the pointer is, or that it is in no tile's window.
+    pub fn set_pointer(&self, at: Option<(f64, f64)>) {
+        self.with(|desk| desk.pointer = at);
+    }
+
+    /// The desk as it is now, for one frame to read without holding the lock.
+    pub fn snapshot(&self) -> Desk {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Every room this session is in, and the one the user is looking at — what
+/// a frame hands [`PeerPresence::set_rooms`] and
+/// [`PeerPresence::publish_local_cursor`]. One reading for both shells, so
+/// they listen to and speak in the same rooms.
+pub fn rooms_and_active(
+    tree: &crate::shell::state::WorkspaceTree,
+) -> (Vec<String>, Option<String>) {
+    let rooms = tree
+        .desktop
+        .workspaces
+        .iter()
+        .map(|w| w.room.to_string())
+        .collect();
+    let active = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|w| w.id == tree.desktop.active)
+        .map(|w| w.room.to_string());
+    (rooms, active)
+}
+
 /// Bridges the session's collaboration broker and its peers for
 /// pointer presence. Held by the compositor for the life of the session.
 pub struct PeerPresence {
@@ -107,7 +184,10 @@ pub struct PeerPresence {
     seen_departures: Mutex<HashSet<DepartureKey>>,
     /// The departure history's generation [`Self::pump`] last read it at.
     departures_applied: AtomicU64,
-    subscription: Arc<RoomSubscription>,
+    /// What the session's apps publish in its rooms. `None` for a session
+    /// with no collaboration broker (a hosted shell started without one):
+    /// it still publishes its own pointer and places its peers'.
+    subscription: Option<Arc<RoomSubscription>>,
     /// The rooms this session is in, mirrored from [`Self::set_rooms`]
     /// so a room this session has left stops being remembered below.
     rooms: Mutex<Vec<String>>,
@@ -284,16 +364,13 @@ impl PeerPresence {
     /// apps publish in them to `net`.
     pub fn attach(broker: &BrokerHandle, net: &Arc<ShellNetwork>, rooms: Vec<String>) -> Self {
         let cursor: Arc<Mutex<Option<PointerAnchor>>> = Arc::new(Mutex::new(None));
-        let inbound = net.inbound_presence_handle();
-        let rooms_mirror = rooms.clone();
-        let net_for_desktop = Arc::clone(net);
         let net_for_subscription = Arc::clone(net);
 
         let sink_cursor = Arc::clone(&cursor);
         let typed_inbound: Arc<Mutex<Vec<RoomTypedPresence>>> = Arc::new(Mutex::new(Vec::new()));
         let sink_typed = Arc::clone(&typed_inbound);
         let subscription = broker.subscribe_rooms(
-            rooms,
+            rooms.clone(),
             Box::new(move |event, route| {
                 if let CollabEvent::RemotePresenceUpdate {
                     user_id,
@@ -352,7 +429,29 @@ impl PeerPresence {
                 net_for_subscription.publish_presence(key_str, (anchor.x, anchor.y));
             }),
         );
+        Self::assemble(cursor, typed_inbound, Some(subscription), net, rooms)
+    }
 
+    /// [`Self::attach`] for a session with no collaboration broker: it
+    /// publishes its own pointer and places its peers', but has no local
+    /// apps' presence to republish or fold.
+    pub fn for_network(net: &Arc<ShellNetwork>, rooms: Vec<String>) -> Self {
+        Self::assemble(
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(Vec::new())),
+            None,
+            net,
+            rooms,
+        )
+    }
+
+    fn assemble(
+        cursor: Arc<Mutex<Option<PointerAnchor>>>,
+        typed_inbound: Arc<Mutex<Vec<RoomTypedPresence>>>,
+        subscription: Option<Arc<RoomSubscription>>,
+        net: &Arc<ShellNetwork>,
+        rooms: Vec<String>,
+    ) -> Self {
         let departures = net.peer_departure_history();
         // Read before the snapshot: a departure recorded in between is in
         // both, and the next pump reads it again and finds it seen.
@@ -380,13 +479,13 @@ impl PeerPresence {
         Self {
             cursor,
             anchored: Mutex::new(HashMap::new()),
-            inbound,
+            inbound: net.inbound_presence_handle(),
             typed_inbound,
             departures,
             seen_departures: Mutex::new(seen_departures),
             departures_applied,
             subscription,
-            rooms: Mutex::new(rooms_mirror),
+            rooms: Mutex::new(rooms),
             followed: Mutex::new(None),
             last_published: Mutex::new(HashMap::new()),
             colours_applied: AtomicU64::new(u64::MAX),
@@ -394,7 +493,7 @@ impl PeerPresence {
             roster_tree,
             participants_epoch,
             roster_seen: Mutex::new(None),
-            net: net_for_desktop,
+            net: Arc::clone(net),
         }
     }
 
@@ -412,7 +511,9 @@ impl PeerPresence {
             }
             g.clone_from(&rooms);
         }
-        self.subscription.set_rooms(rooms);
+        if let Some(subscription) = &self.subscription {
+            subscription.set_rooms(rooms);
+        }
     }
 
     /// Follow the session's workspaces: after any write to `tree` since the
@@ -428,26 +529,10 @@ impl PeerPresence {
         // read again on the next call.
         let generation = tree.generation();
         if followed.as_ref().map(|(seen, _)| *seen) != Some(generation) {
-            let (rooms, here) = {
-                let tree = tree.read();
-                let rooms = tree
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .map(|workspace| workspace.room.to_string())
-                    .collect::<Vec<_>>();
-                // The room the user is looking at (where their pointer is),
-                // distinct from the set above (every room the session
-                // listens to).
-                let here = tree
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.id == tree.desktop.active)
-                    .map(|workspace| workspace.room.to_string());
-                drop(tree);
-                (rooms, here)
-            };
+            // Every room the session listens to, and the one the user is
+            // looking at (where their pointer is). The read guard is a
+            // temporary, released before the subscription is re-pointed.
+            let (rooms, here) = rooms_and_active(&tree.read());
             self.set_rooms(rooms);
             *followed = Some((generation, here));
         }
@@ -508,6 +593,25 @@ impl PeerPresence {
         if let Ok(mut g) = self.cursor.lock() {
             *g = at;
         }
+    }
+
+    /// One frame of a session whose host and pointer are read through a
+    /// [`SharedDesk`] (the hosted shell): anchor its pointer to the tile
+    /// under it, follow its rooms, say where it points in the room on
+    /// screen, fold in what peers sent, and restate who is here — the same
+    /// steps, in the same order, as the native frame loop. Returns whether
+    /// anything a paint shows changed or is still moving.
+    pub fn frame(
+        &self,
+        presence: &mut PresenceCtx,
+        desk: &Desk,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+    ) -> bool {
+        self.set_pointer(desk.pointer.and_then(|at| anchor_pointer(&desk.tiles, at)));
+        self.follow_tree(tree);
+        let moved = self.pump(presence, &desk.tiles);
+        let roster_changed = self.refresh_roster(presence);
+        moved || roster_changed
     }
 
     /// Fold everything that arrived from other hosts into `presence`,
@@ -939,7 +1043,10 @@ pub fn fold_inbound(
 /// a pointer riding a scrolling tile still goes quiet on time: one not
 /// heard for [`ui::presence::POINTER_IDLE`] is retired
 /// ([`PresenceCtx::prune_pointers`]) and not placed again until it is.
-/// Returns whether anything landed, moved, went, or is fading out.
+/// The same stamp is what tells the presence store a tile carrying the
+/// pointer from the peer moving it: only a newly heard position glides
+/// ([`PresenceCtx::pointer_position_at`]).
+/// Returns whether anything landed, moved, went, or is fading or gliding.
 pub fn place_pointers(
     anchored: &AnchoredPointers,
     fresh: &[String],
@@ -967,21 +1074,20 @@ pub fn place_pointers(
         if placed == Some(at) && !fresh.contains(user) {
             continue;
         }
-        presence.apply_remote_presence(
+        // Stamped with when it was heard rather than now: moving with a
+        // tile is not the peer saying anything.
+        presence.apply_remote_presence_at(
             user.clone(),
-            key.clone(),
+            key,
             PresencePayload::Pointer { x: at.0, y: at.1 },
+            *heard,
         );
-        // Stamp it with when it was heard rather than now, which the fold
-        // above used: moving with a tile is not the peer saying anything.
-        let uid = ui::permissions::UserId(user.clone());
-        if presence.pointer_for(&key, &uid) == Some(at) {
-            presence.set_pointer_at(&key, uid, at, *heard);
-        }
         changed = true;
     }
     changed |= presence.prune_pointers(now, POINTER_IDLE);
-    changed || presence.pointers_fading(now, POINTER_IDLE, POINTER_FADE)
+    changed
+        || presence.pointers_fading(now, POINTER_IDLE, POINTER_FADE)
+        || presence.pointers_easing(now)
 }
 
 /// The people in `ws`'s room. Two sources, neither sufficient alone:
@@ -2364,6 +2470,152 @@ mod two_sessions {
         a_session_is_silent_until_its_pointer_has_been_somewhere();
         the_frame_loop_publishes_nothing_for_a_pointer_that_has_never_moved();
         a_pointer_from_a_room_this_session_is_not_in_is_refused();
+    }
+
+    /// The key a session put on the wire, parsed back the way a receiver does.
+    fn key_of(msg: &NeighbourMsg) -> PresenceKey {
+        let NeighbourMsg::PresenceMoved { key, .. } = msg else {
+            panic!("expected PresenceMoved, got {msg:?}");
+        };
+        serde_json::from_str(key).expect("a presence key")
+    }
+
+    /// A native session (broker attached) and a hosted one (the shell as a
+    /// window, here with no broker) in one room. They used to publish
+    /// different keys and each drop the other's, so neither saw the other;
+    /// now both publish a tile-anchored pointer and both place it.
+    #[test]
+    fn hosted_and_native_publish_the_same_key_shape_and_see_each_other() {
+        let hosted_peer = peer_id(31);
+        let native_peer = peer_id(33);
+        let (mut native_tree, room) =
+            host_naming(&[(&hosted_peer, "Xaver"), (&native_peer, "Quinten")]);
+        let hosted_tree = guest_joining(&mut native_tree, room);
+        let native_handle = native_tree.shared();
+        let hosted_handle = hosted_tree.shared();
+        let (native_net, mut native_cmds) =
+            shell_network_for_test(native_handle.clone(), handle_of(&native_peer));
+        let (hosted_net, mut hosted_cmds) =
+            shell_network_for_test(hosted_handle.clone(), handle_of(&hosted_peer));
+        let native_net = Arc::new(native_net);
+        let hosted_net = Arc::new(hosted_net);
+
+        let dir = std::env::temp_dir().join(format!("tilo-hosted-native-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let native_broker = broker(&dir, "n.sock");
+        let native = PeerPresence::attach(&native_broker, &native_net, rooms_of(&native_handle));
+        let hosted = PeerPresence::for_network(&hosted_net, rooms_of(&hosted_handle));
+        let room_key = PresenceKey::Workspace {
+            id: room.to_string(),
+        };
+        let tile_key = PresenceKey::tile_pointer(room.to_string(), DESK_TAB);
+
+        hosted.set_pointer(Some(on_desk(420.0, 300.0)));
+        assert!(hosted.publish_local_cursor(&room.to_string()));
+        let from_hosted = published(&mut hosted_cmds);
+        native.set_pointer(Some(on_desk(880.0, 520.0)));
+        assert!(native.publish_local_cursor(&room.to_string()));
+        let from_native = published(&mut native_cmds);
+        assert_eq!(key_of(&from_hosted), tile_key, "the hosted shell's key");
+        assert_eq!(
+            key_of(&from_native),
+            key_of(&from_hosted),
+            "one key shape whichever way the shell runs",
+        );
+
+        over_the_wire(from_hosted, &native_net);
+        let mut on_native = PresenceCtx::default();
+        assert!(native.pump(&mut on_native, &DESK_TILES));
+        let seen = on_native
+            .pointers
+            .get(&room_key)
+            .expect("the native session places the hosted peer's pointer");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].1, (420.0, 300.0));
+        assert_eq!(on_native.display_name(&seen[0].0), "Xaver");
+
+        over_the_wire(from_native, &hosted_net);
+        let mut on_hosted = PresenceCtx::default();
+        assert!(hosted.pump(&mut on_hosted, &DESK_TILES));
+        let seen = on_hosted
+            .pointers
+            .get(&room_key)
+            .expect("the hosted session places the native peer's pointer");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].1, (880.0, 520.0));
+        assert_eq!(on_hosted.display_name(&seen[0].0), "Quinten");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hosted shell's frame reads its host through a [`SharedDesk`]:
+    /// the pointer is anchored to the tile under it and published in the
+    /// room on screen, nothing is published before it has moved, and a
+    /// peer's pointer lands over this window's tile for its tab.
+    #[test]
+    fn a_hosted_frame_anchors_its_pointer_and_places_its_peers() {
+        use vello::kurbo::Rect;
+        let hosted_peer = peer_id(41);
+        let other_peer = peer_id(43);
+        let (mut other_tree, room) =
+            host_naming(&[(&hosted_peer, "Xaver"), (&other_peer, "Quinten")]);
+        let mut hosted_tree = guest_joining(&mut other_tree, room);
+        looking_at_its_room(&mut hosted_tree);
+        let hosted_handle = hosted_tree.shared();
+        let (hosted_net, mut hosted_cmds) =
+            shell_network_for_test(hosted_handle.clone(), handle_of(&hosted_peer));
+        let hosted_net = Arc::new(hosted_net);
+        let hosted = PeerPresence::for_network(&hosted_net, Vec::new());
+        let shared = SharedDesk::default();
+        shared.set_tiles(vec![(DESK_TAB, Rect::new(100.0, 50.0, 700.0, 650.0))]);
+        let mut presence = PresenceCtx::default();
+
+        hosted.frame(&mut presence, &shared.snapshot(), &hosted_handle);
+        assert!(
+            hosted_cmds.try_recv().is_err(),
+            "a pointer that has not moved is not published at the origin",
+        );
+
+        shared.set_pointer(Some((130.0, 70.0)));
+        hosted.frame(&mut presence, &shared.snapshot(), &hosted_handle);
+        let NeighbourMsg::PresenceMoved { key, point, .. } = published(&mut hosted_cmds) else {
+            panic!("expected PresenceMoved");
+        };
+        assert_eq!(
+            serde_json::from_str::<PresenceKey>(&key).expect("a presence key"),
+            PresenceKey::tile_pointer(room.to_string(), DESK_TAB),
+            "published in the room on screen, anchored to the tile under it",
+        );
+        assert_eq!(point, (30.0, 20.0), "as an offset from that tile's corner");
+
+        shared.set_pointer(None);
+        hosted.frame(&mut presence, &shared.snapshot(), &hosted_handle);
+        assert!(
+            hosted_cmds.try_recv().is_err(),
+            "a pointer that left the window is not restated",
+        );
+
+        hosted_net.handle_presence_message(
+            handle_of(&other_peer),
+            "anyone at all".into(),
+            serde_json::to_string(&PresenceKey::tile_pointer(room.to_string(), DESK_TAB))
+                .expect("a tile pointer key serialises"),
+            (5.0, 6.0),
+            0,
+        );
+        assert!(hosted.frame(&mut presence, &shared.snapshot(), &hosted_handle));
+        let seen = presence
+            .pointers
+            .get(&PresenceKey::Workspace {
+                id: room.to_string(),
+            })
+            .expect("the peer's pointer is placed over this window's tile");
+        assert_eq!(seen[0].1, (105.0, 56.0));
+        assert_eq!(
+            presence.display_name(&seen[0].0),
+            "Quinten",
+            "named by the room, not by the frame",
+        );
     }
 
     /// One strip of four windows in `room`, the same on every device —

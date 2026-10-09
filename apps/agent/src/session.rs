@@ -171,7 +171,7 @@ enum TaskControlChange {
 const MAX_TASK_STEPS: usize = 64;
 
 /// One planned action whose declared incremental Text parameter is written
-/// as chunk steps.
+/// with a live preview, in as few steps as one step's bound allows.
 struct ChunkedParagraph<'a> {
     first: &'a TaskAction,
     /// The declared continuation action.
@@ -1085,7 +1085,8 @@ impl Session {
         })
     }
 
-    /// Whether `action` is written in parts: its own descriptor declares an
+    /// Whether `action` is written as a paragraph with a live preview (in
+    /// parts only past one step's bound): its own descriptor declares an
     /// incremental Text parameter ([`crate::live::INCREMENTAL_TEXT_TAG`])
     /// whose value is longer than [`crate::live::CHUNK_MIN_TEXT`], and the
     /// declared continuation action is published on the same resource with
@@ -1135,10 +1136,13 @@ impl Session {
         Some((param.to_owned(), next))
     }
 
-    /// Write one incremental text as chunk steps: the first chunk through the
-    /// planned action, the rest through its declared continuation, each
-    /// through the unchanged durable step path. Before each chunk the
-    /// still-uncommitted rest is sent as the live preview.
+    /// Write one incremental text that is already complete. It is one step
+    /// through the planned action — each step is a durable round trip, so
+    /// splitting complete text only makes it land later — unless one step
+    /// cannot carry it ([`crate::live::step_text_len`]); then the rest goes
+    /// through the declared continuation, in order, through the unchanged
+    /// durable step path. Before each step the still-uncommitted rest is
+    /// sent as the live preview.
     fn run_chunked_paragraph(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -1148,7 +1152,6 @@ impl Session {
         stepped: &mut bool,
     ) -> Result<Result<Handoff, TaskActionStop>> {
         let mut rest = paragraph.text;
-        let mut target = crate::live::CHUNK_TARGET;
         let mut chunks_left = paragraph.budget;
         let mut last = Handoff::None;
         let mut first = true;
@@ -1158,7 +1161,7 @@ impl Session {
                     "Cancelled before the next action".into(),
                 ))));
             }
-            let len = crate::live::next_chunk_len(rest, target, chunks_left);
+            let len = crate::live::step_text_len(rest, chunks_left);
             let (chunk, after) = rest.split_at(len);
             let (action, arguments) = if first {
                 (
@@ -1172,7 +1175,6 @@ impl Session {
                 )
             };
             self.live_applying(paragraph.first, paragraph.arguments, Some(rest));
-            let began = ui::time::now();
             let result =
                 self.run_task_step(run, index, *step_index, action, &arguments, stepped)?;
             *step_index += 1;
@@ -1180,7 +1182,6 @@ impl Session {
                 Ok(next) => last = next,
                 Err(stop) => return Ok(Err(stop)),
             }
-            target = crate::live::adapt_chunk_target(target, began.elapsed());
             chunks_left = chunks_left.saturating_sub(1);
             rest = after;
             first = false;
@@ -4353,19 +4354,10 @@ mod tests {
                 .collect()
         }
 
-        /// A long declared incremental text becomes ordered durable steps — the first
-        /// chunk appends, the rest continue — each preceded by a live preview
-        /// of the paragraph text still uncommitted.
-        #[test]
-        fn a_long_paragraph_is_written_as_ordered_chunk_steps_with_previews() {
-            let text = "The ocean covers more than seventy percent of our planet, holding \
-                        ninety-seven percent of its water and most of its life, from reefs \
-                        to trenches.";
-            let chunks =
-                crate::live::split_chunks(text, crate::live::CHUNK_TARGET, crate::live::MAX_CHUNKS);
-            assert!(chunks.len() >= 2);
-            let replies = chunks
-                .iter()
+        /// Write `text` as a declared incremental paragraph and return each
+        /// step as `(step, action, part, preview shown before it)`.
+        fn write_paragraph(text: &str) -> Vec<(Option<u32>, String, String, String)> {
+            let replies = (0..crate::live::MAX_CHUNKS)
                 .map(|_| Reply::Committed(succeeded("done"), serde_json::json!({"succeeded": {}})))
                 .collect();
             let (mut session, run, sent) = fixture(replies, vec![]);
@@ -4390,7 +4382,6 @@ mod tests {
                 .run_chunked_paragraph(&run, 1, &mut step_index, &paragraph, &mut stepped)
                 .unwrap()
                 .unwrap();
-            assert_eq!(step_index, 2 + chunks.len());
             let mut preview = None;
             let mut steps = Vec::new();
             for request in sent.borrow().iter() {
@@ -4413,18 +4404,57 @@ mod tests {
                         *step,
                         action.clone(),
                         arguments["body"].as_str().unwrap().to_owned(),
-                        preview.take().expect("a preview precedes every chunk"),
+                        // The preview on show when the step is sent: an
+                        // unchanged preview is not published again.
+                        preview.clone().expect("a preview precedes the first step"),
                     )),
                     _ => {}
                 }
             }
-            let mut rest = text.to_owned();
+            assert_eq!(step_index, 2 + steps.len());
+            steps
+        }
+
+        /// A complete 700-byte paragraph is one durable step through the
+        /// planned action, previewed before it lands — not a dozen chunk
+        /// round trips imitating typing.
+        #[test]
+        fn a_complete_paragraph_is_one_step_with_its_preview() {
+            let text = "The ocean covers more than seventy percent of the planet! ".repeat(13);
+            assert!(text.len() >= 700, "{}", text.len());
+            let steps = write_paragraph(&text);
+            assert_eq!(
+                steps,
+                [(
+                    Some(2),
+                    "start".to_owned(),
+                    text.clone(),
+                    crate::live::tail(&text, crate::live::MAX_PREVIEW_BYTES).to_owned()
+                )],
+                "one step carries the whole paragraph, after its preview"
+            );
+        }
+
+        /// Text past one step's bound continues through the declared
+        /// continuation, strictly in order, each step sent while the preview
+        /// shows the uncommitted rest, and the parts rejoin exactly.
+        #[test]
+        fn a_paragraph_past_one_steps_bound_continues_in_order_with_previews() {
+            let text = "word ".repeat(6000);
+            assert!(text.len() > crate::live::MAX_STEP_TEXT_JSON);
+            let steps = write_paragraph(&text);
+            assert_eq!(steps.len(), 2, "split only at the step bound: {steps:?}");
+            let mut rest = text.clone();
             for (index, (step, action, chunk, preview)) in steps.iter().enumerate() {
                 assert_eq!(*step, Some(u32::try_from(2 + index).unwrap()));
                 let expected = if index == 0 { "start" } else { "more" };
                 assert_eq!(action, expected);
-                assert_eq!(chunk, chunks[index]);
-                assert_eq!(*preview, rest, "the preview is the uncommitted rest");
+                assert!(chunk.len() <= crate::live::MAX_STEP_TEXT_JSON);
+                assert_eq!(
+                    preview,
+                    crate::live::tail(&rest, crate::live::MAX_PREVIEW_BYTES),
+                    "the preview is the uncommitted rest"
+                );
                 rest = rest[chunk.len()..].to_owned();
             }
             assert!(rest.is_empty());

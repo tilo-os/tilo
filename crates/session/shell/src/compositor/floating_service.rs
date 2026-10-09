@@ -27,7 +27,7 @@ const MAX_FRAME_BYTES: usize = 1024 * 1024;
     clippy::large_enum_variant,
     reason = "events are moved once through a channel; boxing the message would add an allocation per frame"
 )]
-pub(crate) enum FloatingServiceEvent {
+pub enum FloatingServiceEvent {
     Connected {
         connection: u64,
         app_id: String,
@@ -45,8 +45,10 @@ pub(crate) enum FloatingServiceEvent {
     },
 }
 
+/// Opaque authenticated launch custody for event observation.
+/// External callers cannot construct it or access its custody fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AuthenticatedLaunch {
+pub struct AuthenticatedLaunch {
     pub(crate) workspace_id: String,
     pub(crate) custody: crate::shell::launcher::VerifiedLaunchCustody,
 }
@@ -59,9 +61,23 @@ struct LauncherHandshake {
     network_status_allowed: bool,
 }
 
+/// The service owns shutdown even when a reply sender is held by a worker.
+struct ConnectionWriter {
+    sender: mpsc::Sender<Vec<u8>>,
+    socket: UnixStream,
+}
+
+impl Drop for ConnectionWriter {
+    fn drop(&mut self) {
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        // An empty buffer is an internal shutdown marker, never a wire frame.
+        let _ = self.sender.send(Vec::new());
+    }
+}
+
 pub struct FloatingSurfaceService {
     events: mpsc::Receiver<FloatingServiceEvent>,
-    writers: Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>,
+    writers: Arc<Mutex<HashMap<u64, ConnectionWriter>>>,
     workspace_task_requests: Mutex<HashMap<u64, u64>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     acceptor: Option<std::thread::JoinHandle<()>>,
@@ -102,9 +118,12 @@ impl FloatingSurfaceService {
                             let connection = next_id.fetch_add(1, Ordering::Relaxed);
                             let tx = event_tx.clone();
                             let writers = Arc::clone(&thread_writers);
+                            let stop = Arc::clone(&thread_stop);
                             let _ = std::thread::Builder::new()
                                 .name(format!("tilo-shell-ui-{connection}"))
-                                .spawn(move || serve_connection(connection, stream, tx, writers));
+                                .spawn(move || {
+                                    serve_connection(connection, stream, tx, writers, stop);
+                                });
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                         Err(error) => {
@@ -132,12 +151,16 @@ impl FloatingSurfaceService {
         })
     }
 
-    pub(crate) fn drain(&self) -> Vec<FloatingServiceEvent> {
+    pub fn drain(&self) -> Vec<FloatingServiceEvent> {
         self.events.try_iter().collect()
     }
 
     pub fn reply_writer(&self, connection: u64) -> Option<mpsc::Sender<Vec<u8>>> {
-        self.writers.lock().ok()?.get(&connection).cloned()
+        self.writers
+            .lock()
+            .ok()?
+            .get(&connection)
+            .map(|writer| writer.sender.clone())
     }
 
     pub fn send(&self, connection: u64, message: &FloatingSurfaceHostMessage) {
@@ -149,7 +172,7 @@ impl FloatingSurfaceService {
             .writers
             .lock()
             .ok()
-            .and_then(|writers| writers.get(&connection).cloned());
+            .and_then(|writers| writers.get(&connection).map(|writer| writer.sender.clone()));
         let failed = writer.is_some_and(|writer| writer.send(frame).is_err());
         if failed && let Ok(mut writers) = self.writers.lock() {
             writers.remove(&connection);
@@ -194,7 +217,7 @@ impl FloatingSurfaceService {
             .map(|writers| {
                 writers
                     .iter()
-                    .map(|(connection, writer)| (*connection, writer.clone()))
+                    .map(|(connection, writer)| (*connection, writer.sender.clone()))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -224,6 +247,9 @@ impl Drop for FloatingSurfaceService {
         {
             let _ = acceptor.join();
         }
+        if let Ok(mut writers) = self.writers.lock() {
+            writers.clear();
+        }
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -238,7 +264,8 @@ fn serve_connection(
     connection: u64,
     stream: UnixStream,
     events: mpsc::Sender<FloatingServiceEvent>,
-    writers: Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>,
+    writers: Arc<Mutex<HashMap<u64, ConnectionWriter>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let peer_pid = super::native::wayland_peer_credentials(&stream)
         .and_then(|credentials| u32::try_from(credentials.pid).ok());
@@ -260,7 +287,19 @@ fn serve_connection(
     }
     let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
     if let Ok(mut open) = writers.lock() {
-        open.insert(connection, write_tx);
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        let Ok(socket) = reader.get_ref().try_clone() else {
+            return;
+        };
+        open.insert(
+            connection,
+            ConnectionWriter {
+                sender: write_tx,
+                socket,
+            },
+        );
     } else {
         return;
     }
@@ -268,6 +307,9 @@ fn serve_connection(
         .name(format!("tilo-shell-ui-writer-{connection}"))
         .spawn(move || {
             for frame in write_rx {
+                if frame.is_empty() {
+                    break;
+                }
                 if writer
                     .write_all(&frame)
                     .and_then(|()| writer.flush())
@@ -278,17 +320,7 @@ fn serve_connection(
             }
         });
     let app_id = handshake.app_id;
-    let launch = peer_pid
-        .and_then(crate::shell::launcher::verified_launch_custody_for_descendant)
-        .and_then(|(identity, custody)| {
-            (identity.confined && identity.package_id == app_id)
-                .then_some(identity.workspace_id)
-                .flatten()
-                .map(|workspace_id| AuthenticatedLaunch {
-                    workspace_id,
-                    custody,
-                })
-        });
+    let launch = authenticated_launch(peer_pid, &app_id);
     let _ = events.send(FloatingServiceEvent::Connected {
         network_status_allowed: handshake.network_status_allowed,
         connection,
@@ -327,6 +359,20 @@ fn serve_connection(
         open.remove(&connection);
     }
     let _ = events.send(FloatingServiceEvent::Disconnected { connection, app_id });
+}
+
+fn authenticated_launch(peer_pid: Option<u32>, app_id: &str) -> Option<AuthenticatedLaunch> {
+    peer_pid
+        .and_then(crate::shell::launcher::verified_launch_custody_for_descendant)
+        .and_then(|(identity, custody)| {
+            (identity.confined && identity.package_id == app_id)
+                .then_some(identity.workspace_id)
+                .flatten()
+                .map(|workspace_id| AuthenticatedLaunch {
+                    workspace_id,
+                    custody,
+                })
+        })
 }
 
 /// What each authenticated app was last told about where, and for whom,
@@ -770,7 +816,15 @@ mod tests {
             let (tx, rx) = mpsc::channel();
             let writers = Arc::new(Mutex::new(HashMap::new()));
             let observed = Arc::clone(&writers);
-            let worker = std::thread::spawn(move || serve_connection(1, server, tx, writers));
+            let worker = std::thread::spawn(move || {
+                serve_connection(
+                    1,
+                    server,
+                    tx,
+                    writers,
+                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                );
+            });
             let mut frame =
                 serde_json::to_vec(&serde_json::json!({"protocol": protocol, "app_id": app_id}))
                     .expect("serialize invalid handshake");
