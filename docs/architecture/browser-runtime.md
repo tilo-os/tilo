@@ -350,7 +350,13 @@ rather than a second host:
     `CoverageStatement` naming the retained entries (by digest of their
     body) it had delivered or published before the request. The host
     removes exactly those. Rooms whose replay a native shell selects
-    (`shell_authority`) are left to that selection.
+    (`shell_authority`) are left to that selection. It runs for
+    checkpoints, room frames and before every replay, not per keystroke:
+    a signed route increment that sorts after the route's
+    accepted tails and applies to them is published as an original from an
+    in-memory cursor the last clean selection left behind
+    (`store/shell_selection/tail_cache.rs`), since a selection could only
+    have listed it.
 - **Live plane over WebTransport.** It uses 541's `LIVE_V1` relay
   (`crates/hosting/tilo-moq`, ported from `qos-moq`), `moq-lite` at
   `/moq/live` on the same port number over UDP.
