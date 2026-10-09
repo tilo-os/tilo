@@ -186,6 +186,18 @@ impl ResourceApp for TubeShell {
     }
 
     fn view(cx: &mut ViewCx<Library>) -> Element {
+        // A search hit, or an agent's `open`, opens the video, creator or
+        // playlist it names.
+        let dispatcher = cx.dispatcher();
+        cx.on_open(
+            move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
+                let effect = crate::search_type::opened(anchor).ok_or_else(|| {
+                    ui::tilo_resource::Refusal::new(format!("`{anchor}` is nothing Tube opens"))
+                })?;
+                dispatcher.effect(&effect);
+                Ok(())
+            },
+        );
         cx.surface(Self::surface(cx.mode()))
     }
 
