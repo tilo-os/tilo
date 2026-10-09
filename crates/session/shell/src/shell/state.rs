@@ -2222,14 +2222,14 @@ impl WorkspaceTree {
         let before = Self::governance_of(self.room_docs.get(&room));
         let after = Self::governance_of(Some(candidate));
         let Some(proposed) = after
-            .3
+            .identities
             .get(endpoint)
             .and_then(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes).ok())
         else {
             return false;
         };
         let Ok(admitted) = before
-            .3
+            .identities
             .get(endpoint)
             .map(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes))
             .transpose()
@@ -2243,7 +2243,7 @@ impl WorkspaceTree {
         }
         let certificate = &proposed.device_cert;
         let now = tilo_clock::unix_now_ns();
-        let prior_owner = before.0.as_deref().or_else(|| {
+        let prior_owner = before.owner.as_deref().or_else(|| {
             self.workspace_in_room(room)
                 .and_then(|workspace| workspace.owner.as_deref())
         });
@@ -2254,13 +2254,13 @@ impl WorkspaceTree {
             || certificate.is_expired_at(now)
             || certificate.issued_at_ns > now
             || tilo_user_identity::verify_device_cert(certificate).is_err()
-            || after.0.as_deref() != Some(hex::encode(certificate.user_public_key).as_str())
-            || prior_owner.is_some_and(|owner| after.0.as_deref() != Some(owner))
+            || after.owner.as_deref() != Some(hex::encode(certificate.user_public_key).as_str())
+            || prior_owner.is_some_and(|owner| after.owner.as_deref() != Some(owner))
         {
             return false;
         }
         let mut revocations = tilo_user_identity::RevocationList::new();
-        for bytes in before.3.values().chain(after.3.values()) {
+        for bytes in before.identities.values().chain(after.identities.values()) {
             let Ok(identity) = serde_json::from_slice::<GovernedPeerIdentity>(bytes) else {
                 return false;
             };
