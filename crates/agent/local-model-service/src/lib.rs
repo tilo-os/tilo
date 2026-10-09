@@ -561,7 +561,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             ModelArtifactFormat::VllmGguf
             | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
-            | ModelArtifactFormat::WhisperGgml => self.object_path(&model.artifact.sha256),
+            | ModelArtifactFormat::WhisperGgml
+            | ModelArtifactFormat::WhistleCact => self.object_path(&model.artifact.sha256),
         }
     }
 
@@ -638,7 +639,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             ModelArtifactFormat::VllmGguf
             | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
-            | ModelArtifactFormat::WhisperGgml => Ok(object),
+            | ModelArtifactFormat::WhisperGgml
+            | ModelArtifactFormat::WhistleCact => Ok(object),
             ModelArtifactFormat::HfSnapshotTarZst => self.extract_snapshot(&object, model),
         }
     }
@@ -2694,11 +2696,20 @@ mod tests {
 
     #[test]
     fn speech_install_uses_verified_objects_and_never_launches_a_runtime() {
+        for format in [
+            ModelArtifactFormat::WhisperGgml,
+            ModelArtifactFormat::WhistleCact,
+        ] {
+            assert_speech_install(format);
+        }
+    }
+
+    fn assert_speech_install(format: ModelArtifactFormat) {
         let bytes = b"synthetic speech graph receipt";
         let dir = tempfile::tempdir().unwrap();
         let mut release = onnx_model(bytes);
         release.id = "speech".into();
-        release.artifact_format = ModelArtifactFormat::WhisperGgml;
+        release.artifact_format = format;
         release.segmentation = false;
         let mut service = service_for(dir.path(), bytes);
         assert!(matches!(
@@ -2758,8 +2769,7 @@ mod tests {
             fs::write(&catalog_path, serde_json::to_vec(&signed).unwrap()).unwrap();
             fs::write(&keys_path, serde_json::to_vec(&serde_json::json!({"keys": {"isolated-test-only": hex::encode(key.verifying_key().to_bytes())}})).unwrap()).unwrap();
             let verified = VerifiedCatalog::load(&catalog_path, &keys_path).unwrap();
-            let (_, _, loaded) = crate::speech::speech_model_bytes(dir.path(), &verified).unwrap();
-            assert_eq!(&**loaded, bytes);
+            assert_speech_witness(dir.path(), &verified, format, bytes);
             fs::write(&installed.path, vec![0; bytes.len()]).unwrap();
             assert!(matches!(
                 crate::speech::speech_model_bytes(dir.path(), &verified),
@@ -2791,6 +2801,35 @@ mod tests {
             installed_in_process_model(dir.path(), InProcessCapability::SpeechRecognition).unwrap(),
             None
         );
+    }
+
+    fn assert_speech_witness(
+        root: &Path,
+        verified: &crate::catalog::VerifiedCatalog,
+        format: ModelArtifactFormat,
+        bytes: &[u8],
+    ) {
+        assert_eq!(
+            crate::speech::speech_model_file(root, verified)
+                .unwrap()
+                .format(),
+            format
+        );
+        let (_, _, loaded) = crate::speech::speech_model_bytes(root, verified).unwrap();
+        assert_eq!(&**loaded, bytes);
+        #[cfg(feature = "whisper")]
+        if format == ModelArtifactFormat::WhistleCact {
+            // These authenticated fixture weights deliberately have the wrong
+            // pinned size. Both feature configurations must reject them before
+            // configuring a session or entering any native model parser.
+            let mut input = std::io::empty();
+            let mut output = Vec::new();
+            assert_eq!(
+                crate::speech::worker::serve(root, verified, &mut input, &mut output),
+                Err(crate::speech::SpeechError::ModelUnavailable)
+            );
+            assert!(output.is_empty());
+        }
     }
 
     /// An in-process model installs through the verified download and the

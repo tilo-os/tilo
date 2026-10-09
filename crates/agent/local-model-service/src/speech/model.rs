@@ -15,8 +15,19 @@ pub struct SealedSpeechModel {
     size: u64,
     id: String,
     revision: String,
+    format: agent_provider_config::local::ModelArtifactFormat,
 }
 impl SealedSpeechModel {
+    pub fn format(&self) -> agent_provider_config::local::ModelArtifactFormat {
+        self.format
+    }
+    pub(super) fn with_format(
+        mut self,
+        format: agent_provider_config::local::ModelArtifactFormat,
+    ) -> Self {
+        self.format = format;
+        self
+    }
     pub fn file(&self) -> &File {
         &self.file
     }
@@ -97,6 +108,7 @@ pub(super) fn seal_verified(
         size,
         id,
         revision,
+        format: agent_provider_config::local::ModelArtifactFormat::WhisperGgml,
     };
     model.check_seals()?;
     Ok(model)

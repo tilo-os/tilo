@@ -157,12 +157,9 @@ and sources/provenance under `/usr/share/tilo-speech/whistle`. Model bytes are
 excluded. The [package ledger](dictation-whistle-aot-package.json) records the
 actual nine files and forged-code rejection.
 
-This is preparation, not production admission: no root-owned package was
-installed, no model catalogue/format was activated, and no signing or publication
-occurred. The production worker still selects Whisper GGML only. The next source
-step is to connect the immutable runtime and signed model witnesses, CPU
-compatibility and participant licence selection to that worker; a private review
-manifest or matching caller hash must never replace those witnesses.
+The package remains a private candidate: no root-owned host package was installed,
+no production model catalogue was activated, and no signing or publication occurred.
+The subsequent default-off production source integration is described below.
 
 Follow-up validation: both four-language insertion tests pass (1.135 s combined,
 zero ignored); the accessible preview test passes (0.112 s); required shell
@@ -173,6 +170,54 @@ native-call cancellation, subsequent fresh recognition and package preparation
 also pass without changing admission controls.
 
 ## Reproduction and remaining boundary
+
+### Default-off production source admission
+
+The `whistle-aot` service feature now admits signed `whistle_cact` weights through
+the existing object verification, licence acceptance and sealed-model path. Weights
+cannot nominate an executable runtime. Without that feature the worker rejects
+this format before configuring or parsing it as Whisper. With it, the worker
+requires x86-64-v3 CPU support and exact model bytes, and authenticates three
+fixed image runtime objects by root ownership, non-writable parents, no-follow
+opens, sizes and compiled-in digests. A caller receipt cannot grant code authority.
+Native deserialization and model preparation still happen after the existing
+Landlock/seccomp confinement. No JIT or additional filesystem/network permission
+is enabled.
+
+The decoder uses the production full-context cadence and shared bounded
+segmentation, preserving the 120-second session cap while keeping each native
+call below 30 seconds. This differs from the earlier incremental review profile;
+its timings are recorded separately. The feature remains off by default.
+
+The [production-handler ledger](dictation-whistle-aot-image.json) records actual
+`worker::serve` journeys in an isolated synthetic image whose root maps to an
+unprivileged host account. The signed catalogue, trust key, licence selection and
+model store are ephemeral fixtures in the namespace. There is no host root,
+microphone, home directory, network, installed package or persistent trust change.
+Ready times include fixture setup, and replayed application insertion is a
+separate test rather than a concurrent microphone-to-app journey.
+
+| Public case | Ready including fixture (s) | Final after Ready (s) | Word errors/reference words |
+| --- | ---: | ---: | ---: |
+| English, 10.56 s audio | 1.115 | 11.906 | 4/19 |
+| German, 17.94 s audio | 1.138 | 21.077 | 6/18 |
+| French, 10.2 s audio | 1.103 | 11.821 | 0/20 |
+| Spanish, 12.84 s audio | 1.447 | 15.571 | 2/29 |
+| French repeated four times, 40.8 s audio | 1.293 | 44.024 | 4/80 |
+
+All successful runs observed one native thread. Peak virtual memory ranged from
+about 176 to 210 MiB for these recordings. Silence emitted no text; interrupted
+input emitted no final. A forged root-owned AOT artifact, even accompanied by a
+matching caller receipt, was rejected before Ready. All review units were inactive
+after observation. The earlier incorrectly serialized fixture status remains a
+failed attempt in the ledger. Raw draft/final text is preserved, including early
+invented words and German recognition errors; preview labelling does not repair
+accuracy. These are remote-builder results, not older physical-device acceptance.
+
+Focused speech tests pass: 17 run, zero failures (27 unrelated tests filtered).
+Strict all-target service Clippy passes both the default build and the opt-in
+production/review features. Remaining checks and publication are recorded with
+the candidate commit.
 
 The adjacent [JSON ledger](dictation-whistle-aot-review.json) records source-built
 runtime/compiler/artifact digests, exact Rust/bridge source hashes, raw receipt
@@ -207,8 +252,10 @@ affected-package plan are recorded at publication.
 
 Still unqualified: live microphone/account permission, complete concurrent native/browser/
 terminal journeys **with this engine**, older physical devices, ARM,
-engine-specific language/dictionary revocation and
-production immutable runtime/model admission (the package candidate is now prepared).
+engine-specific language/dictionary revocation, the complete 120-second session,
+and live immutable runtime/model installation and activation. Production source
+admission and the isolated synthetic image are now exercised, while the package
+candidate remains uninstalled.
 Existing insertion/undo and
 revocation regressions are transport foundations, not new acoustic evidence.
 The backend is default-off and not selectable on the production model catalogue.

@@ -92,6 +92,12 @@ pub fn serve_with_diagnostics(
 ) -> Result<(), SpeechError> {
     let verification_started = std::time::Instant::now();
     let sealed = speech_model_file(root, verified)?;
+    if sealed.format() == agent_provider_config::local::ModelArtifactFormat::WhistleCact {
+        #[cfg(feature = "whistle-aot")]
+        return super::aot::serve(sealed, input, output);
+        #[cfg(not(feature = "whistle-aot"))]
+        return Err(SpeechError::ModelUnavailable);
+    }
     let verify_ms = verification_started.elapsed().as_secs_f64() * 1000.0;
     let model = sealed.id().to_owned();
     let revision = sealed.revision().to_owned();
