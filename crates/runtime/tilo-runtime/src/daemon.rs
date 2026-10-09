@@ -775,7 +775,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .name("tilo-native-mcp".into())
                 .spawn(move || {
                     let _slot = slot;
-                    let mut server = match factory() {
+                    let server = match factory() {
                         Ok(server) => server.with_computer(computer).with_media(media),
                         Err(error) => {
                             tracing::debug!(%error, "native MCP session admission unavailable");
@@ -783,7 +783,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                         }
                     };
                     if let Err(error) =
-                        serve_connection(stream, &mut server, &status, joiner.as_ref(), &search)
+                        serve_connection(stream, &server, &status, joiner.as_ref(), &search)
                     {
                         tracing::debug!(%error, "native runtime client disconnected");
                     }
@@ -803,9 +803,9 @@ impl Drop for ConnectionSlot {
     }
 }
 
-fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
+fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync + 'static>(
     mut stream: UnixStream,
-    server: &mut McpServer<H>,
+    server: &McpServer<H>,
     status: &Status,
     joiner: Option<&crate::Joiner>,
     search: &tilo_os_search::OsSearch,

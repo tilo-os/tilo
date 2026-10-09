@@ -465,6 +465,21 @@ impl ActionHost for RuntimeActionHost {
             .action_observe(&on_this_device(caller), id)
     }
 
+    /// Routed and authorized exactly as [`Self::observe`]: a caller that may
+    /// not observe an invocation may not wait on it either.
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        if let Some(session) = &self.session {
+            session.check(caller, &self.joined).ok()?;
+            return session.host.next_change(caller, id);
+        }
+        if !self.admitted(caller) {
+            return None;
+        }
+        self.broker
+            .state()
+            .action_next_change_after_now(&on_this_device(caller), id)
+    }
+
     fn cancel(
         &self,
         caller: &Caller,

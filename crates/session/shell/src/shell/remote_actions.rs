@@ -126,6 +126,12 @@ impl ActionHost for BrokerActionHost {
         self.broker.state().action_observe(caller, id)
     }
 
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        // Authorized as `observe` is: an invocation this caller did not
+        // admit has no change to wait for.
+        self.broker.state().action_next_change_after_now(caller, id)
+    }
+
     fn cancel(
         &self,
         caller: &Caller,
