@@ -2514,3 +2514,35 @@ command line before verifying its absence, and unreadable command lines fail.
 No Whisper control was repeated or rewritten. Publication, persistent model or
 runtime installation, real microphone consent and deployment remain held;
 older devices, ARM and arbitrary complex editors remain unqualified.
+
+### Matching-build component and direct recognition controls (9 October)
+
+The fresh component profile at `c403ee7bf5f2660abadc20726697a5d810632ae1`
+uses all four matching-build binaries and exact source guards. The earlier
+component run's binary-identity refusal is retained. The actual pinned AOT
+worker now returns empty draft/final text for two seconds of exact silence in
+1.3/0.9 ms; the production shared recognition path skips inference only for
+exact zero samples and still decodes appended nonzero quiet audio.
+
+French insertion, Undo/Redo, cancellation, restart and focus retirement pass.
+Preview appears 4.249 seconds after playback; insertion takes 2.137 seconds
+after Finish. The transcript differs from the earlier control and scores 15%
+raw development WER; this is neither an accuracy nor latency improvement.
+Sampled group RSS peaks are 131.8 MiB for worker/runtime, 893.1 MiB for the
+compositor and 896.9 MiB for browser/host. RSS sums double-count shared pages;
+peaks occur at different times. Total cgroup usage reaches the 3 GiB bound and
+includes debug executables, page cache, graphics and staging. Runtime and model
+share one process, so their individual allocations remain unmeasured.
+
+Fixed-audio direct German inference reproduces the wrong names with both auto
+and explicit German (33.3% raw WER). The unchanged original compositor German
+control remains failed at 27.8%. Capture is not required to reproduce the
+recognition defect; the inspected bridge passes the language correctly and
+calls the pinned decoder without reference-aware text replacement. A next
+accuracy comparison can use an already-pinned stronger multilingual model
+under the same bounded scope; its previous strict 1 GiB comparison failed
+before producing a usable result. No catalogue, runtime publication or
+persistent deployment is authorized by this evidence.
+
+See [component evidence](dictation-component-profile-evidence.json) and
+[historical drivers](../../tools/release/fixtures/whistle_components_20261009/README.md).
