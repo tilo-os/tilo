@@ -4,8 +4,8 @@
 //! typed; the launch reads the current state and leaves the history to the
 //! History view, which describes it when opened, a page at a time.
 
-use notes::actions::new_page_action;
-use notes::doc::NotesDoc;
+use notes::actions::create_page_action;
+use notes::read;
 use notes::{NotesShell, PageId};
 use tilo_document::RichTextAction;
 use tilo_document::action::RegionKind;
@@ -25,13 +25,13 @@ fn typed_notebook(directory: &std::path::Path) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::open_data_dir(directory).unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&new_page_action(page, None, "a".into(), "Bugs")).unwrap())
+    app.invoke(Invoke::apply(&create_page_action(page, None, "Bugs")).unwrap())
         .unwrap();
     let mut peer = app.peer_document();
-    let block = NotesDoc::page_block_snapshots(&peer, page)[0].0.clone();
+    let block = read::page_block_snapshots(&peer, page)[0].0.clone();
     let line = "the sidebar flickers when a note is renamed twice ";
     for (at, ch) in line.chars().cycle().take(KEYSTROKES).enumerate() {
-        NotesDoc::edit_page_body(
+        crate::component_support::edit_page_body(
             &mut peer,
             page,
             &RichTextAction::SpliceText {

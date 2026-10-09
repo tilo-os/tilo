@@ -59,7 +59,7 @@ fn fixture_with_extra_calculators(
         store.with(&record.id, |doc| match i {
             0 => word_processor::initialize_empty_document(doc).unwrap(),
             1 => chat::doc::ChatDoc::seed_starter(doc, "author", "Author", "AU"),
-            2 => notes::notebook::initialize_empty(doc).unwrap(),
+            2 => notes::read::initialize(doc),
             _ => calculator::doc::initialize(doc).unwrap(),
         });
         if i == 0 {
@@ -1330,9 +1330,9 @@ fn external_hidden_notes_strip_renders_when_selected_without_redraw_loop() {
         .invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: hidden_notes_instance,
-                address: tilo_actions::ActionAddress::new("notes.notebook", "new-page"),
+                address: tilo_actions::ActionAddress::new("notes.notebook", "new-note"),
             },
-            serde_json::json!({"value": hidden_title})
+            serde_json::json!({"title": hidden_title})
                 .as_object()
                 .unwrap(),
         )
@@ -1356,7 +1356,7 @@ fn external_hidden_notes_strip_renders_when_selected_without_redraw_loop() {
         notes_record
             .store
             .read(&notes_record.checkout.id, |doc| {
-                notes::notebook::project(doc, None)
+                notes::read::project(doc)
                     .unwrap()
                     .pages()
                     .iter()
@@ -3884,18 +3884,26 @@ fn actual_desktop_hosts_checked_writer_chat_notes_calculator_and_preserves_write
             .unwrap()
             .contains("Retained canonical desktop")
     );
-    for (instance, resource, action, value) in [
+    for (instance, resource, action, param, value) in [
         (
             (5 << 48) | 11,
             "chat.channel:c_general",
             "post",
+            "value",
             "Desktop message",
         ),
-        ((5 << 48) | 12, "notes.notebook", "new-page", "Desktop page"),
+        (
+            (5 << 48) | 12,
+            "notes.notebook",
+            "new-note",
+            "title",
+            "Desktop page",
+        ),
         (
             (5 << 48) | 13,
             "calculator.workspace",
             "add-function",
+            "value",
             "sin(x)",
         ),
     ] {
@@ -3905,7 +3913,7 @@ fn actual_desktop_hosts_checked_writer_chat_notes_calculator_and_preserves_write
                     instance_id: instance,
                     address: tilo_actions::ActionAddress::new(resource, action),
                 },
-                serde_json::json!({"value":value}).as_object().unwrap(),
+                serde_json::json!({ param: value }).as_object().unwrap(),
             )
             .unwrap();
     }
@@ -4461,7 +4469,6 @@ fn global_search_real_catalog_launch_uses_bound_queue() {
 
 #[test]
 fn global_search_real_notes_and_chat_body_hits_select_exact_admitted_tab() {
-    use notes::{doc::NotesDoc, model::PageMeta};
     let (root, handle, _) = fixture_with_topology(|tree| {
         let strip = &mut tree.workspaces[0].strips[0];
         let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
@@ -4481,25 +4488,19 @@ fn global_search_real_notes_and_chat_body_hits_select_exact_admitted_tab() {
         record.store.with(&record.checkout.id, |doc| {
             if record.app == "so.tilo.notes" {
                 let page = uuid::Uuid::new_v4();
-                NotesDoc::upsert_page_meta(
-                    doc,
-                    &PageMeta {
-                        id: page,
-                        title: "Ordinary notebook page".into(),
-                        parent: None,
-                        order: "a".into(),
-                    },
-                );
-                NotesDoc::fill_page_body(
-                    doc,
-                    page,
-                    &[ui::widget::BlockContent::paragraph(
-                        "",
-                        "quasar-notes-body-only",
-                    )],
-                )
-                .unwrap();
-                notes::notebook::validate(doc).unwrap();
+                for action in [
+                    notes::actions::create_page_action(page, None, "Ordinary notebook page"),
+                    notes::actions::write_body_action(
+                        page,
+                        &[ui::widget::BlockContent::paragraph(
+                            "",
+                            "quasar-notes-body-only",
+                        )],
+                    ),
+                ] {
+                    tilo_actions::Action::apply(&action, doc).unwrap();
+                }
+                notes::read::validate(doc).unwrap();
             } else if record.app == "so.tilo.chat" {
                 chat::doc::ChatDoc::push_message(
                     doc,

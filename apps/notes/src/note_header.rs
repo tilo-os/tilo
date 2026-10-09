@@ -4,14 +4,16 @@
 //!
 //! Tags and incoming links are chips that act: they take focus, activate from
 //! the keyboard and assistive technology, and are laid out and painted by the
-//! toolkit. A press invokes the published tag's or note's "open", the same
-//! operation a command-palette entry does.
+//! toolkit. A press invokes the effect that browses the tag or opens the
+//! note, the same operation a command-palette entry does.
 
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{Chip, Column, Row, Text};
 
+use crate::effect::NotesEffect;
 use crate::main_panel::{BacklinkChip, TagChip};
+use crate::notebook::Notebook;
 
 /// What an incoming-link button says: the source note, and how many times it
 /// links here when more than once.
@@ -31,9 +33,26 @@ pub struct NoteHeader {
     captions: Vec<String>,
     column: Option<Column>,
     stale: bool,
+    /// What the chips invoke, once the notebook's window is attached.
+    actions: Option<ui::framework::Actions<Notebook>>,
 }
 
 impl NoteHeader {
+    /// Bind the chips to the notebook window's effects from now on.
+    pub fn attach(&mut self, actions: ui::framework::Actions<Notebook>) {
+        self.actions = Some(actions);
+        self.stale = true;
+    }
+
+    /// What the chips invoke, when attached.
+    pub fn actions(&self) -> Option<ui::framework::Actions<Notebook>> {
+        self.actions.clone()
+    }
+
+    fn effect(&self, effect: &NotesEffect) -> Option<tilo_actions::ActionBinding<()>> {
+        self.actions.as_ref()?.effect(effect)
+    }
+
     /// Show these tags. Returns whether the header changed.
     pub fn set_tags(&mut self, tags: Vec<TagChip>) -> bool {
         let changed = self.tags != tags;
@@ -115,7 +134,7 @@ impl NoteHeader {
                         "notes-surface-tag",
                         &[("tag", tag.name.clone().into())],
                     ));
-                if let Some(open) = crate::actions::open_tag_binding(tag.id, &tag.name) {
+                if let Some(open) = self.effect(&NotesEffect::OpenTag { tag: tag.id }) {
                     chip = chip.on_action(open);
                 }
                 row = row.push(Box::new(chip));
@@ -151,9 +170,10 @@ impl NoteHeader {
                         "notes-surface-backlink",
                         &[("title", backlink.title.clone().into())],
                     ));
-                if let Some(open) =
-                    crate::actions::open_page_binding(backlink.page, &backlink.title)
-                {
+                if let Some(open) = self.effect(&NotesEffect::OpenNote {
+                    page: backlink.page,
+                    block: None,
+                }) {
                     chip = chip.on_action(open);
                 }
                 row = row.push(Box::new(chip));

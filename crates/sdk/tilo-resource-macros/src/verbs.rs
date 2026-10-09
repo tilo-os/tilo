@@ -1265,7 +1265,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                         }
                         _ => true,
                     },
-                    _ => true,
+                    // A verb is a step of its own: nothing continues it.
+                    _ => false,
                 }
             }
 

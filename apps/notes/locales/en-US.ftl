@@ -59,3 +59,36 @@ notes-view-editor = Editor
 notes-help-block-duplicate = Duplicate blocks and their children
 
 notes-help-block-move = Move focused or selected blocks
+
+## History: what each change did, by field and by verb
+
+notes-page-body = Edited { $item }
+notes-page-tags = { $op ->
+    [insert] Tagged { $item }
+   *[other] Untagged { $item }
+}
+notes-tag-name = Renamed the tag { $old } to { $new }
+notes-notebook-pages = { $op ->
+    [insert] Added a note
+    [remove] Removed a note
+   *[other] Moved a note
+}
+notes-notebook-tags = { $op ->
+    [insert] Added a tag
+   *[other] Removed a tag
+}
+notes-new-note = Created { $title }
+notes-new-child = Created { $title } in { $item }
+notes-rename = Renamed { $item } to { $title }
+notes-delete = Deleted { $item }
+notes-move-note = Moved { $item }
+notes-move-up = Moved { $item } up
+notes-move-down = Moved { $item } down
+notes-indent = Indented { $item }
+notes-outdent = Outdented { $item }
+notes-duplicate = Duplicated { $item }
+notes-new-tag = Created the tag { $name }
+notes-tag = Tagged { $item } with { $name }
+notes-delete-tag = Deleted the tag { $item }
+notes-place-image = Added a picture to { $item }
+notes-import-markdown = Imported { $title }

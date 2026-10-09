@@ -267,6 +267,19 @@ pub trait Model: Sized {
         }
     }
 
+    /// Read everything this value holds, for a field marked
+    /// `#[model(whole)]`: a value read lazily (rich text reads its
+    /// paragraphs as views ask for them) reads all of it, so every reader of
+    /// the record — a verb, search, `read_content` — sees all of it. The
+    /// default has nothing more to read.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document no longer holds the value.
+    fn read_whole(&mut self, doc: &Doc) -> Result<(), ModelError> {
+        let _ = doc;
+        Ok(())
+    }
+
     /// Run every `#[model(check)]` invariant of this value and the values
     /// inside it.
     ///

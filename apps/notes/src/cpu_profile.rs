@@ -98,7 +98,7 @@ fn fixture(
         };
         apply_fixture_action(
             &mut peer,
-            &crate::actions::append_page_action(page, None, &format!("CPU fixture {index}")),
+            &crate::actions::create_page_action(page, None, &format!("CPU fixture {index}")),
         );
         if index != 0 {
             let body = format!("Authored fixture {index}. {}", "notebook text ".repeat(160));
@@ -107,10 +107,7 @@ fn fixture(
         }
     }
     app.merge_peer(&mut peer).unwrap();
-    assert_eq!(
-        app.read_document(crate::doc::NotesDoc::list_pages).len(),
-        pages
-    );
+    assert_eq!(app.read_document(crate::read::list_pages).len(), pages);
     app.surface(|notes: &mut crate::NotesApp| notes.navigate_to(target))
         .unwrap();
     let rect = app
@@ -123,7 +120,7 @@ fn fixture(
     (app, target)
 }
 
-fn apply_fixture_action(doc: &mut ui::tilo_resource::Doc, action: &crate::actions::NotesAction) {
+fn apply_fixture_action(doc: &mut ui::tilo_resource::Doc, action: &crate::actions::Action) {
     tilo_actions::apply_local(doc, action, crate::actions::encode(action)).unwrap();
 }
 
@@ -148,42 +145,14 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                 frames = app.harness().take_profile_samples();
             });
             let text = app.read_document(|doc| {
-                crate::doc::NotesDoc::page_block_snapshots(doc, target)
+                crate::read::page_block_snapshots(doc, target)
                     .into_iter()
                     .map(|(_, text)| text)
                     .collect::<String>()
             });
             assert_eq!(text, "a".repeat(sample + 1), "real editor mutation");
-            for phase in [
-                "search_blocks",
-                "search_delta_adopted",
-                "canonical_projection_adopted",
-                "notebook_children",
-                "page_tree_commands",
-                "page_tree_action",
-                "page_body_resource",
-                "page_body_publish",
-                "page_body_continuations",
-                "duplicate_sources",
-                "page_preview",
-                "continuation_stamp",
-                "publication_backlinks",
-                "page_decoration",
-                "projection_bodies",
-                "projection_rich_states",
-            ] {
-                assert!(rows.iter().any(|row| row.phase == phase));
-            }
-            assert!(rows.iter().all(|row| row.phase != "search_body_decode"));
-            assert!(rows.iter().any(|row| row.phase == "tree_metadata_plan"));
-            if pages > 1 {
-                for phase in [
-                    "tree_metadata_delta",
-                    "tree_metadata_encode",
-                    "tree_metadata_spec",
-                ] {
-                    assert!(rows.iter().any(|row| row.phase == phase));
-                }
+            for phase in ["surface_sync", "search_blocks"] {
+                assert!(rows.iter().any(|row| row.phase == phase), "{phase}");
             }
             assert!(!frames.is_empty(), "actual frame-pass observations");
             for phase in [
@@ -197,14 +166,15 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                 assert!(framework_rows.iter().any(|row| row.phase == phase));
             }
             for phase in [
-                "child.publish_parts",
-                "child.rewrap",
                 "schema.cached_clone",
                 "resource.apply_spec",
                 "resource.group_spec",
                 "resource.declaration_spec",
             ] {
-                assert!(resource_rows.iter().any(|row| row.phase == phase));
+                assert!(
+                    resource_rows.iter().any(|row| row.phase == phase),
+                    "{phase}"
+                );
             }
             if sample >= 2 {
                 eprintln!(
@@ -358,7 +328,7 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
     let original = app.harness().resources();
     assert!(contains(&original, "notes.notebook"));
     let before = app.read_document(Transactable::base_heads);
-    let (_, rows) = observe(|| {
+    let ((), rows) = ui::framework::testing::phases::observe(|| {
         for _ in 0..10 {
             let resources = app.harness().resources();
             assert!(contains(&resources, "notes.notebook"));
@@ -366,19 +336,22 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
         }
     });
     assert!(
-        !rows.iter().any(|row| row.phase == "notebook_children"),
-        "unchanged catalogue reads must reuse the canonical resource tree"
+        !rows
+            .iter()
+            .any(|row| row.phase == "framework.resource_tree"),
+        "unchanged catalogue reads must reuse the published resource tree"
     );
     assert_eq!(app.read_document(Transactable::base_heads), before);
 
     let locale = ui::i18n::I18nManager::pseudo_locale();
     ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
-    let (_, rows) = observe(|| {
+    let ((), rows) = ui::framework::testing::phases::observe(|| {
         assert!(contains(&app.harness().resources(), "notes.notebook"));
     });
     ui::i18n::I18nManager::set_pseudo_locale(locale);
     assert!(
-        rows.iter().any(|row| row.phase == "notebook_children"),
+        rows.iter()
+            .any(|row| row.phase == "framework.resource_tree"),
         "translation changes must invalidate cached resource labels"
     );
     assert_eq!(app.read_document(Transactable::base_heads), before);
@@ -387,7 +360,7 @@ fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() 
     let mut peer = app.peer_document();
     apply_fixture_action(
         &mut peer,
-        &crate::actions::append_page_action(page, None, "Remote creation"),
+        &crate::actions::create_page_action(page, None, "Remote creation"),
     );
     app.merge_peer(&mut peer).unwrap();
     let resources = app.harness().resources();

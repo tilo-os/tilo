@@ -57,3 +57,36 @@ notes-view-editor = Editor
 notes-help-block-duplicate = Blöcke mit Unterelementen duplizieren
 
 notes-help-block-move = Fokussierte oder ausgewählte Blöcke verschieben
+
+## Verlauf: was jede Änderung getan hat, nach Feld und nach Aktion
+
+notes-page-body = { $item } bearbeitet
+notes-page-tags = { $op ->
+    [insert] { $item } verschlagwortet
+   *[other] Schlagwort von { $item } entfernt
+}
+notes-tag-name = Schlagwort { $old } in { $new } umbenannt
+notes-notebook-pages = { $op ->
+    [insert] Notiz hinzugefügt
+    [remove] Notiz entfernt
+   *[other] Notiz verschoben
+}
+notes-notebook-tags = { $op ->
+    [insert] Schlagwort hinzugefügt
+   *[other] Schlagwort entfernt
+}
+notes-new-note = { $title } erstellt
+notes-new-child = { $title } in { $item } erstellt
+notes-rename = { $item } in { $title } umbenannt
+notes-delete = { $item } gelöscht
+notes-move-note = { $item } verschoben
+notes-move-up = { $item } nach oben verschoben
+notes-move-down = { $item } nach unten verschoben
+notes-indent = { $item } eingerückt
+notes-outdent = { $item } ausgerückt
+notes-duplicate = { $item } dupliziert
+notes-new-tag = Schlagwort { $name } erstellt
+notes-tag = { $item } mit { $name } verschlagwortet
+notes-delete-tag = Schlagwort { $item } gelöscht
+notes-place-image = Bild zu { $item } hinzugefügt
+notes-import-markdown = { $title } importiert

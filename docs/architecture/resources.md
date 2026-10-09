@@ -73,6 +73,9 @@ shared ones (`RichText`, `Grid`). An app does not implement `Resource` by hand.
   `Collection`, each item is one), so the relay can enforce who may write it
   without reading content ([permissions.md](permissions.md) §5). A comment
   thread inside a document is a unit; the document body is another.
+- `#[model(whole)]` reads all of a value that is otherwise read as views ask
+  for it (a `RichText`'s paragraphs), so verbs, search and `read_content` see
+  every word: for short texts such as a note's body or a slide's text box.
 - `#[model(rename = "key")]`, `#[model(skip)]` as before.
 - `#[model(check = path)]` on a type names an invariant,
   `fn(&Self) -> Result<(), Refusal>`. It runs after every change that touched a

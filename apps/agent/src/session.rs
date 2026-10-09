@@ -2991,6 +2991,7 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         RichTextAction::SetPageMargins { .. }
         | RichTextAction::GenerateToc { .. }
         | RichTextAction::ReplaceBody { .. }
+        | RichTextAction::ReplaceClips { .. }
         | RichTextAction::ReplaceFormatted { .. }
         | RichTextAction::NoteFileWritten { .. }
         | RichTextAction::EnsureRegionBlock { .. } => tilo_actions::InteractionAnchor::Resource,

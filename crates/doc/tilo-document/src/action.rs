@@ -408,6 +408,10 @@ pub enum RichTextAction {
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
     ReplaceBody { markdown: String },
+    /// Replace the whole body with `blocks`, formatted as they are: text an
+    /// app brings with marks Markdown cannot carry (a note's links to other
+    /// notes, a slide's runs, a copied fragment).
+    ReplaceClips { blocks: Vec<ClipBlock> },
     /// Replace the body with `bytes` decoded as `format`. A decode failure
     /// refuses the action so the open document stays as it was. The
     /// document remembers the bytes' content address as the file it was
@@ -485,6 +489,7 @@ impl RichTextAction {
             | Self::RemoveRegionBlocks { .. }
             | Self::EnsureRegionBlock { .. }
             | Self::ReplaceBody { .. }
+            | Self::ReplaceClips { .. }
             | Self::ReplaceFormatted { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
             | Self::ApplyNamedStyle { .. }
@@ -858,6 +863,19 @@ impl<'a> ActionValidator<'a> {
         }
     }
 
+    /// A pasted or written paragraph the document can hold.
+    fn valid_clip(block: &ClipBlock) -> bool {
+        Self::safe_text(&block.text)
+            && Self::safe_name(&block.kind)
+            && block.level.is_none_or(|level| (0..=9).contains(&level))
+            && Self::valid_clip_attrs(block)
+            && block.marks.iter().all(|mark| {
+                Self::safe_name(&mark.name)
+                    && mark.start < mark.end
+                    && mark.end <= block.text.chars().count()
+            })
+    }
+
     fn validate_paste_and_body(&self, action: &RichTextAction) -> bool {
         match action {
             RichTextAction::PasteFragment {
@@ -874,17 +892,7 @@ impl<'a> ActionValidator<'a> {
                 valid_range
                     && !blocks.is_empty()
                     && blocks.len() <= 10_000
-                    && blocks.iter().all(|block| {
-                        Self::safe_text(&block.text)
-                            && Self::safe_name(&block.kind)
-                            && block.level.is_none_or(|level| (0..=9).contains(&level))
-                            && Self::valid_clip_attrs(block)
-                            && block.marks.iter().all(|mark| {
-                                Self::safe_name(&mark.name)
-                                    && mark.start < mark.end
-                                    && mark.end <= block.text.chars().count()
-                            })
-                    })
+                    && blocks.iter().all(Self::valid_clip)
             }
             RichTextAction::InsertParagraph { after, text } => {
                 self.block_len(RegionKind::Body, after).is_some() && Self::safe_text(text)
@@ -904,6 +912,9 @@ impl<'a> ActionValidator<'a> {
             }
             RichTextAction::EnsureRegionBlock { .. } => true,
             RichTextAction::ReplaceBody { markdown } => Self::safe_text(markdown),
+            RichTextAction::ReplaceClips { blocks } => {
+                blocks.len() <= 10_000 && blocks.iter().all(Self::valid_clip)
+            }
             RichTextAction::ReplaceFormatted { bytes, .. } => bytes.len() <= MAX_IMPORT_BYTES,
             _ => false,
         }
@@ -2103,6 +2114,29 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
     keep_a_paragraph(dm);
 }
 
+fn apply_replace_clips(dm: &mut DocMut, blocks: &[ClipBlock]) {
+    let existing = tilo_doc::model::blocks_in_order(dm.doc, dm.c);
+    for id in &existing {
+        dm.tombstone_block_in(Region::Body, id);
+    }
+    if !blocks.is_empty() {
+        let first = dm.insert_block(None, "paragraph");
+        apply_paste_fragment(
+            dm,
+            Region::Body,
+            &SelectionTarget {
+                start_block: first.clone(),
+                start: 0,
+                end_block: first,
+                end: 0,
+            },
+            blocks,
+            true,
+        );
+    }
+    keep_a_paragraph(dm);
+}
+
 /// A body replaced by nothing (an empty file, an empty template) still has
 /// a paragraph to write in, as a new document does.
 fn keep_a_paragraph(dm: &mut DocMut) {
@@ -2342,6 +2376,7 @@ fn apply_block_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             apply_ensure_region_block(dm, region.to_region());
         }
         RichTextAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
+        RichTextAction::ReplaceClips { blocks } => apply_replace_clips(dm, blocks),
         RichTextAction::ReplaceFormatted { format, bytes } => {
             apply_replace_formatted(dm, *format, bytes);
         }

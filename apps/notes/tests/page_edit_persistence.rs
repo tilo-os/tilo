@@ -2,7 +2,7 @@
 //! editor makes are there when the notebook opens again.
 
 use crate::framework_support::with_note;
-use notes::doc::NotesDoc;
+use notes::read;
 use ui::widget::BlockKind;
 
 /// Click into the open note's body and type `keys`, one key per entry.
@@ -25,7 +25,7 @@ fn typed_paragraphs_and_headings_survive_a_reopen() {
         let (mut app, page) = with_note("First note", "");
         type_in_body(&mut app, &["First", "Enter", "Second"]);
         let app = app.reopen().unwrap();
-        let blocks = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let blocks = app.read_document(|doc| read::page_blocks(doc, page));
         let texts = blocks
             .iter()
             .map(|block| block.text.as_str())
@@ -43,7 +43,7 @@ fn typed_paragraphs_and_headings_survive_a_reopen() {
         let (mut app, page) = with_note("Headings", "");
         type_in_body(&mut app, &["## Heading two", "Enter", "Body"]);
         let app = app.reopen().unwrap();
-        let blocks = app.read_document(|doc| NotesDoc::page_blocks(doc, page));
+        let blocks = app.read_document(|doc| read::page_blocks(doc, page));
         assert!(
             matches!(blocks[0].kind, BlockKind::Heading(2)),
             "{blocks:?}"

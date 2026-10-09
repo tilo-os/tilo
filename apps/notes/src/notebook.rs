@@ -1,297 +1,765 @@
-//! Versioned canonical notebook schema. Validation and projection never repair a document.
+//! The notebook: what Notes stores, and the operations on it that are more
+//! than editing one field.
 //!
-//! Page links retain their non-nil UUID after a target is deleted. Tree and tag
-//! endpoints must exist; a surviving text link need not have a surviving page.
-use crate::{
-    doc::NotesDoc,
-    model::{PageId, PageMeta, TagAssignment, TagMeta, Workspace, WorkspaceData},
-};
-use automerge::{
-    AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
-};
-use std::collections::HashMap;
+//! [`Notebook`] is the record: its notes ([`Page`]) in one [`Collection`],
+//! whose order is the order of every group of sibling notes, the tags a note
+//! may carry, and the images the notes show. A note's body is rich text,
+//! edited by field edits at its path
+//! (`Notebook::paths().pages.item(&id).body.perform(&op)`); assigning or
+//! removing a tag is a field edit of the note's `tags`, renaming a tag one of
+//! the tag's `name`. The methods below are what is more than that: a note's
+//! place in the tree (a parent must exist and never be the note's own
+//! descendant), its title (renaming relabels the links to it), creating,
+//! deleting and copying notes with everything under them.
 
-/// 3: page bodies are rich text (`body`).
-pub const NOTES_SCHEMA_VERSION: u32 = 3;
-const OWNED_FIELDS: [&str; 5] = [
-    "notes_schema_version",
-    "pages",
-    "tags",
-    "tag_assignments",
-    "assets",
-];
-/// Largest image a note accepts. The notebook records only a reference and
-/// the bytes live in the device content store, but the insert action still
-/// carries the bytes once, so this stays well inside one action payload.
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use tilo_document::action::{RegionKind, Span};
+use tilo_document::{ClipBlock, RichText, RichTextAction};
+use ui::tilo_resource::{
+    self, ActionCx, Atom, Bytes, Collection, Id, Model, Refusal, Set, resource,
+};
+use ui::widget::BlockContent;
+use ui::widget::marks::Mark;
+
+use crate::model::PageId;
+
+/// Largest image a note accepts. The notebook records a reference and the
+/// bytes live in the content store, but the action adding it carries the
+/// bytes once, so this stays well inside one action payload.
 pub const MAX_ASSET_BYTES: usize = 1024 * 1024;
 
-/// Initialize only a new notebook; existing Notes data is never reset or stamped.
-/// # Errors
-/// Refuses preexisting Notes fields or an Automerge mutation failure.
-pub fn initialize_empty(doc: &mut AutoCommit) -> Result<(), String> {
-    for key in OWNED_FIELDS {
-        if !doc
-            .get_all(ROOT, key)
-            .map_err(|e| e.to_string())?
-            .is_empty()
-        {
-            return Err("notebook already contains Notes data; migration required".into());
+/// The title a note gets when none is given.
+pub const UNTITLED: &str = "Untitled";
+
+/// The notebook.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct Notebook {
+    /// Notes
+    pub pages: Collection<Page>,
+    /// Tags
+    pub tags: Collection<Tag>,
+    /// Images
+    ///
+    /// The pictures the notes show, by the BLAKE3 digest their bodies name
+    /// them by. Only placing a picture writes one.
+    #[model(readonly)]
+    pub images: BTreeMap<String, Bytes>,
+}
+
+/// One note.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct Page {
+    /// Title
+    ///
+    /// Renaming relabels every link to the note.
+    #[model(label)]
+    #[model(readonly)]
+    pub title: String,
+    /// Parent
+    ///
+    /// The note this one sits under; none for a top-level note. Only moving
+    /// the note changes it.
+    #[model(readonly)]
+    pub parent: Option<Id>,
+    /// Body
+    ///
+    /// Read whole: a note is short, and search, links and copies read every
+    /// word of it.
+    #[model(whole)]
+    pub body: RichText,
+    /// Tags
+    pub tags: Set<Id>,
+}
+
+/// A named tag notes carry.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+#[model(check = Tag::valid)]
+pub struct Tag {
+    /// Name
+    ///
+    /// Written whole: two people renaming a tag at once keep one of the
+    /// names, never a mix.
+    #[model(label)]
+    pub name: Atom,
+}
+
+impl Tag {
+    /// A tag is listed and found by its name: never blank, never padded.
+    fn valid(&self) -> Result<(), Refusal> {
+        let name = self.name.0.as_str();
+        if name.trim().is_empty() || name.trim() != name {
+            return Err(Refusal::new("a tag has a name without surrounding spaces"));
         }
-    }
-    for key in ["pages", "tags", "tag_assignments", "assets"] {
-        doc.put_object(ROOT, key, ObjType::Map)
-            .map_err(|e| e.to_string())?;
-    }
-    doc.put(
-        ROOT,
-        "notes_schema_version",
-        u64::from(NOTES_SCHEMA_VERSION),
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Validate schema, complete model and native formatting without writing anything.
-/// # Errors
-/// Returns a migration-required or malformed-notebook diagnostic.
-pub fn validate(doc: &AutoCommit) -> Result<(), String> {
-    validated_workspace(doc, true).map(|_| ())
-}
-
-/// Project the current document, retaining a local selection only while it exists.
-/// # Errors
-/// Returns the same schema/structure errors as [`validate`].
-pub fn project(doc: &AutoCommit, selected: Option<PageId>) -> Result<Workspace, String> {
-    project_impl(doc, selected, true)
-}
-
-/// Per-frame projection after the component has validated the current asset
-/// revision separately. Image payloads can be large, so ordinary text edits
-/// must not hash every unchanged byte again.
-pub(crate) fn project_without_asset_rehash(
-    doc: &AutoCommit,
-    selected: Option<PageId>,
-) -> Result<Workspace, String> {
-    project_impl(doc, selected, false)
-}
-
-fn project_impl(
-    doc: &AutoCommit,
-    selected: Option<PageId>,
-    validate_image_bytes: bool,
-) -> Result<Workspace, String> {
-    let mut workspace = validated_workspace(doc, validate_image_bytes)?;
-    workspace.data.selected =
-        selected.filter(|id| workspace.data.pages.iter().any(|page| page.id == *id));
-    Ok(workspace)
-}
-
-pub(crate) fn required<'a>(
-    doc: &'a AutoCommit,
-    object: &ObjId,
-    key: &str,
-) -> Result<(Value<'a>, ObjId), String> {
-    let mut values = doc.get_all(object, key).map_err(|e| e.to_string())?;
-    if values.len() != 1 {
-        return Err(format!("{key} must have exactly one value"));
-    }
-    values.pop().ok_or_else(|| format!("missing {key}"))
-}
-fn object(doc: &AutoCommit, parent: &ObjId, key: &str, kind: ObjType) -> Result<ObjId, String> {
-    let (value, id) = required(doc, parent, key)?;
-    if value != Value::Object(kind) {
-        return Err(format!("{key} must be {kind:?}"));
-    }
-    Ok(id)
-}
-pub(crate) fn string(doc: &AutoCommit, parent: &ObjId, key: &str) -> Result<String, String> {
-    match required(doc, parent, key)?.0 {
-        Value::Scalar(value) => match value.as_ref() {
-            ScalarValue::Str(s) => Ok(s.to_string()),
-            _ => Err(format!("{key} must be a string")),
-        },
-        Value::Object(_) => Err(format!("{key} must be a string")),
-    }
-}
-fn text(doc: &AutoCommit, parent: &ObjId, key: &str) -> Result<String, String> {
-    doc.text(object(doc, parent, key, ObjType::Text)?)
-        .map_err(|e| e.to_string())
-}
-fn integer(doc: &AutoCommit, parent: &ObjId, key: &str) -> Result<u64, String> {
-    let (value, _) = required(doc, parent, key)?;
-    match value {
-        Value::Scalar(s) => match s.as_ref() {
-            ScalarValue::Uint(n) => Ok(*n),
-            ScalarValue::Int(n) => u64::try_from(*n).map_err(|_| format!("{key} is negative")),
-            _ => Err(format!("{key} must be an integer")),
-        },
-        Value::Object(_) => Err(format!("{key} must be an integer")),
+        Ok(())
     }
 }
 
-/// Read the original u32 ordinal as a stable fractional key without changing
-/// the record. Fixed width preserves numeric order; the final nonzero digit
-/// leaves room for inserts. Deleting another page cannot change this key.
-pub(crate) fn page_order(doc: &AutoCommit, page: &ObjId) -> Result<String, String> {
-    let (value, _) = required(doc, page, "order")?;
-    let ordinal = match value {
-        Value::Scalar(value) => match value.as_ref() {
-            ScalarValue::Str(key) => return Ok(key.to_string()),
-            ScalarValue::Uint(value) => u32::try_from(*value).ok(),
-            ScalarValue::Int(value) => u32::try_from(*value).ok(),
-            _ => None,
-        },
-        Value::Object(_) => None,
-    };
-    ordinal
-        .map(|value| format!("i{value:08x}1"))
-        .ok_or_else(|| "order must be a fractional key or legacy u32 ordinal".into())
-}
-
-fn schema_version(doc: &AutoCommit) -> Result<u64, String> {
-    let version = |value: &Value<'_>| match value {
-        Value::Scalar(value) => match value.as_ref() {
-            ScalarValue::Uint(version) => Some(*version),
-            ScalarValue::Int(version) => u64::try_from(*version).ok(),
-            _ => None,
-        },
-        Value::Object(_) => None,
-    };
-    let values = doc
-        .get_all(ROOT, "notes_schema_version")
-        .map_err(|e| e.to_string())?;
-    let first = values
-        .first()
-        .and_then(|(value, _)| version(value))
-        .ok_or("notebook schema version is missing or malformed")?;
-    // Two replicas can independently perform the same additive upgrade. Equal
-    // concurrent version stamps describe one schema, not a corrupt notebook.
-    if values
-        .iter()
-        .any(|(value, _)| version(value) != Some(first))
-    {
-        return Err("notebook schema versions conflict".into());
-    }
-    Ok(first)
-}
-fn uuid(value: &str) -> Result<uuid::Uuid, String> {
-    value
-        .parse::<uuid::Uuid>()
-        .ok()
-        .filter(|id| !id.is_nil())
-        .ok_or_else(|| format!("invalid non-nil UUID {value}"))
-}
-fn keyed_uuid(value: &str) -> Result<uuid::Uuid, String> {
-    let id = uuid(value)?;
-    if id.to_string() != value {
-        return Err(format!("noncanonical UUID map key {value}"));
-    }
-    Ok(id)
-}
-
-fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<Workspace, String> {
-    if schema_version(doc).ok() != Some(u64::from(NOTES_SCHEMA_VERSION)) {
-        return Err("notebook schema version is missing or unsupported; migration required".into());
-    }
-    let pages = object(doc, &ROOT, "pages", ObjType::Map)?;
-    let tags = object(doc, &ROOT, "tags", ObjType::Map)?;
-    let assignments = object(doc, &ROOT, "tag_assignments", ObjType::Map)?;
-    if validate_image_bytes {
-        validate_assets(doc)?;
-    } else {
-        validate_asset_shape(doc)?;
-    }
-    let mut data = WorkspaceData::default();
-    for key in doc.keys(&pages) {
-        let id = keyed_uuid(&key)?;
-        let page = object(doc, &pages, &key, ObjType::Map)?;
-        let parent = string(doc, &page, "parent")?;
-        let parent = if parent.is_empty() {
-            None
-        } else {
-            Some(uuid(&parent)?)
-        };
-        let order = page_order(doc, &page)?;
-        data.pages.push(PageMeta {
-            id,
-            title: text(doc, &page, "title")?,
+impl Page {
+    /// A new note titled `title` (the untitled title when blank) under
+    /// `parent`.
+    #[must_use]
+    pub fn titled(title: &str, parent: Option<Id>) -> Self {
+        let title = title.trim();
+        Self {
+            title: if title.is_empty() { UNTITLED } else { title }.to_owned(),
             parent,
-            order,
-        });
-        validate_body(doc, &page).map_err(|e| format!("page {id}: {e}"))?;
-    }
-    for key in doc.keys(&tags) {
-        let id = keyed_uuid(&key)?;
-        let entry = object(doc, &tags, &key, ObjType::Map)?;
-        data.tags.push(TagMeta {
-            id,
-            name: text(doc, &entry, "name")?,
-        });
-    }
-    for key in doc.keys(&assignments) {
-        let (page, tag) = key
-            .split_once(':')
-            .ok_or_else(|| format!("invalid tag assignment {key}"))?;
-        let page = keyed_uuid(page)?;
-        let tag = keyed_uuid(tag)?;
-        if !matches!(required(doc,&assignments,&key)?.0,Value::Scalar(s) if s.as_ref()==&ScalarValue::Boolean(true))
-        {
-            return Err(format!("tag assignment {key} must be true"));
+            ..Self::default()
         }
-        data.tag_assignments.push(TagAssignment { page, tag });
     }
-    let workspace = Workspace {
-        data,
-        ..Workspace::default()
-    };
-    workspace.check_invariants()?;
-    // The established NotesDoc readers determine display order after strict
-    // validation has ruled out their permissive malformed-data fallbacks.
-    Ok(Workspace {
-        data: WorkspaceData {
-            pages: NotesDoc::list_pages(doc),
-            tags: NotesDoc::list_tags(doc),
-            tag_assignments: workspace.data.tag_assignments,
-            selected: None,
-        },
-        ..Workspace::default()
-    })
-}
 
-fn asset_digest(value: &str) -> Option<&str> {
-    let digest = value.strip_prefix("asset:").unwrap_or(value);
-    (digest.len() == 64
-        && digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
-    .then_some(digest)
-}
-
-fn assets_map(doc: &AutoCommit) -> Result<Option<ObjId>, String> {
-    let values = doc.get_all(ROOT, "assets").map_err(|e| e.to_string())?;
-    if values.is_empty() {
-        return Ok(None);
+    /// The body's paragraphs as the editor shows them, a block per
+    /// paragraph, with their ids.
+    #[must_use]
+    pub fn blocks(&self) -> Vec<BlockContent> {
+        let Some(state) = self.body.state() else {
+            return Vec::new();
+        };
+        state
+            .body()
+            .all()
+            .filter_map(|id| state.block(id))
+            .map(|view| tilo_rich_text::content_of(view))
+            .collect()
     }
-    let [(Value::Object(ObjType::Map), id)] = values.as_slice() else {
-        return Err("assets must be one Map".into());
-    };
-    Ok(Some(id.clone()))
 }
 
-/// One image asset as the notebook stores it.
+/// The id a note is stored under.
+#[must_use]
+pub fn page_id(page: PageId) -> Id {
+    Id::from(page.to_string())
+}
+
+/// The note a stored id names, when it is one.
+#[must_use]
+pub fn page_of(id: &Id) -> Option<PageId> {
+    id.as_str().parse().ok()
+}
+
+#[resource(
+    kind = "notes.notebook",
+    label = "Notebook",
+    search = crate::search::entries,
+    read_content = Notebook::read_note
+)]
+impl Notebook {
+    /// New note
+    ///
+    /// A note titled `title`, after the notes already under `parent` (a
+    /// top-level note when none).
+    #[action]
+    pub fn new_note(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Title")] title: String,
+        #[param("The note it goes under; none for a top-level note")] parent: Option<Id>,
+    ) -> Result<(), Refusal> {
+        if let Some(parent) = &parent {
+            self.pages
+                .get(parent)
+                .ok_or("the note it goes under is gone")?;
+        }
+        let id = Id::from(cx.uuid().to_string());
+        self.pages.push(id, Page::titled(&title, parent));
+        Ok(())
+    }
+
+    /// New note inside
+    ///
+    /// A note titled `title`, after the notes already under this one.
+    #[action(item = pages)]
+    pub fn new_child(
+        &mut self,
+        cx: &mut ActionCx,
+        page: &Id,
+        #[param("Title")] title: String,
+    ) -> Result<(), Refusal> {
+        self.pages.get(page).ok_or("no such note")?;
+        let id = Id::from(cx.uuid().to_string());
+        self.pages
+            .push(id, Page::titled(&title, Some(page.clone())));
+        Ok(())
+    }
+
+    /// Rename note
+    ///
+    /// Give the note a new title; every link to it reads the new title.
+    #[action(item = pages)]
+    pub fn rename(
+        &mut self,
+        page: &Id,
+        #[param("New title")] title: String,
+    ) -> Result<(), Refusal> {
+        let title = title.trim().to_owned();
+        let note = self.pages.get_mut(page).ok_or("no such note")?;
+        if note.title == title {
+            return Ok(());
+        }
+        note.title.clone_from(&title);
+        if let Some(target) = page_of(page) {
+            self.relabel_links(target, &title);
+        }
+        Ok(())
+    }
+
+    /// Delete note
+    ///
+    /// Delete the note and every note under it.
+    #[action(item = pages, destructive)]
+    pub fn delete(&mut self, page: &Id) -> Result<(), Refusal> {
+        self.pages.get(page).ok_or("no such note")?;
+        for id in self.subtree(page) {
+            self.pages.remove(&id);
+        }
+        Ok(())
+    }
+
+    /// Move note
+    ///
+    /// Put the note under `parent` (top level when none), before the note
+    /// `before` there, or after the notes there when none.
+    #[action(item = pages)]
+    pub fn move_note(
+        &mut self,
+        page: &Id,
+        #[param("The note it goes under; none for the top level")] parent: Option<Id>,
+        #[param("The note it goes before; none to go last")] before: Option<Id>,
+    ) -> Result<(), Refusal> {
+        self.place(page, parent, before.as_ref())
+    }
+
+    /// Move note up
+    #[action(item = pages)]
+    pub fn move_up(&mut self, page: &Id) -> Result<(), Refusal> {
+        let (parent, siblings, at) = self.siblings_of(page)?;
+        let above = at
+            .checked_sub(1)
+            .and_then(|at| siblings.get(at))
+            .ok_or("the note is first already")?
+            .clone();
+        self.place(page, parent, Some(&above))
+    }
+
+    /// Move note down
+    #[action(item = pages)]
+    pub fn move_down(&mut self, page: &Id) -> Result<(), Refusal> {
+        let (parent, siblings, at) = self.siblings_of(page)?;
+        if at.saturating_add(1) >= siblings.len() {
+            return Err(Refusal::new("the note is last already"));
+        }
+        let after_next = siblings.get(at.saturating_add(2)).cloned();
+        self.place(page, parent, after_next.as_ref())
+    }
+
+    /// Indent note
+    ///
+    /// Put the note under the note above it.
+    #[action(item = pages)]
+    pub fn indent(&mut self, page: &Id) -> Result<(), Refusal> {
+        let (_, siblings, at) = self.siblings_of(page)?;
+        let above = at
+            .checked_sub(1)
+            .and_then(|at| siblings.get(at))
+            .ok_or("no note above to go under")?
+            .clone();
+        self.place(page, Some(above), None)
+    }
+
+    /// Outdent note
+    ///
+    /// Put the note beside the note it is under, right after it.
+    #[action(item = pages)]
+    pub fn outdent(&mut self, page: &Id) -> Result<(), Refusal> {
+        let parent = self
+            .pages
+            .get(page)
+            .ok_or("no such note")?
+            .parent
+            .clone()
+            .ok_or("the note is at the top level already")?;
+        let (grandparent, siblings, at) = self.siblings_of(&parent)?;
+        let next = siblings.get(at.saturating_add(1)).cloned();
+        self.place(page, grandparent, next.as_ref())
+    }
+
+    /// Duplicate note
+    ///
+    /// Copy the note and every note under it, right after it. Links between
+    /// the copied notes lead to the copies.
+    #[action(item = pages)]
+    pub fn duplicate(&mut self, cx: &mut ActionCx, page: &Id) -> Result<(), Refusal> {
+        let source = self.pages.get(page).ok_or("no such note")?.clone();
+        let sources = self.subtree(page);
+        let copies: HashMap<Id, Id> = sources
+            .iter()
+            .map(|id| (id.clone(), Id::from(cx.uuid().to_string())))
+            .collect();
+        let follow = |page: PageId| copies.get(&page_id(page)).and_then(page_of).unwrap_or(page);
+        let mut at = self
+            .pages
+            .position(page)
+            .map_or(0, |at| at.saturating_add(1));
+        for id in &sources {
+            let (Some(original), Some(copy)) = (self.pages.get(id), copies.get(id)) else {
+                continue;
+            };
+            let mut blocks = original.blocks();
+            for block in &mut blocks {
+                // A copied fence is a fence of its own: its group follows
+                // the copy, the same on every replica.
+                if let Some(group) = &block.code_group {
+                    let digest = blake3::hash(format!("{copy}/{group}").as_bytes());
+                    let bytes = digest
+                        .as_bytes()
+                        .first_chunk::<16>()
+                        .copied()
+                        .unwrap_or_default();
+                    block.code_group = Some(uuid::Uuid::from_bytes(bytes).to_string());
+                }
+                for span in &mut block.marks {
+                    span.mark = match &span.mark {
+                        Mark::Link(page) => Mark::Link(follow(*page)),
+                        Mark::Transclusion(page) => Mark::Transclusion(follow(*page)),
+                        other => other.clone(),
+                    };
+                }
+            }
+            let title = if id == page {
+                format!("{} copy", original.title)
+            } else {
+                original.title.clone()
+            };
+            let parent = if id == page {
+                source.parent.clone()
+            } else {
+                original
+                    .parent
+                    .as_ref()
+                    .and_then(|parent| copies.get(parent).cloned())
+            };
+            let page_copy = Page {
+                title,
+                parent,
+                body: written(&blocks),
+                tags: original.tags.clone(),
+            };
+            self.pages.insert(at, copy.clone(), page_copy);
+            at = at.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// New tag
+    #[action]
+    pub fn new_tag(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Name")] name: String,
+    ) -> Result<(), Refusal> {
+        let name = name.trim();
+        if self.tag_named(name).is_some() {
+            return Err(Refusal::new("a tag of that name exists"));
+        }
+        let id = Id::from(cx.uuid().to_string());
+        self.tags.push(
+            id,
+            Tag {
+                name: Atom(name.to_owned()),
+            },
+        );
+        Ok(())
+    }
+
+    /// Tag note
+    ///
+    /// Give the note the tag named `name`, made when the notebook has none.
+    #[action(item = pages)]
+    pub fn tag(
+        &mut self,
+        cx: &mut ActionCx,
+        page: &Id,
+        #[param("Tag")] name: String,
+    ) -> Result<(), Refusal> {
+        self.pages.get(page).ok_or("no such note")?;
+        let name = name.trim();
+        let tag = if let Some(tag) = self.tag_named(name) {
+            tag
+        } else {
+            let id = Id::from(cx.uuid().to_string());
+            self.tags.push(
+                id.clone(),
+                Tag {
+                    name: Atom(name.to_owned()),
+                },
+            );
+            id
+        };
+        if let Some(note) = self.pages.get_mut(page) {
+            note.tags.insert(tag);
+        }
+        Ok(())
+    }
+
+    /// Delete tag
+    ///
+    /// Delete the tag and take it off every note.
+    #[action(item = tags, destructive)]
+    pub fn delete_tag(&mut self, tag: &Id) -> Result<(), Refusal> {
+        self.tags.remove(tag).ok_or("no such tag")?;
+        for (_, page) in self.pages.iter_mut() {
+            page.tags.remove(tag);
+        }
+        Ok(())
+    }
+
+    /// Place image
+    ///
+    /// Keep a PNG, JPEG or WebP picture with the notebook and show it in the
+    /// note: `show` is the edit of its body that places it (a paragraph
+    /// `![alt](asset:<digest>)`); at the end of the note when none.
+    #[action(item = pages)]
+    pub fn place_image(
+        &mut self,
+        cx: &mut ActionCx,
+        page: &Id,
+        #[param("The picture")] bytes: Vec<u8>,
+        #[param("The edit of the note's body that shows it")] show: Option<RichTextAction>,
+    ) -> Result<(), Refusal> {
+        self.pages.get(page).ok_or("no such note")?;
+        let digest = self.keep_image(cx, &bytes)?;
+        let show = show.unwrap_or_else(|| RichTextAction::AppendParagraph {
+            text: format!("![Image](asset:{digest})"),
+        });
+        if let Some(note) = self.pages.get_mut(page) {
+            note.body.perform(show);
+        }
+        Ok(())
+    }
+
+    /// Import Markdown
+    ///
+    /// Add Markdown text as a new top-level note titled `title`, with the
+    /// pictures it shows. A `[[Title]]` link leads to the note of that
+    /// title.
+    #[action]
+    pub fn import_markdown(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Title")] title: String,
+        #[param("Markdown content")] markdown: String,
+        #[param("Pictures the Markdown shows")] images: Vec<Vec<u8>>,
+        #[param("The id the note is kept under; a new one when none")] note: Option<Id>,
+    ) -> Result<(), Refusal> {
+        check_markdown_import(&markdown).map_err(Refusal::new)?;
+        let id = match note {
+            Some(note) if page_of(&note).is_none() => {
+                return Err(Refusal::new("a note's id is a UUID"));
+            }
+            Some(note) if self.pages.contains(&note) => {
+                return Err(Refusal::new("that note is imported already"));
+            }
+            Some(note) => note,
+            None => Id::from(cx.uuid().to_string()),
+        };
+        for bytes in images {
+            self.keep_image(cx, &bytes)?;
+        }
+        let page = Page::titled(
+            if title.trim().is_empty() {
+                "Imported note"
+            } else {
+                &title
+            },
+            None,
+        );
+        let new = page_of(&id);
+        let blocks = crate::MainPanel::seed_blocks(&markdown, |target| {
+            if target == page.title {
+                return new;
+            }
+            self.pages
+                .iter()
+                .find(|(_, candidate)| candidate.title == target)
+                .and_then(|(id, _)| page_of(id))
+        });
+        self.pages.push(
+            id,
+            Page {
+                body: written(&blocks),
+                ..page
+            },
+        );
+        Ok(())
+    }
+}
+
+impl Notebook {
+    /// The note `page` and every note under it, parents before their
+    /// children, in notebook order.
+    #[must_use]
+    pub fn subtree(&self, page: &Id) -> Vec<Id> {
+        let mut inside: HashSet<Id> = HashSet::from([page.clone()]);
+        // Notebook order puts no parent before its children, so grow the
+        // set until a pass adds nothing.
+        loop {
+            let before = inside.len();
+            for (id, note) in self.pages.iter() {
+                if note
+                    .parent
+                    .as_ref()
+                    .is_some_and(|parent| inside.contains(parent))
+                {
+                    inside.insert(id.clone());
+                }
+            }
+            if inside.len() == before {
+                break;
+            }
+        }
+        let mut ordered = vec![page.clone()];
+        let mut pending = vec![page.clone()];
+        while let Some(parent) = pending.pop() {
+            for (id, note) in self.pages.iter() {
+                if note.parent.as_ref() == Some(&parent)
+                    && inside.contains(id)
+                    && !ordered.contains(id)
+                {
+                    ordered.push(id.clone());
+                    pending.push(id.clone());
+                }
+            }
+        }
+        ordered
+    }
+
+    /// Keep picture `bytes` under its digest; the digest.
+    fn keep_image(&mut self, cx: &ActionCx, bytes: &[u8]) -> Result<String, Refusal> {
+        let (digest, stored) = image(bytes)?;
+        if stored.needs_store() {
+            let store = cx.content().ok_or("no content store keeps pictures here")?;
+            store.put(bytes).map_err(|error| {
+                Refusal::new(format!("the content store refused the picture: {error}"))
+            })?;
+        }
+        self.images.insert(digest.clone(), stored);
+        Ok(digest)
+    }
+
+    /// The tag named `name`.
+    #[must_use]
+    pub fn tag_named(&self, name: &str) -> Option<Id> {
+        self.tags
+            .iter()
+            .find(|(_, tag)| tag.name.0 == name)
+            .map(|(id, _)| id.clone())
+    }
+
+    /// The notes beside `page` (its parent's children, in order), and where
+    /// it is among them.
+    fn siblings_of(&self, page: &Id) -> Result<(Option<Id>, Vec<Id>, usize), Refusal> {
+        let parent = self.pages.get(page).ok_or("no such note")?.parent.clone();
+        let siblings: Vec<Id> = self
+            .pages
+            .iter()
+            .filter(|(_, note)| note.parent == parent)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let at = siblings
+            .iter()
+            .position(|id| id == page)
+            .ok_or("no such note")?;
+        Ok((parent, siblings, at))
+    }
+
+    /// Put `page` under `parent`, before its child `before` (last when
+    /// none). Refused when the parent is gone or would be the note itself or
+    /// a note under it.
+    fn place(&mut self, page: &Id, parent: Option<Id>, before: Option<&Id>) -> Result<(), Refusal> {
+        self.pages.get(page).ok_or("no such note")?;
+        if let Some(parent) = &parent {
+            self.pages
+                .get(parent)
+                .ok_or("the note it goes under is gone")?;
+            if self.subtree(page).contains(parent) {
+                return Err(Refusal::new("a note cannot go under itself"));
+            }
+        }
+        let order: Vec<Id> = self.pages.ids().filter(|id| *id != page).cloned().collect();
+        let siblings: Vec<usize> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| self.pages.get(id).is_some_and(|note| note.parent == parent))
+            .map(|(at, _)| at)
+            .collect();
+        let target = before
+            .and_then(|before| order.iter().position(|id| id == before))
+            .filter(|at| siblings.contains(at))
+            .or_else(|| siblings.last().map(|last| last.saturating_add(1)));
+        if let Some(note) = self.pages.get_mut(page) {
+            note.parent = parent;
+        }
+        if let Some(target) = target {
+            self.pages.move_to(page, target);
+        }
+        Ok(())
+    }
+
+    /// Relabel every link and embed of note `target` to read `title`.
+    fn relabel_links(&mut self, target: PageId, title: &str) {
+        let chars =
+            |text: &str, byte: usize| text.get(..byte).map_or(0, |head| head.chars().count());
+        for (_, page) in self.pages.iter_mut() {
+            for block in page.blocks() {
+                let mut ranges: Vec<_> = block
+                    .marks
+                    .iter()
+                    .filter(|span| {
+                        matches!(&span.mark, Mark::Link(linked) | Mark::Transclusion(linked) if *linked == target)
+                    })
+                    .filter(|span| block.text.get(span.range.clone()) != Some(title))
+                    .map(|span| (span.range.clone(), span.mark.clone()))
+                    .collect();
+                // Last first, so each edit leaves the earlier ranges where
+                // they are.
+                ranges.sort_unstable_by_key(|(range, _)| std::cmp::Reverse(range.start));
+                for (range, mark) in ranges {
+                    let at = chars(&block.text, range.start);
+                    let del = block
+                        .text
+                        .get(range.clone())
+                        .map_or(0, |old| old.chars().count());
+                    page.body.perform(RichTextAction::SpliceText {
+                        region: RegionKind::Body,
+                        block: block.id.clone(),
+                        at,
+                        del,
+                        ins: title.to_owned(),
+                    });
+                    page.body.perform(mark_op(
+                        &block.id,
+                        at..at.saturating_add(title.chars().count()),
+                        &mark,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// One note, or the notebook, as a reader reads it: the notebook as its
+    /// notes and tags; a note (by its id) as its title and blocks, each with
+    /// the id edits of its body name it by.
+    fn read_note(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        let note =
+            |id: &Id| page_of(id).map_or_else(|| id.to_string(), crate::actions::page_resource_id);
+        let Some(item) = item else {
+            return Ok(serde_json::json!({
+                "kind": <Self as tilo_resource::Resource>::KIND,
+                "pages": self.pages.iter().map(|(id, page)| serde_json::json!({
+                    "item": note(id),
+                    "title": page.title,
+                    "parent": page.parent.as_ref().map(note),
+                })).collect::<Vec<_>>(),
+                "tags": self.tags.iter().map(|(id, tag)| serde_json::json!({
+                    "id": id.as_str(),
+                    "name": tag.name.0,
+                })).collect::<Vec<_>>(),
+            }));
+        };
+        let id =
+            crate::actions::page_of_resource(item.as_str()).map_or_else(|| item.clone(), page_id);
+        let page = self
+            .pages
+            .get(&id)
+            .ok_or_else(|| format!("no note `{item}`; read the notebook for the notes it holds"))?;
+        let blocks = page.blocks();
+        Ok(serde_json::json!({
+            "kind": "notes.page",
+            "item": note(&id),
+            "title": page.title,
+            "parent": page.parent.as_ref().map(note),
+            "text": blocks.iter().map(|block| block.text.as_str()).collect::<Vec<_>>().join("\n"),
+            "blocks": blocks.iter().map(|block| serde_json::json!({
+                "id": block.id,
+                "kind": block_kind(&block.kind),
+                "text": block.text,
+            })).collect::<Vec<_>>(),
+        }))
+    }
+}
+
+/// A block's kind as a reader names it.
+fn block_kind(kind: &ui::widget::BlockKind) -> serde_json::Value {
+    use ui::widget::BlockKind;
+    match kind {
+        BlockKind::Paragraph => "paragraph".into(),
+        BlockKind::Quote => "quote".into(),
+        BlockKind::Heading(level) => serde_json::json!({ "heading": level }),
+        BlockKind::Bullet { indent } => serde_json::json!({ "bullet": indent }),
+        BlockKind::Numbered { indent } => serde_json::json!({ "numbered": indent }),
+        BlockKind::Checklist { indent, done } => {
+            serde_json::json!({ "checklist": indent, "done": done })
+        }
+        BlockKind::CodeBlock { lang } => serde_json::json!({ "code": lang }),
+        BlockKind::Table { .. } => "table".into(),
+        BlockKind::Divider => "divider".into(),
+    }
+}
+
+/// A new body holding `blocks`, written when the note is stored.
+#[must_use]
+pub fn written(blocks: &[BlockContent]) -> RichText {
+    let mut body = RichText::default();
+    body.perform(clips_op(blocks));
+    body
+}
+
+/// The rich-text op replacing a body with `blocks`, formatted as they are.
+#[must_use]
+pub fn clips_op(blocks: &[BlockContent]) -> RichTextAction {
+    RichTextAction::ReplaceClips {
+        blocks: blocks
+            .iter()
+            .map(tilo_rich_text::clip_of_content)
+            .collect::<Vec<ClipBlock>>(),
+    }
+}
+
+/// The rich-text op marking characters `range` of `block` with `mark`: a
+/// format, a page link.
+#[must_use]
+pub fn mark_op(block: &str, range: std::ops::Range<usize>, mark: &Mark) -> RichTextAction {
+    let (name, value) = tilo_rich_text::document_mark(mark);
+    RichTextAction::SetMark {
+        region: RegionKind::Body,
+        spans: vec![Span {
+            block: block.to_owned(),
+            start: range.start,
+            end: range.end,
+        }],
+        name: name.to_owned(),
+        value: Some(value),
+        also_clear: Vec::new(),
+    }
+}
+
+/// The digest an image is kept under, and how it is stored.
 ///
-/// A process without a shared content store keeps the bytes inline. A
-/// reference is a small map `{len, mime}` under the content digest; the
-/// bytes are in the app's content store ([`content`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StoredAsset {
-    Inline(Vec<u8>),
-    Reference { len: u64, mime: String },
+/// # Errors
+/// Refuses anything but a PNG, JPEG or WebP picture of at most
+/// [`MAX_ASSET_BYTES`].
+pub fn image(bytes: &[u8]) -> Result<(String, Bytes), Refusal> {
+    if bytes.is_empty() || bytes.len() > MAX_ASSET_BYTES {
+        return Err(Refusal::new("a picture is between 1 byte and 1 MiB"));
+    }
+    if image_mime(bytes).is_none() {
+        return Err(Refusal::new("a picture is PNG, JPEG or WebP"));
+    }
+    Ok((blake3::hash(bytes).to_hex().to_string(), Bytes::of(bytes)))
 }
 
-const REFERENCE_MIMES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
-
-fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+/// The picture format of `bytes`, when it is one notes show.
+#[must_use]
+pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         Some("image/png")
     } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
@@ -303,649 +771,61 @@ fn image_mime(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-fn stored_asset(doc: &AutoCommit, assets: &ObjId, key: &str) -> Result<StoredAsset, String> {
-    // The key is the content digest, so every value under it names the same
-    // bytes. Two devices adding or moving one image concurrently leave
-    // conflicting values; each must be well formed, and a reference wins over
-    // inline bytes because it is what every device converges on.
-    let values = doc.get_all(assets, key).map_err(|e| e.to_string())?;
-    if values.is_empty() {
-        return Err(format!("missing {key}"));
-    }
-    let mut chosen = None;
-    for (value, id) in values {
-        let asset = match value {
-            Value::Scalar(value) => match value.as_ref() {
-                ScalarValue::Bytes(bytes) => StoredAsset::Inline(bytes.clone()),
-                _ => return Err(format!("asset {key} must be bytes or a reference")),
-            },
-            Value::Object(ObjType::Map) => {
-                let len = integer(doc, &id, "len")?;
-                let mime = string(doc, &id, "mime")?;
-                if len == 0
-                    || len > MAX_ASSET_BYTES as u64
-                    || !REFERENCE_MIMES.contains(&mime.as_str())
-                {
-                    return Err(format!("asset {key} has an invalid reference"));
-                }
-                StoredAsset::Reference { len, mime }
-            }
-            Value::Object(_) => return Err(format!("asset {key} must be bytes or a reference")),
-        };
-        chosen = match (chosen, asset) {
-            (Some(StoredAsset::Reference { len, mime }), _)
-            | (_, StoredAsset::Reference { len, mime }) => {
-                Some(StoredAsset::Reference { len, mime })
-            }
-            (_, inline) => Some(inline),
-        };
-    }
-    chosen.ok_or_else(|| format!("missing {key}"))
+/// The object note `page`'s body is kept in, in `doc`.
+#[must_use]
+pub fn body_object(doc: &tilo_resource::Doc, page: PageId) -> Option<automerge::ObjId> {
+    let notebook = <Notebook as tilo_resource::Resource>::read(doc).ok()?;
+    let body = notebook.pages.get(&page_id(page))?.body.state()?;
+    Some(body.containers().root.clone())
 }
 
-fn validate_assets(doc: &AutoCommit) -> Result<(), String> {
-    let Some(assets) = assets_map(doc)? else {
-        return Ok(());
-    };
-    for key in doc.keys(&assets) {
-        let Some(digest) = asset_digest(&key) else {
-            return Err(format!("invalid asset digest {key}"));
-        };
-        if let StoredAsset::Inline(bytes) = stored_asset(doc, &assets, &key)? {
-            validate_asset_payload(digest, &bytes)
-                .map_err(|error| format!("asset {key}: {error}"))?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_asset_shape(doc: &AutoCommit) -> Result<(), String> {
-    let Some(assets) = assets_map(doc)? else {
-        return Ok(());
-    };
-    for key in doc.keys(&assets) {
-        if asset_digest(&key).is_none() {
-            return Err(format!("invalid asset digest {key}"));
-        }
-        stored_asset(doc, &assets, &key)?;
-    }
-    Ok(())
-}
-
-/// Cheap identity of every asset value. Automerge operation ids change when a
-/// payload is replaced, including same-sized corrupt replacements.
-pub(crate) fn asset_manifest(doc: &AutoCommit) -> Result<Vec<(String, String)>, String> {
-    let Some(assets) = assets_map(doc)? else {
-        return Ok(Vec::new());
-    };
-    let mut manifest = doc
-        .map_range(&assets, ..)
-        .map(|item| {
-            let id = format!("{:?}", item.id());
-            (item.key.into_owned(), id)
-        })
-        .collect::<Vec<_>>();
-    manifest.sort();
-    Ok(manifest)
-}
-
-/// Validate a content-addressed image payload before it enters the notebook.
-///
-/// # Errors
-/// Returns an error for an invalid digest, unsupported image bytes, size, or hash mismatch.
-pub fn validate_asset_payload(digest: &str, bytes: &[u8]) -> Result<(), String> {
-    let Some(digest) = asset_digest(digest) else {
-        return Err("image asset digest is invalid".into());
-    };
-    if bytes.is_empty() || bytes.len() > MAX_ASSET_BYTES {
-        return Err("image asset must be between 1 byte and 1 MiB".into());
-    }
-    if !(bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10])
-        || bytes.starts_with(&[0xff, 0xd8, 0xff])
-        || (bytes.get(..4) == Some(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")))
-    {
-        return Err("image asset must be PNG, JPEG, or WebP".into());
-    }
-    if blake3::hash(bytes).to_hex().as_str() != digest {
-        return Err("image asset bytes do not match their digest".into());
-    }
-    Ok(())
-}
-
-/// Keep the bytes of one validated image in the content store and record
-/// its reference in the notebook. Only the reference reaches collaborators'
-/// replicas; their devices fetch the bytes from the content store.
-///
-/// A process whose content store is not shared (one started outside the
-/// launcher) keeps the bytes inline instead, as notebooks did before: a
-/// reference to bytes only this device holds would dangle for collaborators.
-///
-/// # Errors
-/// Returns an error when validation fails, the content store refuses the
-/// bytes, or the collaborative asset map cannot be updated.
-pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(), String> {
-    put_asset_in(&content(), doc, digest, bytes)
-}
-
-/// The content store of the window whose code is running, which the
-/// framework hands every window: the one its host lent, joined to the
-/// notebook's route, so an image reaches every device that opens the
-/// notebook. Outside a window (a test, a browser page without a store),
-/// an empty one in memory, which keeps images inline in the notebook.
+/// The content store of the window whose code is running. Outside a window
+/// (a test, a page without a store), an empty one in memory.
+#[must_use]
 pub fn content() -> tilo_content::ContentStore {
     ui::tilo_resource::content::current().unwrap_or_else(tilo_content::ContentStore::memory)
 }
 
-/// [`put_asset`] against an explicit store.
-///
-/// # Errors
-/// As [`put_asset`].
-pub fn put_asset_in(
-    store: &tilo_content::ContentStore,
-    doc: &mut AutoCommit,
-    digest: &str,
-    bytes: &[u8],
-) -> Result<(), String> {
-    validate_asset_payload(digest, bytes)?;
-    let digest = digest.strip_prefix("asset:").unwrap_or(digest);
-    let assets = match assets_map(doc)? {
-        Some(assets) => assets,
-        None => doc
-            .put_object(ROOT, "assets", ObjType::Map)
-            .map_err(|e| e.to_string())?,
-    };
-    let existing = if doc
-        .get_all(&assets, digest)
-        .map_err(|e| e.to_string())?
-        .is_empty()
-    {
-        None
-    } else {
-        Some(stored_asset(doc, &assets, digest)?)
-    };
-    match existing {
-        Some(StoredAsset::Inline(existing)) if existing == bytes => Ok(()),
-        Some(StoredAsset::Reference { len, .. }) if len == bytes.len() as u64 => {
-            // Keep this device able to serve the bytes the reference names.
-            store_asset_bytes(store, digest, bytes)
-        }
-        Some(_) => Err("image asset digest already names different content".into()),
-        None if store.shared() => {
-            store_asset_bytes(store, digest, bytes)?;
-            write_reference(doc, &assets, digest, bytes)
-        }
-        None => doc
-            .put(&assets, digest, ScalarValue::Bytes(bytes.to_vec()))
-            .map_err(|e| e.to_string()),
-    }
-}
-
-fn store_asset_bytes(
-    store: &tilo_content::ContentStore,
-    digest: &str,
-    bytes: &[u8],
-) -> Result<(), String> {
-    match store.put(bytes) {
-        Ok(stored) if stored == digest => Ok(()),
-        Ok(_) => Err("image asset bytes do not match their digest".into()),
-        Err(error) => Err(format!("the content store refused the image: {error}")),
-    }
-}
-
-fn write_reference(
-    doc: &mut AutoCommit,
-    assets: &ObjId,
-    digest: &str,
-    bytes: &[u8],
-) -> Result<(), String> {
-    let mime = image_mime(bytes).ok_or("image asset must be PNG, JPEG, or WebP")?;
-    let reference = doc
-        .put_object(assets, digest, ObjType::Map)
-        .map_err(|e| e.to_string())?;
-    doc.put(&reference, "len", bytes.len() as u64)
-        .map_err(|e| e.to_string())?;
-    doc.put(&reference, "mime", mime).map_err(|e| e.to_string())
-}
-
-/// Snapshot the image assets whose bytes are readable now, using their
-/// canonical `asset:` keys. A referenced image a collaborator added may still
-/// be on its way from their device; it is absent until it arrives.
-///
-/// # Errors
-/// Returns an error when the notebook asset schema or any payload is invalid.
-pub fn asset_snapshot(doc: &AutoCommit) -> Result<HashMap<String, Vec<u8>>, String> {
-    let content = content();
-    asset_snapshot_with(doc, |hash| content.read(hash))
-}
-
-/// [`asset_snapshot`] reading referenced bytes through `read`.
-///
-/// # Errors
-/// As [`asset_snapshot`].
-pub fn asset_snapshot_with(
-    doc: &AutoCommit,
+/// The pictures of `notebook` whose bytes are readable now, by the `asset:`
+/// source their bodies name them by. A picture a collaborator added may
+/// still be on its way from their device; it is absent until it arrives.
+#[must_use]
+pub fn image_snapshot(
+    notebook: &Notebook,
     read: impl Fn(&str) -> Option<Vec<u8>>,
-) -> Result<HashMap<String, Vec<u8>>, String> {
-    validate_assets(doc)?;
-    let Some(assets) = assets_map(doc)? else {
-        return Ok(HashMap::new());
-    };
-    let mut snapshot = HashMap::new();
-    for digest in doc.keys(&assets) {
-        let bytes = match stored_asset(doc, &assets, &digest)? {
-            StoredAsset::Inline(bytes) => Some(bytes),
-            StoredAsset::Reference { .. } => {
-                read(&digest).filter(|bytes| tilo_content::verify(&digest, bytes))
-            }
-        };
-        if let Some(bytes) = bytes {
-            snapshot.insert(format!("asset:{digest}"), bytes);
-        }
-    }
-    Ok(snapshot)
+) -> HashMap<String, Vec<u8>> {
+    notebook
+        .images
+        .iter()
+        .filter_map(|(digest, stored)| {
+            let bytes = match stored.inline() {
+                Some(bytes) => bytes.to_vec(),
+                None => read(digest).filter(|bytes| tilo_content::verify(digest, bytes))?,
+            };
+            Some((format!("asset:{digest}"), bytes))
+        })
+        .collect()
 }
 
-/// Whether every asset the notebook references is in `snapshot`.
+/// The most Markdown one import takes: 1 MiB of text in at most 10,000
+/// blocks.
+pub const MAX_MARKDOWN_IMPORT_BYTES: usize = 1024 * 1024;
+pub const MAX_MARKDOWN_IMPORT_BLOCKS: usize = 10_000;
+
+/// Whether `markdown` is small enough for one import.
 ///
 /// # Errors
-/// Returns an error when the asset map is malformed.
-pub(crate) fn assets_complete(
-    doc: &AutoCommit,
-    snapshot: &HashMap<String, Vec<u8>>,
-) -> Result<bool, String> {
-    let Some(assets) = assets_map(doc)? else {
-        return Ok(true);
-    };
-    Ok(doc
-        .keys(&assets)
-        .all(|digest| snapshot.contains_key(&format!("asset:{digest}"))))
-}
-
-/// Strictly validate the current body of an existing canonical page.
-pub(crate) fn validated_page_body(doc: &AutoCommit, id: PageId) -> Result<ObjId, String> {
-    let pages = object(doc, &ROOT, "pages", ObjType::Map)?;
-    let page = object(doc, &pages, &id.to_string(), ObjType::Map)?;
-    validate_body(doc, &page)?;
-    object(doc, &page, "body", ObjType::Map)
-}
-
-/// A page's body: rich text.
-fn validate_body(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
-    let body = object(doc, page, "body", ObjType::Map)?;
-    tilo_doc::model::open(doc, &body)
-        .map(|_| ())
-        .map_err(|error| format!("body is not rich text: {error}"))
+/// Says which limit it exceeds.
+pub fn check_markdown_import(markdown: &str) -> Result<(), String> {
+    if markdown.len() > MAX_MARKDOWN_IMPORT_BYTES {
+        return Err("Markdown content is larger than 1 MiB".into());
+    }
+    if crate::markdown::parse(markdown).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
+        return Err("Markdown content contains more than 10,000 blocks".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::actions::{InlineMark, InlineMarkSpan, NotesAction};
-
-    fn notebook_with(blocks: &[ui::widget::BlockContent]) -> (AutoCommit, PageId) {
-        let mut doc = AutoCommit::new();
-        initialize_empty(&mut doc).unwrap();
-        let page = uuid::Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id: page,
-                title: "Reference".into(),
-                parent: None,
-                order: "a".into(),
-            },
-        );
-        NotesDoc::fill_page_body(&mut doc, page, blocks).unwrap();
-        (doc, page)
-    }
-
-    fn linked_notebook(mark: InlineMark) -> (AutoCommit, PageId) {
-        let mut read = ui::widget::BlockContent::paragraph("", "Read this");
-        read.marks = InlineMarkSpan {
-            start: 0,
-            end: 9,
-            mark,
-        }
-        .to_ui()
-        .into_iter()
-        .collect();
-        notebook_with(&[read])
-    }
-
-    #[test]
-    fn numeric_page_order_reopens_without_rewriting_notebook() {
-        let (mut doc, page) = notebook_with(&[ui::widget::BlockContent::paragraph(
-            "",
-            "Preserve my existing note",
-        )]);
-        let pages = object(&doc, &ROOT, "pages", ObjType::Map).unwrap();
-        let entry = object(&doc, &pages, &page.to_string(), ObjType::Map).unwrap();
-        doc.put(&entry, "order", 7_i64).unwrap();
-        let bytes = doc.save();
-        let mut reopened = AutoCommit::load(&bytes).unwrap();
-        let workspace = project(&reopened, Some(page)).unwrap();
-        assert_eq!(workspace.data.selected, Some(page));
-        assert_eq!(workspace.data.pages[0].id, page);
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&reopened, page),
-            NotesDoc::page_block_snapshots(&doc, page),
-        );
-        assert_eq!(reopened.save(), bytes);
-    }
-
-    #[test]
-    fn legacy_order_remains_stable_across_gaps_duplicates_and_fractional_inserts() {
-        let (mut doc, first) = notebook_with(&[]);
-        let second = uuid::Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id: second,
-                title: "Second".into(),
-                parent: None,
-                order: "b".into(),
-            },
-        );
-        NotesDoc::fill_page_body(&mut doc, second, &[]).unwrap();
-        let pages = object(&doc, &ROOT, "pages", ObjType::Map).unwrap();
-        let first_entry = object(&doc, &pages, &first.to_string(), ObjType::Map).unwrap();
-        let second_entry = object(&doc, &pages, &second.to_string(), ObjType::Map).unwrap();
-        doc.put(&first_entry, "order", 7_i64).unwrap();
-        doc.put(&second_entry, "order", 40_u64).unwrap();
-        let original = project(&doc, None).unwrap();
-        assert_eq!(
-            original.data.pages.iter().map(|p| p.id).collect::<Vec<_>>(),
-            [first, second]
-        );
-        let first_key = original.data.pages[0].order.clone();
-        let second_key = original.data.pages[1].order.clone();
-        let middle = uuid::Uuid::new_v4();
-        NotesDoc::upsert_page_meta(
-            &mut doc,
-            &PageMeta {
-                id: middle,
-                title: "Middle".into(),
-                parent: None,
-                order: ui::tilo_resource::order::between(Some(&first_key), Some(&second_key)),
-            },
-        );
-        NotesDoc::fill_page_body(&mut doc, middle, &[]).unwrap();
-        assert_eq!(
-            project(&doc, None)
-                .unwrap()
-                .data
-                .pages
-                .iter()
-                .map(|p| p.id)
-                .collect::<Vec<_>>(),
-            [first, middle, second]
-        );
-        doc.put(&second_entry, "order", 7_i64).unwrap();
-        let tied = project(&doc, None).unwrap();
-        assert_eq!(tied.data.pages[0].id, first.min(second));
-        assert_eq!(tied.data.pages[1].id, first.max(second));
-        doc.delete(&pages, first.to_string()).unwrap();
-        assert_eq!(project(&doc, None).unwrap().data.pages[0].order, first_key);
-        for bad in [-1_i64, i64::from(u32::MAX) + 1] {
-            doc.put(&second_entry, "order", bad).unwrap();
-            assert!(project(&doc, None).is_err());
-        }
-    }
-
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn canonical_notebook_reopens_quotes_tables_links_and_embeds_losslessly() {
-        eprintln!("phase quote_and_table_blocks_survive_canonical_reopen");
-        {
-            use ui::widget::{BlockContent, BlockKind};
-            let kinds = [
-                BlockKind::Quote,
-                BlockKind::Table { visual: false },
-                BlockKind::Table { visual: true },
-            ];
-            let blocks = kinds
-                .iter()
-                .map(|kind| BlockContent {
-                    kind: kind.clone(),
-                    ..BlockContent::paragraph("", "| a |")
-                })
-                .collect::<Vec<_>>();
-            let (mut doc, page) = notebook_with(&blocks);
-            let reopened = AutoCommit::load(&doc.save()).unwrap();
-            project(&reopened, Some(page)).unwrap();
-            validate(&reopened).unwrap();
-            assert_eq!(
-                NotesDoc::page_blocks(&reopened, page)
-                    .into_iter()
-                    .map(|block| block.kind)
-                    .collect::<Vec<_>>(),
-                kinds
-            );
-            for malformed in ["table:2", "table:true", "quote:1"] {
-                assert!(BlockKind::from_stored(malformed).is_none());
-            }
-        }
-
-        eprintln!("phase external_links_and_embeds_reopen_and_duplicate_without_losing_marks");
-        {
-            for mark in [
-                InlineMark::ExternalLink {
-                    url: "https://example.com/research?q=notes".into(),
-                },
-                InlineMark::Transclusion {
-                    page: uuid::Uuid::new_v4().to_string(),
-                },
-            ] {
-                let (mut doc, page) = linked_notebook(mark.clone());
-                let mut reopened = AutoCommit::load(&doc.save()).unwrap();
-                let workspace = project(&reopened, Some(page)).unwrap();
-                assert_eq!(workspace.selected(), Some(page));
-                assert_eq!(
-                    NotesDoc::page_block_marks(&reopened, page)[0].1[0].mark,
-                    mark
-                );
-                let NotesAction::DuplicateSubtree { pages, .. } =
-                    crate::actions::duplicate_subtree_action(&reopened, page).unwrap()
-                else {
-                    panic!("duplicate action expected");
-                };
-                NotesDoc::duplicate_subtree(&mut reopened, page, &pages).unwrap();
-                let workspace = project(&reopened, Some(page)).unwrap();
-                let copy = workspace
-                    .pages()
-                    .iter()
-                    .find(|note| note.id != page)
-                    .unwrap();
-                assert_eq!(
-                    NotesDoc::page_block_marks(&reopened, copy.id)[0].1[0].mark,
-                    mark
-                );
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn notebook_images_are_content_addressed_references_that_survive_reopen_and_undo() {
-        eprintln!("phase content_addressed_image_assets_survive_reopen_and_reject_bad_payloads");
-        {
-            use tilo_actions::Action;
-            let mut doc = AutoCommit::new();
-            initialize_empty(&mut doc).unwrap();
-            let page = uuid::Uuid::new_v4();
-            crate::actions::new_page_action(page, None, "a".into(), "Images")
-                .apply(&mut doc)
-                .unwrap();
-            let bytes = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0];
-            let action = crate::actions::add_image_asset_action(
-                page,
-                bytes.clone(),
-                tilo_document::RichTextAction::AppendParagraph {
-                    text: format!("![Scan](asset:{})", blake3::hash(&bytes).to_hex()),
-                },
-            );
-            action.apply(&mut doc).unwrap();
-            validate(&doc).unwrap();
-            let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
-            assert_eq!(asset_snapshot(&doc).unwrap().get(&source), Some(&bytes));
-            let reopened = AutoCommit::load(&doc.save()).unwrap();
-            validate(&reopened).unwrap();
-            assert_eq!(
-                asset_snapshot(&reopened).unwrap().get(&source),
-                Some(&bytes)
-            );
-
-            let before = NotesDoc::page_block_snapshots(&reopened, page);
-            let invalid = crate::actions::NotesAction::AddImageAsset {
-                page: page.to_string(),
-                digest: "0".repeat(64),
-                bytes: b"not an image".to_vec(),
-                edit: tilo_document::RichTextAction::AppendParagraph {
-                    text: "![Bad](asset:bad)".into(),
-                },
-            };
-            let mut rejected = reopened;
-            assert!(invalid.apply(&mut rejected).is_err());
-            assert_eq!(NotesDoc::page_block_snapshots(&rejected, page), before);
-        }
-
-        eprintln!(
-            "phase image_source_edits_persist_through_actions_and_undo_but_view_modes_do_not"
-        );
-        {
-            let original = "![Scan](assets/original.png)";
-            let edited = "![Updated scan](assets/revised.png)";
-            ui::i18n::I18nManager::init("en-US");
-            let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
-            let page = crate::PageId::new_v4();
-            for action in [
-                crate::actions::new_page_action(page, None, "a".into(), "Reference"),
-                crate::actions::write_body_action(
-                    page,
-                    &[ui::widget::BlockContent::paragraph("", original)],
-                ),
-            ] {
-                app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
-                    .unwrap();
-            }
-            app.surface(|notes: &mut crate::NotesApp| notes.navigate_to(page))
-                .unwrap();
-            let id =
-                app.read_document(|doc| NotesDoc::page_block_snapshots(doc, page)[0].0.clone());
-            let text = |app: &ui::framework::testing::TestApp<crate::NotesShell>| {
-                app.read_document(|doc| NotesDoc::page_block_snapshots(doc, page)[0].1.clone())
-            };
-            let semantic = |app: &mut ui::framework::testing::TestApp<crate::NotesShell>,
-                            target: String,
-                            action: ui::a11y::Action| {
-                app.harness()
-                    .perform_semantic_named("block_editor", Some(&target), &action)
-                    .unwrap();
-            };
-            let versions = app.versions().len();
-            semantic(
-                &mut app,
-                format!("notes.image-edit:{id}"),
-                ui::a11y::Action::Activate,
-            );
-            assert_eq!(app.versions().len(), versions, "a view mode writes nothing");
-            semantic(
-                &mut app,
-                format!("notes.image-source:{id}"),
-                ui::a11y::Action::SetValue(edited.into()),
-            );
-            assert_eq!(text(&app), edited);
-            let edited_versions = app.versions().len();
-            assert!(
-                edited_versions > versions,
-                "a source edit is a Notes action"
-            );
-            semantic(
-                &mut app,
-                format!("notes.image-done:{id}"),
-                ui::a11y::Action::Activate,
-            );
-            assert_eq!(app.versions().len(), edited_versions);
-            let reopened = AutoCommit::load(&app.peer_document().save()).unwrap();
-            validate(&reopened).unwrap();
-            assert_eq!(NotesDoc::page_block_snapshots(&reopened, page)[0].1, edited);
-            assert!(app.undo());
-            assert_eq!(text(&app), original);
-        }
-
-        eprintln!("phase new_images_are_references_only_when_a_content_store_holds_the_bytes");
-        {
-            let bytes = png(5);
-            let digest = blake3::hash(&bytes).to_hex().to_string();
-
-            let mut shared_doc = AutoCommit::new();
-            initialize_empty(&mut shared_doc).unwrap();
-            let store = device_store(false);
-            put_asset_in(&store, &mut shared_doc, &digest, &bytes).unwrap();
-            assert!(matches!(
-                stored(&shared_doc, &digest),
-                StoredAsset::Reference { .. }
-            ));
-            assert_eq!(store.read(&digest), Some(bytes.clone()));
-            // Re-adding the same image is a no-op; other bytes under the digest are not.
-            put_asset_in(&store, &mut shared_doc, &digest, &bytes).unwrap();
-
-            let mut local_doc = AutoCommit::new();
-            initialize_empty(&mut local_doc).unwrap();
-            let local = tilo_content::ContentStore::memory();
-            put_asset_in(&local, &mut local_doc, &digest, &bytes).unwrap();
-            assert_eq!(stored(&local_doc, &digest), StoredAsset::Inline(bytes));
-            validate(&local_doc).unwrap();
-        }
-    }
-
-    /// A content backend standing in for the device store behind the
-    /// launcher's capability: shared beyond this process, optionally refusing.
-    #[derive(Default)]
-    struct DeviceStore {
-        local: tilo_content::MemoryBackend,
-        refuse: bool,
-    }
-
-    impl tilo_content::ContentBackend for DeviceStore {
-        fn put(
-            &self,
-            reader: &mut dyn std::io::Read,
-            mime: &str,
-        ) -> Result<tilo_content::Stored, tilo_content::ContentError> {
-            if self.refuse {
-                return Err(tilo_content::ContentError::Io("full".into()));
-            }
-            self.local.put(reader, mime)
-        }
-        fn open(
-            &self,
-            hash: &str,
-        ) -> Result<Option<tilo_content::ContentReader>, tilo_content::ContentError> {
-            self.local.open(hash)
-        }
-        fn has(&self, hash: &str) -> bool {
-            self.local.has(hash)
-        }
-        fn shared(&self) -> bool {
-            true
-        }
-    }
-
-    fn device_store(refuse: bool) -> tilo_content::ContentStore {
-        tilo_content::ContentStore::new(DeviceStore {
-            refuse,
-            ..DeviceStore::default()
-        })
-    }
-
-    fn png(seed: u8) -> Vec<u8> {
-        let mut bytes = vec![137, 80, 78, 71, 13, 10, 26, 10];
-        bytes.extend(std::iter::repeat_n(seed, 2048));
-        bytes
-    }
-
-    fn stored(doc: &AutoCommit, digest: &str) -> StoredAsset {
-        stored_asset(doc, &assets_map(doc).unwrap().unwrap(), digest).unwrap()
-    }
-}
+#[path = "notebook/tests.rs"]
+mod tests;

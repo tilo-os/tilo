@@ -1,5 +1,5 @@
 use crate::component_support::*;
-use notes::doc::NotesDoc;
+use notes::read;
 use ui::{
     a11y::{AccessNode, Action},
     headless::{Driver, InspectionNode},
@@ -59,7 +59,7 @@ fn native_accessibility_new_note_creates_an_editable_document() {
         app.surface_frame(&Surface(width), &mut scene);
         assert_eq!(
             f.records
-                .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+                .read(&checkout.id, |doc| read::list_pages(doc).len())
                 .unwrap(),
             0,
             "the native notebook starts empty"
@@ -85,7 +85,7 @@ fn native_accessibility_new_note_creates_an_editable_document() {
         }
         assert_eq!(
             f.records
-                .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+                .read(&checkout.id, |doc| read::list_pages(doc).len())
                 .unwrap(),
             1
         );
@@ -115,7 +115,7 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     perform(&mut a, sidebar, &Action::Activate);
     assert_eq!(
         f.records
-            .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+            .read(&checkout.id, |doc| read::list_pages(doc).len())
             .unwrap(),
         1
     );
@@ -146,7 +146,7 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     perform(&mut a, &first, &Action::Activate);
     assert_eq!(
         f.records
-            .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+            .read(&checkout.id, |doc| read::list_pages(doc).len())
             .unwrap(),
         1
     );
@@ -162,18 +162,10 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
     let checkout = notebook(&f);
     let mut a = driver(&f, 11, &checkout);
     let page = f.child;
-    invoke(
-        &mut a,
-        11,
-        notes::actions::page_resource_id(page),
-        "open",
-        None,
-    );
+    open_note(&mut a, 11, page, None);
     let body = f
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, page)
-        })
+        .read(&checkout.id, |doc| read::page_block_snapshots(doc, page))
         .unwrap();
     let title = named(&a, "Page title");
     assert_eq!(title.len(), 1, "one truthful title surface");
@@ -202,7 +194,7 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
     a.key("Enter");
     assert_eq!(
         f.records
-            .read(&checkout.id, |doc| NotesDoc::list_pages(doc)
+            .read(&checkout.id, |doc| read::list_pages(doc)
                 .into_iter()
                 .find(|p| p.id == page)
                 .unwrap()
@@ -215,7 +207,7 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
     a.perform_named("block_editor", &Action::Focus).unwrap();
     assert_eq!(
         f.records
-            .read(&checkout.id, |doc| NotesDoc::list_pages(doc)
+            .read(&checkout.id, |doc| read::list_pages(doc)
                 .into_iter()
                 .find(|p| p.id == page)
                 .unwrap()
@@ -225,19 +217,11 @@ fn published_title_edits_the_retained_label_and_commits_through_enter_and_blur()
     );
     assert_eq!(
         f.records
-            .read(&checkout.id, |doc| NotesDoc::page_block_snapshots(
-                doc, page
-            ))
+            .read(&checkout.id, |doc| read::page_block_snapshots(doc, page))
             .unwrap(),
         body
     );
-    invoke(
-        &mut a,
-        11,
-        notes::actions::page_resource_id(f.root),
-        "open",
-        None,
-    );
+    open_note(&mut a, 11, f.root, None);
     assert!(
         a.perform_semantic_named(
             &title.0,
@@ -260,12 +244,12 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
     let mut a = driver(&f, 11, &checkout);
     let mut b = driver(&f, 12, &checkout);
     let original = named(&a, "Page title")[0].clone();
-    invoke(
+    invoke_with(
         &mut b,
         12,
         notes::actions::page_resource_id(f.root),
         "rename",
-        Some("Remote title"),
+        serde_json::json!({ "title": "Remote title" }),
     );
     a.relayout();
     perform(&mut a, &original, &Action::Focus);
@@ -275,13 +259,7 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
     );
     // Replacing the selected page changes the model token even though the
     // retained label and its inspection path occupy the same layout position.
-    invoke(
-        &mut a,
-        11,
-        notes::actions::page_resource_id(f.child),
-        "open",
-        None,
-    );
+    open_note(&mut a, 11, f.child, None);
     let replacement = named(&a, "Page title")[0].clone();
     assert_ne!(original.1, replacement.1);
     assert!(
@@ -321,7 +299,7 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
     assert_eq!(a.focused_access_node().unwrap().value, canonical);
     let pages = f
         .records
-        .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+        .read(&checkout.id, |doc| read::list_pages(doc).len())
         .unwrap();
     let create = named(&a, "New note")[0].clone();
     perform(&mut a, &create, &Action::Activate);
@@ -329,7 +307,7 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
     a.click_at(rect.center().x, rect.center().y);
     assert_eq!(
         f.records
-            .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+            .read(&checkout.id, |doc| read::list_pages(doc).len())
             .unwrap(),
         pages
     );
@@ -356,7 +334,7 @@ fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
     a.click_at(rect.center().x, rect.center().y);
     assert_eq!(
         f.records
-            .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+            .read(&checkout.id, |doc| read::list_pages(doc).len())
             .unwrap(),
         0
     );

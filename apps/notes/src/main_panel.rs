@@ -6,7 +6,7 @@
 //! - the currently displayed page's id (or `None` if nothing's
 //!   selected),
 //! - the page's editor: the SDK rich-text editor bound to the page's body,
-//!   every edit a [`NotesAction::EditBody`](crate::actions::NotesAction),
+//!   every edit a [`NotesAction::EditBody`](crate::actions::Action),
 //! - the last-loaded body string, kept around so a Markdown-backed page can
 //!   compare against the editor's current content and only request a save
 //!   when the user actually changed something.
@@ -39,7 +39,7 @@ use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -171,10 +171,20 @@ pub struct PageBody {
 impl PageBody {
     fn attach(&mut self, notebook: &Dispatcher<crate::resource::Notebook>) {
         if let Some(page) = self.page {
-            self.field
-                .attach(crate::actions::page_body_dispatcher(notebook, page));
+            self.field.attach(body_dispatcher(notebook, page));
         }
     }
+}
+
+/// The dispatcher `page`'s body is edited through: each rich-text edit is a
+/// field edit of the notebook at the body's path.
+fn body_dispatcher(
+    notebook: &Dispatcher<crate::resource::Notebook>,
+    page: PageId,
+) -> Dispatcher<tilo_document::RichText> {
+    notebook.child(&crate::actions::page_resource_id(page), move |op| {
+        crate::actions::edit_body_action(page, &op)
+    })
 }
 
 impl RichTextSource for PageBody {
@@ -218,14 +228,17 @@ impl RichTextSource for PageBody {
 /// it edits, through the notebook's dispatcher; without a page or a
 /// dispatcher it shows what it is given and writes nothing.
 fn notes_editor(
-    page: Option<PageId>,
+    page: Option<(PageId, ObjId)>,
     notebook: Option<&Dispatcher<crate::resource::Notebook>>,
 ) -> NotesEditor {
+    let body_object = page.as_ref().map(|(_, body)| body.clone());
     let mut body = PageBody {
         field: RichTextField::view_only(move |doc| {
-            page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page))
+            body_object
+                .clone()
+                .filter(|body| tilo_doc::model::open(doc, body).is_ok())
         }),
-        page,
+        page: page.map(|(page, _)| page),
     };
     if let Some(notebook) = notebook {
         body.attach(notebook);
@@ -496,9 +509,7 @@ impl MainPanel {
         page: PageId,
         title: &str,
     ) -> Result<(), String> {
-        if crate::doc::NotesDoc::page_body(doc, page).is_none() {
-            return Err("the page has no body".into());
-        }
+        let body = crate::notebook::body_object(doc, page).ok_or("the page has no body")?;
         // Binding the page already open again (its record re-read, a reveal)
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
@@ -509,7 +520,7 @@ impl MainPanel {
                 Some((block.id.clone(), block.line.cursor_pos()))
             })
             .flatten();
-        let mut editor = self.fresh_editor(Some(page));
+        let mut editor = self.fresh_editor(Some((page, body)));
         editor
             .editor_mut()
             .set_local_author(self.local_author.clone());
@@ -545,6 +556,9 @@ impl MainPanel {
     ) -> Result<Self, String> {
         let mut panel = Self::new();
         panel.notebook.clone_from(&self.notebook);
+        if let Some(actions) = self.header.actions() {
+            panel.header.attach(actions);
+        }
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
@@ -704,12 +718,33 @@ impl MainPanel {
 
     /// Edit page bodies through `notebook` from now on, the one shown
     /// included.
-    pub(crate) fn attach_notebook(&mut self, notebook: Dispatcher<crate::resource::Notebook>) {
-        self.editor.source_mut().attach(&notebook);
-        self.notebook = Some(notebook);
+    /// What the header's controls invoke, once attached.
+    #[doc(hidden)]
+    pub fn actions(&self) -> Option<ui::framework::Actions<crate::resource::Notebook>> {
+        self.header.actions()
     }
 
-    fn fresh_editor(&self, page: Option<PageId>) -> NotesEditor {
+    /// Bind the header's controls to the notebook window's effects, for a
+    /// panel shown on its own.
+    #[doc(hidden)]
+    pub fn attach_actions_for_test(
+        &mut self,
+        actions: ui::framework::Actions<crate::resource::Notebook>,
+    ) {
+        self.header.attach(actions);
+    }
+
+    pub(crate) fn attach_notebook(
+        &mut self,
+        notebook: Dispatcher<crate::resource::Notebook>,
+        actions: ui::framework::Actions<crate::resource::Notebook>,
+    ) {
+        self.editor.source_mut().attach(&notebook);
+        self.notebook = Some(notebook);
+        self.header.attach(actions);
+    }
+
+    fn fresh_editor(&self, page: Option<(PageId, ObjId)>) -> NotesEditor {
         let mut editor = notes_editor(page, self.notebook.as_ref());
         editor
             .editor_mut()
@@ -2107,7 +2142,7 @@ mod tests {
             let tag = fresh_page_id();
             let backlink = fresh_page_id();
             let mut doc = AutoCommit::new();
-            crate::actions::new_page_action(page, None, "launch".into(), "Launch")
+            crate::actions::create_page_action(page, None, "Launch")
                 .apply(&mut doc)
                 .unwrap();
             doc.commit_with(
@@ -2313,25 +2348,6 @@ mod tests {
                 backlink.y1 <= editor_top,
                 "incoming-link metadata clears the first block"
             );
-            // Each visible chip publishes the exact stable resource address,
-            // so accessibility and the palette resolve the same identity.
-            let bindings = ui::widget::controls::control_action_bindings(&*panel);
-            for tag in &tags {
-                let expected = crate::actions::open_tag_binding(*tag, "label").unwrap();
-                assert!(
-                    bindings
-                        .iter()
-                        .any(|b| b.control_id == format!("notes.tag-chip:{tag}")
-                            && b.kind
-                                == ui::widget::ControlBindingKind::Action(
-                                    expected.address().clone()
-                                ))
-                );
-            }
-            let expected = crate::actions::open_page_binding(source, "label").unwrap();
-            assert!(bindings.iter().any(|b| b.control_id
-                == format!("notes.backlink-chip:{source}")
-                && b.kind == ui::widget::ControlBindingKind::Action(expected.address().clone())));
         }
     }
 }

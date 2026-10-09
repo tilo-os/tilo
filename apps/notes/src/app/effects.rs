@@ -19,10 +19,10 @@ impl NotesApp {
             let document = cx.document().ok_or("the editor document is unavailable")?;
             return Ok(Effected::value(self.editor_observation(&document)));
         }
-        let state = cx.live().get();
+        let state = Workspace::of(cx.live().get(), &self.workspace);
         match effect {
             NotesEffect::InspectEditor => Err("the editor document is unavailable".into()),
-            NotesEffect::ImportMarkdown => Ok(Self::choose_markdown(cx)),
+            NotesEffect::ImportMarkdownFile => Ok(Self::choose_markdown(cx)),
             NotesEffect::ImportMarkdownContent { title, body } => {
                 let title = title.trim();
                 let title = if title.is_empty() {
@@ -47,7 +47,7 @@ impl NotesApp {
             }
             NotesEffect::Back => self.step(ui::NavAction::Back, "no previous note"),
             NotesEffect::Forward => self.step(ui::NavAction::Forward, "no next note"),
-            NotesEffect::Open { page, block } => self
+            NotesEffect::OpenNote { page, block } => self
                 .open_block(&state, page, block)
                 .map(|()| Effected::done()),
             NotesEffect::RevealBlockRange {
@@ -90,14 +90,7 @@ impl NotesApp {
             tracing::warn!(?effect, "notes: this notebook is open to view only");
             return;
         };
-        match effect {
-            NotesEffect::ExportMarkdown { page }
-            | NotesEffect::InsertImage { page }
-            | NotesEffect::CopyLink { page } => {
-                dispatcher.effect_on(&actions::page_resource_id(*page), effect);
-            }
-            _ => dispatcher.effect(effect),
-        }
+        dispatcher.effect(effect);
     }
 
     /// Show note `page`.
@@ -257,15 +250,20 @@ impl NotesApp {
 
     /// Add `markdown` to the notebook as a note titled `title`, and show it.
     fn import_note(&mut self, title: &str, markdown: &str, cx: &Cx) -> Result<PageId, String> {
-        if let Err(error) = actions::check_markdown_import(markdown) {
+        if let Err(error) = crate::notebook::check_markdown_import(markdown) {
             self.import_failed(&error);
             return Err(error);
         }
         let (markdown, assets) = super::adopt_inline_images(markdown);
         let page = PageId::new_v4();
-        cx.apply(&actions::import_markdown_action(
-            page, title, &markdown, assets,
-        ));
+        cx.invoke(
+            Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
+                title: title.to_owned(),
+                markdown,
+                images: assets.into_iter().map(|(_, bytes)| bytes).collect(),
+                note: Some(crate::notebook::page_id(page)),
+            }),
+        );
         self.open_when_present(page);
         self.transfer_toasts.push(
             format!("Imported {title}"),
@@ -352,7 +350,7 @@ impl NotesApp {
         page: PageId,
         alt: &str,
         bytes: Vec<u8>,
-    ) -> actions::NotesAction {
+    ) -> actions::Action {
         let digest = blake3::hash(&bytes).to_hex().to_string();
         let after = (self.main.page_id() == Some(page))
             .then(|| {
@@ -369,7 +367,7 @@ impl NotesApp {
             Some(after) => tilo_document::RichTextAction::InsertParagraph { after, text },
             None => tilo_document::RichTextAction::AppendParagraph { text },
         };
-        actions::add_image_asset_action(page, bytes, edit)
+        actions::place_image_action(page, bytes, Some(edit))
     }
 }
 

@@ -9653,6 +9653,7 @@ dependencies = [
  "tilo-doc",
  "tilo-document",
  "tilo-files",
+ "tilo-history",
  "tilo-rich-text",
  "tilo-test-env",
  "tilo-vello",

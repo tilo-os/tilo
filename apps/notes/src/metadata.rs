@@ -140,7 +140,6 @@ pub struct NoteDateIndex {
     heads: Vec<ChangeHash>,
     objects: HashMap<SchemaObjectId, PageId>,
     page_maps: HashSet<SchemaObjectId>,
-    assignments: HashSet<SchemaObjectId>,
     dates: HashMap<PageId, NoteDates>,
 }
 
@@ -163,20 +162,11 @@ impl NoteDateIndex {
         }
         for op in schema_operations_since(doc, &self.heads) {
             let key = op.key.as_deref();
-            if op.object.is_root() && op.new_object.is_some() {
-                match key {
-                    Some("pages") => {
-                        if let Some(object) = op.new_object.clone() {
-                            self.page_maps.insert(object);
-                        }
-                    }
-                    Some("tag_assignments") => {
-                        if let Some(object) = op.new_object.clone() {
-                            self.assignments.insert(object);
-                        }
-                    }
-                    _ => {}
-                }
+            if op.object.is_root()
+                && key == Some("pages")
+                && let Some(object) = op.new_object.clone()
+            {
+                self.page_maps.insert(object);
             }
             let mut page = self.objects.get(&op.object).copied();
             if self.page_maps.contains(&op.object) && op.new_object.is_some() {
@@ -187,10 +177,6 @@ impl NoteDateIndex {
                         edited: op.timestamp,
                     });
                 }
-            } else if self.assignments.contains(&op.object) {
-                page = key
-                    .and_then(|key| key.split_once(':'))
-                    .and_then(|(page, _)| page.parse().ok());
             }
             if let Some(page) = page {
                 if let Some(new_object) = op.new_object {
@@ -207,14 +193,14 @@ impl NoteDateIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::{self, NotesAction};
-    use tilo_actions::Action;
+    use crate::actions::{self, Action};
+    use tilo_actions::Action as _;
     use tilo_automerge::ApplyIncoming;
     #[allow(
         clippy::needless_pass_by_value,
         reason = "test helper models handing an owned action to the production executor"
     )]
-    fn apply(doc: &mut AutoCommit, action: NotesAction, timestamp: i64) {
+    fn apply(doc: &mut AutoCommit, action: Action, timestamp: i64) {
         action.apply(doc).unwrap();
         doc.commit_with(automerge::transaction::CommitOptions::default().with_time(timestamp));
     }
@@ -246,16 +232,8 @@ mod tests {
             let mut doc = AutoCommit::new();
             let a = PageId::new_v4();
             let b = PageId::new_v4();
-            apply(
-                &mut doc,
-                actions::new_page_action(a, None, "a".into(), "A"),
-                100,
-            );
-            apply(
-                &mut doc,
-                actions::new_page_action(b, None, "b".into(), "B"),
-                200,
-            );
+            apply(&mut doc, actions::create_page_action(a, None, "A"), 100);
+            apply(&mut doc, actions::create_page_action(b, None, "B"), 200);
             let mut index = NoteDateIndex::default();
             index.sync(&doc);
             assert_eq!(
@@ -299,11 +277,10 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut doc,
-                actions::new_page_action(page, None, "a".into(), "Legacy"),
+                actions::create_page_action(page, None, "Legacy"),
                 0,
             );
-            let meta = crate::doc::NotesDoc::list_pages(&doc).remove(0);
-            apply(&mut doc, actions::rename_page_action(&meta, "Renamed"), 500);
+            apply(&mut doc, actions::rename_page_action(page, "Renamed"), 500);
             let mut index = NoteDateIndex::default();
             index.sync(&doc);
             assert_eq!(
@@ -320,7 +297,7 @@ mod tests {
             let mut origin = AutoCommit::new();
             let mut peer = AutoCommit::new();
             let page = PageId::new_v4();
-            let action = actions::new_page_action(page, None, "a".into(), "New note");
+            let action = actions::create_page_action(page, None, "New note");
             let envelope =
                 tilo_actions::apply_local(&mut origin, &action, actions::encode(&action)).unwrap();
             assert!(
@@ -337,14 +314,17 @@ mod tests {
                 }
             );
             let mut registry = tilo_actions::ActionRegistry::new();
-            actions::register(&mut registry);
+            <crate::Notebook as ui::tilo_resource::Resource>::register(&mut registry);
             tilo_actions::replay(&mut peer, &envelope, &registry).unwrap();
             let mut peer_index = NoteDateIndex::default();
             peer_index.sync(&peer);
             assert_eq!(peer_index.get(page), index.get(page));
             assert_eq!(origin.get_heads(), peer.get_heads());
             let heads = origin.get_heads();
-            tilo_actions::apply_local(&mut origin, &action, actions::encode(&action)).unwrap();
+            assert!(
+                tilo_actions::apply_local(&mut origin, &action, actions::encode(&action)).is_err(),
+                "a note is created once"
+            );
             index.sync(&origin);
             assert_eq!(
                 origin.get_heads(),
@@ -363,10 +343,9 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut base,
-                actions::new_page_action(page, None, "a".into(), "Original"),
+                actions::create_page_action(page, None, "Original"),
                 100,
             );
-            let meta = crate::doc::NotesDoc::list_pages(&base).remove(0);
             let mut first = base.fork();
             let mut second = base.fork();
             let mut first_index = NoteDateIndex::default();
@@ -375,7 +354,7 @@ mod tests {
             second_index.sync(&second);
             apply(
                 &mut first,
-                actions::rename_page_action(&meta, "Renamed"),
+                actions::rename_page_action(page, "Renamed"),
                 200,
             );
             apply(
@@ -415,14 +394,13 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut state.doc,
-                actions::new_page_action(page, None, "a".into(), "Original"),
+                actions::create_page_action(page, None, "Original"),
                 100,
             );
             let before = state.doc.get_heads();
-            let meta = crate::doc::NotesDoc::list_pages(&state.doc).remove(0);
             apply(
                 &mut state.doc,
-                actions::rename_page_action(&meta, "Renamed"),
+                actions::rename_page_action(page, "Renamed"),
                 200,
             );
             state.record_committed_action(before, None, None);
@@ -430,10 +408,7 @@ mod tests {
             index.sync(&state.doc);
             assert_eq!(index.get(page).edited, Some(200));
             assert!(state.undo(None, None).is_some());
-            assert_eq!(
-                crate::doc::NotesDoc::list_pages(&state.doc)[0].title,
-                "Original"
-            );
+            assert_eq!(crate::read::list_pages(&state.doc)[0].title, "Original");
             index.sync(&state.doc);
             let undo_dates = index.get(page);
             assert_eq!(undo_dates.created, Some(100));
@@ -442,10 +417,7 @@ mod tests {
                 "shared undo commits its own real timestamp"
             );
             assert!(state.redo(None, None).is_some());
-            assert_eq!(
-                crate::doc::NotesDoc::list_pages(&state.doc)[0].title,
-                "Renamed"
-            );
+            assert_eq!(crate::read::list_pages(&state.doc)[0].title, "Renamed");
             index.sync(&state.doc);
             assert_eq!(index.get(page).created, Some(100));
             assert!(index.get(page).edited >= undo_dates.edited);
@@ -457,12 +429,11 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut doc,
-                actions::new_page_action(page, None, "a".into(), "Original"),
+                actions::create_page_action(page, None, "Original"),
                 100,
             );
             let before = doc.get_heads();
-            let meta = crate::doc::NotesDoc::list_pages(&doc).remove(0);
-            apply(&mut doc, actions::rename_page_action(&meta, "Renamed"), 200);
+            apply(&mut doc, actions::rename_page_action(page, "Renamed"), 200);
             let mut index = NoteDateIndex::default();
             index.sync(&doc);
             let historical = doc.fork_at(&before).unwrap();

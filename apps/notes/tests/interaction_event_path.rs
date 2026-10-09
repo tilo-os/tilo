@@ -1295,7 +1295,6 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let order_ids = |app: &mut TestApp<NotesShell>| -> Vec<uuid::Uuid> {
             let mut ps = n(app).workspace_pages_for_test();
             ps.retain(|p| p.parent.is_none());
-            ps.sort_by(notes::model::sibling_order);
             ps.into_iter().map(|p| p.id).collect()
         };
         assert_eq!(order_ids(&mut app), vec![welcome, p1, p2]);

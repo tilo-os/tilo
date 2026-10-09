@@ -1,6 +1,6 @@
 //! Damage from the outer, ordinarily mounted component after real note input.
 use crate::component_support::*;
-use notes::{actions, doc::NotesDoc};
+use notes::read;
 use std::{cell::RefCell, rc::Rc};
 use ui::{Widget, headless::Driver};
 use vello::{Scene, kurbo::Rect, peniko::Color};
@@ -67,13 +67,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     )
     .unwrap();
     driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
-    invoke(
-        &mut driver,
-        11,
-        actions::page_resource_id(f.child),
-        "open",
-        None,
-    );
+    open_note(&mut driver, 11, f.child, None);
     driver
         .perform_named("block_editor", &ui::a11y::Action::Focus)
         .unwrap();
@@ -106,7 +100,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     let actual = f
         .records
         .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.child)
+            read::page_block_snapshots(doc, f.child)
                 .into_iter()
                 .map(|(_, text)| text)
                 .collect::<Vec<_>>()

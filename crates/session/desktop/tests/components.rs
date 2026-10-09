@@ -94,7 +94,7 @@ fn fixture() -> (
             1 => {
                 chat::doc::ChatDoc::seed_starter(doc, "author", "Author", "AU");
             }
-            _ => notes::notebook::initialize_empty(doc).unwrap(),
+            _ => notes::read::initialize(doc),
         });
         retained_records.push(store);
         tabs.push(Tab {
@@ -291,14 +291,21 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
     let surface = DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 720));
-    for (instance, resource, action, value) in [
+    for (instance, resource, action, param, value) in [
         (
             11,
             "chat.channel:c_general",
             "post",
+            "value",
             "Shared desktop message",
         ),
-        (12, "notes.notebook", "new-page", "Shared desktop page"),
+        (
+            12,
+            "notes.notebook",
+            "new-note",
+            "title",
+            "Shared desktop page",
+        ),
     ] {
         frame
             .invoke_bound_action(
@@ -306,7 +313,7 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
                     instance_id: instance,
                     address: tilo_actions::ActionAddress::new(resource, action),
                 },
-                serde_json::json!({"value":value}).as_object().unwrap(),
+                serde_json::json!({ param: value }).as_object().unwrap(),
             )
             .unwrap();
     }

@@ -271,6 +271,11 @@ impl Model for RichText {
         action.apply_under(doc, &obj).map_err(refused)
     }
 
+    /// Every paragraph, for a field marked `#[model(whole)]`.
+    fn read_whole(&mut self, doc: &Doc) -> Result<(), ModelError> {
+        self.demand(doc, &tilo_resource::Demand::range(0..usize::MAX))
+    }
+
     fn collect_text(&self, out: &mut Vec<String>) {
         let text = self.text();
         if !text.is_empty() {
@@ -404,5 +409,51 @@ mod tests {
             .unwrap();
         let schema = serde_json::to_string(edit.params()[0].schema.as_deref().unwrap()).unwrap();
         assert!(schema.contains("SpliceText"), "{schema}");
+    }
+
+    #[derive(Model, Default, Debug, Clone, PartialEq)]
+    pub struct Card {
+        #[model(whole)]
+        pub body: RichText,
+        pub lazy: RichText,
+    }
+
+    #[resource(kind = "test.card", label = "Card")]
+    impl Card {
+        /// Write both texts.
+        #[action]
+        pub fn write(&mut self, markdown: String) {
+            self.body = RichText::from_markdown(markdown.clone());
+            self.lazy = RichText::from_markdown(markdown);
+        }
+
+        /// Copy the body's words into a new paragraph at its end.
+        #[action]
+        pub fn echo(&mut self) {
+            let text = self.body.text();
+            self.body.perform(RichTextAction::AppendParagraph { text });
+        }
+    }
+
+    /// A record holding short text reads all of it: its verbs and readers
+    /// see every paragraph, not only the ones a view asked for.
+    #[test]
+    fn a_whole_field_reads_every_paragraph() {
+        let mut card = Replica::<Card>::new();
+        card.apply(Card::WRITE.with("one\n\ntwo")).unwrap();
+        let state = card.state().unwrap();
+        assert_eq!(state.body.text(), "one\ntwo");
+        assert_eq!(
+            state.lazy.text(),
+            "",
+            "a lazy field reads what views ask for"
+        );
+        card.apply(Card::ECHO.with(())).unwrap();
+        assert_eq!(card.state().unwrap().body.text(), "one\ntwo\none\ntwo");
+        let live = card.live().unwrap().body.text();
+        assert_eq!(
+            live, "one\ntwo\none\ntwo",
+            "a refresh reads the new paragraph too"
+        );
     }
 }

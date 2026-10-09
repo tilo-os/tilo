@@ -103,6 +103,7 @@ struct FieldOptions {
     readonly: bool,
     unit: bool,
     atom: bool,
+    whole: bool,
 }
 
 fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
@@ -122,9 +123,11 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.unit = true;
             } else if meta.path.is_ident("atom") {
                 options.atom = true;
+            } else if meta.path.is_ident("whole") {
+                options.whole = true;
             } else {
                 return Err(meta.error(
-                    "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit` or `atom`",
+                    "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom` or `whole`",
                 ));
             }
             Ok(())
@@ -463,6 +466,20 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 self.#ident = atom.0;
                 refreshed?;
             });
+        } else if options.whole {
+            reads.push(quote!(#ident: {
+                let mut value = #krate::read_key::<#ty>(doc, obj, #key)?;
+                #krate::Model::read_whole(&mut value, doc).map_err(|error| error.at(#key))?;
+                value
+            }));
+            refreshes.push(quote! {
+                #krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;
+                #krate::Model::read_whole(&mut self.#ident, doc).map_err(|error| error.at(#key))?;
+            });
+            missing.push(quote!(
+                #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
+            ));
+            writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
         } else {
             reads.push(quote!(#ident: #krate::read_key::<#ty>(doc, obj, #key)?));
             missing.push(quote!(

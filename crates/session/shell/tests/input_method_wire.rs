@@ -727,8 +727,8 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
     fixture
         .driver
         .invoke_action(
-            &tilo_actions::ActionAddress::new("notes.notebook", "new-page"),
-            serde_json::json!({"value": "Dictation"})
+            &tilo_actions::ActionAddress::new("notes.notebook", "new-note"),
+            serde_json::json!({"title": "Dictation"})
                 .as_object()
                 .unwrap(),
             false,
@@ -738,14 +738,14 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
     let page = fixture
         .records
         .read(&fixture.checkout.id, |doc| {
-            notes::doc::NotesDoc::list_pages(doc).first().unwrap().id
+            notes::read::list_pages(doc).first().unwrap().id
         })
         .unwrap();
     fixture
         .driver
         .invoke_action(
-            &tilo_actions::ActionAddress::new(notes::actions::page_resource_id(page), "open"),
-            &serde_json::Map::new(),
+            &tilo_actions::ActionAddress::new("notes.notebook", "open-note"),
+            serde_json::json!({ "page": page }).as_object().unwrap(),
             false,
             None,
         )
@@ -870,8 +870,8 @@ impl NativeNotes {
     fn assert_body(&self, page: notes::PageId, expected: &str) {
         self.records
             .read(&self.checkout.id, |doc| {
-                notes::notebook::validate(doc).unwrap();
-                let blocks = notes::doc::NotesDoc::page_block_snapshots(doc, page);
+                notes::read::validate(doc).unwrap();
+                let blocks = notes::read::page_block_snapshots(doc, page);
                 assert_eq!(blocks.len(), 1);
                 assert_eq!(blocks.first().unwrap().1, expected);
             })

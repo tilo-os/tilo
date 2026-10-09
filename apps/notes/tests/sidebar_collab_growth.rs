@@ -16,7 +16,6 @@
 )]
 
 use notes::NotesApp;
-use notes::doc::NotesDoc;
 use notes::model::PageMeta;
 use ui::headless::Framed;
 use ui::permissions::PermissionContext;
@@ -53,14 +52,13 @@ fn draw(app: &mut NotesApp, theme: &Theme, tr: &mut TextRenderer) {
 #[test]
 fn sidebar_survives_remote_page_added_between_layout_and_draw() {
     let mut state = ui::State::new();
-    notes::notebook::initialize_empty(&mut state.doc).unwrap();
-    NotesDoc::upsert_page_meta(
+    notes::read::initialize(&mut state.doc);
+    crate::component_support::upsert_page(
         &mut state.doc,
         &PageMeta {
             id: uuid::Uuid::new_v4(),
             title: "Local Page".into(),
             parent: None,
-            order: "a".into(),
         },
     );
     let app = NotesApp::from_document(&state.doc, &ui::permissions::UserId("me".into())).unwrap();
@@ -72,13 +70,12 @@ fn sidebar_survives_remote_page_added_between_layout_and_draw() {
     draw(&mut app, &theme, &mut tr);
 
     // A remote peer adds a second page to the SHARED doc.
-    NotesDoc::upsert_page_meta(
+    crate::component_support::upsert_page(
         &mut Framed::split(&mut app).1.doc,
         &PageMeta {
             id: uuid::Uuid::new_v4(),
             title: "Remote Page".into(),
             parent: None,
-            order: "b".into(),
         },
     );
 

@@ -854,7 +854,7 @@ mod tests {
             .unwrap();
             harness.relayout();
             let import = notes::actions::import_markdown_action(
-                uuid::Uuid::new_v4(),
+                Some(uuid::Uuid::new_v4()),
                 title,
                 &format!("{title} body"),
                 Vec::new(),
@@ -894,8 +894,8 @@ mod tests {
                 .with(&RecordId::for_tab(tab), |doc| {
                     notes::Notebook::read(doc).map(|state| {
                         state
-                            .pages()
-                            .iter()
+                            .pages
+                            .values()
                             .map(|page| page.title.clone())
                             .collect::<Vec<_>>()
                     })
@@ -1026,8 +1026,8 @@ mod tests {
             .with(&RecordId::for_tab(81), |doc| {
                 notes::Notebook::read(doc).map(|state| {
                     state
-                        .pages()
-                        .iter()
+                        .pages
+                        .values()
                         .map(|page| page.title.clone())
                         .collect::<Vec<_>>()
                 })
@@ -1261,7 +1261,7 @@ mod tests {
                 .rows
                 .iter()
                 .filter_map(|row| row.action.as_ref())
-                .find(|action| action.address.action == "new-page")
+                .find(|action| action.address.action == "new-note")
                 .map(|action| action.address.clone())
                 .expect("the notebook offers a new note");
             let mut started = tilo_actions::remote::ActionHost::invoke(
@@ -1275,7 +1275,7 @@ mod tests {
                         address,
                     },
                     argument: tilo_actions::remote::InvokeArgument::Json(
-                        serde_json::json!({ tilo_actions::PROMPTED_PARAM: "Tide table" })
+                        serde_json::json!({ "title": "Tide table" })
                             .as_object()
                             .unwrap()
                             .clone(),
@@ -1336,19 +1336,24 @@ mod tests {
             }
         }
 
-        // The palette's search finds the note by a word only in its body.
+        // The directory lists the note the launch imported, by its title,
+        // with the verbs that act on it.
         let found = {
             let mut found = false;
             let deadline = tilo_test_env::hang_deadline();
             while !found {
                 let page = wait_page(
                     &mut [&mut notes, &mut terminal],
-                    query(&notes_provider, "quayside"),
+                    query(&notes_provider, "Harbour plan"),
                 );
-                found = !page.rows.is_empty();
+                found = page.rows.iter().any(|row| {
+                    row.action
+                        .as_ref()
+                        .is_some_and(|action| action.address.action == "rename")
+                });
                 assert!(
                     found || std::time::Instant::now() < deadline,
-                    "no row for the note's body"
+                    "no row for the imported note"
                 );
             }
             found

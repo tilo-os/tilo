@@ -132,7 +132,7 @@ fn sidebar_drags_preview_cancel_and_reparent() {
         assert!(drag_active(&mut app));
         dispatch(&mut app, &mouse(ElementState::Released, MouseButton::Left));
 
-        let pages = app.state().pages().to_vec();
+        let pages = crate::framework_support::shown(&app).pages().to_vec();
         let one_meta = pages.iter().find(|p| p.id == one).unwrap();
         assert_eq!(
             one_meta.parent,
@@ -148,7 +148,7 @@ fn sidebar_context_menu_deletes_and_deep_copies_pages() {
     eprintln!("phase context_menu_delete_removes_the_page");
     {
         let (mut app, welcome, one, _two) = three_page_app();
-        let before = app.state().pages().len();
+        let before = crate::framework_support::shown(&app).pages().len();
 
         // Right-click row 1 (One) → the context menu opens.
         let r1 = row(&mut app, 1);
@@ -160,7 +160,7 @@ fn sidebar_context_menu_deletes_and_deep_copies_pages() {
         dispatch(&mut app, &named_key(NamedKey::ArrowUp));
         dispatch(&mut app, &named_key(NamedKey::Enter));
 
-        let pages = app.state().pages().to_vec();
+        let pages = crate::framework_support::shown(&app).pages().to_vec();
         assert_eq!(pages.len(), before - 1, "Delete removed exactly one page");
         assert!(
             pages.iter().all(|p| p.id != one),
@@ -187,7 +187,7 @@ fn sidebar_context_menu_deletes_and_deep_copies_pages() {
         surface(&mut app, |notes| {
             notes.apply_event_for_test(OutEvent::CreateChild { parent: Some(one) });
         });
-        let before = app.state().pages().len();
+        let before = crate::framework_support::shown(&app).pages().len();
 
         // Right-click row 1 (Report) → menu; ArrowDown ×3 lands on Duplicate.
         let r1 = row(&mut app, 1);
@@ -199,7 +199,7 @@ fn sidebar_context_menu_deletes_and_deep_copies_pages() {
         }
         dispatch(&mut app, &named_key(NamedKey::Enter));
 
-        let pages = app.state().pages().to_vec();
+        let pages = crate::framework_support::shown(&app).pages().to_vec();
         assert_eq!(
             pages.len(),
             before + 2,

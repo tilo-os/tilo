@@ -807,12 +807,14 @@ mod tests {
         eprintln!("phase keys_stay_attached_to_pages_across_rebuilds");
         {
             let mut ws = Workspace::new();
-            let a = ws.create_page(None);
+            ws.create_page(None);
             let b = ws.create_page(None);
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             let key_b = tree.key(b).unwrap();
-            ws.move_to(b, None, Some(a));
+            // `b` moves before `a`.
+            let moved = ws.data.pages.remove(1);
+            ws.data.pages.insert(0, moved);
             tree.sync_from_workspace(&ws);
             assert_eq!(tree.key(b), Some(key_b));
             assert_eq!(tree.row(0).map(|(key, _, _)| key), Some(key_b));
@@ -848,7 +850,7 @@ mod tests {
         {
             let mut ws = Workspace::new();
             let root = ws.create_page(None);
-            ws.rename(root, "Project plan");
+            ws.data.pages[0].title = "Project plan".into();
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             place(&mut tree, Rect::new(0.0, 0.0, 200.0, 300.0), 1.0);
@@ -969,7 +971,7 @@ mod tests {
         {
             let mut ws = Workspace::new();
             let id = ws.create_page(None);
-            ws.rename(id, "Untitled");
+            ws.data.pages[0].title = "Untitled".into();
             let mut tree = PageSidebar::new();
             tree.sync_from_workspace(&ws);
             assert!(tree.begin_rename(id));

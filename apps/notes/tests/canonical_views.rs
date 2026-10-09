@@ -5,7 +5,7 @@
 
 use crate::component_support::*;
 use automerge::transaction::Transactable;
-use notes::{actions, doc::NotesDoc};
+use notes::{actions, read};
 use ui::{
     application::RestoreInput,
     headless::{Driver, SemanticExpectation},
@@ -21,7 +21,7 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
         let checkout = notebook(&f);
         let mut a = driver(&f, 11, &checkout);
         let mut b = driver(&f, 12, &checkout);
-        invoke(&mut a, 11, actions::page_resource_id(f.child), "open", None);
+        open_note(&mut a, 11, f.child, None);
         a.perform_named(
             "note_title",
             &ui::a11y::Action::SetSelection {
@@ -40,12 +40,12 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
         assert_closed(&reports[0]);
         let saved = reports[0].recovery.clone().unwrap();
         drop(a);
-        invoke(
+        invoke_with(
             &mut b,
             12,
             actions::page_resource_id(f.child),
             "rename",
-            Some("Latest Launch"),
+            serde_json::json!({ "title": "Latest Launch" }),
         );
         let before = f
             .records
@@ -53,7 +53,7 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
                 (
                     doc.base_heads(),
                     doc.pending_ops(),
-                    NotesDoc::page_block_snapshots(doc, f.child),
+                    read::page_block_snapshots(doc, f.child),
                 )
             })
             .unwrap();
@@ -74,7 +74,7 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
                 .read(&checkout.id, |doc| (
                     doc.base_heads(),
                     doc.pending_ops(),
-                    NotesDoc::page_block_snapshots(doc, f.child)
+                    read::page_block_snapshots(doc, f.child)
                 ))
                 .unwrap()
         );
@@ -92,16 +92,10 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
         let block = f
             .records
             .read(&checkout.id, |doc| {
-                NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone()
+                read::page_block_snapshots(doc, f.child)[0].0.clone()
             })
             .unwrap();
-        invoke(
-            &mut b,
-            12,
-            actions::block_resource_id(f.child, &block),
-            "replace-text",
-            Some("éλx"),
-        );
+        replace_text_through(&mut b, 12, &f, &checkout, &block, "éλx");
         stamp_current_runs(&f, &checkout, f.child, 0);
         let before = fingerprint(&f, &checkout);
         for (offset, expected) in [(0, 0), (1, 0), (2, 2), (3, 2), (4, 4), (5, 5), (900, 5)] {
@@ -214,17 +208,18 @@ fn stamp_current_runs(
     // synthesize authorship/formatting. Restoration must adopt these existing marks.
     f.records
         .with(&checkout.id, |doc| {
-            let snapshots = NotesDoc::page_block_snapshots(doc, page);
+            let snapshots = read::page_block_snapshots(doc, page);
             let body = &snapshots[index].1;
-            let actions::NotesAction::EditBody { edit, .. } = actions::set_mark_action(
-                page,
-                &snapshots[index].0,
-                0..body.chars().count(),
-                &ui::widget::marks::Mark::Bold,
-            ) else {
-                unreachable!()
-            };
-            edit_body(doc, page, edit);
+            apply_to(
+                doc,
+                &actions::set_mark_action(
+                    page,
+                    &snapshots[index].0,
+                    0..body.chars().count(),
+                    &ui::widget::marks::Mark::Bold,
+                ),
+            )
+            .unwrap();
             edit_body(
                 doc,
                 page,
@@ -316,18 +311,12 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
     let block = f
         .records
         .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.child)[3].0.clone()
+            read::page_block_snapshots(doc, f.child)[3].0.clone()
         })
         .unwrap();
     let mut a = driver(&f, 11, &checkout);
     let mut b = driver(&f, 12, &checkout);
-    invoke(
-        &mut a,
-        11,
-        actions::block_resource_id(f.child, &block),
-        "open",
-        None,
-    );
+    open_note(&mut a, 11, f.child, Some(&block));
     a.perform_named("block_editor", &ui::a11y::Action::Focus)
         .unwrap();
     a.key("Home");
@@ -345,13 +334,7 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
     assert_eq!(selected.caret.as_ref().unwrap().byte_offset, 2);
     assert_eq!(selected.caret.as_ref().unwrap().block_id, block);
     drop(a);
-    invoke(
-        &mut b,
-        12,
-        actions::block_resource_id(f.child, &block),
-        "replace-text",
-        Some("é current"),
-    );
+    replace_text_through(&mut b, 12, &f, &checkout, &block, "é current");
     // The current native formatting/author projection must survive immutable adoption.
     stamp_current_runs(&f, &checkout, f.child, 3);
     let before = fingerprint(&f, &checkout);
@@ -376,14 +359,11 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
     assert_eq!(revision(&f, &checkout), before.3 + 1);
     f.records
         .read_history(&checkout.id, |doc, history| {
-            assert_eq!(
-                NotesDoc::page_block_snapshots(doc, f.child)[3].1,
-                "Q current"
-            );
+            assert_eq!(read::page_block_snapshots(doc, f.child)[3].1, "Q current");
             let last = history.next_undo_in(&f.author, 11).unwrap();
             assert_eq!(last.author.as_ref(), Some(&f.author));
             assert_eq!(last.instance_id, Some(11));
-            notes::notebook::validate(doc).unwrap();
+            notes::read::validate(doc).unwrap();
             let mut snapshot = doc.clone();
             let changes = snapshot.get_changes(&before.0);
             assert_eq!(
@@ -398,14 +378,17 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
                     let context =
                         tilo_actions::ActionContext::from_change_message(change.message().unwrap())
                             .unwrap();
-                    assert_eq!(context.resource.unwrap().id, actions::page_body_id(f.child));
+                    assert_eq!(
+                        context.resource.unwrap().id,
+                        actions::page_resource_id(f.child)
+                    );
                     match context.what {
-                        Some(tilo_actions::Did::Verb(verb)) => verb.action.action,
-                        other => panic!("a verb: {other:?}"),
+                        Some(tilo_actions::Did::Edit(edit)) => edit.field,
+                        other => panic!("a field edit: {other:?}"),
                     }
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(labels, ["edit-body"]);
+            assert_eq!(labels, ["body"]);
         })
         .unwrap();
     for _ in 0..3 {
@@ -424,7 +407,7 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
     f.records
         .read(&checkout.id, |doc| {
             assert_eq!(
-                NotesDoc::page_block_marks(doc, f.child)
+                read::page_block_marks(doc, f.child)
                     .iter()
                     .find(|(id, _)| id == &block)
                     .unwrap()
@@ -448,7 +431,7 @@ fn independent_scroll_close_before_layout_and_narrow_sidebar_resolve_once() {
     let block = f
         .records
         .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone()
+            read::page_block_snapshots(doc, f.child)[0].0.clone()
         })
         .unwrap();
     let requested = payload(f.child, "Sidebar", Some(&block), Some(0), 2, 700.0);
@@ -497,7 +480,7 @@ fn independent_scroll_close_before_layout_and_narrow_sidebar_resolve_once() {
     let index_block = f
         .records
         .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.root)[0].0.clone()
+            read::page_block_snapshots(doc, f.root)[0].0.clone()
         })
         .unwrap();
     let b_before = semantic_rect(&b, &format!("notes.block:{index_block}")).y0;
@@ -525,7 +508,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         let block = f
             .records
             .read(&checkout.id, |doc| {
-                NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone()
+                read::page_block_snapshots(doc, f.child)[0].0.clone()
             })
             .unwrap();
         let mut local = payload(f.child, "Editor", Some(&block), Some(1), 8, 40.0);
@@ -536,7 +519,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         let saved = saved_view(&f, &checkout, local);
         let mut b = driver(&f, 12, &checkout);
         invoke_confirmed(&mut b, 12, actions::page_resource_id(f.child), "delete");
-        invoke_confirmed(&mut b, 12, actions::tag_resource_id(f.tag), "delete");
+        invoke_confirmed(&mut b, 12, actions::tag_resource_id(f.tag), "delete-tag");
         let before = fingerprint(&f, &checkout);
         let mut app = app_from_payload(&f, &checkout, saved.application.as_ref().unwrap());
         assert_eq!(app.selected_for_test(), Some(f.root));
@@ -560,7 +543,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         let empty_block = f
             .records
             .read(&checkout.id, |doc| {
-                NotesDoc::page_block_snapshots(doc, f.empty)[0].0.clone()
+                read::page_block_snapshots(doc, f.empty)[0].0.clone()
             })
             .unwrap();
         f.records
@@ -601,7 +584,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         f.records
             .read(&checkout.id, |doc| {
                 assert_eq!(
-                    NotesDoc::page_block_snapshots(doc, f.empty)
+                    read::page_block_snapshots(doc, f.empty)
                         .iter()
                         .map(|(_, text)| text.as_str())
                         .collect::<Vec<_>>(),
@@ -620,7 +603,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         let block = f
             .records
             .read(&checkout.id, |doc| {
-                NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone()
+                read::page_block_snapshots(doc, f.child)[0].0.clone()
             })
             .unwrap();
         let saved = saved_view(
@@ -717,11 +700,10 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
             .records
             .with(&checkout.id, |doc| {
                 let (_, pages) = doc.get(automerge::ROOT, "pages").unwrap().unwrap();
-                let (_, page) = doc.get(&pages, f.root.to_string()).unwrap().unwrap();
-                (
-                    NotesDoc::page_block_snapshots(doc, f.root)[0].0.clone(),
-                    page,
-                )
+                let (_, item) = doc.get(&pages, f.root.to_string()).unwrap().unwrap();
+                // A collection keeps each item's fields under `v`.
+                let (_, page) = doc.get(&item, "v").unwrap().unwrap();
+                (read::page_block_snapshots(doc, f.root)[0].0.clone(), page)
             })
             .unwrap();
         let spelling = spelling.as_str();
@@ -744,7 +726,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         f.records
             .read(&checkout.id, |doc| {
                 assert_eq!(
-                    NotesDoc::page_block_snapshots(doc, f.root)[0],
+                    read::page_block_snapshots(doc, f.root)[0],
                     (spelling.into(), "PQroject index".into())
                 );
             })
