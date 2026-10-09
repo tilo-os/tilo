@@ -7,7 +7,11 @@ For every record of the run:
   environment key (profile, renderer, virtualization, runner), excluding
   records that were themselves regressions, and starting no earlier than the
   newest record a person accepted. Records from another environment are never
-  compared.
+  compared. A baseline is compared with once it holds the KPI's
+  `baseline_min_runs` records (default 1), or starts at an accepted one; until
+  then the run is `new` and joins the baseline. A deterministic KPI (bytes) is
+  judged by one run; a noisy one needs more, or its first quiet night becomes
+  the bar every later night is held to.
 - **Relative regression.** p50 above `p50_tolerance` (1.10) or p99 above
   `p99_tolerance` (1.20) times the baseline median of that percentile, and by
   more than the KPI's `min_delta`. A first regression is `regression-pending`
@@ -55,7 +59,8 @@ BUDGETS = Path(__file__).resolve().parent / "kpi-budgets.toml"
 CEILINGS = ("p50", "p95", "p99", "max")
 REGRESSED = frozenset({"regression-pending", "regression"})
 FAILING = frozenset({"regression", "unit-mismatch"})
-DEFAULTS = {"p50_tolerance": 1.10, "p99_tolerance": 1.20, "baseline_runs": 5, "min_delta": 0.0}
+DEFAULTS = {"p50_tolerance": 1.10, "p99_tolerance": 1.20, "baseline_runs": 5,
+            "baseline_min_runs": 1, "min_delta": 0.0}
 
 
 @dataclasses.dataclass
@@ -106,6 +111,12 @@ def baseline(history: list[record.Record], runs: int) -> list[record.Record]:
     return [item for item in real if (item.verdict or {}).get("status") not in REGRESSED][-runs:]
 
 
+def comparable(base: list[record.Record], min_runs: int) -> bool:
+    """Enough runs for a median, or a baseline a person started on purpose."""
+    accepted = any((item.verdict or {}).get("status") == "accepted" for item in base)
+    return len(base) >= min_runs or accepted
+
+
 def number(value: float | None) -> str:
     if value is None:
         return ""
@@ -130,7 +141,12 @@ def judge(item: record.Record, history: list[record.Record], budgets: Budgets, a
     own = [h for h in matching if series(h) == series(item)]
     previous = (own[-1].verdict or {}).get("status") if own else None
     status = "new"
-    if base:
+    notes = []
+    min_runs = int(budgets.setting(item.kpi, "baseline_min_runs"))
+    if base and not comparable(base, min_runs):
+        verdict.update(baseline_n=len(base))
+        notes.append(f"baseline {len(base)} of {min_runs} runs; not compared yet")
+    elif base:
         base50 = statistics.median(h.p50 for h in base)
         base99 = statistics.median(h.p99 for h in base)
         min_delta = budgets.setting(item.kpi, "min_delta")
@@ -145,7 +161,6 @@ def judge(item: record.Record, history: list[record.Record], budgets: Budgets, a
         status = "accepted"
     verdict["status"] = status
     entry = budgets.kpis.get(item.kpi)
-    notes = []
     failing = status in FAILING
     if entry is not None:
         if entry["unit"] != item.unit:
@@ -160,7 +175,7 @@ def judge(item: record.Record, history: list[record.Record], budgets: Budgets, a
             notes.append(("over budget: " if enforced else "over target: ") + "; ".join(misses))
     if status == "regression-pending":
         notes.append("first regression; fails if the next run regresses too")
-    return Row(item, item.kpi, status, failing, " ".join(notes))
+    return Row(item, item.kpi, status, failing, "; ".join(notes))
 
 
 def compare(current: list[record.Record], history: list[record.Record], budgets: Budgets,
