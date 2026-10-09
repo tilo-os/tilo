@@ -42,9 +42,7 @@ fn new_category_id() -> String {
 }
 
 fn now_secs() -> i64 {
-    ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(NOW, |d| d.as_secs() as i64)
+    ui::time::try_unix_now().map_or(NOW, |secs| secs as i64)
 }
 
 struct EventDispatch<'a, 'doc> {
