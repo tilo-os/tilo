@@ -39,6 +39,11 @@ use super::stage::Stages;
 use super::surface::SurfacePublication;
 use super::view::{Bindings, Updaters, ViewCx};
 
+struct PublicationCache {
+    revision: (u64, u64, String),
+    tree: tilo_actions::Resource,
+}
+
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
     icon: IconDescriptor,
@@ -77,6 +82,9 @@ pub(crate) struct ResourceRoot<R: Resource> {
     presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's and its surfaces' search entries, indexed.
     search: std::cell::RefCell<Option<SearchCache>>,
+    /// The document-owned tree at one live and translation revision. Surface bindings, local
+    /// rows and effect availability are decorated afresh for every caller.
+    publication_tree: std::cell::RefCell<Option<PublicationCache>>,
     /// The view operation types of the nested resources at one live revision.
     nested_views: std::cell::RefCell<Option<(u64, Rc<HashSet<String>>)>>,
     /// The palette the view was last drawn in, which `render` draws it in.
@@ -337,6 +345,7 @@ impl<R: Resource> ResourceRoot<R> {
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
+            publication_tree: std::cell::RefCell::new(None),
             nested_views: std::cell::RefCell::new(None),
             drawn_theme: None,
             render_text: None,
@@ -449,7 +458,37 @@ impl<R: Resource> ResourceRoot<R> {
     /// views and surfaces bound to where the user is, the live rows surfaces
     /// show, and the framework's operations every app answers.
     fn publication(&self) -> tilo_actions::Resource {
-        self.publication_of(&self.live.get())
+        #[cfg(feature = "test-support")]
+        let _profile = super::profiling::Scope::start("framework.publication");
+        let state = self.live.get();
+        let Some(epoch) = R::publication_cache_epoch(&state) else {
+            return self.decorate_publication(&state, self.resource_tree(&state));
+        };
+        let revision = (
+            self.live.revision(),
+            ui_core::i18n::I18nManager::revision(),
+            epoch,
+        );
+        let tree = {
+            let mut cached = self.publication_tree.borrow_mut();
+            if cached
+                .as_ref()
+                .is_some_and(|cached| cached.revision != revision)
+            {
+                *cached = None;
+            }
+            cached
+                .get_or_insert_with(|| {
+                    let state = self.live.get();
+                    PublicationCache {
+                        revision,
+                        tree: self.resource_tree(&state),
+                    }
+                })
+                .tree
+                .clone()
+        };
+        self.decorate_publication(&self.live.get(), tree)
     }
 
     /// [`Self::publication`] of the resource as `doc` holds it now, which a
@@ -475,11 +514,20 @@ impl<R: Resource> ResourceRoot<R> {
     fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.publication");
-        let mut resource = {
-            #[cfg(feature = "test-support")]
-            let _profile = super::profiling::Scope::start("framework.resource_tree");
-            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state)
-        };
+        self.decorate_publication(state, self.resource_tree(state))
+    }
+
+    fn resource_tree(&self, state: &R::State) -> tilo_actions::Resource {
+        #[cfg(feature = "test-support")]
+        let _profile = super::profiling::Scope::start("framework.resource_tree");
+        tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state)
+    }
+
+    fn decorate_publication(
+        &self,
+        state: &R::State,
+        mut resource: tilo_actions::Resource,
+    ) -> tilo_actions::Resource {
         let mut bound = self.bindings.declarations(state);
         let mut rows = Vec::new();
         let mut availability = Vec::new();
