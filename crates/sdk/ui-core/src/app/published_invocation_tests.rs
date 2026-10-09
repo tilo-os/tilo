@@ -592,17 +592,6 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
     }
 }
 
-/// The id of the published resource, at any depth, that offers `action`.
-fn published_with_action(resources: &[tilo_actions::Resource], action: &str) -> Option<String> {
-    resources.iter().find_map(|resource| {
-        if resource.actions.iter().any(|offered| offered.id == action) {
-            Some(resource.id.as_str().to_owned())
-        } else {
-            published_with_action(&resource.children, action)
-        }
-    })
-}
-
 /// TIL-652: a caller that names no revision is admitted against the one the
 /// owner resolved the action at, and the broker binds the admission to the
 /// revision that resolution names. When the directory moves on between that
@@ -623,22 +612,18 @@ fn revisionless_directory_invoke_is_bound_to_the_resolved_revision() {
         if moved && resolved_after {
             let _ = app.action_registry_mut();
         }
-        // Publish the directory as the app does, then resolve the published
-        // `bump` with no revision, as the broker asks for a caller naming
-        // none.
+        // Publish the directory as the app does, then resolve one of its
+        // published actions with no revision, as the broker asks for a
+        // caller naming none. The revision is the whole directory's: it
+        // binds every action the app runs, `bump` among them.
         let resources = app.publication_resources();
-        let counter = published_with_action(&resources, "bump").unwrap_or_else(|| {
-            panic!(
-                "the counter publishes bump: {:?}",
-                resources
-                    .iter()
-                    .map(|resource| resource.id.as_str())
-                    .collect::<Vec<_>>()
-            )
-        });
         let descriptors = tilo_actions::door::survey(&resources);
         app.capture_action_directory_snapshot(&resources, &descriptors);
-        let resolution = app.resolve_action_directory("", &counter, "bump");
+        let published = &descriptors
+            .first()
+            .expect("the counter publishes its directory")
+            .address;
+        let resolution = app.resolve_action_directory("", &published.resource, &published.action);
         let runtime_collab::ActionDirectoryResolution::Found {
             revision: Some(resolved),
             ..
