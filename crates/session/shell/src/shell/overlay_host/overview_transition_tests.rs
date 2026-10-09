@@ -198,6 +198,28 @@ fn overview_transition_latches_completes_reverses_and_snaps_with_reduced_motion(
     reduced_motion_snaps_overview_to_each_target();
 }
 
+/// A desktop of two displays side by side, with the chrome that says which
+/// one has focus: the overview opens on that display, as it does live.
+fn two_display_host() -> ShellOverlayHost {
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::WorkspaceTree;
+
+    let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+    let mut host =
+        ShellOverlayHost::with_fixture_content(Box::new(Container::new())).with_chrome(chrome);
+    host.rect = Rect::new(0.0, 0.0, 3200.0, 1080.0);
+    host.set_output_geometry(&[
+        OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+        OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+    ]);
+    assert_eq!(
+        host.overlay_area(),
+        Rect::new(0.0, 0.0, 1920.0, 1080.0),
+        "the overview opens on the focused first display"
+    );
+    host
+}
+
 /// The overview drawn into a tracked section, as the frame builder draws it,
 /// with the parts the retained-damage producer compares.
 fn overview_section(
@@ -249,12 +271,7 @@ fn overview_transition_damages_one_display_not_both() {
         );
     }
 
-    let mut host = host();
-    host.rect = Rect::new(0.0, 0.0, 3200.0, 1080.0);
-    host.set_output_geometry(&[
-        OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
-        OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0),
-    ]);
+    let mut host = two_display_host();
     let theme = Theme::dark();
     let mut renderer = TextRenderer::new();
     let closed = overview_section(&mut host, &mut renderer, &theme, false);
@@ -298,12 +315,7 @@ fn overview_transition_damages_one_display_not_both() {
 
 #[test]
 fn both_overview_directions_damage_only_the_overview_display() {
-    let mut host = host();
-    host.rect = Rect::new(0.0, 0.0, 3200.0, 1080.0);
-    host.set_output_geometry(&[
-        OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
-        OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0),
-    ]);
+    let mut host = two_display_host();
     let theme = Theme::dark();
     let mut renderer = TextRenderer::new();
     let closed = overview_section(&mut host, &mut renderer, &theme, false);
