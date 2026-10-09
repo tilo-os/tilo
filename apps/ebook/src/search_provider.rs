@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use tilo_actions::{ActionAddress, Resource};
+use tilo_actions::Resource;
 use ui::icons::Icon;
 use ui::search::SearchResult;
 use ui::tilo_resource::{Derived, SearchBody, SearchPiece, SearchText, SearchWeight};
@@ -99,7 +99,7 @@ impl SearchText for ChapterBody {
         let chapter_title = chapter_label(chapter, self.chapter);
         Some(
             ui::tilo_resource::SearchEntry::new(format!("Match in {chapter_title}"), "")
-                .invoking(BookSearch::location_address(
+                .anchored(BookSearch::location_anchor(
                     &self.book.id,
                     self.chapter,
                     segment,
@@ -256,17 +256,16 @@ impl BookSearch {
                        fields: &[(&str, SearchWeight)],
                        body: Option<SearchBody>|
          -> bool {
-            let Some(address) = result.action_address() else {
-                return false;
-            };
-            if resource_rows
-                .insert(address.resource.clone(), entries.len())
-                .is_some()
+            let anchor = result.action_id.clone();
+            if anchor.is_empty()
+                || resource_rows
+                    .insert(anchor.clone(), entries.len())
+                    .is_some()
             {
                 return false;
             }
             let mut entry = ui::tilo_resource::SearchEntry::new(result.title.clone(), "")
-                .invoking(address)
+                .anchored(anchor)
                 .grouped(result.kind.clone());
             for (text, weight) in fields {
                 entry = entry.field(*text, *weight);
@@ -288,7 +287,7 @@ impl BookSearch {
         for (book_index, book) in books.iter().enumerate() {
             let title = Self::book_title(book).to_string();
             let mut result =
-                SearchResult::for_action(BOOK_KIND, title.clone(), Self::book_address(&book.id))
+                SearchResult::new(BOOK_KIND, title.clone(), book_place_resource(&book.id))
                     .with_icon(Icon::FileText);
             if !book.author.trim().is_empty() {
                 result = result.with_subtitle(book.author.clone());
@@ -314,10 +313,10 @@ impl BookSearch {
                 );
             for (chapter_index, chapter) in book.chapters.iter().enumerate() {
                 let chapter_title = chapter_label(chapter, chapter_index);
-                let result = SearchResult::for_action(
+                let result = SearchResult::new(
                     CHAPTER_KIND,
                     chapter_title.clone(),
-                    Self::chapter_address(&book.id, chapter_index),
+                    Self::chapter_anchor(&book.id, chapter_index),
                 )
                 .with_subtitle(title.clone())
                 .with_icon(Icon::List);
@@ -348,9 +347,9 @@ impl BookSearch {
                 entry.title.clone()
             };
             // A collaborator's book is fetched before it opens.
-            let download = ActionAddress::new(book_place_resource(&entry.id), "download");
-            let mut result = SearchResult::for_action(BOOK_KIND, title.clone(), download)
-                .with_icon(Icon::FileText);
+            let mut result =
+                SearchResult::new(BOOK_KIND, title.clone(), book_place_resource(&entry.id))
+                    .with_icon(Icon::FileText);
             if !entry.author.trim().is_empty() {
                 result = result.with_subtitle(entry.author.clone());
             }
@@ -379,10 +378,10 @@ impl BookSearch {
                 .unwrap_or_else(|| ("Unknown book".into(), String::new()));
             let comment = annotation.kind == AnnoKind::Note
                 && groups.contains(&(annotation.doc_id.clone(), annotation.group));
-            let result = SearchResult::for_action(
+            let result = SearchResult::new(
                 ANNOTATION_KIND,
                 Self::preview(annotation),
-                Self::annotation_address(annotation, comment),
+                mark_place_resource(annotation, comment),
             )
             .with_subtitle(format!(
                 "{} in chapter {} of {title}",
@@ -477,16 +476,8 @@ impl BookSearch {
         }
     }
 
-    fn book_address(id: &str) -> ActionAddress {
-        ActionAddress::new(book_place_resource(id), "open")
-    }
-
-    fn chapter_address(book_id: &str, chapter: usize) -> ActionAddress {
-        ActionAddress::new(format!("ebook.chapter:{book_id}:{chapter}"), "open")
-    }
-
-    fn annotation_address(annotation: &Annotation, comment: bool) -> ActionAddress {
-        ActionAddress::new(mark_place_resource(annotation, comment), "open")
+    fn chapter_anchor(book_id: &str, chapter: usize) -> String {
+        format!("ebook.chapter:{book_id}:{chapter}")
     }
 
     fn preview(annotation: &Annotation) -> String {
@@ -506,18 +497,15 @@ impl BookSearch {
         }
     }
 
-    fn location_address(book_id: &str, chapter: usize, block: usize) -> ActionAddress {
-        ActionAddress::new(
-            format!("ebook.location:{book_id}:{chapter}:{block}"),
-            "open",
-        )
+    fn location_anchor(book_id: &str, chapter: usize, block: usize) -> String {
+        format!("ebook.location:{book_id}:{chapter}:{block}")
     }
 
     /// Resolve a full-text location resource exactly. This performs a bounded
     /// metadata lookup plus one block bounds check; it does not construct a
     /// prose index or hydrate unrelated chapters.
-    fn location_resource_for(&self, address: &ActionAddress) -> Option<Resource> {
-        let suffix = address.resource.strip_prefix("ebook.location:")?;
+    fn location_resource_for(&self, id: &str) -> Option<Resource> {
+        let suffix = id.strip_prefix("ebook.location:")?;
         let (book, location) = self.books.iter().find_map(|book| {
             let prefix = format!("{}:", book.id);
             suffix
@@ -534,33 +522,30 @@ impl BookSearch {
         let chapter_data = book.chapters.get(chapter)?;
         chapter_data.blocks.get(block)?;
         let chapter_title = chapter_label(chapter_data, chapter);
-        let resource = Resource::new(
-            &address.resource,
-            "ebook.location",
-            format!("{chapter_title} in {}", Self::book_title(book)),
+        Some(
+            Resource::new(
+                id,
+                "ebook.location",
+                format!("{chapter_title} in {}", Self::book_title(book)),
+            )
+            .with_action(crate::actions::open_at(
+                &book.id,
+                chapter,
+                Some(block),
+                "Open match",
+            )),
         )
-        .with_action(crate::actions::open_at(
-            &book.id,
-            chapter,
-            Some(block),
-            "Open match",
-        ));
-        resource
-            .actions
-            .iter()
-            .any(|action| action.id == address.action)
-            .then_some(resource)
     }
 
     /// The resource a hit names: a chapter opened, or the place the library
     /// publishes for a book or an annotation, with what acts on it.
-    fn resource_for(&self, entry: &SearchEntry, address: &ActionAddress) -> Option<Resource> {
+    fn resource_for(&self, entry: &SearchEntry, id: &str) -> Option<Resource> {
         let book = match entry.target {
             SearchTarget::Chapter { book, chapter } => {
                 let book = self.books.get(book)?;
                 book.chapters.get(chapter)?;
                 return Some(
-                    Resource::new(&address.resource, "ebook.chapter", &entry.result.title)
+                    Resource::new(id, "ebook.chapter", &entry.result.title)
                         .with_action(crate::actions::open_at(&book.id, chapter, None, "Open")),
                 );
             }
@@ -598,30 +583,45 @@ impl BookSearch {
             .filter(|mark| mark.doc_id == book)
             .collect();
         let place = Ebook::book_place(&row, &marks);
-        let mut resource = Derived::find(std::slice::from_ref(&place), &address.resource)?;
+        let mut resource = Derived::find(std::slice::from_ref(&place), id)?;
         resource.children.clear();
         Some(resource)
     }
 }
 
 impl BookSearch {
-    /// The exact resource a hit's address names: a book, a chapter, an
+    /// The exact resource a hit is anchored at: a book, a chapter, an
     /// annotation, a remote book or a reading location.
-    pub(crate) fn resolve(&self, address: &ActionAddress) -> Option<Resource> {
+    pub(crate) fn resolve(&self, id: &str) -> Option<Resource> {
         if !self.available {
             return None;
         }
-        if let Some(resource) = self.location_resource_for(address) {
+        if let Some(resource) = self.location_resource_for(id) {
             return Some(resource);
         }
-        let row = *self.resource_rows.get(&address.resource)?;
+        let row = *self.resource_rows.get(id)?;
         let entry = self.entries.get(row)?;
-        let resource = self.resource_for(entry, address)?;
-        resource
+        self.resource_for(entry, id)
+    }
+
+    /// What opening the hit anchored at `id` runs: the reader opens the
+    /// book, chapter, annotation or match there; a collaborator's book not
+    /// on this device is fetched first. `None` once the hit is gone.
+    pub(crate) fn opened(&self, id: &str) -> Option<crate::resource::BooksEffect> {
+        use ui::tilo_resource::Effect as _;
+        let resource = self.resolve(id)?;
+        let action = resource
             .actions
             .iter()
-            .any(|action| action.id == address.action)
-            .then_some(resource)
+            .find(|action| action.id == "open")
+            .or_else(|| {
+                resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "download")
+            })?;
+        let encoded = action.build_json(&serde_json::Map::new()).ok()?;
+        crate::resource::BooksEffect::from_payload(&encoded.payload).ok()
     }
 }
 
@@ -732,8 +732,8 @@ impl ui::search::SearchProvider for BookSearchProvider {
         self.source.action_directory_cursor_is_current(cursor)
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
-        self.books.resolve(address)
+    fn resolve_action_resource(&self, address: &tilo_actions::ActionAddress) -> Option<Resource> {
+        self.books.resolve(&address.resource)
     }
 }
 
@@ -766,11 +766,12 @@ mod tests {
                 .into_iter()
                 .find(|hit| hit.kind == CHAPTER_KIND)
                 .expect("chapter");
-            let address = hit.action_address().expect("canonical");
+            let address = hit.action_id;
             let resource = provider
-                .resolve_action_resource(&address)
+                .books
+                .resolve(&address)
                 .expect("exact local resource");
-            assert_eq!(resource.id.as_str(), address.resource);
+            assert_eq!(resource.id.as_str(), address);
             assert!(resource.children.is_empty());
             assert_eq!(resource.actions.len(), 1);
         }
@@ -830,10 +831,11 @@ mod tests {
                 .into_iter()
                 .find(|hit| hit.kind == LOCATION_KIND)
                 .expect("precise full-text location");
-            let address = hit.action_address().expect("canonical location address");
-            assert_eq!(address.resource, "ebook.location:stable-book:0:1");
+            let address = hit.action_id;
+            assert_eq!(address, "ebook.location:stable-book:0:1");
             let resource = provider
-                .resolve_action_resource(&address)
+                .books
+                .resolve(&address)
                 .expect("exact lazy location resource");
             let open = resource
                 .actions
@@ -903,7 +905,8 @@ mod tests {
             let provider = BookSearchProvider::new_with_registry(&[], &[], &[entry]);
             let hit = provider.search("mira").pop().expect("metadata");
             let resource = provider
-                .resolve_action_resource(&hit.action_address().expect("address"))
+                .books
+                .resolve(&hit.action_id)
                 .expect("actionable remote resource");
             let open = resource
                 .actions
@@ -983,12 +986,9 @@ mod tests {
                 assert_late_hit_reachable(|corpus| late_hit_library(corpus, false), 3_000);
             assert_eq!(hit.kind, BOOK_KIND);
             assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let address = hit.action_address().expect("canonical address");
-            assert_eq!(
-                address.resource,
-                crate::resource::book_place_resource("book:002999")
-            );
-            assert!(provider.resolve_action_resource(&address).is_some());
+            let address = hit.action_id;
+            assert_eq!(address, crate::resource::book_place_resource("book:002999"));
+            assert!(provider.books.resolve(&address).is_some());
         }
 
         // --- phase: late_body_only_hit_is_found_within_the_search_bound ---
@@ -996,9 +996,9 @@ mod tests {
             let (provider, hit) =
                 assert_late_hit_reachable(|corpus| late_hit_library(corpus, true), 3_000);
             assert_eq!(hit.kind, LOCATION_KIND);
-            let address = hit.action_address().expect("canonical address");
-            assert_eq!(address.resource, "ebook.location:book:002999:0:0");
-            assert!(provider.resolve_action_resource(&address).is_some());
+            let address = hit.action_id;
+            assert_eq!(address, "ebook.location:book:002999:0:0");
+            assert!(provider.books.resolve(&address).is_some());
         }
 
         // --- phase: late_metadata_posting_avoids_a_library_scan ---
@@ -1282,7 +1282,8 @@ mod tests {
             assert!(provider.search("duplicate").is_empty());
             assert!(
                 provider
-                    .resolve_action_resource(&BookSearch::book_address("duplicate"))
+                    .books
+                    .resolve(&crate::resource::book_place_resource("duplicate"))
                     .is_none(),
                 "an ambiguous projection publishes no row"
             );
@@ -1307,7 +1308,8 @@ mod tests {
             let provider = BookSearchProvider::new(&books, &[note.clone()]);
             let hit = provider.search("keep").pop().expect("annotation row");
             let resource = provider
-                .resolve_action_resource(&hit.action_address().expect("address"))
+                .books
+                .resolve(&hit.action_id)
                 .expect("exact annotation resource");
             let delete = resource
                 .actions
@@ -1353,12 +1355,13 @@ mod tests {
             let provider = BookSearchProvider::new(&[book], &[highlight, comment, note]);
 
             let book_resource = provider
-                .resolve_action_resource(
+                .books
+                .resolve(
                     &provider
                         .search("contract book")
                         .into_iter()
                         .find(|result| result.kind == BOOK_KIND)
-                        .and_then(|result| result.action_address())
+                        .map(|result| result.action_id)
                         .expect("book address"),
                 )
                 .expect("book resource");
@@ -1383,11 +1386,12 @@ mod tests {
             assert!(remove.contract.reversible);
 
             let highlight_resource = provider
-                .resolve_action_resource(
+                .books
+                .resolve(
                     &provider
                         .search("amber")
                         .pop()
-                        .and_then(|result| result.action_address())
+                        .map(|result| result.action_id)
                         .expect("highlight address"),
                 )
                 .expect("highlight resource");
@@ -1407,11 +1411,12 @@ mod tests {
                 ("reader note", ["delete-annotation", "open"].as_slice()),
             ] {
                 let resource = provider
-                    .resolve_action_resource(
+                    .books
+                    .resolve(
                         &provider
                             .search(query)
                             .pop()
-                            .and_then(|result| result.action_address())
+                            .map(|result| result.action_id)
                             .expect("annotation address"),
                     )
                     .expect("annotation resource");

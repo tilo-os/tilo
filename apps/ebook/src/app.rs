@@ -1150,6 +1150,9 @@ pub struct BooksApp {
     /// Whether this window edited the library since it was last read, so
     /// the next refresh reads it again from the document.
     record_stale: std::cell::Cell<bool>,
+    /// What a search hit or an agent's `open` asked to show, shown on the
+    /// next sync.
+    opens: Rc<std::cell::RefCell<Vec<String>>>,
 }
 
 impl BooksApp {
@@ -1348,6 +1351,7 @@ impl BooksApp {
             cover_cache: HashMap::new(),
             hits: Vec::new(),
             dispatch,
+            opens: Rc::default(),
             record: Rc::new(Ebook::default()),
             record_stale: std::cell::Cell::new(false),
         }
@@ -4488,6 +4492,7 @@ impl Widget for BooksApp {
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
+        self.drain_opens();
         self.close_orphaned_editors();
         self.note_composer.sync(doc, path);
         self.comment_overlay.sync(doc, path);
@@ -5415,13 +5420,25 @@ impl BooksApp {
     /// The book, chapter, annotation or location a search hit names, with
     /// what opens it. Its edits are the library's own, on the published row.
     pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
-        self.book_search
-            .resolve(&tilo_actions::ActionAddress::new(id, "open"))
-            .or_else(|| {
-                self.book_search
-                    .resolve(&tilo_actions::ActionAddress::new(id, "download"))
-            })
-            .map(live_row)
+        self.book_search.resolve(id).map(live_row)
+    }
+
+    /// Where a search hit or an agent's `open` queues what to show.
+    pub(crate) fn opens(&self) -> Rc<std::cell::RefCell<Vec<String>>> {
+        Rc::clone(&self.opens)
+    }
+
+    /// Show what was asked to be opened: the book, chapter, annotation or
+    /// match a hit is anchored at, fetching a collaborator's book first.
+    fn drain_opens(&self) {
+        let opens = std::mem::take(&mut *self.opens.borrow_mut());
+        for anchor in opens {
+            if let Some(effect) = self.book_search.opened(&anchor) {
+                self.dispatch.effect(&effect);
+            } else {
+                tracing::debug!(%anchor, "books: a search hit to open is gone");
+            }
+        }
     }
 }
 

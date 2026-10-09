@@ -857,7 +857,12 @@ impl ResourceApp for EbookShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Ebook>) -> Element {
-        cx.surface(BooksApp::new(cx.dispatcher(), bundled_library()))
+        let app = BooksApp::new(cx.dispatcher(), bundled_library());
+        // A search hit, or an agent's `open`, shows the book, chapter,
+        // annotation or match it is anchored at.
+        let opens = app.opens();
+        cx.on_open(move |anchor: &str| opens.borrow_mut().push(anchor.to_owned()));
+        cx.surface(app)
     }
 
     fn label(state: &Ebook) -> String {
