@@ -1125,16 +1125,23 @@ Git; there is no shared machine-specific default. Install `tools/ci/cargo-shim`
 as `cargo` on PATH; every invocation from the tree or a worktree routes into it.
 
 Agent sessions identified by `CODEX_THREAD_ID`, `CODEX_SESSION_ID` or
-`CLAUDECODE` compile through `rcargo --no-fallback`. The shim checks this before
-`RCARGO=0`, `QCARGO_BYPASS` and container routing. A missing remote client, a
-builder failure or a returned local compilation fails visibly; it never starts
-a local compiler. Noninteractive invocations in the two existing onboarding and
-prepared-userspace retry worktrees follow the same rule without agent identity.
-Ordinary human shells and remote builder recursion retain their local controls.
-Metadata, formatting and dependency commands can still run without compiling.
-Use explicit `rcargo --no-fallback` when calling the remote client directly;
-invoking an absolute Rustup Cargo path bypasses the shim. This is a routing guard,
-not an operating-system execution boundary.
+`CLAUDECODE` require a remote-only Cargo executor. Set `QCARGO_REMOTE_CARGO` in
+an untracked developer environment to one executable name or path. The executor
+accepts ordinary Cargo arguments and must fail on remote errors rather than
+compile locally. It may be any Cargo-compatible drop-in or a local adapter that
+configures the chosen remote build service; shell command strings are not
+accepted. Other unattended callers opt into this policy with
+`QCARGO_REMOTE_ONLY=1` in their own environment.
+
+The shim checks this policy before `QCARGO_BYPASS` and container routing. A
+missing executor or a builder failure fails visibly. It sets
+`QCARGO_REMOTE_ACTIVE=1` when invoking the executor: a returned Cargo call in the
+same policy context is rejected before compilation. Executors should not forward
+agent identity, `QCARGO_REMOTE_ONLY` or `QCARGO_REMOTE_ACTIVE` into remote builder
+processes, where ordinary Cargo must run locally. Human shells retain their
+local controls; metadata, formatting and dependency commands can still run
+without compiling. Invoking an absolute Rustup Cargo path bypasses the shim.
+This is a routing guard, not an operating-system execution boundary.
 
 Run `python3 tools/tests/test_cargo_shim_routing.py` for recording-stub routing
 checks; they never invoke Rust. `tools/tests/cargo_shim.sh` also uses stubs to

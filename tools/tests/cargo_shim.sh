@@ -4,6 +4,7 @@ set -euo pipefail
 # These cases exercise human/container cache policy; agent routing has separate
 # recording-stub coverage and must never inherit the caller's agent identity.
 unset CODEX_THREAD_ID CODEX_SESSION_ID CLAUDECODE
+unset QCARGO_REMOTE_ONLY QCARGO_REMOTE_ACTIVE QCARGO_REMOTE_CARGO
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/tilo-cargo-shim-test.XXXXXX")
