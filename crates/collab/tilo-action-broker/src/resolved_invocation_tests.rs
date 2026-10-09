@@ -467,15 +467,13 @@ async fn a_directory_invoke_naming_no_revision_resolves_the_directory_as_it_is_n
             params: action_directory::ResolveParams,
             mut results: action_directory::ResolveResults,
         ) -> Promise<(), capnp::Error> {
-            let revision = params
-                .get()
-                .and_then(|request| request.get_revision())
-                .and_then(|revision| {
-                    revision
-                        .to_str()
-                        .map(str::to_owned)
-                        .map_err(|error| capnp::Error::failed(error.to_string()))
-                });
+            let revision = params.get().and_then(|request| {
+                request
+                    .get_revision()?
+                    .to_str()
+                    .map(str::to_owned)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))
+            });
             match revision {
                 Ok(revision) => self.revisions.borrow_mut().push(revision),
                 Err(error) => return Promise::err(error),
