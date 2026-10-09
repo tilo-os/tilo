@@ -405,6 +405,9 @@ inputs = [
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_gate.rs",
   "crates/session/shell/src/compositor/switch_latency.rs",
+  # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
+  "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
+  "crates/session/shell/examples/redraw_bench.rs",
 ]
 suites = [
   "scripts/perf/check_app_coverage_test.py",
@@ -426,6 +429,7 @@ suites = [
   "scripts/perf/native_app_capture_test.py",
   "scripts/perf/native_delivery_test.py",
   "scripts/perf/presentation_feedback_test.py",
+  "scripts/perf/render_bench_test.py",
   "scripts/perf/render_boundaries_test.py",
   "scripts/perf/runtime_benchmark_test.py",
   "scripts/perf/scratchpad_effects_test.py",
