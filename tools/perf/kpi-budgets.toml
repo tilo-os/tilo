@@ -28,15 +28,16 @@ min_delta = 0.0
 
 # tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs), a
 # debug build on the shared `runner` class. The ceilings are the gate's own
-# SLO constants (tools/perf/test_adapters.py keeps them equal; TIL-595
-# tightens both). Tolerances are wider than the default because single runs
+# SLO constants (tools/perf/test_adapters.py keeps them equal): twice the p99
+# of 56 CI runs (TIL-595), derived beside the constants; change both together.
+# Tolerances are wider than the default because single runs
 # of this gate on the shared runner have spread up to 1.8x between nights
 # (KPI document inventory: run 85201 against the maximum of eight runs); five
 # repetitions per night and a two-run rule absorb the rest.
 
 [kpi."fs.metadata-cold-open-and-1000-list"]
 unit = "ms"
-max = 2000.0
+max = 360.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -45,7 +46,7 @@ source = "COLD_METADATA_SLO"
 
 [kpi."fs.metadata-warm-8x-1000-list"]
 unit = "ms"
-max = 4000.0
+max = 470.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -54,7 +55,7 @@ source = "WARM_DIRECTORY_SLO"
 
 [kpi."fs.local-chunked-64x256k-ranged-read"]
 unit = "ms"
-max = 4000.0
+max = 400.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -63,16 +64,16 @@ source = "RANGED_READ_SLO"
 
 [kpi."fs.mount-64x256k-ranged-read-under-remote-apply"]
 unit = "ms"
-max = 4000.0
+max = 680.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 1.0
-source = "RANGED_READ_SLO"
+source = "REMOTE_APPLY_RANGED_READ_SLO"
 
 [kpi."fs.thumbnail-cold-decode-scale-encode-cache"]
 unit = "ms"
-max = 3000.0
+max = 550.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -81,7 +82,7 @@ source = "COLD_THUMBNAIL_SLO"
 
 [kpi."fs.thumbnail-warm-1000-cache-lookups"]
 unit = "ms"
-max = 500.0
+max = 12.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
