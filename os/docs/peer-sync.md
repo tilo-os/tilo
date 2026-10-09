@@ -142,6 +142,18 @@ conditions, cleanup and the user manager's environment must match that profile
 through an explicit service override; changing only the shell environment is
 insufficient.
 
+The normal Permissions choice remains scoped to `/var/workspace` for Read
+and Write; Edit files (Write) already includes Read. It does not require a
+host-root `/` grant or Admin. Files evaluates that mount scope against its
+namespace-relative root `/`, using the shared ACL
+projection for initialization, signed authority, FUSE and peer requests. Deeper
+scopes stay subtrees, and restrictions (including mount ancestors), subject
+matching and expiry remain enforced. The signed capability list keeps its
+original paths. Its accepted authority envelope binds it to the exact Files
+workspace UUID; this mapping grants no access to host paths outside the Files
+mount. An approval must still explicitly name a NEW empty namespace and its
+private cache/bindings when no verified recovery copy is available.
+
 When recovery cannot supply a verified copy and the user has explicitly chosen
 a new empty primary namespace, the source controller supports:
 

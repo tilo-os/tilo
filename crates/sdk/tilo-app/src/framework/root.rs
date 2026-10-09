@@ -95,6 +95,52 @@ pub(crate) struct ResourceRoot<R: Resource> {
     past: Option<super::preview::DrawPast>,
     /// Whether the resource keeps document state History shows.
     history: bool,
+    activation_requested: std::cell::Cell<bool>,
+}
+
+fn with_native_presentations(mut resource: tilo_actions::Resource) -> tilo_actions::Resource {
+    if cfg!(not(target_family = "wasm")) {
+        for spec in [render_spec(), activate_spec()] {
+            if !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                resource = resource.with_action(spec);
+            }
+        }
+    }
+    resource
+}
+
+fn activate_spec() -> tilo_actions::ActionSpec {
+    let label = ui_core::I18nManager::lookup_plain("app-activate-window");
+    let mut spec = tilo_actions::ActionSpec::typed_operation(
+        tilo_actions::remote::APPLICATION_ACTIVATE_ACTION,
+        label.clone(),
+        label,
+        tilo_actions::OperationKind::View,
+        tilo_actions::remote::APPLICATION_ACTIVATE_TYPE,
+        Vec::new(),
+        |_| tilo_actions::EncodedAction {
+            type_id: tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.into(),
+            payload: b"{}".to_vec(),
+        },
+    )
+    .requiring(tilo_actions::PermissionRequirement::Read)
+    .with_description(ui_core::I18nManager::lookup_plain(
+        "app-activate-window-description",
+    ));
+    spec.contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    spec
+}
+
+impl<R: Resource> ui_core::component_lifecycle::WindowActivation for ResourceRoot<R> {
+    fn take_window_activation_intent(&self) -> bool {
+        self.activation_requested.replace(false)
+    }
 }
 
 /// The operation type of the framework's `render` view.
@@ -296,6 +342,7 @@ impl<R: Resource> ResourceRoot<R> {
             render_text: None,
             past: None,
             history: true,
+            activation_requested: std::cell::Cell::new(false),
         }
     }
 
@@ -493,14 +540,7 @@ impl<R: Resource> ResourceRoot<R> {
             }
             resource = resource.with_action(spec);
         }
-        if cfg!(not(target_family = "wasm"))
-            && !resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == "render")
-        {
-            resource = resource.with_action(render_spec());
-        }
+        resource = with_native_presentations(resource);
         if R::READABLE
             && !resource
                 .actions
@@ -1079,7 +1119,7 @@ impl ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::component_lifecycle::WindowActivation; inner = content);
 
     type Inner = dyn Widget;
 
@@ -1153,6 +1193,10 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         Decorator::draw(self, scene, transform, text, theme, presence);
     }
 
+    fn needs_redraw(&self) -> bool {
+        self.activation_requested.get() || self.content.needs_redraw()
+    }
+
     fn name(&self) -> &'static str {
         "ResourceApp"
     }
@@ -1185,6 +1229,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         let mut handlers = self.inner().resource_operation_handlers();
         if cfg!(not(target_family = "wasm")) {
             handlers.insert(RENDER_TYPE.to_owned());
+            handlers.insert(tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.to_owned());
         }
         handlers.insert(super::history::VIEW_TYPE.to_owned());
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
@@ -1232,13 +1277,23 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
         #[cfg(not(target_family = "wasm"))]
-        if let Some(request) = op.unscoped()
-            && request.type_id == RENDER_TYPE
-        {
-            let output = self.render(request.payload, doc)?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
+        if let Some(request) = op.unscoped() {
+            let output = match request.type_id {
+                tilo_actions::remote::APPLICATION_ACTIVATE_TYPE => {
+                    self.activation_requested.set(true);
+                    Some(tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({"activation_requested": true})),
+                        resources: Vec::new(),
+                    })
+                }
+                RENDER_TYPE => Some(self.render(request.payload, doc)?),
+                _ => None,
+            };
+            if let Some(output) = output {
+                return Ok(Some(
+                    ui_core::host_operation::ResourceOperationStart::Completed(output),
+                ));
+            }
         }
         if R::READABLE
             && let Some(request) = op.unscoped()

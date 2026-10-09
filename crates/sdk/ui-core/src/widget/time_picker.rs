@@ -496,7 +496,7 @@ impl Widget for TimePicker {
         // Total width = spinner + colon + spinner [+ colon + spinner]
         let n_spinners: f32 = if self.seconds.is_some() { 3.0 } else { 2.0 };
         let total_w = n_spinners * SPINNER_WIDTH + (n_spinners - 1.0) * COLON_WIDTH;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(total_w),
                 height: Dimension::length(PICKER_HEIGHT),
@@ -504,19 +504,13 @@ impl Widget for TimePicker {
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.apply_layout_external(Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        ));
+        self.apply_layout_external(crate::widget::placed(&layout, origin));
     }
 
     fn draw(

@@ -461,6 +461,159 @@ mod availability_control_tests {
         close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pin_worker_idle_tick_does_not_walk_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("idle-pin").unwrap()));
+        let (folder, last) = {
+            let mut namespace = namespace.lock().unwrap();
+            let folder = namespace.create_dir(ROOT_INO, "offline", 1).unwrap();
+            let mut last = ROOT_INO;
+            for index in 0..8 {
+                last = namespace
+                    .create_file(folder, format!("empty-{index}"), None, 0, 1)
+                    .unwrap();
+            }
+            (folder, namespace.record_id_for(last).unwrap())
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let repair = Duration::from_millis(20);
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry))
+            .with_pinned_hydration_every(repair);
+        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+            .unwrap();
+        wait_for_availability(&registry, last, |record| {
+            record.residency == Residency::Resident { bytes: 0 }
+        })
+        .await;
+        // Let the pass that observes the worker's own registry writes run.
+        tokio::time::sleep(repair.saturating_mul(10)).await;
+
+        let walks = || namespace.lock().unwrap().node_entry_read_count();
+        let settled = walks();
+        tokio::time::sleep(repair.saturating_mul(25)).await;
+        assert_eq!(
+            walks(),
+            settled,
+            "ticks with nothing changed must not walk the namespace"
+        );
+
+        // A change that arrives without a wake (as a remote apply does) is
+        // still repaired by the next tick.
+        let late = {
+            let mut namespace = namespace.lock().unwrap();
+            let ino = namespace
+                .create_file(folder, "arrived-remotely", None, 0, 2)
+                .unwrap();
+            namespace.record_id_for(ino).unwrap()
+        };
+        wait_for_availability(&registry, late, |record| {
+            record.residency == Residency::Resident { bytes: 0 }
+        })
+        .await;
+        assert!(walks() > settled);
+
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn first_pin_pass_persists_registry_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let local = store.write_content(b"already here").await.unwrap().unwrap();
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let namespace = Arc::new(Mutex::new(Namespace::new("pin-once").unwrap()));
+        let (folder, empty, resident) = {
+            let mut namespace = namespace.lock().unwrap();
+            let folder = namespace.create_dir(ROOT_INO, "offline", 1).unwrap();
+            let mut empty = ROOT_INO;
+            for index in 0..1_000 {
+                empty = namespace
+                    .create_file(folder, format!("empty-{index:04}"), None, 0, 1)
+                    .unwrap();
+            }
+            let resident = namespace
+                .create_file(folder, "resident.txt", Some(&local), 12, 1)
+                .unwrap();
+            (
+                folder,
+                namespace.record_id_for(empty).unwrap(),
+                namespace.record_id_for(resident).unwrap(),
+            )
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry));
+        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+            .unwrap();
+        let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
+        let persists = || registry.lock().unwrap().persist_count();
+
+        let before = persists();
+        let outcome = reconcile_pinned_hydration(
+            &namespace,
+            Arc::clone(&hydrator),
+            Arc::clone(&registry),
+            None,
+            wakes.clone(),
+        )
+        .await;
+        assert_eq!(
+            persists().saturating_sub(before),
+            1,
+            "a pass over a 1 000-record pinned folder commits the registry once"
+        );
+        assert!(!outcome.more_due);
+        {
+            let registry = registry.lock().unwrap();
+            assert_eq!(
+                registry.get(empty).unwrap().residency,
+                Residency::Resident { bytes: 0 }
+            );
+            assert_eq!(
+                registry.get(resident).unwrap().residency,
+                Residency::Resident { bytes: 12 }
+            );
+            assert_eq!(
+                registry.effective_policy(resident).unwrap(),
+                Some(AvailabilityPolicy::Pinned)
+            );
+            drop(registry);
+        }
+
+        let before = persists();
+        let _ = reconcile_pinned_hydration(
+            &namespace,
+            Arc::clone(&hydrator),
+            Arc::clone(&registry),
+            None,
+            wakes,
+        )
+        .await;
+        assert_eq!(
+            persists(),
+            before,
+            "a pass that finds everything current writes nothing"
+        );
+
+        drop(fs);
+        endpoint.close().await;
+    }
+
     #[tokio::test]
     async fn transfer_retries_run_off_thread_and_report_actionable_outcomes() {
         // Phase `retry_transfer_runs_off_thread_and_persists_completion`.
@@ -1543,6 +1696,79 @@ mod predictive_tests {
                 "the sync subscriber must use a weak cache reference and exit after unmount"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn acl_index_incremental_matches_full_rebuild() {
+        const ME: [u8; 32] = [0xA9; 32];
+        let (namespace, fs) = fixture().await;
+        let visible = {
+            let mut ns = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let visible = ns.create_dir(ROOT_INO, "visible", 1).unwrap();
+            for index in 0..64 {
+                ns.create_file(visible, format!("shown-{index:03}"), None, 0, 1)
+                    .unwrap();
+                ns.create_file(ROOT_INO, format!("hidden-{index:03}"), None, 0, 1)
+                    .unwrap();
+            }
+            drop(ns);
+            visible
+        };
+        let mut policy = WorkspaceAcl::new();
+        policy.grant_read(ME, "/visible");
+        let handle = AclHandle::new(policy);
+        let fs = fs.with_acl(handle.clone(), ME);
+        let rows = || {
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .indexed_record_count()
+        };
+        let initial = fs.acl_visible_record_index().unwrap();
+        assert_eq!(initial.acl_evaluations, rows());
+
+        // A notification that moved no row keeps the retained view as is.
+        fs.refresh_acl_visible_record_index();
+        assert!(Arc::ptr_eq(
+            &initial,
+            &fs.acl_visible_record_index().unwrap()
+        ));
+
+        // A new row and a moved row are the only ones judged again.
+        let revealed = {
+            let mut ns = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ns.create_file(visible, "late.txt", None, 0, 2).unwrap();
+            assert!(ns.rename(ROOT_INO, "hidden-000", visible, "revealed.txt", 2));
+            ns.entry_at("visible/revealed.txt").unwrap().record_id
+        };
+        fs.refresh_acl_visible_record_index();
+        let incremental = fs.acl_visible_record_index().unwrap();
+        assert_eq!(incremental.acl_evaluations, 2);
+        assert!(incremental.by_id.contains_key(&revealed));
+
+        // Judging every row from scratch agrees row for row.
+        *fs.acl_visible_record_index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        fs.refresh_acl_visible_record_index();
+        let full = fs.acl_visible_record_index().unwrap();
+        assert_eq!(full.acl_evaluations, rows());
+        assert_eq!(full.records, incremental.records);
+        assert_eq!(full.hidden, incremental.hidden);
+        assert_eq!(full.revision, incremental.revision);
+
+        // A new ACL revision judges every row again.
+        let mut widened = WorkspaceAcl::new();
+        widened.grant_read(ME, "/");
+        handle.replace(widened);
+        fs.refresh_acl_visible_record_index();
+        let regranted = fs.acl_visible_record_index().unwrap();
+        assert_eq!(regranted.acl_evaluations, rows());
+        assert!(regranted.hidden.is_empty());
     }
 }
 

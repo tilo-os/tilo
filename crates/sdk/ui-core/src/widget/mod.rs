@@ -144,6 +144,27 @@ pub fn semantic_action_bindings(
     bindings
 }
 
+/// A laid-out box placed at `origin`, in absolute coordinates.
+pub fn placed(layout: &taffy::Layout, origin: vello::kurbo::Point) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::from_origin_size(
+        (
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+        ),
+        (f64::from(layout.size.width), f64::from(layout.size.height)),
+    )
+}
+
+/// `node`'s laid-out box placed at `origin`: what `apply_layout` stores as a
+/// leaf's rect. A node missing from the tree is an empty box at `origin`.
+pub fn layout_rect(
+    taffy: &TaffyTree<()>,
+    node: NodeId,
+    origin: vello::kurbo::Point,
+) -> vello::kurbo::Rect {
+    placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
+}
+
 /// What a gated, presence-publishing widget draws over itself once drawn:
 /// the denied-permission scrim, then the focus ring of the first peer on it.
 pub(crate) fn draw_gate_and_peer_focus(
@@ -2567,6 +2588,19 @@ pub trait TaffyTreeExt {
 
     /// Insert a parent whose child ids were built in this same tree.
     fn parent_node(&mut self, style: taffy::Style, children: &[NodeId]) -> NodeId;
+
+    /// Insert a leaf node for `widget` and register it in `node_map`: the
+    /// whole of a leaf widget's `build_layout`.
+    fn widget_leaf(
+        &mut self,
+        style: taffy::Style,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        widget: &mut (dyn Widget + 'static),
+    ) -> NodeId {
+        let node = self.leaf_node(style);
+        node_map.insert(node, std::ptr::from_mut(widget));
+        node
+    }
 }
 
 impl TaffyTreeExt for TaffyTree<()> {

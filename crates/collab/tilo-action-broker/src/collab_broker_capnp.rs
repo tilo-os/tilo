@@ -1861,7 +1861,7 @@ impl CapnpBrokerState {
             return Err("invalid invocation target or bounds".into());
         }
         if let Some(record) = self.verified_invocation_status(caller, request.invocation)? {
-            if record.intent["request"] != request.intent() {
+            if !record.admitted_request_is(&request.intent()) {
                 return Err("invocation identity reused with different intent".into());
             }
             return Ok(record);
@@ -14192,10 +14192,10 @@ pub mod tests {
             .try_recv()
             .expect("actual app invocation stream");
         assert_eq!(delivered.id, job.id);
-        let bytes = std::fs::read(root.path().join("state.json.invocations/records.json")).expect(
-            "the real broker must persist admission before delivering an application effect",
-        );
-        let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // What a restart would replay: the real broker must persist admission
+        // before delivering an application effect.
+        let snapshot =
+            invocation_journal::durable_snapshot(&root.path().join("state.json.invocations"));
         assert_eq!(snapshot["records"].as_array().unwrap().len(), 1);
         assert_eq!(snapshot["records"][0]["wire_id"], job.id);
     }
@@ -14241,15 +14241,15 @@ pub mod tests {
             assert_ne!(delivered.0, uuid::Uuid::from_u128(u128::from(job)));
             assert!(matches!(fixture.state.invocation_status(job),
                 Some(tilo_actions::InvocationUpdate::Accepted { invocation }) if invocation == request.invocation));
-            let path = root.path().join("state.json.invocations/records.json");
-            let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let path = root.path().join("state.json.invocations");
+            let snapshot = invocation_journal::durable_snapshot(&path);
             assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
             fixture.complete_invocation(job, &tilo_actions::InvocationUpdate::Succeeded {
                 invocation: delivered, output: tilo_actions::ActionOutput::default(),
             }).await.unwrap();
             assert!(matches!(fixture.state.invocation_status(job),
                 Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == request.invocation));
-            let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            let snapshot = invocation_journal::durable_snapshot(&path);
             assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
             assert!(fixture.take_invocation_identity().is_none());
         }).await;

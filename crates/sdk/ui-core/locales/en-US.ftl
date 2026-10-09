@@ -602,3 +602,6 @@ music-recommendations-disable = Disable input
 terminal-editor-busy = The editor is still confirming the previous input. Check the field before entering more text.
 terminal-editor-rejected = The field changed before this input could be inserted. Check the field before trying again.
 terminal-editor-unconfirmed = The editor did not confirm this input. Check the field before trying again.
+
+app-activate-window = Show this window
+app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.

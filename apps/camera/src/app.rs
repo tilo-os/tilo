@@ -2900,12 +2900,7 @@ impl Widget for CameraApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         if self.built_with_document {
             let placed = Self::document_layout(self.rect, &self.layout_theme);
             for (field, rect) in self.document_controls.fields.iter_mut().zip(placed.fields) {

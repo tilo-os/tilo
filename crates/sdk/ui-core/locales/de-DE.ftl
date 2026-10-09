@@ -499,3 +499,6 @@ device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getr
 terminal-editor-busy = Der Editor bestätigt noch die vorherige Eingabe. Prüfe das Feld, bevor du weiteren Text eingibst.
 terminal-editor-rejected = Das Feld wurde geändert, bevor diese Eingabe eingefügt werden konnte. Prüfe das Feld, bevor du es erneut versuchst.
 terminal-editor-unconfirmed = Der Editor hat diese Eingabe nicht bestätigt. Prüfe das Feld, bevor du es erneut versuchst.
+
+app-activate-window = Dieses Fenster anzeigen
+app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.

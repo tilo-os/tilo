@@ -1,11 +1,27 @@
 //! Host-private, single-writer invocation admission. Never replicated.
 //!
-//! No dedup key is evicted. Any failed write poisons this writer; a restart
-//! validates the last atomic snapshot and turns every nonterminal into an
-//! uncertain observation. Recovery never returns a dispatch permit.
+//! The store is one private file, `records.json`: a compacted snapshot, then
+//! one appended entry line per durable transition. An admission, a terminal
+//! outcome, a cancellation request or an effect preparation each cost one
+//! appended entry and one data barrier. Nonterminal progress stays in memory:
+//! recovery turns every nonterminal record into an uncertain observation
+//! whatever progress it last reported, so persisting progress would buy
+//! nothing. Once the appended entries would outgrow the snapshot, the next
+//! transition compacts the whole store through an atomic rename instead.
+//!
+//! No dedup key is evicted. An admission intent's `request` is retained only as
+//! a digest, which answers "same request?" exactly as the value did. Any failed
+//! write poisons this writer; a restart validates the snapshot, replays every
+//! complete entry, ignores only a torn final entry (no caller was ever told of
+//! it), turns every nonterminal into an uncertain observation and compacts.
+//! Recovery never returns a dispatch permit.
+//!
+//! A store without entries has exactly the snapshot format earlier writers
+//! produced, so their stores open unchanged. An earlier writer refuses a store
+//! that still carries entries rather than ignoring them.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 #[path = "invocation_journal/effect.rs"]
@@ -95,13 +111,85 @@ pub(super) struct InvocationKey {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DurableInvocation {
     pub(super) key: InvocationKey,
+    /// The admission intent. Its `request`, when it had one, is retained only
+    /// as `request_digest`: ask [`Self::admitted_request_is`], never this map.
     pub(super) intent: serde_json::Value,
+    request_digest: Option<guarded::Digest>,
     pub wire_id: u64,
     pub update: InvocationUpdate,
     pub uncertain: bool,
     pub cancellation_requested: bool,
     guarded: Option<guarded::State>,
     pub(crate) prepared_effect: Option<PreparedEffect>,
+}
+
+impl DurableInvocation {
+    /// Whether `request` is the request this invocation was admitted with.
+    /// A record without one compares as `null`, like an absent JSON member.
+    pub(crate) fn admitted_request_is(&self, request: &serde_json::Value) -> bool {
+        match (&self.request_digest, self.intent.get("request")) {
+            (Some(digest), _) => *digest == request_digest(request),
+            (None, Some(retained)) => retained == request,
+            (None, None) => request.is_null(),
+        }
+    }
+
+    /// Whether `intent` is the whole intent this invocation was admitted with.
+    fn admitted_intent_is(&self, intent: &serde_json::Value) -> bool {
+        if self.request_digest.is_none() {
+            return self.intent == *intent;
+        }
+        let (rest, digest) = retained_intent(intent.clone());
+        digest == self.request_digest && rest == self.intent
+    }
+}
+
+/// Splits an admission intent into what is retained verbatim and the digest
+/// of its `request`, the one member that carries the caller's arguments.
+fn retained_intent(mut intent: serde_json::Value) -> (serde_json::Value, Option<guarded::Digest>) {
+    let request = intent
+        .as_object_mut()
+        .and_then(|fields| fields.remove("request"));
+    (intent, request.as_ref().map(request_digest))
+}
+
+/// A digest of `request` that is equal exactly when the JSON values are:
+/// object members are hashed in key order, whatever order they arrived in.
+fn request_digest(request: &serde_json::Value) -> guarded::Digest {
+    fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                let mut members: Vec<_> = fields.iter().collect();
+                members.sort_unstable_by(|left, right| left.0.cmp(right.0));
+                out.push(b'{');
+                for (position, (name, member)) in members.into_iter().enumerate() {
+                    if position > 0 {
+                        out.push(b',');
+                    }
+                    canonical(&serde_json::Value::String(name.clone()), out);
+                    out.push(b':');
+                    canonical(member, out);
+                }
+                out.push(b'}');
+            }
+            serde_json::Value::Array(items) => {
+                out.push(b'[');
+                for (position, item) in items.iter().enumerate() {
+                    if position > 0 {
+                        out.push(b',');
+                    }
+                    canonical(item, out);
+                }
+                out.push(b']');
+            }
+            scalar => out.extend_from_slice(scalar.to_string().as_bytes()),
+        }
+    }
+    let mut encoded = Vec::new();
+    canonical(request, &mut encoded);
+    let mut hasher = blake3::Hasher::new_derive_key("tilo invocation journal request v1");
+    hasher.update(&encoded);
+    guarded::Digest(*hasher.finalize().as_bytes())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -112,15 +200,249 @@ struct Snapshot {
     records: Vec<DurableInvocation>,
 }
 
+/// One durable transition appended after the snapshot: the record's whole
+/// row as it now stands, and the writer floor it was written under.
+#[derive(Serialize)]
+struct EntryRef<'a> {
+    version: u32,
+    record: &'a DurableInvocation,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Entry {
+    version: u32,
+    record: DurableInvocation,
+}
+
+/// Where each record sits, by the two identities that are unique store-wide.
+#[derive(Default)]
+struct Index {
+    by_invocation: HashMap<InvocationId, usize>,
+    wire_ids: HashSet<u64>,
+}
+
+impl Index {
+    fn insert(
+        &mut self,
+        records: &mut Vec<DurableInvocation>,
+        record: DurableInvocation,
+    ) -> Result<usize, String> {
+        if self.by_invocation.contains_key(&record.key.invocation)
+            || !self.wire_ids.insert(record.wire_id)
+        {
+            return Err("invocation journal contains inconsistent identities".into());
+        }
+        let at = records.len();
+        self.by_invocation.insert(record.key.invocation, at);
+        records.push(record);
+        Ok(at)
+    }
+}
+
+/// The open store, positioned after its last acknowledged entry.
+struct Tail {
+    file: File,
+    /// Durable length: the snapshot plus every acknowledged entry.
+    len: u64,
+    /// Length of the snapshot this file was compacted to.
+    snapshot: u64,
+}
+
+impl Tail {
+    /// Whether one more entry of `bytes` stays an append rather than a
+    /// compaction: entries never outgrow their snapshot (or the floor below
+    /// which compacting is not worth its rename) and never the size limit.
+    fn takes(&self, bytes: u64) -> bool {
+        let entries = self.len.saturating_sub(self.snapshot).saturating_add(bytes);
+        entries <= self.snapshot.max(InvocationJournal::COMPACT_AFTER)
+            && self.len.saturating_add(bytes) <= InvocationJournal::MAX_BYTES
+    }
+}
+
+/// A store file decoded up to recovery.
+struct Loaded {
+    snapshot: Snapshot,
+    index: Index,
+    /// Complete entries replayed after the snapshot.
+    entries: usize,
+    /// A final entry was torn by a crash and ignored.
+    torn: bool,
+    /// The file ends exactly where an entry may be appended.
+    appendable: bool,
+    len: u64,
+}
+
+impl Loaded {
+    fn empty(host: uuid::Uuid) -> Self {
+        Self {
+            snapshot: Snapshot {
+                version: 1,
+                host,
+                records: Vec::new(),
+            },
+            index: Index::default(),
+            entries: 0,
+            torn: false,
+            appendable: false,
+            len: 0,
+        }
+    }
+
+    fn read(file: &mut File) -> Result<Self, String> {
+        let len = file
+            .metadata()
+            .map_err(|_| "invocation journal metadata unreadable")?
+            .len();
+        if len > InvocationJournal::MAX_BYTES {
+            return Err("invocation journal exceeds storage limit".into());
+        }
+        let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or_default());
+        file.seek(SeekFrom::Start(0))
+            .map_err(|_| "invocation journal rewind failed")?;
+        Read::by_ref(file)
+            .take(InvocationJournal::MAX_BYTES)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "invocation journal snapshot missing or unreadable")?;
+        let mut values =
+            serde_json::Deserializer::from_slice(&bytes).into_iter::<serde::de::IgnoredAny>();
+        if !matches!(values.next(), Some(Ok(_))) {
+            return Err("invocation journal snapshot is corrupt or unsupported".into());
+        }
+        let (head, rest) = bytes
+            .split_at_checked(values.byte_offset())
+            .ok_or("invocation journal snapshot is corrupt or unsupported")?;
+        guarded::preflight(&mut &*head)?;
+        let snapshot: Snapshot = serde_json::from_slice(head)
+            .map_err(|_| "invocation journal snapshot is corrupt or unsupported")?;
+        if !matches!(snapshot.version, 1..=5) || snapshot.host.is_nil() {
+            return Err("invocation journal version or host unsupported".into());
+        }
+        let mut loaded = Self {
+            snapshot: Snapshot {
+                version: snapshot.version,
+                host: snapshot.host,
+                records: Vec::with_capacity(snapshot.records.len()),
+            },
+            index: Index::default(),
+            entries: 0,
+            torn: false,
+            appendable: rest == b"\n",
+            len: bytes.len() as u64,
+        };
+        for record in snapshot.records {
+            check_record(&record, loaded.snapshot.version, loaded.snapshot.host)?;
+            loaded.index.insert(&mut loaded.snapshot.records, record)?;
+        }
+        if rest.iter().all(u8::is_ascii_whitespace) {
+            return Ok(loaded);
+        }
+        let entries = rest
+            .strip_prefix(b"\n")
+            .ok_or("invocation journal trailing bytes")?;
+        let mut lines = entries.split_inclusive(|byte| *byte == b'\n').peekable();
+        while let Some(line) = lines.next() {
+            let Some(line) = line.strip_suffix(b"\n").filter(|line| !line.contains(&0)) else {
+                // A crash mid-append leaves the final entry unterminated or
+                // with unwritten (zero) blocks. Its barrier never returned,
+                // so no caller was told of it. Only the final one may be torn.
+                if lines.peek().is_some() {
+                    return Err("invocation journal entry is corrupt".into());
+                }
+                loaded.torn = true;
+                break;
+            };
+            guarded::preflight(&mut &*line)?;
+            let entry: Entry = serde_json::from_slice(line)
+                .map_err(|_| "invocation journal entry is corrupt or unsupported")?;
+            loaded.replay(entry)?;
+        }
+        Ok(loaded)
+    }
+
+    fn replay(&mut self, entry: Entry) -> Result<(), String> {
+        if !matches!(entry.version, 1..=5) || entry.version < self.snapshot.version {
+            return Err("invocation journal entry downgrades the writer floor".into());
+        }
+        check_record(&entry.record, entry.version, self.snapshot.host)?;
+        self.snapshot.version = entry.version;
+        self.entries = self.entries.saturating_add(1);
+        let Some(&at) = self.index.by_invocation.get(&entry.record.key.invocation) else {
+            return self
+                .index
+                .insert(&mut self.snapshot.records, entry.record)
+                .map(drop);
+        };
+        let retained = self
+            .snapshot
+            .records
+            .get_mut(at)
+            .ok_or("invocation journal index inconsistent")?;
+        // Entries only move a live record forward; a retired one is final.
+        if retained.key != entry.record.key
+            || retained.wire_id != entry.record.wire_id
+            || retained.update.is_terminal()
+        {
+            return Err("invocation journal entry rewrites a retired or foreign record".into());
+        }
+        *retained = entry.record;
+        Ok(())
+    }
+}
+
+/// Every check one stored row must pass under the writer floor `version`.
+fn check_record(record: &DurableInvocation, version: u32, host: uuid::Uuid) -> Result<(), String> {
+    record.key.owner.validate()?;
+    if let Some(prepared) = &record.prepared_effect {
+        if version < 5 {
+            return Err("prepared effect requires journal version 5".into());
+        }
+        prepared.validate(record)?;
+    }
+    if record.guarded.is_some() && version < 3 {
+        return Err("guarded read requires journal version 3".into());
+    }
+    if version < 4 && matches!(record.key.owner, InvocationOwner::AuthenticatedLocal { .. }) {
+        return Err("authenticated local ownership requires journal version 4".into());
+    }
+    if version == 1 && matches!(record.key.owner, InvocationOwner::Enrolled { .. }) {
+        return Err("private invocation ownership requires journal version 2".into());
+    }
+    if record.request_digest.is_some()
+        && record
+            .intent
+            .as_object()
+            .is_none_or(|fields| fields.contains_key("request"))
+    {
+        return Err("invocation journal retains a request beside its digest".into());
+    }
+    if record.key.host != host
+        || record.key.invocation != record.update.invocation()
+        || record.wire_id == 0
+    {
+        return Err("invocation journal contains inconsistent identities".into());
+    }
+    Ok(())
+}
+
 pub(super) struct InvocationJournal {
     root: PathBuf,
     _lock: advisory_lock::FileLock,
     snapshot: Snapshot,
+    index: Index,
+    /// The store open for appends; `None` makes the next transition compact
+    /// (an earlier writer's snapshot ends without an entry separator).
+    tail: Option<Tail>,
     poisoned: bool,
     #[cfg(test)]
     pub fail_at: Option<BarrierFailure>,
+    #[cfg(test)]
+    pub barriers: Barriers,
 }
 
+/// An injected failure. `File` fails before the write is durable, so the
+/// transition is absent after restart; `Directory` fails once the write is
+/// durable (after an entry's data barrier, or a compaction's rename).
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum BarrierFailure {
@@ -130,8 +452,36 @@ pub(super) enum BarrierFailure {
     Terminal,
 }
 
+/// What this writer asked of the disk. `elide` skips the barriers themselves
+/// for tests that measure size rather than durability.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Barriers {
+    pub writes: u64,
+    pub file: u64,
+    pub directory: u64,
+    pub elide: bool,
+}
+
+/// Performs one durability barrier; under test it is counted, and elided
+/// when a size test asks.
+macro_rules! barrier {
+    ($barriers:expr, $kind:ident, $barrier:expr) => {{
+        #[cfg(test)]
+        let elide = {
+            $barriers.$kind = $barriers.$kind.saturating_add(1);
+            $barriers.elide
+        };
+        #[cfg(not(test))]
+        let elide = false;
+        if elide { Ok(()) } else { $barrier }
+    }};
+}
+
 impl InvocationJournal {
     const MAX_BYTES: u64 = 256 * 1024 * 1024;
+    /// Entries may always grow to this before a compaction is due.
+    const COMPACT_AFTER: u64 = 1024 * 1024;
 
     pub fn open(root: &Path) -> Result<Self, String> {
         Self::open_with_parent_barrier(root, |parent| {
@@ -151,7 +501,7 @@ impl InvocationJournal {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one ordered open, lock, decode and validation pass over the journal snapshot"
+        reason = "one ordered open, lock, decode and recovery pass over the journal store"
     )]
     fn open_with_barriers(
         root: &Path,
@@ -193,80 +543,33 @@ impl InvocationJournal {
         private_file(&lock)?;
         let lock = advisory_lock::FileLock::try_exclusive(lock)
             .map_err(|_| "invocation journal already has a writer")?;
-        let mut observed_snapshot = None;
-        let snapshot = if created {
-            Snapshot {
-                version: 1,
-                host: uuid::Uuid::new_v4(),
-                records: Vec::new(),
-            }
+        let mut observed_store = None;
+        let loaded = if created {
+            Loaded::empty(uuid::Uuid::new_v4())
         } else {
+            // Opened for appends too: a clean store keeps exactly this file.
             let mut file = OpenOptions::new()
                 .read(true)
+                .append(true)
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(root.join("records.json"))
                 .map_err(|_| "invocation journal snapshot missing or unreadable")?;
             private_file(&file)?;
-            if file
-                .metadata()
-                .map_err(|_| "invocation journal metadata unreadable")?
-                .len()
-                > Self::MAX_BYTES
-            {
-                return Err("invocation journal exceeds storage limit".into());
-            }
-            guarded::preflight(&mut file)?;
-            file.seek(SeekFrom::Start(0))
-                .map_err(|_| "invocation journal rewind failed")?;
-            let snapshot =
-                serde_json::from_reader(std::io::BufReader::new((&mut file).take(Self::MAX_BYTES)))
-                    .map_err(|_| "invocation journal snapshot is corrupt or unsupported")?;
-            observed_snapshot = Some(file);
-            snapshot
+            let loaded = Loaded::read(&mut file)?;
+            observed_store = Some(file);
+            loaded
         };
-        if !matches!(snapshot.version, 1..=5) || snapshot.host.is_nil() {
-            return Err("invocation journal version or host unsupported".into());
-        }
-        let mut keys = HashSet::new();
-        let mut handles = HashSet::new();
-        let mut invocations = HashSet::new();
-        for record in &snapshot.records {
-            record.key.owner.validate()?;
-            if let Some(prepared) = &record.prepared_effect {
-                if snapshot.version < 5 {
-                    return Err("prepared effect requires journal version 5".into());
-                }
-                prepared.validate(record)?;
-            }
-            if record.guarded.is_some() && snapshot.version < 3 {
-                return Err("guarded read requires journal version 3".into());
-            }
-            if snapshot.version < 4
-                && matches!(record.key.owner, InvocationOwner::AuthenticatedLocal { .. })
-            {
-                return Err("authenticated local ownership requires journal version 4".into());
-            }
-            if snapshot.version == 1 && matches!(record.key.owner, InvocationOwner::Enrolled { .. })
-            {
-                return Err("private invocation ownership requires journal version 2".into());
-            }
-            if record.key.host != snapshot.host
-                || record.key.invocation != record.update.invocation()
-                || record.wire_id == 0
-                || !keys.insert(record.key.clone())
-                || !handles.insert(record.wire_id)
-                || !invocations.insert(record.key.invocation)
-            {
-                return Err("invocation journal contains inconsistent identities".into());
-            }
-        }
         let mut journal = Self {
             root: root.to_owned(),
             _lock: lock,
-            snapshot,
+            snapshot: loaded.snapshot,
+            index: loaded.index,
+            tail: None,
             poisoned: false,
             #[cfg(test)]
             fail_at: None,
+            #[cfg(test)]
+            barriers: Barriers::default(),
         };
         let mut recovered = false;
         for record in &mut journal.snapshot.records {
@@ -282,24 +585,37 @@ impl InvocationJournal {
                 recovered = true;
             }
         }
-        if created || recovered {
-            journal.persist()?;
-        } else if journal
-            .snapshot
-            .records
-            .iter()
-            .any(|record| record.guarded.is_some() || record.prepared_effect.is_some())
-        {
-            // A visible terminal marker may be the result of a failed rename
-            // directory barrier. Reconcile the exact decoded file, not a
-            // freshly reopened name, before exposing even sanitized status.
-            guarded_barrier(
-                observed_snapshot
-                    .as_ref()
-                    .ok_or("guarded snapshot unavailable")?,
-                &directory,
-            )
-            .map_err(|_| "guarded invocation snapshot reconciliation failed")?;
+        if created || recovered || loaded.entries > 0 || loaded.torn {
+            // Fold the replayed entries (dropping a torn one) and the recovered
+            // records into one fresh snapshot before anything is exposed.
+            journal.compact()?;
+        } else {
+            if loaded.appendable
+                || journal
+                    .snapshot
+                    .records
+                    .iter()
+                    .any(|record| record.guarded.is_some() || record.prepared_effect.is_some())
+            {
+                // The decoded file may be the result of a rename whose directory
+                // barrier failed. Reconcile the exact decoded file, not a freshly
+                // reopened name, before exposing even sanitized guarded status or
+                // appending entries a lost rename would orphan.
+                guarded_barrier(
+                    observed_store
+                        .as_ref()
+                        .ok_or("guarded snapshot unavailable")?,
+                    &directory,
+                )
+                .map_err(|_| "invocation journal snapshot reconciliation failed")?;
+            }
+            journal.tail = observed_store
+                .filter(|_| loaded.appendable)
+                .map(|file| Tail {
+                    file,
+                    len: loaded.len,
+                    snapshot: loaded.len,
+                });
         }
         // A failed initialization may leave a valid snapshot. Its existence
         // does not prove the directory entry was durable: retry on every open.
@@ -321,13 +637,36 @@ impl InvocationJournal {
             .saturating_add(1)
     }
 
+    /// The position of exactly `key`; its UUID alone is unique store-wide.
+    fn position(&self, key: &InvocationKey) -> Option<usize> {
+        let at = *self.index.by_invocation.get(&key.invocation)?;
+        self.snapshot
+            .records
+            .get(at)
+            .is_some_and(|record| record.key == *key)
+            .then_some(at)
+    }
+
+    fn record_mut(
+        &mut self,
+        key: &InvocationKey,
+    ) -> Result<(usize, &mut DurableInvocation), &'static str> {
+        let at = self
+            .position(key)
+            .ok_or("unknown invocation journal identity")?;
+        let record = self
+            .snapshot
+            .records
+            .get_mut(at)
+            .ok_or("unknown invocation journal identity")?;
+        Ok((at, record))
+    }
+
     pub fn lookup(&self, key: &InvocationKey) -> Result<Option<DurableInvocation>, String> {
         self.check()?;
         Ok(self
-            .snapshot
-            .records
-            .iter()
-            .find(|r| &r.key == key)
+            .position(key)
+            .and_then(|at| self.snapshot.records.get(at))
             .cloned())
     }
 
@@ -341,8 +680,13 @@ impl InvocationJournal {
     ) -> Result<bool, String> {
         self.check()?;
         key.owner.validate()?;
-        if let Some(existing) = self.lookup(&key)? {
-            if existing.intent != intent {
+        if let Some(existing) = self.position(&key) {
+            if !self
+                .snapshot
+                .records
+                .get(existing)
+                .is_some_and(|record| record.admitted_intent_is(&intent))
+            {
                 return Err("invocation identity reused with different intent".into());
             }
             return Ok(false);
@@ -350,18 +694,10 @@ impl InvocationJournal {
         // Application lifecycle routing and internal dedup use the full UUID
         // without the owner. Permanently reserve it for one durable key so a
         // different device, room, or legacy caller can never alias that state.
-        if self
-            .snapshot
-            .records
-            .iter()
-            .any(|r| r.key.invocation == key.invocation)
-        {
+        if self.index.by_invocation.contains_key(&key.invocation) {
             return Err("action_invocation_identity_conflict: UUID already reserved".into());
         }
-        if key.host != self.host()
-            || wire_id == 0
-            || self.snapshot.records.iter().any(|r| r.wire_id == wire_id)
-        {
+        if key.host != self.host() || wire_id == 0 || self.index.wire_ids.contains(&wire_id) {
             return Err("invocation journal identity conflict".into());
         }
         let update = InvocationUpdate::Accepted {
@@ -373,17 +709,22 @@ impl InvocationJournal {
         if matches!(key.owner, InvocationOwner::AuthenticatedLocal { .. }) {
             self.snapshot.version = self.snapshot.version.max(4);
         }
-        self.snapshot.records.push(DurableInvocation {
-            key,
-            intent,
-            wire_id,
-            update,
-            uncertain: false,
-            cancellation_requested: false,
-            guarded: None,
-            prepared_effect: None,
-        });
-        self.persist()?;
+        let (intent, request_digest) = retained_intent(intent);
+        let at = self.index.insert(
+            &mut self.snapshot.records,
+            DurableInvocation {
+                key,
+                intent,
+                request_digest,
+                wire_id,
+                update,
+                uncertain: false,
+                cancellation_requested: false,
+                guarded: None,
+                prepared_effect: None,
+            },
+        )?;
+        self.commit(at)?;
         #[cfg(test)]
         if self.fail_at.take() == Some(BarrierFailure::AfterAdmission) {
             self.poisoned = true;
@@ -392,6 +733,8 @@ impl InvocationJournal {
         Ok(true)
     }
 
+    /// A terminal outcome is durable before this returns. Nonterminal
+    /// progress is kept for observers only: recovery discards it anyway.
     pub fn update(
         &mut self,
         key: &InvocationKey,
@@ -399,12 +742,7 @@ impl InvocationJournal {
         uncertain: bool,
     ) -> Result<(), String> {
         self.check()?;
-        let record = self
-            .snapshot
-            .records
-            .iter_mut()
-            .find(|r| &r.key == key)
-            .ok_or("unknown invocation journal identity")?;
+        let (at, record) = self.record_mut(key)?;
         if record.update.is_terminal() || update.invocation() != key.invocation {
             return Err("invocation journal transition rejected".into());
         }
@@ -418,10 +756,10 @@ impl InvocationJournal {
         {
             return Err("prepared effect requires its exact owner-accepted terminal".into());
         }
+        let terminal = update.is_terminal();
         record.update = update;
         record.uncertain = uncertain;
-        self.persist()?;
-        Ok(())
+        if terminal { self.commit(at) } else { Ok(()) }
     }
 
     // Storage prerequisites only. No production caller is wired until the
@@ -433,12 +771,7 @@ impl InvocationJournal {
         selection: [u8; 32],
     ) -> Result<(), String> {
         self.check()?;
-        let record = self
-            .snapshot
-            .records
-            .iter_mut()
-            .find(|r| &r.key == key)
-            .ok_or("unknown invocation journal identity")?;
+        let (at, record) = self.record_mut(key)?;
         if let Some(guarded) = &record.guarded {
             return if guarded.selection() == &selection {
                 Ok(())
@@ -454,7 +787,7 @@ impl InvocationJournal {
         }
         record.guarded = Some(guarded::State::selected(selection));
         self.snapshot.version = self.snapshot.version.max(3);
-        self.persist()
+        self.commit(at)
     }
 
     #[cfg(test)]
@@ -467,12 +800,7 @@ impl InvocationJournal {
         bytes: u32,
     ) -> Result<(), String> {
         self.check()?;
-        let record = self
-            .snapshot
-            .records
-            .iter_mut()
-            .find(|r| &r.key == key)
-            .ok_or("unknown invocation journal identity")?;
+        let (at, record) = self.record_mut(key)?;
         if !matches!(record.update, InvocationUpdate::Accepted { .. })
             || record.uncertain
             || record.cancellation_requested
@@ -486,17 +814,12 @@ impl InvocationJournal {
         guarded.complete(key.invocation, output, basis, bytes)?;
         record.update = guarded::unavailable(key.invocation);
         record.uncertain = false;
-        self.persist()
+        self.commit(at)
     }
 
     pub fn cancel(&mut self, key: &InvocationKey) -> Result<(), String> {
         self.check()?;
-        let record = self
-            .snapshot
-            .records
-            .iter_mut()
-            .find(|r| &r.key == key)
-            .ok_or("unknown invocation journal identity")?;
+        let (at, record) = self.record_mut(key)?;
         if record.update.is_terminal() {
             return Err("invocation is no longer running".into());
         }
@@ -504,7 +827,7 @@ impl InvocationJournal {
             return Err("guarded reads are noncancellable".into());
         }
         record.cancellation_requested = true;
-        self.persist()
+        self.commit(at)
     }
 
     pub(super) fn check(&self) -> Result<(), String> {
@@ -515,36 +838,108 @@ impl InvocationJournal {
         }
     }
 
-    fn persist(&mut self) -> Result<(), String> {
-        let outcome = self.write_snapshot();
+    /// Makes record `at` durable as it now stands: one appended entry, or a
+    /// compaction once the entries would outgrow the snapshot.
+    fn commit(&mut self, at: usize) -> Result<(), String> {
+        let outcome = self.write_entry(at);
         if outcome.is_err() {
-            self.poisoned = true;
+            self.poison();
         }
         outcome
     }
 
-    fn write_snapshot(&self) -> Result<(), String> {
-        let bytes =
+    /// Rewrites the whole store as one snapshot through an atomic rename.
+    fn compact(&mut self) -> Result<(), String> {
+        let outcome = self.write_snapshot();
+        if outcome.is_err() {
+            self.poison();
+        }
+        outcome
+    }
+
+    fn poison(&mut self) {
+        self.poisoned = true;
+        self.tail = None;
+    }
+
+    fn write_entry(&mut self, at: usize) -> Result<(), String> {
+        let record = self
+            .snapshot
+            .records
+            .get(at)
+            .ok_or("unknown invocation journal identity")?;
+        let mut bytes = serde_json::to_vec(&EntryRef {
+            version: self.snapshot.version,
+            record,
+        })
+        .map_err(|_| "invocation journal encoding failed")?;
+        bytes.push(b'\n');
+        let Some(mut tail) = self
+            .tail
+            .take()
+            .filter(|tail| tail.takes(bytes.len() as u64))
+        else {
+            return self.write_snapshot();
+        };
+        #[cfg(test)]
+        {
+            self.barriers.writes = self.barriers.writes.saturating_add(1);
+        }
+        let mut durable = tail
+            .file
+            .write_all(&bytes)
+            .map_err(|_| "invocation journal write failed");
+        #[cfg(test)]
+        if durable.is_ok() && self.fail_at == Some(BarrierFailure::File) {
+            durable = Err("injected file barrier failure");
+        }
+        if durable.is_ok() {
+            durable = barrier!(self.barriers, file, tail.file.sync_data())
+                .map_err(|_| "invocation journal file barrier failed");
+        }
+        if let Err(error) = durable {
+            // No caller was told of it: take the bytes back if the disk lets us.
+            let _ = tail.file.set_len(tail.len);
+            return Err(error.into());
+        }
+        tail.len = tail.len.saturating_add(bytes.len() as u64);
+        self.tail = Some(tail);
+        #[cfg(test)]
+        if self.fail_at == Some(BarrierFailure::Directory) {
+            return Err("injected failure after a durable entry".into());
+        }
+        Ok(())
+    }
+
+    fn write_snapshot(&mut self) -> Result<(), String> {
+        self.tail = None;
+        let mut bytes =
             serde_json::to_vec(&self.snapshot).map_err(|_| "invocation journal encoding failed")?;
+        bytes.push(b'\n');
         if bytes.len() as u64 > Self::MAX_BYTES {
             return Err("invocation journal storage limit reached".into());
         }
         let temporary = self.root.join(format!(".write-{}", uuid::Uuid::new_v4()));
-        let result = (|| {
+        let result: Result<File, &'static str> = (|| {
+            // The renamed file stays open: later entries append to exactly it.
             let mut file = OpenOptions::new()
-                .write(true)
+                .append(true)
                 .create_new(true)
                 .mode(0o600)
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(&temporary)
                 .map_err(|_| "invocation journal temporary file unavailable")?;
+            #[cfg(test)]
+            {
+                self.barriers.writes = self.barriers.writes.saturating_add(1);
+            }
             file.write_all(&bytes)
                 .map_err(|_| "invocation journal write failed")?;
             #[cfg(test)]
             if self.fail_at == Some(BarrierFailure::File) {
                 return Err("injected file barrier failure");
             }
-            file.sync_all()
+            barrier!(self.barriers, file, file.sync_all())
                 .map_err(|_| "invocation journal file barrier failed")?;
             std::fs::rename(&temporary, self.root.join("records.json"))
                 .map_err(|_| "invocation journal rename failed")?;
@@ -552,14 +947,32 @@ impl InvocationJournal {
             if self.fail_at == Some(BarrierFailure::Directory) {
                 return Err("injected directory barrier failure");
             }
-            File::open(&self.root)
-                .and_then(|file| file.sync_all())
-                .map_err(|_| "invocation journal directory barrier failed")?;
-            Ok(())
+            barrier!(
+                self.barriers,
+                directory,
+                File::open(&self.root).and_then(|directory| directory.sync_all())
+            )
+            .map_err(|_| "invocation journal directory barrier failed")?;
+            Ok(file)
         })();
         let _ = std::fs::remove_file(&temporary);
-        result.map_err(str::to_string)
+        let len = bytes.len() as u64;
+        self.tail = Some(Tail {
+            file: result?,
+            len,
+            snapshot: len,
+        });
+        Ok(())
     }
+}
+
+/// The durable store as a snapshot value: what a restart replays before
+/// recovery. It reads the file only; a live writer keeps its lock.
+#[cfg(test)]
+pub(super) fn durable_snapshot(root: &Path) -> serde_json::Value {
+    let mut file = File::open(root.join("records.json")).expect("invocation journal store");
+    let loaded = Loaded::read(&mut file).expect("decodable invocation journal store");
+    serde_json::to_value(&loaded.snapshot).expect("invocation journal snapshot value")
 }
 
 fn private_file(file: &File) -> Result<(), String> {
@@ -800,7 +1213,7 @@ mod tests {
         };
         conflicting.wire_id = 2;
         journal.snapshot.records.push(conflicting);
-        journal.persist().unwrap();
+        journal.compact().unwrap();
         drop(journal);
         assert!(
             InvocationJournal::open(&root).is_err(),
@@ -949,3 +1362,7 @@ mod guarded_tests;
 #[cfg(test)]
 #[path = "invocation_journal/authenticated_local_tests.rs"]
 mod authenticated_local_tests;
+
+#[cfg(test)]
+#[path = "invocation_journal/append_tests.rs"]
+mod append_tests;

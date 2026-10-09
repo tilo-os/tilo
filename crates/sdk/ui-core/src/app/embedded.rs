@@ -198,13 +198,7 @@ impl Widget for EmbeddedApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        let rect = KurboRect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        let rect = crate::widget::placed(layout, origin);
         if rect.size() != self.rect.size() {
             self.app.layout.layout_dirty = true;
             self.wants_frame.set(true);

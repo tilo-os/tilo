@@ -289,6 +289,15 @@ pub fn check_scope(
     component: &str,
     info: &ComponentInfo,
 ) -> Result<(), DaemonError> {
+    if info.frame_cpu_trace
+        && (component != "shell"
+            || info.scope != Scope::Session
+            || !matches!(record.kind, SlotKind::Headful | SlotKind::Headless))
+    {
+        return Err(DaemonError::InvalidParams(
+            "phase CPU recording requires a stand-in slot's shell component".into(),
+        ));
+    }
     let fits = match record.kind {
         SlotKind::Vm => info.scope == Scope::Vm,
         SlotKind::Headful | SlotKind::Headless | SlotKind::Device => info.scope != Scope::Vm,
@@ -500,7 +509,17 @@ pub fn activate(
 
     let dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
     for unit in layered_units(&session, uid) {
-        apply.write_dropin(&unit, LAYERS_DROPIN, &dropin)?;
+        let text = if unit == session.unit
+            && generation
+                .components
+                .get("shell")
+                .is_some_and(|entry| entry.info.frame_cpu_trace)
+        {
+            format!("{dropin}\n[Service]\nEnvironment=TILO_VM_FRAME_CPU_TRACE=1\n")
+        } else {
+            dropin.clone()
+        };
+        apply.write_dropin(&unit, LAYERS_DROPIN, &text)?;
         actions.push(Action::WriteDropIn { unit });
     }
     // The device's own session picks its seat itself.
@@ -1068,6 +1087,49 @@ mod tests {
             );
         }
         g
+    }
+
+    #[test]
+    fn frame_cpu_trace_is_generation_scoped_and_stand_in_only() {
+        let mut apply = RecordingApply::default();
+        let mut slot = record("cpu", SlotKind::Headless);
+        let plain = generation(1, &[("shell", "h1", Scope::Session, &[])]);
+        let mut traced = plain.clone();
+        traced.number = 2;
+        traced
+            .components
+            .get_mut("shell")
+            .unwrap()
+            .info
+            .frame_cpu_trace = true;
+        let info = &traced.components["shell"].info;
+        check_scope(&slot, "shell", info).unwrap();
+        for kind in [SlotKind::Vm, SlotKind::Device] {
+            assert!(check_scope(&record("other", kind), "shell", info).is_err());
+        }
+        assert!(check_scope(&slot, "music", info).is_err());
+        let layers = [PathBuf::from("/var/lib/tilo-vm/layers/h1")];
+        let key = (session_unit("cpu"), LAYERS_DROPIN.into());
+        for (g, enabled) in [(&traced, true), (&plain, false), (&traced, true)] {
+            activate(
+                &mut apply,
+                &mut slot,
+                g,
+                &layers,
+                Policy::SessionRestart,
+                &Restarts::default(),
+                SessionChange::Keep,
+            )
+            .unwrap();
+            assert_eq!(
+                apply.dropins[&key].contains("Environment=TILO_VM_FRAME_CPU_TRACE=1"),
+                enabled
+            );
+            assert!(
+                !apply.dropins[&(user_unit(60_001), LAYERS_DROPIN.into())]
+                    .contains("TILO_VM_FRAME_CPU_TRACE")
+            );
+        }
     }
 
     #[test]

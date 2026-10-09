@@ -135,7 +135,8 @@ containerfile="$repo/os/Containerfile"
 # The signed SDK font-catalog tree adds one native-builder-payload row.
 # Combining the application publisher with the existing runtime publisher
 # COPY preserves their exact payload mappings and the 156-instruction budget.
-expected_contract=4bec7cf6742bff2a18ba086170146f0f8396c28929446347c11d971fd0e54c70
+# The first-login Flatpak unit and cooperative Bash editor are both retained.
+expected_contract=7ae5fa508eee4062dda7e997189cd678c0d213eeed43990e3b9863245704fded
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
