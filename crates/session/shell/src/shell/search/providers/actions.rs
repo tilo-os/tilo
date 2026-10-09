@@ -771,21 +771,6 @@ fn name_invited_peer(state: &ChromeState, args: &ActionArgs) -> Result<String, A
     Ok(name)
 }
 
-/// Current wall-clock time as nanoseconds since the epoch, clamped to
-/// `u64::MAX` rather than truncated — a value that large is centuries past
-/// any real expiry/enrollment window this crate computes against.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "clamped to 0..=u64::MAX immediately above, so it always fits u64"
-)]
-fn now_ns_u64() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .min(u128::from(u64::MAX)) as u64
-}
-
 fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
     let value = value.trim();
     if value.len() != 64 {
@@ -1205,7 +1190,7 @@ impl Action {
             "search-action-identity-device-enroll-subtitle",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
-                let now = now_ns_u64();
+                let now = tilo_clock::unix_now_ns();
                 let expires = now.saturating_add(5 * 60 * 1_000_000_000);
                 let token = crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| {
@@ -1231,7 +1216,7 @@ impl Action {
             "search-action-identity-home-peer-enroll-subtitle",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
-                let now = now_ns_u64();
+                let now = tilo_clock::unix_now_ns();
                 let expires = now.saturating_add(5 * 60 * 1_000_000_000);
                 let token = crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| {
@@ -1281,7 +1266,7 @@ impl Action {
                         ));
                     }
                 };
-                let now = now_ns_u64();
+                let now = tilo_clock::unix_now_ns();
                 crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| store.revoke(&profile.id, key, reason, now))
                     .map_err(|error| ActionError::Refused(error.to_string()))?;

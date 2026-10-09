@@ -270,10 +270,8 @@ pub fn inspect_certificate(bytes: &[u8]) -> Result<CertificateInfo, String> {
     let (der, certificate) = decode_single_certificate(bytes)?;
     let validity = &certificate.tbs_certificate.validity;
     let expires = display_time(validity.not_after);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "system clock is before the Unix epoch")?;
-    if validity.not_after.to_unix_duration().as_secs() <= now.as_secs() {
+    let now = tilo_clock::try_unix_now().ok_or("system clock is before the Unix epoch")?;
+    if validity.not_after.to_unix_duration().as_secs() <= now {
         return Err(format!("certificate expired at {expires}"));
     }
 
@@ -1458,9 +1456,9 @@ fn verify_authenticode_entry(
         }
     }
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "system clock is before the Unix epoch")?;
+    let now = tilo_clock::try_unix_now_ns()
+        .map(std::time::Duration::from_nanos)
+        .ok_or("system clock is before the Unix epoch")?;
     let validity = &signing_certificate.tbs_certificate.validity;
     if validity.not_before.to_unix_duration() > now {
         return fail("signer certificate is not yet valid");
