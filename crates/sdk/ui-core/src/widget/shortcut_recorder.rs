@@ -518,18 +518,7 @@ fn chord_from_event(key: &Key, modifiers: winit::event::Modifiers) -> Option<Str
 }
 
 impl crate::widget::controls::ActionControls for ShortcutRecorder {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         match &self.action {
             Some(action) => vec![action.metadata(&self.id)],
@@ -537,14 +526,6 @@ impl crate::widget::controls::ActionControls for ShortcutRecorder {
                 control_id: self.id.clone(),
                 kind: ControlBindingKind::SemanticAction(self.id.clone()),
             }],
-        }
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
         }
     }
 }
