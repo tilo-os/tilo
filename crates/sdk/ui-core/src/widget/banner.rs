@@ -163,13 +163,7 @@ pub struct BannerHit {
 /// The node's box in absolute coordinates.
 fn layout_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
     let l = taffy.layout(node).copied().unwrap_or_default();
-    Rect::from_origin_size(
-        (
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-        ),
-        (f64::from(l.size.width), f64::from(l.size.height)),
-    )
+    crate::widget::placed(&l, origin)
 }
 
 /// The face of a banner's action: the main one a secondary control, the
