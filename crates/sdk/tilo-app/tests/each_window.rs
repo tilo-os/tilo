@@ -6,6 +6,7 @@
 use tilo_app::accesskit::Role;
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
+use tilo_app::winit::event::WindowEvent;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
@@ -77,7 +78,7 @@ impl ResourceApp for Window {
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
         let draft = cx
-            .input(|list| list.draft.clone(), Checklist::DRAFT)
+            .input_with(|list| list.draft.clone(), Checklist::DRAFT)
             .with_id("draft");
         let rows = cx.each(
             |list| &list.tasks,
@@ -87,7 +88,7 @@ impl ResourceApp for Window {
                 };
                 Box::new(tilo_app::row![
                     row.text(|task| task.title.clone()),
-                    row.checkbox(
+                    row.checkbox_with(
                         "window-done",
                         |task| task.done,
                         Checklist::SET_DONE.map(move |done| (id.clone(), done))
