@@ -12339,9 +12339,7 @@ impl ShellOverlayHost {
             };
             match edit {
                 tilo_desktop::text_entry::Edit::Cancel => {
-                    self.status_editing = false;
-                    self.status_draft.clear();
-                    self.status_selection = ui::text_selection::Selection::default();
+                    self.end_status_edit();
                 }
                 tilo_desktop::text_entry::Edit::Submit => {
                     let text = self
@@ -12350,9 +12348,7 @@ impl ShellOverlayHost {
                         .collect::<Vec<_>>()
                         .join(" ");
                     let status = (!text.is_empty()).then_some(text);
-                    self.status_editing = false;
-                    self.status_draft.clear();
-                    self.status_selection = ui::text_selection::Selection::default();
+                    self.end_status_edit();
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().push_presence_request(
                             crate::shell::chrome_state::PresenceRequest::SetManualStatus(status),
@@ -14048,7 +14044,34 @@ impl ShellOverlayHost {
         *ctx.handled
     }
 
+    fn begin_status_edit(&mut self) {
+        self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual) {
+            self.local_status.clone().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        self.status_selection = ui::text_selection::Selection::collapsed(self.status_draft.len());
+        self.status_editing = true;
+    }
+
+    /// A status draft belongs to the visible People editor. Ending it never
+    /// publishes or changes the participant's existing status.
+    fn end_status_edit(&mut self) {
+        self.status_editing = false;
+        self.status_draft.clear();
+        self.status_selection = ui::text_selection::Selection::default();
+    }
+
     fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
+        if matches!(
+            hit,
+            CollaboratorsHit::Dismiss
+                | CollaboratorsHit::Invite
+                | CollaboratorsHit::Join
+                | CollaboratorsHit::RoomActivity
+        ) {
+            self.end_status_edit();
+        }
         if matches!(
             hit,
             CollaboratorsHit::PreviousPeople | CollaboratorsHit::NextPeople
@@ -14099,15 +14122,7 @@ impl ShellOverlayHost {
         }
         match hit {
             CollaboratorsHit::EditStatus => {
-                self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual)
-                {
-                    self.local_status.clone().unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                self.status_selection =
-                    ui::text_selection::Selection::collapsed(self.status_draft.len());
-                self.status_editing = true;
+                self.begin_status_edit();
                 *handled = true;
                 return;
             }
@@ -18056,6 +18071,9 @@ impl Widget for ShellOverlayHost {
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
         let people_open = self.overlay_flags().collaborators;
+        if !people_open {
+            self.end_status_edit();
+        }
         if self
             .collaborators_overlay
             .consume_sequence_edge(event, people_open)
@@ -21352,6 +21370,7 @@ impl ShellOverlayHost {
                 self.last_cursor,
             );
         } else {
+            self.end_status_edit();
             self.collaborators_overlay.clear();
         }
     }
