@@ -664,7 +664,7 @@ mod tests {
 
         // A press on the second row opens it.
         let (second, rect) = rows[1];
-        let mut doc = automerge::AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), rect.center()));
         assert_eq!(shared.borrow().selected, Some(second));
 

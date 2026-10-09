@@ -1,21 +1,3 @@
-[ratchets.hand_resource_impl]
-"apps/mail/src/resource.rs" = 1
-
-[ratchets.action_decl_new]
-"apps/mail/src/resource.rs" = 2
-
 [ratchets.action_address_new]
-"apps/mail/src/actions.rs" = 2
 "apps/mail/src/app.rs" = 1
 "apps/mail/src/contact_recipients.rs" = 1
-"apps/mail/src/search.rs" = 2
-
-[ratchets.untyped_action_args]
-"apps/mail/src/actions.rs" = 1
-"apps/mail/src/resource.rs" = 2
-
-[ratchets.action_spec]
-"apps/mail/src/actions.rs" = 6
-
-[ratchets.direct_automerge_write]
-"apps/mail/src/doc.rs" = 3

@@ -1,9 +1,9 @@
 //! Pure data model for the Mail app.
 //!
 //! Everything here is IO-free, render-free logic. The widgets read these
-//! structs; the CRDT layer (`doc.rs`) persists the *mutable* per-message
-//! state (read/unread, starred, current folder, drafts) and the account
-//! configuration. The immutable message corpus (headers + bodies +
+//! structs; the mailbox record ([`crate::resource::Mail`]) holds the
+//! *mutable* per-message state (read/unread, starred, current folder) and the
+//! draft. The immutable message corpus (headers + bodies +
 //! attachments) is hydrated from the server in the live app, or from the
 //! bundled `sample.rs` corpus when running headless (`--shots`).
 
@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use ui::icons::Icon;
+use ui::tilo_resource::{self, JsonSchema, Model};
 use uuid::Uuid;
 
 /// Stable identifier for a single message. In the live app this is derived
@@ -23,8 +24,12 @@ pub type MessageId = Uuid;
 /// The canonical system folders every account has. We keep them as an enum
 /// (rather than free-form strings) so routing — archive/delete/move — is
 /// total and exhaustively checked by the compiler.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, Model, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Folder {
+    #[default]
     Inbox,
     Starred,
     Sent,
@@ -282,7 +287,7 @@ pub struct Message {
     /// User-applied labels/tags, mirrored from the CRDT (`flags/<id>/labels`).
     /// These are set exclusively through [`crate::actions::MailAction::AddLabel`]
     /// / [`crate::actions::MailAction::RemoveLabel`] and overlaid onto the
-    /// in-memory message by [`crate::doc::MailDoc::apply_flags`]; empty for a
+    /// in-memory message by [`crate::resource::Mail::apply_flags`]; empty for a
     /// message that has never been tagged.
     #[serde(default)]
     pub labels: Vec<String>,
@@ -614,7 +619,7 @@ impl Draft {
 }
 
 /// Exact sending account reviewed when preparing a Contacts draft.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftSender {
     pub account: String,
     pub email: String,
@@ -622,13 +627,15 @@ pub struct DraftSender {
 
 /// Metadata for one staged draft attachment. The content is addressed by a
 /// verified content-store identity and materialized only at the send boundary.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftAttachment {
     pub content_id: String,
     pub filename: String,
     pub mime: String,
     pub size: u64,
 }
+
+tilo_resource::json_model!(DraftSender, DraftAttachment);
 
 /// The whole mailbox aggregate: an account, its messages, and the derived
 /// folder/thread structure. Pure logic — the widgets ask it questions.

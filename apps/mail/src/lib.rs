@@ -16,8 +16,8 @@
 //!   out of the headless build so it stays small and green.
 //!
 //! ## State
-//! Per-message flags (read/starred/folder), selected folder/view state, and
-//! the active draft live in the Automerge document via `doc::MailDoc`, so they
+//! Per-message flags (read/starred/folder), the reader's folders and the
+//! active draft live in the mailbox record ([`resource::Mail`]), so they
 //! sync and undo. Account identities, connection endpoints, and credentials
 //! are device-local in the shared Tilo account store + encrypted vault. The
 //! immutable message corpus is hydrated into `model::Mailbox`.
@@ -43,7 +43,11 @@
 #![cfg_attr(
     test,
     allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
         clippy::string_slice,
+        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -56,7 +60,6 @@ pub mod app;
 pub mod attachment_store;
 pub mod autoconfig;
 pub mod compose;
-pub mod doc;
 pub mod engine;
 pub mod header;
 pub mod html_mail;

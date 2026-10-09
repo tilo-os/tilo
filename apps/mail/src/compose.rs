@@ -59,22 +59,21 @@ use ui::widget::{
     ControlSize, SegmentedFace, TextInput, TextInputKind, ToggleGroup, Toolbar,
 };
 
-use crate::actions::{DraftBodySeed, MailAction};
-use crate::doc::MailDoc;
+use crate::actions::DraftBodySeed;
 use crate::model::{ComposeFormat, Draft, DraftAttachment};
-use crate::resource::{Mail, draft_body_dispatcher};
+use crate::resource::{Mail, draft_body_dispatcher, draft_body_object, mailbox};
 
 /// The HTML body: the SDK rich-text editor over the draft's body, every
-/// edit a [`MailAction::EditDraftBody`] through `dispatcher`; shown view-only
+/// edit a field edit of the body through `dispatcher`; shown view-only
 /// until there is one.
 type BodyEditor = RichTextSurface<RichTextField>;
 
 fn body_editor(dispatcher: Option<&Dispatcher<Mail>>) -> BodyEditor {
     let field = match dispatcher {
         Some(dispatcher) => {
-            RichTextField::new(draft_body_dispatcher(dispatcher), MailDoc::draft_body)
+            RichTextField::new(draft_body_dispatcher(dispatcher), draft_body_object)
         }
-        None => RichTextField::view_only(MailDoc::draft_body),
+        None => RichTextField::view_only(draft_body_object),
     };
     RichTextSurface::field(field).with_editor(
         BlockEditor::new()
@@ -479,7 +478,7 @@ pub struct ComposeWindow {
     /// The body to start the draft with, applied when the window next
     /// reaches the document.
     seed: Option<DraftBodySeed>,
-    /// Dispatches [`MailAction::StartDraftBody`].
+    /// Submits [`Mail::START_DRAFT_BODY`].
     dispatcher: Option<Dispatcher<Mail>>,
     /// The body as plain text as of the last frame, for accessibility and a
     /// switch to plain-text authoring.
@@ -1046,7 +1045,7 @@ impl ComposeWindow {
         self.start_pending_body(doc);
         let (body, html_body) = match self.format {
             ComposeFormat::Html => {
-                let root = MailDoc::draft_body(doc);
+                let root = draft_body_object(doc);
                 let html = root.as_ref().and_then(|root| {
                     tilo_doc_codecs::export_html::render_html_fragment_under(
                         doc,
@@ -1122,15 +1121,17 @@ impl ComposeWindow {
         let Some(seed) = self.seed.take() else {
             return;
         };
-        let action = MailAction::StartDraftBody(seed);
-        let context = tilo_actions::ActionContext::for_app("so.tilo.mail", "Mail");
-        if let Err(error) = dispatcher.apply_now_with(doc, &action, context) {
+        let start = Mail::START_DRAFT_BODY.with(mailbox::StartDraftBody {
+            text: seed.text,
+            html: seed.html,
+        });
+        if let Err(error) = dispatcher.submit_now(doc, start) {
             tracing::warn!(%error, "draft body could not be started");
         }
     }
 
     fn read_plain(doc: &automerge::AutoCommit) -> String {
-        MailDoc::draft_body(doc)
+        draft_body_object(doc)
             .and_then(|root| tilo_rich_text::blocks_under(doc, &root).ok())
             .map(|blocks| plain_of(&blocks))
             .unwrap_or_default()
@@ -2617,17 +2618,17 @@ mod tests {
         // Phase `format_toggle_round_trips_content`.
         {
             let mut w = win();
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             w.set_focus(Field::Body);
             w.start_body(DraftBodySeed::text("Hello world"));
             w.sync(&doc, &automerge::ROOT);
             assert!(
-                MailDoc::draft_body(&doc).is_none(),
+                draft_body_object(&doc).is_none(),
                 "projection leaves a pending draft body unwritten"
             );
             w.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             assert!(
-                MailDoc::draft_body(&doc).is_some(),
+                draft_body_object(&doc).is_some(),
                 "settlement authors the pending draft body"
             );
             w.sync(&doc, &automerge::ROOT);
@@ -2647,7 +2648,7 @@ mod tests {
         // Phase `draft_carries_html_in_html_mode`.
         {
             let mut w = win();
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             w.set_focus(Field::Body);
             w.start_body(DraftBodySeed::text("Body\n> quoted"));
             w.to.set_text("a@b.example");
@@ -2662,7 +2663,7 @@ mod tests {
         // Phase `a_saved_html_draft_reopens_with_its_formatting`.
         {
             let mut w = win();
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             w.open_with_draft(&Draft {
                 body: "Plan\nship it".into(),
                 html_body: Some("<h2>Plan</h2><ul><li><b>ship</b> it</li></ul>".into()),
@@ -2682,7 +2683,7 @@ mod tests {
             w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
             w.plain_body.set_text("Just text");
             let d = w.to_draft(&mut ui::widget::Edits::lend(
-                &mut automerge::AutoCommit::new(),
+                &mut crate::resource::TestMail::doc(),
             ));
             assert!(d.html_body.is_none());
             assert_eq!(d.body, "Just text");
@@ -2699,7 +2700,7 @@ mod tests {
             w.set_focus(Field::Body);
 
             let m = winit::event::Modifiers::default();
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
             let node = taffy::NodeId::new(0);
             let mut send = |ev: &WindowEvent| {
@@ -2796,7 +2797,7 @@ mod tests {
             let mut w = win();
             w.last_mouse = Point::new(5.0, 5.0); // outside the centred window
             let modifiers = winit::event::Modifiers::default();
-            let mut doc = automerge::AutoCommit::new();
+            let mut doc = crate::resource::TestMail::doc();
             let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
             let press = WindowEvent::MouseInput {
                 device_id: winit::event::DeviceId::dummy(),
@@ -2876,7 +2877,7 @@ mod tests {
 
     fn press_at(w: &mut ComposeWindow, p: Point) -> (bool, ComposeAction) {
         let m = winit::event::Modifiers::default();
-        let mut doc = automerge::AutoCommit::new();
+        let mut doc = crate::resource::TestMail::doc();
         let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let node = taffy::NodeId::new(0);
         let mv = WindowEvent::CursorMoved {

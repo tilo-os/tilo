@@ -8830,6 +8830,7 @@ dependencies = [
  "tilo-content",
  "tilo-doc-codecs",
  "tilo-document",
+ "tilo-history",
  "tilo-net",
  "tilo-oauth",
  "tilo-rich-text",
