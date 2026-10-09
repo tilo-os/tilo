@@ -54,6 +54,10 @@ fn switch_counts(status: &str) -> (u64, u64) {
 
 /// Context switches, voluntary and involuntary, of thread `tid` of this
 /// process so far.
+///
+/// # Panics
+/// The thread's `/proc/self/task/<tid>/status` cannot be read: not Linux,
+/// or no such thread.
 pub fn context_switches(tid: &str) -> u64 {
     let status =
         std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).expect("thread status");
@@ -63,6 +67,10 @@ pub fn context_switches(tid: &str) -> u64 {
 
 /// Run `start` and return its result with the id of the thread it spawned
 /// under `comm` (the kernel's 15-byte truncation of the thread name).
+///
+/// # Panics
+/// `/proc/self/task` cannot be listed, or no new thread of that name
+/// appears within 5 s.
 pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
     let before = own_thread_ids();
     let started = start();
@@ -88,6 +96,9 @@ pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
 }
 
 /// Fail if thread `tid` is scheduled at all during an idle 400 ms.
+///
+/// # Panics
+/// The thread was scheduled, or its counts cannot be read.
 pub fn assert_stays_asleep(tid: &str, what: &str) {
     std::thread::sleep(Duration::from_millis(50));
     let settled = context_switches(tid);
