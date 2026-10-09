@@ -3969,21 +3969,21 @@ mod tests {
                 .send(ScanoutCommand::Pause)
                 .expect("the presenter holds the command receiver");
             let dropping_master = quiesce_presentations(Some(&gate));
-            let (returned, presented) = std::sync::mpsc::channel();
+            let (finished_tx, finished) = std::sync::mpsc::channel();
             let render_thread = std::thread::spawn(move || {
                 entry(&mut presenter);
-                let _ = returned.send(());
+                let _ = finished_tx.send(());
                 presenter
             });
             assert_eq!(
-                presented.recv_timeout(Duration::from_millis(100)),
+                finished.recv_timeout(Duration::from_millis(100)),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout),
                 "{name} presented while DRM master was being dropped"
             );
             drop(dropping_master);
             tilo_test_env::recv(
                 format!("{name} to present once the master drop finished"),
-                &presented,
+                &finished,
             );
             let presenter = render_thread.join().expect("the render thread");
             assert!(
