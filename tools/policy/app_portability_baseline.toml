@@ -163,9 +163,6 @@ D2 = 2
 [apps.video-editor]
 D2 = 3
 
-[apps.video-player]
-D2 = 1
-
 [apps.vpn]
 D1 = 1
 D2 = 4
