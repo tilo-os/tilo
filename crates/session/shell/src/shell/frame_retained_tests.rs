@@ -1590,7 +1590,10 @@ fn point_peer_at(frame: &mut FrameBuilder, at: (f64, f64)) {
     };
     frame.presence.pointers.insert(
         ui::presence::PresenceKey::Workspace { id: room },
-        vec![(ui::permissions::UserId("ada".into()), at)],
+        vec![(
+            ui::permissions::UserId("ada".into()),
+            (at.0 as f32, at.1 as f32),
+        )],
     );
 }
 
