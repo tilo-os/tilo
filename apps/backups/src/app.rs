@@ -1,7 +1,8 @@
 //! Retained unified backup views over the resource-native device runtime.
-use crate::actions::{self, BackupsEffect, Blocked};
-use crate::doc::PolicyField;
+use crate::actions::{BackupsEffect, Blocked};
 use crate::i18n;
+use crate::model::MAX_KEPT;
+use crate::model::PolicyField;
 use crate::model::{Catalog, Filter, RetentionPolicy};
 use crate::resource::{BackupLocation, Backups, DemoRepository};
 use crate::view::{self, Intent, Intents, JobKind, Order, Page, Setup};
@@ -284,20 +285,14 @@ impl BackupsApp {
         Ok(())
     }
 
-    /// Adjust one retention field by `delta`, clamped to `[0, 999]`, through the
-    /// dispatcher. This is the single production funnel both the on-screen +/-
-    /// buttons and the keyboard arrow / `+` / `-` handlers call, and it submits
-    /// the byte-identical [`BackupsAction`](crate::actions::BackupsAction) the
-    /// Ctrl+K increment/decrement spec exports.
+    /// Adjust one retention class by `delta`, within `[0, MAX_KEPT]`: the
+    /// field edit at its path, which both the on-screen +/- buttons and the
+    /// keyboard arrow / `+` / `-` handlers submit.
     fn bump_retention(&self, field: PolicyField, delta: i64) {
-        let current = match field {
-            PolicyField::Hourly => self.ui.policy.hourly,
-            PolicyField::Daily => self.ui.policy.daily,
-            PolicyField::Weekly => self.ui.policy.weekly,
-            PolicyField::Monthly => self.ui.policy.monthly,
-        };
+        let count = (i64::from(field.of(&self.ui.policy)) + delta).clamp(0, i64::from(MAX_KEPT));
+        let count = u32::try_from(count).unwrap_or_default();
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(&actions::bump_retention_action(field, current, delta));
+            dispatcher.submit(field.path(&Backups::paths().policy).set(count));
         }
     }
 
@@ -1530,12 +1525,12 @@ mod tests {
             .unwrap();
         let before = app.state().policy.daily;
         app.harness()
-            .perform_semantic_named("backups-keep-ret_daily", None, &Action::Increment)
+            .perform_semantic_named("backups-keep-daily", None, &Action::Increment)
             .unwrap();
         app.settle();
         assert_eq!(app.state().policy.daily, before + 1);
         app.invoke(
-            ui::tilo_resource::Invoke::apply(&actions::set_retention_action(PolicyField::Daily, 3))
+            ui::tilo_resource::Invoke::edit(&crate::resource::Backups::paths().policy.daily.set(3))
                 .unwrap(),
         )
         .unwrap();
@@ -1642,13 +1637,13 @@ mod tests {
         );
     }
     #[test]
-    fn a_fresh_backup_record_stays_empty_until_a_retention_action() {
+    fn the_window_alone_writes_nothing_to_the_record() {
         let app = frame(BackupsApp::new(), 1280.0, 800.0, 1.0);
         assert!(
             Framed::harness(&app)
                 .state()
                 .doc
-                .get(automerge::ROOT, "ret_hourly")
+                .get(automerge::ROOT, "policy")
                 .unwrap()
                 .is_none()
         );

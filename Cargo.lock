@@ -994,6 +994,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-history",
  "tilo-paths",
  "tilo-vello",
  "tilo-winit",
