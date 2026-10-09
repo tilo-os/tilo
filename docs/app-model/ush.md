@@ -227,7 +227,9 @@ closing it ends the guest, and the guest exiting closes it.
 
 Terminal records what a session **ran**, not what its screen showed. A
 session is a record of its own (`terminal.session`); opening Terminal starts a
-new one, and each tab of the shell is its own. The screen, the scrollback and
+new one (each window the launcher opens has a record of its own, and a new
+terminal opened in a window is a new record), and reopening a window returns
+to its session. The screen, the scrollback and
 the window title stay on the device that runs the process: they are live
 output, like the pixels of a legacy window, and another device reaches them by
 re-attaching to the session on its relay.
@@ -272,7 +274,7 @@ when it ends, by the Terminal that runs the session:
 |---|---|
 | `command`, `cwd` | as the shell marked them |
 | `environment` | where it ran: the session's target |
-| `actor`, `for_person` | who ran it: the person typing, or the agent (and for whom) whose `run` asked for it |
+| `actor`, `for_person` | who ran it: the person typing, or whoever's `run` asked for it; `for_person` names the person an agent ran it for once actions carry it to the verb |
 | `started_ms`, `ended_ms`, `exit` | start, end and exit status; the duration is their difference |
 | `output` | the raw bytes it printed, escape sequences included, as one content-addressed `Bytes` blob (at most 4 MiB; `truncated` when it printed more) |
 | `tool`, `items` | which parser read it, and what it found |
@@ -296,15 +298,21 @@ where it has them, a path, line, column, code or test name.
 ### Actions on runs
 
 - `run` runs a command line in the session: a verb of kind **Outside**, which
-  queues the command in the record's outbox. The Terminal running the session
-  types it into the shell and settles the entry with the run once it ends,
-  so an agent's call returns the run. It shows in the view like a person's
-  typing, and the run is attributed to whoever invoked it.
+  queues the command in the record's outbox for the process that runs the
+  session now (a request names its pane, so a restarted process never runs
+  what was asked of the one before). The Terminal running it types the line
+  at the next prompt and settles the entry with the run once it ends
+  (`{"run": <id>, "exit": <status>}`; the run's id is the request's), so an
+  agent's call returns when the command finished. It shows in the view like
+  a person's typing, and the run is attributed to whoever invoked it. A
+  session whose shell does not mark its runs, or one in the device's own
+  shell, settles the request as failed.
 - `rerun` (on a run) runs its command line again; `rerun-test` (on a run, with
-  a test name) runs that one test the way the run's tool does
-  (`cargo test <name> -- --exact`); both are Outside like `run`.
-- `open-item` (on a run, with the item's position) shows an item: a location
-  or a diagnostic opens its file at its line, a URL opens in the browser.
+  a test name it reported) runs that one test the way the run's tool does
+  (`cargo test -p <package> -- --exact <name>`); both are Outside like `run`.
+- `open-item` (on a run, with the item's position among its items) shows an
+  item: a location or a diagnostic opens its file (relative to the run's
+  directory), a URL opens in the browser.
 
 Agents read runs as data: each run is a published item with its fields and
 items, its `output` is read with the content it names, and "the second error"
@@ -317,9 +325,11 @@ see [permissions.md](../architecture/permissions.md).
 
 The person's command history spans every session: each run also adds an
 entry to the person's own history record (`terminal.history`: command, cwd,
-environment, exit, when, who, and the session and run it was), which follows
-them to their devices. Terminal's search shows the runs of every session
-from it, and a hit opens the session at that run.
+environment, exit, when, who, and the session record and run it was), which
+follows them to their devices and never reaches a collaborator. It keeps the
+newest 10,000 runs. Every entry is a search entry under its command line, so
+Terminal's search finds a command whichever session ran it, and each
+session's own runs are search entries of the session whose `open` shows it.
 
 ## Installing tools
 

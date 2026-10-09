@@ -284,6 +284,10 @@ impl super::App {
             &self.state.root,
         );
         let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        // Settlement can have replaced widgets (a surface closing its own
+        // dialog): forget their nodes before dispatch, which may open a
+        // confirmation that captures where focus returns.
+        self.forget_replaced_widgets();
         let submitted = self.dispatch_control_invocations() != 0;
         if settled || submitted {
             self.root_widget.sync(&self.state.doc, &self.state.root);

@@ -23,11 +23,11 @@ fn unopened_terminal_never_accepts_reviewed_input_into_sink() {
     assert!(widget.try_write_input(b"reviewed command\r").is_err());
     assert!(
         widget
-            .perform(crate::resource::TerminalEffect::Run {
-                command: "reviewed command".into(),
+            .perform(crate::resource::TerminalEffect::Send {
+                text: "reviewed command".into(),
             })
             .is_err(),
-        "an unattached sink must never report Run completion"
+        "an unattached sink must never report Send completion"
     );
     assert!(
         opened.borrow().is_empty(),
@@ -380,17 +380,27 @@ fn supervisor_replies_say_what_to_do_next() {
     );
     #[cfg(unix)]
     {
-        let request =
-            crate::inner::ush_request(&[], &SessionTarget::Host, Requester::Person, None, (80, 24))
-                .unwrap();
+        let request = crate::inner::ush_request(
+            &[],
+            &SessionTarget::Host,
+            Requester::Person,
+            None,
+            Some("0123456789abcdef"),
+            (80, 24),
+        )
+        .unwrap();
         let request: serde_json::Value = serde_json::from_slice(&request).unwrap();
         assert_eq!(request["target"], serde_json::json!({"kind": "host"}));
         assert_eq!(request["requested_by"], "person");
+        assert_eq!(request["runs"], "0123456789abcdef");
+        assert!(crate::inner::marks_runs(br#"{"result":"ok","runs":true}"#));
+        assert!(!crate::inner::marks_runs(br#"{"result":"ok"}"#));
         assert!(
             crate::inner::ush_request(
                 &[],
                 &SessionTarget::Legacy { vm: "linux".into() },
                 Requester::Person,
+                None,
                 None,
                 (80, 24)
             )
@@ -846,8 +856,8 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
         );
         let result = app
             .with_surface(|terminal: &mut TerminalWidget| {
-                terminal.perform(crate::resource::TerminalEffect::Run {
-                    command: "printf forbidden".into(),
+                terminal.perform(crate::resource::TerminalEffect::Send {
+                    text: "printf forbidden".into(),
                 })
             })
             .unwrap();
@@ -973,7 +983,7 @@ fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
 }
 
 #[test]
-fn published_run_and_read_follow_actual_pty_output_into_the_shared_session() {
+fn published_read_follows_actual_pty_output_into_the_shared_session() {
     use crate::resource::TerminalEffect;
     let sessions = Sessions::scripted(RecentTarget::none(), |target, _, _| {
         assert_eq!(target, &SessionTarget::default_environment());
@@ -989,9 +999,10 @@ fn published_run_and_read_follow_actual_pty_output_into_the_shared_session() {
     app.settle();
     let inspected = app.effect(&TerminalEffect::InspectSession).unwrap();
     let session = inspected.value.unwrap()["session"].clone();
-    app.effect_confirmed(&TerminalEffect::Run {
-        command: "printf 'TILO_%s\\n' OWNED_PTY_OUTPUT".into(),
+    app.with_surface(|terminal: &mut TerminalWidget| {
+        terminal.try_write_input(b"printf 'TILO_%s\\n' OWNED_PTY_OUTPUT\r")
     })
+    .unwrap()
     .unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut observed = false;
@@ -1015,10 +1026,9 @@ fn published_run_and_read_follow_actual_pty_output_into_the_shared_session() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    app.effect_confirmed(&TerminalEffect::Run {
-        command: "exit".into(),
-    })
-    .unwrap();
+    app.with_surface(|terminal: &mut TerminalWidget| terminal.try_write_input(b"exit\r"))
+        .unwrap()
+        .unwrap();
     wait_for_owner_shell(&mut app, session.as_str().unwrap(), true);
     assert!(observed, "canonical retained PTY output/prompt absent");
 }

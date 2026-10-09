@@ -744,6 +744,47 @@ pub struct TerminalWidget {
     /// While the open context menu is the target picker: what each row does.
     target_menu_rows: Option<Vec<Option<TargetMenuRow>>>,
     environments_panel: EnvironmentsPanel,
+    /// The command runs of the process this terminal runs: its shell's
+    /// marks, the run going on and the runs `run` asked for.
+    runs: RunState,
+}
+
+/// The person's command history this terminal adds its runs to.
+struct RunHistory {
+    record: ui::framework::PersonRecord<crate::history::CommandHistory>,
+    /// The address of the session record its runs name.
+    session: String,
+    /// Who types at this terminal.
+    me: String,
+}
+
+/// Where this terminal is with its process's command runs
+/// (docs/app-model/ush.md, "Command runs").
+#[derive(Default)]
+struct RunState {
+    /// The marks of the process's shell, when it marks its runs.
+    marks: Option<crate::runs::Marks>,
+    /// The run going on.
+    current: crate::runs::Runs,
+    /// The command lines `run` asked for, shared with the view that carries
+    /// out the session's outbox.
+    queue: crate::runs::RunQueue,
+    /// Asked, waiting for the shell to be at its prompt.
+    waiting: std::collections::VecDeque<crate::runs::Asked>,
+    /// Typed at the prompt, waiting for the shell to start it.
+    typed: Option<crate::runs::Asked>,
+    /// Started for whoever asked.
+    running: Option<crate::runs::Asked>,
+    /// Ended, waiting to be recorded.
+    ended: Vec<(crate::runs::FinishedRun, Option<crate::runs::Asked>)>,
+    /// The shell showed its prompt and has not started a run since.
+    at_prompt: bool,
+    /// The person's command history, and the address of the session record
+    /// its runs name.
+    history: Option<RunHistory>,
+    /// The session as its record was last presented: the runs to show
+    /// items of.
+    session: Option<std::rc::Rc<crate::resource::Terminal>>,
 }
 
 impl TerminalWidget {
@@ -857,6 +898,7 @@ impl TerminalWidget {
             chip_rect: Rect::ZERO,
             target_menu_rows: None,
             environments_panel: EnvironmentsPanel::default(),
+            runs: RunState::default(),
         }
     }
 
@@ -868,6 +910,7 @@ impl TerminalWidget {
         self.local_session = Some(uuid::Uuid::new_v4().to_string());
         self.pane_id = uuid::Uuid::new_v4().to_string();
         self.submit(crate::resource::Terminal::CLAIM_PANE.with(self.pane_id.clone()));
+        self.begin_runs();
         self.emulating = true;
         self.screen = crate::screen::Screen::default();
         self.cursor_x = 0;
@@ -1039,7 +1082,6 @@ impl TerminalWidget {
         if let Some((code, reason)) = self.input_unavailable() {
             statuses.extend([
                 EffectStatus::unavailable(E::SEND, code, reason),
-                EffectStatus::unavailable(E::RUN, code, reason),
                 EffectStatus::unavailable(E::INTERRUPT, code, reason),
                 EffectStatus::unavailable(E::CLEAR, code, reason),
                 EffectStatus::unavailable(E::PASTE, code, reason),
@@ -1783,6 +1825,20 @@ impl TerminalWidget {
     /// very same path. From here on the terminal shows its own emulator's
     /// screen; the session record follows it at the next sync.
     pub fn feed(&mut self, bytes: &[u8]) {
+        let Some(marks) = self.runs.marks.as_mut() else {
+            self.feed_output(bytes);
+            return;
+        };
+        for piece in marks.push(bytes) {
+            if let crate::runs::Piece::Output(output) = &piece {
+                self.feed_output(output);
+            }
+            self.follow_run(&piece);
+        }
+    }
+
+    /// [`Self::feed`] of output with the session's marks taken out.
+    fn feed_output(&mut self, bytes: &[u8]) {
         if !bytes.is_empty() {
             self.invalidate_deferred_input();
         }
@@ -2047,12 +2103,7 @@ impl TerminalWidget {
             && Requester::current() == Requester::Agent
             && matches!(
                 effect,
-                E::Send { .. }
-                    | E::Run { .. }
-                    | E::Paste { .. }
-                    | E::PastePrimary { .. }
-                    | E::Interrupt
-                    | E::Clear
+                E::Send { .. } | E::Paste { .. } | E::PastePrimary { .. } | E::Interrupt | E::Clear
             )
     }
 
@@ -2089,26 +2140,6 @@ impl TerminalWidget {
                 }
                 self.try_write_input(text.as_bytes())?;
             }
-            E::Run { command } => {
-                if command.trim().is_empty() {
-                    return Err("command to run cannot be empty".to_string());
-                }
-                if command.len() > MAX_RESOURCE_SEND_BYTES {
-                    return Err(format!(
-                        "command exceeds the {} KiB reviewed-command limit",
-                        MAX_RESOURCE_SEND_BYTES / 1024
-                    ));
-                }
-                if !is_reviewable_terminal_text(&command) {
-                    return Err(
-                        "command must be one line and may not contain terminal control characters"
-                            .to_string(),
-                    );
-                }
-                let mut command = command.into_bytes();
-                command.push(b'\r');
-                self.try_write_input(&command)?;
-            }
             E::Paste { text } | E::PastePrimary { text } => self.try_paste(&text)?,
             E::Interrupt => self.try_write_input(&[0x03])?,
             E::Clear => self.try_write_input(&[0x0c])?,
@@ -2143,6 +2174,7 @@ impl TerminalWidget {
                 }
                 open_url(&url);
             }
+            E::OpenItem { run, position } => self.show_item(&run, position)?,
             E::OpenIn { target } => self.open_in(&target)?,
             E::CreateEnvironment { name } => {
                 self.sessions.create_environment(&name)?;
@@ -2243,6 +2275,258 @@ impl TerminalWidget {
 }
 
 impl TerminalWidget {
+    /// The command lines `run` asks this terminal's process to run reach it
+    /// through `queue`, which the view carrying out the session's outbox
+    /// shares.
+    pub(crate) fn run_through(&mut self, queue: crate::runs::RunQueue) {
+        queue.set_pane(if self.emulating { &self.pane_id } else { "" });
+        self.runs.queue = queue;
+    }
+
+    /// Remember every run this terminal records in the person's `history`,
+    /// as runs of the session record at `session`.
+    pub(crate) fn remember_in(
+        &mut self,
+        record: ui::framework::PersonRecord<crate::history::CommandHistory>,
+        session: String,
+        me: String,
+    ) {
+        self.runs.history = Some(RunHistory {
+            record,
+            session,
+            me,
+        });
+    }
+
+    /// A new process takes the session: what was asked of the last one and
+    /// has not run settles as failed, and the queue follows the new pane.
+    fn begin_runs(&mut self) {
+        let runs = &mut self.runs;
+        runs.current = crate::runs::Runs::default();
+        runs.at_prompt = false;
+        let unanswered: Vec<_> = runs
+            .waiting
+            .drain(..)
+            .chain(runs.typed.take())
+            .chain(runs.running.take())
+            .collect();
+        for asked in unanswered {
+            fail_run(asked, "the session's process ended before the command ran");
+        }
+        runs.marks = None;
+        runs.queue.set_pane(&self.pane_id);
+    }
+
+    /// Follow one piece of the session's output: a mark moves its runs on.
+    fn follow_run(&mut self, piece: &crate::runs::Piece) {
+        use crate::runs::{Mark, Piece};
+        let runs = &mut self.runs;
+        match piece {
+            Piece::Mark(Mark::Prompt) => {
+                runs.at_prompt = true;
+                if let Some(asked) = runs.typed.take() {
+                    fail_run(asked, "the shell did not run the command");
+                }
+            }
+            Piece::Mark(Mark::Started { .. }) => {
+                runs.at_prompt = false;
+                runs.running = runs.typed.take();
+            }
+            Piece::Mark(Mark::Ended { .. }) | Piece::Output(_) => {}
+        }
+        if let Some(run) = runs
+            .current
+            .follow(piece, ui::tilo_resource::origin_now_ms())
+        {
+            let asked = runs.running.take();
+            runs.ended.push((run, asked));
+        }
+    }
+
+    /// Type the next command line `run` asked for, once the shell is at its
+    /// prompt and nothing typed for it is waiting to start.
+    fn type_asked_run(&mut self) {
+        for asked in self.runs.queue.take() {
+            // The same request handed over again (its invocation took it
+            // over from the drain) runs once and answers the newest asker.
+            let runs = &mut self.runs;
+            match runs
+                .waiting
+                .iter_mut()
+                .chain(runs.typed.as_mut())
+                .chain(runs.running.as_mut())
+                .find(|known| known.request == asked.request)
+            {
+                Some(known) => known.reply = asked.reply,
+                None => runs.waiting.push_back(asked),
+            }
+        }
+        if self.runs.waiting.is_empty() {
+            return;
+        }
+        if self.runs.marks.is_none() {
+            for asked in self.runs.waiting.drain(..) {
+                fail_run(asked, "this session's shell does not mark its runs");
+            }
+            return;
+        }
+        if self
+            .sessions
+            .target
+            .as_ref()
+            .is_some_and(crate::target::SessionTarget::is_host)
+        {
+            for asked in self.runs.waiting.drain(..) {
+                fail_run(
+                    asked,
+                    "commands are not run in the device's own shell for anyone",
+                );
+            }
+            return;
+        }
+        if !self.runs.at_prompt || self.runs.typed.is_some() {
+            return;
+        }
+        let Some(asked) = self.runs.waiting.pop_front() else {
+            return;
+        };
+        // Ctrl-U first: what was half typed at the prompt does not become
+        // part of the command.
+        let mut line = vec![0x15];
+        line.extend_from_slice(asked.command.as_bytes());
+        line.push(b'\r');
+        match self.try_write_input(&line) {
+            Ok(()) => {
+                self.runs.at_prompt = false;
+                self.runs.typed = Some(asked);
+            }
+            Err(error) => fail_run(asked, &error),
+        }
+    }
+
+    /// Record the runs that ended, their output in the content store, and
+    /// answer whoever asked for each.
+    fn record_runs(
+        &mut self,
+        dispatch: &ui::framework::Dispatcher<crate::resource::Terminal>,
+        edits: &mut ui::widget::Edits<'_>,
+    ) {
+        for (run, asked) in std::mem::take(&mut self.runs.ended) {
+            let output = if run.output.is_empty() {
+                None
+            } else {
+                match self.content.put(&run.output) {
+                    Ok(hash) => Some(hash),
+                    Err(error) => {
+                        tracing::warn!(%error, "terminal could not keep a run's output");
+                        None
+                    }
+                }
+            };
+            let request = asked.as_ref().map(|asked| asked.request.clone());
+            let id = request.clone().unwrap_or_else(|| {
+                ui::tilo_resource::Id::from_raw(uuid::Uuid::new_v4().simple().to_string())
+            });
+            let finished = crate::resource::Finished {
+                tool: crate::parse::tool_of(&run.command).to_owned(),
+                items: crate::parse::items(&run.command, &run.output),
+                output_len: if output.is_some() {
+                    u64::try_from(run.output.len()).unwrap_or(u64::MAX)
+                } else {
+                    0
+                },
+                output,
+                command: run.command,
+                cwd: run.cwd,
+                started_ms: run.started_ms,
+                ended_ms: run.ended_ms,
+                exit: run.exit,
+                truncated: run.truncated,
+                request: request.clone(),
+                run: id.clone(),
+            };
+            let ran = crate::history::Ran {
+                command: finished.command.clone(),
+                cwd: finished.cwd.clone(),
+                environment: self
+                    .sessions
+                    .target
+                    .as_ref()
+                    .map(crate::target::SessionTarget::encode),
+                exit: finished.exit,
+                ended_ms: finished.ended_ms,
+                actor: asked
+                    .as_ref()
+                    .map(|asked| asked.requested_by.clone())
+                    .unwrap_or_default(),
+                session: String::new(),
+                run: id.clone(),
+            };
+            let recorded =
+                dispatch.submit_now(edits, crate::resource::Terminal::RECORD_RUN.with(finished));
+            match &recorded {
+                Ok(()) => self.remember(ran),
+                Err(error) => tracing::warn!(%error, "terminal session record refused a run"),
+            }
+            if let Some(asked) = asked {
+                let answer = crate::resource::RunAnswer {
+                    run: recorded.is_ok().then_some(asked.request.clone()),
+                    exit: Some(run.exit),
+                };
+                asked.reply.finish(Ok(ui::tilo_actions::ActionOutput {
+                    value: serde_json::to_value(answer).ok(),
+                    resources: Vec::new(),
+                }));
+            }
+        }
+    }
+
+    /// Show the item at `position` of the run `run`: open its page or its
+    /// file.
+    fn show_item(&self, run: &str, position: u32) -> Result<(), String> {
+        let session = self
+            .runs
+            .session
+            .as_ref()
+            .ok_or("the session's runs are not here")?;
+        let run = session
+            .runs
+            .get(&ui::tilo_resource::Id::from_raw(run))
+            .ok_or("no such run")?;
+        let position = usize::try_from(position).unwrap_or(usize::MAX);
+        match crate::parse::shown(&run.cwd.0, &run.items, position)? {
+            crate::parse::Shown::Page(url) => {
+                if !is_public_web_link(&url) {
+                    return Err("the link is not a public web page".into());
+                }
+                open_url(&url);
+            }
+            crate::parse::Shown::File { path, .. } => {
+                if !path.is_file() {
+                    return Err(format!("{} is not a file on this device", path.display()));
+                }
+                ui::widget::open_external_url(&format!("file://{}", path.display()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Remember `ran`, which the session record now holds, in the person's
+    /// history.
+    fn remember(&self, mut ran: crate::history::Ran) {
+        let Some(history) = &self.runs.history else {
+            return;
+        };
+        if ran.actor.is_empty() {
+            ran.actor.clone_from(&history.me);
+        }
+        ran.session.clone_from(&history.session);
+        let remember = crate::history::CommandHistory::REMEMBER.with(ran);
+        if let Err(error) = history.record.invoke(&remember) {
+            tracing::warn!(%error, "the command history refused a run");
+        }
+    }
+
     /// Open the session, drain the PTY and mirror the document's screen.
     fn sync_document(&mut self, _state: &AppModel, _root: &ModelPath) {
         if self.sessions.is_live() {
@@ -2254,6 +2538,7 @@ impl TerminalWidget {
         // still advances the terminal: pumping from `sync`, driven by the
         // waker (or an embedding host's own pump), is what shows output.
         self.pump();
+        self.type_asked_run();
     }
 
     /// Bring the session record up to date with this terminal: the session
@@ -2262,6 +2547,7 @@ impl TerminalWidget {
     fn record(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(dispatch) = self.dispatch.clone() else {
             self.pending_actions.clear();
+            self.runs.ended.clear();
             return;
         };
         for action in std::mem::take(&mut self.pending_actions) {
@@ -2269,6 +2555,7 @@ impl TerminalWidget {
                 tracing::warn!(%error, "terminal session record refused a change");
             }
         }
+        self.record_runs(&dispatch, edits);
     }
 
     /// Queue a session change for the next sync.
@@ -2280,7 +2567,8 @@ impl TerminalWidget {
 
     /// Follow the session as its record holds it: where it runs, the relay
     /// session it re-attaches to and the pane presence is scoped to.
-    pub(crate) fn present_session(&mut self, state: &crate::resource::Terminal) {
+    pub(crate) fn present_session(&mut self, state: &std::rc::Rc<crate::resource::Terminal>) {
+        self.runs.session = Some(std::rc::Rc::clone(state));
         self.recorded_target = state.session_target();
         self.recorded_relay_session = state.relay().map(str::to_owned);
         if !state.pane_id().is_empty() {
@@ -6015,6 +6303,8 @@ pub struct TerminalBackend {
     /// For an environment on a relay: the session's id there, which
     /// re-attaches to it.
     pub relay_session: Option<String>,
+    /// The key the session's shell marks its command runs with, when it does.
+    pub runs: Option<String>,
     #[cfg(unix)]
     service_lifetime: Option<std::os::unix::net::UnixStream>,
     #[cfg(windows)]
@@ -6031,6 +6321,7 @@ impl TerminalBackend {
             master: Box::new(NullMaster),
             shell_name: "test".into(),
             relay_session: None,
+            runs: None,
             service_lifetime: None,
         }
     }
@@ -6075,11 +6366,19 @@ impl TerminalBackend {
             ConfineRoute::SelfHosted(bin) => {
                 let mut cmd = CommandBuilder::new(&bin);
                 cmd.arg("run");
-                if !program.is_empty() {
+                // The runtime's interactive bash marks its runs with this
+                // session's key, as it does for the supervisor's sessions.
+                let key = program.is_empty().then(crate::runs::new_key);
+                if let Some(key) = &key {
+                    cmd.env("TILO_USH_RUNS", key);
+                } else {
                     cmd.arg("-c");
                     cmd.arg(exec_script(&program));
                 }
-                Self::with_command(cmd).map_err(|error| OpenError::Failed(error.to_string()))
+                let mut backend = Self::with_command(cmd)
+                    .map_err(|error| OpenError::Failed(error.to_string()))?;
+                backend.runs = key;
+                Ok(backend)
             }
             ConfineRoute::Host => {
                 if requested_by == Requester::Agent {
@@ -6133,6 +6432,7 @@ impl TerminalBackend {
             master: pair.master,
             shell_name,
             relay_session: None,
+            runs: None,
             #[cfg(unix)]
             service_lifetime: None,
             #[cfg(windows)]
@@ -6506,6 +6806,7 @@ pub(crate) fn ush_request(
     target: &crate::target::SessionTarget,
     requested_by: Requester,
     relay_session: Option<&str>,
+    runs: Option<&str>,
     (cols, rows): (u16, u16),
 ) -> Result<Vec<u8>, OpenError> {
     let wire_target = target.to_supervisor().ok_or_else(|| {
@@ -6526,6 +6827,9 @@ pub(crate) fn ush_request(
         if let Some(session) = relay_session {
             fields.insert("relay_session".to_string(), serde_json::json!(session));
         }
+        if let Some(key) = runs {
+            fields.insert("runs".to_string(), serde_json::json!(key));
+        }
     }
     let mut request =
         serde_json::to_vec(&request).map_err(|error| OpenError::Failed(error.to_string()))?;
@@ -6543,7 +6847,15 @@ pub(crate) fn ush_backend_on(
 ) -> Result<TerminalBackend, OpenError> {
     use std::os::fd::AsRawFd;
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
-    let request = ush_request(program, target, requested_by, relay_session, (80, 24))?;
+    let key = crate::runs::new_key();
+    let request = ush_request(
+        program,
+        target,
+        requested_by,
+        relay_session,
+        Some(&key),
+        (80, 24),
+    )?;
     {
         let mut w = stream;
         w.write_all(&request).map_err(|e| failed(&e))?;
@@ -6567,6 +6879,7 @@ pub(crate) fn ush_backend_on(
         master: Box::new(FdMaster { file: master }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: granted_relay_session(&payload),
+        runs: marks_runs(&payload).then_some(key),
         service_lifetime: Some(stream.try_clone().map_err(|e| failed(&e))?),
     })
 }
@@ -6582,6 +6895,29 @@ pub(crate) fn granted_relay_session(payload: &[u8]) -> Option<String> {
         .ok()?
         .relay_session
         .filter(|session| session.len() == 32 && session.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Whether a supervisor's answer says the session's shell marks its runs
+/// with the key the request named.
+pub(crate) fn marks_runs(payload: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Reply {
+        #[serde(default)]
+        runs: bool,
+    }
+    serde_json::from_slice::<Reply>(payload).is_ok_and(|reply| reply.runs)
+}
+
+/// Settle a run asked for as failed for good: it did not run, and will not.
+fn fail_run(asked: crate::runs::Asked, reason: &str) {
+    let settled = ui::tilo_resource::Settled::Failed {
+        reason: reason.to_owned(),
+        partial: crate::resource::RunAnswer::default(),
+    };
+    asked.reply.finish(Ok(ui::tilo_actions::ActionOutput {
+        value: serde_json::to_value(settled).ok(),
+        resources: Vec::new(),
+    }));
 }
 
 /// What a supervisor reply without a descriptor means.
@@ -6717,6 +7053,7 @@ impl TerminalWidget {
         self.session_status_message =
             Arc::new(Mutex::new("Session ended — input unavailable".into()));
         self.begin_local_session();
+        self.runs.marks = backend.runs.map(crate::runs::Marks::new);
         let widget = self;
         #[cfg(unix)]
         {

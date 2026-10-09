@@ -32,7 +32,10 @@
 
 pub mod actions;
 mod graphics;
+pub mod history;
+pub mod parse;
 pub mod resource;
+pub mod runs;
 mod scenarios;
 pub mod screen;
 pub mod target;
@@ -77,6 +80,8 @@ pub fn demo_session_input() -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod run_tests;
 #[cfg(test)]
 mod target_tests;
 #[cfg(test)]
