@@ -1584,7 +1584,7 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
 /// policy's reason; without the grant both refuse for lack of permission.
 #[test]
 fn delegated_inviter_follows_the_capability_policy() {
-    use crate::shell::invite_policy::{InviteRefusal, InviteRoute, may_issue_invitation};
+    use crate::shell::invite_policy::{InviteRefusal, InviteRoute, active_invite_route};
     use crate::shell::state::{CapOverride, PeerOrigin, RoomAuthority, Scope, Subject, Verb};
 
     let mut tree = WorkspaceTree::default();
@@ -1604,15 +1604,11 @@ fn delegated_inviter_follows_the_capability_policy() {
     let handle = tree.shared();
     let chrome = ChromeState::new_with_handle(handle.clone());
     chrome.borrow_mut().peer_sync_enabled = true;
-    let host =
-        ShellOverlayHost::with_fixture_content(Box::new(Container::new())).with_chrome(chrome);
+    let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(chrome.clone());
     let (net, _commands) = crate::shell::network::shell_network_for_test(handle.clone(), 0x354);
     let carol = crate::shell::state::local_user_id_for_room(&room);
-    let route = || {
-        let tree = handle.read();
-        let workspace = tree.desktop.active_workspace().expect("active workspace");
-        may_issue_invitation(&tree, workspace, workspace.actor_for_person(&carol))
-    };
+    let route = || active_invite_route(&chrome.borrow()).expect("active workspace");
     let issue = || {
         net.issue_invite_named_with_role(
             local,
