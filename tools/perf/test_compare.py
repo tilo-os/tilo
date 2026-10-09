@@ -75,6 +75,42 @@ class Relative(unittest.TestCase):
         [after] = compare.compare([make(20.5, 7)], past + [accepted.record], NO_BUDGETS, set(), set())
         self.assertEqual((after.status, after.record.verdict["baseline_p50"]), ("pass", 20))
 
+    @staticmethod
+    def noisy(min_runs: int = 3) -> compare.Budgets:
+        return compare.Budgets(dict(compare.DEFAULTS), {"render.frame_ms.4k": {
+            "unit": "ms", "max": 1000.0, "baseline_min_runs": min_runs}})
+
+    def test_a_short_baseline_is_not_compared(self):
+        # One quiet night is not a median: a noisy second night is not a regression.
+        [early] = compare.compare([make(5, 2)], history(1), self.noisy(), set(), set())
+        self.assertEqual((early.status, early.failing), ("new", False))
+        self.assertEqual(early.record.verdict["baseline_n"], 1)
+        self.assertNotIn("baseline_p99", early.record.verdict)
+        self.assertIn("baseline 1 of 3 runs", early.note)
+        # With three runs the same value is judged.
+        [judged] = compare.compare([make(5, 4)], history(1, 1, 1), self.noisy(), set(), set())
+        self.assertEqual((judged.status, judged.record.verdict["baseline_n"]), ("regression-pending", 3))
+
+    def test_runs_building_the_baseline_enter_it(self):
+        past = history(10)
+        for day in (2, 3):
+            [row] = compare.compare([make(30, day)], past, self.noisy(), set(), set())
+            self.assertEqual(row.status, "new")
+            past.append(row.record)
+        [third] = compare.compare([make(31, 4)], past, self.noisy(), set(), set())
+        self.assertEqual((third.status, third.record.verdict["baseline_n"]), ("pass", 3))
+        self.assertEqual(third.record.verdict["baseline_p50"], 30)
+
+    def test_an_accepted_run_is_a_baseline_at_once(self):
+        [accepted] = compare.compare([make(10, 1)], [], self.noisy(), set(), {"render.frame_ms.4k"})
+        [after] = compare.compare([make(20, 2)], [accepted.record], self.noisy(), set(), set())
+        self.assertEqual((after.status, after.record.verdict["baseline_n"]), ("regression-pending", 1))
+
+    def test_by_default_one_run_is_a_baseline(self):
+        # Deterministic KPIs (bytes) keep the one-run comparison.
+        [row] = compare.compare([make(12.5, 2)], history(10), NO_BUDGETS, set(), set())
+        self.assertEqual((row.status, row.record.verdict["baseline_n"]), ("regression-pending", 1))
+
     def test_a_unit_change_fails(self):
         past = [record.from_samples("render.frame_ms.4k", "us", [1], started_at="2026-10-01T00:00:00Z", **ENV)]
         [row] = compare.compare([make(1, 6)], past, NO_BUDGETS, set(), set())
@@ -130,6 +166,8 @@ class Budgets(unittest.TestCase):
         budgets = compare.load_budgets(compare.BUDGETS)
         self.assertEqual(budgets.defaults["p50_tolerance"], 1.10)
         self.assertEqual(budgets.defaults["p99_tolerance"], 1.20)
+        self.assertEqual(budgets.defaults["baseline_min_runs"], 1)
+        self.assertEqual(budgets.setting("latency.workspace_switch.dropped_frames", "baseline_min_runs"), 3)
         self.assertIn("footprint.tapp.bytes.x86_64", budgets.kpis)
 
 
