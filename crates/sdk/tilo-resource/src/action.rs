@@ -702,6 +702,19 @@ impl<R: Resource> Invoke<R> {
         })
     }
 
+    /// The field edit `edit`, or an invocation that refuses when it does
+    /// not encode: [`Self::edit`] where an `Invoke` is expected
+    /// (`replica.apply(paths.count.set(42))`).
+    fn from_edit(edit: &crate::Edit<R>) -> Self {
+        Self::edit(edit).unwrap_or_else(|error| Self {
+            id: crate::FIELD_EDIT,
+            arguments: serde_json::Map::new(),
+            refusal: Some(error.to_string()),
+            effect: false,
+            marker: PhantomData,
+        })
+    }
+
     /// Select the audited low-risk door when this exact value is opted in.
     /// The target independently revalidates the decoded value.
     ///
@@ -771,6 +784,18 @@ impl<R: Resource> Invoke<R> {
             return Err(refusal.clone());
         }
         crate::resource::build_action::<R>(self.id, &self.arguments, now_ms)
+    }
+}
+
+impl<R: Resource> From<crate::Edit<R>> for Invoke<R> {
+    fn from(edit: crate::Edit<R>) -> Self {
+        Self::from_edit(&edit)
+    }
+}
+
+impl<R: Resource> From<&crate::Edit<R>> for Invoke<R> {
+    fn from(edit: &crate::Edit<R>) -> Self {
+        Self::from_edit(edit)
     }
 }
 

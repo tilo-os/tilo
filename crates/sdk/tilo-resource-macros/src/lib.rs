@@ -28,7 +28,8 @@ fn krate() -> Tokens {
 ///   marked `#[default]` is the value of an absent slot.
 ///
 /// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
-/// stored; `Default::default()` on read).
+/// stored; the containing type's `Default` on read), `#[model(atom)]` on a
+/// `String` (written whole, last writer wins, as `Atom` is).
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
 /// (History restore) reconcile it field by field.
@@ -101,6 +102,7 @@ struct FieldOptions {
     label: bool,
     readonly: bool,
     unit: bool,
+    atom: bool,
 }
 
 fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
@@ -118,9 +120,12 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.readonly = true;
             } else if meta.path.is_ident("unit") {
                 options.unit = true;
+            } else if meta.path.is_ident("atom") {
+                options.atom = true;
             } else {
-                return Err(meta
-                    .error("expected `skip`, `rename = \"...\"`, `label`, `readonly` or `unit`"));
+                return Err(meta.error(
+                    "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit` or `atom`",
+                ));
             }
             Ok(())
         })?;
@@ -405,9 +410,12 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         let options = field_options(&field.attrs)?;
         let key = options.rename.clone().unwrap_or_else(|| ident.to_string());
         if options.skip {
-            reads.push(quote!(#ident: ::core::default::Default::default()));
-            missing.push(quote!(#ident: ::core::default::Default::default()));
-            from_json.push(quote!(#ident: ::core::default::Default::default()));
+            // The containing type's default, which may differ from the
+            // field type's (`is_admin: true`).
+            let default = quote!(<Self as ::core::default::Default>::default().#ident);
+            reads.push(quote!(#ident: #default));
+            missing.push(quote!(#ident: #default));
+            from_json.push(quote!(#ident: #default));
             continue;
         }
         let field_name = ident.to_string();
@@ -428,13 +436,36 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
             label = Some(ident.clone());
         }
-        reads.push(quote!(#ident: #krate::read_key::<#ty>(doc, obj, #key)?));
-        missing.push(quote!(
-            #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
-        ));
-        writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
-        refreshes
-            .push(quote!(#krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;));
+        if options.atom {
+            // A `String` written whole, last writer winning: an id or a
+            // name two people setting at once must not interleave.
+            let atom = quote!(#krate::Atom);
+            reads.push(quote!(#ident: #krate::read_key::<#atom>(doc, obj, #key)?.0));
+            missing.push(quote!(
+                #ident: <#atom as #krate::Model>::missing().map_err(|error| error.at(#key))?.0
+            ));
+            writes.push(quote!(#krate::write_key::<#atom>(
+                doc,
+                obj,
+                #key,
+                &#krate::Atom(::core::clone::Clone::clone(&self.#ident)),
+            )?;));
+            refreshes.push(quote! {
+                let mut atom = #krate::Atom(::core::mem::take(&mut self.#ident));
+                let refreshed = #krate::refresh_key::<#atom>(&mut atom, doc, obj, #key, delta);
+                self.#ident = atom.0;
+                refreshed?;
+            });
+        } else {
+            reads.push(quote!(#ident: #krate::read_key::<#ty>(doc, obj, #key)?));
+            missing.push(quote!(
+                #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
+            ));
+            writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
+            refreshes.push(
+                quote!(#krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;),
+            );
+        }
         texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
         get_arms.push(quote!(#key => #krate::Model::get_at(&self.#ident, rest),));
         op_coalesce_arms
@@ -492,6 +523,15 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                     ::std::format!("`{}` is changed only by the record's actions", #field_name),
                 ));
             }));
+        } else if options.atom {
+            edit_arms.push(quote!(#key => <#krate::Atom as #krate::Model>::edit(
+                doc,
+                #krate::Slot::Key(obj, #key),
+                rest,
+                op,
+                cx,
+            )
+            .map_err(|error| error.at(#key))?,));
         } else {
             edit_arms.push(quote!(#key => <#ty as #krate::Model>::edit(
                 doc,

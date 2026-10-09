@@ -5,6 +5,8 @@
 
 #[path = "evolution.rs"]
 pub mod evolution;
+#[path = "fields.rs"]
+pub mod fields;
 #[path = "golden_path.rs"]
 pub mod golden_path;
 #[path = "incremental.rs"]
