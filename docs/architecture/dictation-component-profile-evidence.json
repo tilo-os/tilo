@@ -330,5 +330,26 @@
     "focused_recognition_tests_result": "passed",
     "actual_aot_empty_draft_and_final": "passed"
   },
-  "next_accuracy_option": "Compare an already-pinned stronger multilingual model using unbiased recorded inputs and the same bounded hardware-isolated scope; previous small-model comparison failed the stricter 1 GiB address-space experiment. No reference-aware vocabulary or output replacement."
+  "next_accuracy_option": {
+    "candidate": "whisper-small-q5_1-multilingual",
+    "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+    "model_sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+    "model_bytes": 190085487,
+    "license": "MIT",
+    "existing_evidence": "docs/architecture/dictation-small-allocation-qualification.json",
+    "earlier_same_german_clip_conditional_production_source": {
+      "errors": 0,
+      "reference_units": 18,
+      "first_partial_ms": 7246.112906001144,
+      "worker_peak_rss_kib": 446896,
+      "scope_peak_bytes": 811646976,
+      "public_vocabulary": [
+        "TiLo"
+      ],
+      "input_pcm_sha256": "fe4d2a3b4113fb327094d0628ff7ed07e40726c1ab20564d01d3a745cba349b0"
+    },
+    "scope": "Earlier source and source-paced transport, not the current matching compositor build; related strict non-flash/1 GiB experiments failed before producing a final. Do not call all Small experiments failed.",
+    "next_step": "Restore the already-reviewed pinned artifact into an ephemeral fixture and requalify the current sealed-descriptor worker on the fixed German PCM with no vocabulary, using unchanged 1 GiB worker address-space and two CPU threads before any new compositor journey. Compare accuracy and preview latency rather than treating Small as a faster model.",
+    "publication_installation_deployment_authorized": false
+  }
 }

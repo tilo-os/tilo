@@ -2539,10 +2539,17 @@ and explicit German (33.3% raw WER). The unchanged original compositor German
 control remains failed at 27.8%. Capture is not required to reproduce the
 recognition defect; the inspected bridge passes the language correctly and
 calls the pinned decoder without reference-aware text replacement. A next
-accuracy comparison can use an already-pinned stronger multilingual model
-under the same bounded scope; its previous strict 1 GiB comparison failed
-before producing a usable result. No catalogue, runtime publication or
-persistent deployment is authorized by this evidence.
+accuracy comparison has a specific existing candidate: pinned Whisper Small
+Q5 (`ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb`).
+The earlier [conditional allocation ledger](dictation-small-allocation-qualification.json)
+records 0/18 German errors on this same clip, but first preview takes 7.246
+seconds and worker RSS peaks at 446,896 KiB. This is a separate older source
+and source-paced transport with the unrelated public spelling `TiLo`; it is
+not current compositor acceptance. Non-flash strict-cap experiments also
+failed, so neither blanket failure nor current success is warranted. Recheck
+the current sealed worker on fixed German PCM with no vocabulary and unchanged
+1 GiB worker/two-thread limits before selecting that accuracy/latency tradeoff.
+No catalogue, runtime publication or persistent deployment is authorized.
 
 See [component evidence](dictation-component-profile-evidence.json) and
 [historical drivers](../../tools/release/fixtures/whistle_components_20261009/README.md).
