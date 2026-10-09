@@ -57,7 +57,19 @@ pub struct McpServer<H> {
     /// decides every invocation, and one it refuses as not offered lists
     /// them again ([`Self::invoke_one`]).
     seen: std::sync::Mutex<std::collections::HashMap<u64, Option<String>>>,
+    /// Turns for the session's requests that work ([`Self::turn`]).
+    working: tokio::sync::Semaphore,
+    /// Places for the session's requests that work or wait for a turn.
+    admitted: tokio::sync::Semaphore,
 }
+
+/// A session's requests that work at once; more wait for a turn. One agent
+/// cannot occupy the host with every call it can send.
+pub(crate) const MAX_WORKING: usize = 16;
+/// A session's requests that work or wait for a turn; more are refused at
+/// once, so a flood of calls neither queues without end nor makes the one
+/// that cancels wait behind it.
+pub(crate) const MAX_ADMITTED: usize = 64;
 
 /// Where an answer carries the images it shows until [`tool_result`] moves
 /// them out of the JSON and into MCP image blocks. Not a valid JSON key an
@@ -420,6 +432,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             produced_by: std::sync::Mutex::default(),
             shown: std::sync::Mutex::default(),
             seen: std::sync::Mutex::default(),
+            working: tokio::sync::Semaphore::new(MAX_WORKING),
+            admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
         }
     }
     pub(crate) fn execution_caller(&self) -> Caller {
@@ -955,6 +969,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 ));
             }
         }
+        let _turn = match self.turn(method, &params).await {
+            Ok(turn) => turn,
+            Err(message) => return Some(error(&id, -32000, message)),
+        };
         let result = match method {
             "initialize" => match self.initialize(&params) {
                 Ok(result) => Ok(result),
@@ -996,6 +1014,35 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(value) => json!({"jsonrpc":"2.0","id":id,"result":value}),
             Err(e) => error(&id, -32602, &e),
         })
+    }
+    /// The turn a request of this session works in: at most [`MAX_WORKING`]
+    /// work at once, and at most [`MAX_ADMITTED`] work or wait, beyond which
+    /// a request is refused rather than queued. A request that only reads
+    /// the session or stops one of its invocations (`tilo_status`,
+    /// `tilo_cancel`, `ping`, `tools/list`, `initialize`) needs no turn: it
+    /// never waits behind the calls it is about.
+    async fn turn(
+        &self,
+        method: &str,
+        params: &Value,
+    ) -> Result<Option<[tokio::sync::SemaphorePermit<'_>; 2]>, &'static str> {
+        let immediate = match method {
+            "initialize" | "ping" | "tools/list" => true,
+            "tools/call" => matches!(
+                params.get("name").and_then(Value::as_str),
+                Some("tilo_status" | "tilo_cancel")
+            ),
+            _ => false,
+        };
+        if immediate {
+            return Ok(None);
+        }
+        let admitted = self
+            .admitted
+            .try_acquire()
+            .map_err(|_| "too many requests in flight for this session")?;
+        let working = self.working.acquire().await.map_err(|_| "session closed")?;
+        Ok(Some([admitted, working]))
     }
     /// Negotiate the protocol version and take the client's page detail.
     fn initialize(&self, params: &Value) -> Result<Value, &'static str> {

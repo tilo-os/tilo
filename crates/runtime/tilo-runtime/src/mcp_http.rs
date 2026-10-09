@@ -614,4 +614,4 @@ pub fn spawn<H: ActionHost + Clone + Send + Sync + 'static>(
 
 #[cfg(test)]
 #[path = "mcp_http_tests.rs"]
-mod tests;
+pub(crate) mod tests;
