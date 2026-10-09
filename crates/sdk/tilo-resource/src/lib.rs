@@ -188,6 +188,47 @@ pub mod __private {
         schema
     }
 
+    /// `Some(T::default())` when `T` is `Default`, else `None`, decided
+    /// where `T` is concrete: `(&DefaultOf::<T>::new()).default_value()`
+    /// with [`HasDefault`] and [`NoDefault`] in scope. A skipped field reads
+    /// as its containing type's default this way.
+    pub struct DefaultOf<T>(::core::marker::PhantomData<T>);
+
+    impl<T> DefaultOf<T> {
+        #[must_use]
+        pub const fn new() -> Self {
+            Self(::core::marker::PhantomData)
+        }
+    }
+
+    impl<T> Default for DefaultOf<T> {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    /// See [`DefaultOf`].
+    pub trait HasDefault<T> {
+        fn default_value(&self) -> Option<T>;
+    }
+
+    impl<T: Default> HasDefault<T> for DefaultOf<T> {
+        fn default_value(&self) -> Option<T> {
+            Some(T::default())
+        }
+    }
+
+    /// See [`DefaultOf`].
+    pub trait NoDefault<T> {
+        fn default_value(&self) -> Option<T>;
+    }
+
+    impl<T> NoDefault<T> for &DefaultOf<T> {
+        fn default_value(&self) -> Option<T> {
+            None
+        }
+    }
+
     /// The type of a parameter whose Rust type the macros cannot read
     /// (an app's own enum or struct): what its schema says it is written as.
     /// A unit enum is text, a struct an object; a value written in several

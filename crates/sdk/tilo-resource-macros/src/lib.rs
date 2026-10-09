@@ -410,9 +410,15 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         let options = field_options(&field.attrs)?;
         let key = options.rename.clone().unwrap_or_else(|| ident.to_string());
         if options.skip {
-            // The containing type's default, which may differ from the
-            // field type's (`is_admin: true`).
-            let default = quote!(<Self as ::core::default::Default>::default().#ident);
+            // The containing type's default when it has one, which may
+            // differ from the field type's (`is_admin: true`).
+            let default = quote!({
+                #[allow(unused_imports, reason = "one of the two applies")]
+                use #krate::__private::{HasDefault as _, NoDefault as _};
+                (&#krate::__private::DefaultOf::<Self>::new())
+                    .default_value()
+                    .map_or_else(::core::default::Default::default, |value: Self| value.#ident)
+            });
             reads.push(quote!(#ident: #default));
             missing.push(quote!(#ident: #default));
             from_json.push(quote!(#ident: #default));
