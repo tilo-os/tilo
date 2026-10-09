@@ -21,9 +21,13 @@ use syn::visit_mut::VisitMut;
 /// read or parsed.
 pub fn declared_by_app(app_dir: &Path) -> Result<Vec<String>> {
     let metadata = crate::cargo_metadata(app_dir)?;
+    declared_with_metadata(app_dir, &metadata)
+}
+
+pub(crate) fn declared_with_metadata(app_dir: &Path, metadata: &Value) -> Result<Vec<String>> {
     let mut kinds = Kinds::default();
     visit_sources(&app_dir.join("src"), &mut kinds)?;
-    for dependency in local_dependencies(&metadata)? {
+    for dependency in local_dependencies(metadata)? {
         visit_sources(&dependency.join("src"), &mut kinds)?;
     }
     Ok(kinds.0.into_iter().collect())

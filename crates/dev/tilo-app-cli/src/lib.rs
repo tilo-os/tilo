@@ -5057,7 +5057,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
 
     let staged_package = staging.path().join("package.tapp");
     let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
-    let resource_kinds = resource_kinds::declared_by_app(&spec.app_dir)?;
+    let resource_kinds = package_resources(&spec, request, &built, triple.as_deref())?;
     let mut manifest = signed_manifest(
         &spec,
         request,
@@ -5246,6 +5246,18 @@ pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuil
 /// Where the package goes: `--output`, or `dist/<package>.tapp` (with the
 /// platform and architecture for a desktop build). Refuses to replace an
 /// existing file without `force`, and creates the directory.
+fn package_resources(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    built: &HashMap<String, PathBuf>,
+    triple: Option<&str>,
+) -> Result<Vec<String>> {
+    match request.sdk.as_ref().filter(|sdk| sdk.compiler.is_some()) {
+        Some(sdk) => native_sdk::compiler::declared_resources(sdk, built, &spec.app_dir, triple),
+        None => resource_kinds::declared_by_app(&spec.app_dir),
+    }
+}
+
 fn package_output(
     spec: &AppPackageSpec,
     request: &PackageRequest,
@@ -5570,6 +5582,13 @@ fn build_entrypoints(
     plan: &BuildPlan<'_>,
     request: &PackageRequest,
 ) -> Result<HashMap<String, PathBuf>> {
+    if request
+        .sdk
+        .as_ref()
+        .is_some_and(|sdk| sdk.compiler.is_some())
+    {
+        return native_sdk::compiler::build(spec, plan, request);
+    }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = ProcessCommand::new(&cargo);
     command

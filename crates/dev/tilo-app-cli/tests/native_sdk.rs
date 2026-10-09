@@ -115,6 +115,7 @@ fn prepare_fixture(temp: &Path) -> NativeFixture {
     std::fs::write(&key, identity.to_json_bytes()).unwrap();
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
     let placeholder = SdkSelection {
+        compiler: None,
         bundle: temp.join("bundles"),
         publisher: identity.public_key_hex(),
         root: "0".repeat(64),
@@ -146,6 +147,7 @@ fn prepare_fixture(temp: &Path) -> NativeFixture {
     )
     .unwrap();
     let selection = SdkSelection {
+        compiler: None,
         bundle,
         publisher: identity.public_key_hex(),
         root: manifest.root_hash.clone(),
@@ -200,6 +202,7 @@ fn assert_refusals(fixture: &NativeFixture) {
     )
     .unwrap();
     let wrong = SdkSelection {
+        compiler: None,
         bundle: wrong_bundle,
         publisher: fixture.selection.publisher.clone(),
         root: wrong_manifest.root_hash,

@@ -90,6 +90,7 @@ fn verified_snapshot_cannot_follow_later_mutation_of_the_selected_sdk() {
     )
     .unwrap();
     let selected = SdkSelection {
+        compiler: None,
         bundle: bundle.clone(),
         publisher: identity.public_key_hex(),
         root: manifest.root_hash,
