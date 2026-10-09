@@ -161,6 +161,7 @@ fn connection_fixture() -> (Chrome, ShellOverlayHost, crate::shell::status::Stat
             ssid: "Old observed AP".into(),
             signal: 2,
             secure: true,
+            security: os_actions::WifiSecurity::Wpa2,
             connected: false,
         }];
     }

@@ -3889,6 +3889,7 @@ mod tests {
                 ssid: "fixture".into(),
                 signal: 1,
                 secure: false,
+                security: os_actions::WifiSecurity::Open,
                 connected: false,
             })
             .collect();
