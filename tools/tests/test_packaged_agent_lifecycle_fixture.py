@@ -26,31 +26,84 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_message_phase_reads_only_exact_request_description(self):
+        access = {"bus": "owned", "window": "/window"}
+        client = PROOF.atspi.AtspiClient("address", "owned")
+        for name, description, expected in (
+                ("Person: PRIVATE-DRAFT", "Waiting for reply", True),
+                ("Person: OTHER-DRAFT", "Waiting for reply", False),
+                ("Person: PRIVATE-DRAFT", "Waiting for reply. Other status", False),
+                ("Person: PRIVATE-DRAFT", "Publishing reply", False)):
+            with self.subTest(name=name, description=description), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                    patch.object(PROOF, "accessible_subtree",
+                                 return_value={"/messages": "(<'Messages'>,)"}), \
+                    patch.object(client, "call", return_value="['/request']"), \
+                    patch.object(client, "property", side_effect=lambda path, field:
+                                 f"(<'{name if field == 'Name' else description}'>,)") as read:
+                self.assertEqual(PROOF.message_phase_accessibility(
+                    access, "PRIVATE-DRAFT", "Waiting for reply"), expected)
+                if name == "Person: OTHER-DRAFT":
+                    self.assertEqual(read.call_args_list, [call("/request", "Name")])
+
+    def test_message_phase_duplicate_request_refuses_and_only_known_stale_retries(self):
+        access = {"process": 7, "bus": "owned", "agent": "Tide",
+                  "detached": False, "window": "/window"}
+        client = PROOF.atspi.AtspiClient("address", "owned")
+        tree = {"/messages": "(<'Messages'>,)"}
+        stale = PROOF.atspi.GateError(
+            "call failed: Error: GDBus.Error:org.freedesktop.DBus.Error.UnknownObject: retired")
+        with patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                patch.object(PROOF, "accessible_subtree", side_effect=[stale, tree]), \
+                patch.object(client, "call", return_value="['/request']"), \
+                patch.object(client, "property", side_effect=[
+                    "(<'Person: PRIVATE-DRAFT'>,)", "(<'Waiting for reply'>,)"]), \
+                patch.object(PROOF.time, "sleep"):
+            self.assertEqual(PROOF.wait_for_current_message_phase_accessibility(
+                access, "PRIVATE-DRAFT", "Waiting for reply", None), access)
+        with patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF, "accessible_subtree", return_value=tree), \
+                patch.object(client, "call", return_value="['/request', '/duplicate']"), \
+                patch.object(client, "property", return_value="(<'Person: PRIVATE-DRAFT'>,)") as read:
+            with self.assertRaisesRegex(RuntimeError, "duplicate saved request rows"):
+                PROOF.message_phase_accessibility(access, "PRIVATE-DRAFT", "Waiting for reply")
+            self.assertTrue(all(args.args[1] == "Name" for args in read.call_args_list))
+        with patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF, "accessible_subtree",
+                             side_effect=PROOF.atspi.GateError("unrelated transport refusal")):
+            with self.assertRaises(PROOF.atspi.GateError):
+                PROOF.message_phase_accessibility(access, "PRIVATE-DRAFT", "Waiting for reply")
+
     def test_current_message_phase_refreshes_retired_accessibility_snapshot(self):
         owner = {"process": 7, "bus": "owned", "agent": "Tide",
                  "detached": False, "window": "retired"}
         current = {**owner, "window": "current"}
         with patch.object(PROOF, "agent_conversation_accessibility",
                           side_effect=[owner, current]) as discover, \
-                patch.object(PROOF, "task_phase_accessibility",
+                patch.object(PROOF, "message_phase_accessibility",
                              side_effect=[False, True]) as phase, \
                 patch.object(PROOF.time, "sleep"):
             self.assertEqual(PROOF.wait_for_current_message_phase_accessibility(
-                owner, "Waiting for reply", None), current)
+                owner, "PRIVATE-DRAFT", "Waiting for reply", None), current)
             self.assertEqual(discover.call_args_list, [call("Tide"), call("Tide")])
             self.assertEqual(phase.call_args_list,
-                             [call(owner, "Waiting for reply"),
-                              call(current, "Waiting for reply")])
+                             [call(owner, "PRIVATE-DRAFT", "Waiting for reply"),
+                              call(current, "PRIVATE-DRAFT", "Waiting for reply")])
 
     def test_current_message_phase_missing_label_expires_without_skipping(self):
         owner = {"process": 7, "bus": "owned", "agent": "Tide", "detached": False}
         with patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
-                patch.object(PROOF, "task_phase_accessibility", return_value=False) as phase, \
+                patch.object(PROOF, "message_phase_accessibility", return_value=False) as phase, \
                 patch.object(PROOF.time, "sleep"), \
                 patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
             with self.assertRaises(PROOF.ProofTimeout):
                 PROOF.wait_for_current_message_phase_accessibility(
-                    owner, "Waiting for reply", None)
+                    owner, "PRIVATE-DRAFT", "Waiting for reply", None)
             self.assertEqual(phase.call_count, 3)
 
     def test_current_message_phase_refuses_foreign_route_before_label_read(self):
@@ -60,10 +113,10 @@ class PresentedEditorTargetTests(unittest.TestCase):
             with self.subTest(changed=changed), \
                     patch.object(PROOF, "agent_conversation_accessibility",
                                  return_value={**owner, **changed}), \
-                    patch.object(PROOF, "task_phase_accessibility") as phase:
+                    patch.object(PROOF, "message_phase_accessibility") as phase:
                 with self.assertRaisesRegex(RuntimeError, "changed the owned Chat route"):
                     PROOF.wait_for_current_message_phase_accessibility(
-                        owner, "Waiting for reply", None)
+                        owner, "PRIVATE-DRAFT", "Waiting for reply", None)
                 phase.assert_not_called()
 
     def test_physical_message_admission_observes_lagging_canonical_projection(self):

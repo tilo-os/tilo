@@ -5495,7 +5495,42 @@ def wait_for_physical_message_admission(socket, room, record, draft, process, id
     return wait_for("physical Message's original saved owner projection", observe, process)
 
 
-def wait_for_current_message_phase_accessibility(owner, label, process):
+def message_phase_accessibility(access, draft, label):
+    """Read the phase description of only this uniquely saved request's AT row."""
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    try:
+        tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+        lists = client.named(tree, "Messages")
+        if len(lists) > 1:
+            raise RuntimeError("the owned conversation has duplicate Messages lists")
+        if not lists:
+            return False
+        children = client.call(lists[0], "org.a11y.atspi.Accessible.GetChildren")
+        matches = []
+        suffix = ": " + draft
+        for path in dict.fromkeys(atspi.PATH_RE.findall(children)):
+            name = atspi.property_text(client.property(path, "Name"))
+            if name is None:
+                raise RuntimeError("the saved request accessibility name is unobservable")
+            if name.endswith(suffix) and len(name) > len(suffix):
+                matches.append(path)
+        if len(matches) > 1:
+            raise RuntimeError("the owned conversation has duplicate saved request rows")
+        if not matches:
+            return False
+        description = atspi.property_text(client.property(matches[0], "Description"))
+        if description is None:
+            raise RuntimeError("the saved request accessibility description is unobservable")
+        return description == label
+    except atspi.GateError as error:
+        if not re.search(
+                r" failed: Error: GDBus\.Error:org\.freedesktop\.DBus\.Error\.UnknownObject:",
+                str(error)):
+            raise
+        return False
+
+
+def wait_for_current_message_phase_accessibility(owner, draft, label, process):
     """Observe current public phase on the same owned, attached Chat route."""
     def observe():
         current = agent_conversation_accessibility(owner["agent"])
@@ -5505,7 +5540,7 @@ def wait_for_current_message_phase_accessibility(owner, label, process):
                for field in ("process", "bus", "agent", "detached")) \
                 or current.get("detached") is not False:
             raise RuntimeError("physical Message phase changed the owned Chat route")
-        return current if task_phase_accessibility(current, label) else None
+        return current if message_phase_accessibility(current, draft, label) else None
 
     return wait_for("mounted original Message's current public phase", observe, process)
 
@@ -5575,7 +5610,8 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
              lambda: private_editor_value_matches(access, ""), process)
     waiting = wait_for("mounted Chat's original WaitingForReply",
                        lambda: chat_public_message_progress(sample(), original, "waiting_for_reply"), process)
-    access = wait_for_current_message_phase_accessibility(access, "Waiting for reply", process)
+    access = wait_for_current_message_phase_accessibility(
+        access, draft, "Waiting for reply", process)
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"physical-send-waiting-{size}.png")}))
     provider.release_exact(4)
     reply = wait_for("same Agent's canonical physical Send reply", lambda: agent_reply_observation(
