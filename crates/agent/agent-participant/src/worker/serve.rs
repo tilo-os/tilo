@@ -74,7 +74,7 @@ impl Worker {
             catalogue: AppCatalogue::native(),
             replica: None,
             views: None,
-            text: (mode == Mode::Read).then(ui::TextRenderer::new),
+            text: (mode == Mode::Read).then(resident_text_renderer),
             read: None,
         }
     }
@@ -253,6 +253,26 @@ impl Worker {
             Err(reason) => Reply::Failed(reason),
         }
     }
+}
+
+/// The toolkit's text renderer with every font face's data mapped now.
+///
+/// Font databases name system faces by path and open the file the first time
+/// a face is used; once confined, the worker can open no file, and a
+/// component would find no font to lay its text out in. So every face is
+/// mapped before the confinement, and shaping reads the mappings.
+fn resident_text_renderer() -> ui::TextRenderer {
+    let mut fonts = ui::configured_font_system();
+    let database = fonts.db_mut();
+    let faces: Vec<_> = database.faces().map(|face| face.id).collect();
+    for face in faces {
+        // SAFETY: maps an installed font file read-only. fontdb's caveat is
+        // that a file truncated while mapped faults on access; font files of
+        // the image are not rewritten under a running worker, and a fault
+        // costs only this worker.
+        let _ = unsafe { database.make_shared_face_data(face) };
+    }
+    ui::TextRenderer::with_font_system(fonts)
 }
 
 /// A record id as [`RecordId::as_str`] spells it.

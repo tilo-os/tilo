@@ -251,11 +251,10 @@ impl ConfinedReplica {
             arguments: serde_json::to_string(arguments).map_err(|e| unavailable(e.to_string()))?,
             confirm,
         };
-        let reply = {
-            let mut inner = self.lock();
-            inner.dirty = true;
-            self.call(&mut inner, &request)
-        };
+        let mut inner = self.lock();
+        inner.dirty = true;
+        let reply = self.call(&mut inner, &request);
+        drop(inner);
         match reply {
             Ok(Reply::Output(text)) => serde_json::from_str(&text)
                 .map_err(|error| DoorError::Failed(format!("the output did not decode: {error}"))),
