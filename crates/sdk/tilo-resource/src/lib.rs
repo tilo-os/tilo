@@ -157,9 +157,9 @@ pub use replica::Replica;
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, NoAction, Place, Resource,
     ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText,
-    SearchWeight, SharedRecord, bind_declaration, build_action, declaration_spec, default_search,
-    encode, need_of, origin_now_ms, publish, reset_type_schemas, scope_contains, spec_kind,
-    with_origin_clock,
+    SearchWeight, SharedRecord, bind_declaration, build_action, child_by_id, declaration_spec,
+    default_search, encode, need_of, origin_now_ms, publish, reset_type_schemas, scope_contains,
+    spec_kind, with_origin_clock,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape, StoredText, stored_text};

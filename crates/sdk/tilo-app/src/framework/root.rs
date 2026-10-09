@@ -1684,8 +1684,8 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
             R::read(doc).ok()
         };
         let child = match &current {
-            Some(current) => R::child(current, id),
-            None => R::child(&self.live.get(), id),
+            Some(current) => tilo_resource::child_by_id::<R>(current, doc, id),
+            None => tilo_resource::child_by_id::<R>(&self.live.get(), doc, id),
         };
         let mut row = None;
         self.surfaces(&mut |surface| {

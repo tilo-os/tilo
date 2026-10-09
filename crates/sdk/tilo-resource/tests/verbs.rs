@@ -776,3 +776,59 @@ fn an_edit_inside_a_missing_map_entry_starts_the_entry() {
     assert_eq!(report.note, "needs a key");
     assert_eq!(report.title, "");
 }
+
+/// Pages whose places are published only once a view loaded them.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Pages {
+    pub titles: Vec<String>,
+    #[model(skip)]
+    pub loaded: Vec<usize>,
+}
+
+#[resource(kind = "test.pages", label = "Pages", load = Pages::load_pages, children = Pages::places)]
+impl Pages {
+    /// Add a page.
+    #[action]
+    pub fn add_page(&mut self, title: String) {
+        self.titles.push(title);
+    }
+
+    #[allow(clippy::unnecessary_wraps, reason = "the load hook's signature")]
+    fn load_pages(
+        &mut self,
+        _doc: &tilo_resource::Doc,
+        demand: &tilo_resource::Demand,
+    ) -> Result<(), tilo_resource::ModelError> {
+        self.loaded = demand
+            .keys
+            .iter()
+            .filter_map(|key| key.strip_prefix('p')?.parse().ok())
+            .filter(|index| *index < self.titles.len())
+            .collect();
+        Ok(())
+    }
+
+    fn places(&self) -> Vec<Derived<Self>> {
+        self.loaded
+            .iter()
+            .map(|&index| {
+                Derived::new(self.titles[index].clone())
+                    .identified(format!("p{index}"))
+                    .in_field("pages")
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_place_not_loaded_still_resolves_by_id() {
+    let mut pages = Replica::<Pages>::new();
+    for title in ["Cover", "Contents", "Chapter one"] {
+        pages.apply(Pages::ADD_PAGE.with(title.to_owned())).unwrap();
+    }
+    let state = Pages::read(pages.doc()).unwrap();
+    let id = "test.pages/pages/p2";
+    assert!(Pages::child(&state, id).is_none(), "nothing is loaded");
+    let child = tilo_resource::child_by_id::<Pages>(&state, pages.doc(), id).expect("resolved");
+    assert_eq!(child.label, "Chapter one");
+}

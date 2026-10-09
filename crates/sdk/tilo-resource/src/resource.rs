@@ -1523,6 +1523,24 @@ pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> Enc
     }
 }
 
+/// The nested resource `id` of `state`, read from `doc` with `id` demanded
+/// when `state` has not loaded it: an item past what a view shows or a
+/// tree pages still resolves by id ([`Resource::child`], [`Resource::load`]).
+pub fn child_by_id<R: Resource>(
+    state: &R::State,
+    doc: &Doc,
+    id: &str,
+) -> Option<tilo_actions::Resource> {
+    R::child(state, id).or_else(|| {
+        let mut fresh = R::read(doc).ok()?;
+        // A child is published as `<kind>/<field>/<key>`; its record knows
+        // it by the key.
+        let key = id.rsplit('/').next().unwrap_or(id);
+        R::load(&mut fresh, doc, &Demand::none().with_keys([id, key])).ok()?;
+        R::child(&fresh, id)
+    })
+}
+
 /// An action whose payload cannot be decoded, so the host refuses it with
 /// the builder's reason instead of applying anything.
 pub(crate) fn refused(reason: &str) -> EncodedAction {

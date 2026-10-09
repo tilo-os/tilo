@@ -53,7 +53,7 @@ pub struct ResourceKind {
     name: fn(&dyn Any) -> Option<String>,
     publish: fn(&str, &str, &dyn Any) -> Option<tilo_actions::Resource>,
     search: fn(&dyn Any) -> Option<Vec<SearchEntry>>,
-    child: fn(&dyn Any, &str) -> Option<tilo_actions::Resource>,
+    child: fn(&dyn Any, &Doc, &str) -> Option<tilo_actions::Resource>,
     register: fn(&mut ActionRegistry),
     initialize: fn(&mut Doc) -> Result<(), ModelError>,
     encode: fn(serde_json::Value) -> Result<EncodedAction, String>,
@@ -85,8 +85,8 @@ fn publish<R: Resource>(id: &str, label: &str, state: &dyn Any) -> Option<tilo_a
         .map(|state| resource::publish::<R>(id, label, state))
 }
 
-fn child<R: Resource>(state: &dyn Any, id: &str) -> Option<tilo_actions::Resource> {
-    R::child(state.downcast_ref::<R::State>()?, id)
+fn child<R: Resource>(state: &dyn Any, doc: &Doc, id: &str) -> Option<tilo_actions::Resource> {
+    resource::child_by_id::<R>(state.downcast_ref::<R::State>()?, doc, id)
 }
 
 fn search<R: Resource>(state: &dyn Any) -> Option<Vec<SearchEntry>> {
@@ -238,7 +238,7 @@ impl ResourceKind {
     /// Returns why this document does not hold the publishing resource.
     pub fn child(&self, doc: &Doc, id: &str) -> Result<Option<tilo_actions::Resource>, ModelError> {
         let state = self.read(doc)?;
-        Ok((self.child)(state.as_ref(), id))
+        Ok((self.child)(state.as_ref(), doc, id))
     }
 
     /// [`Self::publish`] from a state [`Self::read`] returned.
