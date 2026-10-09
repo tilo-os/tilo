@@ -198,6 +198,8 @@ pub enum NetCmd {
     /// headless loop otherwise sleeps until something else wakes it.
     SetWake(LoopWake),
     PrivateMessages(tokio::sync::oneshot::Sender<super::private_messages::Transport>),
+    /// What this device has received from its peers, by kind.
+    WireTally(tokio::sync::oneshot::Sender<Arc<WireTally>>),
     /// This device's own topology entries (`SyncResp`) for a room another
     /// device governs, to its workspace hosts as a retained delta: the
     /// governor admits them within this device's registered namespace.
@@ -878,6 +880,36 @@ struct ActorState {
     personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
     active_personal_media: HashMap<(EndpointId, [u8; 16]), ActivePersonalMediaTransfer>,
     next_personal_media_generation: u64,
+    /// Every application message peers delivered here (see [`WireTally`]).
+    tally: Arc<WireTally>,
+}
+
+/// Every application message this device received from its peers, by kind:
+/// gossip, workspace-host and direct-stream traffic alike, counted where it
+/// arrives and before any deduplication. Transport keep-alives (QUIC PINGs,
+/// gossip membership upkeep) never reach the application and are not here.
+/// What an idle session costs its peers and hosts is read from this.
+#[derive(Debug, Default)]
+pub struct WireTally {
+    counts: Mutex<std::collections::BTreeMap<&'static str, u64>>,
+}
+
+impl WireTally {
+    fn note(&self, kind: &'static str) {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *counts.entry(kind).or_default() += 1;
+    }
+
+    /// The counts so far, by message kind.
+    pub fn snapshot(&self) -> std::collections::BTreeMap<&'static str, u64> {
+        self.counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 struct ActivePersonalMediaTransfer {
@@ -1037,6 +1069,9 @@ impl ActorState {
         match command {
             Some(NetCmd::PrivateMessages(reply)) => {
                 let _ = reply.send(self.private_messages.clone());
+            }
+            Some(NetCmd::WireTally(reply)) => {
+                let _ = reply.send(Arc::clone(&self.tally));
             }
             Some(NetCmd::NativeMedia(command)) => {
                 let sessions = &self.host_sessions;
@@ -2203,6 +2238,7 @@ impl ActorState {
                 fingerprint,
                 msg,
             }) => {
+                self.tally.note(msg.kind());
                 self.handle_surface_frame(ws, peer, fingerprint, msg).await;
             }
             Some(InternalEvent::SurfaceFanoutComplete {
@@ -2412,6 +2448,7 @@ impl ActorState {
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     ) {
+        self.tally.note("PersonalFabric");
         // Topic membership establishes reachability only. ShellNetwork
         // still binds the frame to the peer's certified person/device.
         let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
@@ -2503,11 +2540,14 @@ impl ActorState {
             GossipEvent::Received(message) => {
                 let peer = message.delivered_from;
                 let (membership_epoch, rediscovered) = self.touch_or_mint_membership(ws, peer);
+                let decoded = postcard::from_bytes::<NeighbourMsg>(&message.content);
+                self.tally
+                    .note(decoded.as_ref().map_or("Undecodable", NeighbourMsg::kind));
                 let fingerprint = message_fingerprint(&message.content);
                 if !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order) {
                     return;
                 }
-                match postcard::from_bytes::<NeighbourMsg>(&message.content) {
+                match decoded {
                     Ok(NeighbourMsg::Heartbeat { .. }) if rediscovered => {
                         Some(NetEvent::PeerJoined {
                             ws,
@@ -2651,6 +2691,14 @@ impl ActorState {
     /// [`InternalEvent::Host`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
+        self.tally.note(match &event {
+            HostEvent::Message { msg, .. } => msg.kind(),
+            HostEvent::NativeInput(_) => "HostNativeInput",
+            HostEvent::Ready => "HostReady",
+            HostEvent::Live { .. } => "HostLive",
+            HostEvent::Voice(_) => "HostVoice",
+            HostEvent::Closed => "HostClosed",
+        });
         let mapped = match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => {
@@ -3404,6 +3452,7 @@ async fn run(
         personal_fabric_connections: HashMap::new(),
         active_personal_media: HashMap::new(),
         next_personal_media_generation: 0,
+        tally: Arc::default(),
     };
     let mut heartbeat = tokio::time::interval(heartbeat_interval);
     let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
