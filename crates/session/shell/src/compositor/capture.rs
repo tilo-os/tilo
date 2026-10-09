@@ -1922,13 +1922,13 @@ fn output_dimensions(width: f64, height: f64) -> Result<(u32, u32, f64), String>
 /// than landing in the shared temp directory, where other users could read it.
 fn capture_folder(user_dir: Option<PathBuf>, name: &str) -> Result<PathBuf, String> {
     user_dir
-        .or_else(xdg_paths::home)
+        .or_else(tilo_paths::home)
         .map(|root| root.join(name))
         .ok_or_else(|| format!("no home folder to save {name} in"))
 }
 
 fn next_screenshot_path(sequence: u64) -> Result<PathBuf, String> {
-    let root = capture_folder(xdg_paths::picture_dir(), "Screenshots")?;
+    let root = capture_folder(tilo_paths::picture_dir(), "Screenshots")?;
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let suffix = if sequence == 0 {
         String::new()
@@ -1939,14 +1939,14 @@ fn next_screenshot_path(sequence: u64) -> Result<PathBuf, String> {
 }
 
 fn next_recording_path(sequence: u64, include_audio: bool) -> Result<PathBuf, String> {
-    let root = capture_folder(xdg_paths::video_dir(), "Screen Recordings")?;
+    let root = capture_folder(tilo_paths::video_dir(), "Screen Recordings")?;
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let extension = if include_audio { "mov" } else { "mp4" };
     Ok(root.join(format!("Tilo Recording {stamp}-{sequence}.{extension}")))
 }
 
 fn next_replay_path(sequence: u64, include_audio: bool) -> Result<PathBuf, String> {
-    let root = capture_folder(xdg_paths::video_dir(), "Screen Recordings")?;
+    let root = capture_folder(tilo_paths::video_dir(), "Screen Recordings")?;
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let extension = if include_audio { "mov" } else { "mp4" };
     Ok(root.join(format!("Tilo Recent {stamp}-{sequence}.{extension}")))

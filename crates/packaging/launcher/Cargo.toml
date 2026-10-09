@@ -48,7 +48,7 @@ runtime-portal = { path = "../../runtime/runtime-portal", default-features = fal
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 blake3.workspace = true
 tempfile.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 clap.workspace = true

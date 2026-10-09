@@ -1454,7 +1454,7 @@ mod files_clipboard_tests {
         fixture.session.workspace_tree().write().workspaces[0].grant_app(
             APP,
             &Capability::Filesystem {
-                path: xdg_paths::data_dir().expect("isolated user data root"),
+                path: tilo_paths::data_dir().expect("isolated user data root"),
                 mode: FsMode::ReadWrite,
                 scope: GRANT_SESSION,
             },
@@ -1483,7 +1483,7 @@ mod files_clipboard_tests {
         )
         .unwrap();
         fixture.succeeds(1, "undo");
-        let root = xdg_paths::data_dir().unwrap().join("Trash/files");
+        let root = tilo_paths::data_dir().unwrap().join("Trash/files");
         let entries = std::fs::read_dir(root)
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -2130,7 +2130,7 @@ mod files_clipboard_tests {
     ) {
         grant_native_trash(fixture);
         fixture.succeeds(1, "open-trash");
-        let retained = std::fs::read_dir(xdg_paths::data_dir().unwrap().join("Trash/files"))
+        let retained = std::fs::read_dir(tilo_paths::data_dir().unwrap().join("Trash/files"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .collect::<Vec<_>>();

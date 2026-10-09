@@ -16,12 +16,12 @@ default = ["host-storage"]
 host-storage = [
     "dep:tilo-files",
     "dep:package-store",
-    "dep:tilo-xdg-paths",
+    "dep:tilo-paths",
     "dep:settings-store",
 ]
 
 [dependencies]
-tilo-xdg-paths = { version = "0.1.0", path = "../xdg-paths", optional = true }
+tilo-paths = { workspace = true, optional = true }
 # Which packages are installed and where their trees are.
 package-store = { version = "0.1.0", path = "../../packaging/package-store", optional = true }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }

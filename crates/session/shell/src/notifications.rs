@@ -1227,8 +1227,8 @@ impl NotificationService {
         priority_contacts: PriorityContactRegistry,
         schedule_workspaces: Option<crate::portal::GrantStoreHandle>,
     ) -> Self {
-        let path =
-            xdg_paths::xdg::state_home().map(|root| root.join("tilo/notifications/schedules.json"));
+        let path = tilo_paths::xdg::state_home()
+            .map(|root| root.join("tilo/notifications/schedules.json"));
         let schedules = path.and_then(|path| {
             scheduled::ScheduleStore::open(Some(path))
                 .inspect_err(|error| tracing::warn!(%error, "notification schedules unavailable"))

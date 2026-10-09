@@ -174,8 +174,8 @@ pub struct FilesProvider {
 /// slot driven through `TILO_TEST_CONTROL`) indexes `$HOME`: that is where
 /// `~/Documents` is written.
 fn indexable_home() -> PathBuf {
-    let home = xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
-    if let Some(config) = xdg_paths::config_dir()
+    let home = tilo_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
+    if let Some(config) = tilo_paths::config_dir()
         && !config.starts_with(&home)
     {
         let profile = config.parent().unwrap_or(config.as_path());
@@ -190,7 +190,7 @@ fn indexable_home() -> PathBuf {
         && (std::env::var_os("TILO_TEST_CONTROL").is_some()
             || std::env::var_os("TILO_IDENTITY_ROOT").is_some())
     {
-        let scratch = xdg_paths::cache_dir()
+        let scratch = tilo_paths::cache_dir()
             .unwrap_or_else(std::env::temp_dir)
             .join("tilo-headless-home");
         let _ = std::fs::create_dir_all(&scratch);

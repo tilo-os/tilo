@@ -941,8 +941,8 @@ to the app the host prepared.
 | Preferences | `cx.settings()` (the app's section) or `ui::storage::Settings::section("locale")` for a shared one: `load`, `bool`, `string`, `update` | the desktop settings document (`settings-store`), or the host's source |
 | Secrets | `cx.secrets()` (`ui::storage::secrets(id)`) | `tilo-secrets`: Secret Service, Keychain, wrapped IndexedDB |
 
-Apps do not depend on `settings-store`, `app-state` or `xdg-paths`: those
-are the SDK's internals (the last is a deprecated shim over `tilo-paths`). The exceptions are
+Apps do not depend on `settings-store` or `app-state`: those are the SDK's
+internals. The exceptions are
 the Settings app, which owns the settings document, and Notes' capture
 fault-injection scenario, which locates its record on disk. Desktop-only code
 that must name a native path uses `tilo_paths` and `tilo_files::native`

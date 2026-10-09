@@ -339,7 +339,7 @@ pub struct InstalledInProcessModel {
 /// shared fallback: a store anyone can write would let them plant the model
 /// this user runs.
 pub fn user_model_root() -> Option<PathBuf> {
-    xdg_paths::xdg::data_home().map(|data| data.join("tilo/models"))
+    tilo_paths::xdg::data_home().map(|data| data.join("tilo/models"))
 }
 
 /// Find the installed in-process model that provides `capability` in the

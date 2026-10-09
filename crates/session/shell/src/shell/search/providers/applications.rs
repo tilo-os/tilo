@@ -859,7 +859,7 @@ pub(crate) fn grant_file_manager_home(
     if package_id != SYSTEM_FILE_MANAGER {
         return false;
     }
-    let Some(home) = xdg_paths::home() else {
+    let Some(home) = tilo_paths::home() else {
         return false;
     };
     let Some(ws) = tree
