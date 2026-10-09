@@ -134,12 +134,11 @@ impl App {
             .filter(|cache| cache.key == key)
             .map_or_else(Vec::new, |cache| cache.declared.clone());
         let mut semantics = crate::a11y_tree::SemanticTree::new();
-        semantics.refresh_bound(
+        semantics.refresh_action_projection(
             self.root_widget.as_ref(),
             &self.layout.node_map,
             &self.bindings.semantic_node_names(&self.layout.node_map),
             self.focused_node,
-            &[],
         );
         complete.extend(semantics.action_resources());
         complete.extend(self.history_action_resources());
@@ -423,6 +422,17 @@ impl App {
         &self,
         resources: &[tilo_actions::Resource],
     ) -> Vec<ControlBindingCoverage> {
+        self.control_binding_coverage_for(
+            resources,
+            crate::widget::controls::control_action_bindings(self.root_widget.as_ref()),
+        )
+    }
+
+    fn control_binding_coverage_for(
+        &self,
+        resources: &[tilo_actions::Resource],
+        bindings: Vec<crate::widget::ControlBindingMetadata>,
+    ) -> Vec<ControlBindingCoverage> {
         // Shared chrome invokes doors served by this host, rather than by
         // the app's resource provider. Audit those exact declarations too.
         let mut host_resources = vec![crate::search::search_resource()];
@@ -435,7 +445,7 @@ impl App {
             ));
         }
         let mut seen = std::collections::HashSet::new();
-        crate::widget::controls::control_action_bindings(self.root_widget.as_ref())
+        bindings
             .into_iter()
             .map(|binding| {
                 let status = match &binding.kind {
@@ -666,7 +676,10 @@ impl App {
         // Use this exact snapshot for coverage as well as publication. That
         // prevents recursive/repeated resource collection and makes the audit
         // correspond to the catalogue about to cross the wire.
-        let binding_coverage = self.control_action_coverage_for(&self.collect_resources());
+        let binding_coverage = self.control_binding_coverage_for(
+            &self.collect_resources(),
+            crate::widget::controls::action_control_bindings(self.root_widget.as_ref()),
+        );
         if binding_coverage
             .iter()
             .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
