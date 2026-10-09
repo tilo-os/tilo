@@ -2938,6 +2938,7 @@ COPY --from=native-builder-payload \
     /out/runtime-bundle-publisher.hex \
     /out/browser-runtime-publisher.hex \
     /out/registry-runtime-publisher.hex \
+    /out/app-publisher.hex \
     /usr/share/tilo/
 # ---- Preinstalled application store -----------------------------------------
 # The registry + unpacked payloads the builder produced with `tilo-app-package pack` and
@@ -2957,7 +2958,6 @@ COPY --from=native-builder-payload \
 # image build, and claims nothing more.
 COPY --from=native-builder-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
 COPY --from=native-builder-payload /usr/share/tilo/font-catalogs/ /usr/share/tilo/font-catalogs/
-COPY --from=native-builder-payload /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
 # The shell and the browser engine must resolve every library they load from
 # this rootfs: a gap is a loader error at the first launch, on a device.
 ARG CHROMIUM_RUNTIME_VERSION
