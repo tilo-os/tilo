@@ -87,6 +87,8 @@ struct Deadlines {
     history: Option<Instant>,
     /// A registry lease stops counting by itself.
     lease_lapse: Option<Instant>,
+    /// Whether `foreign_inhibitors` follows an armed idle timeout; becoming armed reads at once.
+    foreign_armed: bool,
 }
 
 impl Deadlines {
@@ -408,7 +410,7 @@ impl PowerService {
                 }
                 msg = next_or_pending(&mut streams.sleep), if streams.sleep.is_some() => {
                     if let Some(msg) = msg {
-                        self.handle_prepare_for_sleep(&msg).await;
+                        self.handle_prepare_for_sleep(&msg, &mut deadlines).await;
                     } else {
                         warn!(target: "tilo::power", "PrepareForSleep stream ended; scheduling resubscription");
                         streams.sleep = None;
@@ -491,6 +493,7 @@ impl PowerService {
         };
         if idle_timeout_armed(&self.policy) {
             self.poll_foreign_inhibitors().await;
+            deadlines.foreign_armed = true;
         }
         self.mirror_inhibit_registry().await;
         self.drain_commands().await;
@@ -551,10 +554,18 @@ impl PowerService {
     fn schedule_polls(&mut self, deadlines: &mut Deadlines) {
         let now = Instant::now();
         if idle_timeout_armed(&self.policy) {
-            deadlines
-                .foreign_inhibitors
-                .get_or_insert_with(|| after(now, FOREIGN_INHIBITOR_POLL));
+            // An idle timeout that was just armed reads at once: a lock taken while none was
+            // armed must not wait a whole poll to count.
+            let first = !std::mem::replace(&mut deadlines.foreign_armed, true);
+            deadlines.foreign_inhibitors.get_or_insert_with(|| {
+                if first {
+                    now
+                } else {
+                    after(now, FOREIGN_INHIBITOR_POLL)
+                }
+            });
         } else {
+            deadlines.foreign_armed = false;
             deadlines.foreign_inhibitors = None;
             if self.foreign_hold.take().is_some() {
                 debug!(target: "tilo::power", "no idle timeout armed: stopped following other programs' locks");
@@ -575,12 +586,12 @@ impl PowerService {
         match self.upower.history_samples().await {
             Ok(samples) => {
                 for sample in samples {
-                    let point = BatteryHistoryPoint {
-                        unix_minute: now_secs / 60,
-                        capacity: sample.capacity.min(100),
-                        health: sample.health.map(|value| value.min(100)),
-                        on_ac: sample.on_ac,
-                    };
+                    let point = BatteryHistoryPoint::sampled(
+                        now_secs / 60,
+                        sample.capacity,
+                        sample.health,
+                        sample.on_ac,
+                    );
                     if let Err(error) = self.history.record(sample.kind, point) {
                         debug!(target: "tilo::power", %error, "power history sample could not be stored");
                     }
@@ -658,7 +669,7 @@ impl PowerService {
         }
     }
 
-    async fn handle_prepare_for_sleep(&mut self, msg: &zbus::Message) {
+    async fn handle_prepare_for_sleep(&mut self, msg: &zbus::Message, deadlines: &mut Deadlines) {
         // `PrepareForSleep(true)` = about to sleep, `false` = just resumed.
         if let Ok(going_to_sleep) = msg.body().deserialize::<bool>() {
             if going_to_sleep {
@@ -672,6 +683,13 @@ impl PowerService {
                 self.sleep_lock_drawn = false;
                 self.sleep_delay_lock = take_sleep_delay_lock(&self.logind).await;
                 self.bridge.push_signal(sleep_reaction(false));
+                // The loop's deadlines run on the monotonic clock, which stood still while the
+                // machine slept: what came due during sleep is due now.
+                let now = Instant::now();
+                deadlines.history = Some(now);
+                if deadlines.foreign_inhibitors.is_some() {
+                    deadlines.foreign_inhibitors = Some(now);
+                }
             }
         }
     }

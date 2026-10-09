@@ -25,6 +25,8 @@ struct Calls {
     /// service drops the lock.
     held: Vec<UnixStream>,
     list_inhibitors: usize,
+    /// `UPower.EnumerateDevices`: one per battery-history sample.
+    enumerations: usize,
     suspends: usize,
     /// When each `Suspend` arrived, on the paused clock.
     suspended_at: Vec<Instant>,
@@ -89,6 +91,7 @@ impl FakeLogind {
 
 /// A laptop on battery with its lid open.
 struct FakeUPower {
+    calls: Shared,
     lid_closed: bool,
     lid_present: bool,
     on_battery: bool,
@@ -113,6 +116,9 @@ impl FakeUPower {
     }
 
     fn enumerate_devices(&self) -> Vec<OwnedObjectPath> {
+        let mut calls = calls(&self.calls);
+        calls.enumerations = calls.enumerations.saturating_add(1);
+        drop(calls);
         self.devices.clone()
     }
 }
@@ -195,6 +201,7 @@ async fn start(policy: PowerPolicy, foreign: Vec<LogindInhibitorRow>) -> Session
         .serve_at(
             UPOWER_PATH,
             FakeUPower {
+                calls: Arc::clone(&calls),
                 lid_closed: false,
                 lid_present: true,
                 on_battery: true,
@@ -310,6 +317,18 @@ impl Session {
             .percentage_changed(iface.signal_emitter())
             .await
             .expect("Percentage changed");
+    }
+
+    async fn resume(&self) {
+        let iface = self
+            .server
+            .object_server()
+            .interface::<_, FakeLogind>(LOGIND_PATH)
+            .await
+            .expect("logind iface");
+        FakeLogind::prepare_for_sleep(iface.signal_emitter(), false)
+            .await
+            .expect("PrepareForSleep(false)");
     }
 
     /// Whether the service still holds the `i`th lock it took.
@@ -517,4 +536,42 @@ async fn the_logind_mirror_follows_the_registry_without_a_tick() {
     let before = session.wakeups();
     tokio::time::sleep(IDLE_WINDOW).await;
     assert_eq!(session.wakeups() - before, 0, "and then it sleeps again");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn arming_an_idle_timeout_reads_logind_locks_at_once() {
+    let session = start(quiet_policy(), Vec::new()).await;
+    assert_eq!(calls(&session.calls).list_inhibitors, 0);
+    session.bridge.update_policy(PowerPolicy {
+        idle_lock: Some(Duration::from_secs(60)),
+        ..quiet_policy()
+    });
+    eventually(
+        "the newly armed timeout reads the locks without a poll's delay",
+        || calls(&session.calls).list_inhibitors == 1,
+    )
+    .await;
+    session.settle().await;
+    assert_eq!(calls(&session.calls).list_inhibitors, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resuming_samples_what_came_due_during_sleep() {
+    let session = start(quiet_policy(), Vec::new()).await;
+    assert_eq!(
+        calls(&session.calls).enumerations,
+        1,
+        "one history sample at start"
+    );
+    session.resume().await;
+    eventually("the history is sampled again after resume", || {
+        calls(&session.calls).enumerations == 2
+    })
+    .await;
+    assert!(
+        session
+            .bridge
+            .drain_signals()
+            .contains(&PowerSignal::ResumedFromSleep)
+    );
 }

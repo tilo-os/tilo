@@ -25,6 +25,18 @@ pub struct BatteryHistoryPoint {
     pub on_ac: bool,
 }
 
+impl BatteryHistoryPoint {
+    /// A point sampled at `unix_minute`, percentages clamped to 100.
+    pub fn sampled(unix_minute: u64, capacity: u32, health: Option<u32>, on_ac: bool) -> Self {
+        Self {
+            unix_minute,
+            capacity: capacity.min(100),
+            health: health.map(|value| value.min(100)),
+            on_ac,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BatteryHistory {
     pub points: Vec<BatteryHistoryPoint>,
@@ -79,12 +91,7 @@ pub fn record_power_history(
     let path = history_path(kind).ok_or("no private per-user state directory is available")?;
     record_power_history_at(
         &path,
-        BatteryHistoryPoint {
-            unix_minute: now,
-            capacity: capacity.min(100),
-            health: health.map(|value| value.min(100)),
-            on_ac,
-        },
+        BatteryHistoryPoint::sampled(now, capacity, health, on_ac),
     )
 }
 
