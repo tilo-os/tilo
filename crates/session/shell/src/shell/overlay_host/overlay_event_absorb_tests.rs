@@ -14,8 +14,8 @@ use tilo_desktop::i18n::t as desktop_text;
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 /// Mock content widget recording every [`Widget::handle_event`] call by
 /// event-variant name, so tests can assert which events reached it —
@@ -407,14 +407,14 @@ fn directory_action_rows_paint_label_and_subtitle_at_normal_and_narrow_sizes() {
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(p.x, p.y),
     }
 }
 
 fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
     WindowEvent::Touch(winit::event::Touch {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         phase,
         location: PhysicalPosition::new(x, y),
         force: None,
@@ -424,7 +424,7 @@ fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowE
 
 fn left_button_released() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,
     }
@@ -692,37 +692,25 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
 
 fn left_button_pressed() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     }
 }
 
 fn key_pressed(key: Key) -> WindowEvent {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = ElementState::Pressed;
-    event.repeat = false;
-    event.text = None;
+    let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     }
 }
 
 fn key_released(key: Key) -> WindowEvent {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = ElementState::Released;
-    event.repeat = false;
-    event.text = None;
+    let event = ui::synthetic_input::key_event(key, None, ElementState::Released);
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     }
@@ -2095,7 +2083,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
 
             assert!(pump(&mut h, &cursor_moved_at(panel.center())));
             let wheel = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -2.0),
                 phase: winit::event::TouchPhase::Moved,
             };

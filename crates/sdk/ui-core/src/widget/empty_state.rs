@@ -1238,18 +1238,15 @@ mod tests {
         scene
     }
 
-    fn synth() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
     fn press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }

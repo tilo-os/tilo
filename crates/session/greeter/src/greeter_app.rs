@@ -2419,19 +2419,12 @@ mod tests {
     }
 
     fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-
         // winit intentionally keeps the platform-specific key field private;
         // these are the same inert placeholders used by ui::App's key tests.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = text.map(Into::into);
+        let event =
+            ui::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }

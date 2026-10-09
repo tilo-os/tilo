@@ -802,8 +802,6 @@ mod tests {
         }
 
         fn visible_label_is_part_of_the_checkbox_click_target() {
-            use winit::event::DeviceId;
-
             let mut checkbox = Checkbox::new("ack", "acknowledged")
                 .with_id("acknowledgement")
                 .with_label("I understand the consequence.");
@@ -829,7 +827,7 @@ mod tests {
             let row_rect = checkbox.rect;
             assert!(row_rect.width() > 300.0, "row={row_rect:?}");
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let mut handled = false;
             let mut focus = None;
@@ -1013,8 +1011,6 @@ mod tests {
         }
 
         fn disabled_checkbox_does_not_toggle() {
-            use winit::event::DeviceId;
-
             let mut c = Checkbox::new("id", "checked").with_enabled(false);
 
             let mut tree = TaffyTree::<()>::new();
@@ -1031,7 +1027,7 @@ mod tests {
             .unwrap();
             c.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             let mods = winit::event::Modifiers::default();

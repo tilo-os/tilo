@@ -41,7 +41,7 @@ use crate::accesskit_bridge::{
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
-use crate::synthetic_input::key_event;
+use crate::synthetic_input::key_input;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{EventCtx, TaffyTreeExt, Widget};
@@ -7496,7 +7496,7 @@ impl FrameHarness {
         self.pump_component_wakes();
         let key = parse_key(spec);
         for state in [ElementState::Pressed, ElementState::Released] {
-            self.send_host_event(&key_event(&key, state));
+            self.send_host_event(&key_input(&key, state));
         }
     }
 
@@ -9562,7 +9562,7 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Character("k".into()),
             ElementState::Pressed,
         ));
@@ -9600,14 +9600,14 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Character("a".into()),
             ElementState::Pressed,
         ));
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::default(),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Character("x".into()),
             ElementState::Pressed,
         ));
@@ -9622,7 +9622,7 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::default(),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Named(winit::keyboard::NamedKey::Tab),
             ElementState::Pressed,
         ));
@@ -9630,7 +9630,7 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::ALT),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Named(winit::keyboard::NamedKey::ArrowUp),
             ElementState::Pressed,
         ));
@@ -9640,7 +9640,7 @@ mod tests {
                 winit::keyboard::ModifiersState::ALT | winit::keyboard::ModifiersState::SHIFT,
             ),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Named(winit::keyboard::NamedKey::ArrowLeft),
             ElementState::Pressed,
         ));
@@ -9657,7 +9657,7 @@ mod tests {
         document.set_platform_conventions(crate::platform::PlatformConventions::new(
             crate::platform::Platform::MacOs,
         ));
-        document.send_host_event(&key_event(
+        document.send_host_event(&key_input(
             &Key::Character("a".into()),
             ElementState::Pressed,
         ));
@@ -9668,7 +9668,7 @@ mod tests {
         document.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER),
         ));
-        document.send_host_event(&key_event(
+        document.send_host_event(&key_input(
             &Key::Character("z".into()),
             ElementState::Pressed,
         ));
@@ -10496,8 +10496,8 @@ mod tests {
         use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 
         let key = Key::Character("Q".into());
-        let pressed = key_event(&key, ElementState::Pressed);
-        let released = key_event(&key, ElementState::Released);
+        let pressed = key_input(&key, ElementState::Pressed);
+        let released = key_input(&key, ElementState::Released);
 
         for (window_event, expected_state, expected_text) in [
             (pressed, ElementState::Pressed, Some("Q")),

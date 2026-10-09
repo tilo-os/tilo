@@ -3383,12 +3383,8 @@ mod tests {
     // `ui::gesture::DragSelect` ladder + `ui::text_selection` boundary walkers),
     // not a test-only shortcut.
 
-    use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-    use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
-
-    fn fake_device_id() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn geom_editor(seed: &str) -> (EditorView, AutoCommit) {
         let (mut ev, doc) = bound_editor(seed);
@@ -3416,7 +3412,7 @@ mod tests {
         let taffy = TaffyTree::<()>::new();
         let node = NodeId::new(0);
         let win_ev = WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         };
         ev.handle_event(
@@ -3441,7 +3437,7 @@ mod tests {
         let taffy = TaffyTree::<()>::new();
         let node = NodeId::new(0);
         let win_ev = WindowEvent::MouseInput {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: if pressed {
                 ElementState::Pressed
             } else {
@@ -3470,15 +3466,9 @@ mod tests {
         let mut focus = None;
         let taffy = TaffyTree::<()>::new();
         let node = NodeId::new(0);
-        let mut ke: KeyEvent = unsafe { std::mem::zeroed() };
-        ke.logical_key = k;
-        ke.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ke.location = winit::keyboard::KeyLocation::Standard;
-        ke.state = ElementState::Pressed;
-        ke.repeat = false;
-        ke.text = None;
+        let ke = ui::synthetic_input::key_event(k, None, ElementState::Pressed);
         let win_ev = WindowEvent::KeyboardInput {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             event: ke,
             is_synthetic: false,
         };

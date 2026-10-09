@@ -1572,10 +1572,6 @@ mod tests {
     use crate::command::{FileCommand, new_sink};
     use std::path::PathBuf;
 
-    fn dev() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
-
     fn dispatch(v: &mut FileView, tree: &TaffyTree<()>, node: NodeId, ev: &WindowEvent) {
         let mut handled = false;
         let mut focus = None;
@@ -2712,14 +2708,14 @@ mod tests {
 
         fn move_to(&mut self, at: Point) {
             self.send(&WindowEvent::CursorMoved {
-                device_id: dev(),
+                device_id: winit::event::DeviceId::dummy(),
                 position: (at.x, at.y).into(),
             });
         }
 
         fn press(&mut self, button: MouseButton) {
             self.send(&WindowEvent::MouseInput {
-                device_id: dev(),
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button,
             });
@@ -2822,7 +2818,7 @@ mod tests {
         let centre = laid.view.list.rect().center();
         laid.move_to(centre);
         laid.send(&WindowEvent::MouseWheel {
-            device_id: dev(),
+            device_id: winit::event::DeviceId::dummy(),
             delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
             phase: winit::event::TouchPhase::Moved,
         });

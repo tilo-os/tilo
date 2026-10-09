@@ -393,7 +393,7 @@ pub fn run(_args: &[String]) {
     // LineDelta(0, -30) = scroll down 30 lines (~600 px after Scrollable's
     // 20× line multiplier). Negative y = "scroll down" in winit's model.
     let wheel = WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         delta: MouseScrollDelta::LineDelta(0.0, -30.0),
         phase: winit::event::TouchPhase::Moved,
     };

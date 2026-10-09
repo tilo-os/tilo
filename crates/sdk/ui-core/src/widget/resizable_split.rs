@@ -1223,14 +1223,14 @@ mod tests {
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
 
     fn mouse_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
@@ -1238,7 +1238,7 @@ mod tests {
 
     fn mouse_release() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         }
@@ -1604,7 +1604,7 @@ mod tests {
         let (tree, node) = solve(&mut s, 400.0, 300.0);
         assert!(s.is_focusable());
         s.set_focus(true);
-        let right = crate::synthetic_input::key_event(
+        let right = crate::synthetic_input::key_input(
             &Key::Named(NamedKey::ArrowRight),
             ElementState::Pressed,
         );

@@ -586,11 +586,11 @@ fn app_opener_pointer_press_waits_and_drag_cancel_keeps_native_search_closed() {
         .expect("production app opener must be mounted")
         .center();
     let moved = |point: Point| WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(point.x, point.y),
     };
     let mouse = |state| WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button: winit::event::MouseButton::Left,
     };

@@ -534,7 +534,7 @@ mod tests {
             let path = automerge::ROOT.clone();
             let modifiers = winit::event::Modifiers::default();
             let mut focus: Option<NodeId> = None;
-            let dev = unsafe { std::mem::zeroed() };
+            let dev = winit::event::DeviceId::dummy();
             let taffy: TaffyTree<()> = TaffyTree::new();
             let node = NodeId::new(0);
             let cx_hover = f64::midpoint(h.rect.x0, h.rect.x1);
@@ -634,7 +634,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 600.0, 400.0),
                 Rect::new(608.0, 0.0, 1208.0, 400.0),
             );
-            let dev = unsafe { std::mem::zeroed() };
+            let dev = winit::event::DeviceId::dummy();
             let taffy: TaffyTree<()> = TaffyTree::new();
             let node = NodeId::new(0);
             let mut state = AutoCommit::new();

@@ -5948,23 +5948,13 @@ pub(crate) mod tests {
         Modifiers::from(s)
     }
 
-    /// Synthesise a pressed `WindowEvent::KeyboardInput` (winit keeps
-    /// `KeyEventExtra` private, so we zero-init like the toolkit's own tests).
+    /// Synthesise a pressed `WindowEvent::KeyboardInput`.
     fn key_event(logical: winit::keyboard::Key) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            logical,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     pub(super) fn char_event(s: &str) -> WindowEvent {

@@ -326,7 +326,7 @@ mod tests {
     use winit::event::{ElementState, MouseButton};
 
     fn click(host: &mut Embedded<BlockEditor>, doc: &mut crate::widget::Edits<'_>, at: Point) {
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         for event in [
             WindowEvent::CursorMoved {
                 device_id,

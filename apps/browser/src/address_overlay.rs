@@ -721,17 +721,10 @@ mod tests {
             let mods = winit::event::Modifiers::default();
 
             let mut send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
-                let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = Key::Named(named);
-                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                );
-                ev.location = winit::keyboard::KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                ev.text = None;
+                let ev =
+                    ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
                 let event = WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     event: ev,
                     is_synthetic: false,
                 };
@@ -777,17 +770,13 @@ mod tests {
             let root = automerge::ROOT;
             let mods = winit::event::Modifiers::default();
 
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(NamedKey::Escape);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                Key::Named(NamedKey::Escape),
+                None,
+                ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
             let event = WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             };
@@ -847,14 +836,14 @@ mod tests {
             dispatch(
                 &mut w,
                 WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(r.x0 + 20.0, row1_y),
                 },
             );
             let handled = dispatch(
                 &mut w,
                 WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },

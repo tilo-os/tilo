@@ -20,8 +20,8 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 fn tree() -> WorkspaceTree {
     let ws = shell::shell::state::Workspace::new(WorkspaceId::new(), "W");
@@ -129,20 +129,13 @@ fn deliver(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, eve
 }
 
 fn press(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, key: NamedKey) {
-    let mut key_event: KeyEvent = unsafe { std::mem::zeroed() };
-    key_event.logical_key = Key::Named(key);
-    key_event.physical_key =
-        PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    key_event.location = KeyLocation::Standard;
-    key_event.state = ElementState::Pressed;
-    key_event.repeat = false;
-    key_event.text = None;
+    let key_event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
     deliver(
         host,
         taffy,
         node,
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: key_event,
             is_synthetic: false,
         },
@@ -155,7 +148,7 @@ fn click(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, at: P
         taffy,
         node,
         &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(at.x, at.y),
         },
     );
@@ -165,7 +158,7 @@ fn click(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, at: P
             taffy,
             node,
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state,
                 button: MouseButton::Left,
             },

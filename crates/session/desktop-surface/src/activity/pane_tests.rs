@@ -2464,37 +2464,25 @@ mod tests {
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
 
     fn mouse_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: winit::event::ElementState::Pressed,
             button: winit::event::MouseButton::Left,
         }
     }
 
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: as in `ui`'s own widget tests — every pub field of `KeyEvent`
-        // tolerates the all-zero bit pattern, and winit 0.30 keeps
-        // `KeyEventExtra` crate-private so a struct literal is unavailable.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = winit::event::ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            logical_key,
+            None,
+            winit::event::ElementState::Pressed,
+        ))
     }
 
     /// Paint the sheet so the rects the click handler reads off the last frame

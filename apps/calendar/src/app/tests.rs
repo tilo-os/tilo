@@ -2435,7 +2435,7 @@ impl Harness {
     fn click(&mut self, p: Point) {
         // winit exposes no public DeviceId constructor; the production
         // synthesized-press path does exactly this.
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         self.dispatch(&winit::event::WindowEvent::CursorMoved {
             device_id,
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
@@ -2448,14 +2448,14 @@ impl Harness {
     }
 
     fn mouse_move(&mut self, p: Point) {
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         self.dispatch(&winit::event::WindowEvent::CursorMoved {
             device_id,
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         });
     }
     fn mouse_button(&mut self, state: ElementState) -> bool {
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         self.dispatch(&winit::event::WindowEvent::MouseInput {
             device_id,
             state,
@@ -2676,40 +2676,19 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
     }
 }
 
-// Synthesised winit keyboard events (the zeroed-KeyEvent trick the toolkit's
-// own widget tests use — every field is overwritten before use).
-fn synth_device() -> winit::event::DeviceId {
-    unsafe { std::mem::zeroed() }
-}
 fn char_press(ch: &str) -> winit::event::WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(ch.into());
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(ch.into());
-    winit::event::WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Character(ch.into()),
+        Some(ch.into()),
+        ElementState::Pressed,
+    ))
 }
 fn named_press(named: winit::keyboard::NamedKey) -> winit::event::WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(named);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    winit::event::WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Named(named),
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 // --- per-calendar visibility actually filters the views ----------------

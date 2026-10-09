@@ -58,7 +58,7 @@ fn dispatch_with<T: 'static, M: TreeModel + 'static>(
 
 fn right_press() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Right,
     }

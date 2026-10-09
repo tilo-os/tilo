@@ -1125,19 +1125,11 @@ mod tests {
     }
 
     pub(crate) fn key(named: NamedKey) -> WindowEvent {
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(named),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     #[allow(

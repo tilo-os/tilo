@@ -779,7 +779,7 @@ mod tests {
             let mut focus = None;
             let modifiers = winit::event::Modifiers::default();
             let cursor = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(40.0, 70.0),
             };
             view.handle_event(
@@ -796,7 +796,7 @@ mod tests {
                 },
             );
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
             };

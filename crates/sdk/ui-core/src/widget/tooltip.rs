@@ -807,7 +807,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let ev = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: (p.x, p.y).into(),
         };
         t.handle_event(

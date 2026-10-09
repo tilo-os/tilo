@@ -4974,7 +4974,7 @@ mod tests {
             let mut focus = None;
             row.handle_event(
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
@@ -5482,7 +5482,7 @@ mod tests {
             taffy,
             root,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             },
         );
@@ -5491,7 +5491,7 @@ mod tests {
             taffy,
             root,
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
@@ -5500,7 +5500,7 @@ mod tests {
 
     fn touch_event(id: u64, phase: winit::event::TouchPhase, p: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(p.x, p.y),
             force: None,
@@ -5556,7 +5556,7 @@ mod tests {
                 &taffy,
                 root,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(past.x, past.y),
                 },
             );
@@ -5574,7 +5574,7 @@ mod tests {
                 &taffy,
                 root,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
@@ -5603,7 +5603,7 @@ mod tests {
                 &taffy,
                 root,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(target.x, target.y),
                 },
             );
@@ -5612,7 +5612,7 @@ mod tests {
                 &taffy,
                 root,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
@@ -5629,7 +5629,7 @@ mod tests {
                 &taffy,
                 root,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
@@ -5928,7 +5928,7 @@ mod tests {
             let mut handled = false;
             let mut focus: Option<NodeId> = None;
             let event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
@@ -6007,7 +6007,7 @@ mod tests {
             let mut handled = false;
             let mut focus: Option<NodeId> = None;
             let release_event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
@@ -6123,7 +6123,7 @@ mod tests {
             let mut handled = false;
             let mut focus: Option<NodeId> = None;
             let release_event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
@@ -6243,7 +6243,7 @@ mod tests {
             let mut handled = false;
             let mut focus: Option<NodeId> = None;
             let event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
@@ -6294,7 +6294,7 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &winit::event::WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: winit::event::ElementState::Released,
                     button: winit::event::MouseButton::Left,
                 },
@@ -6337,7 +6337,7 @@ mod tests {
             let mut handled2 = false;
             row.handle_event(
                 &winit::event::WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: winit::event::ElementState::Released,
                     button: winit::event::MouseButton::Left,
                 },
@@ -6379,7 +6379,7 @@ mod tests {
 
     fn fire_cursor_moved(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, p: Point) {
         let event = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         };
         let mut doc = AutoCommit::new();
@@ -6436,7 +6436,7 @@ mod tests {
             );
 
             let event = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
@@ -6496,7 +6496,7 @@ mod tests {
             assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
 
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(5000.0, 5000.0),
             };
             let mut doc = AutoCommit::new();
@@ -6539,7 +6539,7 @@ mod tests {
             assert!(!row.groups[0].close_complete());
 
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(5000.0, 5000.0),
             };
             let mut doc = AutoCommit::new();
@@ -6595,7 +6595,7 @@ mod tests {
 
             // Production debug_assert would panic here if node_ids drifted.
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(5000.0, 5000.0),
             };
             let mut doc = AutoCommit::new();
@@ -6980,7 +6980,7 @@ mod tests {
                 let modifiers = Modifiers::default();
                 let mut handled = false;
                 let mut focus = None;
-                let dev = unsafe { std::mem::zeroed() };
+                let dev = winit::event::DeviceId::dummy();
                 row.handle_event(
                     &WindowEvent::CursorMoved {
                         device_id: dev,
@@ -7194,7 +7194,7 @@ mod tests {
             let modifiers = Modifiers::default();
             let mut handled = false;
             let mut focus = None;
-            let dev = unsafe { std::mem::zeroed() };
+            let dev = winit::event::DeviceId::dummy();
             row.handle_event(
                 &WindowEvent::CursorMoved {
                     device_id: dev,
@@ -7359,7 +7359,7 @@ mod tests {
             let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1]]);
             let group_rect = row.groups[0].get_rect();
             let grab = Point::new(group_rect.x1 - 2.0, group_rect.center().y);
-            let dev = unsafe { std::mem::zeroed() };
+            let dev = winit::event::DeviceId::dummy();
             let modifiers = Modifiers::default();
             let mut state = AutoCommit::new();
             let path = automerge::ROOT.clone();
@@ -7573,7 +7573,7 @@ mod tests {
             let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
             let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-            let dev = unsafe { std::mem::zeroed() };
+            let dev = winit::event::DeviceId::dummy();
             let modifiers = Modifiers::default();
             let mut state = AutoCommit::new();
             let path = automerge::ROOT.clone();
@@ -7660,7 +7660,7 @@ mod tests {
             let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
             let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-            let dev = unsafe { std::mem::zeroed() };
+            let dev = winit::event::DeviceId::dummy();
             let modifiers = Modifiers::default();
             let mut state = AutoCommit::new();
             let path = automerge::ROOT.clone();
@@ -7762,7 +7762,7 @@ mod tests {
         let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
         let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-        let dev = unsafe { std::mem::zeroed() };
+        let dev = winit::event::DeviceId::dummy();
         let modifiers = Modifiers::default();
         let mut state = AutoCommit::new();
         let path = automerge::ROOT.clone();
