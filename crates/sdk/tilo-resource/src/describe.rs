@@ -124,8 +124,7 @@ fn locate(doc: &Doc, root: Shape, path: &[Segment]) -> Located {
             }
             (_, Segment::Cell { row, column }) => {
                 located.value = map_at(doc, &obj, "cells")
-                    .and_then(|cells| map_at(doc, &cells, row.as_str()))
-                    .and_then(|row| get(doc, &row, column.as_str()));
+                    .and_then(|cells| get(doc, &cells, &format!("{row}/{column}")));
                 shape = Shape::Value;
             }
             _ => {

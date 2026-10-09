@@ -445,11 +445,78 @@ fn read_edit<R: Resource>(value: serde_json::Value) -> Result<R::Action, String>
     R::edit_action(edit).ok_or_else(|| format!("{} has no field edits", R::LABEL))
 }
 
-/// The schema of a field edit of `R`: the generic one, with the
-/// vocabularies of its fields' own operations named for `rich`.
+/// The schema of a field edit of `R`: one alternative per editable path of
+/// its stored shape — the path's steps, the operations its type takes, the
+/// value it holds, its title and flags — so an agent builds a valid edit
+/// from the published descriptor alone. A resource without a shape gets
+/// the generic one, with its fields' own operations named for `rich`.
 pub(crate) fn edit_schema<R: Resource>() -> serde_json::Value {
-    let mut schema = <Edit<R> as crate::JsonSchema>::json_schema();
     let ops = R::op_schemas();
+    if let Some(shape) = R::shape()
+        && !shape.fields().is_empty()
+    {
+        let mut alternatives = Vec::new();
+        edit_paths(shape, &[], "", &ops, &mut alternatives);
+        if !alternatives.is_empty() {
+            return described_edit::<R>(&alternatives, &ops);
+        }
+    }
+    generic_edit_schema::<R>(&ops)
+}
+
+/// The schema a field edit is checked against, with every editable path
+/// described: its template, the operations it takes, the value's schema,
+/// its title and flags (the description), and one example edit per path
+/// (the examples) — what an agent builds a field edit from.
+fn described_edit<R: Resource>(
+    alternatives: &[serde_json::Value],
+    ops: &[(String, serde_json::Value)],
+) -> serde_json::Value {
+    let mut schema = generic_edit_schema::<R>(ops);
+    let mut lines = vec![
+        "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:".to_owned(),
+    ];
+    let mut examples = Vec::new();
+    for alternative in alternatives {
+        let at = |pointer: &str| alternative.pointer(pointer).cloned().unwrap_or_default();
+        let template = at("/properties/path/examples/0");
+        let ops: Vec<String> = at("/properties/op/enum")
+            .as_array()
+            .map(|ops| {
+                ops.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let value = at("/properties/value");
+        let text = |key: &str| at(key).as_str().unwrap_or_default().to_owned();
+        lines.push(format!(
+            "- `{}` ({}) ops: {}; value: {}",
+            text("/title"),
+            text("/description"),
+            ops.join(", "),
+            value
+        ));
+        let mut example = serde_json::Map::new();
+        example.insert("path".into(), template);
+        if let Some(op) = ops.first() {
+            example.insert("op".into(), op.clone().into());
+        }
+        examples.push(serde_json::Value::Object(example));
+    }
+    if let Some(object) = schema.as_object_mut() {
+        object.insert("description".into(), lines.join("\n").into());
+        object.insert("examples".into(), examples.into());
+    }
+    schema
+}
+
+/// The generic field-edit schema, with the vocabularies of the record's
+/// fields' own operations named for `rich`.
+fn generic_edit_schema<R: Resource>(ops: &[(String, serde_json::Value)]) -> serde_json::Value {
+    let ops = ops.to_vec();
+    let mut schema = <Edit<R> as crate::JsonSchema>::json_schema();
     if !ops.is_empty()
         && let Some(properties) = schema
             .get_mut("properties")
@@ -464,26 +531,319 @@ pub(crate) fn edit_schema<R: Resource>() -> serde_json::Value {
     schema
 }
 
+fn step_schema(kind: &str, value: serde_json::Value) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert(kind.to_owned(), value);
+    serde_json::json!({
+        "type": "object",
+        "properties": properties,
+        "required": [kind],
+    })
+}
+
+/// The operations a field of `field`'s type takes, by its stored shape and
+/// type.
+fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
+    let ty = field.ty;
+    match field.shape {
+        crate::Shape::Collection(_) | crate::Shape::Keyed(_) => {
+            vec!["insert-item", "remove-item", "move-to", "set"]
+        }
+        _ if rich => vec!["rich"],
+        _ if ty.starts_with("Counter") => vec!["add", "set"],
+        _ if ty.starts_with("Set<") => vec!["insert", "remove", "set"],
+        _ if ty.starts_with("Grid<") => vec![
+            "set-cell",
+            "insert-row",
+            "insert-column",
+            "remove-row",
+            "remove-column",
+        ],
+        _ if ty.starts_with("Outbox") => vec!["settle", "forget"],
+        crate::Shape::Map(_) => vec!["set", "remove-key"],
+        _ if ty == "String" => vec!["set", "splice", "replace"],
+        _ => vec!["set"],
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk over the stored shape, an alternative per kind of path"
+)]
+fn edit_paths(
+    shape: crate::Shape,
+    steps: &[serde_json::Value],
+    dotted: &str,
+    rich: &[(String, serde_json::Value)],
+    out: &mut Vec<serde_json::Value>,
+) {
+    let alternative = |steps: &[serde_json::Value],
+                       open: bool,
+                       ops: &[&str],
+                       value: serde_json::Value,
+                       rich: Option<&serde_json::Value>,
+                       title: &str,
+                       description: String| {
+        // The path as an agent writes it, items by a placeholder id.
+        let template: Vec<serde_json::Value> = steps
+            .iter()
+            .map(|step| {
+                let properties = step.get("properties").and_then(serde_json::Value::as_object);
+                match properties.and_then(|properties| properties.iter().next()) {
+                    Some((kind, value)) if kind == "field" => {
+                        serde_json::json!({ "field": value.get("const").cloned().unwrap_or_default() })
+                    }
+                    Some((kind, _)) => serde_json::json!({ kind.clone(): format!("<{kind}>") }),
+                    None => serde_json::Value::Null,
+                }
+            })
+            .collect();
+        let dotted: Vec<String> = template
+            .iter()
+            .map(
+                |step| match step.get("field").and_then(serde_json::Value::as_str) {
+                    Some(field) => field.to_owned(),
+                    None => "*".to_owned(),
+                },
+            )
+            .collect();
+        let mut path = serde_json::json!({
+            "type": "array",
+            "prefixItems": steps,
+            "minItems": steps.len(),
+            "examples": [template],
+        });
+        if let Some(path) = path.as_object_mut() {
+            if open {
+                // What is inside the entry or cell, by any steps.
+                path.insert("items".into(), serde_json::json!({ "type": "object" }));
+            } else {
+                path.insert("maxItems".into(), steps.len().into());
+            }
+        }
+        let mut properties = serde_json::Map::new();
+        properties.insert("path".into(), path);
+        properties.insert("op".into(), serde_json::json!({ "enum": ops }));
+        properties.insert("value".into(), value);
+        if let Some(rich) = rich {
+            properties.insert("rich".into(), rich.clone());
+        }
+        serde_json::json!({
+            "title": dotted.join("."),
+            "description": format!("{title}. {description}"),
+            "type": "object",
+            "properties": properties,
+            "required": ["path", "op"],
+        })
+    };
+    let item = step_schema("item", serde_json::json!({ "type": "string" }));
+    for field in shape.fields() {
+        let mut here = steps.to_vec();
+        here.push(step_schema(
+            "field",
+            serde_json::json!({ "const": field.key }),
+        ));
+        let path = format!("{dotted}{}", field.key);
+        let rich_schema = rich
+            .iter()
+            .find(|(at, _)| *at == path)
+            .map(|(_, schema)| schema);
+        let ops = field_ops(field, rich_schema.is_some());
+        let collection = matches!(
+            field.shape,
+            crate::Shape::Collection(_) | crate::Shape::Keyed(_)
+        );
+        // A value field's `set` takes its value; containers' operations
+        // carry items, elements or keys of their own.
+        let simple = ops.first() == Some(&"set") && !collection;
+        let value = if simple {
+            (field.schema)()
+        } else {
+            serde_json::json!({})
+        };
+        let mut flags = Vec::new();
+        if field.readonly {
+            flags.push("readonly: changed only by the record's verbs".to_owned());
+        }
+        if field.unit {
+            flags.push("its own storage unit".to_owned());
+        }
+        if collection {
+            flags.push(if field.quiet_remove {
+                "removing an item asks nothing".to_owned()
+            } else {
+                "removing an item asks for confirmation".to_owned()
+            });
+        }
+        let description = format!(
+            "`{path}`: {}{}{}",
+            ops.join(", "),
+            if flags.is_empty() { "" } else { "; " },
+            flags.join("; ")
+        );
+        out.push(alternative(
+            &here,
+            false,
+            &ops,
+            value,
+            rich_schema,
+            field.title,
+            description,
+        ));
+        match field.shape {
+            crate::Shape::Record(_) => {
+                edit_paths(field.shape, &here, &format!("{path}."), rich, out);
+            }
+            crate::Shape::Collection(inner) | crate::Shape::Keyed(inner) => {
+                let mut items = here.clone();
+                items.push(item.clone());
+                let item_value = (field.schema)().get("items").map_or_else(
+                    || serde_json::json!({}),
+                    |items| {
+                        // A collection's JSON lists `{id, value}` entries.
+                        items
+                            .get("properties")
+                            .and_then(|properties| properties.get("value"))
+                            .cloned()
+                            .unwrap_or_else(|| items.clone())
+                    },
+                );
+                out.push(alternative(
+                    &items,
+                    false,
+                    &["set"],
+                    item_value,
+                    None,
+                    field.title,
+                    format!("`{path}.*`: one item, by its id: set"),
+                ));
+                edit_paths(*inner, &items, &format!("{path}.*."), rich, out);
+            }
+            crate::Shape::Value if field.ty.starts_with("Grid<") => {
+                let mut cells = here.clone();
+                cells.push(step_schema(
+                    "cell",
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "row": { "type": "string" },
+                            "column": { "type": "string" },
+                        },
+                        "required": ["row", "column"],
+                    }),
+                ));
+                out.push(alternative(
+                    &cells,
+                    true,
+                    &[
+                        "set", "splice", "replace", "add", "insert", "remove", "rich",
+                    ],
+                    serde_json::json!({}),
+                    None,
+                    field.title,
+                    format!(
+                        "`{path}.<cell>`: a cell, by its row and column ids, and what is inside it"
+                    ),
+                ));
+            }
+            crate::Shape::Map(_) => {
+                let mut entries = here.clone();
+                entries.push(step_schema("key", serde_json::json!({ "type": "string" })));
+                out.push(alternative(
+                    &entries,
+                    true,
+                    &["set", "splice", "replace", "add", "insert", "remove"],
+                    serde_json::json!({}),
+                    None,
+                    field.title,
+                    format!("`{path}.<key>`: an entry, by its key, and what is inside it"),
+                ));
+            }
+            crate::Shape::Value => {}
+        }
+    }
+}
+
 /// The published spec of [`FIELD_EDIT`].
 fn field_edit_spec<R: Resource>() -> ActionSpec {
+    rooted_edit_spec::<R>(
+        Vec::new(),
+        edit_schema::<R>(),
+        format!("Edit a {} field", R::LABEL),
+        "The path of the field from the record's root, and the operation",
+    )
+}
+
+/// The field edit offered on the item `item` of the collection `field`:
+/// paths from the item, its editable paths described as the record's are.
+#[must_use]
+pub fn item_field_edit_spec<R: Resource>(field: &str, item: &crate::Id) -> Option<ActionSpec> {
+    let shape = R::shape()?;
+    let collection = shape
+        .fields()
+        .iter()
+        .find(|candidate| candidate.key == field)?;
+    let (crate::Shape::Collection(inner) | crate::Shape::Keyed(inner)) = collection.shape else {
+        return None;
+    };
+    if inner.fields().is_empty() || collection.readonly {
+        return None;
+    }
+    let ops: Vec<(String, serde_json::Value)> = R::op_schemas()
+        .into_iter()
+        .filter_map(|(path, schema)| {
+            path.strip_prefix(&format!("{field}.*."))
+                .map(|rest| (rest.to_owned(), schema))
+        })
+        .collect();
+    let mut alternatives = Vec::new();
+    edit_paths(*inner, &[], "", &ops, &mut alternatives);
+    if alternatives.is_empty() {
+        return None;
+    }
+    let schema = described_edit::<R>(&alternatives, &ops);
+    Some(rooted_edit_spec::<R>(
+        vec![
+            crate::Segment::Field(field.to_owned()),
+            crate::Segment::Item(item.clone()),
+        ],
+        schema,
+        "Edit a field of this item".to_owned(),
+        "The path of the field from the item, and the operation",
+    ))
+}
+
+/// The field edit at paths under `prefix`, described by `schema`.
+fn rooted_edit_spec<R: Resource>(
+    prefix: Vec<crate::Segment>,
+    schema: serde_json::Value,
+    label: String,
+    description: &'static str,
+) -> ActionSpec {
+    let read = move |value: &serde_json::Map<String, serde_json::Value>| {
+        let edit: Edit<R> = serde_json::from_value(serde_json::Value::Object(value.clone()))
+            .map_err(|error| error.to_string())?;
+        let mut path = prefix.clone();
+        path.extend(edit.path().iter().cloned());
+        R::edit_action(Edit::new(path, edit.op().clone()))
+            .ok_or_else(|| format!("{} has no field edits", R::LABEL))
+    };
+    let read = std::sync::Arc::new(read);
+    let risk_read = std::sync::Arc::clone(&read);
     ActionSpec::typed(
         FIELD_EDIT,
-        format!("Edit a {} field", R::LABEL),
+        label,
         "Field edit as JSON",
         ExecutionLocus::ClientLocal,
         vec![
-            ActionParam::required_owned(
-                EDIT_PARAM,
-                ParamType::Object,
-                "The path of the field from the record's root, and the operation",
-            )
-            .with_schema(edit_schema::<R>()),
+            ActionParam::required_owned(EDIT_PARAM, ParamType::Object, description)
+                .with_schema(schema),
         ],
-        |args| {
+        move |args| {
             let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
                 return refused::<R>("missing edit");
             };
-            match read_edit::<R>(serde_json::Value::Object(value.clone())) {
+            match read(value) {
                 Ok(mut action) => {
                     R::stamp(&mut action, origin_now_ms());
                     encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
@@ -503,14 +863,13 @@ fn field_edit_spec<R: Resource>() -> ActionSpec {
     // History records the edit itself, not `field-edit`.
     .carrying()
     // Removing a collection item asks, as a delete verb does.
-    .with_risk(|args| {
+    .with_risk(move |args| {
         let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
             return tilo_actions::RiskLevel::Low;
         };
-        read_edit::<R>(serde_json::Value::Object(value.clone()))
-            .map_or(tilo_actions::RiskLevel::Low, |action| {
-                tilo_actions::Action::risk(&action)
-            })
+        risk_read(value).map_or(tilo_actions::RiskLevel::Low, |action| {
+            tilo_actions::Action::risk(&action)
+        })
     })
 }
 

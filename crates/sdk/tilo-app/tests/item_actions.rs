@@ -88,7 +88,8 @@ fn item_actions_are_offered_on_the_item() {
         .find(|child| child.label == "milk")
         .expect("the item is published");
     let actions: Vec<_> = item.actions.iter().map(|spec| spec.id.as_str()).collect();
-    assert_eq!(actions, ["set-done", "remove"]);
+    // The item verbs with the item bound, and the item's own fields.
+    assert_eq!(actions, ["set-done", "remove", "field-edit"]);
     let set_done = item.actions.first().unwrap();
     let params: Vec<_> = set_done.params().iter().map(|p| p.name.as_ref()).collect();
     assert_eq!(params, ["done"], "the item is bound, not asked for");

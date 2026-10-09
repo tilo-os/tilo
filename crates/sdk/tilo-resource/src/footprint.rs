@@ -56,15 +56,19 @@ impl Writes {
     }
 
     fn allows(&self, unit: &[Segment]) -> bool {
-        match unit {
-            [] => true,
-            [Segment::Field(key), rest @ ..] if self.fields.contains(&key.as_str()) => {
-                let _ = rest;
-                true
-            }
-            [Segment::Field(_), Segment::Item(id)] => self.item.as_ref() == Some(id),
-            _ => false,
+        if unit.is_empty() {
+            return true;
         }
+        // A declared field's units, wherever the field sits (a sheet's
+        // comments).
+        if unit.iter().any(
+            |segment| matches!(segment, Segment::Field(key) if self.fields.contains(&key.as_str())),
+        ) {
+            return true;
+        }
+        // The item the verb acts on, and units inside it.
+        unit.iter()
+            .any(|segment| matches!(segment, Segment::Item(id) if self.item.as_ref() == Some(id)))
     }
 }
 

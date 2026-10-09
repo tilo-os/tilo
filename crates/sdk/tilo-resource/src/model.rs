@@ -267,6 +267,13 @@ pub trait Model: Sized {
         }
     }
 
+    /// The JSON Schema of this value's JSON form ([`Self::to_json`]), as
+    /// the published field edit describes what a path takes; the default
+    /// accepts any value.
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({})
+    }
+
     /// Read everything this value holds, for a field marked
     /// `#[model(whole)]`: a value read lazily (rich text reads its
     /// paragraphs as views ask for them) reads all of it, so every reader of
@@ -609,6 +616,9 @@ fn scalar<'v>(value: &'v Value<'_>) -> Option<&'v ScalarValue> {
 
 impl Settable for bool {}
 impl Model for bool {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "boolean"})
+    }
     leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Bool(*self)
@@ -639,6 +649,9 @@ macro_rules! integer_model {
     ($($ty:ty),*) => {$(
         impl Settable for $ty {}
         impl Model for $ty {
+            fn value_schema() -> serde_json::Value {
+                serde_json::json!({"type": "integer"})
+            }
             leaf_paths!();
             fn to_json(&self) -> serde_json::Value {
                 serde_json::Value::from(*self)
@@ -683,6 +696,9 @@ integer_model!(i8, i16, i32, i64, u8, u16, u32, u64, usize, isize);
 
 impl Settable for f64 {}
 impl Model for f64 {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "number"})
+    }
     leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
         serde_json::Number::from_f64(*self)
@@ -720,6 +736,9 @@ impl Model for f64 {
 
 impl Settable for f32 {}
 impl Model for f32 {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "number"})
+    }
     leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
         f64::from(*self).to_json()
@@ -752,6 +771,9 @@ impl Model for f32 {
 /// too and is upgraded on the first write.
 impl Settable for String {}
 impl Model for String {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "string"})
+    }
     leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(self.clone())
@@ -880,6 +902,9 @@ pub struct Atom(pub String);
 
 impl Settable for Atom {}
 impl Model for Atom {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "string"})
+    }
     leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(self.0.clone())
@@ -905,6 +930,9 @@ impl Model for Atom {
 
 impl Settable for uuid::Uuid {}
 impl Model for uuid::Uuid {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "string", "format": "uuid"})
+    }
     leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(self.to_string())
@@ -933,6 +961,9 @@ impl Model for uuid::Uuid {
 /// `None` is an absent key (or a null list element).
 impl<T: Settable> Settable for Option<T> {}
 impl<T: Model> Model for Option<T> {
+    fn value_schema() -> serde_json::Value {
+        crate::schema::nullable(T::value_schema())
+    }
     const SHAPE: crate::Shape = T::SHAPE;
     const CHECKS: bool = T::CHECKS;
     leaf_paths!();
@@ -1051,6 +1082,9 @@ impl<T: Model> Model for Option<T> {
 
 impl<T: Settable> Settable for Box<T> {}
 impl<T: Model> Model for Box<T> {
+    fn value_schema() -> serde_json::Value {
+        T::value_schema()
+    }
     const SHAPE: crate::Shape = T::SHAPE;
     const CHECKS: bool = T::CHECKS;
     fn op_coalesces(
@@ -1136,6 +1170,9 @@ impl<T: Model> Model for Box<T> {
 /// a concurrent insert must not rewrite the neighbours.
 impl<T: Model> Settable for Vec<T> {}
 impl<T: Model> Model for Vec<T> {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "array", "items": T::value_schema()})
+    }
     const CHECKS: bool = T::CHECKS;
     leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
@@ -1204,6 +1241,9 @@ impl<T: Model> Model for Vec<T> {
 /// A fixed number of values, stored as a list.
 impl<T: Model, const N: usize> Settable for [T; N] {}
 impl<T: Model, const N: usize> Model for [T; N] {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "array", "items": T::value_schema(), "minItems": N, "maxItems": N})
+    }
     const CHECKS: bool = T::CHECKS;
     leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
@@ -1254,6 +1294,9 @@ impl<T: Model, const N: usize> Model for [T; N] {
 impl<T: Model> Settable for BTreeMap<String, T> {}
 impl<T: Model> Model for BTreeMap<String, T> {
     const SHAPE: crate::Shape = crate::Shape::Map(&T::SHAPE);
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
     const CHECKS: bool = T::CHECKS;
     leaf_paths!();
     fn op_coalesces(

@@ -100,6 +100,7 @@ impl ActionCx {
         let id = minted(&self.seed, self.minted);
         self.minted = self.minted.saturating_add(1);
         self.ids.push(id.clone());
+        note_minted(id.as_str());
         id
     }
 
@@ -110,7 +111,9 @@ impl ActionCx {
         hasher.update(&self.seed);
         hasher.update(&self.minted.to_le_bytes());
         self.minted = self.minted.saturating_add(1);
-        uuid_from(hasher.finalize().as_bytes())
+        let uuid = uuid_from(hasher.finalize().as_bytes());
+        note_minted(&uuid.to_string());
+        uuid
     }
 
     /// When the action was authored, in milliseconds since the Unix epoch, as
@@ -154,6 +157,23 @@ fn uuid_from(digest: &[u8; 32]) -> uuid::Uuid {
 }
 
 thread_local! {
+    /// The ids the action applying last on this thread minted, in order.
+    static MINTED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_minted(id: &str) {
+    MINTED.with(|minted| minted.borrow_mut().push(id.to_owned()));
+}
+
+/// The ids the record action applied last on this thread minted (items it
+/// added, a group's members' together), taken: what the door answers its
+/// caller with beside the action's own answer.
+#[must_use]
+pub fn take_minted() -> Vec<String> {
+    MINTED.with(|minted| std::mem::take(&mut *minted.borrow_mut()))
+}
+
+thread_local! {
     /// The seed and count of the UUIDs [`fresh_uuid`] mints while a verb
     /// performs on this thread.
     static MINT: std::cell::Cell<Option<([u8; 32], u64)>> = const { std::cell::Cell::new(None) };
@@ -189,7 +209,9 @@ pub fn fresh_uuid() -> uuid::Uuid {
             let mut hasher = blake3::Hasher::new();
             hasher.update(&seed);
             hasher.update(&counter.to_le_bytes());
-            uuid_from(hasher.finalize().as_bytes())
+            let uuid = uuid_from(hasher.finalize().as_bytes());
+            note_minted(&uuid.to_string());
+            uuid
         }
         None => uuid::Uuid::new_v4(),
     })
@@ -529,6 +551,10 @@ impl<O: Operation> Stamped<O> {
 impl<O: Operation> tilo_actions::Action for Stamped<O> {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
+        // A group's members mint into one list; anything else starts afresh.
+        if crate::group::current_member().is_none() {
+            drop(take_minted());
+        }
         let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
         let refused = |error: crate::ModelError| ActionError::Refused(error.to_string());
         let shape = <O::Record as crate::Model>::SHAPE;

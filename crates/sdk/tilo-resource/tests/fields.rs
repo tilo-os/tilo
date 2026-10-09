@@ -44,6 +44,8 @@ pub struct BoardStyle {
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Note {
+    #[model(label)]
+    pub title: String,
     pub body: Vec<String>,
 }
 
@@ -75,6 +77,14 @@ impl Board {
         self.title = style.title;
         if let Some(cards) = style.cards {
             self.cards = cards;
+        }
+    }
+
+    /// Clear a note's lines, answering what it cleared.
+    #[action(answers)]
+    pub fn clear_note(&mut self, notes: &Id) {
+        if let Some(note) = self.notes.get_mut(notes) {
+            note.body.clear();
         }
     }
 
@@ -286,4 +296,155 @@ fn a_derived_place_offers_an_edit_that_asks_for_its_value() {
     let mut board = Replica::<Board>::new();
     board.apply_action(&action).unwrap();
     assert_eq!(board.state().unwrap().title, "Sprint 12");
+}
+
+/// What an agent sees of the field edit at `path` (`notes.*.body`): the
+/// line describing it, and the example edit at it.
+fn described(schema: &serde_json::Value, path: &str) -> (String, serde_json::Value) {
+    let line = schema["description"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .find(|line| line.starts_with(&format!("- `{path}`")))
+        .expect("the descriptor describes the path")
+        .to_owned();
+    let dotted = |example: &serde_json::Value| {
+        example["path"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step["field"].as_str().unwrap_or("*").to_owned())
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    let example = schema["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|example| dotted(example) == path)
+        .expect("an example edit at the path")
+        .clone();
+    (line, example)
+}
+
+#[test]
+fn an_agent_builds_a_field_edit_from_the_published_descriptor_alone() {
+    let mut board = Replica::<Board>::new();
+    board
+        .apply(
+            Board::paths()
+                .notes
+                .insert_as(&Id::from_raw("n1"), 0, &Note::default()),
+        )
+        .unwrap();
+    let published = board.published().unwrap();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .unwrap();
+    let schema = spec.params()[0].schema.as_deref().unwrap().clone();
+
+    // Every editable path is described: title, ops, value, flags.
+    let (title, _) = described(&schema, "title");
+    assert!(title.contains("ops: set, splice, replace"), "{title}");
+    assert!(title.contains("\"string\""), "{title}");
+    let (notes, _) = described(&schema, "notes");
+    assert!(notes.contains("asks for confirmation"), "{notes}");
+    let (drafts, _) = described(&schema, "drafts");
+    assert!(drafts.contains("asks nothing"), "{drafts}");
+
+    // Built from the descriptor: the example's path with the item's id in
+    // place of its placeholder, an op it lists, a value of its type.
+    let (_, example) = described(&schema, "notes.*.body");
+    let mut path = example["path"].clone();
+    for step in path.as_array_mut().unwrap() {
+        if step.get("item").is_some() {
+            *step = serde_json::json!({ "item": "n1" });
+        }
+    }
+    let edit = serde_json::json!({ "path": path, "op": "set", "value": ["line"] });
+    tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the schema");
+    let edit: tilo_resource::Edit<Board> = serde_json::from_value(edit).unwrap();
+    board.apply(edit).unwrap();
+    assert_eq!(
+        board
+            .state()
+            .unwrap()
+            .notes
+            .get(&Id::from_raw("n1"))
+            .unwrap()
+            .body,
+        ["line"]
+    );
+}
+
+#[test]
+fn an_item_resource_offers_the_field_edits_of_its_item() {
+    let mut board = Replica::<Board>::new();
+    board
+        .apply(Board::paths().notes.insert_as(
+            &Id::from_raw("n1"),
+            0,
+            &Note {
+                title: "Plan".into(),
+                ..Note::default()
+            },
+        ))
+        .unwrap();
+    let published = board.published().unwrap();
+    let item = published
+        .children
+        .iter()
+        .find(|child| child.id.as_str().ends_with("/notes/n1"))
+        .expect("the note is an item resource");
+    let spec = item
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .expect("its fields are edited from it");
+    let schema = spec.params()[0].schema.as_deref().unwrap().clone();
+    let (_, example) = described(&schema, "body");
+    let edit =
+        serde_json::json!({ "path": example["path"], "op": "set", "value": ["from the item"] });
+    tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the item's schema");
+}
+
+#[test]
+fn an_answering_verb_published_on_its_item_still_answers() {
+    let mut board = Replica::<Board>::new();
+    board
+        .apply(Board::paths().notes.insert_as(
+            &Id::from_raw("n1"),
+            0,
+            &Note {
+                title: "Plan".into(),
+                ..Note::default()
+            },
+        ))
+        .unwrap();
+    let published = board.published().unwrap();
+    let on_root = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == "clear-note")
+        .unwrap();
+    assert!(matches!(
+        on_root.contract.result,
+        tilo_actions::ResultSpec::Json { .. }
+    ));
+    let item = published
+        .children
+        .iter()
+        .find(|child| child.id.as_str().ends_with("/notes/n1"))
+        .unwrap();
+    let on_item = item
+        .actions
+        .iter()
+        .find(|spec| spec.id == "clear-note")
+        .expect("offered on its item");
+    assert_eq!(
+        on_item.contract.result, on_root.contract.result,
+        "the item's copy declares the same answer"
+    );
 }

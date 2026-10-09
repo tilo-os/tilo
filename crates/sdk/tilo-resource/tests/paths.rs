@@ -317,6 +317,52 @@ fn first_writes_into_one_row_both_survive() {
 }
 
 #[test]
+fn rows_two_replicas_add_under_one_id_keep_both_cells() {
+    let mut library = Replica::<Library>::new();
+    let sheet = Library::paths().sheet;
+    edit(&mut library, &sheet.insert_column(0)).unwrap();
+    let column = library
+        .state()
+        .unwrap()
+        .sheet
+        .columns()
+        .next()
+        .cloned()
+        .unwrap();
+    let mut other = library.fork();
+    let row = |id: &str| {
+        sheet.edit(tilo_resource::EditOp::InsertRow {
+            id: Some(Id::from_raw(id)),
+            at: 0,
+        })
+    };
+    edit(&mut library, &row("r40")).unwrap();
+    edit(&mut other, &row("r40")).unwrap();
+    edit(&mut other, &row("r39")).unwrap();
+    edit(
+        &mut library,
+        &sheet.set_cell(&Id::from_raw("r40"), &column, Some(&"A40".to_owned())),
+    )
+    .unwrap();
+    edit(
+        &mut other,
+        &sheet.set_cell(&Id::from_raw("r39"), &column, Some(&"B39".to_owned())),
+    )
+    .unwrap();
+    library.sync_with(&mut other).unwrap();
+    let grid = library.state().unwrap().sheet;
+    assert_eq!(
+        grid.cell(&Id::from_raw("r40"), &column).map(String::as_str),
+        Some("A40")
+    );
+    assert_eq!(
+        grid.cell(&Id::from_raw("r39"), &column).map(String::as_str),
+        Some("B39")
+    );
+    assert_eq!(grid, other.state().unwrap().sheet);
+}
+
+#[test]
 fn grid_cells_keep_identity_when_rows_and_columns_move() {
     let mut library = Replica::<Library>::new();
     let sheet = Library::paths().sheet;

@@ -215,7 +215,7 @@ impl PdfMarkup {
     /// values the source bytes already carry become records like any other,
     /// once per source. Their ids derive from the source, so two people
     /// taking it over at once agree.
-    #[action(external)]
+    #[action(external, writes = comments)]
     pub fn adopt_existing(
         &mut self,
         #[param("The content hash of the source the markup is in")] source: String,
@@ -291,7 +291,7 @@ impl PdfMarkup {
     ///
     /// Pages of other PDFs or pictures, by content, after a page (first when
     /// none is named). Their bytes are in the content store, never here.
-    #[action]
+    #[action(writes = comments)]
     pub fn import_pages(
         &mut self,
         #[param("The page they go after; the start when none")] after: Option<String>,
@@ -414,7 +414,7 @@ impl PdfMarkup {
     ///
     /// Text markup, ink, a note or free text on a page, signed by whoever
     /// adds it.
-    #[action]
+    #[action(writes = comments)]
     pub fn add_annotation(
         &mut self,
         cx: &mut ActionCx,
@@ -442,7 +442,7 @@ impl PdfMarkup {
     ///
     /// The comments pinned to it go with it, so a deleted note leaves no
     /// thread behind.
-    #[action(item = annotations)]
+    #[action(item = annotations, writes = comments)]
     pub fn delete_annotation(&mut self, annotation: &Id) -> Result<(), Refusal> {
         self.annotations
             .take(annotation)
@@ -456,7 +456,7 @@ impl PdfMarkup {
     ///
     /// A sticky note on a page and the comment thread pinned to it, signed
     /// by whoever adds it.
-    #[action]
+    #[action(writes = comments)]
     pub fn create_note(
         &mut self,
         cx: &mut ActionCx,
@@ -504,7 +504,7 @@ impl PdfMarkup {
     ///
     /// A sticky note with this text, where a reader looks first; for the
     /// palette, keyboard users and agents.
-    #[action]
+    #[action(writes = comments)]
     pub fn add_note(
         &mut self,
         cx: &mut ActionCx,
@@ -532,7 +532,7 @@ impl PdfMarkup {
     /// Add comment.
     ///
     /// Free on a page, or about an annotation, signed by whoever writes it.
-    #[action(field = "comments")]
+    #[action(field = "comments", writes = comments)]
     pub fn add_comment(
         &mut self,
         cx: &mut ActionCx,
@@ -573,7 +573,7 @@ impl PdfMarkup {
     /// Reply.
     ///
     /// Adds an answer to the thread, signed by whoever writes it.
-    #[action(item = comments, field = "comments")]
+    #[action(item = comments, field = "comments", writes = comments)]
     pub fn reply(
         &mut self,
         cx: &mut ActionCx,
@@ -611,7 +611,7 @@ impl PdfMarkup {
     /// Delete comment.
     ///
     /// A comment pinning a sticky note takes the note with it.
-    #[action(item = comments)]
+    #[action(item = comments, writes = comments)]
     pub fn delete_comment(&mut self, comment: &Id) -> Result<(), Refusal> {
         let thread = self
             .comments
@@ -687,7 +687,7 @@ impl PdfMarkup {
     }
 
     /// Delete signature.
-    #[action(item = signatures)]
+    #[action(item = signatures, writes = comments)]
     pub fn delete_signature(&mut self, signature: &Id) -> Result<(), Refusal> {
         self.signatures
             .take(signature)

@@ -49,6 +49,7 @@ fn a_derived_record_lists_its_stored_fields() {
             label: false,
             label_part: 0,
             quiet_remove: false,
+            schema: <String as tilo_resource::Model>::value_schema,
         },
         FieldShape {
             key: "limit",
@@ -63,6 +64,7 @@ fn a_derived_record_lists_its_stored_fields() {
             label: false,
             label_part: 0,
             quiet_remove: false,
+            schema: <String as tilo_resource::Model>::value_schema,
         },
     ]);
     const META: Shape = Shape::Record(&[FieldShape {
@@ -78,6 +80,7 @@ fn a_derived_record_lists_its_stored_fields() {
         label: false,
         label_part: 0,
         quiet_remove: false,
+        schema: <String as tilo_resource::Model>::value_schema,
     }]);
     assert_eq!(
         Board::shape(),
@@ -95,6 +98,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label: false,
                 label_part: 0,
                 quiet_remove: false,
+                schema: <String as tilo_resource::Model>::value_schema,
             },
             FieldShape {
                 key: "cols",
@@ -109,6 +113,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label: false,
                 label_part: 0,
                 quiet_remove: false,
+                schema: <String as tilo_resource::Model>::value_schema,
             },
             FieldShape {
                 key: "archived",
@@ -123,6 +128,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label: false,
                 label_part: 0,
                 quiet_remove: false,
+                schema: <String as tilo_resource::Model>::value_schema,
             },
             FieldShape {
                 key: "filter",
@@ -137,6 +143,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 label: false,
                 label_part: 0,
                 quiet_remove: false,
+                schema: <String as tilo_resource::Model>::value_schema,
             },
         ])),
     );

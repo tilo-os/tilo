@@ -263,9 +263,12 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         );
 
         // Its actions are the card actions, with the card already bound: only
-        // the remaining parameters are asked for.
+        // the remaining parameters are asked for; and the card's own fields.
         let actions: Vec<_> = card.actions.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(actions, ["advance", "move-card", "delete-card"]);
+        assert_eq!(
+            actions,
+            ["advance", "move-card", "delete-card", "field-edit"]
+        );
         let advance = card.actions.first().unwrap();
         assert!(advance.params().is_empty());
         let move_card = card.actions.get(1).unwrap();

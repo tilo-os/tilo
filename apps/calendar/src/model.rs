@@ -466,7 +466,8 @@ pub struct Event {
     pub timezone: String,
     /// Stable attendee id designating the organizer, when known.
     pub organizer: Option<Id>,
-    /// Who is invited
+    /// Who is invited. Taking someone off the list asks nothing.
+    #[model(remove = "quiet")]
     pub attendees: Keyed<Attendee>,
     /// Minutes before start for a reminder, if any.
     pub reminder_min: Option<i64>,

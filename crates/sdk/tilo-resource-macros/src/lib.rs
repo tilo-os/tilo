@@ -235,6 +235,9 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         ) -> ::core::result::Result<Self, #krate::ModelError> {
                             <#ty as #krate::Model>::load(doc, value, id).map(Self)
                         }
+                        fn value_schema() -> #krate::__private::serde_json::Value {
+                            <#ty as #krate::Model>::value_schema()
+                        }
                         fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
                             <#ty as #krate::Model>::missing().map(Self)
                         }
@@ -338,6 +341,9 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                             )),
                         }
                     }
+                    fn value_schema() -> #krate::__private::serde_json::Value {
+                        #krate::__private::serde_json::json!({"type": "string", "enum": [#(#names),*]})
+                    }
                     fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
                         #missing
                     }
@@ -403,6 +409,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut writes = Vec::new();
     let mut refreshes = Vec::new();
     let mut texts = Vec::new();
+    let mut value_schemas = Vec::new();
     let mut shapes = Vec::new();
     let mut collections = Vec::new();
     let mut path_fields = Vec::new();
@@ -529,6 +536,10 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             );
         }
         texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
+        value_schemas.push(quote!(properties.insert(
+            ::std::string::String::from(#key),
+            <#ty as #krate::Model>::value_schema(),
+        );));
         get_arms.push(quote!(#key => #krate::Model::get_at(&self.#ident, rest),));
         op_coalesce_arms
             .push(quote!(#key => <#ty as #krate::Model>::op_coalesces(rest, previous, next),));
@@ -566,6 +577,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label: #is_label,
             label_part: #label_part,
             quiet_remove: #quiet_remove,
+            schema: <#ty as #krate::Model>::value_schema,
         }));
         path_fields.push(quote!(#field_vis #ident: <#ty as #krate::Model>::Paths<__R>));
         path_inits.push(quote!(#ident: <#ty as #krate::Model>::paths_at(
@@ -934,6 +946,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                     }
                     _ => ::core::result::Result::Err(#krate::ModelError::shape("a map")),
                 }
+            }
+            fn value_schema() -> #krate::__private::serde_json::Value {
+                let mut properties = #krate::__private::serde_json::Map::new();
+                #(#value_schemas)*
+                #krate::__private::serde_json::json!({"type": "object", "properties": properties})
             }
             fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
                 ::core::result::Result::Ok(Self { #(#missing,)* })

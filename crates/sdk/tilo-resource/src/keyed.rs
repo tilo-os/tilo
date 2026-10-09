@@ -193,6 +193,9 @@ fn entries<T: Model>(doc: &Doc, map: &ObjId) -> Result<Vec<T>, ModelError> {
 }
 
 impl<T: Model + Identified> Model for Keyed<T> {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "array", "items": T::value_schema()})
+    }
     const SHAPE: crate::Shape = crate::Shape::Keyed(&T::SHAPE);
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();

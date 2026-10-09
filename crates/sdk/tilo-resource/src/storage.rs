@@ -64,6 +64,9 @@ impl fmt::Display for Counter {
 }
 
 impl Model for Counter {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "integer"})
+    }
     crate::model::leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
         self.0.into()
@@ -200,6 +203,9 @@ impl<T: Model> FromIterator<T> for Set<T> {
 }
 
 impl<T: Model> Model for Set<T> {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "array", "items": T::value_schema()})
+    }
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
@@ -485,13 +491,41 @@ const ROWS: &str = "rows";
 const COLUMNS: &str = "columns";
 const CELLS: &str = "cells";
 
+/// The key a cell is stored under in the grid's `cells` map.
+fn cell_key(row: &str, column: &str) -> String {
+    format!("{row}/{column}")
+}
+
+/// Every cell `cells` (the grid's `cells` map) holds, by row then column.
+fn read_cells<T: Model>(
+    doc: &Doc,
+    grid: &ObjId,
+) -> Result<BTreeMap<String, BTreeMap<String, T>>, ModelError> {
+    let mut out: BTreeMap<String, BTreeMap<String, T>> = BTreeMap::new();
+    let Some((Value::Object(ObjType::Map), cells)) = doc.get(grid, CELLS)? else {
+        return Ok(out);
+    };
+    for key in doc.keys(&cells) {
+        let Some((row, column)) = key.split_once('/') else {
+            continue;
+        };
+        let value = read_key::<T>(doc, &cells, &key)?;
+        out.entry(row.to_owned())
+            .or_default()
+            .insert(column.to_owned(), value);
+    }
+    Ok(out)
+}
+
 /// A table of cells addressed by stable row and column ids. Inserting or
 /// removing a row or column keeps every other cell's identity, concurrent
 /// edits merge per cell, and empty cells take no space.
 ///
 /// Stored as a map: `rows` and `columns` are ordered like a
-/// [`Collection`]'s items, `cells` maps each row id to a map of its
-/// non-empty cells by column id.
+/// [`Collection`]'s items, `cells` maps `<row>/<column>` to each non-empty
+/// cell. Cells sit flat in one map made with the grid, so no write ever
+/// makes an object per row: two people writing into a row they both just
+/// added both keep their cells.
 #[derive(Clone, Debug)]
 pub struct Grid<T> {
     rows: Collection<()>,
@@ -771,14 +805,10 @@ impl<T: Model> Model for Grid<T> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a grid"));
         }
-        let mut cells: BTreeMap<String, BTreeMap<String, T>> = read_key(doc, id, CELLS)?;
-        // A row's cell map exists from the row's start; an empty one is no
-        // content.
-        cells.retain(|_, row| !row.is_empty());
         Ok(Self {
             rows: read_key(doc, id, ROWS)?,
             columns: read_key(doc, id, COLUMNS)?,
-            cells,
+            cells: read_cells(doc, id)?,
         })
     }
     fn missing() -> Result<Self, ModelError> {
@@ -788,24 +818,20 @@ impl<T: Model> Model for Grid<T> {
         let map = grid_map(doc, slot)?;
         write_key(doc, &map, ROWS, &self.rows)?;
         write_key(doc, &map, COLUMNS, &self.columns)?;
-        // Every row keeps its cell map from its start, so two people writing
-        // the first cells of one row write into the same map rather than
-        // each creating one and losing the other's.
         let cells = Slot::Key(&map, CELLS).object(doc, ObjType::Map)?;
-        let stale: Vec<String> = doc
-            .keys(&cells)
-            .filter(|row| !self.rows.contains(&Id::from_raw(row.as_str())))
+        let held: std::collections::BTreeSet<String> = self
+            .cells()
+            .map(|(row, column, _)| cell_key(row.as_str(), column.as_str()))
             .collect();
-        for row in stale {
-            doc.delete(&cells, row.as_str())?;
+        let stale: Vec<String> = doc.keys(&cells).filter(|key| !held.contains(key)).collect();
+        for key in stale {
+            doc.delete(&cells, key.as_str())?;
         }
-        let empty = BTreeMap::new();
-        for row in self.rows.ids() {
-            self.cells
-                .get(row.as_str())
-                .unwrap_or(&empty)
-                .store(doc, Slot::Key(&cells, row.as_str()))
-                .map_err(|error| error.at(row.as_str()))?;
+        for (row, column, value) in self.cells() {
+            let key = cell_key(row.as_str(), column.as_str());
+            value
+                .store(doc, Slot::Key(&cells, &key))
+                .map_err(|error| error.at(&key))?;
         }
         Ok(())
     }
@@ -822,10 +848,13 @@ impl<T: Model> Model for Grid<T> {
         }
         refresh_key(&mut self.rows, doc, id, ROWS, delta)?;
         refresh_key(&mut self.columns, doc, id, COLUMNS, delta)?;
-        refresh_key(&mut self.cells, doc, id, CELLS, delta)?;
-        self.cells.retain(|_, row| !row.is_empty());
+        self.cells = read_cells(doc, id)?;
         Ok(())
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per grid operation, read top to bottom"
+    )]
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -846,8 +875,8 @@ impl<T: Model> Model for Grid<T> {
                     return Err(ModelError::invalid(format!("no cell {row}:{column}")));
                 }
                 let cells = Slot::Key(&map, CELLS).object(doc, ObjType::Map)?;
-                let cells = Slot::Key(&cells, row.as_str()).object(doc, ObjType::Map)?;
-                let slot = Slot::Key(&cells, column.as_str());
+                let key = cell_key(row.as_str(), column.as_str());
+                let slot = Slot::Key(&cells, &key);
                 if rest.is_empty() && matches!(op, EditOp::Set { .. }) {
                     return edit_whole::<T>(doc, slot, rest, op);
                 }
@@ -863,39 +892,34 @@ impl<T: Model> Model for Grid<T> {
                     return Err(ModelError::invalid(format!("no cell {row}:{column}")));
                 }
                 let cells = Slot::Key(&map, CELLS).object(doc, ObjType::Map)?;
+                let key = cell_key(row.as_str(), column.as_str());
                 match value {
                     Some(value) => {
                         let value = T::from_json(value)?;
                         value.check().map_err(ModelError::refused)?;
-                        let cells = Slot::Key(&cells, row.as_str()).object(doc, ObjType::Map)?;
-                        value.store(doc, Slot::Key(&cells, column.as_str()))
+                        value.store(doc, Slot::Key(&cells, &key))
                     }
-                    None => match doc.get(&cells, row.as_str())? {
-                        Some((_, row_cells)) => Slot::Key(&row_cells, column.as_str()).remove(doc),
-                        None => Ok(()),
-                    },
+                    None => Slot::Key(&cells, &key).remove(doc),
                 }
             }
             (None, EditOp::InsertRow { id, at } | EditOp::InsertColumn { id, at }) => {
-                let row = matches!(op, EditOp::InsertRow { .. });
-                let axis = if row { ROWS } else { COLUMNS };
+                let axis = if matches!(op, EditOp::InsertRow { .. }) {
+                    ROWS
+                } else {
+                    COLUMNS
+                };
                 let id = id.clone().unwrap_or_else(|| cx.id());
                 Collection::<()>::edit(
                     doc,
                     Slot::Key(&map, axis),
                     &[],
                     &EditOp::InsertItem {
-                        id: Some(id.clone()),
+                        id: Some(id),
                         at: *at,
                         value: serde_json::Value::Null,
                     },
                     cx,
                 )?;
-                if row {
-                    // The row's cell map, so its first cells merge.
-                    let cells = Slot::Key(&map, CELLS).object(doc, ObjType::Map)?;
-                    Slot::Key(&cells, id.as_str()).object(doc, ObjType::Map)?;
-                }
                 Ok(())
             }
             (None, EditOp::RemoveRow { id }) => {
@@ -907,7 +931,14 @@ impl<T: Model> Model for Grid<T> {
                     cx,
                 )?;
                 if let Some((_, cells)) = doc.get(&map, CELLS)? {
-                    Slot::Key(&cells, id.as_str()).remove(doc)?;
+                    let prefix = format!("{id}/");
+                    let gone: Vec<String> = doc
+                        .keys(&cells)
+                        .filter(|key| key.starts_with(&prefix))
+                        .collect();
+                    for key in gone {
+                        doc.delete(&cells, key.as_str())?;
+                    }
                 }
                 Ok(())
             }
@@ -920,11 +951,13 @@ impl<T: Model> Model for Grid<T> {
                     cx,
                 )?;
                 if let Some((_, cells)) = doc.get(&map, CELLS)? {
-                    let rows: Vec<String> = doc.keys(&cells).collect();
-                    for row in rows {
-                        if let Some((_, row_cells)) = doc.get(&cells, row.as_str())? {
-                            Slot::Key(&row_cells, id.as_str()).remove(doc)?;
-                        }
+                    let suffix = format!("/{id}");
+                    let gone: Vec<String> = doc
+                        .keys(&cells)
+                        .filter(|key| key.ends_with(&suffix))
+                        .collect();
+                    for key in gone {
+                        doc.delete(&cells, key.as_str())?;
                     }
                 }
                 Ok(())

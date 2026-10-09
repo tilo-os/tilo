@@ -75,6 +75,9 @@ impl std::str::FromStr for Id {
 
 impl Settable for Id {}
 impl Model for Id {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "string"})
+    }
     crate::model::leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(self.0.clone())
@@ -466,6 +469,9 @@ fn longest_increasing(keys: &[Option<&str>]) -> Vec<usize> {
 }
 
 impl<T: Model> Model for Collection<T> {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "value": T::value_schema()}}})
+    }
     const SHAPE: crate::Shape = crate::Shape::Collection(&T::SHAPE);
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();

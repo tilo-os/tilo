@@ -119,9 +119,18 @@ fn items_offer_their_effects_and_open_and_labelled_items_are_published() {
     let answered = app
         .call("save", serde_json::json!({ "name": "Churn" }))
         .unwrap();
+    let answered = answered.expect("the verb answers");
+    assert_eq!(answered["saved"], true, "with what it made");
+    let churn = app
+        .state()
+        .queries
+        .iter()
+        .find(|(_, query)| query.name == "Churn")
+        .map(|(id, _)| id.as_str().to_owned())
+        .unwrap();
     assert_eq!(
-        answered,
-        Some(serde_json::json!({ "saved": true })),
-        "the verb answers with what it made"
+        answered["minted"],
+        serde_json::json!([churn]),
+        "and the ids it minted"
     );
 }

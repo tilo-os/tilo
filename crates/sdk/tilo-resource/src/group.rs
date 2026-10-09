@@ -66,6 +66,9 @@ where
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload = serde_json::to_vec(&self.actions).map_err(ActionError::Encode)?;
         let seed = crate::action::seed(doc, b"tilo-resource/group-seed/v1", &payload);
+        if current_member().is_none() {
+            drop(crate::action::take_minted());
+        }
         let _restore = MemberScope(current_member());
         for (position, action) in (0_u64..).zip(&self.actions) {
             MEMBER.with(|member| member.set(Some((seed, position))));

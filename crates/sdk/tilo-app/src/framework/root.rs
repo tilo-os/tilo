@@ -1682,11 +1682,26 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         address: &tilo_actions::ActionAddress,
         changes: &[ui_core::automerge::Patch],
     ) -> Option<serde_json::Value> {
-        if address.resource == self.dispatch.resource_id() {
+        // The record's own actions, and its verbs bound on its items.
+        if address.resource == self.dispatch.resource_id()
+            || tilo_resource::items::item_of_resource::<R>(address.resource.as_str()).is_some()
+        {
             if super::history::is_edit(&address.action) {
                 return super::history::result(&address.action, doc, changes);
             }
-            if let Some(answer) = R::answer(doc, &address.action, changes) {
+            // What the action minted rides beside its own answer.
+            let minted = tilo_resource::take_minted();
+            let answer = R::answer(doc, &address.action, changes);
+            if !minted.is_empty() {
+                let mut answer = match answer {
+                    Some(serde_json::Value::Object(fields)) => fields,
+                    Some(other) => serde_json::Map::from_iter([("answer".to_owned(), other)]),
+                    None => serde_json::Map::new(),
+                };
+                answer.insert("minted".into(), minted.into());
+                return Some(serde_json::Value::Object(answer));
+            }
+            if let Some(answer) = answer {
                 return Some(answer);
             }
         }

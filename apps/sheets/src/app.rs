@@ -4756,7 +4756,7 @@ pub(crate) mod tests {
     fn sample_app() -> TestApp<crate::resource::SheetsShell> {
         let mut app = TestApp::<crate::resource::SheetsShell>::new().unwrap();
         for invoke in crate::sample::workbook() {
-            app.invoke(invoke).unwrap();
+            app.invoke_confirmed(invoke).unwrap();
         }
         app
     }

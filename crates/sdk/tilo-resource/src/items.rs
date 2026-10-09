@@ -232,6 +232,10 @@ fn build_item<R: Resource>(
     {
         child = child.with_action(rename);
     }
+    // Its fields, edited from the item.
+    if let Some(spec) = crate::resource::item_field_edit_spec::<R>(field, id) {
+        child = child.with_action(spec);
+    }
     child
 }
 
@@ -534,6 +538,10 @@ pub fn bound<R: Resource, N: AsRef<str>>(
     }
     if decl.destructive {
         spec = spec.destructive();
+    }
+    // An item verb that answers answers on its item too.
+    if let Some(result) = &decl.result {
+        spec.contract.result = result.clone();
     }
     spec
 }

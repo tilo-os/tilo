@@ -36,7 +36,7 @@ pub enum Shape {
     clippy::struct_excessive_bools,
     reason = "each flag is one independent field attribute"
 )]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct FieldShape {
     /// The key the field is stored under (after `#[model(rename)]`).
     pub key: &'static str,
@@ -69,7 +69,28 @@ pub struct FieldShape {
     /// field edit asks no confirmation. Otherwise it is destructive, as a
     /// delete verb is, so the generic edit is never a quieter way around it.
     pub quiet_remove: bool,
+    /// The JSON Schema of the field's value ([`Model::value_schema`](crate::Model::value_schema)).
+    pub schema: fn() -> serde_json::Value,
 }
+
+/// Two fields are the same field when everything but their value schema's
+/// function (which compares by address) is.
+impl PartialEq for FieldShape {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.owner == other.owner
+            && self.name == other.name
+            && self.ty == other.ty
+            && self.title == other.title
+            && self.shape == other.shape
+            && self.unit == other.unit
+            && self.readonly == other.readonly
+            && self.label == other.label
+            && self.quiet_remove == other.quiet_remove
+    }
+}
+
+impl Eq for FieldShape {}
 
 impl Shape {
     /// The fields of a record shape; none for any other.

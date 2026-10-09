@@ -131,7 +131,7 @@ pub mod text;
 
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
-    Outcome, Params, Refusal, Stamped, Undoing, fresh_uuid, minted_ids,
+    Outcome, Params, Refusal, Stamped, Undoing, fresh_uuid, minted_ids, take_minted,
 };
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;

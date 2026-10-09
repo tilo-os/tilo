@@ -558,7 +558,7 @@ impl Workbook {
     }
 
     /// Comment on cells.
-    #[action]
+    #[action(writes = comments)]
     pub fn comment(
         &mut self,
         cx: &mut ActionCx,
@@ -588,7 +588,7 @@ impl Workbook {
     }
 
     /// Reply to a comment.
-    #[action]
+    #[action(writes = comments)]
     pub fn reply(
         &mut self,
         cx: &mut ActionCx,
@@ -609,7 +609,7 @@ impl Workbook {
     }
 
     /// Delete a comment.
-    #[action(destructive)]
+    #[action(destructive, writes = comments)]
     pub fn delete_comment(
         &mut self,
         sheet: &Id,

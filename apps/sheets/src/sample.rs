@@ -239,7 +239,7 @@ pub fn fill_seeds() -> Vec<Invoke<Workbook>> {
     let state = {
         let mut replica = ui::tilo_resource::Replica::<Workbook>::new();
         for invoke in workbook() {
-            let _ = replica.apply(invoke);
+            let _ = replica.apply_confirmed(invoke);
         }
         replica.state().unwrap_or_default()
     };
@@ -254,7 +254,7 @@ pub fn fill_seeds() -> Vec<Invoke<Workbook>> {
 pub(crate) fn replica() -> ui::tilo_resource::Replica<Workbook> {
     let mut replica = ui::tilo_resource::Replica::<Workbook>::new();
     for invoke in workbook() {
-        replica.apply(invoke).unwrap();
+        replica.apply_confirmed(invoke).unwrap();
     }
     replica
 }

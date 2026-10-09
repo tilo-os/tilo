@@ -1035,8 +1035,18 @@ fn validate_schema_array(
         {
             return Err("must contain unique items".into());
         }
+        // `prefixItems` checks the leading items one schema each; `items`
+        // the ones after them (JSON Schema 2020-12).
+        let prefix = schema
+            .get("prefixItems")
+            .and_then(serde_json::Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        for (index, (item, item_schema)) in items.iter().zip(prefix).enumerate() {
+            validate_schema(item, item_schema)
+                .map_err(|reason| format!("item {index} {reason}"))?;
+        }
         if let Some(item_schema) = schema.get("items") {
-            for (index, item) in items.iter().enumerate() {
+            for (index, item) in items.iter().enumerate().skip(prefix.len()) {
                 validate_schema(item, item_schema)
                     .map_err(|reason| format!("item {index} {reason}"))?;
             }
@@ -1083,6 +1093,7 @@ const SCHEMA_ASSERTIONS: &[&str] = &[
     "maxItems",
     "uniqueItems",
     "items",
+    "prefixItems",
     "required",
     "properties",
     "additionalProperties",
@@ -1206,6 +1217,15 @@ fn validate_schema_definition_collections(
     if let Some(items) = object.get("items") {
         validate_schema_definition(items).map_err(|reason| format!("items {reason}"))?;
     }
+    if let Some(prefix) = object.get("prefixItems") {
+        let prefix = prefix
+            .as_array()
+            .ok_or_else(|| "schema `prefixItems` must be an array".to_string())?;
+        for (index, item) in prefix.iter().enumerate() {
+            validate_schema_definition(item)
+                .map_err(|reason| format!("prefixItems {index} {reason}"))?;
+        }
+    }
     if let Some(alternatives) = object.get("oneOf") {
         let alternatives = alternatives
             .as_array()
@@ -1320,6 +1340,21 @@ mod rich_schema_tests {
                 .get(RESOURCE_KIND_ANNOTATION),
             None
         );
+    }
+
+    #[test]
+    fn prefix_items_check_the_leading_items_and_items_the_rest() {
+        let schema = json!({
+            "type": "array",
+            "prefixItems": [{"const": "a"}, {"type": "string"}],
+            "items": {"type": "integer"},
+        });
+        assert!(validate_schema_definition(&schema).is_ok());
+        assert!(validate_schema(&json!(["a", "x", 1, 2]), &schema).is_ok());
+        assert!(validate_schema(&json!(["b", "x"]), &schema).is_err());
+        assert!(validate_schema(&json!(["a", 1]), &schema).is_err());
+        assert!(validate_schema(&json!(["a", "x", "y"]), &schema).is_err());
+        assert!(validate_schema_definition(&json!({"prefixItems": {}})).is_err());
     }
 
     #[test]

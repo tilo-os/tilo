@@ -187,7 +187,7 @@ impl Ebook {
     ///
     /// Takes the book off the shelf. Where the reader was and what they
     /// marked in it stay, so adding it again brings them back.
-    #[action(destructive)]
+    #[action(destructive, writes = annotations)]
     pub fn remove_from_library(&mut self, #[param("The book's id")] book: String) {
         self.entries.remove(&Id::from_raw(book));
     }
@@ -420,7 +420,7 @@ impl Ebook {
     }
 
     /// Delete scheme
-    #[action(destructive)]
+    #[action(destructive, writes = annotations)]
     pub fn delete_scheme(
         &mut self,
         #[param("The colour scheme's id")] scheme: String,
@@ -1143,6 +1143,7 @@ pub(crate) fn edit_doc(doc: &mut ui::automerge::AutoCommit, edit: &tilo_resource
 
 #[cfg(test)]
 fn put(library: &mut tilo_resource::Replica<Ebook>, edit: &tilo_resource::Edit<Ebook>) {
+    // The library's own fixture: removals are confirmed.
     library
         .apply_confirmed(Invoke::edit(edit).expect("a test's edit builds"))
         .expect("a test's edit applies");

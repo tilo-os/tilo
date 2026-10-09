@@ -168,6 +168,9 @@ impl<R, T: Model + Identified> Path<R, Ordered<T>> {
 }
 
 impl<T: Model + Identified> Model for Ordered<T> {
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "array", "items": T::value_schema()})
+    }
     const SHAPE: crate::Shape = crate::Shape::Collection(&T::SHAPE);
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
