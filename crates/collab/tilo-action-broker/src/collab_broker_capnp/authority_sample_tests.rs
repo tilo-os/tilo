@@ -126,7 +126,7 @@ fn meter_start() {
 
 /// Stop counting and return the bytes requested since [`meter_start`].
 fn meter_stop() -> usize {
-    METERED.with(|total| total.take()).unwrap_or(0)
+    METERED.with(Cell::take).unwrap_or(0)
 }
 
 /// Effect receipts in the heavy fixture: a long agent history.
