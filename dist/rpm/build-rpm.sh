@@ -70,7 +70,7 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 [[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
-for bin in fs tilo-relay-admin shell imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
+for bin in shell fs tilo-relay-admin imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
            tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway \
            tilo-relay-environment tilo-relay-offers tilo-legacy app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
