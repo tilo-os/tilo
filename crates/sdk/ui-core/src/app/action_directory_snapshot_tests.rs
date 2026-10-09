@@ -320,10 +320,9 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         assert_eq!(root.rows[0].action.as_deref(), Some("inspect"));
         assert_eq!(
             root.rows[0].descriptor.as_ref().unwrap().operation_kind,
-            "effect"
+            tilo_actions::OperationKind::Effect
         );
-        let contract: tilo_actions::ActionContract =
-            serde_json::from_str(&root.rows[0].visibility_contract_json).unwrap();
+        let contract = &root.rows[0].visibility.as_ref().unwrap().contract;
         assert_eq!(
             contract.permission,
             tilo_actions::PermissionRequirement::Write
@@ -359,8 +358,7 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
             ]
         );
         assert_eq!(rows[0].resource_label, "Published label");
-        let contract: tilo_actions::ActionContract =
-            serde_json::from_str(&rows[0].visibility_contract_json).unwrap();
+        let contract = &rows[0].visibility.as_ref().unwrap().contract;
         assert_eq!(
             contract.permission,
             tilo_actions::PermissionRequirement::Read
@@ -757,8 +755,7 @@ fn directory_lifecycle_publishes_once_ready_and_refreshes_on_idle() {
         let rows = app.action_directory_page(directory_query("", "declared:0", 8, 8192, 8));
         assert_eq!(rows.rows.len(), 1);
         assert_ne!(rows.revision, revision);
-        let contract: tilo_actions::ActionContract =
-            serde_json::from_str(&rows.rows[0].visibility_contract_json).unwrap();
+        let contract = &rows.rows[0].visibility.as_ref().unwrap().contract;
         assert_eq!(
             contract.confirmation,
             tilo_actions::ConfirmationPolicy::Confirm

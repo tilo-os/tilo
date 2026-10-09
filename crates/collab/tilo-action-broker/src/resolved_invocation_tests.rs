@@ -208,10 +208,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
         // The eager path on the second worker binds its lease to the exact
         // original request as well.
         let mut descriptor = directory_state.borrow().row().descriptor.unwrap();
-        let mut contract: tilo_actions::ActionContract =
-            serde_json::from_str(&descriptor.contract_json).unwrap();
-        contract.permission = tilo_actions::PermissionRequirement::Write;
-        descriptor.contract_json = serde_json::to_string(&contract).unwrap();
+        descriptor.contract.permission = tilo_actions::PermissionRequirement::Write;
         second
             .handle
             .publish_actions(&route.app_id, &[descriptor])
@@ -360,8 +357,10 @@ async fn resolved_invocation_capacity_is_bounded_and_cancellation_releases_it() 
             Promise::from_future(async move {
                 self.entered.send(()).unwrap();
                 self.release.notified().await;
-                write_directory_row(results.get().init_resolution().init_found(), &self.row);
-                Ok(())
+                runtime_collab::write_action_directory_row(
+                    results.get().init_resolution().init_found(),
+                    &self.row,
+                )
             })
         }
     }

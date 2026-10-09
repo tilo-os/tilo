@@ -17,8 +17,8 @@ use tilo_actions::remote::{
     APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
     ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility,
-    application_provider, pending, workspace_provider, workspace_provider_room,
+    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, application_provider,
+    pending, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
@@ -2558,20 +2558,11 @@ fn directory_row(
             id: row.resource.clone(),
             kind: row.resource_kind.clone(),
             label: row.resource_label.clone(),
-            presentation: serde_json::from_str::<tilo_actions::ResourcePresentation>(
-                &row.resource_presentation_json,
-            )
-            .ok()
-            .filter(tilo_actions::ResourcePresentation::is_valid),
+            presentation: row.presentation.clone(),
         },
         action,
         has_children: row.has_children,
-        visibility: row.visibility_action.clone().and_then(|action| {
-            Some(RowVisibility {
-                action,
-                contract: serde_json::from_str(&row.visibility_contract_json).ok()?,
-            })
-        }),
+        visibility: row.visibility.clone(),
     })
 }
 

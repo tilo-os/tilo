@@ -139,6 +139,13 @@ fn serve(socket: &PathBuf) -> Result<(), String> {
     let http = Arc::new(provider_client()?);
     tilo_rt::daemon("model-gateway")
         .run(async move {
+            // An idle gateway lets go of the provider keys it kept.
+            tokio::spawn(async {
+                loop {
+                    tokio::time::sleep(PROFILE_REUSE).await;
+                    PLAN_PROFILES.sweep(Instant::now());
+                }
+            });
             let listener =
                 tokio::net::UnixListener::from_std(listener).map_err(|error| error.to_string())?;
             serve_on(listener, http, MAX_CLIENTS, same_user).await
@@ -632,6 +639,7 @@ fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
     vault.put(&vault_id(profile_id)?, &Secret::password(key.as_str()));
     key.zeroize();
     vault.save();
+    PLAN_PROFILES.forget(profile_id);
     Ok(())
 }
 
@@ -643,13 +651,18 @@ fn remove_key(profile_id: &str) -> Result<(), String> {
     let mut vault = SecretVault::open();
     vault.remove(&vault_id(profile_id)?);
     vault.save();
+    PLAN_PROFILES.forget(profile_id);
     Ok(())
 }
 
 const MAX_PROVIDER_TIMEOUT: Duration = Duration::from_secs(60);
-// Retry policy remains scoped to the separate Photos operations. Plan must
-// never infer permission to replay paid work from an HTTP or transport error.
+// The Photos operations retry transient failures in `while_busy`. Plan must
+// never infer permission to replay paid work from an HTTP or transport
+// error: it asks again only when the provider provably did not take the
+// request (`ProviderFailure::unprocessed`), in `plan_send`.
 const RETRY_ATTEMPTS: u32 = 4;
+/// Every POST one Plan may make, the first included.
+const PLAN_ATTEMPTS: u32 = 3;
 const FIRST_RETRY_WAIT: Duration = Duration::from_millis(500);
 const LONGEST_RETRY_WAIT: Duration = Duration::from_secs(4);
 const ROOM_TO_ANSWER: Duration = Duration::from_secs(5);
@@ -663,8 +676,14 @@ enum Again {
 struct ProviderFailure {
     why: String,
     again: Again,
-    /// False only when request construction proves no dispatch occurred.
+    /// False only when request construction proves no dispatch occurred, or
+    /// the provider provably did not take the request (`unprocessed`).
     outcome_unknown: bool,
+    /// The provider provably did no work for this request: no connection to
+    /// it could be made, or it refused the request as rate-limited (HTTP
+    /// 429, not for exhausted quota) or overloaded (HTTP 529). The one
+    /// ground on which a Plan is sent again.
+    unprocessed: bool,
     /// The provider's HTTP status, when one was received.
     status: Option<u16>,
 }
@@ -692,17 +711,205 @@ async fn plan(
     result
 }
 
-/// The configured profile for a planning call and its API key.
-fn plan_profile(
-    profile_id: &str,
-    model_id: &str,
-) -> Result<(ProviderProfile, Option<Zeroizing<String>>), String> {
-    let profile = configured_profile(profile_id)?;
-    if !profile.models.iter().any(|model| model.id == model_id) {
-        return Err("model is not configured for this provider".into());
+/// A configured profile and its API key (none for an unauthenticated local
+/// endpoint).
+type ResolvedProfile = (ProviderProfile, Option<Zeroizing<String>>);
+
+/// The configured profile for a planning call and its API key, as
+/// [`PLAN_PROFILES`] keeps them between model turns.
+fn plan_profile(profile_id: &str, model_id: &str) -> Result<ResolvedProfile, String> {
+    // Stamped before reading, so a change made while reading is a miss next time.
+    let stamp = ProfileSources::current().and_then(|sources| sources.stamp());
+    PLAN_PROFILES.resolve((profile_id, model_id), stamp, Instant::now(), || {
+        let profile = configured_profile(profile_id)?;
+        if !profile.models.iter().any(|model| model.id == model_id) {
+            return Err("model is not configured for this provider".into());
+        }
+        let secret = plan_secret(&profile)?;
+        Ok((profile, secret))
+    })
+}
+
+/// How long a resolved profile and key are reused at most. Changes to
+/// `settings.json` or the vault, and keys set or removed through this
+/// gateway, take effect at once; this bounds what no file records, chiefly
+/// the keyring holding the vault's key: once it is locked, a Plan within
+/// this long still uses the key read while it was open, and a later one
+/// consults (and asks to unlock) it again, as every Plan did before.
+const PROFILE_REUSE: Duration = Duration::from_secs(60);
+
+/// Plans' and Transforms' resolved profiles and keys, kept between model
+/// turns so a turn does not re-read and re-validate `settings.json`, ask the
+/// keyring for the vault key and decrypt every account secret before its
+/// POST. Memory only; a key is wiped when its entry is dropped.
+static PLAN_PROFILES: ProfileCache = ProfileCache::new();
+
+/// One file as a reading of it found it. An atomic replacement changes the
+/// inode, an edit in place the length or times.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileStamp {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl FileStamp {
+    /// `Ok(None)` for a file that is not there, `Err` when that cannot be told.
+    fn of(path: &Path) -> Result<Option<Self>, ()> {
+        use std::os::unix::fs::MetadataExt as _;
+        match fs::metadata(path) {
+            Ok(meta) => Ok(Some(Self {
+                device: meta.dev(),
+                inode: meta.ino(),
+                length: meta.len(),
+                modified: (meta.mtime(), meta.mtime_nsec()),
+                changed: (meta.ctime(), meta.ctime_nsec()),
+            })),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(()),
+        }
     }
-    let secret = plan_secret(&profile)?;
-    Ok((profile, secret))
+}
+
+/// The settings document and the vault, as a reading of both found them.
+type SourceStamp = (FileStamp, Option<FileStamp>);
+
+/// The files a resolved profile is read from: the settings document
+/// `ProviderConfig::load` reads and the vault `SecretVault::open` decrypts.
+struct ProfileSources {
+    settings: PathBuf,
+    vault: PathBuf,
+}
+
+impl ProfileSources {
+    /// `None` where the vault is not a file under the config root, so
+    /// nothing is kept.
+    fn current() -> Option<Self> {
+        let root = accounts::config_root()?;
+        // As `settings_store::settings_path`: the session document a sandbox
+        // names, else the one under the same config root as the vault.
+        let settings = std::env::var_os("TILO_SESSION_SETTINGS")
+            .filter(|path| !path.is_empty())
+            .map_or_else(|| root.join("settings.json"), PathBuf::from);
+        Some(Self {
+            settings,
+            vault: accounts::vault_dir_in(&root).join("vault.enc"),
+        })
+    }
+
+    /// `None` when either file cannot be told, or there is no settings
+    /// document: one that is not there configured nothing, so a profile read
+    /// meanwhile came from elsewhere and is not kept.
+    fn stamp(&self) -> Option<SourceStamp> {
+        let settings = FileStamp::of(&self.settings).ok()??;
+        let vault = FileStamp::of(&self.vault).ok()?;
+        Some((settings, vault))
+    }
+}
+
+struct ProfileCache {
+    state: Mutex<CacheState>,
+    /// How many times a profile was read rather than reused.
+    reads: std::sync::atomic::AtomicU64,
+}
+
+struct CacheState {
+    /// Advanced by [`ProfileCache::forget`]: a reading begun before is not kept.
+    generation: u64,
+    entries: Vec<CachedProfile>,
+}
+
+struct CachedProfile {
+    profile_id: String,
+    model_id: String,
+    stamp: SourceStamp,
+    read_at: Instant,
+    resolved: ResolvedProfile,
+}
+
+impl ProfileCache {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(CacheState {
+                generation: 0,
+                entries: Vec::new(),
+            }),
+            reads: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, CacheState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The profile and key for `(profile id, model id)`: the kept ones while
+    /// `stamp`, taken just before this call, is the one they were read
+    /// under and they are younger than [`PROFILE_REUSE`]; else `read`'s,
+    /// kept when stamped and nothing was forgotten meanwhile. A failed read
+    /// is never kept.
+    fn resolve(
+        &self,
+        (profile_id, model_id): (&str, &str),
+        stamp: Option<SourceStamp>,
+        now: Instant,
+        read: impl FnOnce() -> Result<ResolvedProfile, String>,
+    ) -> Result<ResolvedProfile, String> {
+        let same =
+            |entry: &CachedProfile| entry.profile_id == profile_id && entry.model_id == model_id;
+        let generation = {
+            let mut state = self.lock();
+            state.entries.retain(|entry| fresh(entry, now));
+            if let Some(entry) = state
+                .entries
+                .iter()
+                .find(|entry| same(entry) && Some(entry.stamp) == stamp)
+            {
+                return Ok(entry.resolved.clone());
+            }
+            // A stale reading of this pair holds a key nothing will use.
+            state.entries.retain(|entry| !same(entry));
+            state.generation
+        };
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let resolved = read()?;
+        if let Some(stamp) = stamp {
+            let mut state = self.lock();
+            if state.generation == generation {
+                state.entries.retain(|entry| !same(entry));
+                state.entries.push(CachedProfile {
+                    profile_id: profile_id.to_owned(),
+                    model_id: model_id.to_owned(),
+                    stamp,
+                    read_at: now,
+                    resolved: resolved.clone(),
+                });
+            }
+        }
+        Ok(resolved)
+    }
+
+    /// Drop what is kept for `profile_id`, and keep no reading in progress:
+    /// its key was just set or removed.
+    fn forget(&self, profile_id: &str) {
+        let mut state = self.lock();
+        state.generation = state.generation.wrapping_add(1);
+        state.entries.retain(|entry| entry.profile_id != profile_id);
+    }
+
+    /// Drop every entry past [`PROFILE_REUSE`], so an idle gateway does not
+    /// hold a key in memory longer than a busy one reuses it.
+    fn sweep(&self, now: Instant) {
+        self.lock().entries.retain(|entry| fresh(entry, now));
+    }
+}
+
+fn fresh(entry: &CachedProfile, now: Instant) -> bool {
+    now.saturating_duration_since(entry.read_at) < PROFILE_REUSE
 }
 
 /// A missing credential means unauthenticated only for a literal loopback
@@ -780,18 +987,35 @@ async fn plan_dispatch(
         timing.source_context = model.context_window;
     }
     let endpoint = provider_url(&profile);
-    let budget = timeout
-        .checked_sub(timing.started.elapsed())
-        .filter(|budget| !budget.is_zero())
-        .ok_or_else(|| "provider request timed out".to_string())?;
+    let started = timing.started;
+    let left = || {
+        timeout
+            .checked_sub(started.elapsed())
+            .filter(|budget| !budget.is_zero())
+    };
+    left().ok_or_else(|| "provider request timed out".to_string())?;
+    // Whether any frame reached the caller: after one, nothing is sent again.
+    let emitted = std::sync::atomic::AtomicBool::new(false);
+    let mut noting = |event: &Response| {
+        emitted.store(true, std::sync::atomic::Ordering::Relaxed);
+        emit(event)
+    };
+    let emit: Emit<'_> = &mut noting;
     let result = async {
-        let response = send_provider(
-            http,
-            &profile,
-            &endpoint,
-            secret.as_ref().map(|secret| secret.as_str()),
-            &body,
-            budget,
+        let response = plan_send(
+            left,
+            tokio::time::sleep,
+            &|| emitted.load(std::sync::atomic::Ordering::Relaxed),
+            |budget| {
+                send_provider(
+                    http,
+                    &profile,
+                    &endpoint,
+                    secret.as_ref().map(|secret| secret.as_str()),
+                    &body,
+                    budget,
+                )
+            },
         )
         .await
         .inspect_err(|failure| timing.status = failure.status)?;
@@ -805,6 +1029,7 @@ async fn plan_dispatch(
                 why: "provider response was unreadable".into(),
                 again: Again::Never,
                 outcome_unknown: true,
+                unprocessed: false,
                 status: None,
             })?;
             timing.observe_body(&text);
@@ -1177,6 +1402,7 @@ fn stream_failure(why: &str) -> ProviderFailure {
         why: why.into(),
         again: Again::Never,
         outcome_unknown: true,
+        unprocessed: false,
         status: None,
     }
 }
@@ -2348,6 +2574,7 @@ async fn provider_attempt(
             why: "provider response was unreadable".into(),
             again: Again::Never,
             outcome_unknown: true,
+            unprocessed: false,
             status: None,
         })
 }
@@ -2372,6 +2599,7 @@ async fn send_provider(
                 why,
                 again: Again::Never,
                 outcome_unknown: false,
+                unprocessed: false,
                 status: None,
             })?
     {
@@ -2390,6 +2618,7 @@ async fn send_provider(
                     why: "Anthropic requests require a configured credential".into(),
                     again: Again::Never,
                     outcome_unknown: false,
+                    unprocessed: false,
                     status: None,
                 });
             };
@@ -2408,9 +2637,12 @@ async fn send_provider(
         .send()
         .await
         .map_err(|error| ProviderFailure {
-            // A builder error occurs before any network send. Once dispatch starts,
-            // even connect/timeout errors cannot grant permission to replay Plan.
-            outcome_unknown: !error.is_builder(),
+            // A builder error occurs before any network send, and a connect
+            // error before any request byte reached the provider. Every other
+            // transport failure, a timeout included, leaves the outcome unknown
+            // and never grants permission to replay Plan.
+            outcome_unknown: !error.is_builder() && !error.is_connect(),
+            unprocessed: error.is_connect(),
             why: if error.is_timeout() {
                 "provider request timed out".into()
             } else {
@@ -2433,8 +2665,8 @@ async fn send_provider(
                 .and_then(|value| value.to_str().ok()),
         );
         // A bounded, numeric Retry-After is passed on so the caller can see
-        // when a rate-limited provider will take work again; Plan itself
-        // never replays.
+        // when a rate-limited provider will take work again; Plan replays
+        // only what the provider provably refused unprocessed.
         let retry_after = match again {
             Again::Soon(Some(wait)) if wait <= Duration::from_secs(3600) => {
                 format!(" retry_after_s={}", wait.as_secs_f32().ceil())
@@ -2442,6 +2674,7 @@ async fn send_provider(
             _ => String::new(),
         };
         let detail = error_body(response).await;
+        let unprocessed = refused_unprocessed(status.as_u16(), &detail);
         return Err(ProviderFailure {
             why: format!(
                 "provider returned HTTP {}{}{retry_after}",
@@ -2449,7 +2682,8 @@ async fn send_provider(
                 provider_error_detail(&detail)
             ),
             again,
-            outcome_unknown: true,
+            outcome_unknown: !unprocessed,
+            unprocessed,
             status: Some(status.as_u16()),
         });
     }
@@ -2526,6 +2760,17 @@ fn again_after(status: u16, retry_after: Option<&str>) -> Again {
     }
 }
 
+/// Whether an unsuccessful answer says the provider did no work for the
+/// request: rate-limited (429) or overloaded (529), classified as the
+/// agent's own OpenAI-compatible client classifies them, so an exhausted
+/// quota (an `OpenAI` 429 `insufficient_quota`), which asking again cannot
+/// help, is not one.
+fn refused_unprocessed(status: u16, body: &[u8]) -> bool {
+    use tilo_model_gateway::openai::{Failure, Kind};
+    let kind = Failure::from_http(status, std::str::from_utf8(body).unwrap_or_default(), None).kind;
+    matches!((status, kind), (429, Kind::RateLimited) | (529, Kind::Busy))
+}
+
 fn after_seconds(value: &str) -> Option<Duration> {
     Duration::try_from_secs_f64(value.trim().parse::<f64>().ok()?).ok()
 }
@@ -2587,6 +2832,73 @@ where
         if left().is_none_or(|remaining| remaining < waiting.saturating_add(ROOM_TO_ANSWER)) {
             return Err(give_up());
         }
+        wait(waiting).await;
+    }
+}
+
+/// Send a Plan's POST with `attempt`, asking again only while the provider
+/// provably did not take it ([`ProviderFailure::unprocessed`]), nothing has
+/// yet reached the caller (`emitted`), the attempts last ([`PLAN_ATTEMPTS`]),
+/// and what is `left` of the Plan's time still holds the wait the provider
+/// asked for (`Retry-After`) and room for an answer.
+async fn plan_send<T, L, W, WF, A, AF>(
+    left: L,
+    mut wait: W,
+    emitted: &(dyn Fn() -> bool + Sync),
+    mut attempt: A,
+) -> Result<T, ProviderFailure>
+where
+    L: Fn() -> Option<Duration>,
+    W: FnMut(Duration) -> WF,
+    WF: Future<Output = ()>,
+    A: FnMut(Duration) -> AF,
+    AF: Future<Output = Result<T, ProviderFailure>>,
+{
+    let mut made = 0_u32;
+    let mut last = None;
+    loop {
+        let Some(budget) = left().filter(|budget| !budget.is_zero()) else {
+            // Nothing was sent since `last`, which already settled the outcome.
+            return Err(last.unwrap_or_else(|| ProviderFailure {
+                why: "provider request timed out".into(),
+                again: Again::Never,
+                outcome_unknown: false,
+                unprocessed: false,
+                status: None,
+            }));
+        };
+        made = made.saturating_add(1);
+        let mut failure = match attempt(budget).await {
+            Ok(answer) => return Ok(answer),
+            Err(failure) => failure,
+        };
+        let waiting = retry_wait(
+            made,
+            match failure.again {
+                Again::Soon(asked_for) => asked_for,
+                Again::Never => None,
+            },
+        );
+        let again = failure.unprocessed
+            && made < PLAN_ATTEMPTS
+            && !emitted()
+            && left().is_some_and(|remaining| remaining >= waiting.saturating_add(ROOM_TO_ANSWER));
+        if made > 1 {
+            failure.why = format!("{} ({made} attempts)", failure.why);
+        }
+        if !again {
+            return Err(failure);
+        }
+        // Content-free: the status and the wait, never the provider's body.
+        eprintln!(
+            "tilo-model-gateway: plan provider did not take attempt {made} (status={}); \
+             asking again in {} ms",
+            failure
+                .status
+                .map_or_else(|| "connect".to_string(), |status| status.to_string()),
+            waiting.as_millis()
+        );
+        last = Some(failure);
         wait(waiting).await;
     }
 }
@@ -2848,6 +3160,7 @@ mod tests {
                         why: format!("provider returned HTTP {status}"),
                         again: again_after(status, retry_after),
                         outcome_unknown: true,
+                        unprocessed: false,
                         status: Some(status),
                     }),
                 })
@@ -3279,3 +3592,6 @@ mod plan_tests;
 
 #[cfg(test)]
 mod selection_tests;
+
+#[cfg(test)]
+mod profile_tests;
