@@ -65,9 +65,9 @@ use ui::framework::{
 };
 use ui::tilo_resource::ActionDecl;
 
-use crate::actions::{HexEditorAction, HexEffect, HexPanel};
-use crate::model::{Column, EditMode, Endian, HexModel};
-use crate::resource::{HexEditor, HexState};
+use crate::actions::{HexEffect, HexPanel};
+use crate::model::{BufferEdit, Column, EditMode, Endian, HexModel};
+use crate::resource::HexEditor;
 use layout::{CellMetrics, ENDIAN_LABELS, Geo, MODE_LABELS};
 use ui::widget::toggle_group::Segment;
 
@@ -339,13 +339,13 @@ impl HexView {
             return;
         }
         for edit in edits {
-            if dispatch
-                .apply_now(doc, &HexEditorAction::from_edit(edit))
-                .is_err()
-            {
+            let submitted = byte_edit(&edit)
+                .ok_or(())
+                .and_then(|edit| dispatch.submit_now(doc, edit).map_err(drop));
+            if submitted.is_err() {
                 if let Some(live) = &self.live {
                     let state = live.get();
-                    self.model.show_bytes(&state.bytes, &self.saved);
+                    self.model.show_bytes(&state.bytes.to_vec(), &self.saved);
                 }
                 return;
             }
@@ -469,7 +469,7 @@ impl HexView {
     fn open_bytes(&mut self, name: String, bytes: Vec<u8>) {
         let n = bytes.len();
         if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(&HexEditorAction::Open { name, bytes });
+            dispatch.invoke(HexEditor::loading(name, bytes));
             self.expect_open = true;
         }
         self.path = None;
@@ -1142,9 +1142,9 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
     /// Show the buffer the resource holds now. A newly opened file loads
     /// fresh; any other change (an undo, a collaborator, the palette) is
     /// shown in place, keeping the cursor and the view settings.
-    fn present(&mut self, state: &Rc<HexState>) {
+    fn present(&mut self, state: &Rc<HexEditor>) {
         let fresh = state.opened != self.opened || (!self.has_file && state.has_file());
-        let name = state.name.clone().unwrap_or_else(|| "No file".to_owned());
+        let name = state.name().unwrap_or("No file").to_owned();
         if fresh {
             // A file a collaborator opened is not the one at our path.
             if self.has_file && name != self.file_name && !self.expect_open {
@@ -1152,14 +1152,14 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
             }
             self.expect_open = false;
             self.opened = state.opened;
-            self.saved.clone_from(&state.bytes);
-            self.model.load(state.bytes.clone());
+            self.saved = state.bytes.to_vec();
+            self.model.load(self.saved.clone());
             self.find_open = false;
             self.matches.clear();
             self.match_idx = None;
             self.inspector_scroll = 0.0;
         } else {
-            self.model.show_bytes(&state.bytes, &self.saved);
+            self.model.show_bytes(&state.bytes.to_vec(), &self.saved);
             self.refind();
         }
         self.has_file = state.has_file();
@@ -1240,7 +1240,7 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
         if !self.has_file {
             return Vec::new();
         }
-        crate::actions::cursor_declarations(
+        HexEditor::at_cursor(
             self.model.cursor(),
             self.model.len(),
             self.model.selection(),
@@ -1452,8 +1452,8 @@ impl HexView {
                 }
                 // The edits are the resource's, as typing them would be.
                 for edit in self.model.take_edits() {
-                    if let Some(dispatch) = &self.dispatch {
-                        dispatch.apply(&HexEditorAction::from_edit(edit));
+                    if let (Some(dispatch), Some(edit)) = (&self.dispatch, byte_edit(&edit)) {
+                        dispatch.submit(edit);
                     }
                 }
                 self.model.move_to(0x10, false);
@@ -1470,6 +1470,11 @@ impl HexView {
         }
         self.dirty = true;
     }
+}
+
+/// `edit` as the field edit of the record's bytes it is.
+fn byte_edit(edit: &BufferEdit) -> Option<ui::tilo_resource::Edit<HexEditor>> {
+    HexEditor::paths().bytes.perform(edit).ok()
 }
 
 /// The view's header row is the window's: it holds the History control the
@@ -1503,9 +1508,9 @@ mod tests {
     fn staged(scenario: Option<&str>) -> HexView {
         let mut view = HexView::empty();
         if scenario != Some("empty") {
-            view.present(&Rc::new(HexState {
-                name: Some("sample.png".into()),
-                bytes: crate::sample::png_image(),
+            view.present(&Rc::new(HexEditor {
+                name: Some(ui::tilo_resource::Atom("sample.png".into())),
+                bytes: crate::buffer::ByteBuffer::of(&crate::sample::png_image()),
                 opened: 1,
             }));
         }
@@ -1521,9 +1526,9 @@ mod tests {
         let mut view = HexView::empty();
         assert!(!view.has_file());
         let state = |bytes: &[u8], opened| {
-            Rc::new(HexState {
-                name: Some("bytes.bin".into()),
-                bytes: bytes.to_vec(),
+            Rc::new(HexEditor {
+                name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
+                bytes: crate::buffer::ByteBuffer::of(bytes),
                 opened,
             })
         };

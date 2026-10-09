@@ -11,13 +11,14 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use hex_editor::HexEditor;
 use hex_editor::HexEditorShell;
-use hex_editor::actions::{HexEditorAction, HexEffect};
+use hex_editor::actions::HexEffect;
+use hex_editor::resource::hex_editor::DeleteBytes;
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::TestApp;
 use ui::portal::PortalOutcome;
 use ui::record::RecordId;
-use ui::tilo_resource::Invoke;
 
 fn file(name: &str, bytes: &[u8]) -> (tempfile::TempDir, String) {
     let directory = tempfile::tempdir().unwrap();
@@ -48,7 +49,7 @@ fn a_launched_file_is_its_own_buffer_typed_into_undone_and_saved_back() {
         &RecordId::derived("hex", &RecordId::identify_file(&path))
     );
     let state = app.state();
-    assert_eq!(state.name.as_deref(), Some("Bytes Grün with spaces.bin"));
+    assert_eq!(state.name(), Some("Bytes Grün with spaces.bin"));
     assert_eq!(state.bytes, [0x00, 0x11, 0x22, 0x33]);
 
     // Two nibbles over the first byte, then one more byte: one run of
@@ -127,7 +128,7 @@ fn agents_edit_the_bytes_through_the_published_actions() {
     .unwrap();
     assert_eq!(app.state().bytes, [0x00, 0xFF, 0xEE, 0x33]);
     // Bound to the cursor, which starts on the first byte.
-    app.call("insert-byte", serde_json::json!({"byte": "7f"}))
+    app.call("insert-byte", serde_json::json!({"bytes": "7f"}))
         .unwrap();
     assert_eq!(app.state().bytes, [0x7F, 0x00, 0xFF, 0xEE, 0x33]);
     assert!(
@@ -142,7 +143,8 @@ fn agents_edit_the_bytes_through_the_published_actions() {
         app.call("delete-byte", serde_json::json!({})).is_err(),
         "a delete waits for confirmation"
     );
-    app.invoke(Invoke::apply(&HexEditorAction::DeleteBytes { offset: 0, len: 2 }).unwrap())
+    // An agent deletes in one call, confirmed.
+    app.invoke_confirmed(HexEditor::DELETE_BYTES.with(DeleteBytes { offset: 0, len: 2 }))
         .unwrap();
     assert_eq!(app.state().bytes, [0xFF, 0xEE, 0x33]);
     assert!(app.undo());
@@ -175,7 +177,7 @@ fn opening_a_file_replaces_the_buffer_and_the_chooser_answers_the_effect() {
     let (_directory, path) = file("named.bin", b"HELLO-HEX");
     app.effect(&HexEffect::Open { path: Some(path) }).unwrap();
     app.settle();
-    assert_eq!(app.state().name.as_deref(), Some("named.bin"));
+    assert_eq!(app.state().name(), Some("named.bin"));
     assert_eq!(app.state().bytes, b"HELLO-HEX");
     assert!(
         !app.undo(),
@@ -194,7 +196,7 @@ fn opening_a_file_replaces_the_buffer_and_the_chooser_answers_the_effect() {
         app.settle();
     });
     assert_eq!(recorder.pick_requests().len(), 1);
-    assert_eq!(app.state().name.as_deref(), Some("chosen.bin"));
+    assert_eq!(app.state().name(), Some("chosen.bin"));
     assert_eq!(app.state().bytes, [1, 2, 3]);
 
     // The chosen file is where a save writes back to.
@@ -212,8 +214,8 @@ fn captures_stage_the_sample_through_the_resource() {
         "the editor fills the app's area"
     );
     let state = sample.state();
-    assert_eq!(state.name.as_deref(), Some("sample.png"));
-    assert_eq!(&state.bytes[..4], &[0x89, 0x50, 0x4E, 0x47]);
+    assert_eq!(state.name(), Some("sample.png"));
+    assert_eq!(&state.bytes.to_vec()[..4], &[0x89, 0x50, 0x4E, 0x47]);
 
     for scenario in [
         "find",
@@ -267,4 +269,104 @@ fn the_executable_opens_a_path_edits_and_saves_it() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(std::fs::read(&path).unwrap(), [0xAB, 0x11, 0x22, 0x33]);
+}
+
+/// What an agent does to the bytes is history the person reads in their
+/// language: the app's sentence for each edit and verb.
+#[test]
+fn history_entries_render_as_the_apps_sentences() {
+    use hex_editor::model::BufferEdit;
+    use ui::tilo_actions::{ActionInvoker, ActorKind};
+
+    let (_directory, path) = file("history.bin", &[0x00, 0x11, 0x22, 0x33]);
+    let mut app = launched(&path);
+    let agent = ActionInvoker::actor("agent:claude")
+        .with_kind(ActorKind::Agent)
+        .acting_for("ada");
+    let kind = <HexEditor as ui::tilo_resource::Resource>::KIND;
+    let bytes = HexEditor::paths().bytes;
+    for edit in [
+        BufferEdit::Overwrite {
+            offset: 1,
+            bytes: hex_editor::buffer::Hex(vec![0xff]),
+        },
+        BufferEdit::Insert {
+            offset: 0,
+            bytes: hex_editor::buffer::Hex(vec![1, 2, 3]),
+        },
+    ] {
+        app.call_by(
+            agent.clone(),
+            kind,
+            "field-edit",
+            serde_json::json!({ "edit": bytes.perform(&edit).unwrap() }),
+        )
+        .unwrap();
+    }
+    app.call_by(
+        agent.clone(),
+        kind,
+        "overwrite-bytes",
+        serde_json::json!({"offset": 2, "bytes": "ab"}),
+    )
+    .unwrap();
+    app.call_by(
+        agent,
+        kind,
+        "load",
+        serde_json::json!({"name": "other.bin", "bytes": "00"}),
+    )
+    .unwrap();
+
+    let catalogue = tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+    let sentences: Vec<String> = app
+        .versions()
+        .into_iter()
+        .filter_map(|version| version.context)
+        .filter(|entry| {
+            entry
+                .invoker
+                .as_ref()
+                .is_some_and(|invoker| invoker.actor == "agent:claude")
+        })
+        .map(|entry| reader.sentence(&entry))
+        .collect();
+    assert_eq!(
+        sentences,
+        [
+            "Overwrote one byte at offset 1",
+            "Inserted 3 bytes at offset 0",
+            "Overwrote bytes at offset 2",
+            "Opened other.bin",
+        ]
+    );
+}
+
+/// Two replicas of one buffer converge after each edits a different page.
+#[test]
+fn two_replicas_converge() {
+    let page = 4096;
+    let (_directory, path) = file("shared.bin", &vec![0; 2 * page]);
+    let mut app = launched(&path);
+    let mut theirs = ui::tilo_resource::Replica::<HexEditor>::from_doc(app.peer_document());
+    theirs
+        .apply(
+            HexEditor::OVERWRITE_BYTES.with(hex_editor::resource::hex_editor::OverwriteBytes {
+                offset: page + 7,
+                bytes: hex_editor::buffer::Hex(vec![7]),
+            }),
+        )
+        .unwrap();
+    app.call(
+        "overwrite-bytes",
+        serde_json::json!({"offset": 0, "bytes": "01"}),
+    )
+    .unwrap();
+    let mut peer = theirs.doc().clone();
+    app.merge_peer(&mut peer).unwrap();
+    let mut expected = vec![0; 2 * page];
+    expected[0] = 1;
+    expected[page + 7] = 7;
+    assert_eq!(app.state().bytes, expected);
 }

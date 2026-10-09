@@ -1,132 +1,13 @@
-//! The hex editor's vocabulary: the byte edits that change a buffer, the
-//! effects that reach outside it (open and save a file), and the views of
-//! the editor (search, go to offset).
+//! The hex editor's effects: work that reaches outside the buffer (open
+//! and save a file) and the views of the editor (search, go to offset).
+//! The byte edits themselves are the record's ([`HexEditor`](crate::HexEditor)).
 //!
-//! Every byte edit — a keystroke, the palette, an agent, a script — is one
-//! [`HexEditorAction`] submitted through the framework's door, so it is
-//! checked, undone per author, shown in history and synced with the record.
 //! Presentation — the cursor, the selection, the scroll position, the
 //! insert-vs-overwrite mode, the hex-vs-ASCII focus — stays in the view.
 
-use serde::{Deserialize, Serialize};
-
-use ui::tilo_actions::{Action, ActionArgs, ActionError, ActionParam, ChangeKind, ParamType};
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource;
-use ui::tilo_resource::{ActionDecl, Doc, Effect};
-
-use crate::model::BufferEdit;
-use crate::resource::HexEditor;
-
-/// Registry `type_id` for every hex-editor action.
-pub const HEX_EDITOR_ACTION_TYPE: &str = "hex_editor.action";
-
-/// One change to the buffer. Every keystroke that changes the bytes reduces
-/// to an insert, delete or overwrite at a concrete offset; opening a file
-/// replaces the whole buffer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HexEditorAction {
-    /// Show `bytes`, read from the file `name`, as the buffer.
-    Open {
-        name: String,
-        #[serde(with = "hex_text")]
-        bytes: Vec<u8>,
-    },
-    /// Splice `bytes` in *before* `offset`, growing the buffer.
-    InsertBytes {
-        offset: usize,
-        #[serde(with = "hex_text")]
-        bytes: Vec<u8>,
-    },
-    /// Remove `len` bytes starting at `offset`.
-    DeleteBytes { offset: usize, len: usize },
-    /// Replace the bytes at `offset..offset + bytes.len()` in place; the
-    /// buffer never grows, so bytes past its end are dropped.
-    OverwriteBytes {
-        offset: usize,
-        #[serde(with = "hex_text")]
-        bytes: Vec<u8>,
-    },
-}
-
-impl Action for HexEditorAction {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        crate::resource::apply(self, doc)
-    }
-
-    /// A file's bytes come from outside: opening one syncs to everyone, but
-    /// no undo takes it back.
-    fn change_kind(&self) -> ChangeKind {
-        match self {
-            Self::Open { .. } => ChangeKind::External,
-            _ => ChangeKind::Content,
-        }
-    }
-}
-
-impl HexEditorAction {
-    /// The action carrying one edit the view made to its buffer.
-    pub fn from_edit(edit: BufferEdit) -> Self {
-        match edit {
-            BufferEdit::Insert { offset, bytes } => Self::InsertBytes { offset, bytes },
-            BufferEdit::Delete { offset, len } => Self::DeleteBytes { offset, len },
-            BufferEdit::Overwrite { offset, bytes } => Self::OverwriteBytes { offset, bytes },
-        }
-    }
-
-    /// The edited span `(offset, len)` of a typing or deleting edit.
-    fn span(&self) -> Option<(usize, usize)> {
-        match self {
-            Self::InsertBytes { offset, bytes } | Self::OverwriteBytes { offset, bytes } => {
-                Some((*offset, bytes.len()))
-            }
-            Self::DeleteBytes { offset, len } => Some((*offset, *len)),
-            Self::Open { .. } => None,
-        }
-    }
-
-    /// Whether `next`, right after `self`, continues the same run of typing
-    /// or deleting: the next nibble or byte typed, the next byte deleted.
-    pub fn continues(&self, next: &Self) -> bool {
-        let (Some((at, len)), Some((next_at, next_len))) = (self.span(), next.span()) else {
-            return false;
-        };
-        match (self, next) {
-            (
-                Self::InsertBytes { .. } | Self::OverwriteBytes { .. },
-                Self::InsertBytes { .. } | Self::OverwriteBytes { .. },
-            ) => next_at >= at && next_at <= at.saturating_add(len),
-            // Delete steps in place (Delete) or backwards (Backspace).
-            (Self::DeleteBytes { .. }, Self::DeleteBytes { .. }) => {
-                next_at == at || next_at.saturating_add(next_len) == at
-            }
-            _ => false,
-        }
-    }
-}
-
-/// Bytes as hexadecimal text in an action's payload: compact, and what a
-/// person or an agent writes (`"de ad be ef"`).
-mod hex_text {
-    use std::fmt::Write as _;
-
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub(crate) fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        let mut text = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            let _ = write!(text, "{byte:02x}");
-        }
-        serializer.serialize_str(&text)
-    }
-
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<u8>, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        super::parse_bytes(&text).map_err(serde::de::Error::custom)
-    }
-}
+use ui::tilo_resource::Effect;
 
 /// Parse hexadecimal bytes as a person writes them: `ff`, `0xFF`,
 /// `de ad be ef`, `DE-AD`. An empty text is no bytes.
@@ -144,144 +25,6 @@ pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
     }
     crate::search::parse_hex_query(text)
         .ok_or_else(|| format!("{text:?} is not hexadecimal bytes (e.g. `de ad be ef`)"))
-}
-
-fn offset_arg(args: &ActionArgs, name: &str) -> Result<usize, String> {
-    let value = args
-        .integer(name)
-        .ok_or_else(|| format!("`{name}` is required"))?;
-    usize::try_from(value).map_err(|_| format!("`{name}` must not be negative"))
-}
-
-fn bytes_arg(args: &ActionArgs) -> Result<Vec<u8>, String> {
-    parse_bytes(args.text("bytes").unwrap_or_default())
-}
-
-const OFFSET: ActionParam =
-    ActionParam::required("offset", ParamType::Integer, "byte offset, from 0");
-const BYTES: ActionParam = ActionParam::required(
-    "bytes",
-    ParamType::Text,
-    "hexadecimal bytes, e.g. `de ad be ef`",
-);
-
-/// The byte edits offered by name, at any offset.
-pub(crate) fn declarations() -> Vec<ActionDecl<HexEditor>> {
-    vec![
-        ActionDecl::new(
-            "insert-bytes",
-            "Insert bytes",
-            vec![OFFSET, BYTES],
-            |args, _| {
-                Ok(HexEditorAction::InsertBytes {
-                    offset: offset_arg(args, "offset")?,
-                    bytes: bytes_arg(args)?,
-                })
-            },
-        )
-        .describe("Insert bytes before an offset, growing the buffer."),
-        ActionDecl::new(
-            "overwrite-bytes",
-            "Overwrite bytes",
-            vec![OFFSET, BYTES],
-            |args, _| {
-                Ok(HexEditorAction::OverwriteBytes {
-                    offset: offset_arg(args, "offset")?,
-                    bytes: bytes_arg(args)?,
-                })
-            },
-        )
-        .describe("Replace the bytes at an offset in place."),
-        ActionDecl::new(
-            "delete-bytes",
-            "Delete bytes",
-            vec![
-                OFFSET,
-                ActionParam::required("len", ParamType::Integer, "how many bytes"),
-            ],
-            |args, _| {
-                Ok(HexEditorAction::DeleteBytes {
-                    offset: offset_arg(args, "offset")?,
-                    len: offset_arg(args, "len")?,
-                })
-            },
-        )
-        .describe("Remove bytes starting at an offset.")
-        .destructive(),
-    ]
-}
-
-const BYTE: ActionParam = ActionParam::required("byte", ParamType::Text, "Byte (hex), e.g. ff");
-
-fn one_byte(args: &ActionArgs) -> Result<Vec<u8>, String> {
-    let bytes = parse_bytes(args.text("byte").unwrap_or_default())?;
-    if bytes.len() == 1 {
-        Ok(bytes)
-    } else {
-        Err("give one byte, e.g. `ff`".into())
-    }
-}
-
-/// The byte edits bound to where the user is: insert or overwrite at the
-/// cursor, delete the selection or the byte under the cursor.
-pub(crate) fn cursor_declarations(
-    cursor: usize,
-    len: usize,
-    selection: Option<(usize, usize)>,
-) -> Vec<ActionDecl<HexEditor>> {
-    // The append position is valid for an insert even in an empty buffer.
-    let at = cursor.min(len);
-    let mut decls = vec![ActionDecl::new(
-        "insert-byte",
-        "Insert byte",
-        vec![BYTE],
-        move |args, _| {
-            Ok(HexEditorAction::InsertBytes {
-                offset: at,
-                bytes: one_byte(args)?,
-            })
-        },
-    )];
-    if cursor < len {
-        decls.push(ActionDecl::new(
-            "overwrite-byte",
-            "Overwrite byte",
-            vec![BYTE],
-            move |args, _| {
-                Ok(HexEditorAction::OverwriteBytes {
-                    offset: cursor,
-                    bytes: one_byte(args)?,
-                })
-            },
-        ));
-    }
-    if let Some((lo, hi)) = selection {
-        decls.push(
-            ActionDecl::new(
-                "delete-selection",
-                "Delete selection",
-                vec![],
-                move |_, _| {
-                    Ok(HexEditorAction::DeleteBytes {
-                        offset: lo,
-                        len: hi - lo + 1,
-                    })
-                },
-            )
-            .destructive(),
-        );
-    } else if cursor < len {
-        decls.push(
-            ActionDecl::new("delete-byte", "Delete byte", vec![], move |_, _| {
-                Ok(HexEditorAction::DeleteBytes {
-                    offset: cursor,
-                    len: 1,
-                })
-            })
-            .destructive(),
-        );
-    }
-    decls
 }
 
 /// Work outside the buffer: reading a file into it and writing it out.
@@ -321,31 +64,14 @@ pub enum HexPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffer::Hex;
+    use crate::model::BufferEdit;
     use ui::tilo_actions::OperationKind;
 
     #[test]
-    fn bytes_travel_as_hexadecimal_text_and_parse_as_people_write_them() {
-        let action = HexEditorAction::OverwriteBytes {
-            offset: 2,
-            bytes: vec![0xde, 0xad],
-        };
-        let json = serde_json::to_value(&action).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({"OverwriteBytes": {"offset": 2, "bytes": "dead"}})
-        );
-        let parsed: HexEditorAction = serde_json::from_value(
-            serde_json::json!({"InsertBytes": {"offset": 0, "bytes": "DE-AD be ef"}}),
-        )
-        .unwrap();
-        assert_eq!(
-            parsed,
-            HexEditorAction::InsertBytes {
-                offset: 0,
-                bytes: vec![0xde, 0xad, 0xbe, 0xef]
-            }
-        );
+    fn bytes_parse_as_people_write_them() {
         assert_eq!(parse_bytes("0xFF"), Ok(vec![0xff]));
+        assert_eq!(parse_bytes("DE-AD be ef"), Ok(vec![0xde, 0xad, 0xbe, 0xef]));
         assert_eq!(parse_bytes(""), Ok(Vec::new()));
         assert!(parse_bytes("xyz").is_err());
         assert!(
@@ -356,15 +82,15 @@ mod tests {
 
     #[test]
     fn a_run_of_typing_or_deleting_continues_while_it_stays_in_place() {
-        let overwrite = |offset, bytes: &[u8]| HexEditorAction::OverwriteBytes {
+        let overwrite = |offset, bytes: &[u8]| BufferEdit::Overwrite {
             offset,
-            bytes: bytes.to_vec(),
+            bytes: Hex(bytes.to_vec()),
         };
-        let insert = |offset, bytes: &[u8]| HexEditorAction::InsertBytes {
+        let insert = |offset, bytes: &[u8]| BufferEdit::Insert {
             offset,
-            bytes: bytes.to_vec(),
+            bytes: Hex(bytes.to_vec()),
         };
-        let delete = |offset| HexEditorAction::DeleteBytes { offset, len: 1 };
+        let delete = |offset| BufferEdit::Delete { offset, len: 1 };
         // Two nibbles of one byte, then the next byte.
         assert!(overwrite(4, &[0xa0]).continues(&overwrite(4, &[0xab])));
         assert!(overwrite(4, &[0xab]).continues(&overwrite(5, &[0xc0])));
@@ -377,12 +103,6 @@ mod tests {
         assert!(delete(4).continues(&delete(3)));
         assert!(!delete(4).continues(&delete(7)));
         assert!(!delete(4).continues(&insert(4, &[1])));
-        let open = HexEditorAction::Open {
-            name: "a".into(),
-            bytes: vec![],
-        };
-        assert!(!open.continues(&insert(0, &[1])));
-        assert_eq!(open.change_kind(), ChangeKind::External);
     }
 
     #[test]
