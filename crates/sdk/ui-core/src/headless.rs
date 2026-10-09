@@ -5808,25 +5808,17 @@ impl FrameHarness {
         if self.owner_service_layout_retired {
             return;
         }
+        // Settlement before this tick can already have replaced children (a
+        // surface closing its own dialog): admit the new composition before
+        // dispatch reads the mapped tree, or opening a confirmation would
+        // capture its return focus through pointers to widgets now gone.
+        self.readmit_replaced_composition();
         self.dispatch_control_invocations();
         self.poll_control_invocations();
-        // Settlement and the control callbacks above can replace children.
-        // Retire their raw nodes before sweeping undo brackets, then admit
-        // the new composition so surviving descendants keep their history.
-        if self.take_composition_dirty() {
-            let focus = crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
-            self.discard_layout_tree();
-            self.relayout();
-            if self.focused.is_none()
-                && let Some(focus) = focus
-            {
-                // A surviving live focus outranks a captured identity: generic
-                // control names may be shared by unrelated retained controls.
-                // SAFETY: the relayout admitted this fresh, exclusively owned tree.
-                self.focused =
-                    unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
-            }
-        }
+        // The control callbacks above can replace children too. Retire their
+        // raw nodes before sweeping undo brackets, then admit the new
+        // composition so surviving descendants keep their history.
+        self.readmit_replaced_composition();
         let author = self.author.clone();
         // SAFETY: this host exclusively owns the unchanged root and admitted layout.
         unsafe {
@@ -5838,6 +5830,26 @@ impl FrameHarness {
                 &author,
                 &self.permissions,
             );
+        }
+    }
+
+    /// When the composition was replaced since it was admitted, retire its
+    /// raw nodes and admit the new one, keeping a surviving live focus.
+    fn readmit_replaced_composition(&mut self) {
+        if !self.take_composition_dirty() {
+            return;
+        }
+        let focus = crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
+        self.discard_layout_tree();
+        self.relayout();
+        if self.focused.is_none()
+            && let Some(focus) = focus
+        {
+            // A surviving live focus outranks a captured identity: generic
+            // control names may be shared by unrelated retained controls.
+            // SAFETY: the relayout admitted this fresh, exclusively owned tree.
+            self.focused =
+                unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
         }
     }
 

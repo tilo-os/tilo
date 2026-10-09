@@ -4589,3 +4589,52 @@ fn cancel_on_host(app: &mut Live) {
     act_named(app, "Cancel", &ui::a11y::Action::Activate);
     app.settle();
 }
+
+/// A surface that closes its own dialog in the same event its destructive
+/// action asks the host to confirm: the host remembers where focus returns
+/// from the window as it now stands, never from the dialog that is gone.
+#[test]
+fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
+    let mut app = ui::framework::testing::TestApp::<crate::ContactsShell>::new().unwrap();
+    let mut survivor = Contact::new();
+    survivor.first = "Ada".into();
+    survivor.id = uuid::Uuid::from_u128(1);
+    let mut source = survivor.clone();
+    source.id = uuid::Uuid::from_u128(2);
+    source.org = "Analytical Engines".into();
+    app.invoke(Contacts::add_all(vec![survivor.clone(), source.clone()]))
+        .unwrap();
+    app.effect_on(
+        &crate::resource::place_resource_id(&crate::resource::duplicate_place(
+            survivor.id,
+            source.id,
+        )),
+        &crate::actions::ContactsEffect::OpenReview {
+            survivor: survivor.id,
+            source: source.id,
+        },
+    )
+    .unwrap();
+    app.settle();
+    let merge = app.harness().a11y_node_named("Merge contacts").unwrap();
+    app.harness()
+        .perform_a11y_action(merge, &ui::a11y::Action::Focus)
+        .unwrap();
+    // In one event: the review closes, so its focused Merge button is
+    // dropped, and the merge goes to the host, which asks to confirm.
+    app.with_widget(|surface: &mut ContactsApp| {
+        surface.duplicate_review = None;
+        surface.dirty = true;
+        surface
+            .submit(Contacts::merge(survivor.id, source.id, []))
+            .unwrap();
+    });
+    app.settle();
+    assert!(
+        app.harness().a11y_nodes().iter().any(|(_, node)| {
+            node.role() == ui::accesskit::Role::Dialog
+                && node.label() == Some("Action confirmation")
+        }),
+        "the host asks to confirm the merge"
+    );
+}
