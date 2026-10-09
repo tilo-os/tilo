@@ -128,10 +128,8 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "tilo-retained-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(io::Error::other)?
-                .as_nanos()
+            tilo_clock::try_unix_now_ns()
+                .ok_or_else(|| io::Error::other("system clock is before the Unix epoch"))?
         ));
         std::fs::create_dir(&path)?;
         Ok(path)

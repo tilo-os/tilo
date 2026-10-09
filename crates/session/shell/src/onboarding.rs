@@ -474,9 +474,7 @@ mod tests {
             let dir = std::env::temp_dir().join(format!(
                 "tilo-onboarding-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos())
+                tilo_clock::unix_now_ns()
             ));
             let system = tilo_user_identity::IdentityPaths::under(dir.join("system"));
             let minted = mint_into_with_paths(&dir, &system, false).expect("mint");

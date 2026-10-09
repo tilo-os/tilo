@@ -918,12 +918,7 @@ impl QuickFS {
                 .take_lease(record, me, ttl, granted)
                 .map(|l| (l, LeaseSource::Local));
         };
-        let nonce = u64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos()),
-        )
-        .unwrap_or(u64::MAX);
+        let nonce = tilo_clock::unix_now_ns();
         let delta = {
             let mut ns = self.ns();
             if !ns.put_lease_request(record, me, LeaseRequest { nonce }) {

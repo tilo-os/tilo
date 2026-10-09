@@ -198,15 +198,12 @@ impl Joined {
     }
 
     fn invited_room(&self, invitation: &str) -> Result<RoomId, String> {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_nanos();
+        let now = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
         let join = tilo_peer_state::join::decode_and_verify_invitation_text(
             invitation,
             Some(self.custody.device_cert.user_public_key),
             &tilo_user_identity::RevocationList::new(),
-            u64::try_from(now).map_err(|e| e.to_string())?,
+            now,
         )?;
         RoomId::parse(&join.grant().room).ok_or_else(|| "invitation names no valid room".into())
     }

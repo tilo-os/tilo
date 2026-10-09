@@ -286,10 +286,7 @@ mod tests {
         // Phase `a_capability_that_expires_mid_mount_stops_permitting`.
         // An expiry must lapse during the mount, true only if the bound ACL reads the live clock, not the load-time instant.
         {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+            let now = tilo_clock::try_unix_now().unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
 
