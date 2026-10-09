@@ -366,7 +366,8 @@ impl<R: Resource> ResourceRoot<R> {
     fn document_tree(
         &self,
         state: &R::State,
-        take: impl FnOnce(&tilo_actions::Resource) -> tilo_actions::Resource,
+        // A function, not a closure: one copy of this per resource type.
+        take: fn(&tilo_actions::Resource) -> tilo_actions::Resource,
     ) -> tilo_actions::Resource {
         let Some(epoch) = R::publication_cache_epoch(state) else {
             let tree = self.resource_tree(state);
