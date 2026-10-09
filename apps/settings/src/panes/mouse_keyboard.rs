@@ -54,6 +54,32 @@ trait BindEffect<I>: ActionControl<I> {
         cx.bind(self, effect)
     }
 
+    /// Bound to the field at `path` of section `T` through `value`.
+    fn bound_field_with<T, V>(
+        self,
+        cx: &PaneCx,
+        path: tilo_resource::Path<T, V>,
+        value: impl Fn(I) -> Result<V, String> + Send + Sync + 'static,
+    ) -> Self
+    where
+        T: crate::host::Section,
+        V: tilo_resource::Model + tilo_resource::Settable + 'static,
+        I: 'static,
+        Self: Sized,
+    {
+        cx.bind_field_with(self, path, value)
+    }
+
+    /// Bound to the verb `verb` of section `T`.
+    fn bound_verb<T>(self, cx: &PaneCx, verb: impl Binds<T, I>) -> Self
+    where
+        T: crate::host::Section,
+        I: 'static,
+        Self: Sized,
+    {
+        cx.bind_verb(self, verb)
+    }
+
     /// Bound to the field at `path` of section `T`.
     fn bound_field<T>(self, cx: &PaneCx, path: tilo_resource::Path<T, I>) -> Self
     where
@@ -746,54 +772,6 @@ pub enum InputEffect {
         query: Option<String>,
         page: Option<u32>,
     },
-    /// Set how fast the pointer moves with the touchpad.
-    #[effect(idempotent)]
-    SetTouchpadSpeed {
-        #[param("Slow (0.0) to fast (1.0)")]
-        speed: f64,
-    },
-    /// Set how fast the pointer moves with a mouse.
-    #[effect(idempotent)]
-    SetMouseSpeed {
-        #[param("Slow (0.0) to fast (1.0)")]
-        speed: f64,
-    },
-    /// Scroll the content with the fingers on the touchpad, or the view.
-    #[effect(idempotent)]
-    SetTouchpadNaturalScroll { on: bool },
-    /// Scroll the content with the mouse wheel, or the view.
-    #[effect(idempotent)]
-    SetMouseNaturalScroll { on: bool },
-    /// Set how a touchpad press becomes a click.
-    #[effect(idempotent)]
-    SetTouchpadClickMethod {
-        #[param("The method", choices = ids(&CLICK_METHOD_CHOICES))]
-        method: String,
-    },
-    /// Set how the touchpad scrolls.
-    #[effect(idempotent)]
-    SetTouchpadScrollMethod {
-        #[param("The method", choices = ids(&SCROLL_METHOD_CHOICES))]
-        method: String,
-    },
-    /// Set how the pointer speeds up with faster movement.
-    #[effect(idempotent)]
-    SetAccelerationProfile {
-        #[param("`adaptive` or `flat`", choices = ["adaptive", "flat"])]
-        profile: String,
-    },
-    /// Set how far one scroll step moves.
-    #[effect(idempotent)]
-    SetScrollSpeed {
-        #[param("Slow (0.0) to fast (1.0)")]
-        speed: f64,
-    },
-    /// Set how soon and how fast a held key repeats.
-    #[effect(idempotent)]
-    SetKeyRepeat {
-        #[param("Slow (0.0) to fast (1.0)")]
-        rate: f64,
-    },
     /// Set the compose key.
     #[effect(idempotent)]
     SetComposeKey {
@@ -1032,37 +1010,6 @@ fn apply(
     use InputEffect as E;
     let installed = |source: &str| catalog.iter().any(|entry| entry.id == source);
     match effect {
-        E::SetTouchpadSpeed { speed } => input.touchpad_pointer_speed = Some(fraction(speed)?),
-        E::SetMouseSpeed { speed } => input.mouse_pointer_speed = Some(fraction(speed)?),
-        E::SetTouchpadNaturalScroll { on } => input.touchpad_natural_scroll = Some(on),
-        E::SetMouseNaturalScroll { on } => input.mouse_natural_scroll = Some(on),
-        E::SetTouchpadClickMethod { method } => {
-            input.touchpad_click_method = click_method_for_id(&method)
-                .ok_or_else(|| format!("`{method}` is not a click method"))?;
-        }
-        E::SetTouchpadScrollMethod { method } => {
-            input.touchpad_scroll_method = scroll_method_for_id(&method)
-                .ok_or_else(|| format!("`{method}` is not a scroll method"))?;
-        }
-        E::SetAccelerationProfile { profile } => {
-            accel_from_label(&profile)
-                .or_else(|| {
-                    ["adaptive", "flat"]
-                        .into_iter()
-                        .find(|known| *known == profile)
-                })
-                .ok_or_else(|| format!("`{profile}` is not an acceleration profile"))?
-                .clone_into(&mut input.accel_profile);
-        }
-        E::SetScrollSpeed { speed } => {
-            input.scroll_speed =
-                settings_store::hardware::scroll_speed_from_slider(fraction(speed)?);
-        }
-        E::SetKeyRepeat { rate } => {
-            input.key_repeat = fraction(rate)?;
-            input.key_repeat_delay_ms = None;
-            input.key_repeat_rate_hz = None;
-        }
         E::SetComposeKey { key } => {
             input.compose_key = stored_for(COMPOSE_KEY_CHOICES, COMPOSE_DISABLED, &key)
                 .ok_or_else(|| format!("`{key}` is not a compose key"))?;
@@ -1934,11 +1881,12 @@ impl MouseKeyboardPane {
         )
     }
 
-    fn bool_row(
+    /// A switch over a per-device choice that, unset, follows the shared one.
+    fn optional_row(
         &self,
         label: &str,
         description: &str,
-        set: tilo_resource::ActionRef<InputEffect, bool>,
+        field: tilo_resource::Path<InputPrefs, Option<bool>>,
         id: &str,
         on: bool,
     ) -> El {
@@ -1948,7 +1896,7 @@ impl MouseKeyboardPane {
             Box::new(
                 Toggle::from_state(&ui::LocalState::new(on))
                     .with_id(id)
-                    .bound(&self.cx, effect(set)),
+                    .bound_field_with(&self.cx, field, |on| Ok(Some(on))),
             ),
         )
     }
@@ -2070,15 +2018,19 @@ impl MouseKeyboardPane {
                         Slider::from_state(&ui::LocalState::new(
                             last.touchpad_pointer_speed.unwrap_or(last.pointer_speed),
                         ))
-                        .bound(&self.cx, effect(InputEffect::SET_TOUCHPAD_SPEED))
+                        .bound_field_with(
+                            &self.cx,
+                            InputPrefs::paths().touchpad_pointer_speed,
+                            |speed| fraction(speed).map(Some),
+                        )
                         .with_id("input.touchpad_pointer_speed")
                         .with_accessible_name("input-touchpad-speed"),
                     ),
                 ),
-                self.bool_row(
+                self.optional_row(
                     "input-touchpad-natural-scroll",
                     "input-touchpad-natural-scroll-description",
-                    InputEffect::SET_TOUCHPAD_NATURAL_SCROLL,
+                    InputPrefs::paths().touchpad_natural_scroll,
                     "input.touchpad_natural_scroll",
                     last.touchpad_natural_scroll.unwrap_or(last.natural_scroll),
                 ),
@@ -2137,7 +2089,14 @@ impl MouseKeyboardPane {
                             "input.touchpad_click_method",
                             &t("input-click-method"),
                         )
-                        .bound(&self.cx, effect(InputEffect::SET_TOUCHPAD_CLICK_METHOD)),
+                        .bound_field_with(
+                            &self.cx,
+                            InputPrefs::paths().touchpad_click_method,
+                            |id: String| {
+                                click_method_for_id(&id)
+                                    .ok_or_else(|| format!("`{id}` is not a click method"))
+                            },
+                        ),
                     ),
                 ),
                 caption(&t("input-click-method-caption")),
@@ -2150,7 +2109,14 @@ impl MouseKeyboardPane {
                             "input.touchpad_scroll_method",
                             &t("input-scroll-method"),
                         )
-                        .bound(&self.cx, effect(InputEffect::SET_TOUCHPAD_SCROLL_METHOD)),
+                        .bound_field_with(
+                            &self.cx,
+                            InputPrefs::paths().touchpad_scroll_method,
+                            |id: String| {
+                                scroll_method_for_id(&id)
+                                    .ok_or_else(|| format!("`{id}` is not a scroll method"))
+                            },
+                        ),
                     ),
                 ),
             ]),
@@ -2169,15 +2135,19 @@ impl MouseKeyboardPane {
                         Slider::from_state(&ui::LocalState::new(
                             last.mouse_pointer_speed.unwrap_or(last.pointer_speed),
                         ))
-                        .bound(&self.cx, effect(InputEffect::SET_MOUSE_SPEED))
+                        .bound_field_with(
+                            &self.cx,
+                            InputPrefs::paths().mouse_pointer_speed,
+                            |speed| fraction(speed).map(Some),
+                        )
                         .with_id("input.mouse_pointer_speed")
                         .with_accessible_name("input-mouse-speed"),
                     ),
                 ),
-                self.bool_row(
+                self.optional_row(
                     "input-mouse-natural-scroll",
                     "input-mouse-natural-scroll-description",
-                    InputEffect::SET_MOUSE_NATURAL_SCROLL,
+                    InputPrefs::paths().mouse_natural_scroll,
                     "input.mouse_natural_scroll",
                     last.mouse_natural_scroll.unwrap_or(last.natural_scroll),
                 ),
@@ -2214,11 +2184,14 @@ impl MouseKeyboardPane {
                             accel_options(),
                             &ui::LocalState::new(accel_shown(&self.last.accel_profile)),
                         )
-                        .bound(
+                        .bound_field_with(
                             &self.cx,
-                            effect(InputEffect::SET_ACCELERATION_PROFILE).map(|shown: String| {
-                                accel_from_label(&shown).unwrap_or_default().to_owned()
-                            }),
+                            InputPrefs::paths().accel_profile,
+                            |shown: String| {
+                                accel_from_label(&shown).map(str::to_owned).ok_or_else(|| {
+                                    format!("`{shown}` is not an acceleration profile")
+                                })
+                            },
                         )
                         .with_id("input.accel_profile")
                         .with_placeholder(&accel_shown(&self.last.accel_profile)),
@@ -2233,7 +2206,10 @@ impl MouseKeyboardPane {
                                 self.last.scroll_speed,
                             ),
                         ))
-                        .bound(&self.cx, effect(InputEffect::SET_SCROLL_SPEED))
+                        .bound_field_with(&self.cx, InputPrefs::paths().scroll_speed, |position| {
+                            fraction(position)
+                                .map(settings_store::hardware::scroll_speed_from_slider)
+                        })
                         .with_id("input.scroll_speed")
                         .with_accessible_name("input-scroll-speed"),
                     ),
@@ -2251,7 +2227,7 @@ impl MouseKeyboardPane {
                     &self.key_repeat_description(),
                     Box::new(
                         Slider::from_state(&ui::LocalState::new(self.key_repeat_slider_value()))
-                            .bound(&self.cx, effect(InputEffect::SET_KEY_REPEAT))
+                            .bound_verb(&self.cx, InputPrefs::SET_KEY_REPEAT)
                             .with_id("input.key_repeat")
                             .with_accessible_name(&t("input-key-repeat")),
                     ),
@@ -3614,11 +3590,8 @@ mod tests {
     #[test]
     fn input_effects_write_the_input_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        assert!(set(&mut app, InputEffect::SetTouchpadSpeed { speed: 0.9 }));
-        assert!(set(
-            &mut app,
-            InputEffect::SetMouseNaturalScroll { on: true }
-        ));
+        edit_field(&mut app, INPUT, "touchpad_pointer_speed", 0.9).unwrap();
+        edit_field(&mut app, INPUT, "mouse_natural_scroll", true).unwrap();
         edit_field(&mut app, INPUT, "touchpad_enabled", false).unwrap();
         assert!(set(
             &mut app,
@@ -3630,12 +3603,7 @@ mod tests {
                 behaviour: "ctrl".into()
             }
         ));
-        assert!(set(
-            &mut app,
-            InputEffect::SetTouchpadClickMethod {
-                method: "areas".into()
-            }
-        ));
+        edit_field(&mut app, INPUT, "touchpad_click_method", "areas").unwrap();
         edit_field(&mut app, TEXT_ASSISTANCE, "check_spelling", false).unwrap();
         let input = app.settings::<InputPrefs>().get();
         assert_eq!(input.touchpad_pointer_speed, Some(0.9));
@@ -3681,7 +3649,7 @@ mod tests {
             "empty is the session's language"
         );
 
-        assert!(!set(&mut app, InputEffect::SetMouseSpeed { speed: 4.0 }));
+        assert!(edit_field(&mut app, INPUT, "mouse_pointer_speed", 4.0).is_err());
         assert!(!set(
             &mut app,
             InputEffect::SetComposeKey { key: "f13".into() }
