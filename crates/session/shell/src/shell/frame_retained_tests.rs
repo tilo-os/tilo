@@ -404,9 +404,8 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
 }
 
 #[test]
-fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
+fn workspace_root_rebuild_frames_carry_the_new_scene() {
     let mut frame = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
-    frame.set_workspace_clip_supported(true);
     frame.relayout();
     let warm = frame.paint_with_damage();
     assert!(
@@ -414,7 +413,7 @@ fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
         "the desktop before the switch records source commands"
     );
     frame.with_chrome(|chrome| {
-        chrome.add_workspace("clip after rebuild");
+        chrome.add_workspace("frames after rebuild");
     });
     let mut document = AutoCommit::new();
     let document_root = automerge::ROOT;
@@ -423,28 +422,22 @@ fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
     let rebuilt = frame.paint_with_damage();
     assert!(
         !rebuilt.scene.encoding().is_empty(),
-        "the rebuilt workspace root has to reach the screen before the clip run"
+        "the rebuilt workspace root reaches the screen"
     );
-    let following = frame.paint_with_damage();
-    assert!(
-        following.scene.encoding().is_empty() && following.workspace_hold,
-        "the rest of the switch stays on the content clip"
-    );
-    // Hot-unplugging to a single scanout changes presenter capability while
-    // the same transition is in flight. Its next frame must be complete.
-    frame.set_workspace_clip_supported(false);
-    let single = frame.paint_with_damage();
-    assert!(!single.workspace_hold && single.workspace_clip.is_none());
-    assert!(
-        !single.scene.encoding().is_empty(),
-        "single-output presenter needs actual scene pixels"
-    );
-    frame.set_workspace_clip_supported(true);
-    let multiple = frame.paint_with_damage();
-    assert!(
-        multiple.workspace_hold && multiple.scene.encoding().is_empty(),
-        "restored multi-output replay capability keeps its clip optimisation"
-    );
+    // The rest of the switch's frame run draws the same desktop. A presenter
+    // keeps every pixel it already shows, on one display or several.
+    for index in 0..3 {
+        let following = frame.paint_with_damage();
+        assert!(
+            !following.scene.encoding().is_empty(),
+            "switch frame {index} carries the desktop on every presenter"
+        );
+        assert_eq!(
+            following.damage_regions.as_deref(),
+            Some(&[][..]),
+            "switch frame {index} repaints nothing the rebuilt frame drew"
+        );
+    }
 }
 
 fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {

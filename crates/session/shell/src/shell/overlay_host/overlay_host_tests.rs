@@ -2716,12 +2716,6 @@ fn palette_scrim_and_surface_alphas_match_the_concept_and_theme() {
                 "{}: a bg-white window card behind the palette lands at {card}",
                 theme.name
             );
-            let expected = (strength * 255.0).round();
-            assert!(
-                (f32::from(scrim_rgba(&theme, 1.0)[3]) - expected).abs() <= 1.0,
-                "{}: the overview's fast frame uses the theme's strength",
-                theme.name
-            );
         }
     }
 
