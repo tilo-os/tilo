@@ -2059,7 +2059,7 @@ fn invitation_actions_return_their_network_output_to_the_caller() {
         let catalog = ActionCatalog::build_exact(
             &registry,
             &resource,
-            crate::shell::search::SearchScope::All,
+            crate::shell::chrome_state::SearchScope::All,
             None,
             &chrome.borrow(),
             &doc,

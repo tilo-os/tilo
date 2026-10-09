@@ -159,15 +159,21 @@ fn is_alarm_action(id: &str) -> bool {
         || crate::shell::notification::is_snoozed_alarm_action(id)
 }
 
+/// Contracts that come from a definition of their own rather than the
+/// id table in [`shell_action_contract`].
+fn dedicated_contract(id: &str) -> Option<tilo_actions::ActionContract> {
+    if is_alarm_action(id) {
+        return Some(alarm_action_contract());
+    }
+    collaboration_contract(id)
+}
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
     };
 
-    if is_alarm_action(id) {
-        return alarm_action_contract();
-    }
-    if let Some(contract) = collaboration_contract(id) {
+    if let Some(contract) = dedicated_contract(id) {
         return contract;
     }
     let mut contract = ActionContract::default();
