@@ -67,8 +67,9 @@ const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const SURFACE_STREAM_ALPN: &[u8] = b"tilo-surface-stream/1";
 const PERSONAL_FABRIC_ALPN: &[u8] = b"tilo-personal-fabric/1";
-pub const PERSONAL_MEDIA_CHUNK_BYTES: usize = 256 * 1024;
-const MAX_ACTIVE_PERSONAL_MEDIA_TRANSFERS: usize = 8;
+/// Largest byte chunk one personal-fabric transfer frame carries.
+pub const PERSONAL_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
+const MAX_ACTIVE_PERSONAL_TRANSFERS: usize = 8;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SurfaceWireFrame {
@@ -85,12 +86,14 @@ pub enum PersonalFabricPayload {
     /// Ephemeral, exact-target command encoded independently of snapshot
     /// schema so it is never persisted or relayed through room history.
     Action(Vec<u8>),
-    /// Bounded pieces of an explicitly requested, device-local media handoff.
-    /// The surrounding personal-fabric route authenticates the source device;
-    /// the receiver additionally verifies the final content hash before use.
+    /// Retired non-resumable media-handoff lane. It stays so frames from
+    /// devices that predate the unified lane still decode; receivers drop
+    /// them. Media handoffs now travel as [`Self::NearbyTransfer`] objects of
+    /// kind `MediaHandoff`.
     MediaTransfer(PersonalMediaTransferFrame),
-    /// Resumable generic Nearby object data. Offers and resume checkpoints
-    /// travel as authenticated actions; this lane carries bounded bytes only.
+    /// The one lane for file bytes between a person's devices: Nearby sends
+    /// and media handoffs alike. Offers and resume checkpoints travel as
+    /// authenticated actions; this lane carries bounded bytes only.
     NearbyTransfer(PersonalNearbyTransferFrame),
     /// One signed mutation of a record in the person's own room. Its room is
     /// implied by the route: the fabric only ever joins one person's devices.
@@ -128,6 +131,7 @@ pub enum PersonalFabricPayload {
     },
 }
 
+/// Wire shape of the retired media-handoff lane, decoded only to be dropped.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum PersonalMediaTransferFrame {
     Start {
@@ -310,22 +314,14 @@ pub enum NetCmd {
         target: EndpointId,
         payload: PersonalFabricPayload,
     },
-    /// Stream one local file to an exact certified personal device without
-    /// copying host paths into a durable snapshot or buffering the file.
-    PublishPersonalMedia {
-        ws: WorkspaceId,
-        user_public_key: [u8; 32],
-        target: EndpointId,
-        transfer_id: [u8; 16],
-        file_name: String,
-        total_bytes: u64,
-        file: std::fs::File,
-    },
     /// Stop only the active stream with this exact transport peer/id binding.
-    CancelPersonalMedia {
+    CancelNearbyTransfer {
         target: EndpointId,
         transfer_id: [u8; 16],
     },
+    /// Stream one immutable spool object to an exact certified personal
+    /// device from the receiver-confirmed checkpoint. A second request for
+    /// the same peer and transfer replaces the running stream.
     PublishNearbyTransfer {
         ws: WorkspaceId,
         user_public_key: [u8; 32],
@@ -435,19 +431,12 @@ pub enum NetEvent {
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     },
-    PersonalMediaTransfer {
-        target: EndpointId,
-        transfer_id: [u8; 16],
-        sent_bytes: u64,
-        total_bytes: u64,
-        status: PersonalMediaTransferStatus,
-    },
     NearbyTransferProgress {
         target: EndpointId,
         transfer_id: [u8; 16],
         sent_bytes: u64,
         total_bytes: u64,
-        status: PersonalMediaTransferStatus,
+        status: PersonalTransferStatus,
     },
 }
 
@@ -464,8 +453,9 @@ impl MembershipEpoch {
     }
 }
 
+/// Where one outgoing personal-fabric transfer stream stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PersonalMediaTransferStatus {
+pub enum PersonalTransferStatus {
     Started,
     Progress,
     Completed,
@@ -545,17 +535,17 @@ enum InternalEvent {
         peer: EndpointId,
         connection_incarnation: u64,
     },
-    PersonalMediaProgress {
+    PersonalTransferProgress {
         target: EndpointId,
         transfer_id: [u8; 16],
         generation: u64,
         sent_bytes: u64,
     },
-    PersonalMediaFinished {
+    PersonalTransferFinished {
         target: EndpointId,
         transfer_id: [u8; 16],
         generation: u64,
-        outcome: PersonalMediaStreamOutcome,
+        outcome: PersonalTransferOutcome,
         sent_bytes: u64,
     },
     Closed {
@@ -920,8 +910,8 @@ struct ActorState {
     /// these devices and never fall back to the workspace's gossip topic.
     surface_fanout_viewers: HashMap<(WorkspaceId, SurfaceId), Vec<EndpointId>>,
     personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
-    active_personal_media: HashMap<(EndpointId, [u8; 16]), ActivePersonalMediaTransfer>,
-    next_personal_media_generation: u64,
+    active_personal_transfers: HashMap<(EndpointId, [u8; 16]), ActivePersonalTransfer>,
+    next_personal_transfer_generation: u64,
     /// Every application message peers delivered here (see [`WireTally`]).
     tally: Arc<WireTally>,
     /// Fingerprint of the codec advert last announced, so a change goes out
@@ -961,7 +951,8 @@ impl WireTally {
     }
 }
 
-struct ActivePersonalMediaTransfer {
+/// One running outgoing transfer stream. Dropping `cancel` also stops it.
+struct ActivePersonalTransfer {
     generation: u64,
     workspace: WorkspaceId,
     total_bytes: u64,
@@ -979,26 +970,26 @@ struct PersonalStreamRoute {
     user_public_key: [u8; 32],
 }
 
-/// One local file offered to a personal device under `transfer_id`.
-struct PersonalMediaUpload {
-    transfer_id: [u8; 16],
-    file_name: String,
-    total_bytes: u64,
-    file: std::fs::File,
+/// The actor-side bindings one streaming task reports through.
+struct PersonalTransferTask {
+    internal: mpsc::Sender<InternalEvent>,
+    sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    generation: u64,
+    cancel: tokio::sync::watch::Receiver<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PersonalMediaStreamOutcome {
+enum PersonalTransferOutcome {
     Completed,
     Failed,
     Cancelled,
 }
 
-fn take_personal_media_generation(
-    active: &mut HashMap<(EndpointId, [u8; 16]), ActivePersonalMediaTransfer>,
+fn take_personal_transfer_generation(
+    active: &mut HashMap<(EndpointId, [u8; 16]), ActivePersonalTransfer>,
     key: (EndpointId, [u8; 16]),
     generation: u64,
-) -> Option<ActivePersonalMediaTransfer> {
+) -> Option<ActivePersonalTransfer> {
     active
         .get(&key)
         .is_some_and(|entry| entry.generation == generation)
@@ -1157,7 +1148,7 @@ impl ActorState {
             return false;
         }
         self.peers_seen.remove(&(ws, peer));
-        self.cancel_personal_media_route(ws, peer);
+        self.cancel_personal_transfer_route(ws, peer);
         revoke_personal_fabric_ingress(&mut self.personal_fabric_ingress, ws, epoch);
         if let Some(connection) = self.personal_fabric_connections.remove(&peer) {
             connection.close(0_u32.into(), b"membership departed");
@@ -1438,30 +1429,11 @@ impl ActorState {
                 self.publish_personal_fabric_to(ws, user_public_key, payload, Some(target))
                     .await;
             }
-            Some(NetCmd::PublishPersonalMedia {
-                ws,
-                user_public_key,
-                target,
-                transfer_id,
-                file_name,
-                total_bytes,
-                file,
-            }) => {
-                self.publish_personal_media(
-                    ws,
-                    user_public_key,
-                    target,
-                    transfer_id,
-                    file_name,
-                    total_bytes,
-                    file,
-                );
-            }
-            Some(NetCmd::CancelPersonalMedia {
+            Some(NetCmd::CancelNearbyTransfer {
                 target,
                 transfer_id,
             }) => {
-                self.cancel_personal_media((target, transfer_id));
+                self.cancel_personal_transfer((target, transfer_id));
             }
             Some(NetCmd::PublishNearbyTransfer {
                 ws,
@@ -1761,60 +1733,120 @@ impl ActorState {
         }
     }
 
-    fn publish_personal_media(
+    /// Report one outgoing transfer's progress. A terminal status is
+    /// delivered even when the subscriber is momentarily full: losing it
+    /// would leave the sender waiting on a stream that has ended.
+    fn report_personal_transfer(
+        &self,
+        workspace: WorkspaceId,
+        key: (EndpointId, [u8; 16]),
+        sent_bytes: u64,
+        total_bytes: u64,
+        status: PersonalTransferStatus,
+    ) {
+        let Some(progress) = self.subscribers.get(&workspace).cloned() else {
+            return;
+        };
+        let event = NetEvent::NearbyTransferProgress {
+            target: key.0,
+            transfer_id: key.1,
+            sent_bytes: sent_bytes.min(total_bytes),
+            total_bytes,
+            status,
+        };
+        if matches!(
+            status,
+            PersonalTransferStatus::Started | PersonalTransferStatus::Progress
+        ) {
+            let _ = progress.try_send(event);
+        } else {
+            tokio::spawn(async move {
+                let _ = progress.send(event).await;
+            });
+        }
+    }
+
+    fn cancel_personal_transfer(&mut self, key: (EndpointId, [u8; 16])) -> bool {
+        let Some(active) = self.active_personal_transfers.remove(&key) else {
+            return false;
+        };
+        let _ = active.cancel.send(true);
+        self.report_personal_transfer(
+            active.workspace,
+            key,
+            active.sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
+            active.total_bytes,
+            PersonalTransferStatus::Cancelled,
+        );
+        true
+    }
+
+    fn cancel_personal_transfer_route(&mut self, workspace: WorkspaceId, target: EndpointId) {
+        let keys = self
+            .active_personal_transfers
+            .iter()
+            .filter_map(|(key, active)| {
+                (key.0 == target && active.workspace == workspace).then_some(*key)
+            })
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.cancel_personal_transfer(key);
+        }
+    }
+
+    fn publish_nearby_transfer(
         &mut self,
         ws: WorkspaceId,
         user_public_key: [u8; 32],
         target: EndpointId,
-        transfer_id: [u8; 16],
-        file_name: String,
-        total_bytes: u64,
+        transfer: NearbyTransferCheckpoint,
         file: std::fs::File,
     ) {
-        let progress = self.subscribers.get(&ws).cloned();
-        let report = |status, sent_bytes| {
-            if let Some(progress) = progress.as_ref() {
-                let _ = progress.try_send(NetEvent::PersonalMediaTransfer {
-                    target,
-                    transfer_id,
-                    sent_bytes,
-                    total_bytes,
-                    status,
-                });
-            }
+        let NearbyTransferCheckpoint {
+            transfer_id,
+            request_id,
+            total_bytes,
+            resume_offset,
+            ..
+        } = transfer;
+        let key = (target, transfer_id);
+        // A fresh checkpoint for the same object supersedes the running
+        // stream, whose stale completion the generation then ignores.
+        self.active_personal_transfers.remove(&key);
+        let failed = |actor: &Self| {
+            actor.report_personal_transfer(
+                ws,
+                key,
+                resume_offset,
+                total_bytes,
+                PersonalTransferStatus::Failed,
+            );
         };
-        if transfer_id == [0; 16] {
-            tracing::warn!(peer = %target, "refusing media transfer with an empty id");
-            report(PersonalMediaTransferStatus::Failed, 0);
-            return;
-        }
-        if !self.peers_seen.contains_key(&(ws, target)) {
-            tracing::warn!(ws, peer = %target, "personal media target is no longer live");
-            report(PersonalMediaTransferStatus::Failed, 0);
+        if transfer_id == [0; 16]
+            || request_id == [0; 16]
+            || resume_offset > total_bytes
+            || !self.peers_seen.contains_key(&(ws, target))
+        {
+            failed(self);
             return;
         }
         let Some(addr) = self.peers.get(&target).cloned() else {
-            tracing::warn!(peer = %target, "personal media target has no dial address");
-            report(PersonalMediaTransferStatus::Failed, 0);
+            failed(self);
             return;
         };
-        let key = (target, transfer_id);
-        if self.active_personal_media.contains_key(&key) {
-            tracing::warn!(peer = %target, "refusing duplicate active personal media transfer");
+        if self.active_personal_transfers.len() >= MAX_ACTIVE_PERSONAL_TRANSFERS {
+            tracing::warn!(peer = %target, "refusing transfer while source streams are full");
+            failed(self);
             return;
         }
-        if self.active_personal_media.len() >= MAX_ACTIVE_PERSONAL_MEDIA_TRANSFERS {
-            tracing::warn!(peer = %target, "refusing media transfer while source streams are full");
-            report(PersonalMediaTransferStatus::Failed, 0);
-            return;
-        }
-        self.next_personal_media_generation = self.next_personal_media_generation.wrapping_add(1);
-        let generation = self.next_personal_media_generation;
-        let sent_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        self.next_personal_transfer_generation =
+            self.next_personal_transfer_generation.wrapping_add(1);
+        let generation = self.next_personal_transfer_generation;
+        let sent_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(resume_offset));
         let (cancel, cancel_rx) = tokio::sync::watch::channel(false);
-        self.active_personal_media.insert(
+        self.active_personal_transfers.insert(
             key,
-            ActivePersonalMediaTransfer {
+            ActivePersonalTransfer {
                 generation,
                 workspace: ws,
                 total_bytes,
@@ -1829,26 +1861,29 @@ impl ActorState {
             workspace: ws,
             user_public_key,
         };
-        let upload = PersonalMediaUpload {
-            transfer_id,
-            file_name,
-            total_bytes,
-            file,
-        };
         let internal = self.internal_tx.clone();
-        report(PersonalMediaTransferStatus::Started, 0);
+        self.report_personal_transfer(
+            ws,
+            key,
+            resume_offset,
+            total_bytes,
+            PersonalTransferStatus::Started,
+        );
         tokio::spawn(async move {
-            let outcome = stream_personal_media(
+            let outcome = stream_nearby_transfer(
                 route,
-                upload,
-                internal.clone(),
-                std::sync::Arc::clone(&sent_bytes),
-                generation,
-                cancel_rx,
+                transfer,
+                file,
+                PersonalTransferTask {
+                    internal: internal.clone(),
+                    sent_bytes: std::sync::Arc::clone(&sent_bytes),
+                    generation,
+                    cancel: cancel_rx,
+                },
             )
             .await;
             let _ = internal
-                .send(InternalEvent::PersonalMediaFinished {
+                .send(InternalEvent::PersonalTransferFinished {
                     target,
                     transfer_id,
                     generation,
@@ -1856,130 +1891,6 @@ impl ActorState {
                     sent_bytes: sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
                 })
                 .await;
-        });
-    }
-
-    fn report_personal_media(
-        &self,
-        workspace: WorkspaceId,
-        target: EndpointId,
-        transfer_id: [u8; 16],
-        sent_bytes: u64,
-        total_bytes: u64,
-        status: PersonalMediaTransferStatus,
-    ) {
-        if let Some(progress) = self.subscribers.get(&workspace) {
-            let _ = progress.try_send(NetEvent::PersonalMediaTransfer {
-                target,
-                transfer_id,
-                sent_bytes: sent_bytes.min(total_bytes),
-                total_bytes,
-                status,
-            });
-        }
-    }
-
-    fn cancel_personal_media(&mut self, key: (EndpointId, [u8; 16])) -> bool {
-        let Some(active) = self.active_personal_media.remove(&key) else {
-            return false;
-        };
-        let _ = active.cancel.send(true);
-        self.report_personal_media(
-            active.workspace,
-            key.0,
-            key.1,
-            active.sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
-            active.total_bytes,
-            PersonalMediaTransferStatus::Cancelled,
-        );
-        true
-    }
-
-    fn cancel_personal_media_route(&mut self, workspace: WorkspaceId, target: EndpointId) {
-        let keys = self
-            .active_personal_media
-            .iter()
-            .filter_map(|(key, active)| {
-                (key.0 == target && active.workspace == workspace).then_some(*key)
-            })
-            .collect::<Vec<_>>();
-        for key in keys {
-            self.cancel_personal_media(key);
-        }
-    }
-
-    fn publish_nearby_transfer(
-        &self,
-        ws: WorkspaceId,
-        user_public_key: [u8; 32],
-        target: EndpointId,
-        transfer: NearbyTransferCheckpoint,
-        file: std::fs::File,
-    ) {
-        let NearbyTransferCheckpoint {
-            transfer_id,
-            request_id,
-            total_bytes,
-            resume_offset,
-            ..
-        } = transfer;
-        let progress = self.subscribers.get(&ws).cloned();
-        let report = |status, sent_bytes| {
-            if let Some(progress) = progress.as_ref() {
-                let _ = progress.try_send(NetEvent::NearbyTransferProgress {
-                    target,
-                    transfer_id,
-                    sent_bytes,
-                    total_bytes,
-                    status,
-                });
-            }
-        };
-        if transfer_id == [0; 16]
-            || request_id == [0; 16]
-            || resume_offset > total_bytes
-            || !self.peers_seen.contains_key(&(ws, target))
-        {
-            report(PersonalMediaTransferStatus::Failed, resume_offset);
-            return;
-        }
-        let Some(addr) = self.peers.get(&target).cloned() else {
-            report(PersonalMediaTransferStatus::Failed, resume_offset);
-            return;
-        };
-        let route = PersonalStreamRoute {
-            endpoint: self.endpoint.clone(),
-            addr,
-            target,
-            workspace: ws,
-            user_public_key,
-        };
-        report(PersonalMediaTransferStatus::Started, resume_offset);
-        tokio::spawn(async move {
-            let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(resume_offset));
-            let result = stream_nearby_transfer(
-                route,
-                transfer,
-                file,
-                progress.clone(),
-                std::sync::Arc::clone(&sent),
-            )
-            .await;
-            if let Some(progress) = progress {
-                let _ = progress
-                    .send(NetEvent::NearbyTransferProgress {
-                        target,
-                        transfer_id,
-                        sent_bytes: sent.load(std::sync::atomic::Ordering::Relaxed),
-                        total_bytes,
-                        status: if result.is_ok() {
-                            PersonalMediaTransferStatus::Completed
-                        } else {
-                            PersonalMediaTransferStatus::Failed
-                        },
-                    })
-                    .await;
-            }
         });
     }
 
@@ -2384,38 +2295,37 @@ impl ActorState {
                 self.personal_fabric_ingress
                     .remove(&(peer, connection_incarnation));
             }
-            Some(InternalEvent::PersonalMediaProgress {
+            Some(InternalEvent::PersonalTransferProgress {
                 target,
                 transfer_id,
                 generation,
                 sent_bytes,
             }) => {
                 let key = (target, transfer_id);
-                if let Some(active) = self
-                    .active_personal_media
+                if let Some((workspace, total_bytes)) = self
+                    .active_personal_transfers
                     .get(&key)
                     .filter(|active| active.generation == generation)
+                    .map(|active| (active.workspace, active.total_bytes))
                 {
-                    self.report_personal_media(
-                        active.workspace,
-                        target,
-                        transfer_id,
+                    self.report_personal_transfer(
+                        workspace,
+                        key,
                         sent_bytes,
-                        active.total_bytes,
-                        PersonalMediaTransferStatus::Progress,
+                        total_bytes,
+                        PersonalTransferStatus::Progress,
                     );
                 }
             }
-            Some(InternalEvent::PersonalMediaFinished {
+            Some(InternalEvent::PersonalTransferFinished {
                 target,
                 transfer_id,
                 generation,
                 outcome,
                 sent_bytes,
             }) => {
-                self.handle_personal_media_finished(
-                    target,
-                    transfer_id,
+                self.handle_personal_transfer_finished(
+                    (target, transfer_id),
                     generation,
                     outcome,
                     sent_bytes,
@@ -2589,29 +2499,27 @@ impl ActorState {
         }
     }
 
-    /// [`InternalEvent::PersonalMediaFinished`] arm of [`Self::handle_internal`], split
-    /// out to keep that dispatcher short.
-    fn handle_personal_media_finished(
+    /// [`InternalEvent::PersonalTransferFinished`] arm of [`Self::handle_internal`],
+    /// split out to keep that dispatcher short. Only the stream that still
+    /// owns its binding reports; a replaced or cancelled one is silent.
+    fn handle_personal_transfer_finished(
         &mut self,
-        target: EndpointId,
-        transfer_id: [u8; 16],
+        key: (EndpointId, [u8; 16]),
         generation: u64,
-        outcome: PersonalMediaStreamOutcome,
+        outcome: PersonalTransferOutcome,
         sent_bytes: u64,
     ) {
-        let key = (target, transfer_id);
         if let Some(active) =
-            take_personal_media_generation(&mut self.active_personal_media, key, generation)
+            take_personal_transfer_generation(&mut self.active_personal_transfers, key, generation)
         {
             let status = match outcome {
-                PersonalMediaStreamOutcome::Completed => PersonalMediaTransferStatus::Completed,
-                PersonalMediaStreamOutcome::Failed => PersonalMediaTransferStatus::Failed,
-                PersonalMediaStreamOutcome::Cancelled => PersonalMediaTransferStatus::Cancelled,
+                PersonalTransferOutcome::Completed => PersonalTransferStatus::Completed,
+                PersonalTransferOutcome::Failed => PersonalTransferStatus::Failed,
+                PersonalTransferOutcome::Cancelled => PersonalTransferStatus::Cancelled,
             };
-            self.report_personal_media(
+            self.report_personal_transfer(
                 active.workspace,
-                target,
-                transfer_id,
+                key,
                 sent_bytes,
                 active.total_bytes,
                 status,
@@ -3282,35 +3190,6 @@ impl ActorState {
     }
 }
 
-async fn send_personal_media_frame(
-    connection: &iroh::endpoint::Connection,
-    workspace: WorkspaceId,
-    user_public_key: [u8; 32],
-    frame: PersonalMediaTransferFrame,
-) -> Result<(), ()> {
-    let wire = PersonalFabricWireFrame {
-        workspace,
-        user_public_key,
-        payload: PersonalFabricPayload::MediaTransfer(frame),
-    };
-    let bytes = postcard::to_allocvec(&wire).map_err(|_| ())?;
-    if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
-        return Err(());
-    }
-    let send = async {
-        let mut stream = connection.open_uni().await.map_err(|_| ())?;
-        stream.write_all(&bytes).await.map_err(|_| ())?;
-        stream.finish().map_err(|_| ())?;
-        match stream.stopped().await.map_err(|_| ())? {
-            None => Ok::<(), ()>(()),
-            Some(_) => Err(()),
-        }
-    };
-    tokio::time::timeout(Duration::from_secs(30), send)
-        .await
-        .map_err(|_| ())?
-}
-
 async fn send_nearby_transfer_frame(
     connection: &iroh::endpoint::Connection,
     workspace: WorkspaceId,
@@ -3342,15 +3221,14 @@ async fn send_nearby_transfer_frame(
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one audited streaming state machine keeps prefix verification, bounded chunks, progress, and the authenticated finish together"
+    reason = "one audited streaming state machine keeps prefix verification, bounded chunks, cancellation, progress, and the authenticated finish together"
 )]
 async fn stream_nearby_transfer(
     route: PersonalStreamRoute,
     transfer: NearbyTransferCheckpoint,
     file: std::fs::File,
-    progress: Option<mpsc::Sender<NetEvent>>,
-    sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
-) -> Result<(), ()> {
+    task: PersonalTransferTask,
+) -> PersonalTransferOutcome {
     let PersonalStreamRoute {
         endpoint,
         addr,
@@ -3366,21 +3244,27 @@ async fn stream_nearby_transfer(
         prefix_hash,
         content_hash,
     } = transfer;
+    let PersonalTransferTask {
+        internal,
+        sent_bytes,
+        generation,
+        mut cancel,
+    } = task;
     // File reads go through the I/O pool, never a network worker: the
     // resumed prefix can be most of a large file.
     let file = Arc::new(file);
     let prefix = Arc::clone(&file);
-    let mut hasher = tilo_rt::io::run(move || {
+    let verify = tilo_rt::io::run(move || {
         use std::io::Read as _;
         let mut reader = &*prefix;
         let mut hasher = blake3::Hasher::new();
-        let mut verify = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
+        let mut verify = vec![0_u8; PERSONAL_TRANSFER_CHUNK_BYTES];
         let mut verified = 0_u64;
         while verified < resume_offset {
             let want = usize::try_from(
                 resume_offset
                     .saturating_sub(verified)
-                    .min(PERSONAL_MEDIA_CHUNK_BYTES as u64),
+                    .min(PERSONAL_TRANSFER_CHUNK_BYTES as u64),
             )
             .map_err(std::io::Error::other)?;
             let window = verify
@@ -3395,119 +3279,17 @@ async fn stream_nearby_transfer(
             verified = verified.saturating_add(u64::try_from(read).map_err(std::io::Error::other)?);
         }
         Ok(hasher)
-    })
-    .await
-    .map_err(|_| ())?;
-    if hasher.finalize().as_bytes() != &prefix_hash {
-        return Err(());
-    }
-    let connection = tokio::time::timeout(
-        Duration::from_secs(10),
-        endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
-    )
-    .await
-    .map_err(|_| ())?
-    .map_err(|_| ())?;
-    let mut offset = resume_offset;
-    while offset < total_bytes {
-        let want = usize::try_from(
-            total_bytes
-                .saturating_sub(offset)
-                .min(PERSONAL_MEDIA_CHUNK_BYTES as u64),
-        )
-        .map_err(|_| ())?;
-        let bytes = tilo_rt::io::read_at(Arc::clone(&file), offset, want)
-            .await
-            .map_err(|_| ())?;
-        if bytes.is_empty() {
-            return Err(());
-        }
-        let read = bytes.len();
-        hasher.update(&bytes);
-        send_nearby_transfer_frame(
-            &connection,
-            workspace,
-            user_public_key,
-            PersonalNearbyTransferFrame::Chunk {
-                transfer_id,
-                request_id,
-                offset,
-                bytes,
-            },
-        )
-        .await?;
-        offset = offset.saturating_add(u64::try_from(read).map_err(|_| ())?);
-        sent_bytes.store(offset, std::sync::atomic::Ordering::Relaxed);
-        if let Some(progress) = progress.as_ref() {
-            let _ = progress.try_send(NetEvent::NearbyTransferProgress {
-                target,
-                transfer_id,
-                sent_bytes: offset,
-                total_bytes,
-                status: PersonalMediaTransferStatus::Progress,
-            });
-        }
-    }
-    let tail = tilo_rt::io::read_at(Arc::clone(&file), offset, 1)
-        .await
-        .map_err(|_| ())?;
-    if !tail.is_empty() {
-        return Err(());
-    }
-    if hasher.finalize().as_bytes() != &content_hash {
-        return Err(());
-    }
-    let result = send_nearby_transfer_frame(
-        &connection,
-        workspace,
-        user_public_key,
-        PersonalNearbyTransferFrame::Finish {
-            transfer_id,
-            request_id,
-            content_hash,
+    });
+    let mut hasher = tokio::select! {
+        result = verify => match result {
+            Ok(hasher) => hasher,
+            Err(_) => return PersonalTransferOutcome::Failed,
         },
-    )
-    .await;
-    if result.is_err() {
-        let _ = send_nearby_transfer_frame(
-            &connection,
-            workspace,
-            user_public_key,
-            PersonalNearbyTransferFrame::Abort {
-                transfer_id,
-                request_id,
-            },
-        )
-        .await;
+        () = personal_transfer_cancelled(&mut cancel) => return PersonalTransferOutcome::Cancelled,
+    };
+    if hasher.finalize().as_bytes() != &prefix_hash {
+        return PersonalTransferOutcome::Failed;
     }
-    result
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one bounded transfer: connect, manifest, chunk loop and cancellation share local state"
-)]
-async fn stream_personal_media(
-    route: PersonalStreamRoute,
-    upload: PersonalMediaUpload,
-    internal: mpsc::Sender<InternalEvent>,
-    sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    generation: u64,
-    mut cancel: tokio::sync::watch::Receiver<bool>,
-) -> PersonalMediaStreamOutcome {
-    let PersonalStreamRoute {
-        endpoint,
-        addr,
-        target,
-        workspace,
-        user_public_key,
-    } = route;
-    let PersonalMediaUpload {
-        transfer_id,
-        file_name,
-        total_bytes,
-        file,
-    } = upload;
     let connect = tokio::time::timeout(
         Duration::from_secs(10),
         endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
@@ -3515,120 +3297,91 @@ async fn stream_personal_media(
     let connection = tokio::select! {
         result = connect => match result {
             Ok(Ok(connection)) => connection,
-            _ => return PersonalMediaStreamOutcome::Failed,
+            _ => return PersonalTransferOutcome::Failed,
         },
-        () = personal_media_cancelled(&mut cancel) => return PersonalMediaStreamOutcome::Cancelled,
+        () = personal_transfer_cancelled(&mut cancel) => return PersonalTransferOutcome::Cancelled,
     };
-    let start = send_personal_media_frame(
-        &connection,
-        workspace,
-        user_public_key,
-        PersonalMediaTransferFrame::Start {
-            transfer_id,
-            file_name,
-            total_bytes,
-        },
-    );
-    let start_outcome = tokio::select! {
-        result = start => result.map_or(PersonalMediaStreamOutcome::Failed, |()| PersonalMediaStreamOutcome::Completed),
-        () = personal_media_cancelled(&mut cancel) => PersonalMediaStreamOutcome::Cancelled,
-    };
-    if start_outcome != PersonalMediaStreamOutcome::Completed {
-        if start_outcome == PersonalMediaStreamOutcome::Cancelled {
-            let _ = tokio::time::timeout(
-                Duration::from_secs(1),
-                send_personal_media_frame(
-                    &connection,
-                    workspace,
-                    user_public_key,
-                    PersonalMediaTransferFrame::Abort { transfer_id },
-                ),
-            )
-            .await;
-            return PersonalMediaStreamOutcome::Cancelled;
-        }
-        return PersonalMediaStreamOutcome::Failed;
-    }
-
-    // Reads go through the I/O pool, never a network worker.
-    let file = Arc::new(file);
-    let mut offset = 0_u64;
-    let mut last_reported = 0_u64;
-    let mut hasher = blake3::Hasher::new();
-    let transfer: Result<(), PersonalMediaStreamOutcome> = async {
+    let streamed: Result<(), PersonalTransferOutcome> = async {
+        let mut offset = resume_offset;
         while offset < total_bytes {
-            let remaining = total_bytes.saturating_sub(offset);
-            let want = usize::try_from(remaining.min(PERSONAL_MEDIA_CHUNK_BYTES as u64))
-                .map_err(|_| PersonalMediaStreamOutcome::Failed)?;
+            let want = usize::try_from(
+                total_bytes
+                    .saturating_sub(offset)
+                    .min(PERSONAL_TRANSFER_CHUNK_BYTES as u64),
+            )
+            .map_err(|_| PersonalTransferOutcome::Failed)?;
             let bytes = tokio::select! {
-                result = tilo_rt::io::read_at(Arc::clone(&file), offset, want) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
-                () = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+                result = tilo_rt::io::read_at(Arc::clone(&file), offset, want) => result.map_err(|_| PersonalTransferOutcome::Failed)?,
+                () = personal_transfer_cancelled(&mut cancel) => return Err(PersonalTransferOutcome::Cancelled),
             };
             if bytes.is_empty() {
-                return Err(PersonalMediaStreamOutcome::Failed);
+                return Err(PersonalTransferOutcome::Failed);
             }
             let read = bytes.len();
             hasher.update(&bytes);
-            let send = send_personal_media_frame(
+            let send = send_nearby_transfer_frame(
                 &connection,
                 workspace,
                 user_public_key,
-                PersonalMediaTransferFrame::Chunk {
+                PersonalNearbyTransferFrame::Chunk {
                     transfer_id,
+                    request_id,
                     offset,
                     bytes,
                 },
             );
             tokio::select! {
-                result = send => result.map_err(|()| PersonalMediaStreamOutcome::Failed)?,
-                () = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+                result = send => result.map_err(|()| PersonalTransferOutcome::Failed)?,
+                () = personal_transfer_cancelled(&mut cancel) => return Err(PersonalTransferOutcome::Cancelled),
             }
-            offset = offset.saturating_add(
-                u64::try_from(read).map_err(|_| PersonalMediaStreamOutcome::Failed)?,
-            );
+            offset = offset
+                .saturating_add(u64::try_from(read).map_err(|_| PersonalTransferOutcome::Failed)?);
             sent_bytes.store(offset, std::sync::atomic::Ordering::Relaxed);
-            if offset == total_bytes || offset.saturating_sub(last_reported) >= 8 * 1024 * 1024 {
-                let _ = internal.try_send(InternalEvent::PersonalMediaProgress {
-                    target,
-                    transfer_id,
-                    generation,
-                    sent_bytes: offset,
-                });
-                last_reported = offset;
-            }
+            let _ = internal.try_send(InternalEvent::PersonalTransferProgress {
+                target,
+                transfer_id,
+                generation,
+                sent_bytes: offset,
+            });
         }
-        let trailing = tokio::select! {
-            result = tilo_rt::io::read_at(Arc::clone(&file), offset, 1) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
-            () = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+        let tail = tokio::select! {
+            result = tilo_rt::io::read_at(Arc::clone(&file), offset, 1) => result.map_err(|_| PersonalTransferOutcome::Failed)?,
+            () = personal_transfer_cancelled(&mut cancel) => return Err(PersonalTransferOutcome::Cancelled),
         };
-        if !trailing.is_empty() {
-            return Err(PersonalMediaStreamOutcome::Failed);
+        if !tail.is_empty() || hasher.finalize().as_bytes() != &content_hash {
+            return Err(PersonalTransferOutcome::Failed);
         }
-        let finish = send_personal_media_frame(
+        let finish = send_nearby_transfer_frame(
             &connection,
             workspace,
             user_public_key,
-            PersonalMediaTransferFrame::Finish {
+            PersonalNearbyTransferFrame::Finish {
                 transfer_id,
-                content_hash: *hasher.finalize().as_bytes(),
+                request_id,
+                content_hash,
             },
         );
         tokio::select! {
-            result = finish => result.map_err(|()| PersonalMediaStreamOutcome::Failed),
-            () = personal_media_cancelled(&mut cancel) => Err(PersonalMediaStreamOutcome::Cancelled),
+            result = finish => result.map_err(|()| PersonalTransferOutcome::Failed),
+            () = personal_transfer_cancelled(&mut cancel) => Err(PersonalTransferOutcome::Cancelled),
         }
     }
     .await;
-    match transfer {
-        Ok(()) => PersonalMediaStreamOutcome::Completed,
+    match streamed {
+        Ok(()) => PersonalTransferOutcome::Completed,
         Err(outcome) => {
+            // The receiver keeps its last durable prefix; the abort only
+            // tells it this stream will send nothing more.
             let _ = tokio::time::timeout(
                 Duration::from_secs(1),
-                send_personal_media_frame(
+                send_nearby_transfer_frame(
                     &connection,
                     workspace,
                     user_public_key,
-                    PersonalMediaTransferFrame::Abort { transfer_id },
+                    PersonalNearbyTransferFrame::Abort {
+                        transfer_id,
+                        request_id,
+                    },
                 ),
             )
             .await;
@@ -3637,7 +3390,7 @@ async fn stream_personal_media(
     }
 }
 
-async fn personal_media_cancelled(cancel: &mut tokio::sync::watch::Receiver<bool>) {
+async fn personal_transfer_cancelled(cancel: &mut tokio::sync::watch::Receiver<bool>) {
     if *cancel.borrow() {
         return;
     }
@@ -3718,8 +3471,8 @@ async fn run(
         surface_fanout_viewers: HashMap::new(),
         pending_surface_frames: HashMap::new(),
         personal_fabric_connections: HashMap::new(),
-        active_personal_media: HashMap::new(),
-        next_personal_media_generation: 0,
+        active_personal_transfers: HashMap::new(),
+        next_personal_transfer_generation: 0,
         tally: Arc::default(),
         caps_sent: None,
         compat_beats: 0,
@@ -4525,9 +4278,9 @@ mod tests {
         }
     }
 
-    fn active_personal_media(generation: u64) -> ActivePersonalMediaTransfer {
+    fn active_personal_transfer(generation: u64) -> ActivePersonalTransfer {
         let (cancel, _receiver) = tokio::sync::watch::channel(false);
-        ActivePersonalMediaTransfer {
+        ActivePersonalTransfer {
             generation,
             workspace: 7,
             total_bytes: 8,
@@ -4538,7 +4291,7 @@ mod tests {
 
     #[test]
     fn personal_bindings_are_exact_generation_and_membership_scoped() {
-        // Phase `personal_media_generation_is_exact_and_stale_completion_cannot_remove_replacement`.
+        // Phase `personal_transfer_generation_is_exact_and_stale_completion_cannot_remove_replacement`.
         {
             let first = iroh::SecretKey::from_bytes(&[0xB1; 32]).public();
             let sibling = iroh::SecretKey::from_bytes(&[0xB2; 32]).public();
@@ -4546,20 +4299,20 @@ mod tests {
             let key = (first, transfer_id);
             let sibling_key = (sibling, transfer_id);
             let mut active = HashMap::from([
-                (key, active_personal_media(12)),
-                (sibling_key, active_personal_media(4)),
+                (key, active_personal_transfer(12)),
+                (sibling_key, active_personal_transfer(4)),
             ]);
 
-            assert!(take_personal_media_generation(&mut active, key, 11).is_none());
+            assert!(take_personal_transfer_generation(&mut active, key, 11).is_none());
             assert!(
                 active.contains_key(&key),
                 "old worker cannot remove replacement"
             );
             assert!(
-                take_personal_media_generation(&mut active, sibling_key, 12).is_none(),
+                take_personal_transfer_generation(&mut active, sibling_key, 12).is_none(),
                 "same id on another target is isolated"
             );
-            assert!(take_personal_media_generation(&mut active, key, 12).is_some());
+            assert!(take_personal_transfer_generation(&mut active, key, 12).is_some());
             assert!(active.contains_key(&sibling_key));
         }
         // Phase `departed_personal_connection_cannot_rebind_after_membership_reconnect`.
@@ -4595,7 +4348,7 @@ mod tests {
                         transfer_id: [4; 16],
                         request_id: [5; 16],
                         offset: 99,
-                        bytes: vec![7; PERSONAL_MEDIA_CHUNK_BYTES],
+                        bytes: vec![7; PERSONAL_TRANSFER_CHUNK_BYTES],
                     },
                 ),
             };
@@ -4614,8 +4367,54 @@ mod tests {
             assert_eq!(transfer_id, [4; 16]);
             assert_eq!(request_id, [5; 16]);
             assert_eq!(offset, 99);
-            assert_eq!(bytes.len(), PERSONAL_MEDIA_CHUNK_BYTES);
+            assert_eq!(bytes.len(), PERSONAL_TRANSFER_CHUNK_BYTES);
         }
+    }
+
+    #[test]
+    fn legacy_media_transfer_frame_is_decoded_and_dropped() {
+        // Postcard writes the variant index first: the retired media lane
+        // keeps its slot, so older devices' frames decode and the unified
+        // lane's discriminant never moves.
+        let legacy = PersonalFabricWireFrame {
+            workspace: 42,
+            user_public_key: [3; 32],
+            payload: PersonalFabricPayload::MediaTransfer(PersonalMediaTransferFrame::Start {
+                transfer_id: [6; 16],
+                file_name: "song.flac".into(),
+                total_bytes: 9,
+            }),
+        };
+        let encoded = postcard::to_allocvec(&legacy).unwrap();
+        let decoded: PersonalFabricWireFrame = postcard::from_bytes(&encoded).unwrap();
+        assert!(matches!(
+            decoded.payload,
+            PersonalFabricPayload::MediaTransfer(PersonalMediaTransferFrame::Start {
+                transfer_id,
+                total_bytes: 9,
+                ..
+            }) if transfer_id == [6; 16]
+        ));
+        let discriminant = |payload: PersonalFabricPayload| {
+            postcard::to_allocvec(&payload).unwrap().first().copied()
+        };
+        assert_eq!(
+            discriminant(PersonalFabricPayload::MediaTransfer(
+                PersonalMediaTransferFrame::Abort {
+                    transfer_id: [1; 16]
+                }
+            )),
+            Some(3)
+        );
+        assert_eq!(
+            discriminant(PersonalFabricPayload::NearbyTransfer(
+                PersonalNearbyTransferFrame::Abort {
+                    transfer_id: [1; 16],
+                    request_id: [2; 16],
+                }
+            )),
+            Some(4)
+        );
     }
 
     use iroh::endpoint::presets;
@@ -5431,7 +5230,7 @@ mod tests {
                 }
             }
         }
-        // Phase `personal_media_streams_in_order_with_a_verified_finish_hash`.
+        // Phase `personal_transfer_streams_in_order_with_a_verified_finish_hash`.
         {
             let (a, lookup_a) = endpoint().await;
             let (b, lookup_b) = endpoint().await;
@@ -5440,8 +5239,10 @@ mod tests {
             let b_addr = b.addr();
             let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
             let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-            let (event_a, mut rx_a) = mpsc::channel(16);
-            let (event_b, mut rx_b) = mpsc::channel(16);
+            // Progress is best-effort; leave room for every chunk's report
+            // while the receiver side is drained first.
+            let (event_a, mut rx_a) = mpsc::channel(256);
+            let (event_b, mut rx_b) = mpsc::channel(256);
             for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b)] {
                 command
                     .send(NetCmd::JoinWorkspace {
@@ -5465,18 +5266,24 @@ mod tests {
 
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("private-host-name.flac");
-            let bytes = vec![0x9a; PERSONAL_MEDIA_CHUNK_BYTES.saturating_add(31)];
+            let bytes = vec![0x9a; PERSONAL_TRANSFER_CHUNK_BYTES.saturating_add(31)];
             std::fs::write(&path, &bytes).unwrap();
             let file = std::fs::File::open(&path).unwrap();
             let transfer_id = [0x45; 16];
+            let request_id = [0x46; 16];
             cmd_a
-                .send(NetCmd::PublishPersonalMedia {
+                .send(NetCmd::PublishNearbyTransfer {
                     ws: 45,
                     user_public_key: [0xA6; 32],
                     target: b_id,
-                    transfer_id,
-                    file_name: "song.flac".into(),
-                    total_bytes: u64::try_from(bytes.len()).unwrap(),
+                    transfer: NearbyTransferCheckpoint {
+                        transfer_id,
+                        request_id,
+                        total_bytes: u64::try_from(bytes.len()).unwrap(),
+                        resume_offset: 0,
+                        prefix_hash: *blake3::hash(&[]).as_bytes(),
+                        content_hash: *blake3::hash(&bytes).as_bytes(),
+                    },
                     file,
                 })
                 .await
@@ -5488,40 +5295,33 @@ mod tests {
                     .await
                     .unwrap();
                 let NetEvent::PersonalFabric {
-                    payload: PersonalFabricPayload::MediaTransfer(frame),
+                    payload: PersonalFabricPayload::NearbyTransfer(frame),
                     ..
                 } = event
                 else {
                     continue;
                 };
                 match frame {
-                    PersonalMediaTransferFrame::Start {
+                    PersonalNearbyTransferFrame::Chunk {
                         transfer_id: id,
-                        file_name,
-                        total_bytes,
-                    } => {
-                        assert_eq!(id, transfer_id);
-                        assert_eq!(file_name, "song.flac");
-                        assert_eq!(total_bytes, u64::try_from(bytes.len()).unwrap());
-                    }
-                    PersonalMediaTransferFrame::Chunk {
-                        transfer_id: id,
+                        request_id: request,
                         offset,
                         bytes: chunk,
                     } => {
-                        assert_eq!(id, transfer_id);
+                        assert_eq!((id, request), (transfer_id, request_id));
                         assert_eq!(offset, u64::try_from(received.len()).unwrap());
                         received.extend_from_slice(&chunk);
                     }
-                    PersonalMediaTransferFrame::Finish {
+                    PersonalNearbyTransferFrame::Finish {
                         transfer_id: id,
+                        request_id: request,
                         content_hash,
                     } => {
-                        assert_eq!(id, transfer_id);
+                        assert_eq!((id, request), (transfer_id, request_id));
                         assert_eq!(content_hash, *blake3::hash(&received).as_bytes());
                         break;
                     }
-                    PersonalMediaTransferFrame::Abort { .. } => panic!("transfer aborted"),
+                    PersonalNearbyTransferFrame::Abort { .. } => panic!("transfer aborted"),
                 }
             }
             assert_eq!(received, bytes);
@@ -5531,7 +5331,7 @@ mod tests {
                 let event = tilo_test_env::within("a message on rx_a", rx_a.recv())
                     .await
                     .unwrap();
-                let NetEvent::PersonalMediaTransfer {
+                let NetEvent::NearbyTransferProgress {
                     target,
                     transfer_id: id,
                     sent_bytes,
@@ -5545,25 +5345,89 @@ mod tests {
                 assert_eq!(id, transfer_id);
                 assert!(sent_bytes <= total_bytes);
                 statuses.push((status, sent_bytes));
-                if status == PersonalMediaTransferStatus::Completed {
+                if status == PersonalTransferStatus::Completed {
                     break;
                 }
             }
             assert_eq!(
                 statuses.first(),
-                Some(&(PersonalMediaTransferStatus::Started, 0))
+                Some(&(PersonalTransferStatus::Started, 0))
             );
             assert!(statuses.iter().any(|(status, sent)| {
-                *status == PersonalMediaTransferStatus::Progress
+                *status == PersonalTransferStatus::Progress
                     && *sent == u64::try_from(bytes.len()).unwrap()
             }));
             assert_eq!(
                 statuses.last(),
                 Some(&(
-                    PersonalMediaTransferStatus::Completed,
+                    PersonalTransferStatus::Completed,
                     u64::try_from(bytes.len()).unwrap()
                 ))
             );
+
+            // Phase `personal_transfer_cancel_stops_only_the_exact_stream`.
+            let large = vec![0x3c; PERSONAL_TRANSFER_CHUNK_BYTES.saturating_mul(64)];
+            let large_path = dir.path().join("film.mkv");
+            std::fs::write(&large_path, &large).unwrap();
+            let cancelled_id = [0x47; 16];
+            cmd_a
+                .send(NetCmd::PublishNearbyTransfer {
+                    ws: 45,
+                    user_public_key: [0xA6; 32],
+                    target: b_id,
+                    transfer: NearbyTransferCheckpoint {
+                        transfer_id: cancelled_id,
+                        request_id,
+                        total_bytes: u64::try_from(large.len()).unwrap(),
+                        resume_offset: 0,
+                        prefix_hash: *blake3::hash(&[]).as_bytes(),
+                        content_hash: *blake3::hash(&large).as_bytes(),
+                    },
+                    file: std::fs::File::open(&large_path).unwrap(),
+                })
+                .await
+                .unwrap();
+            cmd_a
+                .send(NetCmd::CancelNearbyTransfer {
+                    target: a_id,
+                    transfer_id: cancelled_id,
+                })
+                .await
+                .unwrap();
+            cmd_a
+                .send(NetCmd::CancelNearbyTransfer {
+                    target: b_id,
+                    transfer_id: cancelled_id,
+                })
+                .await
+                .unwrap();
+            loop {
+                let event = tilo_test_env::within("a message on rx_a", rx_a.recv())
+                    .await
+                    .unwrap();
+                let NetEvent::NearbyTransferProgress {
+                    target,
+                    transfer_id: id,
+                    status,
+                    ..
+                } = event
+                else {
+                    continue;
+                };
+                if id != cancelled_id {
+                    // Late progress of the finished stream.
+                    continue;
+                }
+                assert_eq!(target, b_id);
+                assert_ne!(
+                    status,
+                    PersonalTransferStatus::Completed,
+                    "a cancelled stream never completes"
+                );
+                if status == PersonalTransferStatus::Cancelled {
+                    break;
+                }
+            }
         }
     }
 

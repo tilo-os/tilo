@@ -2361,6 +2361,7 @@ nearby-error-outside-grant = die Quelle für Nearby Send liegt außerhalb der Fr
 nearby-error-one-item = Nearby Send braucht genau eine normale Datei oder einen Ordner
 nearby-error-queue-full = die Warteschlange für Übertragungen ist voll
 nearby-error-quota-full = der Speicherplatz für Übertragungen ist voll
+nearby-error-disk-full = nicht genug freier Speicherplatz für diese Übertragung
 nearby-error-too-many = zu viele Übertragungen
 nearby-error-not-regular = die Quelle ist keine normale Datei
 nearby-error-folder-too-many = der Ordner enthält zu viele Einträge
