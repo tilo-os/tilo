@@ -30,6 +30,7 @@ hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 semver.workspace = true
 # `update` resolves a newer version through the signed registry index
@@ -44,9 +45,9 @@ workspace-hack = { version = "0.1" }
 tilo-os-search = { path = "../../runtime/os-search" }
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 getrandom.workspace = true
 ed25519-dalek.workspace = true
-tempfile.workspace = true
 
 [[test]]
 name = "it"

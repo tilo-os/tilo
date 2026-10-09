@@ -865,3 +865,107 @@ fn selected_runtime_inventory_uses_the_real_catalog_and_xdg_bundle_path() {
         "inspection never changes a selection"
     );
 }
+
+#[test]
+fn maintained_cohort_prepares_signed_inverse_before_selecting_new_package() {
+    let env = Env::new();
+    let old = env.tapp("73018.0.0", b"original signed package", None);
+    let new = env.tapp("0.1.0", b"cohort signed package", None);
+    assert!(
+        env.cmd(&["install", old.to_str().unwrap(), "--allow-self-signed"])
+            .0
+    );
+    env.seed_state();
+    let original = package_store::Registry::load(&env.tilo_apps().join("registry.toml"))
+        .unwrap()
+        .find("so.tilo.lifecycle")
+        .unwrap()
+        .clone();
+    let (ok, out, err) = env.cmd(&[
+        "cohort-prepare",
+        "--ticket",
+        "activation-1",
+        "so.tilo.lifecycle",
+    ]);
+    assert!(ok, "{out}{err}");
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        new.to_str().unwrap(),
+        "--allow-self-signed",
+        "--force",
+        "--preserve-held",
+        "--cohort",
+        "activation-1",
+    ]);
+    assert!(ok, "{out}{err}");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"cohort signed package"
+    );
+    assert!(
+        !original.payload_root.exists(),
+        "canonical retirement is unchanged"
+    );
+    let directory = env.tilo_apps().join("cohorts/activation-1");
+    let name = tilo_app_package::BlobHash::of(b"so.tilo.lifecycle").to_hex();
+    let file = std::fs::File::open(directory.join(format!("{name}.tapp"))).unwrap();
+    let saved = tilo_app_package::tapp::read(file, &mut tilo_app_package::DiscardBlobs).unwrap();
+    assert_eq!(saved.meta.id.to_hex(), original.package_id_hex);
+    assert!(
+        saved.missing().is_empty(),
+        "the inverse carries all payload blobs"
+    );
+    assert!(matches!(
+        tilo_app_package::verify(&saved.meta, &[env.sk.verifying_key().to_bytes()]),
+        tilo_app_package::Verification::Trusted { .. }
+    ));
+    assert!(env.state_exists("personal") && env.state_exists("b7c1-workspace"));
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        new.to_str().unwrap(),
+        "--allow-self-signed",
+        "--force",
+        "--preserve-held",
+        "--cohort",
+        "activation-1",
+    ]);
+    assert!(ok, "normal same-cohort replay failed: {out}{err}");
+    assert!(out.contains("\"preserved\":false"));
+    let missing = env.tapp("0.1.1", b"missing attempted replacement", None);
+    let meta = tilo_app_package::tapp::read(
+        std::fs::File::open(&missing).unwrap(),
+        &mut tilo_app_package::DiscardBlobs,
+    )
+    .unwrap()
+    .meta;
+    let thin = env.home.path().join("missing-cohort.tapp");
+    tilo_app_package::tapp::write(std::fs::File::create(&thin).unwrap(), &meta, None).unwrap();
+    let (ok, _, _) = env.cmd(&[
+        "install",
+        thin.to_str().unwrap(),
+        "--allow-self-signed",
+        "--force",
+        "--preserve-held",
+        "--cohort",
+        "activation-1",
+    ]);
+    assert!(!ok, "missing payload must refuse the attempted replacement");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"cohort signed package"
+    );
+    let (ok, out, err) = env.cmd(&[
+        "cohort-restore",
+        "--ticket",
+        "activation-1",
+        "so.tilo.lifecycle",
+        "--allow-self-signed",
+    ]);
+    assert!(ok, "canonical inverse failed: {out}{err}");
+    assert!(out.contains("\"changed\":true"));
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"original signed package"
+    );
+    assert!(env.state_exists("personal") && env.state_exists("b7c1-workspace"));
+}
