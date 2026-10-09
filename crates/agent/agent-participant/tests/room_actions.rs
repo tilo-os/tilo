@@ -214,7 +214,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     };
     assert!(page.rows.iter().all(|row| {
         row.resource.id == id
-            && row.resource.kind == "chat.message"
+            && row.resource.kind == "chat.workspace.messages"
             && row
                 .action
                 .as_ref()
