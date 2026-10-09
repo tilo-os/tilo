@@ -1578,13 +1578,44 @@ pub fn run(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
+    let manifest = launch_manifest(manifest_path, payload_root, opts)?;
+    run_manifest(&manifest, payload_root, opts)
+}
+
+/// The first half of [`run`]: the manifest to launch, verified against the
+/// signed installation when `opts` names one (`--expected-package-hash`).
+/// Reads and hashes files only; it starts no process.
+///
+/// # Errors
+///
+/// As [`run`], for a manifest that can't be read or an installation that
+/// changed.
+pub fn launch_manifest(
+    manifest_path: &Path,
+    payload_root: &Path,
+    opts: &RunOptions,
+) -> Result<MinimalManifest, RunError> {
     let manifest = if let Some(expected) = opts.expected_package_hash.as_deref() {
         verified_original_manifest(manifest_path, payload_root, opts, expected)?
     } else {
         read_manifest(manifest_path)?
     };
     tilo_startup_metrics::handoff_mark("package-verified");
-    run_with_context(&manifest, payload_root, opts, None, None)
+    Ok(manifest)
+}
+
+/// The second half of [`run`]: build the sandbox for a manifest from
+/// [`launch_manifest`] and run the app in it.
+///
+/// # Errors
+///
+/// As [`run`].
+pub fn run_manifest(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+) -> Result<ExitStatus, RunError> {
+    run_with_context(manifest, payload_root, opts, None, None)
 }
 
 pub(crate) fn verified_original_manifest(
@@ -3007,6 +3038,76 @@ pub(crate) fn validate_owned_service_options(opts: &RunOptions) -> Result<(), Ru
     Ok(())
 }
 
+/// Start `work` on its own thread of `scope`, beside the launch's main line.
+fn spawn_beside<'scope, T: Send + 'scope>(
+    scope: &'scope std::thread::Scope<'scope, '_>,
+    name: &str,
+    work: impl FnOnce() -> T + Send + 'scope,
+) -> Result<std::thread::ScopedJoinHandle<'scope, T>, RunError> {
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn_scoped(scope, work)
+        .map_err(|error| RunError::Io(std::io::Error::other(format!("{name} thread: {error}"))))
+}
+
+/// The result of [`spawn_beside`]'s work; its panic continues here.
+fn join_beside<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    handle
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// What the host prepares before a sandbox can be described: the verified
+/// runtime bundle, if any, and the app's writable directories.
+struct LaunchHost {
+    runtime: Option<(PathBuf, String)>,
+    app_dir: PathBuf,
+    person_dir: PathBuf,
+}
+
+/// Verify the runtime bundle, check the entrypoint's libraries against it,
+/// and create the app's directories (bwrap can only bind what exists).
+fn prepare_launch_host(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    enrolled: Option<&crate::services::EnrolledServiceContext>,
+) -> Result<LaunchHost, RunError> {
+    // A resolved bundle wins over --minimal-libs and skips the loader-bind
+    // stopgap entirely.
+    let runtime = if enrolled.is_some() {
+        Some(
+            crate::managed::verify_runtime(manifest, opts)
+                .map_err(RunError::InvalidServiceLaunch)?,
+        )
+    } else {
+        resolve_runtime(manifest, opts)?
+    };
+    tilo_startup_metrics::handoff_mark("runtime-verified");
+    let runtime_arg = runtime.as_ref().map(|(p, v)| (p.as_path(), v.as_str()));
+    preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
+    tilo_startup_metrics::handoff_mark("loader-preflight-done");
+    // The app's one writable directory, for the room it's opened into.
+    let (app_dir, person_dir) = if let Some(services) = enrolled {
+        (
+            crate::appdir::prepare_host_app_dir(
+                services.data_home(),
+                Some(&services.binding().room),
+                &services.binding().app,
+            )?,
+            crate::appdir::prepare_host_person_dir(services.data_home(), &services.binding().app)?,
+        )
+    } else {
+        resolve_launch_dirs(manifest, opts)?
+    };
+    tilo_startup_metrics::handoff_mark("app-dirs-ready");
+    Ok(LaunchHost {
+        runtime,
+        app_dir,
+        person_dir,
+    })
+}
+
 pub(crate) fn run_enrolled(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -3058,42 +3159,37 @@ pub(crate) fn run_with_context(
     // D-Bus proxy decision. Failure leaves the bus unavailable; there is
     // no raw-session-bus fallback. `_dbus_guards` stay alive until bwrap is
     // waited on so Drop can SIGTERM the proxies.
-    let (dbus_plan, _dbus_guards) =
-        resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
-    tilo_startup_metrics::handoff_mark("dbus-proxies-ready");
-
-    // Runtime bundle resolution: a resolved bundle wins over
-    // --minimal-libs and skips the loader-bind stopgap entirely.
-    let resolved_runtime = if enrolled.is_some() {
-        Some(
-            crate::managed::verify_runtime(manifest, opts)
-                .map_err(RunError::InvalidServiceLaunch)?,
-        )
-    } else {
-        resolve_runtime(manifest, opts)?
-    };
-    tilo_startup_metrics::handoff_mark("runtime-verified");
+    //
+    // The proxies' start-up and readiness handshakes need nothing from the
+    // runtime, loader and directory preparation, and those need nothing
+    // from the proxies, so the two run side by side. Every check still
+    // completes before anything below; a failed one returns after the
+    // join, and dropping the guards stops the proxies before any sandbox
+    // exists.
+    let (portals, graphical) = (&manifest.sandbox.portals, opts.wayland_socket.is_some());
+    let ((dbus_plan, _dbus_guards), host) = std::thread::scope(|scope| {
+        let dbus = spawn_beside(scope, "launch-dbus", move || {
+            let bind = resolve_dbus_bind(portals, graphical);
+            tilo_startup_metrics::handoff_mark("dbus-proxies-ready");
+            bind
+        })?;
+        let host = prepare_launch_host(
+            manifest,
+            payload_root,
+            opts,
+            enrolled.as_ref().map(|(services, _)| &**services),
+        );
+        Ok::<_, RunError>((join_beside(dbus), host))
+    })?;
+    tilo_startup_metrics::handoff_mark("dbus-joined");
+    let LaunchHost {
+        runtime: resolved_runtime,
+        app_dir,
+        person_dir,
+    } = host?;
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
-    preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
-    tilo_startup_metrics::handoff_mark("loader-preflight-done");
-
-    // The app's one writable directory, for the room it's opened into.
-    // Created here since bwrap can only bind what exists.
-    let (app_dir, person_dir) = if let Some((services, _)) = enrolled.as_ref() {
-        (
-            crate::appdir::prepare_host_app_dir(
-                services.data_home(),
-                Some(&services.binding().room),
-                &services.binding().app,
-            )?,
-            crate::appdir::prepare_host_person_dir(services.data_home(), &services.binding().app)?,
-        )
-    } else {
-        resolve_launch_dirs(manifest, opts)?
-    };
-    tilo_startup_metrics::handoff_mark("app-dirs-ready");
 
     // The user's capability decision. Empty unless the compositor wrote a
     // file — an app launched without one is confined to its manifest alone.
@@ -4030,6 +4126,25 @@ fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
     graphical: bool,
 ) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
+    let (uid, pid) = (current_uid(), std::process::id());
+    let sockets = ProxySockets {
+        session: dbus_proxy::proxy_socket_path(uid, pid),
+        atspi: dbus_proxy::atspi_proxy_socket_path(uid, pid),
+    };
+    resolve_dbus_bind_at(portals, graphical, &sockets)
+}
+
+/// Where one launch's D-Bus proxies listen on the host.
+struct ProxySockets {
+    session: PathBuf,
+    atspi: PathBuf,
+}
+
+fn resolve_dbus_bind_at(
+    portals: &std::collections::BTreeMap<String, PortalPolicy>,
+    graphical: bool,
+    sockets: &ProxySockets,
+) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
     let wants_portals = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
     if !wants_portals && !graphical {
         return (None, Vec::new());
@@ -4054,13 +4169,32 @@ fn resolve_dbus_bind(
         return (None, Vec::new());
     };
 
-    let sock = dbus_proxy::proxy_socket_path(uid, std::process::id());
-    let session = match dbus_proxy::spawn_filtered_proxy(
-        &binary,
-        &bus_addr,
-        &sock,
-        &dbus_proxy::session_filter_args(wants_portals, graphical),
-    ) {
+    // The accessibility bus is found and proxied beside the session bus's
+    // proxy: two lookups and readiness handshakes, independent of each
+    // other. Without a session proxy the AT-SPI one is dropped (stopped).
+    let (session, atspi) = std::thread::scope(|scope| {
+        let atspi = graphical.then(|| {
+            spawn_beside(scope, "launch-atspi", || {
+                spawn_atspi_proxy(&binary, &bus_addr, uid, &sockets.atspi)
+            })
+        });
+        let session = dbus_proxy::spawn_filtered_proxy(
+            &binary,
+            &bus_addr,
+            &sockets.session,
+            &dbus_proxy::session_filter_args(wants_portals, graphical),
+        );
+        let atspi = match atspi {
+            Some(Ok(handle)) => join_beside(handle),
+            Some(Err(error)) => {
+                tracing::warn!(%error, "AT-SPI proxy could not start beside the session proxy");
+                spawn_atspi_proxy(&binary, &bus_addr, uid, &sockets.atspi)
+            }
+            None => None,
+        };
+        (session, atspi)
+    });
+    let session = match session {
         Ok(guard) => guard,
         Err(e) => {
             tracing::warn!(
@@ -4076,7 +4210,7 @@ fn resolve_dbus_bind(
         atspi: None,
     };
     let mut guards = vec![session];
-    if graphical && let Some((atspi, guard)) = spawn_atspi_proxy(&binary, &bus_addr, uid) {
+    if let Some((atspi, guard)) = atspi {
         plan.atspi = Some(atspi);
         guards.push(guard);
     }
@@ -4096,16 +4230,16 @@ fn spawn_atspi_proxy(
     binary: &std::path::Path,
     session_bus: &str,
     uid: u32,
+    socket: &Path,
 ) -> Option<(crate::sandbox::AtspiBindPlan, DBusProxyGuard)> {
     let Some(atspi_addr) = dbus_proxy::host_atspi_address(session_bus) else {
         tracing::info!("the session runs no accessibility bus");
         return None;
     };
-    let socket = dbus_proxy::atspi_proxy_socket_path(uid, std::process::id());
     match dbus_proxy::spawn_filtered_proxy(
         binary,
         &atspi_addr,
-        &socket,
+        socket,
         dbus_proxy::ATSPI_FILTER_ARGS,
     ) {
         Ok(guard) => Some((
@@ -4146,6 +4280,57 @@ mod dbus_resolution_tests {
 
         assert!(plan.is_none(), "a raw D-Bus bind must never be planned");
         assert!(guards.is_empty(), "no proxy process should have started");
+    }
+
+    /// The session and AT-SPI proxies come up side by side. Each mock proxy
+    /// reports ready only once both have started, so one after the other the
+    /// first would never be ready and the session bus would stay unbound.
+    #[test]
+    fn the_session_and_accessibility_proxies_start_side_by_side() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let proxy = tmp.path().join("xdg-dbus-proxy");
+        std::fs::write(
+            &proxy,
+            r#"#!/bin/sh
+notify=0
+if [ "$1" = --fd=0 ]; then notify=1; shift; fi
+dir=$(dirname "$2")
+: >"$2.started"
+tries=0
+while [ "$(ls "$dir" | grep -c '\.started$')" -lt 2 ]; do
+    tries=$((tries + 1))
+    [ "$tries" -gt 400 ] && exit 1
+    sleep 0.01
+done
+: >"$2"
+if [ "$notify" = 1 ]; then printf x >&0; fi
+exec sleep infinity
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&proxy, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(crate::dbus_proxy::PROXY_BIN_ENV, &proxy)
+            .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus")
+            .set("AT_SPI_BUS_ADDRESS", "unix:path=/run/user/1234/at-spi/bus");
+        let sockets = ProxySockets {
+            session: tmp.path().join("sockets/1.sock"),
+            atspi: tmp.path().join("sockets/1-atspi.sock"),
+        };
+
+        let (plan, guards) =
+            resolve_dbus_bind_at(&std::collections::BTreeMap::new(), true, &sockets);
+
+        let plan = plan.expect("both proxies became ready together");
+        assert_eq!(plan.host_socket, sockets.session);
+        assert_eq!(
+            plan.atspi.map(|atspi| atspi.host_socket),
+            Some(sockets.atspi.clone())
+        );
+        assert_eq!(guards.len(), 2);
+        drop(guards);
+        assert!(!sockets.session.exists() && !sockets.atspi.exists());
     }
 }
 
