@@ -1,9 +1,5 @@
 [ratchets.untyped_action_args]
 "apps/imager/src/profile_cli.rs" = 1
-"apps/imager/src/setup/actions.rs" = 2
 "apps/imager/src/setup/migration_native.rs" = 6
 "apps/imager/src/setup/staging/cli.rs" = 1
 "apps/imager/src/setup/staging/final_bootnext.rs" = 1
-
-[ratchets.action_spec]
-"apps/imager/src/setup/actions.rs" = 1

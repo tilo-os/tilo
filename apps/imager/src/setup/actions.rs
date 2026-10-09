@@ -6,10 +6,7 @@
 //! actions, and never carry folder paths or installation authority into the
 //! shared document.
 
-use tilo_actions::{
-    ActionArgs, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-    ResourcePresentation,
-};
+use tilo_actions::{ActionParam, ActionSpec, ParamType, ResourcePresentation};
 use ui::framework::{EffectStatus, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
 
@@ -597,51 +594,25 @@ fn bound(effect: &SetupEffect, label: impl Into<String>) -> ActionSpec {
     spec
 }
 
-/// The effect `id` offered on a row with what the row knows already bound
-/// by `build`, taking `param` from the caller.
-fn partly_bound(
-    id: &'static str,
-    label: impl Into<String>,
-    placeholder: &str,
-    param: ActionParam,
-    build: impl Fn(&ActionArgs) -> SetupEffect + Send + Sync + 'static,
-) -> ActionSpec {
-    let mut spec = ActionSpec::typed_operation(
-        id,
-        label,
-        placeholder,
-        OperationKind::Effect,
-        SetupEffect::OPERATION,
-        vec![param],
-        move |args| {
-            build(args)
-                .bound()
-                .build_json(&serde_json::Map::new())
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: SetupEffect::OPERATION.to_owned(),
-                    payload: Vec::new(),
-                })
-        },
-    );
-    if let Some(declared) = SetupEffect::specs().into_iter().find(|spec| spec.id == id) {
-        spec.contract = declared.contract;
-    }
+/// `effect` offered on a row as `label`, with what the row knows already
+/// bound and `param` asked of the caller.
+fn asking(effect: &SetupEffect, label: impl Into<String>, param: ActionParam) -> ActionSpec {
+    let mut spec = effect.bound_asking_params(vec![param]);
+    spec.label = label.into();
     spec
 }
 
 fn folder_row(folder: &FolderProjection, mode_choices: &[&'static str], edits: bool) -> LiveRow {
     let closed = "Folder choices are not open on the current setup page";
     let identity = folder.identity.clone();
-    let set_mode = partly_bound(
-        SetupEffect::SET_FOLDER_MODE.id,
+    let set_mode = asking(
+        &SetupEffect::SetFolderMode {
+            folder: identity,
+            mode: String::new(),
+        },
         "Set folder mode",
-        "copy",
         ActionParam::required_owned("mode", ParamType::Text, "Folder behavior")
             .with_choices(mode_choices.iter().copied()),
-        move |args| SetupEffect::SetFolderMode {
-            folder: identity.clone(),
-            mode: args.text("mode").unwrap_or("").to_owned(),
-        },
     );
     let (inherit_code, inherit_reason) = if edits {
         (
@@ -772,18 +743,14 @@ fn internal_row(state: &InternalProjection) -> LiveRow {
     for (id, label, open, code, reason) in internal_commands(state) {
         let label = super::strings::t(label);
         let spec = match id {
-            id if id == SetupEffect::SET_INTERNAL_TARGET_SIZE.id => partly_bound(
-                id,
+            id if id == SetupEffect::SET_INTERNAL_TARGET_SIZE.id => asking(
+                &SetupEffect::SetInternalTargetSize { gib: -1 },
                 label,
-                "64",
                 ActionParam::required_owned(
                     "gib",
                     ParamType::Integer,
                     super::strings::t("imager-setup-param-internal-target-gib"),
                 ),
-                |args| SetupEffect::SetInternalTargetSize {
-                    gib: args.integer("gib").unwrap_or(-1),
-                },
             ),
             id if id == SetupEffect::INSTALL_INTERNAL.id => bound(
                 &SetupEffect::InstallInternal {
@@ -972,6 +939,7 @@ fn yes_no(value: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::OperationKind;
 
     fn projection(internal: InternalProjection) -> SetupProjection {
         SetupProjection {
