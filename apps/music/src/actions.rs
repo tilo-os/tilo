@@ -366,7 +366,8 @@ pub enum MusicEffect {
         queued: Option<usize>,
     },
     /// Like or unlike a catalogue song, importing its real metadata first.
-    #[effect(row)]
+    /// It changes only the library, through its edits.
+    #[effect(row, edit)]
     ToggleLike { track: String },
     /// Add to queue
     #[effect(row)]
@@ -1628,10 +1629,11 @@ mod tests {
                         "{} must require write permission",
                         flat.key
                     ),
-                    OperationKind::View => assert_eq!(
-                        permission,
-                        ActionKind::Read,
-                        "{} must require read permission",
+                    // A view shows, or edits the library through its edits
+                    // (liking a song); it never reaches outside it.
+                    OperationKind::View => assert!(
+                        matches!(permission, ActionKind::Read | ActionKind::Undoable),
+                        "{} must stay inside the document",
                         flat.key
                     ),
                     OperationKind::Effect => {}
@@ -1816,7 +1818,11 @@ mod tests {
             ] {
                 let action = on.iter().find(|action| action.id == id).unwrap();
                 assert_eq!(action.kind, tilo_actions::OperationKind::Effect, "{id}");
-                assert_eq!(action.contract.kind, ActionKind::Undoable, "{id}");
+                assert_eq!(
+                    action.contract.kind,
+                    ActionKind::Outside,
+                    "this device's audio is outside the document: {id}"
+                );
                 assert!(
                     !action.contract.reversible,
                     "local device effects cannot claim an executable undo: {id}"
@@ -1826,6 +1832,28 @@ mod tests {
                 library.iter().find(|a| a.id == "seek").unwrap().params()[0].ty,
                 ParamType::Integer
             );
+            for (effect, kind) in [
+                (
+                    MusicEffect::ToggleLike {
+                        track: "track-1".into(),
+                    },
+                    ActionKind::Undoable,
+                ),
+                (
+                    MusicEffect::Open {
+                        place: Place::View("songs".into()),
+                    },
+                    ActionKind::Read,
+                ),
+                (
+                    MusicEffect::OpenAlbum {
+                        album: "album-1".into(),
+                    },
+                    ActionKind::Read,
+                ),
+            ] {
+                assert_eq!(effect.bound().contract.kind, kind, "{effect:?}");
+            }
             let track = CatalogTrackResource {
                 id: "track-2".into(),
                 label: "Track 2".into(),

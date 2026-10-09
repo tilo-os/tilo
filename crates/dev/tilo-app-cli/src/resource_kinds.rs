@@ -293,6 +293,7 @@ mod tests {
             super::declared_by_app(&app).unwrap(),
             [
                 "music.library",
+                "settings.text-assistance",
                 "tilo.accounts",
                 "tilo.feedback-draft",
                 "tilo.text",

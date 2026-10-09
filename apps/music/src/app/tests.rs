@@ -2174,6 +2174,26 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             Action::DeletePlaylist("pl_focus".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
+        assert!(
+            app.lib.playlist("pl_focus").is_some(),
+            "nothing is deleted before the person agrees"
+        );
+        let asked = app
+            .dispatcher
+            .as_ref()
+            .unwrap()
+            .take_asked()
+            .expect("what was asked builds");
+        assert_eq!(asked.len(), 1, "the host asks to delete the playlist");
+        // Confirmed, the door applies what was asked.
+        let mut library = ui::tilo_resource::Replica::<Library>::from_doc(doc.clone());
+        for action in &asked {
+            library
+                .apply_action(action)
+                .expect("a confirmed change applies");
+        }
+        doc = library.doc().clone();
+        app.reload_library(&doc);
         assert!(app.lib.playlist("pl_focus").is_none());
     }
 

@@ -107,7 +107,7 @@ type = "String"
 owner = "playlist"
 path = "playlists.*.tracks"
 stored = "collection"
-title = "Tracks, in order, as items keyed by track id"
+title = "Tracks, in order, as items keyed by track id. Taking a song off a"
 type = "Collection<TrackId>"
 
 [[resources.fields]]
