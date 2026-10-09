@@ -136,16 +136,15 @@ impl Widget for RevealToggle {
             reason = "the control is a few dozen logical pixels, far inside f32"
         )]
         let width = Self::width_for(self.rect.height().max(40.0)) as f32;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             position: Position::Absolute,
             size: Size {
                 width: Dimension::length(width),
                 height: Dimension::percent(1.0),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// The owning field places this control in its own `apply_layout`.

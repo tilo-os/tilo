@@ -853,7 +853,7 @@ impl Widget for NumberInput {
         self.minimum = size;
         self.field_padding = px_f32(self.field.text_padding_x(theme));
         self.value_style = self.value_style_in(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(size.width),
                 height: Dimension::length(size.height),
@@ -863,9 +863,8 @@ impl Widget for NumberInput {
             // leaf below its own size — see `Toggle::build_layout`).
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn adjust_layout_with_measure(
