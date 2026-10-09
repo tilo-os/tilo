@@ -439,3 +439,19 @@ p95 = 16.7
 p99 = 33.4
 min_delta = 2.0
 source = "run.py work_ms_p95 / work_ms_p99: compositor CPU per painted frame during interactions"
+
+# Relay hosting cost (TIL-592): crates/hosting/tilo-relay/examples/relay_load,
+# 100 collaborators in rooms of four, ten measured minutes, one sample per
+# minute; tools/perf/adapters.py hosting-load prices them with
+# tools/perf/prices.toml. The KPI document's target is at most $0.001 per
+# active collaborator-hour.
+
+[kpi."hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]
+unit = "usd"
+p50 = 0.001
+source = "KPI document: Relay cost per active collaborator-hour"
+
+[kpi."hosting.relay.cost_usd_per_collab_hour.hetzner-cx22.n100"]
+unit = "usd"
+p50 = 0.001
+source = "KPI document: Relay cost per active collaborator-hour"
