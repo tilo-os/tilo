@@ -11,8 +11,7 @@
 //! detection and disable-while-typing turned on alongside it to buy back what libinput was cautious about; the setting remains the user's to flip.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use settings_store::hardware::{InputDeviceKind, TouchpadClickMethod, TouchpadScrollMethod};
 
@@ -479,125 +478,9 @@ impl InputSettings {
     }
 }
 
-/// How often the settings file is stat'ed for changes.
-///
-/// The fallback behind the settings file watch (`settings_store::watch`,
-/// which wakes the loop and calls [`SettingsWatch::check_now`]): a write that
-/// lands while that watch is unavailable is still noticed within this
-/// interval, for one `stat` of a page-cached file.
-pub const SETTINGS_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Notices when the settings file changes, and which of its top-level
-/// sections did, so a preference just flipped in Settings takes effect
-/// without restarting the session — and a write to one section (a theme, a
-/// notification toggle) never pays for the work another needs (a display
-/// re-probe, an input device reconfiguration).
-pub struct SettingsWatch {
-    path: Option<PathBuf>,
-    /// The backend reads this committed source, rather than its compatibility copy.
-    source: Option<std::sync::Arc<dyn settings_store::SettingsSource>>,
-    /// Committed revision, or the file modification time for direct file readers.
-    last: Option<settings_store::SettingsStamp>,
-    /// Whether a check has happened at all — distinguishes "no file yet" from "not looked yet", so the file appearing for the first time counts as a change rather than the baseline.
-    primed: bool,
-    /// Each section's fingerprint as of the last read.
-    sections: settings_store::SectionDigest,
-    next_check: Option<Instant>,
-    interval: Duration,
-}
-
-impl Default for SettingsWatch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SettingsWatch {
-    /// Watch the real settings file.
-    pub fn new() -> Self {
-        Self {
-            source: settings_store::installed_source(),
-            ..Self::at(settings_store::settings_path())
-        }
-    }
-
-    /// Watch an explicit path — how the tests drive it without touching the user's real configuration.
-    pub fn at(path: Option<PathBuf>) -> Self {
-        Self {
-            path,
-            source: None,
-            last: None,
-            primed: false,
-            sections: settings_store::SectionDigest::default(),
-            next_check: None,
-            interval: SETTINGS_POLL_INTERVAL,
-        }
-    }
-
-    /// Use a different poll interval; tests set it to zero so they don't wait out a real second.
-    #[must_use]
-    pub fn with_interval(mut self, interval: Duration) -> Self {
-        self.interval = interval;
-        self
-    }
-
-    /// The top-level sections that changed since the last look. Empty means
-    /// there is nothing to re-apply: the check was rate-limited
-    /// ([`Self::with_interval`]; calls in between are free), the file's mtime
-    /// or committed revision did not move, or it moved without any section
-    /// changing. The document is read only when its authoritative stamp moves.
-    pub fn changed_sections(&mut self, now: Instant) -> BTreeSet<String> {
-        if let Some(next) = self.next_check
-            && now < next
-        {
-            return BTreeSet::new();
-        }
-        // `checked_add` sidesteps a theoretical `Instant` overflow (would
-        // need centuries of uptime); falling back to "now" just makes the
-        // next call re-check immediately instead of panicking.
-        self.next_check = Some(now.checked_add(self.interval).unwrap_or(now));
-        let stamp = self.source.as_ref().map_or_else(
-            || self.path.as_deref().and_then(settings_store::stamp_at),
-            |source| Some(settings_store::SettingsStamp::Revision(source.revision())),
-        );
-        let first_look = !self.primed;
-        self.primed = true;
-        if stamp == self.last && !first_look {
-            return BTreeSet::new();
-        }
-        self.last = stamp;
-        let document = self.source.as_ref().map_or_else(
-            || {
-                self.path
-                    .as_deref()
-                    .map(settings_store::load_at)
-                    .unwrap_or_default()
-            },
-            |source| source.load(),
-        );
-        let sections = settings_store::SectionDigest::of(&document);
-        let changed = sections.changed_since(&self.sections);
-        self.sections = sections;
-        // The first look establishes the baseline rather than reporting a change — otherwise every session start would re-apply settings already applied at construction.
-        if first_look { BTreeSet::new() } else { changed }
-    }
-
-    /// Wake after the authoritative source publishes its committed snapshot.
-    /// File notifications may precede that publication; neither consumes its edge.
-    pub fn listen(&self, listener: &std::sync::Arc<settings_store::Listener>) {
-        if let Some(source) = &self.source {
-            source.changes().listen(listener);
-        }
-    }
-
-    /// Let the next [`Self::changed_sections`] look regardless of the rate limit — for when a file-change notification says there is something to see.
-    pub fn check_now(&mut self) {
-        self.next_check = None;
-    }
-}
-
 /// What one settings write asks the compositor to re-apply, decided by the
-/// top-level sections it changed ([`SettingsWatch::changed_sections`]).
+/// top-level sections it changed
+/// ([`settings_store::live::SectionFollower::changed_sections`]).
 /// Sections the compositor does not consume (`notifications`, `audio`,
 /// `region`, `quick_settings`, …) ask for nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -885,8 +768,8 @@ pub fn reconfigure_all<D: ConfigurableDevice>(settings: &InputSettings, devices:
 )]
 mod tests {
     use super::*;
-    // Only the tests build a `Path`; the module itself deals in `PathBuf`.
-    use std::path::Path;
+    use settings_store::live::{LiveSettings, SectionFollower};
+    use std::path::{Path, PathBuf};
 
     use serde_json::json;
 
@@ -1544,35 +1427,43 @@ mod tests {
         assert!(clamped.mouse_keys);
         assert!(!clamped.sticky_keys);
     }
-    // settings watch
+    // settings follower
 
     fn scratch(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("tilo-input-watch-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir.join("settings.json")
-    }
-
-    fn watch(path: &Path) -> SettingsWatch {
-        SettingsWatch::at(Some(path.to_path_buf())).with_interval(Duration::ZERO)
     }
 
     fn sections(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
-    /// Move the mtime explicitly: a same-second rewrite can keep the old
-    /// mtime on filesystems with coarse timestamps, and the watch's contract
-    /// starts at "the mtime moved".
-    fn bump_mtime(path: &Path, seconds: u64) {
-        let f = std::fs::File::options()
-            .write(true)
-            .open(path)
-            .expect("open for times");
-        let moved = std::time::SystemTime::now()
-            .checked_add(Duration::from_secs(seconds))
-            .expect("a near-future mtime");
-        f.set_modified(moved).expect("set mtime");
+    fn write(path: &Path, section: &str, value: serde_json::Value) {
+        let serde_json::Value::Object(values) = value else {
+            panic!("a section is an object");
+        };
+        settings_store::update_section_at(path, section, values).expect("write settings");
+    }
+
+    /// Run `change` and wait until the live document has taken it in.
+    fn changed(live: &LiveSettings, change: impl FnOnce()) {
+        let seen = live.generation();
+        change();
+        let snapshot = live.wait_for_change(seen, tilo_test_env::hang_bound());
+        assert_ne!(
+            snapshot.generation, seen,
+            "the change must reach the live document"
+        );
+    }
+
+    /// Long enough for every notification of a write and one stamp poll.
+    fn settle() {
+        std::thread::sleep(
+            settings_store::live::POLL_INTERVAL.saturating_add(Duration::from_millis(300)),
+        );
     }
 
     struct RestoreSettingsSource(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
@@ -1598,13 +1489,12 @@ mod tests {
         ));
         let _restore = RestoreSettingsSource(settings_store::installed_source());
         settings_store::install_source(Some(source.clone()));
-        let mut watch = SettingsWatch::new().with_interval(Duration::from_secs(3600));
-        assert!(watch.changed_sections(Instant::now()).is_empty());
         let (sender, committed) = mpsc::channel();
-        let listener: Arc<settings_store::Listener> = Arc::new(move || {
+        let live = LiveSettings::start(move || {
             sender.send(()).unwrap();
         });
-        watch.listen(&listener);
+        let mut watch = SectionFollower::new(&live);
+        assert!(watch.changed_sections(&live).is_empty());
         source
             .update_section(
                 "input",
@@ -1615,15 +1505,13 @@ mod tests {
             )
             .unwrap();
         committed.recv_timeout(Duration::from_secs(5)).unwrap();
-        watch.check_now();
-        assert_eq!(watch.changed_sections(Instant::now()), sections(&["input"]));
+        assert_eq!(watch.changed_sections(&live), sections(&["input"]));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "{}",
             "the committed source is authoritative even without a copy rewrite"
         );
-        watch.check_now();
-        assert!(watch.changed_sections(Instant::now()).is_empty());
+        assert!(watch.changed_sections(&live).is_empty());
     }
 
     #[test]
@@ -1642,15 +1530,15 @@ mod tests {
         let (dir, name) = tilo_files::file_at(&path.with_file_name("settings.json.lock")).unwrap();
         let held =
             tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
-        let mut watch = SettingsWatch::new().with_interval(Duration::ZERO);
-        assert!(watch.changed_sections(Instant::now()).is_empty());
-        let mut file_watch = SettingsWatch::at(Some(path.clone())).with_interval(Duration::ZERO);
-        assert!(file_watch.changed_sections(Instant::now()).is_empty());
         let (sender, committed) = mpsc::channel();
-        let listener: Arc<settings_store::Listener> = Arc::new(move || {
+        let live = LiveSettings::start(move || {
             sender.send(()).unwrap();
         });
-        watch.listen(&listener);
+        let mut watch = SectionFollower::new(&live);
+        assert!(watch.changed_sections(&live).is_empty());
+        let file_live = LiveSettings::start_at(path.clone(), || {});
+        let mut file_watch = SectionFollower::new(&file_live);
+        assert!(file_watch.changed_sections(&file_live).is_empty());
         let transaction = settings_store::hardware::DisplayTransaction::prepare_request(
             settings_store::hardware::DisplaySet::default(),
             settings_store::hardware::DisplayConfig::default(),
@@ -1666,13 +1554,13 @@ mod tests {
         )
         .unwrap();
         assert!(source.load().get("display_transaction").is_none());
-        watch.check_now();
         assert!(
-            watch.changed_sections(Instant::now()).is_empty(),
+            watch.changed_sections(&live).is_empty(),
             "an uncommitted copy must not consume the display edge"
         );
+        let _ = file_live.refresh_now();
         assert_eq!(
-            file_watch.changed_sections(Instant::now()),
+            file_watch.changed_sections(&file_live),
             sections(&["display_transaction"]),
             "explicit file readers still observe the atomic replacement"
         );
@@ -1684,14 +1572,12 @@ mod tests {
         committed
             .recv_timeout(Duration::from_secs(5))
             .expect("the committed import must wake the native settings observer");
-        let bound = Instant::now() + Duration::from_secs(5);
-        while source.load().get("display_transaction").is_none() {
-            assert!(Instant::now() < bound, "canonical import did not complete");
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        watch.check_now();
+        assert!(
+            source.load().get("display_transaction").is_some(),
+            "the committed wake follows canonical import"
+        );
         assert_eq!(
-            watch.changed_sections(Instant::now()),
+            watch.changed_sections(&live),
             sections(&["display_transaction"])
         );
         assert_eq!(
@@ -1701,147 +1587,113 @@ mod tests {
             transaction.id
         );
         assert!(
-            watch.changed_sections(Instant::now()).is_empty(),
+            watch.changed_sections(&live).is_empty(),
             "the committed request is reported exactly once"
         );
     }
 
     #[test]
-    fn settings_watch_reports_each_real_change_once_and_rate_limits() {
+    fn settings_follower_reports_each_real_change_once() {
         // Phase `the_first_look_is_a_baseline_not_a_change`.
         {
             // Otherwise every session start re-applies settings already applied while constructing the backend.
             let path = scratch("baseline");
-            std::fs::write(&path, r#"{"input":{"tap_to_click":true}}"#).expect("write");
-            let mut w = watch(&path);
-            assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
-            let _ = std::fs::remove_file(&path);
+            write(&path, "input", json!({"tap_to_click": true}));
+            let live = LiveSettings::start_at(path, || {});
+            let mut follower = SectionFollower::new(&live);
+            assert_eq!(follower.changed_sections(&live), sections(&[]));
         }
         // Phase `a_write_is_noticed_once`.
         {
             let path = scratch("write");
-            std::fs::write(&path, r#"{"input":{"tap_to_click":true}}"#).expect("write");
-            let mut w = watch(&path);
-            assert_eq!(
-                w.changed_sections(Instant::now()),
-                sections(&[]),
-                "baseline"
-            );
+            write(&path, "input", json!({"tap_to_click": true}));
+            let live = LiveSettings::start_at(path.clone(), || {});
+            let mut follower = SectionFollower::new(&live);
+            assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
 
-            std::fs::write(&path, r#"{"input":{"tap_to_click":false}}"#).expect("rewrite");
-            bump_mtime(&path, 2);
-
+            changed(&live, || {
+                write(&path, "input", json!({"tap_to_click": false}));
+            });
             assert_eq!(
-                w.changed_sections(Instant::now()),
+                follower.changed_sections(&live),
                 sections(&["input"]),
                 "the rewrite must be noticed"
             );
+            settle();
             assert_eq!(
-                w.changed_sections(Instant::now()),
+                follower.changed_sections(&live),
                 sections(&[]),
                 "and only once — re-applying every tick would fight the user"
             );
-            let _ = std::fs::remove_file(&path);
         }
         // Phase `the_file_appearing_for_the_first_time_counts_as_a_change`.
         {
             // A fresh install has no settings.json until the user opens Settings; the first write is exactly when the compositor has to start honouring it.
             let path = scratch("appear");
-            let _ = std::fs::remove_file(&path);
-            let mut w = watch(&path);
+            let live = LiveSettings::start_at(path.clone(), || {});
+            let mut follower = SectionFollower::new(&live);
             assert_eq!(
-                w.changed_sections(Instant::now()),
+                follower.changed_sections(&live),
                 sections(&[]),
                 "baseline: no file"
             );
-            std::fs::write(&path, r#"{"input":{"tap_to_click":false}}"#).expect("write");
-            assert_eq!(w.changed_sections(Instant::now()), sections(&["input"]));
-            let _ = std::fs::remove_file(&path);
+            changed(&live, || {
+                write(&path, "input", json!({"tap_to_click": false}));
+            });
+            assert_eq!(follower.changed_sections(&live), sections(&["input"]));
         }
-        // Phase `checks_are_rate_limited`.
+        // Phase `a_removal_is_a_change`.
         {
-            // The loop runs at the display's cadence; stat'ing 144 times a second for a rarely-edited file is waste.
-            let path = scratch("ratelimit");
-            std::fs::write(&path, r#"{"power":{"auto_suspend":false}}"#).expect("write");
-            let mut w =
-                SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
-            let now = Instant::now();
-            assert_eq!(w.changed_sections(now), sections(&[]), "baseline");
-            std::fs::remove_file(&path).expect("remove");
+            let path = scratch("removal");
+            write(&path, "power", json!({"auto_suspend": false}));
+            let live = LiveSettings::start_at(path.clone(), || {});
+            let mut follower = SectionFollower::new(&live);
+            assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
+            changed(&live, || std::fs::remove_file(&path).expect("remove"));
             assert_eq!(
-                w.changed_sections(now),
-                sections(&[]),
-                "a second call inside the interval must not even look"
-            );
-            // Phase `a_notified_write_is_seen_inside_the_interval`.
-            // An idle compositor wakes only for the notification; waiting out the interval would drop the write until unrelated input arrived.
-            w.check_now();
-            assert_eq!(
-                w.changed_sections(now),
+                follower.changed_sections(&live),
                 sections(&["power"]),
-                "the removal must be seen on demand"
+                "the removal must be seen"
             );
-            assert_eq!(
-                w.changed_sections(now),
-                sections(&[]),
-                "and the rate limit resumes after the forced look"
-            );
-        }
-        // Phase `a_watch_with_no_settings_path_never_reports_a_change`.
-        {
-            // No config directory at all — a container with no HOME. The compositor must not spin on it.
-            let mut w = SettingsWatch::at(None).with_interval(Duration::ZERO);
-            assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
-            assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
+            assert_eq!(follower.changed_sections(&live), sections(&[]));
         }
     }
 
     #[test]
-    fn settings_watch_reports_changed_sections() {
+    fn settings_follower_reports_changed_sections() {
         // Writers go through the shared merge-and-replace path, which
-        // rewrites the whole document: the mtime alone cannot say whether a
-        // theme or the display arrangement changed.
+        // rewrites the whole document: knowing that the file changed cannot
+        // say whether a theme or the display arrangement changed.
         let path = scratch("sections");
-        let _ = std::fs::remove_file(&path);
-        let mut values = serde_json::Map::new();
-        values.insert("tap_to_click".into(), json!(true));
-        settings_store::update_section_at(&path, "input", values).expect("seed input");
-        let mut values = serde_json::Map::new();
-        values.insert("do_not_disturb".into(), json!(false));
-        settings_store::update_section_at(&path, "notifications", values).expect("seed dnd");
-        let mut w = watch(&path);
-        assert_eq!(
-            w.changed_sections(Instant::now()),
-            sections(&[]),
-            "baseline"
-        );
+        write(&path, "input", json!({"tap_to_click": true}));
+        write(&path, "notifications", json!({"do_not_disturb": false}));
+        let live = LiveSettings::start_at(path.clone(), || {});
+        let mut follower = SectionFollower::new(&live);
+        assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
 
-        let mut values = serde_json::Map::new();
-        values.insert("theme".into(), json!("light"));
-        settings_store::update_section_at(&path, "appearance", values).expect("theme");
-        bump_mtime(&path, 2);
+        changed(&live, || {
+            write(&path, "appearance", json!({"theme": "light"}));
+        });
         assert_eq!(
-            w.changed_sections(Instant::now()),
+            follower.changed_sections(&live),
             sections(&["appearance"]),
             "a theme write names only its own section"
         );
 
-        let mut values = serde_json::Map::new();
-        values.insert("do_not_disturb".into(), json!(true));
-        settings_store::update_section_at(&path, "notifications", values).expect("dnd");
-        bump_mtime(&path, 4);
+        changed(&live, || {
+            write(&path, "notifications", json!({"do_not_disturb": true}));
+        });
         assert_eq!(
-            w.changed_sections(Instant::now()),
+            follower.changed_sections(&live),
             sections(&["notifications"])
         );
 
-        // A rewrite that moves the mtime but no value is nothing to do.
-        let mut values = serde_json::Map::new();
-        values.insert("do_not_disturb".into(), json!(true));
-        settings_store::update_section_at(&path, "notifications", values).expect("same dnd");
-        bump_mtime(&path, 6);
-        assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
-        let _ = std::fs::remove_file(&path);
+        // A rewrite that changes no value is nothing to do.
+        let generation = live.generation();
+        write(&path, "notifications", json!({"do_not_disturb": true}));
+        settle();
+        assert_eq!(live.generation(), generation);
+        assert_eq!(follower.changed_sections(&live), sections(&[]));
     }
 
     #[test]

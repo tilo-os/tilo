@@ -99,6 +99,8 @@ pub mod environment_routing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod environment_tools;
 #[cfg(not(target_arch = "wasm32"))]
+mod handshake;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
 #[cfg(target_os = "linux")]
 pub mod legacy_route;
@@ -180,9 +182,8 @@ pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, Workspa
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use home_peer::{HomePeerRegistration, home_peer_registry_path, valid_home_peer_label};
 pub use mesh::{
-    ComputeAccelerator, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,
-    PowerAvailability, RemoteControlRoute, ReplicationIntent, ReplicationResource,
-    ServerAdvertisement, ServiceCapabilities, Workload, place, route_remote_control,
+    ComputeAccelerator, DeviceMeshProfile, DeviceRole, PowerAvailability, ReplicationIntent,
+    ReplicationResource, ServerAdvertisement, ServiceCapabilities,
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;

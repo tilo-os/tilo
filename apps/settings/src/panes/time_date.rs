@@ -976,7 +976,7 @@ pub struct TimeDatePane {
     composition: CompositionState,
     catalog_revision: u64,
     structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     rect: Rect,
 }
 
@@ -1012,7 +1012,7 @@ impl TimeDatePane {
             composition: CompositionState::Dirty,
             catalog_revision: ui::i18n::I18nManager::revision(),
             structure_dirty: false,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             rect: Rect::ZERO,
         };
         pane.start_read(true);
@@ -1306,9 +1306,7 @@ impl Widget for TimeDatePane {
             self.structure_dirty = true;
         }
         self.poll_read();
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -1319,18 +1317,23 @@ impl Widget for TimeDatePane {
     ) -> NodeId {
         if self.composition == CompositionState::Dirty
             || self.catalog_revision != ui::i18n::I18nManager::revision()
+            || self.composed.element().is_none()
         {
-            self.composed = None;
+            let composition = self.build_composition();
+            self.composed.replace(composition);
         }
-        let mut composed = self
-            .composed
-            .take()
-            .unwrap_or_else(|| self.build_composition());
         self.composition = CompositionState::Retained;
         // Building the composition can initialize its embedded catalogue.
         self.catalog_revision = ui::i18n::I18nManager::revision();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let child = if let Some(composition) = self.composed.element_mut() {
+            composition.build_layout(taffy, theme, node_map)
+        } else {
+            // A missing retained child needs a real composition and layout,
+            // rather than an empty node or a guessed geometry.
+            let composition = self.build_composition();
+            self.composed
+                .build_layout(composition, taffy, theme, node_map)
+        };
         let style = taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
@@ -1353,7 +1356,7 @@ impl Widget for TimeDatePane {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&cn) = children.first()
         {
@@ -1369,13 +1372,13 @@ impl Widget for TimeDatePane {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
@@ -1384,19 +1387,11 @@ impl Widget for TimeDatePane {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -1417,10 +1412,7 @@ impl Widget for TimeDatePane {
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         own || child
     }
 }

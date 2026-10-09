@@ -202,23 +202,13 @@ pub(crate) struct OutputPresentationSurface {
 
 pub(crate) use crate::shell::floating::*;
 
-/// Read the persisted `HiDPI` display scale from the shared settings store.
+/// The persisted `HiDPI` display scale in a settings document.
 ///
-/// The Settings app writes `~/.config/tilo/settings.json` with a
-/// `"display"` object carrying a `"scale"` number (1.0=100%, …); the
-/// compositor reads the same file via `settings_store`, resolving the same
-/// XDG rule the apps use. Any read/parse failure or out-of-range value falls back to `1.0`.
-fn load_display_scale() -> f64 {
-    let Some(path) = settings_store::settings_path() else {
-        return 1.0;
-    };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return 1.0;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return 1.0;
-    };
-    match json
+/// The Settings app writes a `"display"` object carrying a `"scale"` number
+/// (1.0=100%, …); the compositor follows the same document through its live
+/// settings snapshot. An absent or out-of-range value falls back to `1.0`.
+pub fn display_scale_from(document: &serde_json::Map<String, serde_json::Value>) -> f64 {
+    match document
         .get("display")
         .and_then(|d| d.get("scale"))
         .and_then(serde_json::Value::as_f64)
@@ -713,8 +703,8 @@ pub struct State {
     /// icon for its tab; see [`crate::compositor::toplevel_icon`].
     pub toplevel_icon_manager: crate::compositor::toplevel_icon::ToplevelIconManager,
     /// Current display scale factor (`HiDPI`), sent to clients as the
-    /// preferred `wp_fractional_scale`. Read once at session start from the
-    /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
+    /// preferred `wp_fractional_scale`. Follows the shared settings
+    /// (`display.scale`, see [`display_scale_from`]), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
     pub scale: f64,
     /// Every output as `(position, size, scale)` in the logical desktop,
     /// mirrored from the backend.
@@ -1318,8 +1308,6 @@ impl State {
         let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
         let toplevel_icon_manager = crate::compositor::toplevel_icon::manager(&display_handle);
         let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
-        // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
-        let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
@@ -1393,7 +1381,9 @@ impl State {
             idle_inhibit_manager,
             idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors::default(),
             toplevel_icon_manager,
-            scale,
+            // The session sets the persisted scale from its live settings
+            // ([`display_scale_from`]); a bare `State` advertises 100%.
+            scale: 1.0,
             output_layout: Vec::new(),
             output_sizes: HashMap::new(),
             output_rects: HashMap::new(),

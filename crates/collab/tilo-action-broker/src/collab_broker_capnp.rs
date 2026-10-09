@@ -85,9 +85,9 @@ use collab_types::{
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_directory, action_input, blob_stream, channel_handle,
-    collab_service, context_stream, invocation_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
+    OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle, collab_service,
+    context_stream, invocation_stream, presence_event, presence_handle, presence_payload,
+    presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -1007,34 +1007,11 @@ enum ContextEnvelope {
     Handoff(Vec<u8>),
 }
 
+/// One inert operation published by a live application connection: the one
+/// exported-action shape `runtime-collab` decodes off the wire, typed.
+pub use runtime_collab::ExportedAction as PublishedAction;
 /// Input contract published for one live application action.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PublishedInput {
-    None,
-    Text {
-        prompt: String,
-        placeholder: String,
-        wants_content: bool,
-    },
-}
-
-/// One inert operation published by a live application connection.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PublishedAction {
-    pub resource: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    pub operation_kind: tilo_actions::OperationKind,
-    pub params: Vec<tilo_actions::ActionParam>,
-    pub contract: tilo_actions::ActionContract,
-    pub view: Option<tilo_actions::ResourceViewDescriptor>,
-    pub input: PublishedInput,
-}
+pub use runtime_collab::ExportedInput as PublishedInput;
 
 fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<(), capnp::Error> {
     if action.operation_kind != tilo_actions::OperationKind::View {
@@ -1053,32 +1030,6 @@ fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<
         )));
     }
     Ok(())
-}
-
-fn decode_semantic_identity(
-    row: runtime_collab::collab_capnp::exported_action::Reader<'_>,
-) -> Result<Option<tilo_actions::ResourceSemanticIdentity>, capnp::Error> {
-    if !row.has_semantic_identity() {
-        return Ok(None);
-    }
-    let identity = row.get_semantic_identity()?;
-    let kind = identity.get_kind()?;
-    let key = identity.get_key()?;
-    if kind.len() > tilo_actions::ResourceSemanticIdentity::MAX_KIND_BYTES
-        || key.len() > tilo_actions::ResourceSemanticIdentity::MAX_KEY_BYTES
-    {
-        return Err(capnp::Error::failed(
-            "oversized resource semantic identity".into(),
-        ));
-    }
-    let identity = tilo_actions::ResourceSemanticIdentity::new(kind.to_str()?, key.to_str()?)
-        .ok_or_else(|| capnp::Error::failed("invalid resource semantic identity".into()))?;
-    if identity.kind != row.get_resource_kind()?.to_str()? {
-        return Err(capnp::Error::failed(
-            "resource semantic identity kind mismatch".into(),
-        ));
-    }
-    Ok(Some(identity))
 }
 
 fn validate_resource_range_binding(
@@ -2523,7 +2474,9 @@ const DIRECTORY_MAX_IDENTIFIER_BYTES: usize = 512;
 const DIRECTORY_MAX_KIND_BYTES: usize = 256;
 const DIRECTORY_MAX_LABEL_BYTES: usize = 4 * 1024;
 const DIRECTORY_MAX_DESCRIPTION_BYTES: usize = 8 * 1024;
-const DIRECTORY_MAX_CONTRACT_BYTES: usize = 32 * 1024;
+// A directory row's contract, parameter declarations and presentation are
+// bounded where they are decoded (`runtime_collab::MAX_DIRECTORY_*_WIRE_BYTES`);
+// this bounds the argument an invocation carries.
 const DIRECTORY_MAX_PARAMS_BYTES: usize = 32 * 1024;
 const DIRECTORY_MAX_QUERY_REVISION_BYTES: usize = 512;
 const DIRECTORY_MAX_QUERY_NEEDLE_BYTES: usize = 4 * 1024;
@@ -2635,100 +2588,6 @@ fn validate_directory_target_input(
             DIRECTORY_MAX_CONFIRMATION_BYTES,
             true,
         )?;
-    }
-    Ok(())
-}
-
-fn write_directory_descriptor(
-    mut out: runtime_collab::collab_capnp::exported_action::Builder<'_>,
-    descriptor: &runtime_collab::ExportedAction,
-) {
-    out.set_resource(&descriptor.resource);
-    if let Some(identity) = &descriptor.semantic_identity {
-        let mut out = out.reborrow().init_semantic_identity();
-        out.set_kind(&identity.kind);
-        out.set_key(&identity.key);
-    }
-    out.set_action(&descriptor.action);
-    out.set_resource_kind(&descriptor.resource_kind);
-    out.set_resource_label(&descriptor.resource_label);
-    out.set_action_label(&descriptor.action_label);
-    out.set_description(descriptor.description.as_deref().unwrap_or(""));
-    out.set_operation_kind(&descriptor.operation_kind);
-    out.set_params_json(&descriptor.params_json);
-    out.set_contract_json(&descriptor.contract_json);
-    if let Some(view) = &descriptor.view {
-        let mut out = out.reborrow().init_view();
-        out.set_id(&view.id);
-        out.set_label(&view.label);
-        out.set_description(view.description.as_deref().unwrap_or(""));
-        out.set_open_action(&view.open_action);
-        out.set_primary(view.primary);
-        if let Some(range) = &view.range {
-            let mut range_out = out.reborrow().init_range();
-            range_out.set_action(&range.action);
-            range_out.set_start_param(&range.start_param);
-            range_out.set_end_param(&range.end_param);
-            range_out.set_unit_param(&range.unit_param);
-        }
-        if let Some(mount) = &view.mount {
-            let mut out = out.init_mount();
-            out.set_action(&mount.action);
-            out.set_capability_param(&mount.capability_param);
-            out.set_view_param(&mount.view_param);
-        }
-    }
-    let mut input = out.init_input();
-    match &descriptor.input {
-        runtime_collab::ExportedInput::None => input.set_none(()),
-        runtime_collab::ExportedInput::Text {
-            prompt,
-            placeholder,
-            wants_content,
-        } => {
-            let mut text = input.init_text();
-            text.set_prompt(prompt);
-            text.set_placeholder(placeholder);
-            text.set_wants_content(*wants_content);
-        }
-    }
-}
-
-fn write_directory_row(
-    mut out: runtime_collab::collab_capnp::action_directory_row::Builder<'_>,
-    row: &runtime_collab::ActionDirectoryRow,
-) {
-    out.set_parent_resource(&row.parent_resource);
-    out.set_resource(&row.resource);
-    out.set_resource_kind(&row.resource_kind);
-    out.set_resource_label(&row.resource_label);
-    out.set_action(row.action.as_deref().unwrap_or(""));
-    out.set_has_children(row.has_children);
-    out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
-    out.set_visibility_contract_json(&row.visibility_contract_json);
-    if let Some(descriptor) = &row.descriptor {
-        write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
-    }
-}
-
-fn write_directory_page(
-    mut out: runtime_collab::collab_capnp::action_directory_page::Builder<'_>,
-    page: &runtime_collab::ActionDirectoryPage,
-) -> Result<(), capnp::Error> {
-    out.set_revision(&page.revision);
-    out.set_next_cursor(&page.next_cursor);
-    out.set_exhausted(page.exhausted);
-    out.set_stale_cursor(page.stale_cursor);
-    out.set_budget_exhausted(page.budget_exhausted);
-    let len = u32::try_from(page.rows.len())
-        .map_err(|_| capnp::Error::failed("too many action directory rows".into()))?;
-    let mut rows = out.reborrow().init_rows(len);
-    for (index, row) in page.rows.iter().enumerate() {
-        write_directory_row(
-            rows.reborrow()
-                .get(u32::try_from(index).unwrap_or(u32::MAX)),
-            row,
-        );
     }
     Ok(())
 }
@@ -4491,18 +4350,9 @@ impl CapnpBrokerState {
         app_id: &str,
         resource: &str,
         action: &str,
-        contract_json: &str,
+        contract: &tilo_actions::ActionContract,
     ) -> Result<bool, capnp::Error> {
         let now = self.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
-        if contract_json.is_empty() || contract_json.len() > DIRECTORY_MAX_CONTRACT_BYTES {
-            return Err(capnp::Error::failed(
-                "action directory contract must be non-empty and bounded".into(),
-            ));
-        }
-        let contract = serde_json::from_str::<tilo_actions::ActionContract>(contract_json)
-            .map_err(|error| {
-                capnp::Error::failed(format!("invalid action directory contract: {error}"))
-            })?;
         let Some(verb) = (match contract.permission {
             tilo_actions::PermissionRequirement::None => None,
             tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
@@ -8435,10 +8285,6 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the RPC validates and installs one complete published action surface"
-    )]
     fn publish_actions(
         self: Rc<Self>,
         params: channel_handle::PublishActionsParams,
@@ -8463,16 +8309,15 @@ impl channel_handle::Server for CapnpChannelHandle {
             }
             let rows = request.get_actions()?;
             let mut actions = Vec::with_capacity(rows.len() as usize);
-            for index in 0..rows.len() {
-                let row = rows.get(index);
-                let resource = row.get_resource()?.to_str()?.to_owned();
-                let action = row.get_action()?.to_str()?.to_owned();
-                if resource.is_empty()
-                    || action.is_empty()
-                    || resource.contains(tilo_actions::KEY_SEP)
-                    || action.contains(tilo_actions::KEY_SEP)
+            for row in rows {
+                let published = runtime_collab::decode_exported_action(row)?;
+                if published.resource.is_empty()
+                    || published.action.is_empty()
+                    || published.resource.contains(tilo_actions::KEY_SEP)
+                    || published.action.contains(tilo_actions::KEY_SEP)
                     || actions.iter().any(|candidate: &PublishedAction| {
-                        candidate.resource == resource && candidate.action == action
+                        candidate.resource == published.resource
+                            && candidate.action == published.action
                     })
                 {
                     return Err(capnp::Error::failed(
@@ -8480,109 +8325,6 @@ impl channel_handle::Server for CapnpChannelHandle {
                             .into(),
                     ));
                 }
-                let description = row.get_description()?.to_str()?.to_owned();
-                let input = match row.get_input()?.which()? {
-                    action_input::Which::None(()) => PublishedInput::None,
-                    action_input::Which::Text(text) => PublishedInput::Text {
-                        prompt: text.get_prompt()?.to_str()?.to_owned(),
-                        placeholder: text.get_placeholder()?.to_str()?.to_owned(),
-                        wants_content: text.get_wants_content(),
-                    },
-                };
-                let view = row
-                    .has_view()
-                    .then(|| row.get_view())
-                    .transpose()?
-                    .map(|view| {
-                        let description = view.get_description()?.to_str()?.to_owned();
-                        Ok::<_, capnp::Error>(tilo_actions::ResourceViewDescriptor {
-                            id: view.get_id()?.to_str()?.to_owned(),
-                            label: view.get_label()?.to_str()?.to_owned(),
-                            description: (!description.is_empty()).then_some(description),
-                            open_action: view.get_open_action()?.to_str()?.to_owned(),
-                            primary: view.get_primary(),
-                            range: view
-                                .has_range()
-                                .then(|| view.get_range())
-                                .transpose()?
-                                .map(|range| {
-                                    Ok::<_, capnp::Error>(tilo_actions::ResourceViewRangeSpec {
-                                        action: range.get_action()?.to_str()?.to_owned(),
-                                        start_param: range.get_start_param()?.to_str()?.to_owned(),
-                                        end_param: range.get_end_param()?.to_str()?.to_owned(),
-                                        unit_param: range.get_unit_param()?.to_str()?.to_owned(),
-                                    })
-                                })
-                                .transpose()?,
-                            mount: view
-                                .has_mount()
-                                .then(|| view.get_mount())
-                                .transpose()?
-                                .map(|mount| {
-                                    Ok::<_, capnp::Error>(tilo_actions::ResourceViewMountSpec {
-                                        action: mount.get_action()?.to_str()?.to_owned(),
-                                        capability_param: mount
-                                            .get_capability_param()?
-                                            .to_str()?
-                                            .to_owned(),
-                                        view_param: mount.get_view_param()?.to_str()?.to_owned(),
-                                    })
-                                })
-                                .transpose()?,
-                        })
-                    })
-                    .transpose()?;
-                actions.push(PublishedAction {
-                    resource,
-                    semantic_identity: decode_semantic_identity(row)?,
-                    action,
-                    resource_kind: row.get_resource_kind()?.to_str()?.to_owned(),
-                    resource_label: row.get_resource_label()?.to_str()?.to_owned(),
-                    action_label: row.get_action_label()?.to_str()?.to_owned(),
-                    description: (!description.is_empty()).then_some(description),
-                    operation_kind: match row.get_operation_kind()?.to_str()? {
-                        "" | "document" => tilo_actions::OperationKind::Document,
-                        "effect" => tilo_actions::OperationKind::Effect,
-                        "view" => tilo_actions::OperationKind::View,
-                        other => {
-                            return Err(capnp::Error::failed(format!(
-                                "unknown exported operation kind `{other}`"
-                            )));
-                        }
-                    },
-                    params: {
-                        let json = row.get_params_json()?.to_str()?;
-                        if json.is_empty() {
-                            Vec::new()
-                        } else {
-                            serde_json::from_str(json).map_err(|error| {
-                                capnp::Error::failed(format!(
-                                    "invalid exported action parameters: {error}"
-                                ))
-                            })?
-                        }
-                    },
-                    contract: {
-                        let json = row.get_contract_json()?.to_str()?;
-                        if json.is_empty() {
-                            match row.get_operation_kind()?.to_str()? {
-                                "view" => tilo_actions::ActionContract::view(),
-                                _ => tilo_actions::ActionContract::default(),
-                            }
-                        } else {
-                            serde_json::from_str(json).map_err(|error| {
-                                capnp::Error::failed(format!(
-                                    "invalid exported action contract: {error}"
-                                ))
-                            })?
-                        }
-                    },
-                    view,
-                    input,
-                });
-                let published = actions.last().ok_or_else(|| {
-                    capnp::Error::failed("published action disappeared during validation".into())
-                })?;
                 if published.resource_kind.trim().is_empty()
                     || published.resource_label.trim().is_empty()
                     || published.action_label.trim().is_empty()
@@ -8610,6 +8352,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         )));
                     }
                 }
+                actions.push(published);
             }
             validate_resource_view_descriptors(&actions)?;
             let surface = PublishedSurface {
@@ -8842,7 +8585,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 page,
                 max_results,
             )?;
-            write_directory_page(results.get().init_page(), &page)?;
+            runtime_collab::write_action_directory_page(results.get().init_page(), &page)?;
             Ok(())
         })
     }
@@ -9964,8 +9707,9 @@ fn permits_directory_row(
                 || descriptor.resource_kind != row.resource_kind
                 || descriptor.resource_label != row.resource_label
                 || row.has_children
-                || row.visibility_action.as_deref() != Some(action)
-                || row.visibility_contract_json != descriptor.contract_json
+                || row.visibility.as_ref().is_none_or(|visibility| {
+                    visibility.action != *action || visibility.contract != descriptor.contract
+                })
             {
                 return Err(capnp::Error::failed(
                     "directory action row does not match its descriptor".into(),
@@ -9987,22 +9731,6 @@ fn permits_directory_row(
             {
                 return Err(capnp::Error::failed(
                     "invalid action directory description".into(),
-                ));
-            }
-            if !matches!(
-                descriptor.operation_kind.as_str(),
-                "document" | "effect" | "view"
-            ) {
-                return Err(capnp::Error::failed(
-                    "invalid action directory operation kind".into(),
-                ));
-            }
-            if descriptor.params_json.len() > DIRECTORY_MAX_PARAMS_BYTES
-                || serde_json::from_str::<Vec<tilo_actions::ActionParam>>(&descriptor.params_json)
-                    .is_err()
-            {
-                return Err(capnp::Error::failed(
-                    "invalid action directory parameters".into(),
                 ));
             }
             match &descriptor.input {
@@ -10034,18 +9762,17 @@ fn permits_directory_row(
                 app_id,
                 &row.resource,
                 action,
-                &descriptor.contract_json,
+                &descriptor.contract,
             )
         }
         (None, None) => {
-            if row.visibility_action.is_none() || row.visibility_contract_json.is_empty() {
+            let Some(visibility) = &row.visibility else {
                 return Err(capnp::Error::failed(
                     "directory resource row has no visibility contract".into(),
                 ));
-            }
-            let visibility_action = row.visibility_action.as_deref().unwrap_or_default();
+            };
             validate_directory_identifier(
-                visibility_action,
+                &visibility.action,
                 "visibility action",
                 DIRECTORY_MAX_IDENTIFIER_BYTES,
                 true,
@@ -10055,8 +9782,8 @@ fn permits_directory_row(
                 actor,
                 app_id,
                 &row.resource,
-                visibility_action,
-                &row.visibility_contract_json,
+                &visibility.action,
+                &visibility.contract,
             )
         }
         _ => Err(capnp::Error::failed(
@@ -10123,78 +9850,7 @@ fn published_directory_action(
             "invalid directory resource semantic identity".into(),
         ));
     }
-    let operation_kind = match descriptor.operation_kind.as_str() {
-        "document" => tilo_actions::OperationKind::Document,
-        "effect" => tilo_actions::OperationKind::Effect,
-        "view" => tilo_actions::OperationKind::View,
-        _ => {
-            return Err(capnp::Error::failed(
-                "invalid directory operation kind".into(),
-            ));
-        }
-    };
-    let params = serde_json::from_str(&descriptor.params_json)
-        .map_err(|error| capnp::Error::failed(format!("invalid directory parameters: {error}")))?;
-    let contract = serde_json::from_str(&descriptor.contract_json)
-        .map_err(|error| capnp::Error::failed(format!("invalid directory contract: {error}")))?;
-    let input = match &descriptor.input {
-        runtime_collab::ExportedInput::None => PublishedInput::None,
-        runtime_collab::ExportedInput::Text {
-            prompt,
-            placeholder,
-            wants_content,
-        } => PublishedInput::Text {
-            prompt: prompt.clone(),
-            placeholder: placeholder.clone(),
-            wants_content: *wants_content,
-        },
-    };
-    let view = descriptor
-        .view
-        .as_ref()
-        .map(|view| tilo_actions::ResourceViewDescriptor {
-            id: view.id.clone(),
-            label: view.label.clone(),
-            description: view.description.clone(),
-            open_action: view.open_action.clone(),
-            primary: view.primary,
-            range: view
-                .range
-                .as_ref()
-                .map(|range| tilo_actions::ResourceViewRangeSpec {
-                    action: range.action.clone(),
-                    start_param: range.start_param.clone(),
-                    end_param: range.end_param.clone(),
-                    unit_param: range.unit_param.clone(),
-                }),
-            mount: view
-                .mount
-                .as_ref()
-                .map(|mount| tilo_actions::ResourceViewMountSpec {
-                    action: mount.action.clone(),
-                    capability_param: mount.capability_param.clone(),
-                    view_param: mount.view_param.clone(),
-                }),
-        });
-    Ok(PublishedAction {
-        resource: descriptor.resource.clone(),
-        semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
-            tilo_actions::ResourceSemanticIdentity {
-                kind: identity.kind.clone(),
-                key: identity.key.clone(),
-            }
-        }),
-        action: descriptor.action.clone(),
-        resource_kind: descriptor.resource_kind.clone(),
-        resource_label: descriptor.resource_label.clone(),
-        action_label: descriptor.action_label.clone(),
-        description: descriptor.description.clone(),
-        operation_kind,
-        params,
-        contract,
-        view,
-        input,
-    })
+    Ok(descriptor.clone())
 }
 
 fn revalidate_workspace_control(
@@ -10273,9 +9929,7 @@ fn handle_signed_op_send_for_artifact(
     };
     match validation {
         Ok(()) => {
-            let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
-                mls_vault.clone_from(&ch.mls_vault);
                 ch.record_history(&route.cluster_id, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
@@ -10284,13 +9938,6 @@ fn handle_signed_op_send_for_artifact(
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
-            }
-            if envelope.op_class == collab_types::OpClass::Compaction
-                && let Some(metadata) = envelope.encryption
-                && let Some(vault) = mls_vault
-                && let Err(error) = vault.mint_snapshot_receipt(metadata.channel, &envelope)
-            {
-                tracing::warn!(%error, "encrypted snapshot was accepted but durable receipt minting failed");
             }
             if envelope.op_class == collab_types::OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
@@ -13508,17 +13155,17 @@ pub mod tests {
     }
 
     impl TestActionDirectory {
-        fn contract_json(&self) -> String {
+        fn contract(&self) -> tilo_actions::ActionContract {
             let mut contract = tilo_actions::ActionContract::view();
             contract.result = self.result.clone();
             if self.confirmation_required {
                 contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
             }
-            serde_json::to_string(&contract).expect("test action contract")
+            contract
         }
 
         fn row(&self) -> runtime_collab::ActionDirectoryRow {
-            let contract_json = self.contract_json();
+            let contract = self.contract();
             let descriptor = runtime_collab::ExportedAction {
                 semantic_identity: None,
                 resource: "workspace:atlas".into(),
@@ -13527,9 +13174,9 @@ pub mod tests {
                 resource_label: "Atlas".into(),
                 action_label: "Open Atlas".into(),
                 description: Some("Open the Atlas workspace".into()),
-                operation_kind: "view".into(),
-                params_json: "[]".into(),
-                contract_json: contract_json.clone(),
+                operation_kind: tilo_actions::OperationKind::View,
+                params: Vec::new(),
+                contract: contract.clone(),
                 input: runtime_collab::ExportedInput::None,
                 view: None,
             };
@@ -13538,12 +13185,14 @@ pub mod tests {
                 resource: descriptor.resource.clone(),
                 resource_kind: descriptor.resource_kind.clone(),
                 resource_label: descriptor.resource_label.clone(),
-                resource_presentation_json: String::new(),
+                presentation: None,
                 action: Some(descriptor.action.clone()),
                 descriptor: Some(descriptor),
                 has_children: false,
-                visibility_action: Some("open".into()),
-                visibility_contract_json: contract_json,
+                visibility: Some(runtime_collab::RowVisibility {
+                    action: "open".into(),
+                    contract,
+                }),
             }
         }
     }
@@ -13572,7 +13221,7 @@ pub mod tests {
                 stale_cursor: false,
                 budget_exhausted: false,
             };
-            write_directory_page(results.get().init_page(), &page)
+            runtime_collab::write_action_directory_page(results.get().init_page(), &page)
                 .expect("test directory page encodes");
             Promise::ok(())
         }
@@ -13587,7 +13236,11 @@ pub mod tests {
             let mut out = results.get().init_resolution();
             match state.resolve_mode {
                 DirectoryResolveMode::Found => {
-                    write_directory_row(out.reborrow().init_found(), &state.row());
+                    runtime_collab::write_action_directory_row(
+                        out.reborrow().init_found(),
+                        &state.row(),
+                    )
+                    .expect("test directory row encodes");
                 }
                 DirectoryResolveMode::Stale => out.set_stale_revision(()),
                 DirectoryResolveMode::NotFound => out.set_not_found(()),
@@ -14055,11 +13708,12 @@ pub mod tests {
             let mut identity = descriptor.init_semantic_identity();
             identity.set_kind(kind);
             identity.set_key(key);
-            decode_semantic_identity(
+            runtime_collab::decode_exported_action(
                 message
                     .get_root_as_reader::<exported_action::Reader<'_>>()
                     .unwrap(),
             )
+            .map(|action| action.semantic_identity)
         };
         assert_eq!(
             decode("chat.agent", "chat.person:scribe").unwrap(),
@@ -14076,6 +13730,110 @@ pub mod tests {
             .unwrap()
             .kind = "person".into();
         assert!(published_directory_action(&row).is_err());
+    }
+
+    /// A directory whose container row carries a visibility contract the
+    /// broker cannot read, beside a well-formed action row.
+    #[cfg(test)]
+    struct UndecodableVisibilityDirectory {
+        row: runtime_collab::ActionDirectoryRow,
+    }
+
+    #[allow(
+        refining_impl_trait,
+        reason = "the generated Cap'n Proto test endpoint has the same concrete Promise shape as production endpoints"
+    )]
+    #[cfg(test)]
+    impl action_directory::Server for UndecodableVisibilityDirectory {
+        fn query(
+            self: Rc<Self>,
+            _params: action_directory::QueryParams,
+            mut results: action_directory::QueryResults,
+        ) -> Promise<(), capnp::Error> {
+            let container = runtime_collab::ActionDirectoryRow {
+                parent_resource: String::new(),
+                resource: "workspace:folder".into(),
+                resource_kind: "workspace".into(),
+                resource_label: "Folder".into(),
+                presentation: None,
+                action: None,
+                descriptor: None,
+                has_children: true,
+                visibility: Some(runtime_collab::RowVisibility {
+                    action: "open".into(),
+                    contract: tilo_actions::ActionContract::view(),
+                }),
+            };
+            let page = runtime_collab::ActionDirectoryPage {
+                revision: "directory-r1".into(),
+                rows: vec![self.row.clone(), container],
+                next_cursor: Vec::new(),
+                exhausted: true,
+                stale_cursor: false,
+                budget_exhausted: false,
+            };
+            let mut out = results.get().init_page();
+            runtime_collab::write_action_directory_page(out.reborrow(), &page)
+                .expect("test directory page encodes");
+            // A permission the broker does not know: the gate is unreadable.
+            out.get_rows()
+                .unwrap()
+                .get(1)
+                .set_visibility_contract_json(r#"{"permission":"everyone"}"#);
+            Promise::ok(())
+        }
+    }
+
+    /// The visibility contract is the permission that discloses a container
+    /// row. One the broker cannot decode refuses the page: the row is never
+    /// listed without its gate, and nothing on that page is listed past it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_row_whose_visibility_cannot_be_decoded_is_not_listed() {
+        use tilo_actions::remote::{Caller, CatalogueQuery, PendingPoll};
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let fixture = local_directory_fixture();
+                let caller = Caller::local_person("fixture-owner")
+                    .in_room(fixture.cluster_id.clone())
+                    .in_new_execution();
+                let query = CatalogueQuery {
+                    provider: Some(fixture.peer_id.to_string()),
+                    max_results: 8,
+                    ..CatalogueQuery::default()
+                };
+                let list = || async {
+                    let mut pending = fixture.state.action_query(&caller, &query);
+                    tokio::time::timeout(Duration::from_secs(2), async {
+                        loop {
+                            drain_directory_bridge(&fixture).await;
+                            if let PendingPoll::Ready(result) = pending.poll_ready() {
+                                break result;
+                            }
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .expect("bounded directory query")
+                };
+                let listed = list().await.expect("a well-formed directory lists");
+                assert_eq!(
+                    listed.rows.len(),
+                    1,
+                    "the fixture row is visible to its owner"
+                );
+
+                let row = fixture.directory_state.borrow().row();
+                fixture
+                    .directories
+                    .directories
+                    .borrow_mut()
+                    .get_mut(&fixture.peer_id)
+                    .expect("fixture directory")
+                    .directory = capnp_rpc::new_client(UndecodableVisibilityDirectory { row });
+                let refused = list().await;
+                assert!(refused.is_err(), "{refused:?}");
+            })
+            .await;
     }
 
     #[test]

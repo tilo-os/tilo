@@ -8,7 +8,6 @@ use crate::network::behaviour::load_or_create_keypair;
 use crate::shell::network::{ShellNetwork, peer_key_path};
 use crate::shell::state::WorkspaceTree;
 use crate::shell::{persist, sync_tab_presence_from_tree};
-use ui::collaboration::PresencePayload;
 use ui::presence::PresenceKey;
 use ui::widget::Widget;
 use ui::{App, State};
@@ -209,6 +208,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
     {
         host.attach_task_review(review);
     }
+    // The presence pump runs in the frame tick, which is handed no host:
+    // the host keeps its tiles and pointer current here instead.
+    let desk = host.share_desk();
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
     tilo_startup_metrics::mark("hosted-app-new-start");
     let mut app = App::from_scoped_parts(wake_scope, state, root);
@@ -216,17 +218,24 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // Seed per-tab presence from the tree's collaborator roster so tab-pill presence dots render
     // on first draw; network-driven updates later rewrite the same keys via the collab pump, so this doesn't conflict with live peer attribution.
     sync_tab_presence_from_tree(&tree_snapshot, app.presence_ctx_mut());
-    // Declare the pointer-presence scope so local cursor moves broadcast to every connected peer
-    // under the workspace's **room**, not the local `WorkspaceId` — the id is a per-machine handle
+    // Declare the toolkit's pointer-presence scope (what this window's own collaboration client
+    // broadcasts under; the desktop cursor reaches peers through the presence pump below)
+    // as the workspace's **room**, not the local `WorkspaceId` — the id is a per-machine handle
     // (two peers in one room hold different ones), so a pointer published under it would arrive
     // addressed to a scope the receiver has never heard of. The room is what the launcher, the overlay, and the native backend already key on.
     set_active_room_presence_scope(&mut app, &tree_snapshot);
 
-    // Cursor-presence pump: when peer-sync is enabled, pipe every local `broadcast_presence`
-    // Pointer event into `NetCmd::Publish { msg: PresenceMoved }` and drain received updates into
-    // the chrome's remote-cursors overlay. Installed only under `enable_peer_sync` so the legacy headless path stays bit-compatible.
+    // Cursor-presence pump: when peer-sync is enabled, the native compositor's peer-presence
+    // pipeline runs in the frame tick, so a hosted and a native session publish, accept and paint
+    // peer pointers the same way. Installed only under `enable_peer_sync` so the legacy headless path stays bit-compatible.
     if let Some(net) = peer_sync.as_ref() {
-        install_presence_pump(&mut app, net, tree_handle.clone());
+        install_presence_pump(
+            &mut app,
+            net,
+            collab_broker.as_ref(),
+            tree_handle.clone(),
+            desk,
+        );
     }
 
     // Bring up the xdg-desktop-portal D-Bus backend if `--enable-portals` was passed; zbus's async
@@ -474,85 +483,36 @@ fn set_active_room_presence_scope(app: &mut App, tree_snapshot: &WorkspaceTree) 
     }
 }
 
-/// Installs the cursor-presence pump: pipes every local `broadcast_presence` Pointer event into
-/// `NetCmd::Publish { msg: PresenceMoved }` and drains received updates into the chrome's
-/// remote-cursors overlay.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "`recv_net` moves into the frame-tick closure after the inbound handle is taken"
-)]
+/// Installs the cursor-presence pump: the same [`PeerPresence`](crate::shell::peer_presence::PeerPresence)
+/// the native compositor drives from its frame loop, driven from this window's frame tick.
+///
+/// So a hosted session publishes what a native one does — its pointer anchored to the tile under
+/// it, throttled, with a keepalive — and accepts what a native one does: tile-anchored pointers,
+/// placed over this window's own tile for each tab ([`SharedDesk`](crate::shell::peer_presence::SharedDesk)),
+/// attributed to the authenticated session rather than any name a frame claims, and faded and
+/// glided by the one presence model the overlay paints from. A pointer over a tab this window does
+/// not show stays hidden, as on a native desk. The keepalive restates a still pointer only when the
+/// event loop wakes (input, network, a frame); a hosted window asleep for longer than
+/// [`ui::presence::POINTER_IDLE`] lets its peers' copy of a motionless pointer fade.
 fn install_presence_pump(
     app: &mut App,
     net: &Arc<ShellNetwork>,
+    broker: Option<&crate::shell::collab_broker::BrokerHandle>,
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    desk: crate::shell::peer_presence::SharedDesk,
 ) {
-    let send_net = Arc::clone(net);
-    app.set_presence_broadcast_sink(move |key, payload| {
-        // Only Pointer payloads carry an (x, y); the other variants (Caret, Selection, Arrived, Left) are out of scope here and ride the existing unix-socket path.
-        let PresencePayload::Pointer { x, y } = payload else {
-            return;
-        };
-        // Encode the structured `PresenceKey` to JSON so the wire format stays opaque to the
-        // shell-side bridge; receivers either round-trip back into `PresenceKey` or use the string as an attribution-only id.
-        let key_str = serde_json::to_string(key).unwrap_or_default();
-        send_net.publish_presence(key_str, (f64::from(*x), f64::from(*y)));
-    });
-    let recv_net = Arc::clone(net);
-    let inbound = recv_net.inbound_presence_handle();
-    // Inbound samples arrive at whatever rate the publisher manages (~30 Hz) and never carry a
-    // "peer left" note, so they're fed through the interpolator rather than straight onto the overlay: it eases between samples and fades a quiet peer's cursor out. See `shell::shell::cursor_interp`.
-    let mut cursors = crate::shell::cursor_interp::CursorInterpolator::new();
-    let tree_for_roster = tree_handle;
+    use crate::shell::peer_presence::{PeerPresence, rooms_and_active};
+    let (rooms, _) = rooms_and_active(&tree_handle.read());
+    let relay = match broker {
+        Some(broker) => PeerPresence::attach(broker, net, rooms),
+        None => PeerPresence::for_network(net, rooms),
+    };
+    let net = Arc::clone(net);
     app.set_frame_tick(move |presence_ctx| {
-        // Pump the actor→replica event channel first so any `PresenceMoved` events since the last wakeup land in the inbound buffer this frame.
-        recv_net.tick();
-        // Drain the buffer atomically so a slow frame doesn't double-apply the same delta — anything dropped here is a stale move about to be replaced anyway, since peers republish at ~30 Hz.
-        let drained: Vec<_> = {
-            let mut buf = inbound
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            std::mem::take(&mut *buf)
-        };
-        let received = !drained.is_empty();
-        let now = std::time::Instant::now();
-        for entry in drained {
-            // A pointer anchored to a tab's tile is placed by the native frame loop over its own
-            // tiles; this window has no tile map to place it with, and its offset is no desktop point.
-            if matches!(
-                serde_json::from_str::<ui::presence::PresenceKey>(&entry.key)
-                    .ok()
-                    .and_then(|key| key.pointer_space()),
-                Some(ui::presence::PointerSpace::Tile { .. })
-            ) {
-                continue;
-            }
-            // A frame addressed to a room is this session learning a named person is in it; putting them on
-            // that room's roster is what the avatar stack, wheel-disc dots, and collaborators overlay render from.
-            if let Ok(ui::presence::PresenceKey::Workspace { id }) =
-                serde_json::from_str::<ui::presence::PresenceKey>(&entry.key)
-                && let Some(room) = crate::shell::state::RoomId::parse(&id)
-            {
-                tree_for_roster
-                    .write()
-                    .note_peer_present(room, entry.peer, &entry.user);
-            }
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "peer cursor position in screen-space pixels, always far below f32's exact-integer range"
-            )]
-            let point = [entry.point.0 as f32, entry.point.1 as f32];
-            cursors.push_sample(
-                &crate::shell::state::session_handle(entry.peer),
-                &entry.user,
-                point,
-                now,
-            );
-        }
-        // A received frame can also change the collaborator roster. The
-        // interpolator separately reports position/fade changes; quiet ticks
-        // now leave the 4K surface untouched.
-        let cursor_changed = cursors.apply_to(presence_ctx, now);
-        received || cursor_changed
+        // Pump the actor→replica event channel first so any `PresenceMoved` events since the last
+        // wakeup land in the inbound buffer this frame.
+        net.tick();
+        relay.frame(presence_ctx, &desk.snapshot(), &tree_handle)
     });
 }
 

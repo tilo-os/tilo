@@ -12,16 +12,6 @@ use collab_types::{
     ValidationError, parse_redact_payload,
 };
 
-/// Native vault adapter; no identity or Secret Service discovery occurs here.
-pub trait SnapshotReceiptVault: Send + Sync {
-    /// Mints the snapshot receipt for `envelope` on `channel`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the vault cannot mint the receipt.
-    fn mint_snapshot_receipt(&self, channel: ChannelId, envelope: &SignedOp) -> Result<(), String>;
-}
-
 const AUDIT_LOG_RING_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug)]
@@ -98,9 +88,6 @@ pub struct BrokerChannels {
     /// a channel is accepted and refreshed on every membership change; the
     /// broker holds the gate, never a key.
     pub gates: HashMap<ChannelId, channel_crypto::ChannelGate>,
-    /// Production Secret Service provider installed by shell startup. Kept
-    /// behind the broker boundary; applications see only opaque receipts.
-    pub mls_vault: Option<Arc<dyn SnapshotReceiptVault>>,
     /// Durable history of content-key ciphertext, so members (including
     /// ones added later) can page back past the in-memory window.
     pub history: Option<super::collab_history::CollabHistoryStore>,
@@ -307,10 +294,6 @@ impl BrokerChannels {
                 tracing::warn!(%error, ?artifact, "collab history: peer page not stored");
                 0
             })
-    }
-
-    pub fn install_mls_vault(&mut self, vault: Arc<dyn SnapshotReceiptVault>) {
-        self.mls_vault = Some(vault);
     }
 }
 

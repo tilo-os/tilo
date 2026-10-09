@@ -708,3 +708,26 @@ permitted roots, unsupported mode operations, and queued operations whose
 workspace owner or lock state changed. Agent, app and bearer-token principals
 cannot approve personal file access through an Admin override. Staging a file in
 Downloads does not grant an application access to it.
+
+## Cloud account mounts
+
+Settings publishes `sync-now` and either `pause-sync` or `resume-sync` on each
+`settings.account:<id>` row while the cloud account service lists that account
+as mounted at `~/Remote/<label>`; an account that is not mounted offers none of
+them. They are device-only jobs: the effect answers once the service has
+accepted the request, and the account's health still arrives through the
+account status store. `sync-now` cuts a failure back-off short and runs a pass
+(an account whose mount could not start is tried again); a pause stops
+background sync and uploads until resumed, survives restarts, and leaves
+on-demand reads working while edits queue.
+
+Settings reaches the mounts through the service's account socket,
+`$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock` (`runtime_fs::cloud`, mode
+0600), whose directory its sandbox is granted. That socket lists, syncs,
+pauses and resumes mounts and refuses everything else. File requests (a
+file's provider revisions, restoring one of them, and a share link, each
+refused unless the provider's capabilities include it) are served only on the
+file socket, `$XDG_RUNTIME_DIR/tilo-fs-cloud-files/files.sock`, in a directory
+of its own that no grant of the account socket reaches. No credential crosses
+either socket. Files does not yet publish these file requests as entry
+actions, and no sandbox is granted the file socket yet.

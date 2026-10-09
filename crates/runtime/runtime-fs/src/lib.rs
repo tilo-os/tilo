@@ -104,6 +104,9 @@ pub mod recovery;
 pub mod storage;
 
 #[cfg(unix)]
+pub mod cloud;
+
+#[cfg(unix)]
 pub mod blobs;
 
 #[cfg(unix)]

@@ -478,3 +478,13 @@ missing owner session, or an unobservable SDK fails before application actions.
 The same `--cohort-receipt` option continues to accept individual successful
 `swap apps+runtime` receipts. These checks do not establish hardware acceptance
 until the runner executes its application flow and resident-backing assertions.
+When the published base disk uses a different management protocol, CI builds a
+second `tilo-vm` from that exact base commit. It creates and starts the throwaway
+VM with that client, then runs the ordinary `swap vmd --slot vm --builder host`
+from the clean target checkout. The target client must read back the VM-wide
+management layer before any session is created. P01 records this explicit
+management swap even with `swap=none`; equal-protocol `swap=none` tests the base
+without a management swap. Failures abort P00 instead of relaxing the protocol
+check. For a local older fixture, pass `--bootstrap-tilo-vm <matching-client>`
+and `--bootstrap-from <clean-target-checkout>` together. This bootstrap uses
+the existing layer admission and activation path, and does not reboot.

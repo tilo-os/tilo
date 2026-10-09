@@ -462,10 +462,9 @@ pub struct AppearancePane {
     wallpaper_status: LocalState<Option<String>>,
     status_shown: Option<String>,
     structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     composition_dirty: bool,
     locale_revision: u64,
-    rect: Rect,
 }
 
 impl AppearancePane {
@@ -482,10 +481,9 @@ impl AppearancePane {
             wallpaper_status,
             status_shown,
             structure_dirty: false,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             composition_dirty: true,
             locale_revision: ui::i18n::I18nManager::revision(),
-            rect: Rect::ZERO,
         }
     }
 
@@ -781,9 +779,7 @@ impl Widget for AppearancePane {
             self.composition_dirty = true;
             self.structure_dirty = true;
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
     fn build_layout(
         &mut self,
@@ -791,15 +787,22 @@ impl Widget for AppearancePane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Parent reflow reuses these controls and their measurement/focus caches.
-        // Structural model changes replace them only inside the layout pass.
-        let mut composed = match self.composed.take() {
-            Some(composed) if !self.composition_dirty => composed,
-            _ => self.build_composition(),
-        };
+        // Retain controls across parent reflow; replace the composition only
+        // when current preferences, status or localized copy changed.
+        if self.composition_dirty || self.composed.element().is_none() {
+            let composition = self.build_composition();
+            self.composed.replace(composition);
+        }
         self.composition_dirty = false;
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let child = if let Some(composition) = self.composed.element_mut() {
+            composition.build_layout(taffy, theme, node_map)
+        } else {
+            // A missing retained child needs a real composition and layout,
+            // rather than an empty node or a guessed geometry.
+            let composition = self.build_composition();
+            self.composed
+                .build_layout(composition, taffy, theme, node_map)
+        };
         let style = taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
@@ -815,19 +818,7 @@ impl Widget for AppearancePane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
+        self.composed.apply_layout(taffy, node, origin);
     }
 
     fn draw(
@@ -838,42 +829,28 @@ impl Widget for AppearancePane {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.composed
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
+        self.composed.handle_event(event, ctx);
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // This pane paints only its composition. Keep a child's local visual
         // change local instead of expanding it to the whole form.
-        if let Some(composed) = &self.composed {
+        if let Some(composed) = self.composed.element() {
             composed.collect_damage(regions);
         }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn name(&self) -> &'static str {
@@ -882,15 +859,12 @@ impl Widget for AppearancePane {
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         own || child
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.composed.rect()
     }
 
     /// Surface the user's current appearance choice so the running Settings

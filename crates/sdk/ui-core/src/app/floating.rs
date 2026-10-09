@@ -107,6 +107,16 @@ impl Drop for FloatingRuntime {
 }
 
 impl App {
+    /// Pump the real native host channel in compositor-free acceptance fixtures.
+    /// Returns whether this launch's inherited connection is still present.
+    /// This exposes no connection injection or permission bypass.
+    #[cfg(all(feature = "native", feature = "test-support"))]
+    pub fn pump_native_host_for_test(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
+        self.pump_floating_surface_service();
+        self.floating.client.is_some()
+    }
+
     /// Withhold this app's windows from screenshots, recordings, screen
     /// sharing and remote viewers — for windows that show secrets, such as a
     /// password manager's. The local display is unaffected; captures show a
@@ -914,9 +924,22 @@ mod host_shell_allow_tests {
                 ..
             }
         ));
-        // Closing the runtime without another pump must also retire its hints.
+        // Loss is terminal for this App: pumping again cannot reacquire a
+        // consumed inherited descriptor or resurrect the stale snapshot.
+        app.pump_floating_surface_service();
+        assert!(app.floating.client.is_none());
+        assert_ne!(tilo_host::network_status::current().metered, Some(false));
+        drop(app);
+
+        // A fresh App gets a fresh launch connection. This controlled fixture
+        // covers closure; the launcher boundary fixture qualifies discovery.
         let (app_side, mut shell_side) = UnixStream::pair().unwrap();
-        app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+        let mut relaunched = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Container::new()),
+        );
+        relaunched.floating.client =
+            Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
         let mut message = FloatingSurfaceHostMessage::appearance(&Default::default());
         if let FloatingSurfaceHostMessage::Appearance { network_status, .. } = &mut message {
             *network_status = Some(HostNetworkStatus {
@@ -927,9 +950,9 @@ mod host_shell_allow_tests {
         let mut frame = serde_json::to_vec(&message).unwrap();
         frame.push(b'\n');
         shell_side.write_all(&frame).unwrap();
-        app.pump_floating_surface_service();
+        relaunched.pump_floating_surface_service();
         assert_eq!(tilo_host::network_status::current().metered, Some(false));
-        drop(app);
+        drop(relaunched);
         assert_ne!(tilo_host::network_status::current().metered, Some(false));
     }
 

@@ -33,6 +33,7 @@ from acceptance import core, report  # noqa: E402
 from acceptance.checks import (apps, basics, daily_apps, provenance, resources, search,  # noqa: E402,F401
                                startup, ui, window)
 from acceptance.context import Context  # noqa: E402
+from management import start_management  # noqa: E402
 from acceptance.vm import TiloVm, VmError, first_json  # noqa: E402
 
 REPO = HERE.parents[1]
@@ -372,6 +373,8 @@ def main() -> int:
     ap.add_argument("--gl", action="store_true", help="create the VM with virgl (--disk only)")
     ap.add_argument("--keep", action="store_true", help="leave the VM running (and a created VM registered)")
     ap.add_argument("--tilo-vm")
+    ap.add_argument("--bootstrap-tilo-vm", help="fixture-matching CLI for a canonical management upgrade")
+    ap.add_argument("--bootstrap-from", type=Path, help="exact target source for the management upgrade")
     ap.add_argument("--swap", help="comma-separated components (os/components.toml) or app:<dir> to build "
                     "from this worktree on the host and swap in before the checks; the disk is then the base")
     ap.add_argument("--swap-from", type=Path, help="the worktree --swap builds from (default: this one)")
@@ -381,6 +384,8 @@ def main() -> int:
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
 
+    if bool(args.bootstrap_tilo_vm) != bool(args.bootstrap_from):
+        ap.error("--bootstrap-tilo-vm and --bootstrap-from must be supplied together")
     binary = find_tilo_vm(args.tilo_vm)
     swaps = [c.strip() for c in (args.swap or "").split(",") if c.strip()]
     swap_from = (args.swap_from or REPO).resolve()
@@ -405,6 +410,9 @@ def main() -> int:
         disk = Path(entry["image"]).expanduser() if entry.get("image") else None
     vm = TiloVm(binary, vm_name, args.slot, out / "tilo-vm.log")
 
+    startup_vm = (TiloVm(find_tilo_vm(args.bootstrap_tilo_vm), vm_name, args.slot, out / "tilo-vm.log")
+                  if args.bootstrap_tilo_vm else vm)
+
     others = [n for n in running_vms() if n != vm_name]
     if others:
         sys.exit(f"other VMs are running ({others}); this laptop runs one VM at a time")
@@ -424,21 +432,31 @@ def main() -> int:
     results: list[core.Result] = []
     owners = report.owners_from(args.owners)
     try:
+        cmd = None
         if args.disk:
             existing = (vms_toml().get("vms") or {}).get(vm_name)
             if existing is None:
                 cmd = ["create", vm_name, "--image", str(disk), "--heads", str(len(outputs)),
                        "--resolution", outputs[0].split("@")[0], "--memory-mb", str(args.memory_mb),
                        "--cpus", str(args.cpus)] + (["--gl"] if args.gl else [])
-                vm.vm_cmd(*cmd, timeout=900)
                 created = True
-        vm.vm_cmd("start", vm_name, timeout=600)
+        management = start_management(vm, startup_vm,
+                                      args.bootstrap_from.resolve() if args.bootstrap_from else None,
+                                      swap_ref, cmd)
         meta["vm_up"] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
         facts = {"provenance": provenance_of(vm, disk, want_commit)}
+        if management:
+            facts["provenance"]["swap"] = management
         meta["provenance"] = facts["provenance"]
         bootstrap_session(vm, outputs,
                           {"components": swaps, "ref": swap_ref, "source": swap_from},
                           facts["provenance"])
+        if management and swaps:
+            swapped = facts["provenance"]["swap"]
+            if swapped["commit"] != management["commit"]:
+                raise VmError("management and session swaps have different source commits")
+            swapped["components"] = management["components"] + swapped["components"]
+            swapped["slot_layers"].update(management["slot_layers"])
         time.sleep(5)
         facts["renderer"], facts["display"] = renderer(vm)
         meta["renderer"], meta["display"] = facts["renderer"], facts["display"]
