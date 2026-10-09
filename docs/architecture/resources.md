@@ -249,6 +249,13 @@ cx.outbox(Files::paths().ops, move |_, op| op.device == me, |id, op, cx| Ok(Effe
   reverts the document, which forgets an entry nobody carried out yet.
 - `#[action(item = ops)]` on a verb whose first parameter is an `Id` names an outbox entry;
   such a verb is not offered on collection items.
+- `#[resource(queue = path)]`, `fn queue(&mut self, before: &Self, cx: &mut ActionCx)`, runs after
+  every verb and field edit of the record and may push to its outboxes: an edited event of a
+  remote calendar queues its upload, a changed flag its IMAP command. Every action of such a
+  record is Outside, and undo applies the field edits that restore the record (or the verb's
+  declared `undo`) through `apply`, so the hook queues the compensation.
+- `cx.outbox_awaited(..)` runs an entry an invocation on this device queued under that
+  invocation, which completes once the entry settled.
 - A handler's `Err` leaves the entry pending, tried again after the next change or when the
   `Projection` it returns is told the outside changed.
 

@@ -28,12 +28,14 @@ pub(crate) struct ResourceOptions {
     load: Option<syn::Path>,
     locate: Option<syn::Path>,
     lands: Option<syn::Path>,
+    /// What every change of the record queues for the world outside.
+    queue: Option<syn::Path>,
 }
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
      `read_content = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
-     `locate = path` or `lands = path`";
+     `locate = path`, `lands = path` or `queue = path`";
 
 pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<ResourceOptions> {
     let metas = syn::parse::Parser::parse(Punctuated::<Meta, Token![,]>::parse_terminated, attr)?;
@@ -54,6 +56,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         load: None,
         locate: None,
         lands: None,
+        queue: None,
     };
     let mut kind = None;
     let mut label = None;
@@ -103,6 +106,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ("load", Expr::Path(path)) => options.load = Some(path.path.clone()),
             ("locate", Expr::Path(path)) => options.locate = Some(path.path.clone()),
             ("lands", Expr::Path(path)) => options.lands = Some(path.path.clone()),
+            ("queue", Expr::Path(path)) => options.queue = Some(path.path.clone()),
             _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
         }
     }
@@ -661,16 +665,17 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 outcome
             }
         });
-        let action_kind = if outboxes.is_empty() {
-            quote!(Undoable)
-        } else {
+        let queues = !outboxes.is_empty() || options.queue.is_some();
+        let action_kind = if queues {
             quote!(Outside)
+        } else {
+            quote!(Undoable)
         };
         if let Some(undo) = &verb.options.undo {
-            if outboxes.is_empty() {
+            if !queues {
                 return Err(syn::Error::new(
                     undo.span(),
-                    "`undo` names the verb that compensates an outside consequence; this action queues none (it takes no `&mut Outbox`) and undoes by itself",
+                    "`undo` names the verb that compensates an outside consequence; this action queues none (it takes no `&mut Outbox` and the record has no `queue`) and undoes by itself",
                 ));
             }
             compensating.push(variant.clone());
@@ -1048,6 +1053,30 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     };
+    // A record whose every change may queue an outside consequence: each of
+    // its actions reaches outside.
+    let (default_kind, queue_fns, queue_inherent) = match &options.queue {
+        Some(path) => (
+            quote!(Outside),
+            quote! {
+                const QUEUES: bool = true;
+                fn queue(
+                    record: &mut #self_ty,
+                    before: &#self_ty,
+                    cx: &mut #krate::ActionCx,
+                ) {
+                    <#self_ty>::__queue(record, before, cx);
+                }
+            },
+            quote! {
+                #[doc(hidden)]
+                fn __queue(record: &mut Self, before: &Self, cx: &mut #krate::ActionCx) {
+                    #path(record, before, cx);
+                }
+            },
+        ),
+        None => (quote!(Undoable), quote!(), quote!()),
+    };
     let (compensation_fns, compensation_inherent) = if compensations.is_empty() {
         (quote!(), quote!())
     } else {
@@ -1170,9 +1199,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 #[allow(unreachable_patterns, reason = "edits and the seed change only the document")]
                 match self {
                     #(#kinds)*
-                    _ => #krate::ActionKind::Undoable,
+                    _ => #krate::ActionKind::#default_kind,
                 }
             }
+            fn field_edit(edit: #krate::Edit<#self_ty>) -> ::core::option::Option<Self> {
+                ::core::option::Option::Some(Self::FieldEdit(edit))
+            }
+            #queue_fns
             fn perform(
                 &self,
                 #record_binding: &mut #self_ty,
@@ -1194,6 +1227,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         impl #self_ty {
             #(#consts)*
             #compensation_inherent
+            #queue_inherent
         }
 
         impl #krate::Resource for #self_ty {

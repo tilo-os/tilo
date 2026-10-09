@@ -352,6 +352,22 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
         false
     }
 
+    /// Whether every change of the record may queue an outside consequence
+    /// (`#[resource(queue = path)]`): [`Self::queue`] runs after each.
+    const QUEUES: bool = false;
+
+    /// Queue in the record's outboxes what the change from `before` to
+    /// `record` must do outside (`#[resource(queue = path)]`).
+    fn queue(record: &mut Self::Record, before: &Self::Record, cx: &mut ActionCx) {
+        let _ = (record, before, cx);
+    }
+
+    /// The field edit `edit` as an operation of the record.
+    fn field_edit(edit: crate::Edit<Self::Record>) -> Option<Self> {
+        let _ = edit;
+        None
+    }
+
     /// The verb that undoes this one, from the record before and after it
     /// ran and the ids it minted (`#[action(undo = path)]`). `None` when it
     /// declares none: undo then reverts the document by inverse patches.
@@ -400,32 +416,89 @@ pub struct Stamped<O> {
     pub now_ms: i64,
 }
 
+/// Whether a field edit only records how an outbox entry settled or forgets
+/// one: bookkeeping of the outbox that queues nothing and is nobody's step.
+fn settles(operation: &impl Operation) -> bool {
+    matches!(
+        operation.edit().map(crate::Edit::op),
+        Some(crate::EditOp::Settle { .. } | crate::EditOp::Forget { .. })
+    )
+}
+
 impl<O: Operation> Stamped<O> {
-    /// The compensating operation of this one at the document `doc` it
-    /// applies to: the verb run on a copy of the record, under the seed its
-    /// application will have, so the ids it mints are the ones it queues.
-    fn compensation(&self, doc: &Doc) -> Option<Self> {
-        if self.operation.edit().is_some() || !self.operation.compensates() {
-            return None;
+    /// Whether undoing this goes through `apply`, so what it queued outside
+    /// is compensated the same way: a verb that declares its undo, and every
+    /// change of a record that queues (`#[resource(queue = path)]`).
+    fn compensated(&self) -> bool {
+        if settles(&self.operation) {
+            return false;
         }
-        let before = O::Record::read_fields(doc, &ROOT).ok()?;
-        let mut after = O::Record::read_fields(doc, &ROOT).ok()?;
+        O::QUEUES || (self.operation.edit().is_none() && self.operation.compensates())
+    }
+
+    /// The record after this applies to `doc`, read apart from it, and the
+    /// ids it minted: under the seed its application will have, so they are
+    /// the ones it queues.
+    fn applied_to_copy(&self, doc: &Doc) -> Option<(O::Record, Vec<Id>)> {
         let payload = serde_json::to_vec(self).ok()?;
+        if let Some(edit) = self.operation.edit() {
+            let mut copy = doc.clone();
+            let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
+            edit.apply(&mut copy, &mut cx).ok()?;
+            return Some((O::Record::read_fields(&copy, &ROOT).ok()?, cx.ids));
+        }
+        let mut after = O::Record::read_fields(doc, &ROOT).ok()?;
         let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
         let minting = MintScope::enter(&cx);
         let performed = self.operation.perform(&mut after, &mut cx);
         drop(minting);
         performed.ok()?;
-        // An undo whose arguments do not build is a bug in the app the
-        // verb's tests catch; undo then reverts by inverse patches.
-        let operation = self
-            .operation
-            .compensation(&before, &after, &cx.ids)?
-            .ok()?;
-        Some(Self {
-            operation,
-            now_ms: self.now_ms,
-        })
+        Some((after, cx.ids))
+    }
+
+    /// The action that undoes this one at the document `doc` it applies to:
+    /// the verb it declares (`#[action(undo = path)]`), or on a record that
+    /// queues, the field edits that restore what it changed, applied
+    /// through `apply` so the record's `queue` compensates outside.
+    fn compensation(&self, doc: &Doc) -> Option<tilo_actions::EncodedAction> {
+        if !self.compensated() {
+            return None;
+        }
+        let before = O::Record::read_fields(doc, &ROOT).ok()?;
+        let (after, minted) = self.applied_to_copy(doc)?;
+        if self.operation.edit().is_none() && self.operation.compensates() {
+            // An undo whose arguments do not build is a bug in the app the
+            // verb's tests catch; undo then reverts by inverse patches.
+            let operation = self
+                .operation
+                .compensation(&before, &after, &minted)?
+                .ok()?;
+            let undo = Self {
+                operation,
+                now_ms: self.now_ms,
+            };
+            return tilo_actions::EncodedAction::encode(O::KIND, &undo).ok();
+        }
+        let mut restore = Vec::new();
+        crate::Model::diff(&after, &before, &[], &mut restore);
+        let mut members = restore
+            .into_iter()
+            .map(|edit| {
+                O::field_edit(edit).map(|operation| Self {
+                    operation,
+                    now_ms: self.now_ms,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        match members.len() {
+            0 => None,
+            1 => tilo_actions::EncodedAction::encode(O::KIND, &members.pop()?).ok(),
+            _ => tilo_actions::EncodedAction::encode(
+                format!("{}+group", O::KIND),
+                &crate::ActionGroup { actions: members },
+            )
+            .ok(),
+        }
     }
 }
 
@@ -433,15 +506,32 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
         let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
+        let refused = |error: crate::ModelError| ActionError::Refused(error.to_string());
+        let queues = O::QUEUES && !settles(&self.operation);
         if let Some(edit) = self.operation.edit() {
-            return edit
-                .apply(doc, &mut cx)
-                .map_err(|error| ActionError::Refused(error.to_string()));
+            if !queues {
+                return edit.apply(doc, &mut cx).map_err(refused);
+            }
+            // The record's `queue` sees the change the edit made.
+            let before = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
+            edit.apply(doc, &mut cx).map_err(refused)?;
+            let mut record = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
+            let minting = MintScope::enter(&cx);
+            O::queue(&mut record, &before, &mut cx);
+            drop(minting);
+            return record.write_fields(doc, &ROOT).map_err(refused);
         }
-        let mut record = O::Record::read_fields(doc, &ROOT)
-            .map_err(|error| ActionError::Refused(error.to_string()))?;
+        let before = if queues {
+            Some(O::Record::read_fields(doc, &ROOT).map_err(refused)?)
+        } else {
+            None
+        };
+        let mut record = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
         let minting = MintScope::enter(&cx);
         let performed = self.operation.perform(&mut record, &mut cx);
+        if let (Ok(()), Some(before)) = (&performed, &before) {
+            O::queue(&mut record, before, &mut cx);
+        }
         drop(minting);
         performed.map_err(|refusal| ActionError::Refused(refusal.0))?;
         crate::Model::check(&record).map_err(|refusal| ActionError::Refused(refusal.0))?;
@@ -473,16 +563,17 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         self.operation.kind()
     }
 
-    /// A verb that declares its undo is undone by applying that verb, which
-    /// queues the compensating outside consequence.
+    /// A verb that declares its undo is undone by applying that verb, and a
+    /// change of a record that queues by applying the edits that restore it:
+    /// either queues the compensating outside consequence.
     fn inverse_encoded(&self, doc: &Doc) -> Option<tilo_actions::EncodedAction> {
-        tilo_actions::EncodedAction::encode(O::KIND, &self.compensation(doc)?).ok()
+        self.compensation(doc)
     }
 
-    /// Redo runs the verb again: a new entry, carried out anew.
+    /// Redo runs the action again: a new entry, carried out anew.
     fn redo_encoded(&self, doc: &Doc) -> Option<tilo_actions::EncodedAction> {
         let _ = doc;
-        if self.operation.edit().is_some() || !self.operation.compensates() {
+        if !self.compensated() {
             return None;
         }
         tilo_actions::EncodedAction::encode(O::KIND, self).ok()

@@ -251,3 +251,122 @@ fn a_verb_settles_and_prunes_and_an_entry_verb_is_no_item_verb() {
     );
     assert!(tree.actions.iter().any(|spec| spec.id == "revert"));
 }
+
+/// An event on a calendar a server keeps, or on this device only.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Event {
+    #[model(label)]
+    pub title: String,
+    pub remote: bool,
+}
+
+/// An upload of an event as it is now.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Upload {
+    pub event: Id,
+    pub title: String,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Planner {
+    pub events: Collection<Event>,
+    pub uploads: Outbox<Upload>,
+}
+
+#[resource(kind = "test.planner", label = "Planner", params = planner, queue = Planner::queue)]
+impl Planner {
+    /// Add an event.
+    #[action]
+    pub fn add_event(&mut self, cx: &mut ActionCx, title: String, remote: bool) {
+        self.events.push(cx.id(), Event { title, remote });
+    }
+
+    /// Every change of a remote event goes to its server.
+    fn queue(&mut self, before: &Self, cx: &mut ActionCx) {
+        let changed: Vec<(Id, String)> = self
+            .events
+            .iter()
+            .filter(|(id, event)| event.remote && before.events.get(id) != Some(*event))
+            .map(|(id, event)| (id.clone(), event.title.clone()))
+            .collect();
+        for (event, title) in changed {
+            self.uploads.push(cx.id(), Upload { event, title });
+        }
+    }
+}
+
+fn uploads(planner: &Replica<Planner>) -> Vec<String> {
+    planner
+        .state()
+        .unwrap()
+        .uploads
+        .entries()
+        .map(|(_, entry)| entry.value.title.clone())
+        .collect()
+}
+
+#[test]
+fn every_change_of_a_record_that_queues_reaches_outside_and_undoes_through_apply() {
+    let mut planner = Replica::<Planner>::new();
+    let added = planner
+        .apply(Planner::ADD_EVENT.with(("Standup".to_owned(), true)))
+        .unwrap()
+        .clone();
+    assert_eq!(
+        added.context.as_ref().unwrap().kind,
+        Some(ActionKind::Outside)
+    );
+    planner
+        .apply(Planner::ADD_EVENT.with(("Lunch".to_owned(), false)))
+        .unwrap();
+    assert_eq!(uploads(&planner), ["Standup"]);
+
+    // A field edit is a change like any: the hook queues the upload.
+    let state = planner.state().unwrap();
+    let (standup, _) = state
+        .events
+        .iter()
+        .find(|(_, event)| event.title == "Standup")
+        .unwrap();
+    let (lunch, _) = state
+        .events
+        .iter()
+        .find(|(_, event)| event.title == "Lunch")
+        .unwrap();
+    let rename = Planner::edit_action(
+        Planner::paths()
+            .events
+            .item(standup)
+            .title
+            .replace("Daily standup"),
+    )
+    .unwrap();
+    assert_eq!(Planner::kind_of(&rename), ActionKind::Outside);
+    let renamed = planner.apply_action(&rename).unwrap().clone();
+    assert_eq!(uploads(&planner), ["Standup", "Daily standup"]);
+    // An event kept on this device only queues nothing.
+    planner
+        .apply_action(
+            &Planner::edit_action(Planner::paths().events.item(lunch).title.replace("Brunch"))
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(uploads(&planner), ["Standup", "Daily standup"]);
+
+    // Undo is the edit back, through apply, so the server gets it too.
+    let undo = renamed.context.unwrap().compensation.unwrap().undo;
+    let undo: <Planner as Resource>::Action = serde_json::from_slice(&undo.payload).unwrap();
+    planner.apply_action(&undo).unwrap();
+    let state = planner.state().unwrap();
+    assert_eq!(state.events.get(standup).unwrap().title, "Standup");
+    assert_eq!(uploads(&planner), ["Standup", "Daily standup", "Standup"]);
+
+    // A settlement queues nothing and is nobody's step.
+    let (first, _) = state.uploads.entries().next().unwrap();
+    let settle =
+        Planner::edit_action(Planner::paths().uploads.settle(first, &Settled::Done(()))).unwrap();
+    assert_eq!(settle.change_kind(), ChangeKind::External);
+    let settled = planner.apply_action(&settle).unwrap().clone();
+    assert!(settled.context.unwrap().compensation.is_none());
+    assert_eq!(uploads(&planner).len(), 3);
+}

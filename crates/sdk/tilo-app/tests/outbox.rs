@@ -403,3 +403,82 @@ fn entry_of(app: &TestApp<AwaitedApp>, text: &str) -> Id {
         .map(|(id, _)| id.clone())
         .unwrap()
 }
+
+/// A meeting on a server's calendar.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Meeting {
+    pub title: String,
+    pub room: String,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Agenda {
+    pub meeting: Meeting,
+    /// Each version of the meeting the server is to get.
+    pub uploads: Outbox<Meeting>,
+}
+
+#[resource(kind = "test.agenda", label = "Agenda", queue = Agenda::queue)]
+impl Agenda {
+    /// Move the meeting and rename it at once.
+    #[action]
+    pub fn reschedule(&mut self, title: String, room: String) {
+        self.meeting = Meeting { title, room };
+    }
+
+    fn queue(&mut self, before: &Self, cx: &mut ActionCx) {
+        if self.meeting != before.meeting {
+            self.uploads.push(cx.id(), self.meeting.clone());
+        }
+    }
+}
+
+struct AgendaApp;
+
+impl ResourceApp for AgendaApp {
+    type Resource = Agenda;
+    const ID: &'static str = "so.tilo.test-agenda";
+    const TITLE: &'static str = "Agenda";
+
+    fn view(_cx: &mut ViewCx<Agenda>) -> Element {
+        Box::new(Column::new())
+    }
+}
+
+fn sent(app: &TestApp<AgendaApp>) -> Vec<(String, String)> {
+    app.state()
+        .uploads
+        .entries()
+        .map(|(_, entry)| (entry.value.title.clone(), entry.value.room.clone()))
+        .collect()
+}
+
+#[test]
+fn undoing_a_field_edit_that_queued_queues_the_restored_value() {
+    let mut app = TestApp::<AgendaApp>::new().unwrap();
+    app.invoke(Invoke::edit(&Agenda::paths().meeting.title.replace("Review")).unwrap())
+        .unwrap();
+    assert_eq!(sent(&app), [("Review".to_owned(), String::new())]);
+    app.invoke(Agenda::RESCHEDULE.with(("Retro".to_owned(), "Attic".to_owned())))
+        .unwrap();
+    assert_eq!(sent(&app).len(), 2);
+
+    // Ctrl+Z puts both fields back in one step, through apply: the server
+    // gets the restored meeting.
+    assert!(app.undo());
+    assert_eq!(app.state().meeting.title, "Review");
+    assert_eq!(app.state().meeting.room, "");
+    assert_eq!(
+        sent(&app).last(),
+        Some(&("Review".to_owned(), String::new()))
+    );
+    assert!(app.undo());
+    assert_eq!(app.state().meeting.title, "");
+    assert_eq!(sent(&app).last(), Some(&(String::new(), String::new())));
+    assert!(app.redo());
+    assert_eq!(app.state().meeting.title, "Review");
+    assert_eq!(
+        sent(&app).last(),
+        Some(&("Review".to_owned(), String::new()))
+    );
+}
