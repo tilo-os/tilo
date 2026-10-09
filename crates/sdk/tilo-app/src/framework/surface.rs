@@ -593,6 +593,22 @@ impl<R: Resource> SurfaceCx<R> {
         self.effects.drain(self.alive.clone(), pending, run)
     }
 
+    /// Carry out the entries of an outbox this device owns, as
+    /// [`ViewCx::outbox`](super::ViewCx::outbox).
+    pub fn outbox<E, O>(
+        &self,
+        outbox: tilo_resource::Path<R, tilo_resource::Outbox<E, O>>,
+        owns: impl Fn(&R::State, &E) -> bool + 'static,
+        run: impl FnMut(&tilo_resource::Id, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) -> Projection
+    where
+        R: Resource<State = R> + tilo_resource::Model + 'static,
+        E: tilo_resource::Model + Clone + 'static,
+        O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
+    {
+        self.effects.outbox(self.alive.clone(), outbox, owns, run)
+    }
+
     /// Caller-authorized document consequences, as [`ViewCx::drain_causal`](super::ViewCx::drain_causal).
     pub fn drain_causal<K, T>(
         &self,

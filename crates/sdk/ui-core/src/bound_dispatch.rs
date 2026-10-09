@@ -1840,6 +1840,16 @@ pub(crate) fn control_draft_identity(
 }
 
 /// Canonical Document executor, retaining its actual envelope for owned bookkeeping.
+/// Who writes a document change `actor` makes here. An agent principal
+/// names one writer; a person may write from several devices at once.
+fn document_writer(actor: &str, doc: &AutoCommit) -> Vec<u8> {
+    if crate::history_source::authors::agent_principal_name(actor).is_some() {
+        actor.as_bytes().to_vec()
+    } else {
+        crate::history_source::authors::device_actor(actor, doc.get_actor())
+    }
+}
+
 fn execute_document(
     doc: &mut AutoCommit,
     action: &dyn tilo_actions::Action,
@@ -1851,13 +1861,7 @@ fn execute_document(
 ) -> Result<tilo_actions::Dispatched, tilo_actions::DoorError> {
     let before = typed_action_before(doc);
     let step = action.change_kind().is_step() && context.change.is_step();
-    // An agent principal names one writer; a person may write from several
-    // devices at once.
-    let writer = if crate::history_source::authors::agent_principal_name(actor).is_some() {
-        actor.as_bytes().to_vec()
-    } else {
-        crate::history_source::authors::device_actor(actor, doc.get_actor())
-    };
+    let writer = document_writer(actor, doc);
     let dispatched =
         if broker_admitted && action.locus() == tilo_actions::ExecutionLocus::ServerPreferred {
             tilo_actions::Dispatched::AppliedLocal(
@@ -1994,7 +1998,12 @@ pub(crate) fn execute_resource_operation(
         }
         // Before apply, so a delete can still read the row it removes. Undo
         // of this span applies the compensating action instead of patches.
-        note_compensating_action(doc, action.inverse_encoded(doc), encoded.clone());
+        let undo_via = tilo_actions::executor::inverse_encoded_by(
+            doc,
+            action.as_ref(),
+            &document_writer(actor, doc),
+        );
+        note_compensating_action(doc, undo_via, encoded.clone());
         note_native_text_policy(widget, doc, &encoded);
         let applied = match execute_document(
             doc,

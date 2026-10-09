@@ -14,10 +14,11 @@
 //! [`Dispatcher`], so what the effect changes in the document it changes with
 //! ordinary actions.
 //!
-//! A projection — a document action that queued an outside consequence (an
-//! outbox entry, a filesystem operation, a device configuration) — is drained
-//! with [`ViewCx::drain`](super::ViewCx::drain): the framework runs it in the
-//! live app after each change, on every participant's device.
+//! An outside consequence a verb queued in an
+//! [`Outbox`](tilo_resource::Outbox) is carried out with
+//! [`ViewCx::outbox`](super::ViewCx::outbox): the framework runs the app's
+//! handler in the live app on the device that owns the entry and records how
+//! it settled.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -34,7 +35,7 @@ use ui_core::automerge::transaction::Transactable;
 use tilo_actions::{
     ActionFailure, ActionOutput, ActionSpec, Availability, InvocationId, InvocationUpdate,
 };
-use tilo_resource::{ActionRef, Effect, Invoke, Resource};
+use tilo_resource::{ActionRef, Effect, Id, Invoke, Outbox, Path, Resource, Settled};
 use ui_core::WakeHandle;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
@@ -98,6 +99,13 @@ impl Effected {
             value: Some(serde_json::to_value(value).unwrap_or(serde_json::Value::Null)),
             resources: Vec::new(),
         })
+    }
+
+    /// An outbox entry carried out, or failed for good: how it settled
+    /// ([`ViewCx::outbox`](super::ViewCx::outbox)). [`Self::value`] with the
+    /// result alone settles it done.
+    pub fn settled<O: serde::Serialize>(settled: &Settled<O>) -> Self {
+        Self::value(settled)
     }
 
     /// Finished, answering with the content of `hash` in this device's
@@ -1495,6 +1503,133 @@ impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> Drainer<R> for Dra
     }
 }
 
+type Owns<R, T> = Box<dyn Fn(&<R as Resource>::State, &T) -> bool>;
+type RunEntry<R, T> = Box<dyn FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer>;
+
+/// The drain of one [`Outbox`](tilo_resource::Outbox) on the device that
+/// owns its entries ([`ViewCx::outbox`](super::ViewCx::outbox)).
+struct OutboxDrain<R: Resource, T, O> {
+    env: EffectEnv<R>,
+    outbox: Path<R, Outbox<T, O>>,
+    owns: Owns<R, T>,
+    run: RunEntry<R, T>,
+    jobs: Running<R, (), Id>,
+    /// Entries whose run failed for now, and the revision it failed at: run
+    /// again once the document moved on or the outside changed.
+    retry: HashMap<Id, u64>,
+    /// Entries this drain settled, never run again here while their
+    /// settlement is on its way into the state.
+    settled: std::collections::HashSet<Id>,
+}
+
+/// How a handler's answer settles its entry: a [`Settled`] it answered
+/// ([`Effected::settled`]), the result `O` it answered, or nothing to report
+/// (`O`'s default).
+fn settlement<O>(output: &ActionOutput) -> Result<Settled<O>, String>
+where
+    O: serde::de::DeserializeOwned + Default,
+{
+    let Some(value) = &output.value else {
+        return Ok(Settled::Done(O::default()));
+    };
+    serde_json::from_value::<Settled<O>>(value.clone())
+        .or_else(|_| serde_json::from_value::<O>(value.clone()).map(Settled::Done))
+        .map_err(|error| {
+            format!("an outbox handler answered what its entry does not settle with: {error}")
+        })
+}
+
+impl<R, T, O> OutboxDrain<R, T, O>
+where
+    R: Resource<State = R> + tilo_resource::Model + 'static,
+    T: tilo_resource::Model + Clone + 'static,
+    O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
+{
+    /// Record how the entry `id` settled, or leave it pending to run again.
+    fn finish(&mut self, id: &Id, answer: Result<ActionOutput, String>, revision: u64) -> bool {
+        match answer.and_then(|output| settlement::<O>(&output)) {
+            Ok(settled) => {
+                self.settled.insert(id.clone());
+                self.env.dispatch.submit(self.outbox.settle(id, &settled));
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, kind = R::KIND, "an outbox entry stays pending");
+                self.retry.insert(id.clone(), revision);
+                false
+            }
+        }
+    }
+}
+
+impl<R, T, O> Drainer<R> for OutboxDrain<R, T, O>
+where
+    R: Resource<State = R> + tilo_resource::Model + 'static,
+    T: tilo_resource::Model + Clone + 'static,
+    O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
+{
+    fn run(&mut self, state: &R::State, revision: u64) {
+        let Some(outbox) = self.outbox.get(state) else {
+            return;
+        };
+        let pending: Vec<(Id, T)> = outbox
+            .pending()
+            .filter(|(_, value)| (self.owns)(state, value))
+            .map(|(id, value)| (id.clone(), value.clone()))
+            .collect();
+        self.settled
+            .retain(|id| pending.iter().any(|(entry, _)| entry == id));
+        self.retry
+            .retain(|id, _| pending.iter().any(|(entry, _)| entry == id));
+        for (id, value) in pending {
+            if self.jobs.contains(&id)
+                || self.settled.contains(&id)
+                || self.retry.get(&id) == Some(&revision)
+            {
+                continue;
+            }
+            let mut cx = EffectCx::new(self.env.clone(), None);
+            let answer = (self.run)(&id, value, &mut cx);
+            match (answer, cx.started.take()) {
+                (Ok(Effected::Pending), Some(started)) => self.jobs.insert(id, started),
+                (answer, started) => {
+                    if let Some(started) = started {
+                        started.stop();
+                    }
+                    let answer = answer.and_then(|effected| match effected {
+                        Effected::Done(output) => Ok(output),
+                        Effected::Pending => {
+                            Err("an outbox handler answered later without starting a job".into())
+                        }
+                    });
+                    self.finish(&id, answer, revision);
+                }
+            }
+        }
+    }
+
+    fn poll(&mut self, revision: u64) -> bool {
+        let mut finished = false;
+        for id in self.jobs.keys() {
+            while let Some(polled) = self.jobs.poll(&id, &mut (), &self.env, None) {
+                let Polled::Finished(result) = polled else {
+                    continue;
+                };
+                if let Some(result) = result {
+                    self.finish(&id, result.map_err(|error| error.message), revision);
+                    finished = true;
+                }
+                break;
+            }
+        }
+        finished
+    }
+
+    fn forget_settled(&mut self) {
+        self.retry.clear();
+    }
+}
+
 struct Registered<R: Resource> {
     alive: Weak<()>,
     operation: &'static str,
@@ -1648,6 +1783,40 @@ impl<R: Resource> Effects<R> {
             }),
         });
         // A new drain looks at the document as it stands.
+        inner.drained = None;
+        Projection {
+            outside_changed: Some(Rc::clone(&inner.outside_changed)),
+        }
+    }
+
+    pub(crate) fn outbox<T, O>(
+        &self,
+        alive: Weak<()>,
+        outbox: Path<R, Outbox<T, O>>,
+        owns: impl Fn(&R::State, &T) -> bool + 'static,
+        run: impl FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) -> Projection
+    where
+        R: Resource<State = R> + tilo_resource::Model + 'static,
+        T: tilo_resource::Model + Clone + 'static,
+        O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
+    {
+        let Some(env) = self.env.clone() else {
+            return Projection::default();
+        };
+        let mut inner = self.inner.borrow_mut();
+        inner.drains.push(Drains {
+            alive,
+            drain: Box::new(OutboxDrain {
+                env,
+                outbox,
+                owns: Box::new(owns),
+                run: Box::new(run),
+                jobs: Running::default(),
+                retry: HashMap::new(),
+                settled: std::collections::HashSet::new(),
+            }),
+        });
         inner.drained = None;
         Projection {
             outside_changed: Some(Rc::clone(&inner.outside_changed)),

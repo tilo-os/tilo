@@ -397,6 +397,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut diffs = Vec::new();
     let mut op_schemas = Vec::new();
     let mut collection_names = Vec::new();
+    let mut outbox_names = Vec::new();
     let mut item_label_arms = Vec::new();
     let mut item_searches = Vec::new();
     let owner = snake_case(&name.to_string()).replace('_', "-");
@@ -550,6 +551,9 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         }
         checks.push(quote!(#krate::Model::check(&self.#ident)?;));
         checks_const.push(quote!(<#ty as #krate::Model>::CHECKS));
+        if last_ident(ty).is_some_and(|(name, _)| name == "Outbox") {
+            outbox_names.push(field_name.clone());
+        }
         let keyed = last_ident(ty).is_some_and(|(name, _)| name == "Keyed" || name == "Ordered");
         if keyed || last_ident(ty).is_some_and(|(name, _)| name == "Collection") {
             // Each item with its id: a collection's ids are its own, keyed
@@ -977,6 +981,11 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             /// an item can act.
             #[doc(hidden)]
             pub const __COLLECTIONS: &'static [&'static str] = &[#(#collection_names),*];
+
+            /// The fields holding an `Outbox`, by name: verbs may act on an
+            /// entry of one (`#[action(item = field)]`).
+            #[doc(hidden)]
+            pub const __OUTBOXES: &'static [&'static str] = &[#(#outbox_names),*];
 
             #[doc = #paths_fn_doc]
             #vis fn paths() -> #paths_name<Self, #(#generic_args),*> {

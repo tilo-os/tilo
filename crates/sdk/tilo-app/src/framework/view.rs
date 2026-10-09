@@ -877,6 +877,36 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.effects.drain(self.alive.clone(), pending, run)
     }
 
+    /// Carry out the entries of the [`Outbox`](tilo_resource::Outbox) at
+    /// `outbox` that this device owns, and record how each settled.
+    ///
+    /// Every replica holds the entries; `owns` says which are this device's
+    /// to carry out (the device whose disk a file operation names, the one
+    /// holding the mail account). For each such pending entry the framework
+    /// runs `run` in the live app — never in History or a capture — at once
+    /// or as a job through its [`EffectCx`], and records the answer with
+    /// the outbox's settle edit: content from outside, nobody's undo step.
+    /// The answer settles the entry: [`Effected::settled`](super::Effected::settled)
+    /// with how it went, [`Effected::value`](super::Effected::value) with
+    /// the result `O`, or [`Effected::done`](super::Effected::done) for
+    /// `O`'s default. An `Err` leaves the entry pending, to run again after
+    /// the next change or when the returned [`Projection`] is told the
+    /// outside changed (the server came back); a failure for good is a
+    /// [`Settled::Failed`](tilo_resource::Settled::Failed).
+    pub fn outbox<E, O>(
+        &self,
+        outbox: tilo_resource::Path<R, tilo_resource::Outbox<E, O>>,
+        owns: impl Fn(&R::State, &E) -> bool + 'static,
+        run: impl FnMut(&tilo_resource::Id, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) -> Projection
+    where
+        R: Resource<State = R> + tilo_resource::Model + 'static,
+        E: tilo_resource::Model + Clone + 'static,
+        O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
+    {
+        self.effects.outbox(self.alive.clone(), outbox, owns, run)
+    }
+
     /// Drain only consequences newly queued by an actual local Document
     /// invocation. Delayed work keeps that invocation's checked custody, and
     /// the caller receives success only after every consequence settles.

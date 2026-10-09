@@ -129,7 +129,7 @@ pub mod text;
 
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
-    Outcome, Params, Refusal, Stamped, fresh_uuid, minted_ids,
+    Outcome, Params, Refusal, Stamped, Undoing, fresh_uuid, minted_ids,
 };
 pub use child::{child_resource_id, publish_child};
 pub use collection::{Collection, Id};

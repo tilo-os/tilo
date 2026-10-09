@@ -298,6 +298,14 @@ pub const fn item_target(collections: &[&str], param: &str, named: &str) -> bool
     contains(collections, param) || collections.len() == 1
 }
 
+/// Whether `#[action(item = field)]` names one of `outboxes`: the verb acts
+/// on an outbox entry, which is published on no item.
+#[doc(hidden)]
+#[must_use]
+pub const fn entry_target(outboxes: &[&str], named: &str) -> bool {
+    !named.is_empty() && contains(outboxes, named)
+}
+
 #[allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,

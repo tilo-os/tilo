@@ -14255,6 +14255,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-files",
+ "tilo-history",
  "tilo-vello",
  "tilo-winit",
  "uuid",

@@ -15,6 +15,8 @@ pub mod incremental;
 pub mod keyed;
 #[path = "kinds.rs"]
 pub mod kinds;
+#[path = "outbox.rs"]
+pub mod outbox;
 #[path = "paths.rs"]
 pub mod paths;
 #[path = "schema.rs"]

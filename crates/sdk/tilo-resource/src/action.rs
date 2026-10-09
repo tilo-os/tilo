@@ -27,6 +27,8 @@ use crate::resource::Resource;
 pub struct ActionCx {
     seed: [u8; 32],
     minted: u64,
+    /// The ids [`Self::id`] minted, in order.
+    ids: Vec<Id>,
     now_ms: i64,
     author: Option<String>,
     invocation: Option<tilo_actions::InvocationId>,
@@ -51,10 +53,11 @@ impl ActionCx {
     /// member's position stand in for the heads, which a member cannot read
     /// without committing the members before it as separate changes.
     #[must_use]
-    pub fn for_apply(doc: &mut Doc, payload: &[u8], now_ms: i64) -> Self {
+    pub fn for_apply(doc: &Doc, payload: &[u8], now_ms: i64) -> Self {
         Self {
             seed: seed(doc, b"tilo-resource/action-seed/v1", payload),
             minted: 0,
+            ids: Vec::new(),
             now_ms,
             author: invoking_author(),
             invocation: invoking_invocation(),
@@ -85,6 +88,7 @@ impl ActionCx {
         Self {
             seed: *hasher.finalize().as_bytes(),
             minted: 0,
+            ids: Vec::new(),
             now_ms: 0,
             author: invoking_author(),
             invocation: invoking_invocation(),
@@ -95,6 +99,7 @@ impl ActionCx {
     pub fn id(&mut self) -> Id {
         let id = minted(&self.seed, self.minted);
         self.minted = self.minted.saturating_add(1);
+        self.ids.push(id.clone());
         id
     }
 
@@ -340,7 +345,50 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         tilo_actions::ChangeKind::Content
     }
+
+    /// Whether this operation declares the verb that undoes it
+    /// (`#[action(undo = path)]`).
+    fn compensates(&self) -> bool {
+        false
+    }
+
+    /// The verb that undoes this one, from the record before and after it
+    /// ran and the ids it minted (`#[action(undo = path)]`). `None` when it
+    /// declares none: undo then reverts the document by inverse patches.
+    ///
+    /// # Errors
+    /// Returns why the declared undo does not build.
+    fn compensation(
+        &self,
+        before: &Self::Record,
+        after: &Self::Record,
+        minted: &[Id],
+    ) -> Option<Result<Self, String>> {
+        let _ = (before, after, minted);
+        None
+    }
 }
+
+/// What a verb's declared undo (`#[action(undo = path)]`) is computed from:
+/// the record before and after the verb ran, the ids it minted (the outbox
+/// entry it queued) and its parameters. The undo returns the verb that
+/// compensates, which undo applies like any action, so its own outbox
+/// entries are queued and drained the same way, and which reads at that
+/// time how the original entry settled (where the trashed file went).
+pub struct Undoing<'a, R, P> {
+    pub before: &'a R,
+    pub after: &'a R,
+    pub minted: &'a [Id],
+    pub params: &'a P,
+}
+
+impl<R, P> Clone for Undoing<'_, R, P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R, P> Copy for Undoing<'_, R, P> {}
 
 /// A record operation with the origin's time attached: the replayable action
 /// of a `#[resource]` record.
@@ -350,6 +398,35 @@ pub struct Stamped<O> {
     pub operation: O,
     #[serde(rename = "at", default)]
     pub now_ms: i64,
+}
+
+impl<O: Operation> Stamped<O> {
+    /// The compensating operation of this one at the document `doc` it
+    /// applies to: the verb run on a copy of the record, under the seed its
+    /// application will have, so the ids it mints are the ones it queues.
+    fn compensation(&self, doc: &Doc) -> Option<Self> {
+        if self.operation.edit().is_some() || !self.operation.compensates() {
+            return None;
+        }
+        let before = O::Record::read_fields(doc, &ROOT).ok()?;
+        let mut after = O::Record::read_fields(doc, &ROOT).ok()?;
+        let payload = serde_json::to_vec(self).ok()?;
+        let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
+        let minting = MintScope::enter(&cx);
+        let performed = self.operation.perform(&mut after, &mut cx);
+        drop(minting);
+        performed.ok()?;
+        // An undo whose arguments do not build is a bug in the app the
+        // verb's tests catch; undo then reverts by inverse patches.
+        let operation = self
+            .operation
+            .compensation(&before, &after, &cx.ids)?
+            .ok()?;
+        Some(Self {
+            operation,
+            now_ms: self.now_ms,
+        })
+    }
 }
 
 impl<O: Operation> tilo_actions::Action for Stamped<O> {
@@ -381,12 +458,34 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         self.operation.risk()
     }
 
+    /// An outbox settlement is content from outside and forgetting a
+    /// settled entry is housekeeping: neither is anyone's undo step, so an
+    /// undo never sends a mail twice.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
-        self.operation.change_kind()
+        match self.operation.edit().map(crate::Edit::op) {
+            Some(crate::EditOp::Settle { .. }) => tilo_actions::ChangeKind::External,
+            Some(crate::EditOp::Forget { .. }) => tilo_actions::ChangeKind::Housekeeping,
+            _ => self.operation.change_kind(),
+        }
     }
 
     fn action_kind(&self) -> ActionKind {
         self.operation.kind()
+    }
+
+    /// A verb that declares its undo is undone by applying that verb, which
+    /// queues the compensating outside consequence.
+    fn inverse_encoded(&self, doc: &Doc) -> Option<tilo_actions::EncodedAction> {
+        tilo_actions::EncodedAction::encode(O::KIND, &self.compensation(doc)?).ok()
+    }
+
+    /// Redo runs the verb again: a new entry, carried out anew.
+    fn redo_encoded(&self, doc: &Doc) -> Option<tilo_actions::EncodedAction> {
+        let _ = doc;
+        if self.operation.edit().is_some() || !self.operation.compensates() {
+            return None;
+        }
+        tilo_actions::EncodedAction::encode(O::KIND, self).ok()
     }
 
     /// A field edit with the value before and after, or a verb with its

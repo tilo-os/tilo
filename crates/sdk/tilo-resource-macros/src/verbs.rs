@@ -130,6 +130,9 @@ struct ActionOptions {
     housekeeping: bool,
     external: bool,
     item: Option<syn::Ident>,
+    /// The function that names the verb compensating this one's outside
+    /// consequence on undo.
+    undo: Option<syn::ExprPath>,
 }
 
 fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
@@ -141,6 +144,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         housekeeping: false,
         external: false,
         item: None,
+        undo: None,
     };
     if matches!(attr.meta, Meta::Path(_)) {
         return Ok(options);
@@ -160,9 +164,11 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.external = true;
         } else if meta.path.is_ident("item") {
             options.item = Some(meta.value()?.parse::<syn::Ident>()?);
+        } else if meta.path.is_ident("undo") {
+            options.undo = Some(meta.value()?.parse::<syn::ExprPath>()?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `permission`, `destructive`, `housekeeping`, `external` or `item = field`",
+                "expected `id = \"...\"`, `label`, `permission`, `destructive`, `housekeeping`, `external`, `item = field` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -594,6 +600,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     let mut permissions = Vec::new();
     let mut least: Option<(u8, Tokens)> = None;
     let mut change_kinds = Vec::new();
+    let mut compensations = Vec::new();
+    let mut compensating = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
     let mut item_actions = Vec::new();
@@ -658,6 +666,24 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         } else {
             quote!(Outside)
         };
+        if let Some(undo) = &verb.options.undo {
+            if outboxes.is_empty() {
+                return Err(syn::Error::new(
+                    undo.span(),
+                    "`undo` names the verb that compensates an outside consequence; this action queues none (it takes no `&mut Outbox`) and undoes by itself",
+                ));
+            }
+            compensating.push(variant.clone());
+            compensations.push(quote! {
+                #action_enum::#variant(params) => (#undo)(#krate::Undoing {
+                    before,
+                    after,
+                    minted,
+                    params,
+                })
+                .map(|invoke| invoke.build(0).map(|action| action.operation)),
+            });
+        }
         kinds.push(quote!(Self::#variant(..) => #krate::ActionKind::#action_kind,));
         if verb.options.destructive {
             risks.push(quote!(Self::#variant(..) => #krate::__private::RiskLevel::Destructive,));
@@ -680,7 +706,9 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         });
 
         // An action whose first parameter is an item id acts on an element
-        // of a collection: it is also offered on each item, id bound.
+        // of a collection: it is also offered on each item, id bound. One
+        // naming an outbox (`item = ops`) acts on an entry of it, which is
+        // no item resource.
         if let Some(first) = verb.params.first()
             && last_ident(&first.ty).is_some_and(|(name, _)| name == "Id")
         {
@@ -707,11 +735,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     verb.method, first.public
                 )
             } else {
-                format!("`{type_name}` has no collection named `{named}`")
+                format!("`{type_name}` has no collection or outbox named `{named}`")
             };
             item_checks.push(quote! {
                 const _: () = ::core::assert!(
-                    #krate::items::item_target(<#self_ty>::__COLLECTIONS, #param, #named),
+                    #krate::items::item_target(<#self_ty>::__COLLECTIONS, #param, #named)
+                        || #krate::items::entry_target(<#self_ty>::__OUTBOXES, #named),
                     #message,
                 );
             });
@@ -1019,6 +1048,40 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     };
+    let (compensation_fns, compensation_inherent) = if compensations.is_empty() {
+        (quote!(), quote!())
+    } else {
+        (
+            quote! {
+                fn compensates(&self) -> bool {
+                    ::core::matches!(self, #(Self::#compensating(..))|*)
+                }
+                fn compensation(
+                    &self,
+                    before: &#self_ty,
+                    after: &#self_ty,
+                    minted: &[#krate::Id],
+                ) -> ::core::option::Option<::core::result::Result<Self, ::std::string::String>> {
+                    <#self_ty>::__compensation(self, before, after, minted)
+                }
+            },
+            quote! {
+                #[doc(hidden)]
+                fn __compensation(
+                    operation: &#action_enum,
+                    before: &Self,
+                    after: &Self,
+                    minted: &[#krate::Id],
+                ) -> ::core::option::Option<::core::result::Result<#action_enum, ::std::string::String>> {
+                    #[allow(unreachable_patterns, reason = "only some verbs declare an undo")]
+                    match operation {
+                        #(#compensations)*
+                        _ => ::core::option::Option::None,
+                    }
+                }
+            },
+        )
+    };
     let change_kind = if change_kinds.is_empty() {
         quote!()
     } else {
@@ -1125,10 +1188,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
             #risk
             #change_kind
+            #compensation_fns
         }
 
         impl #self_ty {
             #(#consts)*
+            #compensation_inherent
         }
 
         impl #krate::Resource for #self_ty {

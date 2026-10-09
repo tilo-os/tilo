@@ -135,7 +135,9 @@ fn step(segment: &Segment) -> PathStep {
 const fn operation(op: &EditOp) -> tilo_actions::EditOp {
     use tilo_actions::EditOp as Recorded;
     match op {
-        EditOp::Set { .. } | EditOp::Settle { .. } => Recorded::Set,
+        EditOp::Set { .. } => Recorded::Set,
+        EditOp::Settle { .. } => Recorded::Settle,
+        EditOp::Forget { .. } => Recorded::Forget,
         EditOp::Splice { .. } => Recorded::Splice,
         EditOp::Replace { .. } => Recorded::Replace,
         EditOp::Add { .. } => Recorded::Add,
@@ -172,6 +174,9 @@ pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> 
         EditOp::Rich { rich } => R::op_describe(edit.path(), rich),
         _ => None,
     };
+    if let EditOp::Settle { id, .. } | EditOp::Forget { id } = edit.op() {
+        return Some(outbox_edit(owner, field, edit, id));
+    }
     let described = Described::new(Did::Edit(FieldEdit {
         ty: owner.to_owned(),
         field,
@@ -195,6 +200,35 @@ pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> 
         }
         None => described,
     })
+}
+
+/// An outbox entry settled or forgotten: the entry's id ends the path, and a
+/// settlement names its state (`done`, `failed`) and reason.
+fn outbox_edit<R>(owner: &str, field: String, edit: &Edit<R>, id: &crate::Id) -> Described {
+    let mut path: Vec<PathStep> = edit.path().iter().map(step).collect();
+    path.push(PathStep::Item(id.as_str().to_owned()));
+    let mut args = std::collections::BTreeMap::new();
+    if let EditOp::Settle { outcome, .. } = edit.op() {
+        if let Some(state) = outcome.get("state").and_then(Scalar::from_json) {
+            args.insert("state".to_owned(), state);
+        }
+        if let Some(reason) = outcome
+            .get("result")
+            .and_then(|result| result.get("reason"))
+            .and_then(Scalar::from_json)
+        {
+            args.insert("reason".to_owned(), reason);
+        }
+    }
+    Described::new(Did::Edit(FieldEdit {
+        ty: owner.to_owned(),
+        field,
+        path,
+        op: operation(edit.op()),
+        args,
+        old: None,
+        new: None,
+    }))
 }
 
 /// A verb of a record of shape `shape` and kind `kind`, from its JSON form

@@ -14,6 +14,7 @@
 //! actor id per action means its single change is `seq == 1` on every
 //! replica, so the change hash is content-addressed identical everywhere.
 
+use automerge::ActorId;
 use automerge::transaction::{CommitOptions, Transactable};
 use tilo_automerge::ApplyIncoming;
 
@@ -94,10 +95,15 @@ fn envelope_for(
         context = context.with_described(described);
     }
     // Caller-supplied descriptive context cannot choose executable history.
-    // Compute it from the actual decoded action at its canonical before state.
-    let compensation = action
-        .inverse_encoded(doc)
-        .map(|undo| crate::context::ActionCompensation {
+    // Compute it from the actual decoded action at its canonical before state,
+    // under the actor the change commits as: what the action mints (the
+    // entry a compensation names) depends on it.
+    let actor = actor.filter(|a| !a.is_empty()).map(<[u8]>::to_vec);
+    let committing = actor
+        .clone()
+        .map_or_else(|| ActorId::from(id.actor_bytes().to_vec()), ActorId::from);
+    let compensation =
+        inverse_as(doc, action, committing).map(|undo| crate::context::ActionCompensation {
             undo,
             redo: encoded.clone(),
         });
@@ -120,9 +126,33 @@ fn envelope_for(
         base_heads: base.iter().map(|h| h.0).collect(),
         timestamp: tilo_clock::unix_now_i64(),
         locus: action.locus(),
-        actor: actor.filter(|a| !a.is_empty()).map(<[u8]>::to_vec),
+        actor,
         context,
     })
+}
+
+/// The action's [`inverse_encoded`](Action::inverse_encoded) at `doc`, as
+/// the change written by `actor` (the one [`apply_local_by`] is given)
+/// records it: what the action mints depends on its writer.
+pub fn inverse_encoded_by(
+    doc: &mut Doc,
+    action: &dyn Action,
+    actor: &[u8],
+) -> Option<EncodedAction> {
+    if actor.is_empty() {
+        return action.inverse_encoded(doc);
+    }
+    inverse_as(doc, action, ActorId::from(actor.to_vec()))
+}
+
+/// The action's [`inverse_encoded`](Action::inverse_encoded) at `doc`, as
+/// `actor` would apply it.
+fn inverse_as(doc: &mut Doc, action: &dyn Action, actor: ActorId) -> Option<EncodedAction> {
+    let previous = doc.get_actor().clone();
+    doc.set_actor(actor);
+    let inverse = action.inverse_encoded(doc);
+    doc.set_actor(previous);
+    inverse
 }
 
 /// Fill the app of every verb in `what` that does not name one.
@@ -225,7 +255,7 @@ fn apply_under_envelope(
 /// document content and history are untouched, so replay stays
 /// byte-identical. Runs only on this abandon path — a change-producing
 /// dispatch keeps its patch log intact.
-fn abort_pinned_change(doc: &mut Doc, prev_actor: automerge::ActorId) {
+fn abort_pinned_change(doc: &mut Doc, prev_actor: ActorId) {
     doc.rollback();
     doc.reset_diff_cursor();
     doc.set_actor(prev_actor);
@@ -316,7 +346,7 @@ pub fn replay(
     // `fork_at` fails closed when the dependencies have not arrived yet; the
     // transport can retry once it has the missing base changes.
     let mut replay_base = doc.fork_at(&base_heads)?;
-    validate_compensation(&replay_base, action.as_ref(), env)?;
+    validate_compensation(&mut replay_base, action.as_ref(), env)?;
     apply_under_envelope(&mut replay_base, action.as_ref(), env)?;
     doc.merge_incoming(&mut replay_base)?;
     Ok(())
@@ -368,7 +398,7 @@ pub fn verified_compensation(
 }
 
 fn validate_compensation(
-    doc: &Doc,
+    doc: &mut Doc,
     action: &dyn Action,
     env: &ActionEnvelope,
 ) -> Result<(), ActionError> {
@@ -380,7 +410,7 @@ fn validate_compensation(
         return Ok(());
     };
     if compensation.redo != env.action
-        || action.inverse_encoded(doc).as_ref() != Some(&compensation.undo)
+        || inverse_as(doc, action, env.actor()).as_ref() != Some(&compensation.undo)
         || serde_json::to_vec(compensation)
             .map_err(ActionError::Encode)?
             .len()
