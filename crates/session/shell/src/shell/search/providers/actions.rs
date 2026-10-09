@@ -4368,6 +4368,83 @@ mod tests {
     }
 
     #[test]
+    fn participant_profile_public_open_resets_end_scroll_to_exact_visible_subject() {
+        use crate::shell::overlay_host::ShellOverlayHost;
+        use crate::shell::overlay_host::agent_profile_tests::{find, fixture, paint_with};
+        use ui::widget::{PrimaryScrollAction, PrimaryScrollResult, Widget};
+        let (mut host, chrome) = fixture(13);
+        let presence = ui::PresenceCtx::empty();
+        let theme = ui::Theme::high_contrast().with_text_scale(2.0);
+        let paint_compact =
+            |host: &mut ShellOverlayHost| paint_with(host, &presence, &theme, 800.0, 600.0);
+        let _ = paint_compact(&mut host);
+        assert!(matches!(
+            host.apply_primary_vertical_scroll(PrimaryScrollAction::End),
+            PrimaryScrollResult::Changed(_)
+        ));
+        let _ = paint_compact(&mut host);
+        assert!(
+            find(
+                &host.accessibility().expect("AT"),
+                "workspace-profile:agent:scribe-00"
+            )
+            .is_none()
+        );
+        chrome.borrow_mut().overlays.ws_settings = false;
+        let _ = paint_compact(&mut host);
+        let results = action_results(&ActionsProvider::new(), &chrome);
+        let action = results
+            .iter()
+            .find(|action| action.id == "settings.participant.open")
+            .expect("published semantic action");
+        invoke_participant_profile(
+            action,
+            &mut AutoCommit::new(),
+            &chrome,
+            "agent",
+            "scribe-00",
+        )
+        .expect("current exact member");
+        let _ = paint_compact(&mut host);
+        let tree = host.accessibility().expect("AT");
+        let selected = find(&tree, "workspace-profile:agent:scribe-00")
+            .expect("public navigation exposes selected row");
+        assert!(selected.state.selected);
+        assert!(selected.bounds.expect("clipped row").to_rect().area() > 0.0);
+        assert!(find(&tree, "workspace-profile:agent:scribe-12").is_none());
+        assert!(matches!(
+            host.apply_primary_vertical_scroll(PrimaryScrollAction::End),
+            PrimaryScrollResult::Changed(_)
+        ));
+        let _ = paint_compact(&mut host);
+        assert!(
+            find(
+                &host.accessibility().expect("AT"),
+                "workspace-profile:agent:scribe-00"
+            )
+            .is_none()
+        );
+        invoke_participant_profile(
+            action,
+            &mut AutoCommit::new(),
+            &chrome,
+            "agent",
+            "scribe-00",
+        )
+        .expect("repeat same selected identity");
+        let _ = paint_compact(&mut host);
+        assert!(
+            find(
+                &host.accessibility().expect("AT"),
+                "workspace-profile:agent:scribe-00"
+            )
+            .expect("repeat open reveals target")
+            .state
+            .selected
+        );
+    }
+
+    #[test]
     fn participant_profile_action_refuses_membership_from_another_room() {
         use crate::shell::state::{CapOverride, Subject, Verb};
 

@@ -4568,16 +4568,22 @@ impl ChatApp {
                         (crate::i18n::t("chat-agent-drag"), Role::Button, false)
                     }
                     Hit::AgentIntent(intent) => (
-                        match intent {
-                            AgentComposerIntent::Message => "Message",
-                            AgentComposerIntent::Queue => "Queue task",
-                            AgentComposerIntent::Steer => "Steer current task",
-                        }
-                        .into(),
+                        crate::i18n::t(match intent {
+                            AgentComposerIntent::Message => "chat-agent-mode-message",
+                            AgentComposerIntent::Queue => "chat-agent-intent-queue",
+                            AgentComposerIntent::Steer => "chat-agent-intent-steer",
+                        }),
                         Role::Tab,
                         *intent == self.direct_agent_intent(),
                     ),
-                    Hit::AgentTask(task) => (format!("Select task {task}"), Role::ListItem, false),
+                    Hit::AgentTask(task) => (
+                        crate::i18n::t_args(
+                            "chat-agent-select-task",
+                            &[("task", task.as_str().into())],
+                        ),
+                        Role::ListItem,
+                        false,
+                    ),
                     Hit::AgentTaskCenter(Some(task)) => (
                         self.direct_agent_task_accessible_status(task)
                             .or_else(|| self.direct_agent_task_title(task))
@@ -4598,7 +4604,11 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
-                    Hit::AgentStop => ("Stop current task".into(), Role::Button, false),
+                    Hit::AgentStop => (
+                        crate::i18n::t("chat-agent-stop-current"),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::AgentMessageRefresh => (
                         crate::i18n::t("chat-agent-progress-refresh"),
                         Role::Button,
@@ -4633,12 +4643,11 @@ impl ChatApp {
                     Hit::FocusRename => ("Rename field".into(), Role::TextInput, false),
                     Hit::FocusEdit => ("Edit message".into(), Role::MultilineTextInput, false),
                     Hit::FocusMain => (
-                        match self.direct_agent_intent() {
-                            AgentComposerIntent::Message => "Message composer",
-                            AgentComposerIntent::Queue => "Task instruction composer",
-                            AgentComposerIntent::Steer => "Task direction composer",
-                        }
-                        .into(),
+                        crate::i18n::t(match self.direct_agent_intent() {
+                            AgentComposerIntent::Message => "chat-agent-composer-message",
+                            AgentComposerIntent::Queue => "chat-agent-composer-queue",
+                            AgentComposerIntent::Steer => "chat-agent-composer-steer",
+                        }),
                         Role::MultilineTextInput,
                         false,
                     ),
@@ -4648,12 +4657,11 @@ impl ChatApp {
                         false,
                     ),
                     Hit::Send => (
-                        match self.direct_agent_intent() {
-                            AgentComposerIntent::Message => "Send message",
-                            AgentComposerIntent::Queue => "Queue task",
-                            AgentComposerIntent::Steer => "Save direction",
-                        }
-                        .into(),
+                        crate::i18n::t(match self.direct_agent_intent() {
+                            AgentComposerIntent::Message => "chat-agent-send-message",
+                            AgentComposerIntent::Queue => "chat-agent-send-queue",
+                            AgentComposerIntent::Steer => "chat-agent-send-steer",
+                        }),
                         Role::Button,
                         false,
                     ),

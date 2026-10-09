@@ -4,12 +4,14 @@
 //! reports typed hits, while the host applies them through the existing
 //! authenticated `Workspace` mutation methods.
 
+use std::time::SystemTime;
+
 use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
 use ui::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
 use ui::ColorCompat;
@@ -21,14 +23,22 @@ use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{DesktopTree, UserId};
 
 use super::{
-    AppDirectory, DefaultAppsCtx, GrantDraft, MemberPaneIdentity, WorkspaceSettingsSubject, WsTab,
-    agents_add_rect_for_theme, agents_pane_rows_for_theme, default_app_rows, draw_agents_pane_for,
-    draw_default_apps_pane, draw_members_pane_for, draw_permissions_pane,
-    members_pane_rows_for_theme, ownership_action_rect_for_theme, ownership_transfer_resource,
-    permission_profiles_rect, permissions_pane_layout,
+    AgentPaneRows, AgentProfileActivity, AgentRow, AppDirectory, DefaultAppsCtx, GrantDraft,
+    MemberPaneIdentity, MemberPaneRows, MemberRow, ProfilePaneMetrics, WorkspaceSettingsSubject,
+    WsTab, agents_add_rect_for_theme, agents_list_viewport, all_agent_rows_with_activity_for_theme,
+    all_member_rows_for_theme, default_app_rows_for_theme, draw_agents_pane_rows_for,
+    draw_default_apps_pane, draw_members_pane_rows_for, draw_permissions_pane,
+    members_list_viewport, ownership_action_rect_for_theme, ownership_transfer_resource,
+    permission_profiles_rect_for_theme, permissions_pane_layout_for_theme,
 };
 use ui::TextRole;
 use ui::text_render::TextStyle;
+use ui::widget::{
+    PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics, ScrollRegion,
+    Scrollbar,
+};
+use winit::event::WindowEvent;
+use winit::keyboard::{Key, NamedKey};
 
 /// The "At a glance" stat tiles: the base surface inside the raised summary
 /// card, with a hairline derived against the card. Where a palette makes
@@ -53,6 +63,9 @@ pub struct WorkspaceSettingsModel<'a> {
     pub tab: WsTab,
     /// Exact durable participant revealed by navigation, if any.
     pub selected_subject: Option<&'a WorkspaceSettingsSubject>,
+    /// Monotonic host navigation edge. A repeated open of the same exact
+    /// profile must reveal it again rather than retain an old list offset.
+    pub profile_reveal_generation: u64,
     pub grant_draft: GrantDraft,
     /// This device's person principal.
     pub local_user: &'a UserId,
@@ -66,9 +79,22 @@ pub struct WorkspaceSettingsModel<'a> {
     /// Whether policy controls are live rather than painted disabled.
     pub owner_controls: bool,
     pub apps: &'a dyn AppDirectory,
+    /// Sanitized, exact-agent activity from the authenticated host.
+    pub agent_profile_activity: &'a [AgentProfileActivity],
+    /// One observation instant for every row, paint label, and AT label in
+    /// this model snapshot.
+    pub activity_observed_at: SystemTime,
     /// The person's devices and whether this workspace shows on each.
     /// Empty for a workspace that is not the person's own.
     pub devices: &'a [WorkspaceDevice],
+}
+
+#[derive(Clone, Copy)]
+struct AgentProfileReadContext<'a> {
+    activity: &'a [AgentProfileActivity],
+    observed_at: SystemTime,
+    is_owner: bool,
+    reveal_complete_row: bool,
 }
 
 /// One of the person's devices as the General tab offers it.
@@ -171,6 +197,12 @@ pub struct WorkspaceSettingsOverlay {
     general_text_scale: f64,
     /// Measured footer plus its themed inset/gap, reserved outside the body clip.
     general_footer_height: f64,
+    member_scroll: ScrollRegion,
+    agent_scroll: ScrollRegion,
+    visible_member_rows: Vec<MemberRow>,
+    visible_agent_rows: Vec<AgentRow>,
+    member_scroll_subject: Option<(String, Option<UserId>, u64)>,
+    agent_scroll_subject: Option<(String, Option<String>, u64)>,
     transition: ui::Transition,
     tab_pill_rects: [Rect; 5],
     default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
@@ -195,6 +227,56 @@ pub struct WorkspaceSettingsOverlay {
     name_input: Option<ui::widget::TextInput>,
 }
 
+fn shift_member_row(mut row: MemberRow, dy: f64) -> MemberRow {
+    let shift = Affine::translate((0.0, dy));
+    row.row_rect = shift.transform_rect_bbox(row.row_rect);
+    row.role_rect = shift.transform_rect_bbox(row.role_rect);
+    row.remove_rect = shift.transform_rect_bbox(row.remove_rect);
+    row
+}
+
+fn shift_agent_row(mut row: AgentRow, dy: f64) -> AgentRow {
+    let shift = Affine::translate((0.0, dy));
+    row.row_rect = shift.transform_rect_bbox(row.row_rect);
+    row.role_rect = shift.transform_rect_bbox(row.role_rect);
+    row.review_rect = shift.transform_rect_bbox(row.review_rect);
+    row.remove_rect = shift.transform_rect_bbox(row.remove_rect);
+    row
+}
+
+fn clipped_member_row(mut row: MemberRow, viewport: Rect) -> Option<MemberRow> {
+    let clipped = row.row_rect.intersect(viewport);
+    if clipped.area() <= 0.0 {
+        return None;
+    }
+    row.row_rect = clipped;
+    if !rect_contains(viewport, row.role_rect) {
+        row.role_rect = Rect::ZERO;
+    }
+    if !rect_contains(viewport, row.remove_rect) {
+        row.remove_rect = Rect::ZERO;
+    }
+    Some(row)
+}
+
+fn clipped_agent_row(mut row: AgentRow, viewport: Rect) -> Option<AgentRow> {
+    let clipped = row.row_rect.intersect(viewport);
+    if clipped.area() <= 0.0 {
+        return None;
+    }
+    row.row_rect = clipped;
+    for control in [&mut row.review_rect, &mut row.remove_rect] {
+        if !rect_contains(viewport, *control) {
+            *control = Rect::ZERO;
+        }
+    }
+    Some(row)
+}
+
+fn rect_contains(outer: Rect, inner: Rect) -> bool {
+    inner.x0 >= outer.x0 && inner.y0 >= outer.y0 && inner.x1 <= outer.x1 && inner.y1 <= outer.y1
+}
+
 impl Default for WorkspaceSettingsOverlay {
     fn default() -> Self {
         Self {
@@ -202,6 +284,12 @@ impl Default for WorkspaceSettingsOverlay {
             general_scroll_y: 0.0,
             general_text_scale: 1.0,
             general_footer_height: 48.0,
+            member_scroll: ScrollRegion::vertical().with_edge_fade(),
+            agent_scroll: ScrollRegion::vertical().with_edge_fade(),
+            visible_member_rows: Vec::new(),
+            visible_agent_rows: Vec::new(),
+            member_scroll_subject: None,
+            agent_scroll_subject: None,
             transition: ui::Transition::closed(),
             tab_pill_rects: [Rect::ZERO; 5],
             default_app_rects: Vec::new(),
@@ -231,6 +319,12 @@ impl WorkspaceSettingsOverlay {
 
     pub fn rect(&self) -> Rect {
         Self::rect_for(self.viewport)
+    }
+
+    /// The actual painted Add Agent control, for the host's semantic and AT
+    /// projection. Zero means the control is not currently presented.
+    pub fn agent_add_rect(&self) -> Rect {
+        self.agent_add_rect
     }
 
     pub fn rect_for(viewport: Rect) -> Rect {
@@ -296,6 +390,10 @@ impl WorkspaceSettingsOverlay {
     }
 
     pub fn body_rect_for(card: Rect) -> Rect {
+        Self::body_rect_for_footer(card, 44.0)
+    }
+
+    fn body_rect_for_footer(card: Rect, footer_height: f64) -> Rect {
         let nav = Self::nav_rect_for(card);
         Rect::new(
             card.x0 + Self::HEADER_PAD,
@@ -304,8 +402,19 @@ impl WorkspaceSettingsOverlay {
             // Reserve a real footer band for the global close hint.  Letting
             // tab content extend to y1-16 painted empty states, policy copy,
             // and the hint into the same last line on compact laptop panels.
-            card.y1 - 44.0,
+            card.y1 - footer_height,
         )
+    }
+
+    fn close_hint_band(text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
+        let hint = t("workspace-settings-close-hint");
+        let style = theme.text(TextRole::Caption);
+        let (_, height) = text_renderer.measure_style(&hint, None, &style);
+        f64::from(height) + f64::from(theme.tokens.spacing.s3) * 2.0
+    }
+
+    fn profile_body_rect(card: Rect, text_renderer: &mut TextRenderer, theme: &Theme) -> Rect {
+        Self::body_rect_for_footer(card, Self::close_hint_band(text_renderer, theme))
     }
 
     fn body_rect(card: Rect) -> Rect {
@@ -321,12 +430,19 @@ impl WorkspaceSettingsOverlay {
     ) {
         let hint = t("workspace-settings-close-hint");
         let style = theme.text(TextRole::Caption);
-        let (width, _) = text_renderer.measure_style(&hint, None, &style);
+        let (width, height) = text_renderer.measure_style(&hint, None, &style);
+        let bottom = f64::from(theme.tokens.spacing.s3);
         text_renderer.draw_style(
             scene,
             &hint,
             theme.tokens.colors.text_dim,
-            transform.pre_translate((card.x1 - f64::from(width) - 24.0, card.y1 - 24.0).into()),
+            transform.pre_translate(
+                (
+                    card.x1 - f64::from(width) - bottom,
+                    card.y1 - bottom - f64::from(height),
+                )
+                    .into(),
+            ),
             None,
             &style,
         );
@@ -369,6 +485,127 @@ impl WorkspaceSettingsOverlay {
         let old = self.general_scroll_y;
         self.general_scroll_y = (old + delta).clamp(0.0, max);
         (old - self.general_scroll_y).abs() > f64::EPSILON
+    }
+
+    /// Shared People/Agents list scrolling. The shell maps wheel, Page
+    /// Up/Down, and semantic scroll actions to this same retained region.
+    pub fn scroll_profile_list(&mut self, tab: WsTab, delta: f64) -> bool {
+        if !delta.is_finite() || self.member_sheet.is_some() {
+            return false;
+        }
+        match tab {
+            WsTab::Members => self.member_scroll.scroll_by(Vec2::new(0.0, delta)),
+            WsTab::Agents => self.agent_scroll.scroll_by(Vec2::new(0.0, delta)),
+            _ => false,
+        }
+    }
+
+    pub fn profile_primary_scroll(&self, tab: WsTab) -> Option<PrimaryScrollRegion> {
+        match tab {
+            WsTab::Members => self.member_scroll.primary_vertical_scroll(),
+            WsTab::Agents => self.agent_scroll.primary_vertical_scroll(),
+            _ => None,
+        }
+    }
+
+    pub fn apply_profile_primary_scroll(
+        &mut self,
+        tab: WsTab,
+        action: PrimaryScrollAction,
+    ) -> PrimaryScrollResult {
+        match tab {
+            WsTab::Members => self.member_scroll.apply_primary_vertical_scroll(action),
+            WsTab::Agents => self.agent_scroll.apply_primary_vertical_scroll(action),
+            _ => PrimaryScrollResult::Unsupported,
+        }
+    }
+
+    pub fn handle_profile_scroll_event(
+        &mut self,
+        tab: WsTab,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        theme: &Theme,
+    ) -> bool {
+        let changed = match tab {
+            WsTab::Members => self.member_scroll.handle_event(event, ctx, theme),
+            WsTab::Agents => self.agent_scroll.handle_event(event, ctx, theme),
+            _ => false,
+        };
+        let navigation = match event {
+            WindowEvent::MouseWheel { .. } => true,
+            WindowEvent::KeyboardInput { event, .. } => matches!(
+                event.logical_key,
+                Key::Named(
+                    NamedKey::PageUp
+                        | NamedKey::PageDown
+                        | NamedKey::Home
+                        | NamedKey::End
+                        | NamedKey::ArrowUp
+                        | NamedKey::ArrowDown
+                )
+            ),
+            _ => false,
+        };
+        if navigation && matches!(tab, WsTab::Members | WsTab::Agents) {
+            *ctx.handled = true;
+        }
+        changed || navigation
+    }
+
+    /// Seed a just-opened region so the first wheel event under a stationary
+    /// pointer is routed without requiring a meaningless cursor twitch.
+    pub fn set_profile_scroll_pointer(&mut self, tab: WsTab, point: Point) {
+        match tab {
+            WsTab::Members => self.member_scroll.set_pointer_position(point),
+            WsTab::Agents => self.agent_scroll.set_pointer_position(point),
+            _ => {}
+        }
+    }
+
+    pub fn visible_member_rows(&self) -> &[MemberRow] {
+        &self.visible_member_rows
+    }
+
+    pub fn visible_agent_rows(&self) -> &[AgentRow] {
+        &self.visible_agent_rows
+    }
+
+    fn configure_profile_scroll(
+        scroll: &mut ScrollRegion,
+        viewport: Rect,
+        first_y: Option<f64>,
+        last_y: Option<f64>,
+        theme: &Theme,
+    ) {
+        scroll.set_viewport(viewport, theme);
+        let content = first_y
+            .zip(last_y)
+            .map_or(0.0, |(first, last)| (last - first).max(0.0));
+        scroll.set_content_size(viewport.width(), content);
+    }
+
+    fn paint_profile_scrollbar(
+        scene: &mut Scene,
+        transform: Affine,
+        scroll: &ScrollRegion,
+        content_height: f64,
+        theme: &Theme,
+    ) {
+        if !scroll.overflows_vertically() {
+            return;
+        }
+        let shown = scroll.content_rect();
+        let viewport = Rect::new(
+            shown.x1,
+            shown.y0,
+            shown.x1 + f64::from(theme.tokens.metrics.scrollbar_gutter),
+            shown.y1,
+        );
+        let bar = Scrollbar::vertical();
+        let track = bar.track_in(viewport, theme);
+        let metrics = ScrollMetrics::new(content_height, shown.height(), scroll.offset().y);
+        bar.draw(scene, transform, track, metrics, theme, false);
     }
 
     /// Unscaled height of the devices card for `rows` devices.
@@ -608,6 +845,8 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
+        self.visible_member_rows.clear();
+        self.visible_agent_rows.clear();
         self.member_sheet_option_rects.clear();
     }
 
@@ -1562,6 +1801,10 @@ impl WorkspaceSettingsOverlay {
         active_tab: WsTab,
         model: &WorkspaceSettingsModel<'_>,
     ) -> bool {
+        self.member_scroll
+            .set_focused(matches!(active_tab, WsTab::Members) && self.member_sheet.is_none());
+        self.agent_scroll
+            .set_focused(matches!(active_tab, WsTab::Agents) && self.member_sheet.is_none());
         match active_tab {
             WsTab::Members => {
                 self.draw_ws_settings_members_tab(
@@ -1615,6 +1858,56 @@ impl WorkspaceSettingsOverlay {
     }
 
     /// The Members tab body: roster rows, then the shared close hint.
+    fn prepare_member_profile_rows(
+        &mut self,
+        ws: &tilo_desktop_model::Workspace,
+        body: Rect,
+        selected: Option<&str>,
+        is_owner: bool,
+        theme: &Theme,
+    ) -> (Vec<MemberRow>, f64) {
+        let mut rows = all_member_rows_for_theme(ws, body, selected, theme);
+        let viewport = members_list_viewport(body, theme, !is_owner);
+        let content_height = rows
+            .first()
+            .zip(rows.last())
+            .map_or(0.0, |(first, last)| last.row_rect.y1 - first.row_rect.y0);
+        Self::configure_profile_scroll(
+            &mut self.member_scroll,
+            viewport,
+            rows.first().map(|row| row.row_rect.y0),
+            rows.last().map(|row| row.row_rect.y1),
+            theme,
+        );
+        if self.member_scroll.overflows_vertically() {
+            let mut row_pane = body;
+            row_pane.x1 -= f64::from(theme.tokens.metrics.scrollbar_gutter);
+            rows = all_member_rows_for_theme(ws, row_pane, selected, theme);
+        }
+        let offset = self.member_scroll.offset().y;
+        let rows: Vec<_> = rows
+            .into_iter()
+            .map(|row| shift_member_row(row, -offset))
+            .collect();
+        let shown = self.member_scroll.content_rect();
+        self.visible_member_rows = rows
+            .iter()
+            .cloned()
+            .filter_map(|row| clipped_member_row(row, shown))
+            .collect();
+        self.member_control_rects.extend(
+            self.visible_member_rows
+                .iter()
+                .map(|row| (row.user.clone(), row.role_rect, row.remove_rect)),
+        );
+        (
+            rows.into_iter()
+                .filter(|row| row.row_rect.intersect(shown).area() > 0.0)
+                .collect(),
+            content_height,
+        )
+    }
+
     fn draw_ws_settings_members_tab(
         &mut self,
         scene: &mut Scene,
@@ -1631,7 +1924,8 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
-        let body_rect = Self::body_rect(rect);
+        self.visible_member_rows.clear();
+        let body_rect = Self::profile_body_rect(rect, text_renderer, theme);
         let is_owner = model.owner_controls;
         if let Some(ws) = model.desktop.active_workspace() {
             let actor = model.acting_user;
@@ -1642,21 +1936,38 @@ impl WorkspaceSettingsOverlay {
                 Some(WorkspaceSettingsSubject::Person(user)) => Some(user.as_str()),
                 _ => None,
             };
-            for row in members_pane_rows_for_theme(ws, body_rect, selected_user, theme) {
-                self.member_control_rects
-                    .push((row.user.clone(), row.role_rect, row.remove_rect));
+            let scroll_subject = Some((
+                ws.room.to_string(),
+                selected_user.map(ToOwned::to_owned),
+                model.profile_reveal_generation,
+            ));
+            if self.member_scroll_subject != scroll_subject {
+                self.member_scroll.set_offset(Vec2::ZERO);
+                self.member_scroll_subject = scroll_subject;
             }
-            draw_members_pane_for(
+            let (paint_rows, content_height) =
+                self.prepare_member_profile_rows(ws, body_rect, selected_user, is_owner, theme);
+            draw_members_pane_rows_for(
                 scene,
                 transform,
                 body_rect,
                 ws,
-                MemberPaneIdentity {
-                    local_user: model.local_user,
-                    selected_user,
+                MemberPaneRows {
+                    identity: MemberPaneIdentity {
+                        local_user: model.local_user,
+                        selected_user,
+                    },
+                    is_owner,
+                    rows: &paint_rows,
                 },
-                is_owner,
                 text_renderer,
+                theme,
+            );
+            Self::paint_profile_scrollbar(
+                scene,
+                transform,
+                &self.member_scroll,
+                content_height,
                 theme,
             );
         }
@@ -1665,6 +1976,85 @@ impl WorkspaceSettingsOverlay {
 
     /// The Agents tab body: an explicitly non-human roster backed by the
     /// same signed membership and revocation policy as the broker.
+    fn prepare_agent_profile_rows(
+        &mut self,
+        ws: &tilo_desktop_model::Workspace,
+        body: Rect,
+        selected: Option<&str>,
+        read: AgentProfileReadContext<'_>,
+        theme: &Theme,
+    ) -> (Vec<AgentRow>, f64) {
+        let mut rows = all_agent_rows_with_activity_for_theme(
+            ws,
+            body,
+            selected,
+            read.activity,
+            read.observed_at,
+            theme,
+        );
+        let viewport = agents_list_viewport(body, theme, !read.is_owner);
+        let condensed = ProfilePaneMetrics::agents(theme, body).condensed;
+        let content_height = rows.last().map_or(0.0, |last| {
+            last.row_rect.y1
+                - if condensed {
+                    viewport.y0
+                } else {
+                    rows.first()
+                        .map_or(last.row_rect.y0, |first| first.row_rect.y0)
+                }
+        });
+        Self::configure_profile_scroll(
+            &mut self.agent_scroll,
+            viewport,
+            if condensed {
+                Some(viewport.y0)
+            } else {
+                rows.first().map(|row| row.row_rect.y0)
+            },
+            rows.last().map(|row| row.row_rect.y1),
+            theme,
+        );
+        if read.reveal_complete_row && selected.is_some() && condensed && rows.len() == 1 {
+            let _ = self
+                .agent_scroll
+                .apply_primary_vertical_scroll(PrimaryScrollAction::End);
+        }
+        if self.agent_scroll.overflows_vertically() {
+            let mut row_pane = body;
+            row_pane.x1 -= f64::from(theme.tokens.metrics.scrollbar_gutter);
+            rows = all_agent_rows_with_activity_for_theme(
+                ws,
+                row_pane,
+                selected,
+                read.activity,
+                read.observed_at,
+                theme,
+            );
+        }
+        let offset = self.agent_scroll.offset().y;
+        let rows: Vec<_> = rows
+            .into_iter()
+            .map(|row| shift_agent_row(row, -offset))
+            .collect();
+        let shown = self.agent_scroll.content_rect();
+        self.visible_agent_rows = rows
+            .iter()
+            .cloned()
+            .filter_map(|row| clipped_agent_row(row, shown))
+            .collect();
+        self.agent_control_rects.extend(
+            self.visible_agent_rows
+                .iter()
+                .map(|row| (row.agent.clone(), row.review_rect, row.remove_rect)),
+        );
+        (
+            rows.into_iter()
+                .filter(|row| row.row_rect.intersect(shown).area() > 0.0)
+                .collect(),
+            content_height,
+        )
+    }
+
     fn draw_ws_settings_agents_tab(
         &mut self,
         scene: &mut Scene,
@@ -1679,30 +2069,74 @@ impl WorkspaceSettingsOverlay {
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_control_rects.clear();
+        self.visible_agent_rows.clear();
         self.default_app_rects.clear();
-        let body_rect = Self::body_rect(rect);
-        self.agent_add_rect = agents_add_rect_for_theme(body_rect, theme);
+        let body_rect = Self::profile_body_rect(rect, text_renderer, theme);
+        self.agent_add_rect = Rect::ZERO;
         let is_owner = model.owner_controls;
         if let Some(ws) = model.desktop.active_workspace() {
             let selected_agent = match model.selected_subject {
                 Some(WorkspaceSettingsSubject::Agent(agent)) => Some(agent.as_str()),
                 _ => None,
             };
-            for row in agents_pane_rows_for_theme(ws, body_rect, selected_agent, theme) {
-                self.agent_control_rects.push((
-                    row.agent.clone(),
-                    row.review_rect,
-                    row.remove_rect,
-                ));
+            let scroll_subject = Some((
+                ws.room.to_string(),
+                selected_agent.map(ToOwned::to_owned),
+                model.profile_reveal_generation,
+            ));
+            let reveal_complete_row = self.agent_scroll_subject != scroll_subject;
+            if reveal_complete_row {
+                self.agent_scroll.set_offset(Vec2::ZERO);
+                self.agent_scroll_subject = scroll_subject;
             }
-            draw_agents_pane_for(
+            let (paint_rows, content_height) = self.prepare_agent_profile_rows(
+                ws,
+                body_rect,
+                selected_agent,
+                AgentProfileReadContext {
+                    activity: model.agent_profile_activity,
+                    observed_at: model.activity_observed_at,
+                    is_owner,
+                    reveal_complete_row,
+                },
+                theme,
+            );
+            let offset = self.agent_scroll.offset().y;
+            let condensed = ProfilePaneMetrics::agents(theme, body_rect).condensed;
+            let shown = self.agent_scroll.content_rect();
+            let paint_pane = if condensed {
+                let mut pane = body_rect;
+                if self.agent_scroll.overflows_vertically() {
+                    pane.x1 -= f64::from(theme.tokens.metrics.scrollbar_gutter);
+                }
+                Affine::translate((0.0, -offset)).transform_rect_bbox(pane)
+            } else {
+                body_rect
+            };
+            let add_rect = agents_add_rect_for_theme(paint_pane, theme);
+            let add_clip = if condensed { shown } else { body_rect };
+            self.agent_add_rect = if rect_contains(add_clip, add_rect) {
+                add_rect
+            } else {
+                Rect::ZERO
+            };
+            draw_agents_pane_rows_for(
                 scene,
                 transform,
-                body_rect,
-                ws,
-                is_owner,
-                selected_agent,
+                paint_pane,
+                AgentPaneRows {
+                    is_owner,
+                    rows: &paint_rows,
+                    clip: Some(shown),
+                },
                 text_renderer,
+                theme,
+            );
+            Self::paint_profile_scrollbar(
+                scene,
+                transform,
+                &self.agent_scroll,
+                content_height,
                 theme,
             );
         }
@@ -1720,7 +2154,7 @@ impl WorkspaceSettingsOverlay {
         rect: Rect,
         model: &WorkspaceSettingsModel<'_>,
     ) {
-        let body_rect = Self::body_rect(rect);
+        let body_rect = Self::profile_body_rect(rect, text_renderer, theme);
         let is_owner = model.owner_controls;
         let draft = model.grant_draft;
         self.revoke_rects.clear();
@@ -1731,9 +2165,17 @@ impl WorkspaceSettingsOverlay {
         self.agent_add_rect = Rect::ZERO;
         if let Some(ws) = model.desktop.active_workspace() {
             if is_owner {
-                self.permission_profiles_rect = permission_profiles_rect(body_rect);
+                self.permission_profiles_rect =
+                    permission_profiles_rect_for_theme(body_rect, text_renderer, theme);
             }
-            let layout = permissions_pane_layout(ws, body_rect, model.apps, model.local_user);
+            let layout = permissions_pane_layout_for_theme(
+                ws,
+                body_rect,
+                model.apps,
+                model.local_user,
+                text_renderer,
+                theme,
+            );
             for row in &layout.rows {
                 self.revoke_rects
                     .push((row.cap_id.clone(), row.revoke_rect));
@@ -1774,11 +2216,11 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.default_app_rects.clear();
-        let body_rect = Self::body_rect(rect);
+        let body_rect = Self::profile_body_rect(rect, text_renderer, theme);
         let candidates = model.apps.default_app_candidates();
         if let Some(ws) = model.desktop.active_workspace() {
             self.default_app_rects.extend(
-                default_app_rows(body_rect, &candidates)
+                default_app_rows_for_theme(body_rect, &candidates, text_renderer, theme)
                     .into_iter()
                     .map(|row| (row.resource, row.workspace_rect, row.user_rect)),
             );
@@ -2510,7 +2952,367 @@ fn f64_to_f32_lossy(value: f64) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{
+        AgentLivePhase, AgentTaskAvailability, PANE_PAD_BOTTOM, agent_activity_status,
+        agent_admission_label, agent_row_copy_geometry, agent_row_text_layout,
+    };
     use super::*;
+
+    fn profile_workspace() -> tilo_desktop_model::Workspace {
+        use collab_types::caps::{CapOverride, Subject, Verb};
+        let mut workspace = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId::from(71),
+            "profiles",
+        );
+        workspace.set_owner("owner");
+        for index in 0..4 {
+            workspace.grant_capability(CapOverride::membership(
+                Subject::person(format!("person-{index}")),
+                workspace.room.to_string(),
+                Verb::Read,
+            ));
+            workspace.grant_capability(CapOverride::membership(
+                Subject::agent(format!("agent-{index}")),
+                workspace.room.to_string(),
+                Verb::Read,
+            ));
+        }
+        workspace
+    }
+
+    fn assert_compact_agent_end(
+        overlay: &mut WorkspaceSettingsOverlay,
+        workspace: &tilo_desktop_model::Workspace,
+        body: Rect,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let activity = [AgentProfileActivity {
+            agent: "agent-3".to_string(),
+            task_availability: AgentTaskAvailability::Unavailable,
+            live_phase: Some(AgentLivePhase::Applying),
+            last_activity_at: Some(0),
+        }];
+        let _ = overlay.prepare_agent_profile_rows(
+            workspace,
+            body,
+            None,
+            AgentProfileReadContext {
+                activity: &activity,
+                observed_at: SystemTime::UNIX_EPOCH,
+                is_owner: true,
+                reveal_complete_row: false,
+            },
+            theme,
+        );
+        assert!(overlay.scroll_profile_list(WsTab::Agents, 10_000.0));
+        let (rows, _) = overlay.prepare_agent_profile_rows(
+            workspace,
+            body,
+            None,
+            AgentProfileReadContext {
+                activity: &activity,
+                observed_at: SystemTime::UNIX_EPOCH,
+                is_owner: true,
+                reveal_complete_row: false,
+            },
+            theme,
+        );
+        let row = rows
+            .iter()
+            .find(|row| row.position_in_set == row.set_size)
+            .expect("last Agent remains represented");
+        assert_eq!(row.position_in_set, row.set_size);
+        assert!(row.review_rect.area() > 0.0);
+        assert!(row.remove_rect.area() > 0.0);
+        let viewport = agents_list_viewport(body, theme, false);
+        assert_eq!(viewport.intersect(row.row_rect), row.row_rect);
+        let copy = agent_row_copy_geometry(row, false, text, theme);
+        let identity_line = Rect::new(
+            copy.text_x,
+            copy.title_y,
+            copy.text_limit,
+            copy.title_y + copy.line_height,
+        );
+        assert_eq!(viewport.intersect(identity_line), identity_line);
+        let detail = t_args(
+            "workspace-settings-agent-detail",
+            &[
+                ("admission", agent_admission_label(row.role).into()),
+                ("profile", row.preset.label().into()),
+                ("count", row.grant_count.into()),
+            ],
+        );
+        let status = agent_activity_status(
+            &row.activity_presentation.availability,
+            row.activity_presentation.phase.as_deref(),
+        );
+        let layout = agent_row_text_layout(row, copy, &detail, &status, text, theme);
+        let controls_y = row
+            .role_rect
+            .y0
+            .min(row.review_rect.y0)
+            .min(row.remove_rect.y0);
+        assert!(
+            layout.history_bottom <= controls_y,
+            "wrapped authority, phase, and history must end above the action band"
+        );
+    }
+
+    #[test]
+    fn compact_hc200_profile_scroll_reaches_last_people_and_agent_actions() {
+        let workspace = profile_workspace();
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        let card = Rect::new(0.0, 0.0, 760.0, 512.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let body = WorkspaceSettingsOverlay::profile_body_rect(card, &mut text, &theme);
+        assert!(
+            body.y1 <= card.y1 - WorkspaceSettingsOverlay::close_hint_band(&mut text, &theme),
+            "the measured Escape footer stays outside the profile body"
+        );
+        let nonowner_members = members_list_viewport(body, &theme, true);
+        let authority_top =
+            body.y1 - PANE_PAD_BOTTOM - f64::from(theme.text(TextRole::Caption).line_height_px());
+        assert!(
+            nonowner_members.y1 < authority_top,
+            "the People list must reserve the measured owner-only footer"
+        );
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        let _ = overlay.prepare_member_profile_rows(&workspace, body, None, true, &theme);
+        assert!(overlay.scroll_profile_list(WsTab::Members, 10_000.0));
+        let (member_rows, _) =
+            overlay.prepare_member_profile_rows(&workspace, body, None, true, &theme);
+        let last_member = member_rows
+            .iter()
+            .find(|row| row.position_in_set == row.set_size)
+            .expect("last person remains represented");
+        assert_eq!(last_member.position_in_set, last_member.set_size);
+        assert!(last_member.remove_rect.area() > 0.0);
+        let member_viewport = members_list_viewport(body, &theme, false);
+        assert_eq!(
+            member_viewport.intersect(last_member.row_rect),
+            last_member.row_rect
+        );
+
+        assert_compact_agent_end(&mut overlay, &workspace, body, &mut text, &theme);
+    }
+
+    #[test]
+    fn compact_hc200_single_agent_reveals_complete_card_on_open() {
+        use collab_types::caps::{CapOverride, Subject, Verb};
+        let mut workspace = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId::from(72),
+            "single-profile",
+        );
+        workspace.set_owner("owner");
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("scribe"),
+            workspace.room.to_string(),
+            Verb::Read,
+        ));
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        let card = Rect::new(0.0, 0.0, 760.0, 512.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let body = WorkspaceSettingsOverlay::profile_body_rect(card, &mut text, &theme);
+        let activity = [AgentProfileActivity {
+            agent: "scribe".to_string(),
+            task_availability: AgentTaskAvailability::Unavailable,
+            live_phase: Some(AgentLivePhase::Applying),
+            last_activity_at: Some(0),
+        }];
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        let (rows, _) = overlay.prepare_agent_profile_rows(
+            &workspace,
+            body,
+            Some("scribe"),
+            AgentProfileReadContext {
+                activity: &activity,
+                observed_at: SystemTime::UNIX_EPOCH,
+                is_owner: true,
+                reveal_complete_row: true,
+            },
+            &theme,
+        );
+        let row = rows.first().expect("single Agent remains painted");
+        let viewport = agents_list_viewport(body, &theme, false);
+        assert_eq!(viewport.intersect(row.row_rect), row.row_rect);
+        let copy = agent_row_copy_geometry(row, false, &mut text, &theme);
+        let detail = t_args(
+            "workspace-settings-agent-detail",
+            &[
+                ("admission", agent_admission_label(row.role).into()),
+                ("profile", row.preset.label().into()),
+                ("count", row.grant_count.into()),
+            ],
+        );
+        let status = agent_activity_status(
+            &row.activity_presentation.availability,
+            row.activity_presentation.phase.as_deref(),
+        );
+        let layout = agent_row_text_layout(row, copy, &detail, &status, &mut text, &theme);
+        assert!(layout.history_bottom <= row.role_rect.y0);
+        assert!(viewport.contains(row.review_rect.center()));
+        assert!(viewport.contains(row.remove_rect.center()));
+    }
+
+    #[test]
+    fn compact_hc200_single_agent_roster_keeps_add_entry_point_visible() {
+        use collab_types::caps::{CapOverride, Subject, Verb};
+        let mut workspace = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId::from(73),
+            "single-roster",
+        );
+        workspace.set_owner("owner");
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("scribe"),
+            workspace.room.to_string(),
+            Verb::Read,
+        ));
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        let card = Rect::new(0.0, 0.0, 760.0, 512.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let body = WorkspaceSettingsOverlay::profile_body_rect(card, &mut text, &theme);
+        let mut overlay = WorkspaceSettingsOverlay::default();
+
+        let _ = overlay.prepare_agent_profile_rows(
+            &workspace,
+            body,
+            None,
+            AgentProfileReadContext {
+                activity: &[],
+                observed_at: SystemTime::UNIX_EPOCH,
+                is_owner: true,
+                reveal_complete_row: true,
+            },
+            &theme,
+        );
+
+        assert_eq!(overlay.agent_scroll.offset(), Vec2::ZERO);
+        let viewport = agents_list_viewport(body, &theme, false);
+        let add = agents_add_rect_for_theme(body, &theme);
+        assert_eq!(viewport.intersect(add), add);
+    }
+
+    fn draw_agent_roster(
+        theme: &Theme,
+        card: Rect,
+        agent_count: usize,
+        selected: Option<&str>,
+    ) -> WorkspaceSettingsOverlay {
+        use collab_types::caps::{CapOverride, Subject, Verb};
+        let mut workspace = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId::from(74),
+            "painted-roster",
+        );
+        workspace.set_owner("owner");
+        for index in 0..agent_count {
+            workspace.grant_capability(CapOverride::membership(
+                Subject::agent(format!("agent-{index}")),
+                workspace.room.to_string(),
+                Verb::Read,
+            ));
+        }
+        let desktop = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let owner = "owner".to_string();
+        let selected_subject = selected.map(|agent| WorkspaceSettingsSubject::Agent(agent.into()));
+        let model = WorkspaceSettingsModel {
+            desktop: &desktop,
+            tab: WsTab::Agents,
+            selected_subject: selected_subject.as_ref(),
+            profile_reveal_generation: 0,
+            grant_draft: GrantDraft::default(),
+            local_user: &owner,
+            acting_user: &owner,
+            editing_name: None,
+            name_selection: ui::text_selection::Selection::collapsed(0),
+            governs_active_room: true,
+            owner_controls: true,
+            apps: &super::super::NoAppDirectory,
+            agent_profile_activity: &[],
+            activity_observed_at: SystemTime::UNIX_EPOCH,
+            devices: &[],
+        };
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        overlay.draw_ws_settings_agents_tab(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            theme,
+            card,
+            &model,
+        );
+        overlay
+    }
+
+    #[test]
+    fn painted_agent_add_rect_matches_fixed_and_scrolled_panes() {
+        let normal_card = Rect::new(0.0, 0.0, 960.0, 720.0);
+        let normal_overlay = draw_agent_roster(&Theme::light(), normal_card, 1, None);
+        let normal = normal_overlay.agent_add_rect();
+        assert!(normal.area() > 0.0, "expanded fixed-header Add is exposed");
+        assert_eq!(
+            normal_overlay.hit_test(normal.center(), WsTab::Agents),
+            EventOutcome::AddAgent
+        );
+
+        let compact_theme = Theme::high_contrast().with_text_scale(2.0);
+        let compact_card = Rect::new(0.0, 0.0, 760.0, 512.0);
+        let compact_overlay = draw_agent_roster(&compact_theme, compact_card, 4, None);
+        let compact = compact_overlay.agent_add_rect();
+        assert!(compact.area() > 0.0, "condensed scrolled Add is exposed");
+        assert!(compact_overlay.agent_scroll.overflows_vertically());
+        let shown = compact_overlay.agent_scroll.content_rect();
+        assert!(rect_contains(shown, compact));
+        assert_eq!(
+            compact_overlay.hit_test(compact.center(), WsTab::Agents),
+            EventOutcome::AddAgent
+        );
+        let mut text = TextRenderer::new();
+        text.set_text_scale(compact_theme.text_scale);
+        let body =
+            WorkspaceSettingsOverlay::profile_body_rect(compact_card, &mut text, &compact_theme);
+        assert_eq!(
+            compact.x1, shown.x1,
+            "painted Add ends at the content edge before the scrollbar gutter"
+        );
+        assert!(shown.x1 < body.x1);
+
+        let selected_overlay = draw_agent_roster(&compact_theme, compact_card, 1, Some("agent-0"));
+        assert_eq!(
+            selected_overlay.agent_add_rect(),
+            Rect::ZERO,
+            "selected compact profile reveals its complete card and retires offscreen Add"
+        );
+        let selected_row = selected_overlay
+            .visible_agent_rows()
+            .first()
+            .expect("selected Agent card remains presented");
+        let selected_shown = selected_overlay.agent_scroll.content_rect();
+        assert!(selected_row.selected);
+        assert_eq!(
+            selected_shown.intersect(selected_row.row_rect),
+            selected_row.row_rect
+        );
+        assert!(
+            (selected_row.row_rect.height()
+                - ProfilePaneMetrics::agents(&compact_theme, body).row_height)
+                .abs()
+                <= 1.0,
+            "selected card is not a clipped fragment"
+        );
+        assert!(selected_row.review_rect.area() > 0.0);
+        assert!(selected_row.remove_rect.area() > 0.0);
+    }
 
     #[test]
     fn rename_selection_paint_tracks_selected_range_and_caret() {
@@ -2528,6 +3330,7 @@ mod tests {
             desktop: &desktop,
             tab: WsTab::General,
             selected_subject: None,
+            profile_reveal_generation: 0,
             grant_draft: GrantDraft::default(),
             local_user: &local_user,
             acting_user: &local_user,
@@ -2539,6 +3342,8 @@ mod tests {
             governs_active_room: false,
             owner_controls: true,
             apps: &super::super::NoAppDirectory,
+            agent_profile_activity: &[],
+            activity_observed_at: SystemTime::UNIX_EPOCH,
             devices: &[],
         };
         overlay.paint_name_field(
@@ -2570,6 +3375,7 @@ mod tests {
             desktop: &desktop,
             tab: WsTab::General,
             selected_subject: None,
+            profile_reveal_generation: 0,
             grant_draft: GrantDraft::default(),
             local_user: &local_user,
             acting_user: &local_user,
@@ -2578,6 +3384,8 @@ mod tests {
             governs_active_room: false,
             owner_controls: true,
             apps: &super::super::NoAppDirectory,
+            agent_profile_activity: &[],
+            activity_observed_at: SystemTime::UNIX_EPOCH,
             devices: &[],
         };
         let mut overlay = WorkspaceSettingsOverlay::default();
@@ -2672,6 +3480,7 @@ mod tests {
                 desktop: &desktop,
                 tab: WsTab::General,
                 selected_subject: None,
+                profile_reveal_generation: 0,
                 grant_draft: GrantDraft::default(),
                 local_user: &user,
                 acting_user: &user,
@@ -2680,6 +3489,8 @@ mod tests {
                 governs_active_room: false,
                 owner_controls: true,
                 apps: &super::super::NoAppDirectory,
+                agent_profile_activity: &[],
+                activity_observed_at: SystemTime::UNIX_EPOCH,
                 devices: &[],
             };
             let mut scene = Scene::new();

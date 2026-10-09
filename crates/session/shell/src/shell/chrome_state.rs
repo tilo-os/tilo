@@ -582,6 +582,8 @@ pub struct ChromeState {
     pub ws_settings_tab: WsTab,
     /// Exact durable participant revealed in Workspace Settings.
     pub ws_settings_subject: Option<WorkspaceSettingsSubject>,
+    /// Ephemeral reveal edge: repeating the same public profile open must reveal it again.
+    pub ws_settings_profile_reveal_generation: u64,
     /// Window-logical bounds of the top-bar workspace pill. Published by the
     /// top bar without bumping revision so the workspace lens can animate
     /// from the exact context that opened it.
@@ -851,6 +853,7 @@ impl ChromeState {
             pad_map: None,
             ws_settings_tab: WsTab::default(),
             ws_settings_subject: None,
+            ws_settings_profile_reveal_generation: 0,
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
@@ -1620,6 +1623,8 @@ impl ChromeState {
 
     /// Reveal one exact durable participant without changing their authority.
     pub fn open_workspace_profile(&mut self, subject: WorkspaceSettingsSubject) {
+        self.ws_settings_profile_reveal_generation =
+            self.ws_settings_profile_reveal_generation.wrapping_add(1);
         self.ws_settings_tab = subject.tab();
         self.ws_settings_subject = Some(subject);
         self.overlays.ws_settings = true;

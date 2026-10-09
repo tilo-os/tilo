@@ -9447,6 +9447,9 @@ pub fn run() {
     frame_builder
         .host_mut()
         .set_quick_settings_wake(Arc::clone(&session_wake));
+    frame_builder
+        .host_mut()
+        .set_agent_profile_wake(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
         if let Some(apps) = chrome.hosted_inputs.in_process() {
             let mut apps = apps.borrow_mut();
@@ -12294,15 +12297,7 @@ pub fn run() {
         // The pointer as the input state knows it — "nowhere", not the origin, for
         // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
         frame_builder.note_local_pointer(state.client_input.pointer_position());
-        let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
-            // Clone the tree handle and drop the `ChromeState` borrow before
-            // the relay locks the tree — nothing here needs the RefCell guard.
-            let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
-            relay.follow_tree(&tree_handle);
-            frame_builder.pump_peer_presence()
-        } else {
-            false
-        };
+        let peers_moved = pump_prepaint_peer_presence(&mut frame_builder);
         pump_checkpoint!("peer-presence");
         let pump_presence_done = Instant::now();
         let pump_apps_started = pump_presence_done;
@@ -13710,6 +13705,19 @@ pub fn run() {
     {
         tracing::error!(%error, "session lock handoff failed; next startup validates the saved record");
     }
+}
+
+/// Refresh frame-owned presence/profile projections after input and workspace
+/// routing have settled. Network following is optional; local membership,
+/// expiry, and profile presentation must still be current for the first paint.
+pub(crate) fn pump_prepaint_peer_presence(frame_builder: &mut FrameBuilder) -> bool {
+    if let Some(relay) = frame_builder.peer_presence() {
+        // Clone the tree handle and drop the `ChromeState` borrow before the
+        // relay locks the tree — nothing here needs the RefCell guard.
+        let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+        relay.follow_tree(&tree_handle);
+    }
+    frame_builder.pump_peer_presence()
 }
 
 /// Publish a successful machine-level change to every shell surface that

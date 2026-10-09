@@ -2789,6 +2789,178 @@ class PresentedEditorTargetTests(unittest.TestCase):
             finally:
                 provider.close()
 
+    def test_detached_provider_extension_is_explicit_exact_and_bounded_to_six(self):
+        provider = PROOF.HeldProvider()
+        try:
+            with self.assertRaises(RuntimeError):
+                provider.arm_detached_task_phase(lambda: {"phase": "planning"})
+            self.assertEqual(provider.request_limit, 4)
+            provider.requests = 4
+            provider.allowed = 2
+            provider.exact_releases = {4}
+            provider.owner_admission_probe = lambda: {"phase": "WaitingForReply"}
+            provider.arm_detached_task_phase(lambda: {"run_epoch": 7, "phase": "planning", "sequence": 1})
+            self.assertEqual(provider.request_limit, 6)
+            with self.assertRaises(RuntimeError):
+                provider.arm_detached_task_phase(lambda: {})
+            with self.assertRaises(RuntimeError):
+                provider.release_detached_task_turn(3)
+
+            def post():
+                request = urllib.request.Request(
+                    provider.endpoint + "/chat/completions",
+                    json.dumps({"model": "bounded-fixture"}).encode(),
+                    {"Authorization": "Bearer isolated-fixture-not-a-real-provider-key"})
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return response.status
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                fifth = pool.submit(post)
+                PROOF.wait_for("real fifth task request", lambda: provider.request_count() == 5, timeout=5)
+                self.assertEqual(provider.owner_admission(5)["run_epoch"], 7)
+                with self.assertRaises(RuntimeError):
+                    provider.release_detached_task_turn(6)
+                provider.release_detached_task_turn(5)
+                self.assertEqual(fifth.result(timeout=5), 200)
+                sixth = pool.submit(post)
+                PROOF.wait_for("real sixth rebuilt task request", lambda: provider.request_count() == 6, timeout=5)
+                provider.release_detached_task_turn(6)
+                self.assertEqual(sixth.result(timeout=5), 200)
+                self.assertEqual(provider.allowed, 2)
+                self.assertNotIn(3, provider.exact_releases)
+                with self.assertRaises(urllib.error.HTTPError) as refused:
+                    post()
+                self.assertEqual(refused.exception.code, 429)
+                refused.exception.close()
+                self.assertEqual(provider.request_count(), 6)
+        finally:
+            provider.close()
+
+    def test_detached_provider_extension_refuses_wrong_phase_or_marker(self):
+        for changed in ({"requests": 3}, {"allowed": 3}, {"exact_releases": set()},
+                        {"refused_requests": 1}, {"closed": True}, {"marker_agent": "tide"},
+                        {"owner_admission_probe": None}):
+            provider = PROOF.HeldProvider()
+            try:
+                provider.requests = 4
+                provider.allowed = 2
+                provider.exact_releases = {4}
+                provider.owner_admission_probe = lambda: {}
+                for field, value in changed.items():
+                    setattr(provider, field, value)
+                with self.subTest(changed=changed), self.assertRaises(RuntimeError):
+                    provider.arm_detached_task_phase(lambda: {})
+                self.assertEqual(provider.request_limit, 4)
+            finally:
+                provider.close()
+
+    def test_detached_task_submission_is_additive_physical_and_owner_consumed(self):
+        source = inspect.getsource(PROOF.native_detached_queue_and_steer)
+        self.assertNotIn("invoke(", source)
+        for required in ("wait_for_semantic_float_editor_continuity(",
+                         "wait_for_floating_keyboard_seat(", "physical_detached_task_control(",
+                         '"Queue task", 37', '"Queue task", 43',
+                         '"Steer current task", 37', '"Save direction", 43',
+                         "provider.arm_detached_task_phase(owner_admission)",
+                         "provider.owner_admission(5)", "provider.owner_admission(6)",
+                         "provider.release_detached_task_turn(5)",
+                         "provider.release_detached_task_turn(6)",
+                         'task.get("applied_revision") == revision',
+                         '"Direction saved"', '"Direction applied"',
+                         'task.get("status") == "done"', "provider.overflow_count() != 0"):
+            self.assertIn(required, source)
+        bootstrap = inspect.getsource(PROOF.bootstrap)
+        self.assertLess(bootstrap.index("native_person_permission_downgrades("),
+                        bootstrap.index("native_detached_queue_and_steer("))
+        self.assertIn('detached_task_evidence.get("provider_request_count") == 6', bootstrap)
+        control = inspect.getsource(PROOF.physical_detached_task_control)
+        self.assertEqual(control.count('"op": "click_at"'), 1)
+        for forbidden in ("DoAction", "SetText", "invoke(", '"op": "type"'):
+            self.assertNotIn(forbidden, control)
+
+    def test_task_mode_editor_contract_is_exact_not_any_editable_text(self):
+        for mode in ("Message composer", "Task instruction composer", "Task direction composer"):
+            owner = {"bus": "private-bus", "composer": "/editor", "composer_name": mode}
+            client = unittest.mock.Mock()
+            client.interfaces.return_value = "org.a11y.atspi.Text org.a11y.atspi.EditableText"
+            for observed in (mode, "Unrelated editor"):
+                client.property.return_value = "(<" + repr(observed) + ">,)"
+                with self.subTest(mode=mode, observed=observed), \
+                        patch.object(PROOF.atspi, "atspi_address", return_value="private-address"), \
+                        patch.object(PROOF.atspi, "AtspiClient", return_value=client):
+                    self.assertEqual(PROOF.chat_editor_contract(owner), observed == mode)
+            owner["composer_name"] = "Unrelated editor"
+            client.property.return_value = "(<'Unrelated editor'>,)"
+            with patch.object(PROOF.atspi, "atspi_address", return_value="private-address"), \
+                    patch.object(PROOF.atspi, "AtspiClient", return_value=client):
+                self.assertFalse(PROOF.chat_editor_contract(owner))
+
+    def test_detached_task_target_uses_exact_native_seat_owner_and_control_role(self):
+        owner = {"bus": "private-bus", "process": 9975, "agent": "Tide", "detached": True,
+                 "window": "/private-window"}
+        child = {"app_id": "so.tilo.chat", "floating_id": "private-child", "surface_id": 9974,
+                 "frame_seq": 12, "presented": True, "pixels_ready": True, "keyboard_focused": True,
+                 "suspended": False, "transferring": False, "last_error": None,
+                 "rect": {"x": 16, "y": 170, "w": 344, "h": 360},
+                 "content_rect": {"x": 16, "y": 170, "w": 344, "h": 360},
+                 "content_origin": {"x": 16, "y": 170}}
+        client = unittest.mock.Mock()
+        client.named.return_value = ["/queue-tab", "/queue-send"]
+        client.role.side_effect = lambda path: 37 if path == "/queue-tab" else 43
+        target = {"client_rect": {"x": 40, "y": 240, "w": 100, "h": 30},
+                  "global_center": {"x": 106, "y": 425}}
+        with patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=owner) as discover, \
+                patch.object(PROOF.atspi, "atspi_address", return_value="private-address"), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF, "accessible_subtree", return_value={}), \
+                patch.object(PROOF, "accessibility_control_enabled", return_value=True), \
+                patch.object(PROOF, "component_global_target", return_value=target) as component:
+            self.assertEqual(PROOF.current_detached_task_target(
+                "socket", owner, child, "Task instruction composer", "Queue task", 43),
+                (child, owner, target))
+            discover.assert_called_once_with("Tide", detached=True,
+                composer_name="Task instruction composer", stale_only=True)
+            self.assertEqual(component.call_args.args[1], "/queue-send")
+        for changed in ({"keyboard_focused": False}, {"suspended": True},
+                        {"transferring": True}, {"input_route": "foreign"}):
+            with self.subTest(changed=changed), \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": [{**child, **changed}]}}), \
+                    patch.object(PROOF, "agent_conversation_accessibility") as discover:
+                with self.assertRaises(RuntimeError):
+                    PROOF.current_detached_task_target(
+                        "socket", owner, child, "Task instruction composer", "Queue task", 43)
+                discover.assert_not_called()
+        for changed in ({"process": 9976}, {"bus": "foreign-bus"}, {"agent": "Foreign"}):
+            with self.subTest(changed=changed), \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value={**owner, **changed}), \
+                    patch.object(PROOF, "component_global_target") as component:
+                with self.assertRaises(RuntimeError):
+                    PROOF.current_detached_task_target(
+                        "socket", owner, child, "Task instruction composer", "Queue task", 43)
+                component.assert_not_called()
+
+    def test_stale_task_editor_refresh_retains_exact_selected_mode(self):
+        for mode in ("Task instruction composer", "Task direction composer"):
+            original = {"bus": "private-bus", "process": 9975, "agent": "Tide",
+                        "detached": True, "composer": "/retired", "composer_name": mode}
+            fresh = {**original, "composer": "/fresh"}
+            with self.subTest(mode=mode), \
+                    patch.object(PROOF, "chat_editor_contract", side_effect=[False, True, True]), \
+                    patch.object(PROOF, "process_program", return_value="chat"), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=fresh) as discover:
+                access = original.copy()
+                self.assertEqual(PROOF.owned_editor_read(access, lambda: "fixture-local"), "fixture-local")
+                discover.assert_called_once_with("Tide", detached=True, stale_only=True, composer_name=mode)
+                self.assertEqual(access, fresh)
+            with patch.object(PROOF, "chat_editor_contract", return_value=False), \
+                    patch.object(PROOF, "process_program", return_value="chat"), \
+                    patch.object(PROOF, "agent_conversation_accessibility",
+                                 return_value={**fresh, "composer_name": "Message composer"}):
+                with self.assertRaisesRegex(RuntimeError, "foreign Chat route"):
+                    PROOF.owned_editor_read(original.copy(), lambda: "never-read")
+
     def test_marker_provider_invokes_one_discovered_exact_chat_action(self):
         resource = "tilo-ui-bound:v1:current-category"
         provider = PROOF.HeldProvider(marker_agent="tide", marker_resource=resource)

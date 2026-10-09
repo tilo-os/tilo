@@ -655,6 +655,7 @@ workspace-settings-members-count = { $count ->
 }
 workspace-settings-members-help = Removing someone blocks future sync and edits; copies already downloaded stay with them.
 workspace-settings-ownership = Ownership
+workspace-settings-ownership-action-pending = Transfer pending
 workspace-settings-you-manage = You manage
 workspace-settings-view-only = View only
 workspace-settings-members-empty-title = No one else is in this workspace
@@ -697,6 +698,21 @@ workspace-settings-agent-detail = { $count ->
     [one] { $admission } · { $profile } profile · 1 scoped permission
    *[other] { $admission } · { $profile } profile · { $count } scoped permissions
 }
+workspace-settings-agent-available = Available for tasks
+workspace-settings-agent-unavailable = Not currently available for tasks
+workspace-settings-agent-availability-unknown = Task availability unknown
+workspace-settings-agent-phase-locating = Locating the approved target
+workspace-settings-agent-phase-applying = Applying an approved action
+workspace-settings-agent-phase-progress = Working on an approved action
+workspace-settings-agent-phase-waiting = Waiting for an approved action
+workspace-settings-agent-phase-committed = Approved action completed
+workspace-settings-agent-phase-failed = Approved action needs attention
+workspace-settings-agent-phase-cancelled = Approved action cancelled
+workspace-settings-agent-availability-phase = { $availability }. { $phase }
+workspace-settings-agent-last-activity = Last activity { $when }
+workspace-settings-agent-no-activity = No recorded activity
+workspace-settings-agent-activity-announcement = { $status } { $activity }.
+workspace-settings-agent-profile-summary = { $authority }. { $activity }
 workspace-settings-admitted = Admitted
 workspace-settings-review-access = Review access
 workspace-settings-revoke = Revoke

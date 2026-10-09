@@ -1002,11 +1002,20 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let workspace_id = tree.desktop.active;
-            let room = workspace_id.raw().to_string();
-            tree.grant_in_workspace(
-                workspace_id,
-                &owner,
-                CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
+            let room = tree.desktop.room_of(workspace_id);
+            assert!(
+                room.is_some(),
+                "agent shots fixture requires an active workspace"
+            );
+            let room = room.map(|room| room.to_string()).unwrap_or_default();
+            assert!(
+                tree.grant_in_workspace(
+                    workspace_id,
+                    &owner,
+                    CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
+                )
+                .is_some(),
+                "agent shots fixture membership must be admitted"
             );
             if let Some(workspace) = tree.desktop.active_workspace_mut() {
                 workspace.collaborators.retain(|row| row.id != "scribe");
@@ -1414,12 +1423,21 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
             let ws_id = tree.desktop.active;
-            let room = ws_id.raw().to_string();
+            let room = tree.desktop.room_of(ws_id);
+            assert!(
+                room.is_some(),
+                "permissions shots fixture requires an active workspace"
+            );
+            let room = room.map(|room| room.to_string()).unwrap_or_default();
             for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
-                tree.grant_in_workspace(
-                    ws_id,
-                    &owner,
-                    CapOverride::membership(Subject::person(member), room.clone(), verb),
+                assert!(
+                    tree.grant_in_workspace(
+                        ws_id,
+                        &owner,
+                        CapOverride::membership(Subject::person(member), room.clone(), verb),
+                    )
+                    .is_some(),
+                    "permissions shots fixture membership must be admitted"
                 );
             }
             for (app, scope, verb, expiry) in [
@@ -1442,21 +1460,30 @@ impl ShellDriver {
                     Expiry::AfterUse,
                 ),
             ] {
+                assert!(
+                    tree.grant_in_workspace(
+                        ws_id,
+                        &owner,
+                        CapOverride::grant(Subject::app(app), scope, verb).expiring(expiry),
+                    )
+                    .is_some(),
+                    "permissions shots fixture app grant must be admitted"
+                );
+            }
+            assert!(
                 tree.grant_in_workspace(
                     ws_id,
                     &owner,
-                    CapOverride::grant(Subject::app(app), scope, verb).expiring(expiry),
-                );
-            }
-            tree.grant_in_workspace(
-                ws_id,
-                &owner,
-                CapOverride::grant(
-                    Subject::person("ada"),
-                    Scope::FsPath("/var/workspace/design".to_string()),
-                    Verb::Write,
-                ),
+                    CapOverride::grant(
+                        Subject::person("ada"),
+                        Scope::FsPath("/var/workspace/design".to_string()),
+                        Verb::Write,
+                    ),
+                )
+                .is_some(),
+                "permissions shots fixture person grant must be admitted"
             );
+            drop(tree);
         }
         self.with_chrome(|_| {});
     }
@@ -1489,8 +1516,12 @@ impl ShellDriver {
             "power-menu-keyboard" => self.scene_power_menu(true),
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
+            "ws-settings-members-overflow-end" => self.scene_ws_settings_profile_overflow(false),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
             "ws-settings-agents" => self.scene_ws_settings_agents(),
+            "ws-settings-agents-activity" => self.scene_ws_settings_agents_activity()?,
+            "ws-settings-agents-focus" => self.scene_ws_settings_agents_focus(),
+            "ws-settings-agents-overflow-end" => self.scene_ws_settings_profile_overflow(true),
             "collaborators" => self.scene_collaborators(),
             "launchpad" => self.scene_launchpad(),
             "launchpad-notes-card" => self.scene_launchpad_notes_card(),
@@ -1792,7 +1823,7 @@ impl ShellDriver {
                 recipient_key.verifying_key().to_bytes(),
             );
             let owner = hex::encode(owner_public.as_bytes());
-            st.local_user_id.clone_from(&owner);
+            st.act_as(owner.clone());
             if let Some(workspace) = st.tree_mut().desktop.active_workspace_mut() {
                 workspace.set_owner(owner);
                 workspace.collaborators.push(
@@ -1845,6 +1876,185 @@ impl ShellDriver {
             ));
         });
         self.fb.host_mut().force_ws_settings_settled();
+    }
+
+    fn scene_ws_settings_agents_activity(&mut self) -> Result<(), String> {
+        self.seed_workspace_permissions();
+        self.seed_agent_member_for_shots();
+        let (room, invocation) = {
+            let state = self.chrome();
+            let mut tree = state.tree_mut();
+            let workspace = tree.desktop.active;
+            let room = tree
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.room.to_string())
+                .ok_or_else(|| "shots activity scenario has no active workspace".to_string())?;
+            tree.grant_in_workspace(
+                workspace,
+                &state.local_user_id,
+                shell::shell::state::CapOverride::membership(
+                    shell::shell::state::Subject::agent("scribe"),
+                    room.clone(),
+                    shell::shell::state::Verb::Write,
+                ),
+            );
+            let invocation = tilo_actions::InvocationId::new();
+            let context = tilo_actions::ActionContext::for_resource(
+                "Review release readiness",
+                "shots:release-readiness",
+                "document",
+                "Release readiness",
+            )
+            .with_app("org.tilo.Writer", "Writer");
+            let appended = tree.append_workspace_effect_receipt_for_shots(
+                workspace,
+                invocation,
+                "agent:scribe",
+                context,
+                tilo_actions::EffectReceiptStatus::Succeeded,
+            );
+            drop(tree);
+            if !appended {
+                return Err("shots activity receipt must use the active workspace".to_string());
+            }
+            (room, invocation)
+        };
+        self.fb.apply_remote_presence_for_shots(
+            "agent:scribe".to_string(),
+            ui::presence::PresenceKey::Workspace { id: room },
+            ui::collaboration::PresencePayload::Interaction(Box::new(
+                tilo_actions::SemanticInteraction {
+                    version: tilo_actions::INTERACTION_VERSION,
+                    invocation,
+                    sequence: 1,
+                    actor: tilo_actions::InteractionActor {
+                        id: "agent:scribe".to_string(),
+                        kind: tilo_actions::InteractionActorKind::Agent,
+                    },
+                    phase: tilo_actions::InteractionPhase::Applying,
+                    action: tilo_actions::InteractionAction {
+                        id: "review-release-readiness".to_string(),
+                        label: "Review release readiness".to_string(),
+                        app: Some(tilo_actions::ActionApp {
+                            id: "org.tilo.Writer".to_string(),
+                            label: "Writer".to_string(),
+                        }),
+                    },
+                    resource: tilo_actions::ActionResource {
+                        id: "shots:release-readiness".to_string(),
+                        kind: "document".to_string(),
+                        label: "Release readiness".to_string(),
+                    },
+                    anchor: tilo_actions::InteractionAnchor::Resource,
+                    group: None,
+                },
+            )),
+        );
+        self.with_chrome(|state| {
+            state.open_workspace_profile(
+                shell::shell::chrome_state::WorkspaceSettingsSubject::Agent("scribe".into()),
+            );
+        });
+        self.fb.host_mut().force_ws_settings_settled();
+        let _ = self.fb.pump_peer_presence();
+        let _ = self.paint_settled();
+        Ok(())
+    }
+
+    fn scene_ws_settings_agents_focus(&mut self) {
+        fn focused(node: &ui::a11y::AccessNode, target: &str) -> Option<bool> {
+            if node.semantic_key.as_deref() == Some(target) {
+                return Some(node.state.focused);
+            }
+            node.children
+                .iter()
+                .find_map(|child| focused(child, target))
+        }
+
+        self.scene_ws_settings_agents();
+        self.with_chrome(|state| state.open_workspace_settings(WsTab::Agents));
+        self.fb.host_mut().force_ws_settings_settled();
+        let _ = self.paint_settled();
+        self.press_key(&Key::Named(NamedKey::Home));
+        let _ = self.paint_settled();
+        let root = self.root_obj.clone();
+        let target = "workspace-profile-control:agents:add";
+        let handled = self.fb.host_mut().perform_semantic_action(
+            target,
+            &ui::a11y::Action::Focus,
+            &mut ui::widget::Edits::lend(&mut self.state),
+            &root,
+        );
+        assert!(
+            handled,
+            "Add Agent must accept its public semantic Focus action"
+        );
+        let _ = self.paint_settled();
+        let tree = self.fb.host().accessibility();
+        assert_eq!(
+            tree.as_ref().and_then(|tree| focused(tree, target)),
+            Some(true),
+            "the visible Add Agent control, not an offscreen consumed target, owns focus"
+        );
+    }
+
+    fn seed_workspace_profile_overflow(&mut self, agents: bool) {
+        use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
+        self.with_chrome(|state| {
+            let local = state.local_user_id.clone();
+            let mut tree = state.tree_mut();
+            let Some(workspace) = tree.desktop.active_workspace_mut() else {
+                return;
+            };
+            workspace.set_owner(local);
+            let room = workspace.room.to_string();
+            let count: usize = if agents { 13 } else { 12 };
+            for index in 0..count {
+                let id = if agents {
+                    format!("review-agent-{index:02}")
+                } else {
+                    format!("review-person-{index:02}")
+                };
+                let subject = if agents {
+                    Subject::agent(id.clone())
+                } else {
+                    workspace.collaborators.push(Collaborator::new(
+                        id.clone(),
+                        format!("Reviewer {}", index.saturating_add(1)),
+                    ));
+                    Subject::person(id)
+                };
+                workspace.grant_capability(CapOverride::membership(
+                    subject,
+                    room.clone(),
+                    Verb::Read,
+                ));
+            }
+            drop(tree);
+            state.overlays.ws_settings = true;
+            state.ws_settings_tab = if agents {
+                WsTab::Agents
+            } else {
+                WsTab::Members
+            };
+            state.bump();
+        });
+    }
+
+    fn scene_ws_settings_profile_overflow(&mut self, agents: bool) {
+        self.seed_workspace_profile_overflow(agents);
+        self.fb.host_mut().force_ws_settings_settled();
+        let _ = self.paint_settled();
+        let result = self
+            .fb
+            .host_mut()
+            .apply_primary_vertical_scroll(ui::widget::PrimaryScrollAction::End);
+        assert!(
+            matches!(result, ui::widget::PrimaryScrollResult::Changed(_)),
+            "profile overflow fixture must reach a real semantic scroll region"
+        );
+        let _ = self.paint_settled();
     }
 
     /// The People roster (`collaborators_overlay.rs`): two members present,
@@ -2752,9 +2962,13 @@ impl ShellDriver {
         "power-menu-keyboard",
         "ws-settings-general",
         "ws-settings-members",
+        "ws-settings-members-overflow-end",
         "ws-settings-permissions",
         "ws-settings-apps",
         "ws-settings-agents",
+        "ws-settings-agents-activity",
+        "ws-settings-agents-focus",
+        "ws-settings-agents-overflow-end",
         "collaborators",
         "launchpad",
         "launchpad-notes-card",
@@ -2891,6 +3105,70 @@ use shell::shell::state::WorkspaceExt as _;
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shots_people_owner_scene_uses_the_actual_owner_as_its_active_viewer() {
+        let mut driver = ShellDriver::new((1600, 900));
+        driver.scene_ws_settings_members();
+        let chrome = driver.chrome();
+        let viewer = chrome.active_local_user();
+        let tree = chrome.tree();
+        let workspace = tree
+            .desktop
+            .active_workspace()
+            .expect("People shots workspace");
+        assert_eq!(workspace.owner.as_deref(), Some(viewer.as_str()));
+        assert!(tree.governs_room(workspace.room));
+        assert!(workspace.may_administer(&viewer));
+        assert_eq!(chrome.test_only_owner_override, None);
+    }
+
+    #[test]
+    fn shots_membership_seeders_grant_the_canonical_room_not_the_window_workspace_id() {
+        use shell::shell::state::{Scope, Subject};
+        let mut driver = ShellDriver::new((1600, 900));
+        driver.seed_workspace_permissions();
+        driver.seed_agent_member_for_shots();
+        let chrome = driver.chrome();
+        let tree = chrome.tree();
+        let workspace = tree
+            .desktop
+            .active_workspace()
+            .expect("active shots workspace");
+        let room = workspace.room.to_string();
+        let local_id = tree.desktop.active.raw().to_string();
+        assert_ne!(room, local_id);
+        for subject in [
+            Subject::person("ada"),
+            Subject::person("bo"),
+            Subject::agent("scribe"),
+        ] {
+            assert!(
+                workspace
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability.subject == subject
+                        && capability.scope == Scope::Room(room.clone()))
+            );
+            assert!(
+                !workspace
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability.subject == subject
+                        && capability.scope == Scope::Room(local_id.clone()))
+            );
+        }
+        assert!(
+            workspace
+                .role_of_agent_in_room_at("scribe", &room, 0)
+                .is_some()
+        );
+        assert!(
+            workspace
+                .role_of_agent_in_room_at("scribe", &local_id, 0)
+                .is_none()
+        );
+    }
 
     #[test]
     fn driver_scene_setup_covers_the_catalogue_and_keeps_pending_invites_out_of_presence() {

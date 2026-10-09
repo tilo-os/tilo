@@ -622,6 +622,156 @@ fn valid_agent_navigation_id(agent: &str) -> bool {
     .is_ok()
 }
 
+fn agent_profile_membership_expiry(
+    workspace: &crate::shell::state::Workspace,
+    room: &str,
+    now: Instant,
+) -> Option<Instant> {
+    use collab_types::caps::{Expiry, Principal, Scope, Subject};
+    let unix_now = tilo_clock::unix_now();
+    workspace
+        .capabilities
+        .iter()
+        .filter_map(|cap| {
+            if !matches!(&cap.subject, Subject::Principal(Principal::Agent(_)))
+                || !(matches!(&cap.scope, Scope::Workspace)
+                    || matches!(&cap.scope, Scope::Room(value) if value == room))
+            {
+                return None;
+            }
+            match cap.expiry {
+                Expiry::AtUnix(deadline) if deadline > unix_now => {
+                    std::time::SystemTime::UNIX_EPOCH
+                        .checked_add(std::time::Duration::from_secs(deadline))
+                        .and_then(|expiry| expiry.duration_since(std::time::SystemTime::now()).ok())
+                        .and_then(|remaining| now.checked_add(remaining))
+                }
+                _ => None,
+            }
+        })
+        .min()
+}
+
+struct AgentProfileAvailabilityWatch {
+    task: tokio::task::JoinHandle<()>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[derive(PartialEq, Eq)]
+struct AgentProfileObservationKey {
+    room: String,
+    tree_generation: u64,
+    topology: Option<(u64, bool)>,
+}
+
+impl Drop for AgentProfileAvailabilityWatch {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn watch_agent_profile_availability(
+    mut changes: tokio::sync::watch::Receiver<u64>,
+    wake: crate::session_runtime::Wake,
+) -> Result<AgentProfileAvailabilityWatch, String> {
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ended = std::sync::Arc::clone(&closed);
+    let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(*changes.borrow()));
+    let observed = std::sync::Arc::clone(&generation);
+    let task = crate::session_runtime::runtime()?.spawn(async move {
+        loop {
+            let open = changes.changed().await.is_ok();
+            if open {
+                observed.store(
+                    *changes.borrow_and_update(),
+                    std::sync::atomic::Ordering::Release,
+                );
+            } else {
+                ended.store(true, std::sync::atomic::Ordering::Release);
+            }
+            wake();
+            if !open {
+                break;
+            }
+        }
+    });
+    Ok(AgentProfileAvailabilityWatch {
+        task,
+        closed,
+        generation,
+    })
+}
+
+fn agent_profile_live_phase(
+    presence: &PresenceCtx,
+    room: &str,
+    agent: &str,
+    now: ui::time::Instant,
+) -> Option<tilo_desktop::workspace_settings::AgentLivePhase> {
+    use tilo_actions::InteractionPhase as Phase;
+    use tilo_desktop::workspace_settings::AgentLivePhase as Public;
+    let actor = ui::permissions::UserId(format!("agent:{agent}"));
+    let interaction = presence
+        .visible_interactions(now)
+        .into_iter()
+        .find(|interaction| {
+            interaction.actor.id == actor.0
+                && presence.current_observed_agent_interaction(
+                    &actor,
+                    interaction.invocation,
+                    room,
+                    now,
+                ) == Some(interaction)
+        })?;
+    Some(match interaction.phase {
+        Phase::Locating => Public::Locating,
+        Phase::Applying => Public::Applying,
+        Phase::Progress { .. } => Public::Progress,
+        Phase::Waiting { .. } => Public::Waiting,
+        Phase::Committed => Public::Committed,
+        Phase::Failed { .. } => Public::Failed,
+        Phase::Cancelled { .. } => Public::Cancelled,
+    })
+}
+
+fn agent_profile_rows(
+    workspace: &crate::shell::state::Workspace,
+    presence: &PresenceCtx,
+    now: ui::time::Instant,
+) -> Vec<tilo_desktop::workspace_settings::AgentProfileActivity> {
+    use tilo_desktop::workspace_settings::{AgentProfileActivity, AgentTaskAvailability};
+    let room = workspace.room.to_string();
+    workspace
+        .agent_members_in_room_at(&room, tilo_clock::unix_now())
+        .into_iter()
+        .map(|(agent, _)| {
+            let actor = format!("agent:{agent}");
+            let last_activity_at = workspace
+                .effect_receipts
+                .iter()
+                .filter(|receipt| receipt.actor == actor)
+                .map(|receipt| receipt.completed_at)
+                .chain(
+                    workspace
+                        .tasks
+                        .iter()
+                        .flat_map(|task| &task.audit)
+                        .filter(|event| event.actor == actor)
+                        .map(|event| event.at),
+                )
+                .filter(|at| *at > 0)
+                .max();
+            AgentProfileActivity {
+                live_phase: agent_profile_live_phase(presence, &room, &agent, now),
+                agent,
+                task_availability: AgentTaskAvailability::Unknown,
+                last_activity_at,
+            }
+        })
+        .collect()
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -696,6 +846,19 @@ pub struct ShellOverlayHost {
     /// The live application directory, kept to narrow search to one part of
     /// an app when the app asks (`AppHostIntent::OpenSearch`).
     app_actions: Option<std::rc::Rc<crate::shell::search::providers::LiveAppActionsProvider>>,
+    agent_profile_broker: Option<crate::shell::collab_broker::AppActionBroker>,
+    agent_profile_changes: Option<tokio::sync::watch::Receiver<u64>>,
+    agent_profile_watch: Option<AgentProfileAvailabilityWatch>,
+    agent_profile_wake: Option<crate::session_runtime::Wake>,
+    agent_profile_room: Option<String>,
+    agent_profile_activity: Vec<tilo_desktop::workspace_settings::AgentProfileActivity>,
+    agent_profile_observed_at: std::time::SystemTime,
+    workspace_settings_theme: Theme,
+    agent_profile_expiry: Option<Instant>,
+    agent_profile_presentation_expiry: Option<Instant>,
+    agent_profile_observation_key: Option<AgentProfileObservationKey>,
+    #[cfg(test)]
+    agent_profile_query_count: usize,
     /// Starts an installed desktop app through the session launcher. Kept as
     /// an explicit service so fixture hosts can remain process-free.
     app_launcher: AppLauncher,
@@ -720,6 +883,7 @@ pub struct ShellOverlayHost {
     agent_navigation_chooser: Option<AgentNavigationChooser>,
     accessible_agent_markers: Vec<AccessibleAgentMarker>,
     accessible_agent_marker_focus: Option<String>,
+    profile_control_focus: Option<String>,
     accessible_agent_marker_activation: Option<AccessibleAgentMarker>,
     /// `palette.query()` after the last fan-out; refresh is
     /// short-circuited when this still matches.
@@ -2176,6 +2340,12 @@ impl ShellOverlayHost {
         &mut self,
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
+        // Subscribe before any availability query so a racing topology
+        // change remains observable rather than being lost after a snapshot.
+        self.agent_profile_changes = broker.agent_task_availability_changes().ok();
+        self.agent_profile_broker = Some(broker.clone());
+        self.agent_profile_watch = None;
+        self.install_agent_profile_watch();
         if let Some(chrome) = &self.chrome {
             chrome.borrow_mut().native_app_opening =
                 Some(crate::shell::launcher::NativeAppOpening(broker.downgrade()));
@@ -2192,6 +2362,454 @@ impl ShellOverlayHost {
                 as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
         self.app_actions = Some(app_actions);
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
+    }
+
+    pub(crate) fn set_agent_profile_wake(&mut self, wake: crate::session_runtime::Wake) {
+        self.agent_profile_wake = Some(wake);
+        self.install_agent_profile_watch();
+    }
+
+    fn install_agent_profile_watch(&mut self) {
+        let Some(wake) = self.agent_profile_wake.clone() else {
+            return;
+        };
+        if let Some(changes) = self.agent_profile_changes.take() {
+            self.agent_profile_watch = watch_agent_profile_availability(changes, wake).ok();
+        }
+    }
+
+    pub(crate) fn agent_profile_activity_visible(&self) -> bool {
+        self.chrome.as_ref().is_some_and(|chrome| {
+            let chrome = chrome.borrow();
+            chrome.overlays.ws_settings && chrome.ws_settings_tab == WsTab::Agents
+        })
+    }
+
+    pub(crate) fn refresh_agent_profile_activity(&mut self, presence: &PresenceCtx) -> bool {
+        use tilo_desktop::workspace_settings::AgentTaskAvailability;
+        self.clear_stale_profile_control_focus();
+        let now = ui::time::now();
+        let selection = self.chrome.as_ref().and_then(|chrome| {
+            let chrome = chrome.borrow();
+            if !chrome.overlays.ws_settings || chrome.ws_settings_tab != WsTab::Agents {
+                return None;
+            }
+            let tree = chrome.tree();
+            let workspace = tree.desktop.active_workspace()?;
+            let room = workspace.room.to_string();
+            let rows = agent_profile_rows(workspace, presence, now);
+            let membership_expiry = agent_profile_membership_expiry(workspace, &room, now);
+            let selection = (
+                room,
+                chrome.tree_handle.generation(),
+                rows,
+                membership_expiry,
+            );
+            drop(tree);
+            drop(chrome);
+            Some(selection)
+        });
+        // Broker admission may consult the room owner. No chrome or tree
+        // guard survives into that fallible current-custody observation.
+        let watch = self
+            .agent_profile_watch
+            .as_ref()
+            .map(|watch| {
+                (
+                    watch.generation.load(std::sync::atomic::Ordering::Acquire),
+                    watch.closed.load(std::sync::atomic::Ordering::Acquire),
+                )
+            })
+            .or_else(|| {
+                self.agent_profile_changes
+                    .as_ref()
+                    .map(|changes| (*changes.borrow(), false))
+            });
+        let (key, room, mut rows, membership_expiry) = selection.map_or(
+            (None, None, Vec::new(), None),
+            |(room, generation, rows, expiry)| {
+                (
+                    Some(AgentProfileObservationKey {
+                        room: room.clone(),
+                        tree_generation: generation,
+                        topology: watch,
+                    }),
+                    Some(room),
+                    rows,
+                    expiry,
+                )
+            },
+        );
+        let observation_changed = self.agent_profile_observation_key != key
+            || self
+                .agent_profile_expiry
+                .is_some_and(|deadline| deadline <= now);
+        if !observation_changed {
+            for row in &mut rows {
+                if let Some(previous) = self
+                    .agent_profile_activity
+                    .iter()
+                    .find(|old| old.agent == row.agent)
+                {
+                    row.task_availability = previous.task_availability;
+                }
+            }
+        } else if watch.is_some_and(|(_, closed)| !closed)
+            && let (Some(broker), Some(room)) = (&self.agent_profile_broker, &room)
+        {
+            for row in &mut rows {
+                #[cfg(test)]
+                {
+                    self.agent_profile_query_count =
+                        self.agent_profile_query_count.saturating_add(1);
+                }
+                row.task_availability = match broker.agent_task_availability(room, &row.agent) {
+                    Ok(true) => AgentTaskAvailability::Available,
+                    Ok(false) => AgentTaskAvailability::Unavailable,
+                    Err(_) => AgentTaskAvailability::Unknown,
+                };
+            }
+        }
+        self.agent_profile_expiry = rows
+            .iter()
+            .any(|row| row.live_phase.is_some())
+            .then(|| presence.interaction_next_wake_deadline(now))
+            .flatten()
+            .into_iter()
+            .chain(membership_expiry)
+            .min();
+        let changed = self.agent_profile_room != room || self.agent_profile_activity != rows;
+        self.agent_profile_room = room;
+        self.agent_profile_activity = rows;
+        self.agent_profile_observation_key = key;
+        let presentation_changed = self.refresh_agent_profile_presentation(
+            now,
+            std::time::SystemTime::now(),
+            changed || observation_changed,
+        );
+        changed || presentation_changed
+    }
+
+    fn refresh_agent_profile_presentation(
+        &mut self,
+        now: Instant,
+        wall_now: std::time::SystemTime,
+        force: bool,
+    ) -> bool {
+        if !force
+            && self
+                .agent_profile_presentation_expiry
+                .is_none_or(|deadline| deadline > now)
+        {
+            return false;
+        }
+        self.agent_profile_observed_at = wall_now;
+        self.agent_profile_presentation_expiry =
+            tilo_desktop::workspace_settings::agent_profile_activity_next_presentation_at(
+                &self.agent_profile_activity,
+                wall_now,
+            )
+            .and_then(|deadline| deadline.duration_since(wall_now).ok())
+            .and_then(|remaining| now.checked_add(remaining));
+        true
+    }
+
+    fn agent_profile_activity_in_room<'a>(
+        observed_room: Option<&str>,
+        activity: &'a [tilo_desktop::workspace_settings::AgentProfileActivity],
+        room: &str,
+    ) -> &'a [tilo_desktop::workspace_settings::AgentProfileActivity] {
+        if observed_room == Some(room) {
+            activity
+        } else {
+            &[]
+        }
+    }
+
+    fn workspace_profile_accessibility(
+        &self,
+        state: &crate::shell::chrome_state::ChromeState,
+    ) -> Vec<ui::a11y::AccessNode> {
+        use tilo_desktop::workspace_settings::{
+            AgentTaskAvailability, member_profile_presentation,
+        };
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let actor = state.active_local_user();
+        let tree = state.tree();
+        let Some(workspace) = tree.desktop.active_workspace() else {
+            return Vec::new();
+        };
+        let room = workspace.room.to_string();
+        let owner = state.test_only_owner_override.unwrap_or_else(|| {
+            tree.governs_room(workspace.room) && workspace.may_administer(&actor)
+        });
+        let now = tilo_clock::unix_now();
+        let mut nodes = Vec::new();
+        if state.ws_settings_tab == WsTab::Members {
+            let members = workspace.roster_in_room_at(&room, now);
+            for row in self.workspace_settings_overlay.visible_member_rows() {
+                if !members.iter().any(|(user, _)| user == &row.user) {
+                    continue;
+                }
+                let (name, detail) =
+                    member_profile_presentation(workspace, row, &state.local_user_id);
+                nodes.push(
+                    AccessNode::new(Role::ListItem)
+                        .with_semantic_key(format!("workspace-profile:person:{}", row.user))
+                        .with_action_target(format!("workspace-profile:person:{}", row.user))
+                        .with_name(name)
+                        .with_description(detail)
+                        .with_bounds(row.row_rect)
+                        .with_position(row.position_in_set, row.set_size)
+                        .with_children(self.profile_control_nodes(
+                            &format!("person:{}", row.user),
+                            &[
+                                (
+                                    "role",
+                                    tilo_desktop::workspace_settings::role_label(row.role),
+                                    row.role_rect,
+                                ),
+                                ("remove", t("workspace-settings-remove"), row.remove_rect),
+                            ],
+                            owner,
+                            !row.is_workspace_owner && row.user != state.local_user_id,
+                        ))
+                        .with_state(AccessState::new().selected(row.selected)),
+                );
+            }
+        } else if state.ws_settings_tab == WsTab::Agents {
+            let members = workspace.agent_members_in_room_at(&room, now);
+            for row in self.workspace_settings_overlay.visible_agent_rows() {
+                if !members.iter().any(|(agent, _)| agent == &row.agent) {
+                    continue;
+                }
+                let activity = &row.profile_activity;
+                let opaque_unknown = activity.task_availability == AgentTaskAvailability::Unknown
+                    && activity.live_phase.is_none()
+                    && activity.last_activity_at.is_none();
+                if self.agent_profile_room.as_deref() != Some(room.as_str()) && !opaque_unknown {
+                    continue;
+                }
+                nodes.push(self.agent_profile_accessibility_row(row, owner));
+            }
+        }
+        drop(tree);
+        if nodes.is_empty() {
+            return self.profile_add_agent_accessibility(state);
+        }
+        let bounds = nodes
+            .iter()
+            .filter_map(|node| node.bounds)
+            .map(ui::a11y::AccessBounds::to_rect)
+            .reduce(|left, right| left.union(right))
+            .unwrap_or(Rect::ZERO);
+        let mut roots = vec![
+            AccessNode::new(Role::List)
+                .with_name(state.ws_settings_tab.label())
+                .with_bounds(bounds)
+                .with_children(nodes),
+        ];
+        roots.extend(self.profile_add_agent_accessibility(state));
+        roots
+    }
+
+    fn profile_add_agent_accessibility(
+        &self,
+        state: &crate::shell::chrome_state::ChromeState,
+    ) -> Vec<ui::a11y::AccessNode> {
+        if state.ws_settings_tab != WsTab::Agents {
+            return Vec::new();
+        }
+        self.profile_control_nodes(
+            "agents",
+            &[(
+                "add",
+                t("workspace-settings-add-agent"),
+                self.workspace_settings_overlay.agent_add_rect(),
+            )],
+            is_active_workspace_owner(state),
+            true,
+        )
+    }
+
+    fn agent_profile_accessibility_row(
+        &self,
+        row: &tilo_desktop::workspace_settings::AgentRow,
+        owner: bool,
+    ) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let (name, detail) = tilo_desktop::workspace_settings::agent_profile_presentation(row);
+        let live = AccessNode::new(Role::Label)
+            .with_semantic_key(format!("workspace-profile:agent:{}:activity", row.agent))
+            .with_name(ui::history_source::agent_display_label(&row.agent))
+            .with_value(row.activity_presentation.announcement.clone())
+            .with_live(ui::a11y::Politeness::Polite)
+            .with_bounds(row.row_rect);
+        let mut children = vec![live];
+        children.extend(self.profile_control_nodes(
+            &format!("agent:{}", row.agent),
+            &[
+                (
+                    "review",
+                    t("workspace-settings-review-access"),
+                    row.review_rect,
+                ),
+                ("remove", t("workspace-settings-revoke"), row.remove_rect),
+            ],
+            owner,
+            true,
+        ));
+        AccessNode::new(Role::ListItem)
+            .with_semantic_key(format!("workspace-profile:agent:{}", row.agent))
+            .with_action_target(format!("workspace-profile:agent:{}", row.agent))
+            .with_name(name)
+            .with_description(detail)
+            .with_bounds(row.row_rect)
+            .with_position(row.position_in_set, row.set_size)
+            .with_children(children)
+            .with_state(AccessState::new().selected(row.selected))
+    }
+
+    fn profile_control_nodes(
+        &self,
+        subject: &str,
+        controls: &[(&str, String, Rect)],
+        owner: bool,
+        permitted: bool,
+    ) -> Vec<ui::a11y::AccessNode> {
+        let enabled = permitted && owner;
+        controls
+            .iter()
+            .filter(|(_, _, rect)| rect.area() > 0.0)
+            .map(|(kind, label, rect)| {
+                let target = format!("workspace-profile-control:{subject}:{kind}");
+                let node = ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                    .with_semantic_key(target.clone())
+                    .with_name(label.clone())
+                    .with_bounds(*rect)
+                    .with_state(
+                        ui::a11y::AccessState::new()
+                            .disabled(!enabled)
+                            .focusable(enabled)
+                            .focused(
+                                enabled
+                                    && self.profile_control_focus.as_deref()
+                                        == Some(target.as_str()),
+                            ),
+                    );
+                if enabled {
+                    node.with_action_target(target)
+                } else {
+                    node
+                }
+            })
+            .collect()
+    }
+
+    fn perform_profile_control(&mut self, target: &str, action: &ui::a11y::Action) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return true;
+        };
+        let (rect, tab, owner) = {
+            let state = chrome.borrow();
+            if !state.overlays.ws_settings || self.workspace_settings_overlay.member_sheet_is_open()
+            {
+                return true;
+            }
+            let nodes = self.workspace_profile_accessibility(&state);
+            let rect = nodes
+                .iter()
+                .flat_map(|node| {
+                    std::iter::once(node)
+                        .chain(&node.children)
+                        .chain(node.children.iter().flat_map(|row| &row.children))
+                })
+                .find(|node| node.semantic_key.as_deref() == Some(target))
+                .filter(|node| !node.state.disabled)
+                .and_then(|node| node.bounds)
+                .map(ui::a11y::AccessBounds::to_rect);
+            (
+                rect,
+                state.ws_settings_tab,
+                is_active_workspace_owner(&state),
+            )
+        };
+        if let Some(rect) = rect {
+            match action {
+                ui::a11y::Action::Focus => {
+                    self.profile_control_focus = Some(target.to_owned());
+                    chrome.borrow_mut().bump();
+                }
+                ui::a11y::Action::Activate => {
+                    self.profile_control_focus = None;
+                    let outcome = self.workspace_settings_overlay.hit_test(rect.center(), tab);
+                    self.apply_workspace_settings_outcome(outcome, owner);
+                }
+                _ => {}
+            }
+        } else {
+            self.profile_control_focus = None;
+        }
+        // Stale targets are consumed, never pointer-fallback onto a replacement row.
+        true
+    }
+
+    fn perform_profile_row(&mut self, target: &str, action: &ui::a11y::Action) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return true;
+        };
+        let valid = {
+            let state = chrome.borrow();
+            state.overlays.ws_settings
+                && !self.workspace_settings_overlay.member_sheet_is_open()
+                && self
+                    .workspace_profile_accessibility(&state)
+                    .iter()
+                    .flat_map(|list| &list.children)
+                    .any(|row| row.semantic_key.as_deref() == Some(target))
+        };
+        if valid && matches!(action, ui::a11y::Action::Activate) {
+            use tilo_desktop::workspace_settings::WorkspaceSettingsSubject;
+            let subject = target
+                .strip_prefix("workspace-profile:person:")
+                .map(|user| WorkspaceSettingsSubject::Person(user.to_owned()))
+                .or_else(|| {
+                    target
+                        .strip_prefix("workspace-profile:agent:")
+                        .map(|agent| WorkspaceSettingsSubject::Agent(agent.to_owned()))
+                });
+            if let Some(subject) = subject {
+                let mut state = chrome.borrow_mut();
+                state.open_workspace_profile(subject);
+                state.bump();
+            }
+            self.profile_control_focus = None;
+        }
+        true
+    }
+
+    fn clear_stale_profile_control_focus(&mut self) {
+        let valid = self.profile_control_focus.as_deref().is_some_and(|target| {
+            self.chrome.as_ref().is_some_and(|chrome| {
+                let state = chrome.borrow();
+                state.overlays.ws_settings
+                    && !self.workspace_settings_overlay.member_sheet_is_open()
+                    && self
+                        .workspace_profile_accessibility(&state)
+                        .iter()
+                        .flat_map(|node| {
+                            std::iter::once(node)
+                                .chain(&node.children)
+                                .chain(node.children.iter().flat_map(|row| &row.children))
+                        })
+                        .any(|node| {
+                            !node.state.disabled && node.semantic_key.as_deref() == Some(target)
+                        })
+            })
+        });
+        if !valid {
+            self.profile_control_focus = None;
+        }
     }
 
     /// Settles on the next change to any app invocation's status, for a
@@ -2445,6 +3063,19 @@ impl ShellOverlayHost {
             keyboard_scope: settings_store::keyboard_sources::ALL.into(),
             palette,
             app_actions: None,
+            agent_profile_broker: None,
+            agent_profile_changes: None,
+            agent_profile_watch: None,
+            agent_profile_wake: None,
+            agent_profile_room: None,
+            agent_profile_activity: Vec::new(),
+            agent_profile_observed_at: std::time::SystemTime::UNIX_EPOCH,
+            workspace_settings_theme: Theme::default(),
+            agent_profile_expiry: None,
+            agent_profile_presentation_expiry: None,
+            agent_profile_observation_key: None,
+            #[cfg(test)]
+            agent_profile_query_count: 0,
             palette_visible: false,
             search_registry: inputs.search_registry,
             app_launcher: inputs.app_launcher,
@@ -2457,6 +3088,7 @@ impl ShellOverlayHost {
             agent_navigation_chooser: None,
             accessible_agent_markers: Vec::new(),
             accessible_agent_marker_focus: None,
+            profile_control_focus: None,
             accessible_agent_marker_activation: None,
             last_search_query: String::new(),
             last_search_revision: String::new(),
@@ -13184,9 +13816,9 @@ impl ShellOverlayHost {
         })
     }
 
-    /// Absorbs every non-`Pressed` pointer event over an open overlay so
-    /// a hover/drag can't continue underneath it (`Pressed` is excluded
-    /// so the per-overlay branches later still get clicks), and a
+    /// Absorbs non-`Pressed` pointer events over an open overlay so a
+    /// hover/drag can't continue underneath it (`Pressed` and wheel events
+    /// owned by a later overlay route are excluded), and a
     /// left-click on an uncovered toast dismisses it. Foreground notification
     /// history receives its own presses rather than dismissing a covered toast.
     fn route_absorbable_pointer_and_toast_click(
@@ -13194,15 +13826,29 @@ impl ShellOverlayHost {
         event: &WindowEvent,
         handled: &mut bool,
     ) -> bool {
+        // People and Agents own wheel input through their shared ScrollRegion
+        // later in the route. Let that production handler see the event;
+        // this generic overlay shield used to consume it first, so a wheel
+        // was reported handled without ever moving the profile viewport.
+        let profile_owns_wheel = matches!(event, WindowEvent::MouseWheel { .. })
+            && self.chrome.as_ref().is_some_and(|chrome| {
+                let chrome = chrome.borrow();
+                chrome.overlays.ws_settings
+                    && chrome.editing_workspace_name.is_none()
+                    && matches!(chrome.ws_settings_tab, WsTab::Members | WsTab::Agents)
+            })
+            && !self.palette_visible
+            && self.permission_prompt.is_none()
+            && !self.workspace_settings_overlay.member_sheet_is_open();
         let is_absorbable_pointer = matches!(
             event,
             WindowEvent::CursorMoved { .. }
-                | WindowEvent::MouseWheel { .. }
                 | WindowEvent::MouseInput {
                     state: ElementState::Released,
                     ..
                 }
-        );
+        ) || (matches!(event, WindowEvent::MouseWheel { .. })
+            && !profile_owns_wheel);
         if is_absorbable_pointer
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
@@ -19555,6 +20201,11 @@ impl Widget for ShellOverlayHost {
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         let st = self.chrome.as_ref()?.borrow();
+        if st.overlays.ws_settings {
+            return self
+                .workspace_settings_overlay
+                .profile_primary_scroll(st.ws_settings_tab);
+        }
         if st.overlays.collaborators {
             return self.collaborators_overlay.primary_vertical_scroll();
         }
@@ -19577,7 +20228,18 @@ impl Widget for ShellOverlayHost {
         if self.primary_vertical_scroll().is_none() {
             return ui::widget::PrimaryScrollResult::Unsupported;
         }
-        let result = if self.overlay_flags().collaborators {
+        let tab = self.chrome.as_ref().and_then(|chrome| {
+            let chrome = chrome.borrow();
+            chrome
+                .overlays
+                .ws_settings
+                .then_some(chrome.ws_settings_tab)
+        });
+        let result = if let Some(tab) = tab {
+            self.profile_control_focus = None;
+            self.workspace_settings_overlay
+                .apply_profile_primary_scroll(tab, action)
+        } else if self.overlay_flags().collaborators {
             self.collaborators_overlay
                 .apply_primary_vertical_scroll(action)
         } else {
@@ -20226,6 +20888,41 @@ impl Widget for ShellOverlayHost {
             *ctx.handled = true;
             return;
         }
+        let profile_tab = self.chrome.as_ref().and_then(|chrome| {
+            let chrome = chrome.borrow();
+            (chrome.overlays.ws_settings
+                && chrome.editing_workspace_name.is_none()
+                && !self.palette_visible)
+                .then_some(chrome.ws_settings_tab)
+        });
+        if let (Some(tab), Some(point)) = (profile_tab, self.last_cursor) {
+            self.workspace_settings_overlay
+                .set_profile_scroll_pointer(tab, point);
+        }
+        if let Some(tab) = profile_tab
+            && !self.workspace_settings_overlay.member_sheet_is_open()
+            && self.workspace_settings_overlay.handle_profile_scroll_event(
+                tab,
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: state.reborrow(),
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+                &self.workspace_settings_theme,
+            )
+        {
+            self.profile_control_focus = None;
+            if let Some(chrome) = &self.chrome {
+                chrome.borrow_mut().bump();
+            }
+            return;
+        }
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -20330,6 +21027,7 @@ impl Widget for ShellOverlayHost {
 
     fn set_focus(&mut self, focused: bool) {
         if !focused {
+            self.profile_control_focus = None;
             self.accessible_agent_marker_focus = None;
         }
     }
@@ -20505,58 +21203,10 @@ impl Widget for ShellOverlayHost {
                                         ..Default::default()
                                     }),
                             );
-                        } else if let (Some(workspace), Some(subject)) = (
-                            state.tree().desktop.active_workspace(),
-                            state
-                                .ws_settings_subject
-                                .as_ref()
-                                .filter(|subject| subject.tab() == state.ws_settings_tab),
-                        ) {
-                            let body = WorkspaceSettingsOverlay::body_rect_for(
-                                self.workspace_settings_overlay.rect(),
-                            );
-                            let profile = match subject {
-                                tilo_desktop::workspace_settings::WorkspaceSettingsSubject::Person(
-                                    user,
-                                ) => tilo_desktop::workspace_settings::members_pane_rows_for(
-                                    workspace,
-                                    body,
-                                    Some(user),
-                                )
-                                .into_iter()
-                                .find(|row| row.user == *user)
-                                .map(|row| {
-                                    let (name, detail) = tilo_desktop::workspace_settings::member_profile_presentation(
-                                        workspace,
-                                        &row,
-                                        &state.local_user_id,
-                                    );
-                                    (format!("workspace-profile:person:{user}"), name, detail, row.row_rect)
-                                }),
-                                tilo_desktop::workspace_settings::WorkspaceSettingsSubject::Agent(
-                                    agent,
-                                ) => tilo_desktop::workspace_settings::agents_pane_rows_for(
-                                    workspace,
-                                    body,
-                                    Some(agent),
-                                )
-                                .into_iter()
-                                .find(|row| row.agent == *agent)
-                                .map(|row| {
-                                    let (name, detail) = tilo_desktop::workspace_settings::agent_profile_presentation(&row);
-                                    (format!("workspace-profile:agent:{agent}"), name, detail, row.row_rect)
-                                }),
-                            };
-                            if let Some((key, name, detail, bounds)) = profile {
-                                settings.children.push(
-                                    AccessNode::new(Role::ListItem)
-                                        .with_semantic_key(key)
-                                        .with_name(name)
-                                        .with_description(detail)
-                                        .with_bounds(bounds)
-                                        .with_state(AccessState::new().selected(true)),
-                                );
-                            }
+                        } else {
+                            settings
+                                .children
+                                .extend(self.workspace_profile_accessibility(&state));
                         }
                     }
                     root.children.push(settings);
@@ -21312,6 +21962,12 @@ impl Widget for ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        if target.starts_with("workspace-profile-control:") {
+            return self.perform_profile_control(target, action);
+        }
+        if target.starts_with("workspace-profile:") {
+            return self.perform_profile_row(target, action);
+        }
         if target.starts_with(ACCESSIBLE_AGENT_MARKER_TARGET) {
             if self.accessible_agent_marker_request_is_inert(target) {
                 // Consume stale semantic requests without letting the generic
@@ -21449,6 +22105,12 @@ impl Widget for ShellOverlayHost {
                     .or_else(|| self.qs_root.accessibility_rect_for_path(child_path))
             }
             LayerId::WorkspaceSettings => {
+                if self.chrome.as_ref().is_some_and(|chrome| matches!(chrome.borrow().ws_settings_tab, WsTab::Members | WsTab::Agents)) {
+                    let tree = self.accessibility()?;
+                    let mut node = &tree;
+                    for index in path { node = node.children.get(*index)?; }
+                    return node.bounds.map(ui::a11y::AccessBounds::to_rect);
+                }
                 let ownership = self.workspace_settings_overlay.ownership_action_rect();
                 let ownership_present = ownership.area() > 0.0;
                 match child_path {
@@ -21683,6 +22345,11 @@ impl ShellOverlayHost {
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
         [
+            ("agent-profile-expiry", self.agent_profile_expiry),
+            (
+                "agent-profile-presentation-expiry",
+                self.agent_profile_presentation_expiry,
+            ),
             (
                 "agent-marker-expiry",
                 self.accessible_agent_markers
@@ -22687,6 +23354,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         ws_settings_open: bool,
     ) {
+        self.workspace_settings_theme.clone_from(theme);
         self.workspace_settings_overlay.layout(self.overlay_area());
         let anchor = self
             .chrome
@@ -22739,6 +23407,7 @@ impl ShellOverlayHost {
                     desktop: &tree.desktop,
                     tab: state.ws_settings_tab,
                     selected_subject: state.ws_settings_subject.as_ref(),
+                    profile_reveal_generation: state.ws_settings_profile_reveal_generation,
                     grant_draft: state.ws_grant_draft,
                     local_user: &state.local_user_id,
                     acting_user: &acting_user,
@@ -22748,8 +23417,25 @@ impl ShellOverlayHost {
                     owner_controls,
                     apps: &crate::shell::launcher::ShellApps,
                     devices: &devices,
+                    agent_profile_activity: tree.desktop.active_workspace().map_or(
+                        &[],
+                        |workspace| {
+                            Self::agent_profile_activity_in_room(
+                                self.agent_profile_room.as_deref(),
+                                &self.agent_profile_activity,
+                                &workspace.room.to_string(),
+                            )
+                        },
+                    ),
+                    activity_observed_at: self.agent_profile_observed_at,
                 },
             );
+            drop(tree);
+            if let Some(target) = self.profile_control_focus.as_deref() {
+                let profile = ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                    .with_children(self.workspace_profile_accessibility(&state));
+                ui::widget::paint_semantic_focus(scene, plan.transform, theme, &profile, target);
+            }
         }
         WorkspaceSettingsOverlay::finish_draw(scene, plan);
     }
@@ -28350,6 +29036,9 @@ mod peer_cursor_tests;
 )]
 #[path = "roster_rows_tests.rs"]
 mod roster_rows;
+
+#[cfg(test)]
+pub(crate) mod agent_profile_tests;
 
 #[cfg(test)]
 pub(crate) fn install_fixture_search_provider(

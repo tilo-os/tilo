@@ -14,6 +14,8 @@
 //! [`Workspace::may_administer`]. Non-owners see the same information
 //! with controls painted disabled, not hidden.
 
+use std::time::{Duration as StdDuration, SystemTime};
+
 use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
 use vello::Scene;
@@ -35,6 +37,7 @@ use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
 use ui::TextRole;
 use ui::text_render::TextStyle;
 use ui::widget::ButtonRole;
+use ui::widget::history::format_relative_time;
 
 pub mod overlay;
 
@@ -1005,7 +1008,7 @@ const PANE_PAD_BOTTOM: f64 = ui::tokens::Spacing::BASE.s3 as f64;
 /// does not fit one line at the lens's width, and cutting it mid-sentence
 /// loses the explanation the intro exists for.
 const PANE_INTRO_HEIGHT: f64 = 76.0;
-const PANE_INTRO_DETAIL_LINES: usize = 2;
+const PANE_INTRO_DETAIL_LINES: usize = 4;
 const PANE_INTRO_GAP: f64 = 12.0;
 /// Two lines of text plus breathing room.
 const ROW_HEIGHT: f64 = 56.0;
@@ -1030,7 +1033,6 @@ const COMPOSER_COMPACT_EXTRA: f64 =
 const REVOKE_WIDTH: f64 = 80.0;
 /// Row buttons (revoke, role, review) are full pointer targets (HIG §9.6).
 const REVOKE_HEIGHT: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
-const AGENT_REVIEW_WIDTH: f64 = 112.0;
 const AGENT_ONBOARDING_HEIGHT: f64 = 34.0;
 const SUBMIT_WIDTH: f64 = 92.0;
 const EXPIRY_SEGMENT_WIDTH: f64 = 58.0;
@@ -1053,6 +1055,7 @@ struct ProfilePaneMetrics {
     onboarding_height: f64,
     section_height: f64,
     control_height: f64,
+    caption_line_height: f64,
     stacked: bool,
     condensed: bool,
 }
@@ -1066,26 +1069,86 @@ impl ProfilePaneMetrics {
         Self::new(theme, pane, true)
     }
 
+    fn legacy_intro() -> Self {
+        Self {
+            intro_height: PANE_INTRO_HEIGHT,
+            row_height: ROW_HEIGHT,
+            onboarding_height: AGENT_ONBOARDING_HEIGHT,
+            section_height: SECTION_HEADER_HEIGHT,
+            control_height: REVOKE_HEIGHT,
+            caption_line_height: 0.0,
+            stacked: false,
+            condensed: false,
+        }
+    }
+
+    fn measured_generic_intro(
+        theme: &Theme,
+        pane: Rect,
+        title: &str,
+        detail: &str,
+        text_renderer: &mut TextRenderer,
+    ) -> (Self, usize) {
+        let mut metrics = Self::legacy_intro();
+        metrics.stacked = theme.text_scale.max(1.0) > 1.25;
+        if !metrics.stacked {
+            return (metrics, 2);
+        }
+        let style = theme.text(TextRole::Caption);
+        let detail_width = ui::num::f32_of_f64((pane.width() - 2.0 * PANE_PAD_X - 76.0).max(80.0));
+        let title_height = f64::from(text_renderer.measure_style(title, None, &style).1);
+        let detail_height = f64::from(
+            text_renderer
+                .measure_style(detail, Some(detail_width), &style)
+                .1,
+        );
+        let line_height = f64::from(style.line_height_px()).max(1.0);
+        let detail_lines = ui::num::usize_of_f64((detail_height / line_height).ceil()).max(1);
+        metrics.intro_height = PANE_INTRO_HEIGHT.max(
+            12.0 + title_height + 4.0 + detail_height + 12.0 + BadgeFace::height(theme) + 12.0,
+        );
+        (metrics, detail_lines)
+    }
+
     fn new(theme: &Theme, pane: Rect, agents: bool) -> Self {
         let scale = f64::from(theme.text_scale.max(1.0));
         let stacked = scale > 1.25;
-        let condensed = stacked && pane.height() < 420.0;
         let line = f64::from(theme.text(TextRole::Caption).line_height_px());
         let control_height = f64::from(theme.tokens.metrics.min_pointer_target).max(line + 16.0);
+        let expanded_intro_height = line * 5.0 + control_height + 36.0;
+        let expanded_agent_row_height = (line + 4.0) * 6.0 + control_height + line + 4.0 + 24.0;
+        let expanded_agent_required = PANE_PAD_TOP
+            + expanded_intro_height
+            + PANE_INTRO_GAP
+            + control_height
+            + 12.0
+            + SECTION_HEADER_HEIGHT.max(line + 10.0)
+            + expanded_agent_row_height
+            + PANE_PAD_BOTTOM;
+        let condensed =
+            stacked && (pane.height() < 420.0 || agents && pane.height() < expanded_agent_required);
+        let copy_line = line + if agents && condensed { 0.0 } else { 4.0 };
         Self {
-            intro_height: if condensed {
+            intro_height: if condensed && agents {
+                0.0
+            } else if condensed {
                 line + 28.0
             } else if stacked {
-                line * 3.0 + control_height + 36.0
+                expanded_intro_height
             } else {
                 PANE_INTRO_HEIGHT
             },
-            row_height: if condensed {
-                line * 2.0 + control_height + 28.0
+            row_height: if agents {
+                // Title, up to two authority lines, up to two live-status
+                // lines, and history. These are policy facts, not optional
+                // decoration. At enlarged type, the static admission badge
+                // has its own band above the two actionable controls.
+                copy_line * if stacked { 6.0 } else { 4.0 }
+                    + control_height
+                    + if stacked { line + 4.0 } else { 0.0 }
+                    + if condensed { 16.0 } else { 24.0 }
             } else if stacked {
-                line * 2.0
-                    + control_height * if agents { 2.0 } else { 1.0 }
-                    + if agents { 36.0 } else { 28.0 }
+                line * 2.0 + control_height + 28.0
             } else {
                 ROW_HEIGHT
             },
@@ -1097,13 +1160,22 @@ impl ProfilePaneMetrics {
                 AGENT_ONBOARDING_HEIGHT
             },
             section_height: if condensed {
-                control_height + 8.0
+                control_height
             } else {
                 SECTION_HEADER_HEIGHT.max(line + 10.0)
             },
             control_height,
+            caption_line_height: line,
             stacked,
             condensed,
+        }
+    }
+
+    fn intro_gap(self) -> f64 {
+        if self.condensed && self.intro_height <= f64::EPSILON {
+            0.0
+        } else {
+            PANE_INTRO_GAP
         }
     }
 }
@@ -1182,11 +1254,56 @@ fn draw_pane_intro(
     title: &str,
     detail: &str,
     status: &str,
+) -> f64 {
+    let (metrics, detail_lines) =
+        ProfilePaneMetrics::measured_generic_intro(ctx.theme, pane, title, detail, &mut *ctx.text);
+    draw_pane_intro_with_metrics(
+        ctx,
+        pane,
+        metrics,
+        detail_lines,
+        icon,
+        title,
+        detail,
+        status,
+    );
+    metrics.intro_height
+}
+
+fn draw_profile_pane_intro(
+    ctx: &mut PaintCtx<'_>,
+    pane: Rect,
+    metrics: ProfilePaneMetrics,
+    icon: Icon,
+    title: &str,
+    detail: &str,
+    status: &str,
+) {
+    draw_pane_intro_with_metrics(
+        ctx,
+        pane,
+        metrics,
+        PANE_INTRO_DETAIL_LINES,
+        icon,
+        title,
+        detail,
+        status,
+    );
+}
+
+fn draw_pane_intro_with_metrics(
+    ctx: &mut PaintCtx<'_>,
+    pane: Rect,
+    metrics: ProfilePaneMetrics,
+    detail_lines: usize,
+    icon: Icon,
+    title: &str,
+    detail: &str,
+    status: &str,
 ) {
     let (scene, transform, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let metrics = ProfilePaneMetrics::members(theme, pane);
     let rect = Rect::new(
         pane.x0 + PANE_PAD_X,
         pane.y0 + PANE_PAD_TOP,
@@ -1222,13 +1339,14 @@ fn draw_pane_intro(
         colors.intent.inverted_hover,
         LUCIDE_DEFAULT_STROKE_PX,
     );
-    draw_pane_intro_copy(ctx, rect, metrics, title, detail, status);
+    draw_pane_intro_copy(ctx, rect, metrics, detail_lines, title, detail, status);
 }
 
 fn draw_pane_intro_copy(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
     metrics: ProfilePaneMetrics,
+    detail_lines: usize,
     title: &str,
     detail: &str,
     status: &str,
@@ -1237,7 +1355,7 @@ fn draw_pane_intro_copy(
         (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let detail_style = tokens.typography.style(TextRole::Caption);
+    let detail_style = theme.text(TextRole::Caption);
     let detail_max = if metrics.stacked {
         (rect.width() - 76.0).max(80.0)
     } else {
@@ -1250,18 +1368,9 @@ fn draw_pane_intro_copy(
     let lines = if metrics.condensed {
         Vec::new()
     } else {
-        text_renderer.clamp_to_lines(
-            detail,
-            &detail_style,
-            detail_max as f32,
-            PANE_INTRO_DETAIL_LINES,
-        )
+        text_renderer.clamp_to_lines(detail, &detail_style, detail_max as f32, detail_lines)
     };
-    let title_h = f64::from(
-        text_renderer
-            .measure_style(title, None, &tokens.typography.style(TextRole::Caption))
-            .1,
-    );
+    let title_h = f64::from(text_renderer.measure_style(title, None, &detail_style).1);
     let line_h = f64::from(detail_style.line_height_px());
     #[allow(
         clippy::cast_precision_loss,
@@ -1279,7 +1388,7 @@ fn draw_pane_intro_copy(
         colors.text_primary,
         at(transform, rect.x0 + 62.0, top),
         None,
-        &tokens.typography.style(TextRole::Caption),
+        &detail_style,
     );
     let mut line_y = top + title_h + 4.0;
     for line in &lines {
@@ -1552,42 +1661,67 @@ fn draw_empty_state(
     let colors = &tokens.colors;
     let glyph = 28.0_f64;
     let cx = rect.center().x;
-    let stack_height = glyph + 58.0;
-    let top = rect.y0 + ((rect.height() - stack_height) / 2.0).clamp(12.0, 48.0);
-    // A region too short for the stack (the lens at its height floor) paints
-    // nothing rather than running the glyph and two lines past its bottom
-    // edge into whatever sits below (HIG §7: nothing overlaps).
-    if top + stack_height > rect.y1 {
+    let text_width = (rect.width() - 32.0).max(0.0);
+    let max_width = ui::num::f32_of_f64(text_width);
+    let h_style = tokens.typography.style(TextRole::Body);
+    let c_style = tokens.typography.style(TextRole::Caption);
+    let (hw, hh) = text_renderer.measure_style(headline, Some(max_width), &h_style);
+    let (cw, ch) = text_renderer.measure_style(caption, Some(max_width), &c_style);
+    let gap = f64::from(tokens.spacing.s2);
+    let full_height = glyph + gap + f64::from(hh) + gap + f64::from(ch);
+    let full_top = rect.y0 + ((rect.height() - full_height) / 2.0).clamp(12.0, 48.0);
+    let show_icon = full_top + full_height <= rect.y1;
+    let compact_gap = f64::from(tokens.spacing.s1);
+    let text_height = f64::from(hh) + compact_gap + f64::from(ch);
+    let show_caption = show_icon || text_height <= rect.height();
+    let top = if show_icon {
+        full_top
+    } else {
+        rect.y0
+            + ((rect.height()
+                - if show_caption {
+                    text_height
+                } else {
+                    f64::from(hh)
+                })
+                / 2.0)
+    };
+    if top + f64::from(hh) > rect.y1 {
         return;
     }
-    draw_icon(
-        scene,
-        transform,
-        Rect::new(cx - glyph / 2.0, top, cx + glyph / 2.0, top + glyph),
-        icon,
-        colors.text_dim,
-        LUCIDE_DEFAULT_STROKE_PX,
-    );
-    let h_style = tokens.typography.style(TextRole::Body);
-    let (hw, _) = text_renderer.measure_style(headline, None, &h_style);
+    if show_icon {
+        draw_icon(
+            scene,
+            transform,
+            Rect::new(cx - glyph / 2.0, top, cx + glyph / 2.0, top + glyph),
+            icon,
+            colors.text_dim,
+            LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
+    let headline_y = top + if show_icon { glyph + gap } else { 0.0 };
     text_renderer.draw_style(
         scene,
         headline,
         colors.text_primary,
-        at(transform, cx - f64::from(hw) / 2.0, top + glyph + 14.0),
-        None,
+        at(transform, cx - f64::from(hw) / 2.0, headline_y),
+        Some(max_width),
         &h_style,
     );
-    let c_style = tokens.typography.style(TextRole::Caption);
-    let (cw, _) = text_renderer.measure_style(caption, None, &c_style);
-    text_renderer.draw_style(
-        scene,
-        caption,
-        colors.text_dim,
-        at(transform, cx - f64::from(cw) / 2.0, top + glyph + 36.0),
-        None,
-        &c_style,
-    );
+    if show_caption {
+        text_renderer.draw_style(
+            scene,
+            caption,
+            colors.text_dim,
+            at(
+                transform,
+                cx - f64::from(cw) / 2.0,
+                headline_y + f64::from(hh) + if show_icon { gap } else { compact_gap },
+            ),
+            Some(max_width),
+            &c_style,
+        );
+    }
 }
 
 // Capability vocabulary — labels
@@ -2280,6 +2414,8 @@ pub struct MemberRow {
     pub is_workspace_owner: bool,
     pub grant_count: usize,
     pub selected: bool,
+    pub position_in_set: usize,
+    pub set_size: usize,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub remove_rect: Rect,
@@ -2299,11 +2435,170 @@ pub struct AgentRow {
     /// Set when the agent is a service member: a cloud or relay identity
     /// admitted to the room's encrypted channels with a stated purpose.
     pub service: Option<ServiceMember>,
+    /// Sanitized, exact-agent activity supplied by the authenticated host.
+    pub profile_activity: AgentProfileActivity,
+    /// One frame-stable localization shared by paint and accessibility.
+    pub activity_presentation: AgentProfileActivityPresentation,
     pub selected: bool,
+    pub position_in_set: usize,
+    pub set_size: usize,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub review_rect: Rect,
     pub remove_rect: Rect,
+}
+
+/// Whether the exact current Agent member can accept a task now. This is
+/// deliberately distinct from recent activity and from an observed phase.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AgentTaskAvailability {
+    Available,
+    Unavailable,
+    #[default]
+    Unknown,
+}
+
+/// Sanitized live work phase. No task title, prompt, output, error, UUID, or
+/// private progress crosses into Workspace Settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentLivePhase {
+    Locating,
+    Applying,
+    Progress,
+    Waiting,
+    Committed,
+    Failed,
+    Cancelled,
+}
+
+/// Host-authenticated status for one exact canonical Agent member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentProfileActivity {
+    pub agent: String,
+    pub task_availability: AgentTaskAvailability,
+    pub live_phase: Option<AgentLivePhase>,
+    pub last_activity_at: Option<i64>,
+}
+
+impl AgentProfileActivity {
+    fn unknown(agent: &str) -> Self {
+        Self {
+            agent: agent.to_string(),
+            task_availability: AgentTaskAvailability::Unknown,
+            live_phase: None,
+            last_activity_at: None,
+        }
+    }
+}
+
+/// The single localized presentation consumed by paint and accessibility.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentProfileActivityPresentation {
+    pub availability: String,
+    pub phase: Option<String>,
+    pub last_activity: String,
+    /// Frame-stable, content-free value for the Agent-specific polite live
+    /// region. The node name stays stable while this value changes.
+    pub announcement: String,
+}
+
+fn agent_activity_status(availability: &str, phase: Option<&str>) -> String {
+    phase.map_or_else(
+        || availability.to_string(),
+        |phase| {
+            t_args(
+                "workspace-settings-agent-availability-phase",
+                &[
+                    ("availability", availability.into()),
+                    ("phase", phase.into()),
+                ],
+            )
+        },
+    )
+}
+
+pub fn agent_profile_activity_presentation(
+    activity: &AgentProfileActivity,
+    now: SystemTime,
+) -> AgentProfileActivityPresentation {
+    let availability = t(match activity.task_availability {
+        AgentTaskAvailability::Available => "workspace-settings-agent-available",
+        AgentTaskAvailability::Unavailable => "workspace-settings-agent-unavailable",
+        AgentTaskAvailability::Unknown => "workspace-settings-agent-availability-unknown",
+    });
+    let phase = activity.live_phase.map(|phase| {
+        t(match phase {
+            AgentLivePhase::Locating => "workspace-settings-agent-phase-locating",
+            AgentLivePhase::Applying => "workspace-settings-agent-phase-applying",
+            AgentLivePhase::Progress => "workspace-settings-agent-phase-progress",
+            AgentLivePhase::Waiting => "workspace-settings-agent-phase-waiting",
+            AgentLivePhase::Committed => "workspace-settings-agent-phase-committed",
+            AgentLivePhase::Failed => "workspace-settings-agent-phase-failed",
+            AgentLivePhase::Cancelled => "workspace-settings-agent-phase-cancelled",
+        })
+    });
+    let last_activity = activity
+        .last_activity_at
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .and_then(|seconds| SystemTime::UNIX_EPOCH.checked_add(StdDuration::from_secs(seconds)))
+        .map_or_else(
+            || t("workspace-settings-agent-no-activity"),
+            |at| {
+                t_args(
+                    "workspace-settings-agent-last-activity",
+                    &[("when", format_relative_time(at, now).into())],
+                )
+            },
+        );
+    let announcement = t_args(
+        "workspace-settings-agent-activity-announcement",
+        &[
+            (
+                "status",
+                agent_activity_status(&availability, phase.as_deref()).into(),
+            ),
+            ("activity", last_activity.clone().into()),
+        ],
+    );
+    AgentProfileActivityPresentation {
+        availability,
+        phase,
+        last_activity,
+        announcement,
+    }
+}
+
+/// Earliest instant at which the shared relative-time formatter can produce
+/// different profile copy. Hosts may schedule a presentation-only wake at
+/// this boundary; it never requests new authority or availability facts.
+pub fn agent_profile_activity_next_presentation_at(
+    activity: &[AgentProfileActivity],
+    now: SystemTime,
+) -> Option<SystemTime> {
+    activity
+        .iter()
+        .filter_map(|activity| {
+            let seconds = u64::try_from(activity.last_activity_at?).ok()?;
+            let at = SystemTime::UNIX_EPOCH.checked_add(StdDuration::from_secs(seconds))?;
+            let elapsed = now.duration_since(at).unwrap_or_default().as_secs();
+            let boundary = if elapsed < 60 {
+                60
+            } else if elapsed < 60 * 60 {
+                elapsed.checked_div(60)?.checked_add(1)?.checked_mul(60)?
+            } else if elapsed < 60 * 60 * 24 {
+                elapsed
+                    .checked_div(60 * 60)?
+                    .checked_add(1)?
+                    .checked_mul(60 * 60)?
+            } else {
+                elapsed
+                    .checked_div(60 * 60 * 24)?
+                    .checked_add(1)?
+                    .checked_mul(60 * 60 * 24)?
+            };
+            at.checked_add(StdDuration::from_secs(boundary))
+        })
+        .min()
 }
 
 /// A named starting point for an agent's capability review.
@@ -2481,6 +2776,7 @@ pub fn agents_add_rect(pane_rect: Rect) -> Rect {
             onboarding_height: AGENT_ONBOARDING_HEIGHT,
             section_height: SECTION_HEADER_HEIGHT,
             control_height: AGENT_ONBOARDING_HEIGHT,
+            caption_line_height: 0.0,
             stacked: false,
             condensed: false,
         },
@@ -2489,7 +2785,7 @@ pub fn agents_add_rect(pane_rect: Rect) -> Rect {
 
 fn agents_add_rect_with_metrics(pane_rect: Rect, metrics: ProfilePaneMetrics) -> Rect {
     if metrics.condensed {
-        let y = pane_rect.y0 + PANE_PAD_TOP + metrics.intro_height + PANE_INTRO_GAP;
+        let y = pane_rect.y0 + metrics.intro_height + metrics.intro_gap();
         return Rect::new(
             pane_rect.center().x,
             y,
@@ -2499,7 +2795,7 @@ fn agents_add_rect_with_metrics(pane_rect: Rect, metrics: ProfilePaneMetrics) ->
     }
     Rect::new(
         pane_rect.x0 + PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + metrics.intro_height + PANE_INTRO_GAP,
+        pane_rect.y0 + PANE_PAD_TOP + metrics.intro_height + metrics.intro_gap(),
         if metrics.stacked {
             pane_rect.x1 - PANE_PAD_X
         } else {
@@ -2508,7 +2804,7 @@ fn agents_add_rect_with_metrics(pane_rect: Rect, metrics: ProfilePaneMetrics) ->
         pane_rect.y0
             + PANE_PAD_TOP
             + metrics.intro_height
-            + PANE_INTRO_GAP
+            + metrics.intro_gap()
             + metrics.onboarding_height,
     )
 }
@@ -2531,15 +2827,19 @@ pub fn agents_pane_rows_for(
         ws,
         pane_rect,
         selected_agent,
+        &[],
+        SystemTime::now(),
         ProfilePaneMetrics {
             intro_height: PANE_INTRO_HEIGHT,
             row_height: ROW_HEIGHT,
             onboarding_height: AGENT_ONBOARDING_HEIGHT,
             section_height: SECTION_HEADER_HEIGHT,
             control_height: REVOKE_HEIGHT,
+            caption_line_height: 0.0,
             stacked: false,
             condensed: false,
         },
+        true,
     )
 }
 
@@ -2549,11 +2849,66 @@ pub fn agents_pane_rows_for_theme(
     selected_agent: Option<&str>,
     theme: &Theme,
 ) -> Vec<AgentRow> {
+    agents_pane_rows_with_activity_for_theme(ws, pane_rect, selected_agent, &[], theme)
+}
+
+pub fn agents_pane_rows_with_activity_for_theme(
+    ws: &Workspace,
+    pane_rect: Rect,
+    selected_agent: Option<&str>,
+    activity: &[AgentProfileActivity],
+    theme: &Theme,
+) -> Vec<AgentRow> {
+    all_agent_rows_with_activity_at_for_theme(
+        ws,
+        pane_rect,
+        selected_agent,
+        activity,
+        SystemTime::now(),
+        theme,
+        true,
+    )
+}
+
+fn all_agent_rows_with_activity_at_for_theme(
+    ws: &Workspace,
+    pane_rect: Rect,
+    selected_agent: Option<&str>,
+    activity: &[AgentProfileActivity],
+    observed_at: SystemTime,
+    theme: &Theme,
+    limit_to_pane: bool,
+) -> Vec<AgentRow> {
     agents_pane_rows_for_metrics(
         ws,
         pane_rect,
         selected_agent,
+        activity,
+        observed_at,
         ProfilePaneMetrics::agents(theme, pane_rect),
+        limit_to_pane,
+    )
+}
+
+/// Every Agent row laid out with metrics from the actual viewport. The host
+/// scrolls and clips these rows; virtual content height must never cause a
+/// compact viewport to switch back to wide metrics.
+pub fn all_agent_rows_with_activity_for_theme(
+    ws: &Workspace,
+    pane_rect: Rect,
+    selected_agent: Option<&str>,
+    activity: &[AgentProfileActivity],
+    observed_at: SystemTime,
+    theme: &Theme,
+) -> Vec<AgentRow> {
+    all_agent_rows_with_activity_at_for_theme(
+        ws,
+        pane_rect,
+        selected_agent,
+        activity,
+        observed_at,
+        theme,
+        false,
     )
 }
 
@@ -2561,29 +2916,37 @@ fn agents_pane_rows_for_metrics(
     ws: &Workspace,
     pane_rect: Rect,
     selected_agent: Option<&str>,
+    activity: &[AgentProfileActivity],
+    observed_at: SystemTime,
     metrics: ProfilePaneMetrics,
+    limit_to_pane: bool,
 ) -> Vec<AgentRow> {
-    let mut agents = ws.agent_members();
+    let observed_unix = observed_at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let room = ws.room.to_string();
+    let mut agents = ws.agent_members_in_room_at(&room, observed_unix);
     agents.sort_by(|a, b| {
         let a_selected = selected_agent == Some(a.0.as_str());
         let b_selected = selected_agent == Some(b.0.as_str());
         b_selected.cmp(&a_selected).then_with(|| a.0.cmp(&b.0))
     });
+    let set_size = agents.len();
     let mut rows = Vec::new();
     let mut cursor_y = pane_rect.y0
-        + PANE_PAD_TOP
+        + if metrics.condensed { 0.0 } else { PANE_PAD_TOP }
         + metrics.intro_height
-        + PANE_INTRO_GAP
+        + metrics.intro_gap()
         + metrics.onboarding_height
         + metrics.section_height;
-    for (agent, role) in agents {
+    for (index, (agent, role)) in agents.into_iter().enumerate() {
         let row_rect = Rect::new(
             pane_rect.x0 + PANE_PAD_X,
             cursor_y,
             pane_rect.x1 - PANE_PAD_X,
             cursor_y + metrics.row_height,
         );
-        if row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
+        if limit_to_pane && row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
             break;
         }
         let (role_rect, review_rect, remove_rect) = agent_control_rects(row_rect, metrics);
@@ -2597,7 +2960,14 @@ fn agents_pane_rows_for_metrics(
             })
             .count();
         let preset = agent_authority_preset(ws, &agent);
-        let service = service_purpose(ws, &agent, tilo_clock::unix_now());
+        let service = service_purpose(ws, &agent, observed_unix);
+        let profile_activity = activity
+            .iter()
+            .find(|status| status.agent == agent)
+            .cloned()
+            .unwrap_or_else(|| AgentProfileActivity::unknown(&agent));
+        let activity_presentation =
+            agent_profile_activity_presentation(&profile_activity, observed_at);
         rows.push(AgentRow {
             selected: selected_agent == Some(agent.as_str()),
             agent,
@@ -2605,7 +2975,11 @@ fn agents_pane_rows_for_metrics(
             grant_count,
             preset,
             service,
+            profile_activity,
+            activity_presentation,
             row_rect,
+            position_in_set: index.saturating_add(1),
+            set_size,
             role_rect,
             review_rect,
             remove_rect,
@@ -2616,73 +2990,57 @@ fn agents_pane_rows_for_metrics(
 }
 
 fn agent_control_rects(row: Rect, metrics: ProfilePaneMetrics) -> (Rect, Rect, Rect) {
-    if metrics.condensed {
-        let inner = Rect::new(row.x0 + 12.0, row.y0 + 12.0, row.x1 - 12.0, row.y1 - 12.0);
-        let controls_y = row.y1 - 12.0 - metrics.control_height;
-        let half = (inner.width() - 12.0) / 2.0;
-        return (
-            Rect::new(
-                row.center().x,
-                row.y0 + 12.0,
-                inner.x1,
-                row.y0 + 12.0 + metrics.control_height,
-            ),
-            Rect::new(
-                inner.x0,
-                controls_y,
-                inner.x0 + half,
-                controls_y + metrics.control_height,
-            ),
-            Rect::new(
-                inner.x1 - half,
-                controls_y,
-                inner.x1,
-                controls_y + metrics.control_height,
-            ),
-        );
-    }
-    if metrics.stacked {
-        let inner = Rect::new(row.x0 + 12.0, row.y0 + 12.0, row.x1 - 12.0, row.y1 - 12.0);
-        let controls_y = row.y1 - 12.0 - metrics.control_height;
-        let half = (inner.width() - 12.0) / 2.0;
-        return (
-            Rect::new(
-                inner.x0,
-                controls_y - metrics.control_height - 8.0,
-                inner.x1,
-                controls_y - 8.0,
-            ),
-            Rect::new(
-                inner.x0,
-                controls_y,
-                inner.x0 + half,
-                controls_y + metrics.control_height,
-            ),
-            Rect::new(
-                inner.x1 - half,
-                controls_y,
-                inner.x1,
-                controls_y + metrics.control_height,
-            ),
-        );
-    }
-    let remove = Rect::new(
-        row.x1 - 12.0 - REVOKE_WIDTH,
-        row.center().y - REVOKE_HEIGHT / 2.0,
-        row.x1 - 12.0,
-        row.center().y + REVOKE_HEIGHT / 2.0,
+    let inset = if metrics.condensed { 4.0 } else { 12.0 };
+    let inner = Rect::new(
+        row.x0 + inset,
+        row.y0 + inset,
+        row.x1 - inset,
+        row.y1 - inset,
     );
+    let controls_y = row.y1 - inset - metrics.control_height;
+    let gap = 12.0;
+    if metrics.stacked {
+        let half = (inner.width() - gap) / 2.0;
+        let review = Rect::new(
+            inner.x0,
+            controls_y,
+            inner.x0 + half,
+            controls_y + metrics.control_height,
+        );
+        let remove = Rect::new(
+            review.x1 + gap,
+            controls_y,
+            inner.x1,
+            controls_y + metrics.control_height,
+        );
+        let admission_bottom = controls_y - 4.0;
+        let admission_height = metrics.caption_line_height;
+        let role = Rect::new(
+            inner.x0,
+            admission_bottom - admission_height,
+            inner.x1,
+            admission_bottom,
+        );
+        return (role, review, remove);
+    }
+    let third = (inner.width() - gap * 2.0) / 3.0;
     let role = Rect::new(
-        remove.x0 - 12.0 - AGENT_REVIEW_WIDTH - 12.0 - 96.0,
-        row.center().y - REVOKE_HEIGHT / 2.0,
-        remove.x0 - 12.0 - AGENT_REVIEW_WIDTH - 12.0,
-        row.center().y + REVOKE_HEIGHT / 2.0,
+        inner.x0,
+        controls_y,
+        inner.x0 + third,
+        controls_y + metrics.control_height,
     );
     let review = Rect::new(
-        remove.x0 - 12.0 - AGENT_REVIEW_WIDTH,
-        row.center().y - REVOKE_HEIGHT / 2.0,
-        remove.x0 - 12.0,
-        row.center().y + REVOKE_HEIGHT / 2.0,
+        role.x1 + gap,
+        controls_y,
+        role.x1 + gap + third,
+        controls_y + metrics.control_height,
+    );
+    let remove = Rect::new(
+        review.x1 + gap,
+        controls_y,
+        inner.x1,
+        controls_y + metrics.control_height,
     );
     (role, review, remove)
 }
@@ -2721,9 +3079,11 @@ pub fn members_pane_rows_for(
             onboarding_height: AGENT_ONBOARDING_HEIGHT,
             section_height: SECTION_HEADER_HEIGHT,
             control_height: REVOKE_HEIGHT,
+            caption_line_height: 0.0,
             stacked: false,
             condensed: false,
         },
+        true,
     )
 }
 
@@ -2738,6 +3098,84 @@ pub fn members_pane_rows_for_theme(
         pane_rect,
         selected_user,
         ProfilePaneMetrics::members(theme, pane_rect),
+        true,
+    )
+}
+
+pub fn all_member_rows_for_theme(
+    ws: &Workspace,
+    pane_rect: Rect,
+    selected_user: Option<&str>,
+    theme: &Theme,
+) -> Vec<MemberRow> {
+    members_pane_rows_for_metrics(
+        ws,
+        pane_rect,
+        selected_user,
+        ProfilePaneMetrics::members(theme, pane_rect),
+        false,
+    )
+}
+
+pub fn members_list_viewport_for_theme(pane: Rect, theme: &Theme) -> Rect {
+    members_list_viewport(pane, theme, false)
+}
+
+fn authority_footnote_band(theme: &Theme) -> f64 {
+    f64::from(theme.text(TextRole::Caption).line_height_px()) + f64::from(theme.tokens.spacing.s2)
+}
+
+fn members_list_viewport(pane: Rect, theme: &Theme, reserve_authority: bool) -> Rect {
+    let metrics = ProfilePaneMetrics::members(theme, pane);
+    Rect::new(
+        pane.x0 + PANE_PAD_X,
+        pane.y0
+            + PANE_PAD_TOP
+            + metrics.intro_height
+            + metrics.intro_gap()
+            + metrics.section_height,
+        pane.x1 - PANE_PAD_X,
+        pane.y1
+            - PANE_PAD_BOTTOM
+            - if reserve_authority {
+                authority_footnote_band(theme)
+            } else {
+                0.0
+            },
+    )
+}
+
+pub fn agents_list_viewport_for_theme(pane: Rect, theme: &Theme) -> Rect {
+    agents_list_viewport(pane, theme, false)
+}
+
+fn agents_list_viewport(pane: Rect, theme: &Theme, reserve_authority: bool) -> Rect {
+    let metrics = ProfilePaneMetrics::agents(theme, pane);
+    let pane_pad = if metrics.condensed { 0.0 } else { PANE_PAD_TOP };
+    let bottom_pad = if metrics.condensed {
+        0.0
+    } else {
+        PANE_PAD_BOTTOM
+    };
+    let fixed_header = if metrics.condensed {
+        0.0
+    } else {
+        metrics.intro_height
+            + metrics.intro_gap()
+            + metrics.onboarding_height
+            + metrics.section_height
+    };
+    Rect::new(
+        pane.x0 + PANE_PAD_X,
+        pane.y0 + pane_pad + fixed_header,
+        pane.x1 - PANE_PAD_X,
+        pane.y1
+            - bottom_pad
+            - if reserve_authority {
+                authority_footnote_band(theme)
+            } else {
+                0.0
+            },
     )
 }
 
@@ -2746,6 +3184,7 @@ fn members_pane_rows_for_metrics(
     pane_rect: Rect,
     selected_user: Option<&str>,
     metrics: ProfilePaneMetrics,
+    limit_to_pane: bool,
 ) -> Vec<MemberRow> {
     let mut rows = Vec::new();
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
@@ -2754,18 +3193,19 @@ fn members_pane_rows_for_metrics(
     let mut cursor_y = pane_rect.y0
         + PANE_PAD_TOP
         + metrics.intro_height
-        + PANE_INTRO_GAP
+        + metrics.intro_gap()
         + metrics.section_height;
     let mut roster = ordered_roster(ws);
     roster.sort_by_key(|(user, _)| selected_user != Some(user.as_str()));
-    for (user, role) in roster {
+    let set_size = roster.len();
+    for (index, (user, role)) in roster.into_iter().enumerate() {
         let row_rect = Rect::new(
             pane_rect.x0 + PANE_PAD_X,
             cursor_y,
             pane_rect.x1 - PANE_PAD_X,
             cursor_y + metrics.row_height,
         );
-        if row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
+        if limit_to_pane && row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
             break;
         }
         let (role_rect, remove_rect) = if metrics.stacked {
@@ -2817,6 +3257,8 @@ fn members_pane_rows_for_metrics(
             is_workspace_owner,
             grant_count,
             row_rect,
+            position_in_set: index.saturating_add(1),
+            set_size,
             role_rect,
             remove_rect,
         });
@@ -2871,27 +3313,58 @@ pub fn draw_members_pane_for(
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return;
     }
-    let metrics = ProfilePaneMetrics::members(theme, pane_rect);
     let rows = members_pane_rows_for_theme(ws, pane_rect, identity.selected_user, theme);
+    draw_members_pane_rows_for(
+        scene,
+        transform,
+        pane_rect,
+        ws,
+        MemberPaneRows {
+            identity,
+            is_owner,
+            rows: &rows,
+        },
+        text_renderer,
+        theme,
+    );
+}
+
+#[derive(Clone, Copy)]
+pub struct MemberPaneRows<'a> {
+    pub identity: MemberPaneIdentity<'a>,
+    pub is_owner: bool,
+    pub rows: &'a [MemberRow],
+}
+
+pub fn draw_members_pane_rows_for(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    ws: &Workspace,
+    content: MemberPaneRows<'_>,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let metrics = ProfilePaneMetrics::members(theme, pane_rect);
 
     let roster_count = ordered_roster(ws).len();
-    let transfer_status = ownership_transfer_status(ws, identity.local_user);
+    let transfer_status = ownership_transfer_status(ws, content.identity.local_user);
+    let transfer_pending = transfer_status.is_some();
     let member_help = transfer_status.unwrap_or_else(|| t("workspace-settings-members-help"));
-    let can_manage_transfer = !ownership_transfer_resource(ws, identity.local_user)
+    let can_manage_transfer = !ownership_transfer_resource(ws, content.identity.local_user)
         .actions
         .is_empty();
-    draw_pane_intro(
+    draw_profile_pane_intro(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
         pane_rect,
+        metrics,
         Icon::Home,
         &t_args(
             "workspace-settings-members-count",
             &[("count", roster_count.into())],
         ),
         &member_help,
-        &t(if can_manage_transfer {
-            "workspace-settings-ownership"
-        } else if is_owner {
+        &t(if content.is_owner {
             "workspace-settings-you-manage"
         } else {
             "workspace-settings-view-only"
@@ -2902,14 +3375,18 @@ pub fn draw_members_pane_for(
             scene,
             transform,
             ownership_action_rect_for_theme(pane_rect, theme),
-            &t("workspace-settings-ownership"),
+            &t(if transfer_pending && metrics.condensed {
+                "workspace-settings-ownership-action-pending"
+            } else {
+                "workspace-settings-ownership"
+            }),
             true,
             text_renderer,
             theme,
         );
     }
 
-    if rows.is_empty() {
+    if roster_count == 0 {
         draw_members_empty_state(scene, transform, pane_rect, metrics, text_renderer, theme);
         return;
     }
@@ -2919,7 +3396,7 @@ pub fn draw_members_pane_for(
         transform,
         Point::new(
             pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y0 + PANE_PAD_TOP + metrics.intro_height + PANE_INTRO_GAP,
+            pane_rect.y0 + PANE_PAD_TOP + metrics.intro_height + metrics.intro_gap(),
         ),
         &t("workspace-settings-people-header"),
         Some(ordered_roster(ws).len()),
@@ -2927,20 +3404,29 @@ pub fn draw_members_pane_for(
         theme,
     );
 
+    let clip = members_list_viewport(pane_rect, theme, !content.is_owner);
     let mut member_row_context = MemberRowDrawContext {
         scene,
         transform,
         workspace: ws,
-        local_user: identity.local_user,
-        is_owner,
+        local_user: content.identity.local_user,
+        is_owner: content.is_owner,
         text_renderer,
         theme,
     };
-    for row in &rows {
+    member_row_context.scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &clip,
+    );
+    for row in content.rows {
         draw_member_row(&mut member_row_context, row);
     }
+    member_row_context.scene.pop_layer();
 
-    if !is_owner {
+    if !content.is_owner {
         draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
     }
 }
@@ -2955,7 +3441,7 @@ fn draw_members_empty_state(
 ) {
     let empty = Rect::new(
         pane.x0,
-        pane.y0 + PANE_PAD_TOP + metrics.intro_height + PANE_INTRO_GAP,
+        pane.y0 + PANE_PAD_TOP + metrics.intro_height + metrics.intro_gap(),
         pane.x1,
         pane.y1,
     );
@@ -2991,7 +3477,7 @@ pub fn ownership_action_rect_for_theme(pane_rect: Rect, theme: &Theme) -> Rect {
         return ownership_action_rect(pane_rect);
     }
     if metrics.condensed {
-        let y = pane_rect.y0 + PANE_PAD_TOP + metrics.intro_height + PANE_INTRO_GAP;
+        let y = pane_rect.y0 + PANE_PAD_TOP + metrics.intro_height + metrics.intro_gap();
         return Rect::new(
             pane_rect.center().x,
             y,
@@ -3343,41 +3829,126 @@ pub fn draw_agents_pane_for(
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return;
     }
-    let metrics = ProfilePaneMetrics::agents(theme, pane_rect);
     let rows = agents_pane_rows_for_theme(ws, pane_rect, selected_agent, theme);
-    let count = ws.agent_members().len();
-    draw_pane_intro(
+    draw_agents_pane_rows_for(
+        scene,
+        transform,
+        pane_rect,
+        AgentPaneRows {
+            is_owner,
+            rows: &rows,
+            clip: None,
+        },
+        text_renderer,
+        theme,
+    );
+}
+
+#[derive(Clone, Copy)]
+pub struct AgentPaneRows<'a> {
+    pub is_owner: bool,
+    pub rows: &'a [AgentRow],
+    pub clip: Option<Rect>,
+}
+
+fn draw_agents_pane_header(
+    ctx: &mut PaintCtx<'_>,
+    pane: Rect,
+    metrics: ProfilePaneMetrics,
+    count: usize,
+    is_owner: bool,
+) {
+    let pane_pad = if metrics.condensed { 0.0 } else { PANE_PAD_TOP };
+    if !metrics.condensed {
+        draw_profile_pane_intro(
+            ctx,
+            pane,
+            metrics,
+            Icon::Sparkles,
+            &t_args(
+                "workspace-settings-agents-count",
+                &[("count", count.into())],
+            ),
+            &t("workspace-settings-agents-help"),
+            &t(if is_owner {
+                "workspace-settings-you-manage"
+            } else {
+                "workspace-settings-view-only"
+            }),
+        );
+    }
+    draw_primary_button(
+        ctx.scene,
+        ctx.transform,
+        agents_add_rect_with_metrics(pane, metrics),
+        &t("workspace-settings-add-agent"),
+        is_owner,
+        ctx.text,
+        ctx.theme,
+    );
+    if count > 0 {
+        draw_section_header(
+            ctx.scene,
+            ctx.transform,
+            Point::new(
+                pane.x0 + PANE_PAD_X,
+                pane.y0
+                    + pane_pad
+                    + metrics.intro_height
+                    + metrics.intro_gap()
+                    + metrics.onboarding_height,
+            ),
+            &t("workspace-settings-agents-header"),
+            Some(count),
+            ctx.text,
+            ctx.theme,
+        );
+    }
+}
+
+pub fn draw_agents_pane_rows_for(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    content: AgentPaneRows<'_>,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let metrics = ProfilePaneMetrics::agents(theme, pane_rect);
+    let pane_pad = if metrics.condensed { 0.0 } else { PANE_PAD_TOP };
+    let clip = content
+        .clip
+        .unwrap_or_else(|| agents_list_viewport(pane_rect, theme, !content.is_owner));
+    let clip_whole_pane = metrics.condensed && content.clip.is_some();
+    if clip_whole_pane {
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &clip,
+        );
+    }
+    let count = agent_pane_count(content.rows);
+    draw_agents_pane_header(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
         pane_rect,
-        Icon::Sparkles,
-        &t_args(
-            "workspace-settings-agents-count",
-            &[("count", count.into())],
-        ),
-        &t("workspace-settings-agents-help"),
-        &t(if is_owner {
-            "workspace-settings-you-manage"
-        } else {
-            "workspace-settings-view-only"
-        }),
+        metrics,
+        count,
+        content.is_owner,
     );
-    if rows.is_empty() {
-        draw_primary_button(
-            scene,
-            transform,
-            agents_add_rect_with_metrics(pane_rect, metrics),
-            &t("workspace-settings-add-agent"),
-            is_owner,
-            text_renderer,
-            theme,
-        );
+    if count == 0 {
         let empty = Rect::new(
             pane_rect.x0,
             pane_rect.y0
-                + PANE_PAD_TOP
+                + pane_pad
                 + metrics.intro_height
-                + PANE_INTRO_GAP
-                + metrics.onboarding_height,
+                + metrics.intro_gap()
+                + if metrics.condensed {
+                    metrics.section_height
+                } else {
+                    metrics.onboarding_height
+                },
             pane_rect.x1,
             pane_rect.y1,
         );
@@ -3393,39 +3964,39 @@ pub fn draw_agents_pane_for(
             text_renderer,
             theme,
         );
+        if clip_whole_pane {
+            scene.pop_layer();
+        }
         return;
     }
-    draw_section_header(
-        scene,
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
         transform,
-        Point::new(
-            pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y0
-                + PANE_PAD_TOP
-                + metrics.intro_height
-                + PANE_INTRO_GAP
-                + metrics.onboarding_height,
-        ),
-        &t("workspace-settings-agents-header"),
-        Some(count),
-        text_renderer,
-        theme,
+        &clip,
     );
-    draw_primary_button(
-        scene,
-        transform,
-        agents_add_rect_with_metrics(pane_rect, metrics),
-        &t("workspace-settings-add-agent"),
-        is_owner,
-        text_renderer,
-        theme,
-    );
-    for row in &rows {
-        draw_agent_row(scene, transform, row, is_owner, text_renderer, theme);
+    for row in content.rows {
+        draw_agent_row(
+            scene,
+            transform,
+            row,
+            content.is_owner,
+            text_renderer,
+            theme,
+        );
     }
-    if !is_owner {
+    scene.pop_layer();
+    if !content.is_owner {
         draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
     }
+    if clip_whole_pane {
+        scene.pop_layer();
+    }
+}
+
+fn agent_pane_count(rows: &[AgentRow]) -> usize {
+    rows.first().map_or(0, |row| row.set_size)
 }
 
 /// One line on what a service member may do in the room and for how long.
@@ -3494,6 +4065,54 @@ struct AgentRowCopyGeometry {
     admission_rect: Rect,
     text_x: f64,
     text_limit: f64,
+    detail_limit: f64,
+    title_y: f64,
+    line_height: f64,
+    paragraph_gap: f64,
+}
+
+#[derive(Clone, Copy)]
+struct AgentRowTextLayout {
+    detail_width: f32,
+    detail_y: f64,
+    status_width: f32,
+    status_y: f64,
+    history_y: f64,
+    #[cfg(test)]
+    history_bottom: f64,
+}
+
+fn agent_row_text_layout(
+    row: &AgentRow,
+    copy: AgentRowCopyGeometry,
+    detail: &str,
+    status: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) -> AgentRowTextLayout {
+    let style = theme.tokens.typography.style(TextRole::Caption);
+    let detail_width = ui::num::f32_of_f64((copy.detail_limit - copy.text_x).max(0.0));
+    let (_, detail_height) = text_renderer.measure_style(detail, Some(detail_width), &style);
+    let detail_y = copy.title_y + copy.line_height;
+    let status_width = ui::num::f32_of_f64((row.row_rect.width() - 24.0).max(0.0));
+    let status_y = detail_y + f64::from(detail_height) + copy.paragraph_gap;
+    let (_, status_height) = text_renderer.measure_style(status, Some(status_width), &style);
+    let history_y = status_y + f64::from(status_height) + copy.paragraph_gap;
+    #[cfg(test)]
+    let (_, history_height) = text_renderer.measure_style(
+        &row.activity_presentation.last_activity,
+        Some(status_width),
+        &style,
+    );
+    AgentRowTextLayout {
+        detail_width,
+        detail_y,
+        status_width,
+        status_y,
+        history_y,
+        #[cfg(test)]
+        history_bottom: history_y + f64::from(history_height),
+    }
 }
 
 fn agent_row_copy_geometry(
@@ -3503,15 +4122,12 @@ fn agent_row_copy_geometry(
     theme: &Theme,
 ) -> AgentRowCopyGeometry {
     let stacked = row.row_rect.height() > ROW_HEIGHT + 1.0;
-    let condensed = stacked && row.role_rect.x0 >= row.row_rect.center().x - 1.0;
     let avatar_center_y = if stacked {
         row.row_rect.y0 + 26.0
     } else {
         row.row_rect.center().y
     };
-    let badge_anchor = if condensed {
-        Point::new(row.role_rect.x0 - 8.0, avatar_center_y)
-    } else if stacked {
+    let badge_anchor = if stacked {
         Point::new(row.row_rect.x1 - 12.0, avatar_center_y)
     } else {
         Point::new(row.role_rect.x0 - 12.0, row.row_rect.center().y)
@@ -3525,6 +4141,11 @@ fn agent_row_copy_geometry(
     let badge_height = BadgeFace::height(theme);
     let badge_width = BadgeFace::intrinsic_width(&badge_label, text_renderer, theme);
     let admission_width = BadgeFace::intrinsic_width(&admission_label, text_renderer, theme);
+    let base_line = f64::from(theme.text(TextRole::Caption).line_height_px());
+    let control_height = f64::from(theme.tokens.metrics.min_pointer_target).max(base_line + 16.0);
+    let compact_height = base_line * 7.0 + control_height + 20.0;
+    let compact = (row.row_rect.height() - compact_height).abs() <= 1.0;
+    let line_height = base_line + if compact { 0.0 } else { 4.0 };
     let admission_anchor = Point::new(row.role_rect.x1, row.role_rect.center().y);
     let badge_rect = Rect::new(
         badge_anchor.x - badge_width,
@@ -3542,12 +4163,27 @@ fn agent_row_copy_geometry(
         badge_rect,
         admission_rect,
         text_x: row.row_rect.x0 + 52.0,
-        text_limit: if condensed {
-            badge_rect.x0.min(row.role_rect.x0)
-        } else {
-            badge_rect.x0
-        },
+        text_limit: badge_rect.x0,
+        // Authority, activity, and history occupy the copy band above the
+        // controls. Only the title shares a line with the Agent badge.
+        detail_limit: row.row_rect.x1 - 12.0,
+        title_y: row.row_rect.y0 + 12.0,
+        line_height,
+        paragraph_gap: if compact { 0.0 } else { 4.0 },
     }
+}
+
+/// A compact Agent principal which keeps both ends of an opaque identity.
+/// Agent ids commonly share a long namespace prefix, so a head-only short id
+/// makes adjacent authenticated principals visually indistinguishable.
+fn agent_short_id(id: &str) -> String {
+    let count = id.chars().count();
+    if count <= 9 {
+        return id.to_string();
+    }
+    let head: String = id.chars().take(4).collect();
+    let tail: String = id.chars().skip(count.saturating_sub(4)).collect();
+    format!("{head}…{tail}")
 }
 
 fn draw_agent_row(
@@ -3558,14 +4194,41 @@ fn draw_agent_row(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
     draw_row_card(scene, transform, row.row_rect, theme);
     draw_profile_selection(scene, transform, row.row_rect, row.selected, theme);
     draw_agent_avatar(scene, transform, row, theme);
+    draw_agent_row_content(scene, transform, row, text_renderer, theme);
+    Button::paint(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        &ButtonFace::new(row.review_rect, &t("workspace-settings-review-access"))
+            .disabled(!is_owner),
+    );
+    draw_danger_button(
+        scene,
+        transform,
+        row.remove_rect,
+        &t("workspace-settings-revoke"),
+        is_owner,
+        text_renderer,
+        theme,
+    );
+}
+
+fn draw_agent_row_content(
+    scene: &mut Scene,
+    transform: Affine,
+    row: &AgentRow,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
     let name = match &row.service {
         Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
-        _ => short_id(&row.agent),
+        _ => agent_short_id(&row.agent),
     };
     let copy = agent_row_copy_geometry(row, row.service.is_some(), text_renderer, theme);
     draw_pill(
@@ -3582,10 +4245,10 @@ fn draw_agent_row(
         theme,
     );
     let text_x = copy.text_x;
-    let text_max = copy.text_limit - 8.0 - text_x;
+    let title_max = copy.text_limit - 8.0 - text_x;
     let title_style = tokens.typography.style(TextRole::Caption);
-    let title_y = row.row_rect.y0 + 12.0;
-    let title = elide(&name, &title_style, text_max, text_renderer);
+    let title_y = copy.title_y;
+    let title = elide(&name, &title_style, title_max, text_renderer);
     text_renderer.draw_style(
         scene,
         &title,
@@ -3608,17 +4271,32 @@ fn draw_agent_row(
         )
     };
     let detail_style = tokens.typography.style(TextRole::Caption);
-    let detail = elide(&detail, &detail_style, text_max, text_renderer);
+    let activity = &row.activity_presentation;
+    let status = agent_activity_status(&activity.availability, activity.phase.as_deref());
+    let layout = agent_row_text_layout(row, copy, &detail, &status, text_renderer, theme);
     text_renderer.draw_style(
         scene,
         &detail,
         colors.text_dim,
-        at(
-            transform,
-            text_x,
-            title_y + f64::from(title_style.line_height_px()) + 4.0,
-        ),
-        None,
+        at(transform, text_x, layout.detail_y),
+        Some(layout.detail_width),
+        &detail_style,
+    );
+    let status_x = row.row_rect.x0 + 12.0;
+    text_renderer.draw_style(
+        scene,
+        &status,
+        colors.text_dim,
+        at(transform, status_x, layout.status_y),
+        Some(layout.status_width),
+        &detail_style,
+    );
+    text_renderer.draw_style(
+        scene,
+        &activity.last_activity,
+        colors.text_dim,
+        at(transform, status_x, layout.history_y),
+        Some(layout.status_width),
         &detail_style,
     );
     draw_pill(
@@ -3630,29 +4308,12 @@ fn draw_agent_row(
         text_renderer,
         theme,
     );
-    Button::paint(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        &ButtonFace::new(row.review_rect, &t("workspace-settings-review-access"))
-            .disabled(!is_owner),
-    );
-    draw_danger_button(
-        scene,
-        transform,
-        row.remove_rect,
-        &t("workspace-settings-revoke"),
-        is_owner,
-        text_renderer,
-        theme,
-    );
 }
 
 pub fn agent_profile_presentation(row: &AgentRow) -> (String, String) {
     let name = match &row.service {
         Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
-        _ => short_id(&row.agent),
+        _ => agent_short_id(&row.agent),
     };
     let detail = if let Some(service) = &row.service {
         service_member_detail(service)
@@ -3666,7 +4327,17 @@ pub fn agent_profile_presentation(row: &AgentRow) -> (String, String) {
             ],
         )
     };
-    (name, detail)
+    let activity = &row.activity_presentation;
+    (
+        name,
+        t_args(
+            "workspace-settings-agent-profile-summary",
+            &[
+                ("authority", detail.into()),
+                ("activity", activity.announcement.clone().into()),
+            ],
+        ),
+    )
 }
 
 fn agent_admission_label(role: CapRole) -> String {
@@ -3690,8 +4361,8 @@ pub struct DefaultAppRow {
 /// Top of the first default-app row: under the intro card, the section
 /// header and the column-label line. The pane's empty state starts here
 /// too, so it can never paint over that header block.
-fn default_app_rows_top(pane: Rect) -> f64 {
-    pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + 44.0
+fn default_app_rows_top(pane: Rect, intro_height: f64) -> f64 {
+    pane.y0 + PANE_PAD_TOP + intro_height + PANE_INTRO_GAP + 44.0
 }
 
 /// A default-app cycler keeps this far from its row card's edge.
@@ -3740,6 +4411,30 @@ pub fn default_app_rows(
     pane: Rect,
     candidates: &[desktop_policy::AppCandidate],
 ) -> Vec<DefaultAppRow> {
+    default_app_rows_with_intro(pane, candidates, PANE_INTRO_HEIGHT)
+}
+
+pub fn default_app_rows_for_theme(
+    pane: Rect,
+    candidates: &[desktop_policy::AppCandidate],
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) -> Vec<DefaultAppRow> {
+    let (metrics, _) = ProfilePaneMetrics::measured_generic_intro(
+        theme,
+        pane,
+        &t("workspace-settings-apps-intro-title"),
+        &t("workspace-settings-apps-intro-detail"),
+        text_renderer,
+    );
+    default_app_rows_with_intro(pane, candidates, metrics.intro_height)
+}
+
+fn default_app_rows_with_intro(
+    pane: Rect,
+    candidates: &[desktop_policy::AppCandidate],
+    intro_height: f64,
+) -> Vec<DefaultAppRow> {
     let mut resources: Vec<_> = candidates
         .iter()
         .flat_map(|a| a.resources.iter().cloned())
@@ -3761,7 +4456,7 @@ pub fn default_app_rows(
                 clippy::cast_precision_loss,
                 reason = "index is a small row position bounded by the resource-kind list, well under 2^53"
             )]
-            let y0 = default_app_rows_top(pane) + index as f64 * row_step;
+            let y0 = default_app_rows_top(pane, intro_height) + index as f64 * row_step;
             let row_rect = Rect::new(x0, y0, x1, y0 + row_h);
             let controls_y = if compact {
                 row_rect.y1 - 10.0 - CONTROL_HEIGHT
@@ -3828,14 +4523,29 @@ pub fn draw_default_apps_pane(
             &[("count", custom_rules.into())],
         )
     };
-    draw_default_apps_header(scene, transform, pane, &status, text_renderer, theme);
+    let intro_height =
+        draw_default_apps_header(scene, transform, pane, &status, text_renderer, theme);
     let can_admin = ws.may_administer(local_user);
-    draw_default_apps_rows(scene, transform, pane, ctx, can_admin, text_renderer, theme);
+    draw_default_apps_rows(
+        scene,
+        transform,
+        pane,
+        ctx,
+        can_admin,
+        intro_height,
+        text_renderer,
+        theme,
+    );
     if candidates.iter().all(|a| a.resources.is_empty()) {
         // The empty state owns the row region only: centred in the whole
         // pane it painted across the intro card, the section header and the
         // column labels (HIG §7: nothing overlaps).
-        let rows = Rect::new(pane.x0, default_app_rows_top(pane), pane.x1, pane.y1);
+        let rows = Rect::new(
+            pane.x0,
+            default_app_rows_top(pane, intro_height),
+            pane.x1,
+            pane.y1,
+        );
         draw_empty_state(
             scene,
             transform,
@@ -3861,8 +4571,8 @@ fn draw_default_apps_header(
     status: &str,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
-) {
-    draw_pane_intro(
+) -> f64 {
+    let intro_height = draw_pane_intro(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
         pane,
         Icon::LayoutGrid,
@@ -3870,7 +4580,7 @@ fn draw_default_apps_header(
         &t("workspace-settings-apps-intro-detail"),
         status,
     );
-    let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
+    let heading_y = pane.y0 + PANE_PAD_TOP + intro_height + PANE_INTRO_GAP;
     draw_section_header(
         scene,
         transform,
@@ -3898,6 +4608,7 @@ fn draw_default_apps_header(
             &theme.text(TextRole::Caption),
         );
     }
+    intro_height
 }
 
 /// One row per resource kind: the workspace's policy cycler and the local
@@ -3909,6 +4620,7 @@ fn draw_default_apps_rows(
     pane: Rect,
     ctx: &DefaultAppsCtx<'_>,
     can_admin: bool,
+    intro_height: f64,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
@@ -3917,7 +4629,7 @@ fn draw_default_apps_rows(
         local_user,
         candidates,
     } = *ctx;
-    for row in default_app_rows(pane, candidates) {
+    for row in default_app_rows_with_intro(pane, candidates, intro_height) {
         draw_row_card(scene, transform, row.row_rect, theme);
         let label_style = theme.text(TextRole::Caption);
         let label_x = row.row_rect.x0 + DEFAULT_APP_ROW_INSET;
@@ -4052,6 +4764,7 @@ fn draw_authority_footnote(
     let tokens = &theme.tokens;
     let note = t("workspace-settings-owner-only");
     let style = tokens.typography.style(TextRole::Caption);
+    let line_height = f64::from(style.line_height_px());
     text_renderer.draw_style(
         scene,
         &note,
@@ -4059,7 +4772,7 @@ fn draw_authority_footnote(
         at(
             transform,
             pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y1 - PANE_PAD_BOTTOM - 14.0,
+            pane_rect.y1 - PANE_PAD_BOTTOM - line_height,
         ),
         None,
         &style,
@@ -4179,11 +4892,49 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, &CapOverride)> {
 
 /// Geometry does not depend on the draft, so the click router can
 /// resolve a point without knowing it.
+fn permissions_intro_height(
+    pane_rect: Rect,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) -> f64 {
+    ProfilePaneMetrics::measured_generic_intro(
+        theme,
+        pane_rect,
+        &t("workspace-settings-permissions-intro-title"),
+        &t("workspace-settings-permissions-intro-detail"),
+        text_renderer,
+    )
+    .0
+    .intro_height
+}
+
 pub fn permissions_pane_layout(
     ws: &Workspace,
     pane_rect: Rect,
     apps: &dyn AppDirectory,
     local_user: &str,
+) -> PermissionsPaneLayout {
+    permissions_pane_layout_with_intro(ws, pane_rect, apps, local_user, PANE_INTRO_HEIGHT)
+}
+
+pub fn permissions_pane_layout_for_theme(
+    ws: &Workspace,
+    pane_rect: Rect,
+    apps: &dyn AppDirectory,
+    local_user: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) -> PermissionsPaneLayout {
+    let intro_height = permissions_intro_height(pane_rect, text_renderer, theme);
+    permissions_pane_layout_with_intro(ws, pane_rect, apps, local_user, intro_height)
+}
+
+fn permissions_pane_layout_with_intro(
+    ws: &Workspace,
+    pane_rect: Rect,
+    apps: &dyn AppDirectory,
+    local_user: &str,
+    intro_height: f64,
 ) -> PermissionsPaneLayout {
     let mut layout = PermissionsPaneLayout::default();
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
@@ -4191,7 +4942,7 @@ pub fn permissions_pane_layout(
     }
 
     // ---- Composer -------------------------------------------------
-    let card = permission_composer_card(pane_rect);
+    let card = permission_composer_card(pane_rect, intro_height);
     layout_composer_controls(&mut layout, ws, card, compact_pane(pane_rect));
     layout_capability_rows(&mut layout, (ws, local_user), pane_rect, card, apps);
     layout
@@ -4200,8 +4951,23 @@ pub fn permissions_pane_layout(
 /// Header-level entry point for reusable permission roles. Keeping this in
 /// the pane's shared geometry module makes paint and hit testing agree.
 pub fn permission_profiles_rect(pane_rect: Rect) -> Rect {
+    permission_profiles_rect_with_intro(pane_rect, PANE_INTRO_HEIGHT)
+}
+
+pub fn permission_profiles_rect_for_theme(
+    pane_rect: Rect,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) -> Rect {
+    permission_profiles_rect_with_intro(
+        pane_rect,
+        permissions_intro_height(pane_rect, text_renderer, theme),
+    )
+}
+
+fn permission_profiles_rect_with_intro(pane_rect: Rect, intro_height: f64) -> Rect {
     let width = 164.0_f64.min((pane_rect.width() * 0.42).max(0.0));
-    let y0 = pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP - 2.0;
+    let y0 = pane_rect.y0 + PANE_PAD_TOP + intro_height + PANE_INTRO_GAP - 2.0;
     Rect::new(
         pane_rect.x1 - PANE_PAD_X - width,
         y0,
@@ -4210,7 +4976,7 @@ pub fn permission_profiles_rect(pane_rect: Rect) -> Rect {
     )
 }
 
-fn permission_composer_card(pane_rect: Rect) -> Rect {
+fn permission_composer_card(pane_rect: Rect, intro_height: f64) -> Rect {
     let composer_height = if compact_pane(pane_rect) {
         COMPOSER_HEIGHT + COMPOSER_COMPACT_EXTRA
     } else {
@@ -4218,11 +4984,11 @@ fn permission_composer_card(pane_rect: Rect) -> Rect {
     };
     Rect::new(
         pane_rect.x0 + PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT,
+        pane_rect.y0 + PANE_PAD_TOP + intro_height + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT,
         pane_rect.x1 - PANE_PAD_X,
         pane_rect.y0
             + PANE_PAD_TOP
-            + PANE_INTRO_HEIGHT
+            + intro_height
             + PANE_INTRO_GAP
             + SECTION_HEADER_HEIGHT
             + composer_height,
@@ -4402,9 +5168,8 @@ pub fn draw_permissions_pane(
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return;
     }
-    let layout = permissions_pane_layout(ws, pane_rect, apps, local_user);
     let active_grants = listed_capabilities(ws).len();
-    draw_pane_intro(
+    let intro_height = draw_pane_intro(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
         pane_rect,
         Icon::Shield,
@@ -4415,6 +5180,7 @@ pub fn draw_permissions_pane(
             &[("count", active_grants.into())],
         ),
     );
+    let layout = permissions_pane_layout_with_intro(ws, pane_rect, apps, local_user, intro_height);
 
     let card = draw_permission_composer(
         scene,
@@ -4423,6 +5189,7 @@ pub fn draw_permissions_pane(
         (ws, draft, apps, local_user),
         is_owner,
         &layout,
+        intro_height,
         (&mut *text_renderer, theme),
     );
 
@@ -4587,6 +5354,7 @@ fn draw_permission_composer(
     subject_draft: (&Workspace, &GrantDraft, &dyn AppDirectory, &str),
     is_owner: bool,
     layout: &PermissionsPaneLayout,
+    intro_height: f64,
     render: (&mut TextRenderer, &Theme),
 ) -> Rect {
     let draft = subject_draft.1;
@@ -4599,7 +5367,7 @@ fn draw_permission_composer(
         transform,
         Point::new(
             pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+            pane_rect.y0 + PANE_PAD_TOP + intro_height + PANE_INTRO_GAP,
         ),
         &t("workspace-settings-grant-header"),
         None,
@@ -4612,7 +5380,7 @@ fn draw_permission_composer(
         text_renderer,
         theme,
         &ButtonFace::new(
-            permission_profiles_rect(pane_rect),
+            permission_profiles_rect_with_intro(pane_rect, intro_height),
             &t_args(
                 "workspace-settings-saved-roles",
                 &[("count", subject_draft.0.permission_profiles.len().into())],
@@ -4620,7 +5388,7 @@ fn draw_permission_composer(
         )
         .disabled(!is_owner),
     );
-    let card = permission_composer_card(pane_rect);
+    let card = permission_composer_card(pane_rect, intro_height);
     ui::surface::card(
         scene,
         transform,
@@ -5546,6 +6314,256 @@ mod agents_pane_tests {
     }
 
     #[test]
+    fn agent_profile_rows_count_and_presentation_exclude_other_rooms() {
+        let mut ws = ws_with_agent();
+        ws.grant_capability(CapOverride::membership(
+            Subject::agent("foreign-agent"),
+            "another-room",
+            Verb::Write,
+        ));
+        let observed_at = SystemTime::UNIX_EPOCH + StdDuration::from_secs(3_600);
+        let activities = [
+            AgentProfileActivity {
+                agent: AGENT.to_string(),
+                task_availability: AgentTaskAvailability::Available,
+                live_phase: Some(AgentLivePhase::Applying),
+                last_activity_at: Some(3_540),
+            },
+            AgentProfileActivity {
+                agent: "foreign-agent".to_string(),
+                task_availability: AgentTaskAvailability::Available,
+                live_phase: Some(AgentLivePhase::Applying),
+                last_activity_at: Some(3_540),
+            },
+        ];
+        let pane = Rect::new(0.0, 0.0, 640.0, 700.0);
+        let theme = Theme::dark();
+        let rows = all_agent_rows_with_activity_for_theme(
+            &ws,
+            pane,
+            Some("foreign-agent"),
+            &activities,
+            observed_at,
+            &theme,
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].agent, AGENT);
+        assert!(!rows[0].selected, "a foreign-room subject is not revealed");
+        assert_eq!(agent_pane_count(&rows), 1);
+        assert_eq!((rows[0].position_in_set, rows[0].set_size), (1, 1));
+        let (name, description) = agent_profile_presentation(&rows[0]);
+        assert!(!name.contains("foreign"));
+        assert!(!description.contains("foreign"));
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        draw_agents_pane_rows_for(
+            &mut scene,
+            Affine::IDENTITY,
+            pane,
+            AgentPaneRows {
+                is_owner: true,
+                rows: &rows,
+                clip: None,
+            },
+            &mut text,
+            &theme,
+        );
+        assert!(
+            !scene.encoding().draw_tags.is_empty(),
+            "the exact current-room row remains paintable"
+        );
+    }
+
+    #[test]
+    fn agent_profile_activity_is_exact_typed_and_frame_stable() {
+        let ws = ws_with_agent();
+        let observed_at = SystemTime::UNIX_EPOCH + StdDuration::from_secs(3_600);
+        let activity = AgentProfileActivity {
+            agent: AGENT.to_string(),
+            task_availability: AgentTaskAvailability::Unavailable,
+            live_phase: Some(AgentLivePhase::Applying),
+            last_activity_at: Some(3_480),
+        };
+        let rows = all_agent_rows_with_activity_for_theme(
+            &ws,
+            Rect::new(0.0, 0.0, 640.0, 480.0),
+            Some(AGENT),
+            std::slice::from_ref(&activity),
+            observed_at,
+            &Theme::dark(),
+        );
+        let row = rows.first().expect("exact Agent row");
+        assert_eq!(row.profile_activity, activity);
+        assert_eq!((row.position_in_set, row.set_size), (1, 1));
+        assert!(
+            row.activity_presentation
+                .availability
+                .contains("Not currently")
+        );
+        assert!(
+            row.activity_presentation
+                .phase
+                .as_deref()
+                .is_some_and(|phase| phase.contains("Applying"))
+        );
+        assert!(
+            row.activity_presentation
+                .last_activity
+                .contains("Last activity")
+        );
+        let (_, accessible) = agent_profile_presentation(row);
+        assert!(accessible.contains("Not currently"));
+        assert!(accessible.contains("Applying"));
+        assert!(accessible.contains(&row.activity_presentation.last_activity));
+        assert_eq!(accessible.matches("Last activity").count(), 1);
+
+        let unknown = all_agent_rows_with_activity_for_theme(
+            &ws,
+            Rect::new(0.0, 0.0, 640.0, 480.0),
+            Some(AGENT),
+            &[],
+            observed_at,
+            &Theme::dark(),
+        );
+        assert_eq!(
+            unknown[0].profile_activity.task_availability,
+            AgentTaskAvailability::Unknown
+        );
+        assert!(unknown[0].activity_presentation.phase.is_none());
+        assert!(
+            unknown[0]
+                .activity_presentation
+                .last_activity
+                .contains("No recorded")
+        );
+    }
+
+    #[test]
+    fn normal_agent_rows_keep_complete_copy_above_controls_and_distinguish_ids() {
+        let mut ws = ws_with_agent();
+        ws.capabilities
+            .retain(|cap| !subject_is_agent(&cap.subject, AGENT) || cap.is_room_membership());
+        for index in 0..13 {
+            let agent = format!("review-agent-{index:02}");
+            ws.grant_as(
+                &OWNER.to_string(),
+                CapOverride::membership(Subject::agent(agent), ws.room.to_string(), Verb::Read),
+            )
+            .expect("owner admits overflow Agent");
+        }
+        let theme = Theme::light();
+        let pane = Rect::new(0.0, 0.0, 608.0, 900.0);
+        let activity = AgentProfileActivity {
+            agent: AGENT.to_string(),
+            task_availability: AgentTaskAvailability::Unknown,
+            live_phase: Some(AgentLivePhase::Applying),
+            last_activity_at: Some(3_540),
+        };
+        let rows = all_agent_rows_with_activity_for_theme(
+            &ws,
+            pane,
+            Some(AGENT),
+            std::slice::from_ref(&activity),
+            SystemTime::UNIX_EPOCH + StdDuration::from_secs(3_600),
+            &theme,
+        );
+        let row = rows.first().expect("selected Agent sorts first");
+        let mut text = TextRenderer::new();
+        let copy = agent_row_copy_geometry(row, false, &mut text, &theme);
+        let detail = t_args(
+            "workspace-settings-agent-detail",
+            &[
+                ("admission", agent_admission_label(row.role).into()),
+                ("profile", row.preset.label().into()),
+                ("count", row.grant_count.into()),
+            ],
+        );
+        let style = theme.tokens.typography.style(TextRole::Caption);
+        assert_eq!(
+            elide(&detail, &style, copy.detail_limit - copy.text_x, &mut text),
+            detail,
+            "the normal 608 px pane must show the complete authority summary"
+        );
+        let controls_y = row
+            .role_rect
+            .y0
+            .min(row.review_rect.y0)
+            .min(row.remove_rect.y0);
+        let status = agent_activity_status(
+            &row.activity_presentation.availability,
+            row.activity_presentation.phase.as_deref(),
+        );
+        let layout = agent_row_text_layout(row, copy, &detail, &status, &mut text, &theme);
+        assert!(
+            layout.history_bottom <= controls_y,
+            "identity, authority, status, and history need a distinct copy band"
+        );
+
+        let shown: std::collections::BTreeSet<_> = rows
+            .iter()
+            .filter(|row| row.agent.starts_with("review-agent-"))
+            .map(|row| agent_short_id(&row.agent))
+            .collect();
+        assert_eq!(shown.len(), 13, "fallback Agent identities stay distinct");
+        assert!(shown.iter().all(|name| name.chars().count() <= 9));
+        for row in rows
+            .iter()
+            .filter(|row| row.agent.starts_with("review-agent-"))
+        {
+            let copy = agent_row_copy_geometry(row, false, &mut text, &theme);
+            let name = agent_short_id(&row.agent);
+            assert_eq!(
+                elide(
+                    &name,
+                    &style,
+                    copy.text_limit - 8.0 - copy.text_x,
+                    &mut text
+                ),
+                name,
+                "the distinguishing suffix must survive the actual title column"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_profile_relative_time_wakes_only_at_formatter_boundaries() {
+        let at = SystemTime::UNIX_EPOCH + StdDuration::from_secs(10_000);
+        let activity = AgentProfileActivity {
+            agent: AGENT.to_string(),
+            task_availability: AgentTaskAvailability::Unknown,
+            live_phase: None,
+            last_activity_at: Some(10_000),
+        };
+        let next = |elapsed| {
+            agent_profile_activity_next_presentation_at(
+                std::slice::from_ref(&activity),
+                at + StdDuration::from_secs(elapsed),
+            )
+            .expect("recorded activity has a presentation boundary")
+            .duration_since(at)
+            .expect("boundary follows the activity")
+            .as_secs()
+        };
+
+        assert_eq!(next(0), 60);
+        assert_eq!(next(59), 60);
+        assert_eq!(next(60), 120);
+        assert_eq!(next(3_599), 3_600);
+        assert_eq!(next(3_600), 7_200);
+        assert_eq!(next(86_399), 86_400);
+        assert_eq!(next(86_400), 172_800);
+        assert_eq!(agent_profile_activity_next_presentation_at(&[], at), None);
+
+        let before =
+            agent_profile_activity_presentation(&activity, at + StdDuration::from_secs(119));
+        let after =
+            agent_profile_activity_presentation(&activity, at + StdDuration::from_secs(120));
+        assert_ne!(before.last_activity, after.last_activity);
+    }
+
+    #[test]
     fn hc200_agent_profile_stacks_complete_actions_inside_the_row() {
         let ws = ws_with_agent();
         let pane =
@@ -5555,23 +6573,45 @@ mod agents_pane_tests {
             "fixture must retain the compact production body"
         );
         let theme = Theme::high_contrast().with_text_scale(2.0);
-        let rows = agents_pane_rows_for_theme(&ws, pane, Some(AGENT), &theme);
+        let rows = all_agent_rows_with_activity_for_theme(
+            &ws,
+            pane,
+            Some(AGENT),
+            &[],
+            SystemTime::UNIX_EPOCH,
+            &theme,
+        );
         let row = rows.first().expect("selected agent remains reachable");
         let add = agents_add_rect_for_theme(pane, &theme);
+        let viewport = agents_list_viewport_for_theme(pane, &theme);
 
         assert!(row.selected);
-        for rect in [
-            row.row_rect,
-            row.role_rect,
-            row.review_rect,
-            row.remove_rect,
-            add,
-        ] {
-            assert_eq!(pane.intersect(rect), rect, "HC200 control escaped its pane");
+        for rect in [row.role_rect, row.review_rect, row.remove_rect] {
+            assert_eq!(
+                row.row_rect.intersect(rect),
+                rect,
+                "HC200 control escaped its complete virtual row"
+            );
         }
+        assert_eq!(pane.intersect(add), add, "Add Agent escaped its pane");
         assert_eq!(row.review_rect.intersect(row.remove_rect).area(), 0.0);
         assert!(row.role_rect.y1 <= row.review_rect.y0);
         assert!(add.y1 <= row.row_rect.y0);
+
+        assert_eq!(
+            viewport.intersect(row.role_rect),
+            row.role_rect,
+            "the start position exposes the role control"
+        );
+        let end_shift = Affine::translate((0.0, viewport.y1 - row.row_rect.y1));
+        for rect in [row.review_rect, row.remove_rect] {
+            let at_end = end_shift.transform_rect_bbox(rect);
+            assert_eq!(
+                viewport.intersect(at_end),
+                at_end,
+                "the End position exposes the selected Agent action"
+            );
+        }
 
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
@@ -6700,7 +7740,7 @@ mod rest_edge_tests {
             let pane = Rect::new(0.0, 0.0, 508.0, 560.0);
             let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
             let label_line_bottom = heading_y + 22.0 + 14.0;
-            assert!(default_app_rows_top(pane) >= label_line_bottom + 4.0);
+            assert!(default_app_rows_top(pane, PANE_INTRO_HEIGHT) >= label_line_bottom + 4.0);
             assert!(default_app_rows(pane, &[]).is_empty());
         }
 
@@ -6711,5 +7751,87 @@ mod rest_edge_tests {
             let s2 = f64::from(ui::tokens::Spacing::BASE.s2);
             assert_eq!(PANE_PAD_TOP + s2, s4);
         }
+    }
+
+    #[test]
+    fn generic_intro_geometry_preserves_one_x_and_moves_enlarged_controls_below_copy() {
+        let pane = Rect::new(0.0, 0.0, 608.0, 520.0);
+        let candidates = [desktop_policy::AppCandidate {
+            package_id: "so.tilo.viewer".into(),
+            display_name: "Viewer".into(),
+            resources: [desktop_policy::ResourceKind::extension("pdf").unwrap()].into(),
+        }];
+
+        let normal = Theme::light();
+        let mut normal_text = TextRenderer::new();
+        normal_text.set_text_scale(normal.text_scale);
+        assert_eq!(
+            default_app_rows_for_theme(pane, &candidates, &mut normal_text, &normal)[0].row_rect,
+            default_app_rows(pane, &candidates)[0].row_rect,
+            "normal text keeps the established Apps geometry"
+        );
+        assert_eq!(
+            permission_profiles_rect_for_theme(pane, &mut normal_text, &normal),
+            permission_profiles_rect(pane),
+            "normal text keeps the established Permissions geometry"
+        );
+
+        let enlarged = Theme::high_contrast().with_text_scale(2.0);
+        let mut enlarged_text = TextRenderer::new();
+        enlarged_text.set_text_scale(enlarged.text_scale);
+        let (apps_intro, _) = ProfilePaneMetrics::measured_generic_intro(
+            &enlarged,
+            pane,
+            &t("workspace-settings-apps-intro-title"),
+            &t("workspace-settings-apps-intro-detail"),
+            &mut enlarged_text,
+        );
+        let app_row =
+            &default_app_rows_for_theme(pane, &candidates, &mut enlarged_text, &enlarged)[0];
+        assert!(apps_intro.intro_height > PANE_INTRO_HEIGHT);
+        assert!(
+            app_row.row_rect.y0
+                >= pane.y0 + PANE_PAD_TOP + apps_intro.intro_height + PANE_INTRO_GAP + 44.0
+        );
+
+        let (permissions_intro, _) = ProfilePaneMetrics::measured_generic_intro(
+            &enlarged,
+            pane,
+            &t("workspace-settings-permissions-intro-title"),
+            &t("workspace-settings-permissions-intro-detail"),
+            &mut enlarged_text,
+        );
+        let profiles = permission_profiles_rect_for_theme(pane, &mut enlarged_text, &enlarged);
+        assert!(permissions_intro.intro_height > PANE_INTRO_HEIGHT);
+        assert!(
+            profiles.y0
+                >= pane.y0 + PANE_PAD_TOP + permissions_intro.intro_height + PANE_INTRO_GAP - 2.0,
+            "Permissions controls start after the complete enlarged intro"
+        );
+    }
+
+    #[test]
+    fn compact_hc200_empty_state_keeps_a_truthful_headline() {
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        let mut scene = Scene::new();
+        draw_empty_state(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 608.0, 60.0),
+            Icon::LayoutGrid,
+            (
+                &t("workspace-settings-apps-empty-title"),
+                &t("workspace-settings-apps-empty-detail"),
+            ),
+            &mut text,
+            &theme,
+        );
+
+        assert!(
+            !scene.encoding().draw_tags.is_empty(),
+            "the compact pane must paint its truthful empty-state headline even when the illustration and detail do not fit"
+        );
     }
 }

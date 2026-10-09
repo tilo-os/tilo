@@ -125,6 +125,17 @@ mod tests {
             "chat-agent-empty-title",
             "chat-agent-empty-message",
             "chat-agent-roster-label",
+            "chat-agent-mode-message",
+            "chat-agent-intent-queue",
+            "chat-agent-intent-steer",
+            "chat-agent-composer-message",
+            "chat-agent-composer-queue",
+            "chat-agent-composer-steer",
+            "chat-agent-send-message",
+            "chat-agent-send-queue",
+            "chat-agent-send-steer",
+            "chat-agent-select-task",
+            "chat-agent-stop-current",
         ] {
             let s = t(key);
             assert_ne!(s, key, "{key} has no entry in the catalogue");

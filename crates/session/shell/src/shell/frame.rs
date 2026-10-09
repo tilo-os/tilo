@@ -2911,13 +2911,16 @@ impl FrameBuilder {
     /// pointer publishes nothing, but is in the room all the same.
     pub fn pump_peer_presence(&mut self) -> bool {
         let retired = self.retire_invalid_agent_markers();
-        let Some(relay) = self.peer_presence.as_ref() else {
-            return retired;
-        };
-        let tiles = self.host.tab_tiles();
-        let moved = relay.pump(&mut self.presence, &tiles);
-        let roster_changed = relay.refresh_roster(&self.presence);
-        self.retire_invalid_agent_markers() || moved || roster_changed || retired
+        let (moved, roster_changed) = self.peer_presence.as_ref().map_or((false, false), |relay| {
+            let tiles = self.host.tab_tiles();
+            let moved = relay.pump(&mut self.presence, &tiles);
+            (moved, relay.refresh_roster(&self.presence))
+        });
+        if self.host.agent_profile_activity_visible() {
+            self.presence.prune_interactions(ui::time::now());
+        }
+        let profile_changed = self.host.refresh_agent_profile_activity(&self.presence);
+        self.retire_invalid_agent_markers() || moved || roster_changed || retired || profile_changed
     }
 
     pub(crate) fn authenticated_marker_actor(
@@ -2999,10 +3002,18 @@ impl FrameBuilder {
         key: ui::presence::PresenceKey,
         payload: ui::collaboration::PresencePayload,
     ) {
-        if let ui::collaboration::PresencePayload::Interaction(update) = payload {
-            let _ = self.presence.observe_interaction(*update);
-        } else {
-            self.presence.apply_remote_presence(user, key, payload);
+        match payload {
+            ui::collaboration::PresencePayload::Interaction(update) => match key {
+                ui::presence::PresenceKey::Workspace { id } => {
+                    let _ = self.presence.observe_interaction_in_room(*update, &id);
+                }
+                _ => {
+                    let _ = self.presence.observe_interaction(*update);
+                }
+            },
+            payload => {
+                let _ = self.presence.apply_remote_presence(user, key, payload);
+            }
         }
     }
 
@@ -5782,6 +5793,47 @@ mod tests {
             .iter()
             .find(|(_, node)| node.label() == Some(name))
             .cloned()
+    }
+
+    #[test]
+    fn prepaint_presence_refreshes_new_agent_profile_without_a_peer_relay() {
+        use crate::shell::chrome_state::{WorkspaceSettingsSubject, WsTab};
+        use crate::shell::state::{CapOverride, Subject, Verb};
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let workspace = tree.desktop.active_workspace_mut().expect("workspace");
+        let room = workspace.room.to_string();
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("scribe"),
+            room,
+            Verb::Write,
+        ));
+        let mut frame = FrameBuilder::with_tree(tree, (1280, 800));
+        assert!(
+            frame.peer_presence().is_none(),
+            "fixture has no network relay"
+        );
+        assert!(
+            !frame.pump_peer_presence(),
+            "the early closed-overlay pump observes no profile"
+        );
+        frame.with_chrome(|chrome| {
+            chrome.overlays.ws_settings = true;
+            chrome.ws_settings_tab = WsTab::Agents;
+            chrome.open_workspace_profile(WorkspaceSettingsSubject::Agent("scribe".into()));
+        });
+
+        assert!(
+            crate::compositor::native::pump_prepaint_peer_presence(&mut frame),
+            "the production prepaint pass observes the newly opened exact-room profile"
+        );
+        frame.relayout();
+        let _ = frame.paint();
+        let update = frame.build_a11y_tree_update(None, 1.0);
+        assert!(
+            exported_node_named(&update, "scribe").is_some(),
+            "the first painted and accessible frame contains the current Agent"
+        );
     }
 
     fn axis_a11y_tree() -> (

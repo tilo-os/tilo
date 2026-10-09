@@ -679,6 +679,7 @@ workspace-settings-members-count = { $count ->
 }
 workspace-settings-members-help = Wer entfernt wird, erhält keine Synchronisierung und Änderungen mehr; bereits heruntergeladene Kopien bleiben bei der Person.
 workspace-settings-ownership = Eigentum
+workspace-settings-ownership-action-pending = Übertragung ausstehend
 workspace-settings-you-manage = Von dir verwaltet
 workspace-settings-view-only = Nur ansehen
 workspace-settings-members-empty-title = Sonst ist niemand in diesem Arbeitsbereich
@@ -721,6 +722,21 @@ workspace-settings-agent-detail = { $count ->
     [one] { $admission } · Profil { $profile } · 1 eingeschränkte Berechtigung
    *[other] { $admission } · Profil { $profile } · { $count } eingeschränkte Berechtigungen
 }
+workspace-settings-agent-available = Für Aufgaben verfügbar
+workspace-settings-agent-unavailable = Derzeit nicht für Aufgaben verfügbar
+workspace-settings-agent-availability-unknown = Aufgabenverfügbarkeit unbekannt
+workspace-settings-agent-phase-locating = Freigegebenes Ziel wird gesucht
+workspace-settings-agent-phase-applying = Freigegebene Aktion wird angewendet
+workspace-settings-agent-phase-progress = Freigegebene Aktion wird bearbeitet
+workspace-settings-agent-phase-waiting = Wartet auf eine freigegebene Aktion
+workspace-settings-agent-phase-committed = Freigegebene Aktion abgeschlossen
+workspace-settings-agent-phase-failed = Freigegebene Aktion erfordert Aufmerksamkeit
+workspace-settings-agent-phase-cancelled = Freigegebene Aktion abgebrochen
+workspace-settings-agent-availability-phase = { $availability }. { $phase }
+workspace-settings-agent-last-activity = Letzte Aktivität { $when }
+workspace-settings-agent-no-activity = Keine Aktivität aufgezeichnet
+workspace-settings-agent-activity-announcement = { $status } { $activity }.
+workspace-settings-agent-profile-summary = { $authority }. { $activity }
 workspace-settings-admitted = Zugelassen
 workspace-settings-review-access = Zugriff prüfen
 workspace-settings-revoke = Entziehen

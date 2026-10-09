@@ -248,6 +248,8 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
                                              "private_content_recorded": False})
                     if include_send:
                         matches[key]["send_controls"] = client.named(tree, "Send message")
+                    if composer_name != "Message composer":
+                        matches[key]["composer_name"] = composer_name
             if len(matches) == 1:
                 record()
                 return next(iter(matches.values()))
@@ -869,7 +871,9 @@ def chat_editor_contract(access):
     client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
     name = atspi.property_text(client.property(access["composer"], "Name"))
     interfaces = client.interfaces(access["composer"])
-    return name == "Message composer" and all(interface in interfaces for interface in (
+    expected = access.get("composer_name", "Message composer")
+    return expected in ("Message composer", "Task instruction composer", "Task direction composer") \
+        and name == expected and all(interface in interfaces for interface in (
         "org.a11y.atspi.Text", "org.a11y.atspi.EditableText"))
 
 
@@ -894,10 +898,17 @@ def owned_editor_read(access, read, deadline=None):
         while time.monotonic() < deadline:
             if process_program(access["process"]) != "chat":
                 raise RuntimeError("stale private editor lost its original Chat process")
-            fresh = agent_conversation_accessibility(
-                access["agent"], detached=access["detached"], stale_only=True)
+            mode = access.get("composer_name", "Message composer")
+            if mode == "Message composer":
+                fresh = agent_conversation_accessibility(
+                    access["agent"], detached=access["detached"], stale_only=True)
+            else:
+                fresh = agent_conversation_accessibility(
+                    access["agent"], detached=access["detached"], stale_only=True,
+                    composer_name=mode)
             if fresh is not None:
-                if any(fresh.get(key) != access[key] for key in ("process", "agent", "detached")):
+                if any(fresh.get(key) != access[key] for key in ("process", "agent", "detached")) \
+                        or fresh.get("composer_name", "Message composer") != mode:
                     raise RuntimeError("refreshed private editor belongs to a foreign Chat route")
                 try:
                     if not chat_editor_contract(fresh):
@@ -3446,6 +3457,8 @@ class HeldProvider:
         self.marker_matching_operations = 0
         self.marker_matching_exact_resources = 0
         self.closed = False
+        self.detached_task_phase_armed = False
+        self.request_limit = 3 if marker_agent is not None else 4
         self.request_lock = threading.Condition()
         owner = self
 
@@ -3514,8 +3527,7 @@ class HeldProvider:
                     else:
                         owner.admitted_attempts = min(owner.admitted_attempts + 1, 64)
                 with owner.request_lock:
-                    limit = 3 if owner.marker_agent is not None else 4
-                    if owner.requests >= limit:
+                    if owner.requests >= owner.request_limit:
                         owner.refused_requests += 1
                         self.send_error(429)
                         return
@@ -3689,6 +3701,29 @@ class HeldProvider:
         with self.request_lock:
             if ordinal != 4 or self.requests != 4 or self.allowed != 2:
                 raise RuntimeError("exact release requires the fourth turn and held original third")
+            self.exact_releases.add(ordinal)
+            self.request_lock.notify_all()
+
+    def arm_detached_task_phase(self, probe):
+        """Only the completed four-turn proof may admit two final real task turns."""
+        with self.request_lock:
+            if self.marker_agent is not None or self.closed or self.detached_task_phase_armed \
+                    or self.requests != 4 or self.allowed != 2 or self.exact_releases != {4} \
+                    or self.refused_requests != 0 or self.owner_admission_probe is None \
+                    or not callable(probe):
+                raise RuntimeError("detached task extension requires the exact completed four-turn phase")
+            self.detached_task_phase_armed = True
+            self.request_limit = 6
+            self.owner_admission_probe = probe
+
+    def release_detached_task_turn(self, ordinal):
+        """Never release the old cancelled third turn while completing this task."""
+        with self.request_lock:
+            if not self.detached_task_phase_armed or ordinal not in (5, 6) \
+                    or self.requests < ordinal or self.requests > 6 or self.allowed != 2 \
+                    or 4 not in self.exact_releases \
+                    or ordinal == 6 and 5 not in self.exact_releases:
+                raise RuntimeError("detached task release lacks its exact armed turn")
             self.exact_releases.add(ordinal)
             self.request_lock.notify_all()
 
@@ -7356,6 +7391,197 @@ def managed_task_and_message_lifecycle(
     return evidence
 
 
+def current_detached_task_target(socket, owner, child, composer, label, role):
+    """Bind a real intent/Send control to the same ordinary detached native seat."""
+    if owner.get("detached") is not True:
+        raise RuntimeError("detached task control has no exact captured child route")
+    frame = current_same_floating_presentation(call(socket, {"op": "foreign_frames"}), child)
+    if frame is None:
+        return None
+    if frame.get("keyboard_focused") is not True or frame.get("suspended") is not False \
+            or frame.get("transferring") is not False or frame.get("input_route") is not None \
+            or frame.get("input_source_surface_id") is not None:
+        raise RuntimeError("detached task control lost its exact ordinary child seat")
+    access = agent_conversation_accessibility(owner["agent"], detached=True,
+                                            composer_name=composer, stale_only=True)
+    if access is None:
+        return None
+    if any(access.get(field) != owner.get(field) for field in ("process", "bus", "agent", "detached")):
+        raise RuntimeError("detached task control belongs to a foreign Chat owner")
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    tree = accessible_subtree(client, access["window"], atspi.APP_TREE_NODE_LIMIT)
+    matches = [path for path in client.named(tree, label) if client.role(path) == role]
+    if len(matches) != 1 or not accessibility_control_enabled(access, matches[0]):
+        raise RuntimeError("detached task has no unique enabled actual intent/Send control")
+    geometry = presented_content_geometry(frame)
+    target = component_global_target(access, matches[0], geometry, "detached task control")
+    confirmed = current_same_floating_presentation(call(socket, {"op": "foreign_frames"}), frame)
+    if confirmed is None or presented_content_geometry(confirmed) != geometry:
+        return None
+    return confirmed, access, target
+
+
+def physical_detached_task_control(socket, owner, child, composer, label, role, process):
+    frame, access, target = wait_for("exact detached task control", lambda:
+        current_detached_task_target(socket, owner, child, composer, label, role), process)
+    center = target["global_center"]
+    require_ok(call(socket, {"op": "click_at", "x": center["x"], "y": center["y"]}))
+    return frame, access
+
+
+def native_detached_queue_and_steer(socket, room, provider, output, size, process):
+    """Submit through the real retained child; broker actions below only READ owners."""
+    if provider.request_count() != 4 or provider.overflow_count() != 0:
+        raise RuntimeError("detached task proof requires all original four-turn checks")
+    identity = owned_agent_identity(process.pid)
+    instruction = "Complete the detached composer proof."
+    direction = "Retain this exact detached task and finish it."
+    original = current_agent_tasks(socket, room, "tide", process)
+    if original.get("complete") is not True or original.get("pending_complete") is not True:
+        raise RuntimeError("detached Queue has no complete baseline owner projection")
+    original_ids = {row["task_id"] for field in ("tasks", "pending")
+                    for row in original[field]}
+    owner = wait_for("restored attached Queue editor", lambda:
+        agent_conversation_accessibility("Tide", composer_name="Task instruction composer"), process)
+    # Select the published Chat intent, not the owner's Queue service.
+    activate_named_agent_control(owner, "Message")
+    owner = wait_for("attached Message editor for final Float", lambda:
+        agent_conversation_accessibility("Tide"), process)
+    primary = wait_for("final Float's native primary", lambda:
+        presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), process)
+    physically_click_editor(socket, owner, presented_content_geometry(primary))
+    require_chat_keyboard_focus_after_click(socket, output)
+    physical_chord(socket, "a", ctrl=True)
+    require_ok(call(socket, {"op": "type", "text": instruction}))
+    wait_for("final private instruction", lambda: private_editor_value_matches(owner, instruction), process)
+    before = private_editor_observation(owner, instruction)
+    activate_agent_conversation_control(owner, "Float", expected_name="Float conversation")
+    child = wait_for("final detached native pixels", lambda:
+        presented_floating_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), process)
+    child, access, detached = wait_for_semantic_float_editor_continuity(
+        socket, output, child, {"access": owner, "draft": instruction, "observation": before}, process)
+    if detached != before:
+        raise RuntimeError("final Float changed the exact private instruction editor")
+    child = wait_for_floating_keyboard_seat(socket, child, output, process)
+    task_id = None
+    epoch = None
+
+    def exact_task():
+        nonlocal task_id
+        projection = current_agent_tasks(socket, room, "tide", process)
+        if projection.get("complete") is not True or projection.get("pending_complete") is not True:
+            raise RuntimeError("detached task owner projection became incomplete")
+        rows = [row for field in ("tasks", "pending") for row in projection[field]
+                if row["task_id"] not in original_ids]
+        if len(rows) > 1:
+            raise RuntimeError("detached Queue admitted more than one new owner task")
+        if not rows:
+            return None
+        row = rows[0]
+        if row.get("title") != instruction or row.get("assigned_agent") != "tide" \
+                or row.get("route") != "model":
+            raise RuntimeError("detached Queue's owner task does not match its private instruction")
+        if task_id is not None and row["task_id"] != task_id:
+            raise RuntimeError("detached task changed its exact owner identity")
+        task_id = row["task_id"]
+        return read_task(socket, room, task_id, process)
+
+    def owner_admission():
+        task = exact_task()
+        execution = task.get("execution") if task else None
+        if not isinstance(execution, dict):
+            return None
+        current_epoch = task.get("run_epoch")
+        if type(current_epoch) is not int or current_epoch <= 0 \
+                or execution.get("run_epoch") != current_epoch \
+                or epoch is not None and current_epoch != epoch:
+            raise RuntimeError("detached task model admission lost its exact owner epoch")
+        phase, sequence = execution.get("phase"), execution.get("sequence")
+        if phase == "accepted" and sequence == 0 \
+                or phase == "planning" and type(sequence) is int and sequence > 0:
+            return {"run_epoch": current_epoch, "phase": phase, "sequence": sequence}
+        return None
+
+    provider.arm_detached_task_phase(owner_admission)
+    # AT-SPI's stable wire roles PageTab=37 and PushButton=43 disambiguate
+    # the Queue intent tab and the identically named Queue Send button.
+    child, access = physical_detached_task_control(
+        socket, access, child, "Message composer", "Queue task", 37, process)
+    access = wait_for("detached Queue instruction editor", lambda:
+        agent_conversation_accessibility("Tide", detached=True,
+                                        composer_name="Task instruction composer"), process)
+    if not private_editor_value_matches(access, instruction):
+        raise RuntimeError("Queue intent changed its retained private instruction")
+    child, access = physical_detached_task_control(
+        socket, access, child, "Task instruction composer", "Queue task", 43, process)
+    queued = wait_for("detached Queue's exact durable owner task", exact_task, process)
+    wait_for("receipt-backed detached Queue draft clear", lambda:
+        private_editor_value_matches(access, ""), process)
+    wait_for("detached task's actual fifth model request", lambda:
+        provider.request_count() == 5, process)
+    admission = provider.owner_admission(5)
+    accepted = exact_task()
+    if admission is None or accepted is None or admission["run_epoch"] != accepted["run_epoch"]:
+        raise RuntimeError("detached Queue model request lacks its durable owner acceptance")
+    epoch = admission["run_epoch"]
+    active = wait_for("detached task's Planning frontier", lambda:
+        (task if (task := exact_task()) and task.get("status") == "in_progress"
+         and task.get("execution", {}).get("phase") == "planning" else None), process)
+    before_revision = active["after_revision"]
+    wait_for("actual detached accepted task label", lambda:
+        task_phase_accessibility(access, "Planning: " + instruction), process)
+    require_ok(call(socket, {"op": "snapshot", "path": str(output / f"detached-queue-accepted-{size}.png")}))
+    child, access = physical_detached_task_control(
+        socket, access, child, "Task instruction composer", "Steer current task", 37, process)
+    access = wait_for("detached task direction editor", lambda:
+        agent_conversation_accessibility("Tide", detached=True,
+                                        composer_name="Task direction composer"), process)
+    physically_click_editor(socket, access, presented_content_geometry(child))
+    require_chat_keyboard_focus_after_click(socket, output, detached=True)
+    require_ok(call(socket, {"op": "type", "text": direction}))
+    wait_for("detached private direction", lambda: private_editor_value_matches(access, direction), process)
+    child, access = physical_detached_task_control(
+        socket, access, child, "Task direction composer", "Save direction", 43, process)
+    saved = wait_for("detached Steer's exact owner receipt", lambda:
+        (task if (task := exact_task()) and task.get("run_epoch") == epoch
+         and task.get("after_revision", 0) > before_revision else None), process)
+    revision = saved["after_revision"]
+    wait_for("receipt-backed detached Steer draft clear", lambda:
+        private_editor_value_matches(access, ""), process)
+    wait_for("actual detached Direction saved label", lambda:
+        task_phase_accessibility(access, "Direction saved"), process)
+    provider.release_detached_task_turn(5)
+    applied = wait_for("actual Agent consumes detached direction", lambda:
+        (task if (task := exact_task()) and task.get("run_epoch") == epoch
+         and task.get("after_revision") == revision and task.get("applied_revision") == revision
+         else None), process)
+    wait_for("actual rebuilt detached task model request", lambda: provider.request_count() == 6, process)
+    rebuilt = provider.owner_admission(6)
+    if rebuilt is None or rebuilt["run_epoch"] != epoch:
+        raise RuntimeError("detached direction rebuilt another owner run")
+    wait_for("actual detached Direction applied label", lambda:
+        task_phase_accessibility(access, "Direction applied"), process)
+    require_ok(call(socket, {"op": "snapshot", "path": str(output / f"detached-steer-applied-{size}.png")}))
+    provider.release_detached_task_turn(6)
+    terminal = wait_for("actual detached task completion", lambda:
+        (task if (task := read_task(socket, room, task_id, process))
+         and task.get("status") == "done" else None), process)
+    if owned_agent_identity(process.pid) != identity or provider.request_count() != 6 \
+            or provider.overflow_count() != 0 or terminal["run_epoch"] != epoch \
+            or applied["applied_revision"] != revision:
+        raise RuntimeError("detached Queue/Steer changed managed custody or escaped its bounded turns")
+    evidence = {"ordinary_detached_seat": True, "same_private_editor": True,
+                "physical_queue_submission": True, "queue_owner_receipt": True,
+                "queue_visible_accepted": True, "agent_consumed_queue": True,
+                "physical_steer_submission": True, "steer_owner_receipt": True,
+                "steer_visible_saved": True, "steer_visible_applied": True,
+                "agent_consumed_direction": True, "same_managed_process": True,
+                "provider_request_count": 6, "provider_overflow_count": 0,
+                "task_completed": True, "private_content_recorded": False}
+    (output / "detached-task-submission.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    return evidence
+
+
 def offered_store_chat(socket, room, record=""):
     """Select the published installed-app door; its parent stays SDK-owned."""
     matches = [row for row in actions(socket)
@@ -7490,6 +7716,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
     physical_send_evidence = None
     revocation_evidence = None
     permission_evidence = None
+    detached_task_evidence = None
     marker_evidence = None
     owned_fcitx = None
     try:
@@ -7881,6 +8108,9 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                     socket, enrollment["room"], category[0]["record"], provider, output,
                     size, shell, binaries, env,
                 )
+                detached_task_evidence = native_detached_queue_and_steer(
+                    socket, enrollment["room"], provider, output, size, shell,
+                )
             time.sleep(0.5)
         else:
             invite = require_action(socket, "agent.invite", "agent")
@@ -7929,6 +8159,15 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             and permission_evidence.get("task_selection_restored") is True
             and permission_evidence.get("provider_request_count") == 4
             and permission_evidence.get("provider_overflow_count") == 0
+            and detached_task_evidence is not None
+            and all(detached_task_evidence.get(field) is True for field in (
+                "ordinary_detached_seat", "same_private_editor", "physical_queue_submission",
+                "queue_owner_receipt", "queue_visible_accepted", "agent_consumed_queue",
+                "physical_steer_submission", "steer_owner_receipt", "steer_visible_saved",
+                "steer_visible_applied", "agent_consumed_direction", "same_managed_process",
+                "task_completed"))
+            and detached_task_evidence.get("provider_request_count") == 6
+            and detached_task_evidence.get("provider_overflow_count") == 0
         )
         (output / "bootstrap.json").write_text(json.dumps({
             "stage": "native-bootstrap-only" if native else "legacy-bootstrap-only",
