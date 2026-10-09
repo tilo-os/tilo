@@ -1,0 +1,168 @@
+"""Tests of the performance regression comparator (tools/perf/compare.py)."""
+
+from __future__ import annotations
+
+import contextlib
+import datetime
+import io
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import compare  # noqa: E402
+import record  # noqa: E402
+
+ENV = {"commit": "a" * 40, "profile": "dev", "renderer": "none", "virtualization": "kvm",
+       "runner": "runner", "hardware": "test cpu"}
+NO_BUDGETS = compare.Budgets(dict(compare.DEFAULTS), {})
+
+
+def make(value: float, day: int, kpi: str = "render.frame_ms.4k", status: str | None = None,
+         **overrides) -> record.Record:
+    env = {**ENV, "started_at": f"2026-10-{day:02d}T01:15:00Z", **overrides}
+    item = record.from_samples(kpi, "ms", [value], **env)
+    if status is not None:
+        item.verdict = {"status": status}
+    return item
+
+
+def history(*values: float) -> list[record.Record]:
+    return [make(value, day, status="pass") for day, value in enumerate(values, 1)]
+
+
+class Relative(unittest.TestCase):
+    def test_a_first_regression_is_pending_and_the_second_fails(self):
+        past = history(10, 10, 10, 10, 10)
+        [first] = compare.compare([make(12.5, 6)], past, NO_BUDGETS, set(), set())
+        self.assertEqual((first.status, first.failing), ("regression-pending", False))
+        [second] = compare.compare([make(12.5, 7)], past + [first.record], NO_BUDGETS, set(), set())
+        self.assertEqual((second.status, second.failing), ("regression", True))
+
+    def test_within_tolerance_passes_and_a_spike_does_not_poison_the_baseline(self):
+        past = history(10, 10, 10, 10, 10)
+        [spike] = compare.compare([make(30, 6)], past, NO_BUDGETS, set(), set())
+        self.assertEqual(spike.status, "regression-pending")
+        [after] = compare.compare([make(10.5, 7)], past + [spike.record], NO_BUDGETS, set(), set())
+        self.assertEqual((after.status, after.failing), ("pass", False))
+        self.assertEqual(after.record.verdict["baseline_p50"], 10)
+
+    def test_records_of_another_environment_are_ignored(self):
+        past = [make(1, day, status="pass", renderer="llvmpipe") for day in range(1, 6)]
+        past += [make(1, day, status="pass", runner="device-yoga") for day in range(1, 6)]
+        [row] = compare.compare([make(50, 6)], past, NO_BUDGETS, set(), set())
+        self.assertEqual((row.status, row.failing), ("new", False))
+
+    def test_the_baseline_is_the_median_of_the_last_runs(self):
+        past = history(100, 100, 10, 10, 10, 10, 10)
+        [row] = compare.compare([make(10.9, 8)], past, NO_BUDGETS, set(), set())
+        self.assertEqual(row.status, "pass")
+        self.assertEqual(row.record.verdict["baseline_n"], 5)
+
+    def test_min_delta_ignores_noise_on_tiny_values(self):
+        budgets = compare.Budgets(dict(compare.DEFAULTS), {"render.frame_ms.4k": {
+            "unit": "ms", "max": 1000.0, "min_delta": 1.0}})
+        [row] = compare.compare([make(2.9, 6)], history(2, 2, 2, 2, 2), budgets, set(), set())
+        self.assertEqual(row.status, "pass")
+
+    def test_accept_restarts_the_baseline(self):
+        past = history(10, 10, 10, 10, 10)
+        [accepted] = compare.compare([make(20, 6)], past, NO_BUDGETS, set(), {"render.frame_ms.4k"})
+        self.assertEqual((accepted.status, accepted.failing), ("accepted", False))
+        [after] = compare.compare([make(20.5, 7)], past + [accepted.record], NO_BUDGETS, set(), set())
+        self.assertEqual((after.status, after.record.verdict["baseline_p50"]), ("pass", 20))
+
+    def test_a_unit_change_fails(self):
+        past = [record.from_samples("render.frame_ms.4k", "us", [1], started_at="2026-10-01T00:00:00Z", **ENV)]
+        [row] = compare.compare([make(1, 6)], past, NO_BUDGETS, set(), set())
+        self.assertEqual((row.status, row.failing), ("unit-mismatch", True))
+
+
+class Synthetic(unittest.TestCase):
+    def test_synthetic_series_are_isolated(self):
+        past = history(10, 10, 10, 10, 10)
+        first = [make(10, 6)]
+        compare.inject(first, "check-1", 1.25)
+        [row] = compare.compare(first, past, NO_BUDGETS, set(), set())
+        self.assertEqual(row.status, "regression-pending")
+        # A real run after it neither inherits its pending state nor its value.
+        [real] = compare.compare([make(12.5, 7)], past + [row.record], NO_BUDGETS, set(), set())
+        self.assertEqual((real.status, real.record.verdict["baseline_p50"]), ("regression-pending", 10))
+        # Another series starts fresh.
+        other = [make(10, 7)]
+        compare.inject(other, "check-2", 1.25)
+        [fresh] = compare.compare(other, past + [row.record], NO_BUDGETS, set(), set())
+        self.assertEqual(fresh.status, "regression-pending")
+        second = [make(10, 7)]
+        compare.inject(second, "check-1", 1.25)
+        [failed] = compare.compare(second, past + [row.record], NO_BUDGETS, set(), set())
+        self.assertEqual((failed.status, failed.failing), ("regression", True))
+
+
+class Budgets(unittest.TestCase):
+    def budgets(self, enforce: bool) -> compare.Budgets:
+        return compare.Budgets(dict(compare.DEFAULTS), {"render.frame_ms.4k": {
+            "unit": "ms", "p99": 16.7, "enforce": enforce}})
+
+    def test_an_enforced_budget_miss_fails_on_the_first_run(self):
+        [row] = compare.compare([make(20, 1)], [], self.budgets(True), set(), set())
+        self.assertEqual((row.status, row.failing), ("new", True))
+        self.assertIn("over budget: p99 20 > 16.7 ms", row.note)
+
+    def test_a_target_miss_is_reported_only(self):
+        [row] = compare.compare([make(20, 1)], [], self.budgets(False), set(), set())
+        self.assertFalse(row.failing)
+        self.assertIn("over target", row.note)
+
+    def test_missing_results_fail(self):
+        rows = compare.compare([make(5, 1)], [], self.budgets(True), {"render", "fs"}, set())
+        missing = {row.kpi: row.failing for row in rows if row.status == "missing"}
+        self.assertEqual(missing, {"fs.*": True})
+        other = make(5, 1, kpi="render.other")
+        rows = compare.compare([other], [], self.budgets(True), {"render"}, set())
+        self.assertEqual([(row.kpi, row.failing) for row in rows if row.status == "missing"],
+                         [("render.frame_ms.4k", True)])
+
+    def test_the_repository_budgets_load(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        self.assertEqual(budgets.defaults["p50_tolerance"], 1.10)
+        self.assertEqual(budgets.defaults["p99_tolerance"], 1.20)
+        self.assertIn("footprint.tapp.bytes.x86_64", budgets.kpis)
+
+
+class EndToEnd(unittest.TestCase):
+    """The scheduled lane's sequence with a local store: inject 25 %, pass, then fail."""
+
+    def run_compare(self, root: Path, results: Path, run: str, *extra: str) -> int:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return compare.main(["--results", str(results), "--store", str(root / "store"),
+                                 "--budgets", str(root / "budgets.toml"), "--groups", "render",
+                                 "--publish-dir", str(root / "store"), "--run", run,
+                                 "--summary", str(root / f"{run}.md"), *extra],
+                                now=datetime.datetime(2026, 10, 20, tzinfo=datetime.timezone.utc))
+
+    def test_a_sustained_synthetic_regression_fails_the_second_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "budgets.toml").write_text('[kpi."render.frame_ms.4k"]\nunit = "ms"\nmax = 1000.0\n')
+            for day in range(1, 6):
+                results = root / f"night-{day}.jsonl"
+                record.write(results, record.from_samples("render.frame_ms.4k", "ms", [10, 10, 11],
+                                                          started_at=f"2026-10-{day:02d}T01:15:00Z", **ENV))
+                self.assertEqual(self.run_compare(root, results, f"{day}-1"), 0)
+            for day, expected in ((6, 0), (7, 1)):
+                results = root / f"night-{day}.jsonl"
+                record.write(results, record.from_samples("render.frame_ms.4k", "ms", [10, 10, 11],
+                                                          started_at=f"2026-10-{day:02d}T01:15:00Z", **ENV))
+                status = self.run_compare(root, results, f"{day}-1", "--synthetic", "til-580",
+                                          "--synthetic-factor", "1.25")
+                self.assertEqual(status, expected, (root / f"{day}-1.md").read_text())
+            self.assertIn("**regression**", (root / "7-1.md").read_text())
+            self.assertEqual(len(list((root / "store" / "2026-10").glob("*.jsonl"))), 7)
+
+
+if __name__ == "__main__":
+    unittest.main()
