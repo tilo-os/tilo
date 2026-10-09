@@ -1,11 +1,11 @@
 //! The desktop's action door for the Person/device selected in one room.
 //!
 //! A displayed principal string is never authority. Each session starts from
-//! the identity broker's currently selected certified device, signs the
-//! existing room-join presentation, and lets the action broker verify current
-//! membership and policy before it lists or invokes anything.
+//! the identity broker's currently selected certified device and its signed
+//! room-join presentation (re-signed only when the identity files change), and
+//! lets the action broker verify current membership and policy before it lists
+//! or invokes anything.
 
-use ed25519_dalek::Signer as _;
 use std::sync::Arc;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
@@ -26,6 +26,9 @@ pub(crate) struct ActionSessionSource {
     broker: AppActionBroker,
     #[cfg(test)]
     fixture: Option<super::remote_actions::BrokerActionHost>,
+    /// Sessions [`Self::open`] opened, shared by every clone.
+    #[cfg(test)]
+    opens: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 pub(crate) enum DesktopActionSession {
@@ -43,6 +46,8 @@ impl ActionSessionSource {
             broker,
             #[cfg(test)]
             fixture: None,
+            #[cfg(test)]
+            opens: Arc::default(),
         }
     }
 
@@ -51,7 +56,33 @@ impl ActionSessionSource {
         Self {
             fixture: Some(super::remote_actions::BrokerActionHost::new(broker.clone())),
             broker,
+            opens: Arc::default(),
         }
+    }
+
+    /// How many sessions this source and its clones opened.
+    #[cfg(test)]
+    pub(crate) fn opens(&self) -> usize {
+        self.opens.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A value that changes whenever [`Self::open`] for `room` could admit
+    /// differently because this device's identity files changed: the room's
+    /// selection, the device key, its certificate or the fleet. Only `stat`s,
+    /// no session. `None` while that can't be known (a file can't be
+    /// examined, or was written too recently to trust its stamp): the caller
+    /// must assume it changed.
+    pub(crate) fn identity_revision(&self, room: &str) -> Option<u64> {
+        use std::hash::{Hash as _, Hasher as _};
+        #[cfg(test)]
+        if self.fixture.is_some() {
+            return Some(0);
+        }
+        let stamp = tilo_identity_host::join_proof::current_device_stamp(room)
+            .filter(tilo_identity_host::join_proof::CurrentDeviceStamp::settled)?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        stamp.hash(&mut hasher);
+        Some(hasher.finish())
     }
 
     pub(crate) fn open(
@@ -59,6 +90,9 @@ impl ActionSessionSource {
         room: &str,
         expected_person: Option<&str>,
     ) -> Result<DesktopActionSession, String> {
+        #[cfg(test)]
+        self.opens
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         #[cfg(test)]
         if let Some(host) = &self.fixture {
             let person = expected_person.ok_or("fixture action Person is required")?;
@@ -115,8 +149,12 @@ impl CertifiedActionSession {
         if parsed.is_nil() {
             return Err("invalid action room".into());
         }
-        let (key, certificate) = tilo_identity_host::broker::trusted_current_device(room)
+        // Minted from disk and the device key only when the identity, key,
+        // certificate or fleet files changed; the broker verifies it below
+        // against current membership and policy either way.
+        let joined = tilo_identity_host::join_proof::trusted_current_join_proof(room)
             .map_err(|error| format!("selected workspace identity unavailable: {error}"))?;
+        let certificate = &joined.certificate;
         let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
             certificate.user_public_key,
         );
@@ -125,12 +163,9 @@ impl CertifiedActionSession {
         }
         let presentation = runtime_collab::CertifiedJoinIdentity {
             workspace_id: room.to_owned(),
-            device_certificate: serde_json::to_vec(&certificate)
+            device_certificate: serde_json::to_vec(certificate)
                 .map_err(|error| format!("encoding selected device certificate failed: {error}"))?,
-            proof: key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(room))
-                .to_bytes()
-                .to_vec(),
+            proof: joined.proof.to_vec(),
         }
         .encode()
         .map_err(|error| format!("encoding certified action identity failed: {error}"))?;

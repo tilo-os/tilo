@@ -220,8 +220,8 @@ fn read_import_record(source: &Path) -> io::Result<Vec<u8>> {
 
 /// Identity of an identity directory's contents, as far as rename-based
 /// writers can change it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DirStamp {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct DirStamp {
     dev: u64,
     ino: u64,
     modified: std::time::SystemTime,
@@ -229,7 +229,7 @@ struct DirStamp {
 
 impl DirStamp {
     #[cfg(unix)]
-    fn of(dir: &Path) -> Option<Self> {
+    pub(crate) fn of(dir: &Path) -> Option<Self> {
         use std::os::unix::fs::MetadataExt;
         let meta = fs::metadata(dir).ok()?;
         Some(Self {
@@ -240,12 +240,12 @@ impl DirStamp {
     }
 
     #[cfg(not(unix))]
-    fn of(_dir: &Path) -> Option<Self> {
+    pub(crate) fn of(_dir: &Path) -> Option<Self> {
         None
     }
 
     /// Old enough that a later write cannot share its timestamp.
-    fn settled(self) -> bool {
+    pub(crate) fn settled(self) -> bool {
         std::time::SystemTime::now()
             .duration_since(self.modified)
             .is_ok_and(|age| age >= std::time::Duration::from_secs(2))

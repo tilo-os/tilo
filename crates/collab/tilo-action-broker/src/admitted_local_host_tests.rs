@@ -717,6 +717,156 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
         .await;
 }
 
+/// Opening verifies the presentation once; one listing and one invocation
+/// admission each verify it once more, the invocation's dispatch reusing the
+/// admission its own check just made. Anything later verifies again, so a
+/// revoked device still fails the very next call.
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
+    use crate::collab_broker_capnp::admission_memo::verifications_on_this_thread as verifications;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let row = directory_state("original-r1").borrow().row();
+            rig.worker
+                .handle
+                .publish_actions(&env.route.app_id, &[row.descriptor.unwrap()])
+                .await
+                .unwrap();
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+
+            let before = verifications();
+            let host = facade
+                .certified_local_action_host(&caller, &evidence)
+                .unwrap();
+            assert_eq!(
+                verifications().saturating_sub(before),
+                1,
+                "opening verifies once"
+            );
+
+            let before = verifications();
+            let page = local_host_answer(host.query(
+                &caller,
+                tilo_actions::remote::CatalogueQuery {
+                    max_results: 0,
+                    ..tilo_actions::remote::CatalogueQuery::default()
+                },
+            ))
+            .await
+            .unwrap();
+            assert!(!page.revision.is_empty());
+            assert_eq!(
+                verifications().saturating_sub(before),
+                1,
+                "a listing verifies once"
+            );
+
+            let request = local_host_request(false);
+            let before = verifications();
+            let pending = host.invoke(&caller, request.clone());
+            assert_eq!(
+                verifications().saturating_sub(before),
+                1,
+                "an invocation admission and its dispatch verify once"
+            );
+            let receipt = local_host_answer(pending).await.unwrap();
+            assert_eq!(receipt.invocation, request.invocation);
+            let _lease = local_host_lease(&rig, &caller, request.invocation).await;
+
+            // The admission lent to that dispatch ended with the call.
+            let before = verifications();
+            local_host_answer(host.query(
+                &caller,
+                tilo_actions::remote::CatalogueQuery {
+                    max_results: 0,
+                    ..tilo_actions::remote::CatalogueQuery::default()
+                },
+            ))
+            .await
+            .unwrap();
+            assert_eq!(
+                verifications().saturating_sub(before),
+                1,
+                "a later check verifies again"
+            );
+
+            env.authority
+                .additional_certificates
+                .lock()
+                .unwrap()
+                .clear();
+            assert!(
+                local_host_answer(host.invoke(&caller, local_host_request(false)))
+                    .await
+                    .is_err(),
+                "an unenrolled device fails the very next invocation"
+            );
+            assert!(
+                facade
+                    .certified_local_action_host(&caller.clone().in_new_execution(), &evidence)
+                    .is_err(),
+                "and the very next open"
+            );
+            no_delivery(&rig).await;
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// A tampered proof is never mistaken for the one that verified before.
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_remembers_only_the_exact_verified_proof() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            for _ in 0..2 {
+                facade
+                    .certified_local_action_host(&caller.clone().in_new_execution(), &evidence)
+                    .unwrap();
+            }
+            let presentation = runtime_collab::CertifiedJoinIdentity::decode(&evidence)
+                .unwrap()
+                .unwrap();
+            for byte in [0, 31, 63] {
+                let mut forged = presentation.clone();
+                forged.proof[byte] ^= 0x01;
+                assert!(
+                    facade
+                        .certified_local_action_host(
+                            &caller.clone().in_new_execution(),
+                            &forged.encode().unwrap(),
+                        )
+                        .is_err(),
+                    "proof byte {byte} flipped"
+                );
+            }
+            let mut other_room = presentation;
+            other_room.workspace_id = uuid::Uuid::new_v4().to_string();
+            assert!(
+                facade
+                    .certified_local_action_host(
+                        &caller
+                            .clone()
+                            .in_room(&other_room.workspace_id)
+                            .in_new_execution(),
+                        &other_room.encode().unwrap(),
+                    )
+                    .is_err(),
+                "a proof for one room never admits another"
+            );
+            rig.stop().await;
+        })
+        .await;
+}
+
 /// Wall time of one certified open + provider listing and of one certified
 /// open + eager invocation admission, at workspace histories of 0, 1,000
 /// and 10,000 effect receipts. Prints the numbers (`--nocapture`); the
@@ -738,7 +888,7 @@ async fn certified_local_host_open_list_and_invoke_cost() {
                         workspace.effect_receipts.push(
                             tilo_desktop_model::WorkspaceEffectReceipt {
                                 invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(
-                                    n | (1 << 100),
+                                    u128::MAX.saturating_sub(n),
                                 )),
                                 actor: "person".into(),
                                 context,
@@ -776,7 +926,7 @@ async fn certified_local_host_open_list_and_invoke_cost() {
                     .unwrap();
                     // The first round warms caches and is not counted.
                     if round > 0 {
-                        listing += started.elapsed();
+                        listing = listing.saturating_add(started.elapsed());
                     }
                     assert!(!page.revision.is_empty());
                 }
@@ -789,7 +939,7 @@ async fn certified_local_host_open_list_and_invoke_cost() {
                         .certified_local_action_host(&caller, &evidence)
                         .unwrap();
                     let pending = host.invoke(&caller, request.clone());
-                    invoking += started.elapsed();
+                    invoking = invoking.saturating_add(started.elapsed());
                     let receipt = local_host_answer(pending).await.unwrap();
                     assert_eq!(receipt.invocation, request.invocation);
                     let _lease = local_host_lease(&rig, &caller, request.invocation).await;
@@ -797,8 +947,8 @@ async fn certified_local_host_open_list_and_invoke_cost() {
                 eprintln!(
                     "TIL-593 certified local host, {receipts} receipts: open+list {:?}/call, \
                      open+invoke admission {:?}/call",
-                    listing / LISTINGS,
-                    invoking / INVOKES,
+                    listing.checked_div(LISTINGS).unwrap_or_default(),
+                    invoking.checked_div(INVOKES).unwrap_or_default(),
                 );
                 rig.stop().await;
             }
