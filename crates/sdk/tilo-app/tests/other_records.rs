@@ -344,3 +344,38 @@ fn declared_records_are_published_and_committed_though_no_view_shows_them() {
         assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
     }
 }
+
+/// Binds its own control to a section's field, as a hand surface does.
+struct BindingApp;
+
+impl ResourceApp for BindingApp {
+    type Resource = Board;
+    const ID: &'static str = "so.tilo.test-board-binding";
+    const TITLE: &'static str = "Board";
+
+    fn view(cx: &mut ViewCx<Board>) -> Element {
+        let display = cx.settings::<Display>();
+        let actions = cx.record_actions(&display).unwrap();
+        let shown = LocalState::new(display.get().high_contrast);
+        let binding = actions
+            .edit_binding(
+                Display::paths().high_contrast,
+                tilo_app::tilo_resource::Path::set,
+            )
+            .unwrap();
+        Box::new(
+            Column::new().push(Box::new(
+                Checkbox::from_state(&shown)
+                    .with_id("contrast")
+                    .on_action(binding),
+            )),
+        )
+    }
+}
+
+#[test]
+fn a_control_built_by_hand_binds_a_sections_field_edit() {
+    let mut app = TestApp::<BindingApp>::new().unwrap();
+    app.harness().click_named("contrast").unwrap();
+    assert!(app.settings::<Display>().get().high_contrast);
+}

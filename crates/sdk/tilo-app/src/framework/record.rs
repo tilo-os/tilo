@@ -446,7 +446,56 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     }
 }
 
+/// The published actions of `held`, for controls a surface or a view binds
+/// itself, kept current with the record while `alive` lives.
+fn record_actions<P: Resource>(
+    app: &'static str,
+    storage: &ViewStorage,
+    alive: std::rc::Weak<()>,
+    held: Rc<Held<P>>,
+) -> Actions<P> {
+    let actions = Actions::new(app, Rc::new(held.publish()));
+    let following = actions.clone();
+    let followed = Cell::new(held.live().revision());
+    storage.follow_with(alive, move || {
+        held.sync();
+        let revision = held.live().revision();
+        if followed.replace(revision) != revision {
+            following.update(held.publish());
+        }
+    });
+    actions
+}
+
+impl<R: Resource, T: 'static> ViewCx<R, T> {
+    /// The published actions of another record than the app's own, for
+    /// controls built outside a [`Self::record`] part: `bind` its verbs,
+    /// `edit_binding` its paths. `None` where the record cannot be held.
+    pub fn record_actions<P: Resource>(&self, record: &impl OtherRecord<P>) -> Option<Actions<P>> {
+        let held = record.held(sealed::Storage(&self.storage))?;
+        Some(record_actions(
+            self.dispatch.app_id(),
+            &self.storage,
+            self.alive.clone(),
+            held,
+        ))
+    }
+}
+
 impl<R: Resource> SurfaceCx<R> {
+    /// The published actions of another record than the app's own, as
+    /// [`ViewCx::record_actions`]: a hand surface binds its controls to the
+    /// record's verbs and field edits with them, as to its own.
+    pub fn record_actions<P: Resource>(&self, record: &impl OtherRecord<P>) -> Option<Actions<P>> {
+        let held = record.held(sealed::Storage(&self.storage))?;
+        Some(record_actions(
+            self.dispatch.app_id(),
+            &self.storage,
+            self.alive.clone(),
+            held,
+        ))
+    }
+
     /// The dispatcher of another record than the app's own, as
     /// [`ViewCx::record_dispatcher`]: a surface reads the record itself
     /// ([`PersonRecord::with`](super::PersonRecord::with),
