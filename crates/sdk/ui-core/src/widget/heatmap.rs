@@ -12,7 +12,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
@@ -21,7 +21,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_item,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -242,11 +242,49 @@ impl Heatmap {
             channel(a.b(), b.b()),
         )
     }
+}
+
+impl InteractiveChart for Heatmap {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
     fn update_hover(&mut self) {
         self.hovered = self.cells.iter().position(|cell| {
             self.cell_rect(cell)
                 .is_some_and(|rect| rect.contains(self.pointer))
         });
+    }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(cell) = self.hovered.and_then(|index| self.cells.get(index)) else {
+            return false;
+        };
+        self.activated = Some(cell.id.clone());
+        true
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let candidates = self
+            .cells
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| self.cell_rect(cell).is_some())
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        self.hovered = moved_item(self.hovered, &candidates, action);
+        if let Some(rect) = self
+            .hovered
+            .and_then(|index| self.cells.get(index))
+            .and_then(|cell| self.cell_rect(cell))
+        {
+            self.pointer = rect.center();
+        }
+        self.hovered.is_some()
     }
 }
 
@@ -445,76 +483,7 @@ impl Widget for Heatmap {
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    if let Some(cell) = self.hovered.and_then(|index| self.cells.get(index)) {
-                        self.activated = Some(cell.id.clone());
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.update_hover();
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(cell) = self.hovered.and_then(|index| self.cells.get(index)) {
-                    self.activated = Some(cell.id.clone());
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                if action == ChartNavAction::Activate {
-                    if let Some(cell) = self.hovered.and_then(|index| self.cells.get(index)) {
-                        self.activated = Some(cell.id.clone());
-                    }
-                } else {
-                    let candidates = self
-                        .cells
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, cell)| self.cell_rect(cell).is_some())
-                        .map(|(index, _)| index)
-                        .collect::<Vec<_>>();
-                    self.hovered = moved_item(self.hovered, &candidates, action);
-                    self.keyboard_inspection = self.hovered.is_some();
-                    if let Some(rect) = self
-                        .hovered
-                        .and_then(|index| self.cells.get(index))
-                        .and_then(|cell| self.cell_rect(cell))
-                    {
-                        self.pointer = rect.center();
-                    }
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let children = self

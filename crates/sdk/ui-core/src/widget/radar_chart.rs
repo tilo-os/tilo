@@ -13,7 +13,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
@@ -23,7 +23,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
 };
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -324,6 +324,16 @@ impl RadarChart {
         path.close_path();
         path
     }
+}
+
+impl InteractiveChart for RadarChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
     fn update_hover(&mut self) {
         let mut nearest: Option<(f64, Hovered)> = None;
         for (series_index, series) in self.series.iter().enumerate() {
@@ -348,9 +358,9 @@ impl RadarChart {
         }
         self.hovered = nearest.map(|(_, hovered)| hovered);
     }
-}
-
-impl RadarChart {
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
     fn toggle_legend_at(&mut self, point: Point) -> bool {
         if !self.style.legend.interactive {
             return false;
@@ -379,7 +389,7 @@ impl RadarChart {
         true
     }
 
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) {
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
         let candidates = self
             .series
             .iter()
@@ -402,13 +412,13 @@ impl RadarChart {
         });
         self.hovered = moved_index(current, candidates.len(), action)
             .and_then(|index| candidates.get(index).copied());
-        self.keyboard_inspection = self.hovered.is_some();
         if let Some(hovered) = self.hovered
             && let Some(series) = self.series.get(hovered.series)
             && let Some(point) = self.value_point(series, hovered.axis)
         {
             self.pointer = point;
         }
+        self.hovered.is_some()
     }
 }
 
@@ -658,57 +668,7 @@ impl Widget for RadarChart {
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    if self.toggle_legend_at(point) || self.activate_hovered() {
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.update_hover();
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if self.toggle_legend_at(self.pointer) || self.activate_hovered() {
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                if action == ChartNavAction::Activate {
-                    let _ = self.activate_hovered();
-                } else {
-                    self.move_keyboard_inspection(action);
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let children = self
