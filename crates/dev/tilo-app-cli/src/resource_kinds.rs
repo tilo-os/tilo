@@ -156,6 +156,14 @@ fn requires_test(predicate: &syn::Meta) -> bool {
 struct Kinds(BTreeSet<String>);
 
 impl VisitMut for Kinds {
+    /// A module file whose inner `cfg` compiles it only into the crate's
+    /// tests holds no packaged resource, whatever declares the module.
+    fn visit_file_mut(&mut self, file: &mut syn::File) {
+        if !test_only(&file.attrs) {
+            syn::visit_mut::visit_file_mut(self, file);
+        }
+    }
+
     fn visit_item_mod_mut(&mut self, module: &mut syn::ItemMod) {
         if !test_only(&module.attrs) {
             syn::visit_mut::visit_item_mod_mut(self, module);
@@ -237,6 +245,15 @@ mod tests {
         std::fs::write(
             app.path().join("src/uppercase.rs"),
             r#"impl Resource for Uppercase { const KIND: &'static str = "uppercase.library"; }"#,
+        )
+        .unwrap();
+        // A test module in a file of its own, as `mod shelf_tests;` declares it.
+        std::fs::write(
+            app.path().join("src/shelf_tests.rs"),
+            r#"
+            #![cfg(all(test, not(target_arch = "wasm32")))]
+            impl Resource for Shelf { const KIND: &'static str = "test.shelf"; }
+            "#,
         )
         .unwrap();
         assert_eq!(

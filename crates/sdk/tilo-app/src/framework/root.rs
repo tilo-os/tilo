@@ -324,14 +324,28 @@ impl<R: Resource> ResourceRoot<R> {
         walk(self.content.as_ref(), visit);
     }
 
-    /// Bind the edits surfaces offer on the row `row` names
+    /// Bind the edits surfaces offer on the rows `rows` name
     /// ([`ResourceSurface::row_declarations`](super::ResourceSurface::row_declarations)).
-    fn bind_row_declarations(&self, row: &mut tilo_actions::Resource) {
-        let mut decls = Vec::new();
-        self.surfaces(&mut |surface| decls.extend(surface.row_declarations(row.id.as_str())));
-        for decl in decls {
-            let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
-            *row = tilo_resource::bind_declaration(bound, &decl);
+    ///
+    /// One walk of the view asks every surface about every row, so binding
+    /// costs the view plus surfaces × rows, never the view once per row. Each
+    /// row binds its edits in tree order of the surfaces offering them.
+    fn bind_row_declarations(&self, rows: &mut [tilo_actions::Resource]) {
+        if rows.is_empty() {
+            return;
+        }
+        let mut decls: Vec<Vec<tilo_resource::ActionDecl<R>>> = Vec::new();
+        self.surfaces(&mut |surface| {
+            decls.resize_with(rows.len(), Vec::new);
+            for (row, offered) in rows.iter().zip(decls.iter_mut()) {
+                offered.extend(surface.row_declarations(row.id.as_str()));
+            }
+        });
+        for (row, offered) in rows.iter_mut().zip(decls) {
+            for decl in offered {
+                let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
+                *row = tilo_resource::bind_declaration(bound, &decl);
+            }
         }
     }
 
@@ -342,34 +356,76 @@ impl<R: Resource> ResourceRoot<R> {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.publication");
         let state = self.live.get();
-        let Some(epoch) = R::publication_cache_epoch(&state) else {
-            return self.decorate_publication(&state, self.resource_tree(&state));
+        let tree = self.document_tree(&state, tilo_actions::Resource::clone);
+        self.decorate_publication(&state, tree, Decoration::Tree)
+    }
+
+    /// `take` of the document-owned tree of the live `state`: the cached one
+    /// when the resource opts in to reuse
+    /// ([`Resource::publication_cache_epoch`]), else built afresh.
+    fn document_tree(
+        &self,
+        state: &R::State,
+        // A function, not a closure: one copy of this per resource type.
+        take: fn(&tilo_actions::Resource) -> tilo_actions::Resource,
+    ) -> tilo_actions::Resource {
+        let Some(epoch) = R::publication_cache_epoch(state) else {
+            let tree = self.resource_tree(state);
+            return take(&tree);
         };
         let revision = (
             self.live.revision(),
             ui_core::i18n::I18nManager::revision(),
             epoch,
         );
-        let tree = {
-            let mut cached = self.publication_tree.borrow_mut();
-            if cached
-                .as_ref()
-                .is_some_and(|cached| cached.revision != revision)
-            {
-                *cached = None;
-            }
-            cached
-                .get_or_insert_with(|| {
-                    let state = self.live.get();
-                    PublicationCache {
-                        revision,
-                        tree: self.resource_tree(&state),
-                    }
+        let mut cached = self.publication_tree.borrow_mut();
+        if cached
+            .as_ref()
+            .is_some_and(|cached| cached.revision != revision)
+        {
+            *cached = None;
+        }
+        take(
+            &cached
+                .get_or_insert_with(|| PublicationCache {
+                    revision,
+                    tree: self.resource_tree(state),
                 })
-                .tree
-                .clone()
+                .tree,
+        )
+    }
+
+    /// The document-owned part of what controls bind to: the live
+    /// resource's identity and own actions, without its children.
+    fn binding_head(&self) -> BindingHead {
+        let state = self.live.get();
+        BindingHead {
+            revision: (self.live.revision(), ui_core::i18n::I18nManager::revision()),
+            resource: self.document_tree(&state, without_children),
+        }
+    }
+
+    /// What bound controls look up ([`super::controls::Actions`]): the
+    /// published resource's identity and actions over `head`, exactly as
+    /// [`Self::publication`] publishes them, without building or decorating
+    /// its children.
+    fn binding_publication(&self, head: &BindingHead) -> tilo_actions::Resource {
+        self.decorate_publication(&self.live.get(), head.resource.clone(), Decoration::Actions)
+    }
+
+    /// Refresh the actions bound controls look up, reusing `head` while the
+    /// live state and locale are those it was built at. Answers the head
+    /// they were refreshed from.
+    fn refresh_bindings(&self, head: Option<BindingHead>) -> BindingHead {
+        #[cfg(feature = "test-support")]
+        let _profile = super::profiling::Scope::start("framework.action_bindings");
+        let revision = (self.live.revision(), ui_core::i18n::I18nManager::revision());
+        let head = match head {
+            Some(head) if head.revision == revision => head,
+            _ => self.binding_head(),
         };
-        self.decorate_publication(&self.live.get(), tree)
+        self.action_bindings.update(self.binding_publication(&head));
+        head
     }
 
     /// [`Self::publication`] of the resource as `doc` holds it now, which a
@@ -395,7 +451,7 @@ impl<R: Resource> ResourceRoot<R> {
     fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.publication");
-        self.decorate_publication(state, self.resource_tree(state))
+        self.decorate_publication(state, self.resource_tree(state), Decoration::Tree)
     }
 
     fn resource_tree(&self, state: &R::State) -> tilo_actions::Resource {
@@ -404,11 +460,16 @@ impl<R: Resource> ResourceRoot<R> {
         tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state)
     }
 
+    /// Add to `resource`, the document-owned tree, what the view and the
+    /// framework publish on it. [`Decoration::Actions`] decorates only the
+    /// resource's own actions; its children stay as they are.
     fn decorate_publication(
         &self,
         state: &R::State,
         mut resource: tilo_actions::Resource,
+        decoration: Decoration,
     ) -> tilo_actions::Resource {
+        let children = decoration == Decoration::Tree;
         let mut bound = {
             #[cfg(feature = "test-support")]
             let _profile = super::profiling::Scope::start("framework.bound_declarations");
@@ -421,12 +482,14 @@ impl<R: Resource> ResourceRoot<R> {
             let _profile = super::profiling::Scope::start("framework.surface_publication");
             bound.extend(surface.bound_declarations());
             availability.extend(surface.availability());
-            rows.extend(
-                surface
-                    .live_rows()
-                    .into_iter()
-                    .map(super::LiveRow::into_resource),
-            );
+            if children {
+                rows.extend(
+                    surface
+                        .live_rows()
+                        .into_iter()
+                        .map(super::LiveRow::into_resource),
+                );
+            }
         });
         for decl in bound {
             resource = tilo_resource::bind_declaration(resource, &decl);
@@ -440,13 +503,11 @@ impl<R: Resource> ResourceRoot<R> {
                 status.overlay(spec);
             }
         }
-        merge(&mut resource.children, rows);
-        {
+        if children {
+            merge(&mut resource.children, rows);
             #[cfg(feature = "test-support")]
             let _profile = super::profiling::Scope::start("framework.row_declarations");
-            for child in &mut resource.children {
-                self.bind_row_declarations(child);
-            }
+            self.bind_row_declarations(&mut resource.children);
         }
         for spec in &self.presentation {
             if spec.kind == tilo_actions::OperationKind::Document {
@@ -501,7 +562,9 @@ impl<R: Resource> ResourceRoot<R> {
         if self.effects.has_causal_drains() {
             mark_document_jobs(&mut resource);
         }
-        resource.children.extend(self.storage.person_resources());
+        if children {
+            resource.children.extend(self.storage.person_resources());
+        }
         resource
     }
 
@@ -529,13 +592,16 @@ impl<R: Resource> ResourceRoot<R> {
     /// Follow the document when it moved — a local action, a
     /// collaborator's change, an undo or a restore — reading only what the
     /// change touched.
-    fn refresh(&self, doc: &AutoCommit) {
+    ///
+    /// Answers the document-owned head the bindings were refreshed from, for
+    /// the refresh after the view synced to reuse.
+    fn refresh(&self, doc: &AutoCommit) -> BindingHead {
         if let Err(error) = self.live.sync(doc) {
             tracing::warn!(%error, kind = R::KIND, "resource unreadable");
         }
         // Refresh the same declarations the host publishes before rebuilt
         // controls look up their bindings. Retained surface handles share it.
-        self.action_bindings.update(self.publication());
+        let head = self.refresh_bindings(None);
         // A surface may have synced the state itself after its own edit.
         let revision = self.live.revision();
         if revision != self.followed.get() {
@@ -546,6 +612,49 @@ impl<R: Resource> ResourceRoot<R> {
         self.live
             .with(|state| self.effects.drain_projections(state, revision));
         self.effects.poll_jobs();
+        head
+    }
+}
+
+/// How much of a publication [`ResourceRoot::decorate_publication`] adds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Decoration {
+    /// The whole published tree: the resource's actions and its children.
+    Tree,
+    /// Only the resource's identity and own actions, which is all bound
+    /// controls read.
+    Actions,
+}
+
+/// The document-owned head of the publication, at the live and locale
+/// revision it was built at.
+#[derive(Clone)]
+struct BindingHead {
+    revision: (u64, u64),
+    resource: tilo_actions::Resource,
+}
+
+/// `resource` without its children, cloning nothing of them.
+fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource {
+    let tilo_actions::Resource {
+        id,
+        kind,
+        label,
+        presentation,
+        semantic_identity,
+        children: _,
+        actions,
+        views,
+    } = resource;
+    tilo_actions::Resource {
+        id: id.clone(),
+        kind: kind.clone(),
+        label: label.clone(),
+        presentation: presentation.clone(),
+        semantic_identity: semantic_identity.clone(),
+        children: Vec::new(),
+        actions: actions.clone(),
+        views: views.clone(),
     }
 }
 
@@ -976,10 +1085,13 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui_core::doc::document_ref(state, path);
         self.refresh_access();
-        self.refresh(state);
+        let head = self.refresh(state);
         self.storage.refresh();
         self.content.sync(state, path);
-        self.action_bindings.update(self.publication());
+        // What the view's sync changed (a surface's bound edits, its
+        // availability) reaches the bindings; the document-owned head is
+        // rebuilt only when the sync moved the state.
+        self.refresh_bindings(Some(head));
     }
 
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
@@ -1394,7 +1506,7 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
             }
         });
         if let Some(mut row) = row {
-            self.bind_row_declarations(&mut row);
+            self.bind_row_declarations(std::slice::from_mut(&mut row));
             return Some(row);
         }
         // Last, what the content resolves by id beyond what it publishes (a
@@ -2127,3 +2239,6 @@ mod tests {
         );
     }
 }
+
+// Compiled only into native tests: the file's own `cfg` says so.
+mod publication_tests;
