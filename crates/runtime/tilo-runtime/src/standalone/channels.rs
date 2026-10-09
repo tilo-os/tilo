@@ -58,6 +58,7 @@ impl PumpWake {
     pub(super) fn poke(&self) {
         let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         *pending = true;
+        drop(pending);
         self.ready.notify_one();
     }
 
