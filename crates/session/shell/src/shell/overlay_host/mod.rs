@@ -21156,11 +21156,15 @@ impl ShellOverlayHost {
                 theme,
                 overview_alpha,
             );
-            // The scrim covers the display; the panel, its shadow and its
-            // rise stay inside the stable clip while it fades and inside the
-            // unclamped one once it is opaque and unclipped.
-            let outset = Self::overview_shadow_outset(theme) + OVERVIEW_PANEL_RISE_PX;
-            let panel = self.overview_panel_rect().inflate(outset, outset);
+            // The scrim covers the display. A fading panel is clipped to the
+            // stable clip, inside it; an opaque one is drawn unclipped, so
+            // its shadow and rise may reach past the display.
+            let panel = if overview_alpha < 0.999 {
+                self.overview_stable_clip(theme)
+            } else {
+                let outset = Self::overview_shadow_outset(theme) + OVERVIEW_PANEL_RISE_PX;
+                self.overview_panel_rect().inflate(outset, outset)
+            };
             vec![transform.transform_rect_bbox(output.union(panel))]
         });
     }

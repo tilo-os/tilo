@@ -206,6 +206,9 @@ fn overview_section(
     theme: &Theme,
     open: bool,
 ) -> (Scene, ui::scene_parts::SectionParts) {
+    // What the layout pass does before every draw: the panel's metrics for
+    // the display it is on.
+    host.resolve_overview_layout(theme);
     let mut scene = Scene::new();
     let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
         host.draw_overview_overlay(scene, Affine::IDENTITY, renderer, theme, open);
