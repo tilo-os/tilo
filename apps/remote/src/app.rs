@@ -2009,12 +2009,7 @@ impl Widget for RemoteApp {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         let origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(child) = child_node(taffy, node) {
             self.body_mut().apply_layout(taffy, child, origin);
@@ -2775,13 +2770,7 @@ impl Widget for SessionPane {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = ui::widget::placed(l, origin);
     }
 
     fn draw(

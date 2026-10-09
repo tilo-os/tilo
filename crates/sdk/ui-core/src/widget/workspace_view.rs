@@ -126,12 +126,7 @@ impl Widget for WorkspaceView {
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, n: NodeId, origin: Point) {
         let l = taffy.layout(n).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::placed(&l, origin);
     }
     fn draw(
         &mut self,
