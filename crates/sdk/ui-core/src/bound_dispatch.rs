@@ -4380,6 +4380,7 @@ mod owned_restore_tests;
 
 /// Remote delivery is not a local action. A physical or logical edit must be
 /// finished by its existing owner; the network queue never commits it.
+#[cfg(all(feature = "native", any(test, feature = "test-support")))]
 pub(crate) fn can_merge_remote_owned_document(
     store: &RecordStore,
     checkout: &RecordCheckout,
