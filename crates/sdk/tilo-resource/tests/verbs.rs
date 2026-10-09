@@ -746,3 +746,15 @@ fn an_item_method_reads_and_writes_its_item_alone() {
     assert_eq!(person.first, "Augusta");
     assert_eq!(person.last, "Lovelace");
 }
+
+/// A hit opened by a view effect of a live row is anchored at the row and
+/// runs that effect there.
+#[test]
+fn a_search_entry_opens_by_its_rows_effect() {
+    let entry =
+        tilo_resource::SearchEntry::new("Chapter 2", "").opening("shelf.top:2", &ShelfView::Top);
+    assert_eq!(entry.anchor.as_deref(), Some("shelf.top:2"));
+    let action = entry.action.expect("the row's effect");
+    assert_eq!(action.resource, "shelf.top:2");
+    assert_eq!(action.action, "top");
+}
