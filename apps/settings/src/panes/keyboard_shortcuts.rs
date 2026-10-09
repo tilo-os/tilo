@@ -7,7 +7,6 @@
 //! says why.
 
 use std::collections::HashMap;
-use ui::widget::TaffyTreeExt;
 
 use serde::{Deserialize, Serialize};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
@@ -307,16 +306,7 @@ impl Widget for ShortcutPane {
         let mut c = self.composition();
         let child = c.build_layout(taffy, theme, node_map);
         self.composed.replace(c);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        taffy.widget_node(style, &[child], node_map, self)
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.composed.apply_layout(taffy, node, origin);

@@ -17,7 +17,6 @@
 use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
-use ui::widget::TaffyTreeExt;
 
 use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, PowerProfile};
 use taffy::{NodeId, TaffyTree};
@@ -1083,20 +1082,11 @@ impl Widget for PowerPane {
         let child = self
             .composed
             .build_layout(composition, taffy, theme, node_map);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
         // `child` was just created in this same `taffy` tree, so wrapping it
         // cannot fail in practice; falling back to the child node itself
         // (skipping the wrapper style) is a real degraded behaviour rather
         // than a panic if that invariant is ever broken.
-        taffy.widget_node(style, &[child], node_map, self)
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
 
     ui::forward_to_composed!(composed);
