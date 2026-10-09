@@ -109,7 +109,29 @@ class Compositor:
     # --- the three exposed operations ---
 
     def enumerate_actions(self, query: str = "") -> dict:
-        return self.answer({"op": "actions_enumerate", "query": query})
+        """The whole listing, one bounded page per request. A listing that
+        changes between pages is listed again from the start."""
+        for _ in range(3):
+            listing: dict = {}
+            rows: list = []
+            cursor = None
+            try:
+                while True:
+                    request = {"op": "actions_enumerate", "query": query}
+                    if cursor is not None:
+                        request["cursor"] = cursor
+                    listing = self.answer(request)
+                    rows.extend(listing.get("actions", []))
+                    cursor = listing.get("next_cursor")
+                    if not cursor:
+                        break
+            except CompositorError as error:
+                if error.code == "stale_cursor":
+                    continue
+                raise
+            listing.update(actions=rows, count=len(rows), truncated=False)
+            return listing
+        raise CompositorError("stale_cursor", "the listing kept changing while it was paged")
 
     def invoke_action(self, provider: str, id_: str, args: dict | None = None) -> dict:
         return self.answer(

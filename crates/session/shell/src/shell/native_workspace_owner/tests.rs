@@ -4,7 +4,7 @@ use crate::shell::{persist, state::WorkspaceTree};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use std::{sync::Arc, time::SystemTime};
-use tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation;
+use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_joined_room::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
 use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 use tilo_peer_state::{NeighbourMsg, TransportOrigin, join};
@@ -394,7 +394,7 @@ fn bootstrap_candidate(
     generation: u64,
     now: SystemTime,
 ) -> join::TransportHint {
-    use tilo_delivery_protocol::delivery_v3::descriptor;
+    use tilo_delivery_protocol::descriptor;
     owner
         .with_current(RoomId::parse(ROOM).unwrap(), |view| {
             let authority = descriptor::DescriptorAuthority {
@@ -428,11 +428,11 @@ fn bootstrap_response(
     pending: &NativeBootstrap,
     hint: &join::TransportHint,
     now: SystemTime,
-) -> tilo_delivery_protocol::delivery_v3::media_wire::BootstrapResponse {
+) -> tilo_delivery_protocol::bootstrap::BootstrapResponse {
     use ed25519_dalek::Signer;
-    use tilo_delivery_protocol::delivery_v3::{descriptor, media_wire};
+    use tilo_delivery_protocol::{bootstrap, descriptor};
     let metadata = descriptor::inspect_persisted_hint(hint, &hint.host).unwrap();
-    let mut response = media_wire::BootstrapResponse {
+    let mut response = bootstrap::BootstrapResponse {
         version: 1,
         request: pending.request().clone(),
         host_certificate: postcard::to_stdvec(&hint.host).unwrap(),
@@ -446,7 +446,7 @@ fn bootstrap_response(
             .unwrap(),
         signature: [[0; 32]; 2],
     };
-    response.signature = media_wire::split_signature(
+    response.signature = bootstrap::split_signature(
         SigningKey::from_bytes(&[61; 32])
             .sign(&response.signing_digest().unwrap())
             .to_bytes(),
@@ -725,7 +725,7 @@ pub(crate) fn test_bootstrap_response(
     pending: &NativeBootstrap,
     hint: &join::TransportHint,
     now: SystemTime,
-) -> tilo_delivery_protocol::delivery_v3::media_wire::BootstrapResponse {
+) -> tilo_delivery_protocol::bootstrap::BootstrapResponse {
     bootstrap_response(pending, hint, now)
 }
 fn fresh_slot(
