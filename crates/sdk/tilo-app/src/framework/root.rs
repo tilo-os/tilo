@@ -2239,5 +2239,5 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+// Compiled only into native tests: the file's own `cfg` says so.
 mod publication_tests;
