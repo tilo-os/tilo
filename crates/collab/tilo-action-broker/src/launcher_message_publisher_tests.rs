@@ -42,16 +42,13 @@ mod launcher_message_publisher_tests {
         );
         let server = server.into_std().unwrap();
         let handoff = serde_json::to_vec(&serde_json::json!({
-            "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
             "app_id": room.route.app_id, "workspace_id": room.route.cluster_id,
         }))
         .unwrap();
         if launcher_handoff {
-            std::io::Write::write_all(
-                &mut client,
-                &collab_types::local_transport::COLLAB_LAUNCH_MAGIC,
-            )
-            .unwrap();
+            std::io::Write::write_all(&mut client, &launcher::services::COLLAB_LAUNCH_MAGIC)
+                .unwrap();
             std::io::Write::write_all(
                 &mut client,
                 &launcher::services::COLLAB_LAUNCH_FRAMING
@@ -163,6 +160,7 @@ mod launcher_message_publisher_tests {
             revision: Some("message-r1".into()),
             fresh_binding: None,
             on_behalf_of: None,
+            wait_ms: None,
         };
         let receipt = canonical_pending(room, host.invoke(&caller, request.clone()))
             .await

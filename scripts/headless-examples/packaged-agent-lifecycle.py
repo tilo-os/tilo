@@ -4788,7 +4788,23 @@ def current_agent_tasks(socket, room, agent, process):
     ))
 
 
-def reopen_marker_composer_while_live(socket, agent, marker, windows, process, *, output=None):
+def click_current_agent_marker(socket, marker):
+    """Click only the exact live marker's observed screen-space rectangle."""
+    client = atspi.AtspiClient(marker.get("address") or atspi.atspi_address(), marker["bus"])
+    if atspi.property_text(client.property(marker["control"], "Name")) != marker["label"]:
+        raise RuntimeError("physical marker activation lost its exact accessible subject")
+    rect = atspi.extents_reply(client.call(
+        marker["control"], "org.a11y.atspi.Component.GetExtents", "1"))
+    if rect is None or len(rect) != 4 \
+            or any(type(value) not in (int, float) or not math.isfinite(value) for value in rect) \
+            or rect[2] <= 2 or rect[3] <= 2:
+        raise RuntimeError("physical marker activation has no observable live bounds")
+    require_ok(call(socket, {"op": "click_at", "x": rect[0] + rect[2] / 2,
+                             "y": rect[1] + rect[3] / 2}))
+
+
+def reopen_marker_composer_while_live(socket, agent, marker, windows, process, *, output=None,
+                                    pointer=False):
     """Prove one private draft round trip while the real marker is actionable."""
     draft = "Keep this marker Message draft private."
     observations = {"probe_count": 0, "initial": None, "last": None}
@@ -4816,10 +4832,23 @@ def reopen_marker_composer_while_live(socket, agent, marker, windows, process, *
     wait_for("initial quick composer close", lambda: composer() is None, process)
     # This is the freshly observed real node. Its public activation rejects
     # an expired pulse; caching the address cannot extend its authority.
-    activate_shell_accessibility_control(marker, marker["label"])
+    if pointer:
+        current_marker = agent_marker_accessibility(agent, windows=windows)
+        if current_marker is None or any(current_marker.get(key) != marker.get(key)
+                                         for key in ("bus", "window", "root")):
+            raise RuntimeError("physical marker reopen lost its original owned shell route")
+        click_current_agent_marker(socket, current_marker)
+    else:
+        activate_shell_accessibility_control(marker, marker["label"])
     reopened = wait_for("initial marker composer reopened", composer, process)
     if not private_editor_value_matches(reopened, draft):
         raise RuntimeError("Message draft was lost across the initial marker close and reopen")
+    if pointer and output is not None:
+        (output / "agent-marker-pointer-activation.json").write_text(json.dumps({
+            "same_owned_shell_route": True, "exact_current_marker_clicked": True,
+            "exact_agent_composer_observed": True, "private_draft_retained": True,
+            "private_content_recorded": False,
+        }, indent=2) + "\n")
     return draft
 
 
@@ -5465,7 +5494,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
         raise
     activate_shell_accessibility_control(marker, marker["label"])
     reopened_message_draft = reopen_marker_composer_while_live(
-        socket, agent, marker, shell_windows, process, output=output,
+        socket, agent, marker, shell_windows, process, output=output, pointer=True,
     )
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"agent-action-marker-activated-{size}.png"
@@ -5558,6 +5587,7 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
         "category_rect": marker_binding["category_rect"],
         "marker_accessible": True,
         "marker_activated": True,
+        "marker_pointer_activated": True,
         "quick_composer_accessible": composer is not None,
         "quick_composer_interaction": interaction,
         "terminal_status": terminal["status"],
@@ -8039,6 +8069,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                 proven = bool(
                     marker_evidence.get("provider_request_count") == 3
                     and marker_evidence.get("marker_activated") is True
+                    and marker_evidence.get("marker_pointer_activated") is True
                     and marker_evidence.get("quick_composer_accessible") is True
                     and marker_evidence.get("terminal_status") == "done"
                 )

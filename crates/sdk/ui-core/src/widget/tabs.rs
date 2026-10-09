@@ -3155,32 +3155,42 @@ impl TabBar {
                 compose(transform, Affine::translate((0.0, fade_y)))
             };
             let pill_alpha_active = combined_alpha < 1.0;
-            if pill_alpha_active {
-                // Wider than the pill so hover-reveal action icons fade in cleanly.
-                let close_w = self.close_rects.get(i).map_or(0.0, Rect::width);
-                let clip = Rect::new(r.x0 - 2.0, r.y0 - 4.0, r.x1 + close_w + 60.0, r.y1 + 4.0);
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    combined_alpha,
-                    transform,
-                    &clip,
+            // Wider than the pill so hover-reveal action icons fade in cleanly.
+            let close_w = self.close_rects.get(i).map_or(0.0, Rect::width);
+            let clip = Rect::new(r.x0 - 2.0, r.y0 - 4.0, r.x1 + close_w + 60.0, r.y1 + 4.0);
+            // Each pill is a damage part: hovering one repaints that pill.
+            // It paints inside the clip a fading pill is held to, at its
+            // fade offset; a press only shrinks it.
+            let bounds = vec![
+                transform.transform_rect_bbox(clip),
+                pill_transform.transform_rect_bbox(clip),
+            ];
+            let key = crate::scene_parts::PartKey::new("ui.tab-pill", t.id);
+            crate::scene_parts::part(scene, key, bounds, |scene| {
+                if pill_alpha_active {
+                    scene.push_layer(
+                        vello::peniko::Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        combined_alpha,
+                        transform,
+                        &clip,
+                    );
+                }
+                // Uses `pill_transform` so the fade's y-offset composes with any
+                // layout-spring dx/dy.
+                self.draw_pill_inner(
+                    &mut PaintCtx::new(scene, pill_transform, tr, theme),
+                    presence,
+                    i,
+                    r,
+                    false,
                 );
-            }
-            // Uses `pill_transform` so the fade's y-offset composes with any
-            // layout-spring dx/dy.
-            self.draw_pill_inner(
-                &mut PaintCtx::new(scene, pill_transform, tr, theme),
-                presence,
-                i,
-                r,
-                false,
-            );
 
-            // Must mirror the push above exactly — `pill_alpha_active` tracks that.
-            if pill_alpha_active {
-                scene.pop_layer();
-            }
+                // Must mirror the push above exactly — `pill_alpha_active` tracks that.
+                if pill_alpha_active {
+                    scene.pop_layer();
+                }
+            });
         }
     }
 
@@ -4405,7 +4415,7 @@ mod tests {
             b.hover_idx = Some(1);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
@@ -4477,7 +4487,7 @@ mod tests {
             b.hover_idx = Some(2);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
@@ -4691,7 +4701,7 @@ mod tests {
             b.last_cursor = close_centre;
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
@@ -5105,7 +5115,7 @@ mod tests {
             // Pill B's left half → drop index 1 (insert before B).
             b.last_cursor = Point::new(90.0, 20.0);
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
             };
             let mut tree = TaffyTree::<()>::new();
@@ -5140,7 +5150,7 @@ mod tests {
 
             // Move cursor past pill C's midpoint → gap 3 (append).
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(230.0, 20.0),
             };
             b.handle_event(
@@ -5159,7 +5169,7 @@ mod tests {
             assert_eq!(b.drop_zone_target(), Some(3), "past C's mid → gap 3");
 
             let release = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
@@ -5203,7 +5213,7 @@ mod tests {
             b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
             b.last_cursor = Point::new(90.0, 20.0);
             let event = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
             };
             let mut tree = TaffyTree::<()>::new();
@@ -5236,7 +5246,7 @@ mod tests {
             );
 
             let release = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
@@ -5851,7 +5861,7 @@ mod tests {
             // Cursor over the closing pill's old close chip.
             let cursor = Point::new(155.0, 20.0);
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(cursor.x, cursor.y),
             };
             b.handle_event(
@@ -5871,7 +5881,7 @@ mod tests {
             let before_count = b.closing_tab_ids().len();
             let before_tabs: Vec<u64> = b.tabs().iter().map(|t| t.id).collect();
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
@@ -6340,7 +6350,7 @@ mod tests {
             b.last_cursor = Point::new(50.0, 20.0);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
@@ -6780,7 +6790,7 @@ mod tests {
         let mut focus = None;
         b.handle_event(
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             },
             &mut crate::widget::EventCtx {
@@ -6813,7 +6823,7 @@ mod tests {
         let mut focus = None;
         b.handle_event(
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state,
                 button: MouseButton::Left,
             },

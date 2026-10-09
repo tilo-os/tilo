@@ -1449,7 +1449,10 @@ mod owner_commit_tests {
             }
         }
         impl crate::services::WorkspaceAuthority for CurrentOwner {
-            fn snapshot(&self) -> Result<tilo_desktop_model::DesktopTree, String> {
+            fn with_tree(
+                &self,
+                read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+            ) -> Result<(), String> {
                 let guard = self.0.lock().map_err(|_| "owner authority unavailable")?;
                 let peer = guard.as_ref().ok_or("owner authority unavailable")?;
                 let doc = peer
@@ -1467,7 +1470,8 @@ mod owner_commit_tests {
                 workspace.capabilities = caps;
                 let mut tree = tilo_desktop_model::DesktopTree::default();
                 tree.workspaces.push(workspace);
-                Ok(tree)
+                read(&tree);
+                Ok(())
             }
         }
         struct Published(Arc<AtomicUsize>);
@@ -1961,7 +1965,7 @@ mod owner_commit_tests {
                     assert_eq!(query.unwrap().rows.len(), 1);
                     assert!(matches!(
                         resolve.unwrap(),
-                        runtime_collab::ActionDirectoryResolution::Found(_)
+                        runtime_collab::ActionDirectoryResolution::Found { .. }
                     ));
                 }
                 *authority.certificate.lock().unwrap() = Some(cert.clone());

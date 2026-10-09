@@ -875,7 +875,18 @@ and no control was projected for it.
 
 `crates/agent/agent-participant/src/host.rs` runs a supervisor in a host
 process. Each agent's participant runs on its own thread with the host's
-model, pumping its session until it stops or the host shuts down. Grants
+model, pumping its session until it stops or the host shuts down. Between
+pumps the thread sleeps until its session or steering changes or its
+presence keep-alive is due, never on an interval; a pump runs a plan's local
+steps back to back for up to 5 ms and at most one model call. Records the
+agent has not opened are held as their documents, history kept and each
+change once, so opening one seeds its replica with exactly what its changes
+made: the shared desktop live, its changes merged once per pump, its tabs
+read only when it changed; every other record saved, with the changes since
+merged in one load once they outweigh it (or 64 KiB). Those changes come
+from room members, so every merge goes through `tilo-automerge-isolate`
+first and none decodes in the host process; a change the isolate refuses is
+dropped, and with no isolate the record does not open. Grants
 (agent key, certificate, delegation) and agents (status, room, task log,
 conversation) are kept in `<state>/agents/agents.json` (owner-only). A
 ticker settles expired grants: the agent stops and the relay refuses its
@@ -902,9 +913,22 @@ it. `--agent-model` chooses the planner:
 `ModelPlanner` also offers the room's existing records of an app before a
 new one, so "add a sheet named …" edits the sheet people already have.
 
-**Agents run no app's code.** An agent holds records as replicas of their
-resources, so nothing it does reads the host user's files or secret store;
-it plans with the host's model.
+**App code runs in confined workers, never in the host.** An agent holds
+records as replicas of their resources, and a replica runs the app's own
+resource code (its operations, seed and presence). Each record an agent or
+the host's room actions hold lives in its own app worker
+(`tilo_agent_participant::worker`, `ConfinedReplica`): the host's executable
+started again, which confines itself before it reads a request: no path
+opened or changed, no socket, no exec, no signal to another process. The
+same goes for a record's registered reads and its view discovery. The host
+keeps the device keys and signs; the worker returns unsigned Automerge
+bytes, which the host admits through `tilo-automerge-isolate` before it
+signs them. So nothing an agent does reads the host user's files, secret
+store or the agents' keys; it plans with the host's model. Every binary that
+hosts agents calls `tilo_agent_participant::worker::dispatch_early()` first
+thing in `main` (a test crate, `app_worker!()`); see
+`docs/architecture/security.md`, "App workers for host agents and room
+actions".
 
 `host_agents` covers it end to end: a page requests a grant, a laptop
 approves it with its delegation, the page spawns with a plain-words task, the

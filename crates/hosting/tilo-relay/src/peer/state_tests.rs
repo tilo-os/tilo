@@ -235,6 +235,7 @@ impl Fixture {
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
@@ -1233,6 +1234,7 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
         v2: true,
+        signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
@@ -1755,6 +1757,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 trust_policy: &source.policy,
                 disconnect: &source.disconnect,
                 v2: true,
+                signed_actions: false,
                 private_tx: &private,
                 revocations: &source.revocations,
                 live_bridge: None,
@@ -1861,6 +1864,7 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
         v2: true,
+        signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
@@ -1991,6 +1995,7 @@ impl Fixture {
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
@@ -2105,6 +2110,55 @@ async fn replay_completion_only_classifies_a_valid_replacement_as_superseded() {
             );
         }
     }
+}
+
+/// A device re-dials (its shell follows a changed pin) and drops the old
+/// connection. The old connection's teardown releases its slot while the new
+/// subscription's replay is still running; the new one must take the slot, not
+/// be closed as if it had lost authorization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_completion_takes_a_slot_its_earlier_connection_released() {
+    let fixture = Arc::new(Fixture::new());
+    let device = fixture.recipient.device_public_key;
+    let (earlier, _earlier_rx) = mpsc::channel(32);
+    fixture.workspace.lock().await.add_subscriber(Subscriber {
+        device_public_key: device,
+        role: PeerRole::Device,
+        tx: earlier.clone(),
+        disconnect: fixture.recipient_disconnect.clone(),
+    });
+    let (release, reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "replay-prepare");
+    let subscribing = fixture.clone();
+    let task = tokio::spawn(async move { subscribing.subscribe_result().await });
+    reached.await.unwrap();
+
+    // The earlier connection's teardown: it removes only its own slot.
+    fixture
+        .workspace
+        .lock()
+        .await
+        .remove_subscriber_session(&device, &earlier);
+    drop(release);
+
+    let result = tilo_test_env::within("task to complete", task)
+        .await
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "the re-dialled subscription was refused after its earlier connection ended: {:?}",
+        result.err()
+    );
+    assert!(
+        fixture
+            .workspace
+            .lock()
+            .await
+            .subscribers
+            .get(&device)
+            .is_some_and(|current| current.tx.same_channel(&fixture.recipient_tx)),
+        "the re-dialled subscription holds the device's slot"
+    );
 }
 
 #[test]
@@ -2244,6 +2298,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 trust_policy: &writer.source.policy,
                 disconnect: &writer.source.disconnect,
                 v2: true,
+                signed_actions: false,
                 private_tx: &writer.private,
                 revocations: &writer.source.revocations,
                 live_bridge: None,
@@ -2361,6 +2416,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
     let delivery = PrivateDelivery {
         certified: false,
         action: action.clone(),
+        signed: None,
         source: fixture.source.peer.clone(),
         source_tx: fixture.source.tx.clone(),
         reply,
@@ -2387,6 +2443,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
             live_bridge: None,
@@ -2521,6 +2578,7 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
             live_bridge: None,
@@ -2955,6 +3013,7 @@ impl Fixture {
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
@@ -3305,6 +3364,7 @@ async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution(
             trust_policy: &source.policy,
             disconnect: &source.disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &fixture.private,
             revocations: &source.revocations,
             live_bridge: None,

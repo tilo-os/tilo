@@ -159,12 +159,38 @@ hand-off. It is also where the pacing tail comes from: on a nested run
 at 92.5% on-cadence, the off-cadence spans carry a median 4.1 ms of
 client dispatch against 2.5 ms for the on-cadence ones, and the worst
 gaps (77 ms, 57 ms, 45 ms) are 23-25 ms of client dispatch each. The
-cause is per-commit buffer capture (`foreign::ForeignFrameStore::capture_commit`
-copies an SHM buffer, or reads back a dma-buf) running inline on the
-logic thread, so a client that commits faster than the compositor
-presents makes the compositor late. Moving capture off the logic thread,
-or coalescing commits so only the newest buffer per surface is imported
-per frame, is the follow-up — and the frame trace already measures it.
+cause was per-commit buffer capture running inline on the logic thread,
+so a client that commits faster than the compositor presents made the
+compositor late. Capture now runs on workers, coalesced to the newest
+buffer per surface. For a dma-buf no thread waits on the client's GPU:
+the commit's buffer is captured once the loop sees its implicit fence
+signal, so a slow client delays only its own commits. The shared GPU
+route imports each client buffer once and copies nothing at capture: the
+presenter draws the frame into Vello's image atlas straight from the
+client's buffer (`vello::Renderer::draw_image_from`, a render pass that
+also converts `BGRA` and forces `X` alpha), so a client frame costs one
+full-frame GPU copy — at 3840×2160, 66 MB of GPU memory traffic instead of
+the 133 MB of the earlier copy-then-atlas route.
+
+Drawing from the client's buffer means the compositor decides when it goes
+back. Smithay sends `wl_buffer.release` for the replaced buffer the moment
+the next commit applies, so the commit handler takes the applied buffer out
+of the surface state (`State::hold_drawn_buffer`) and counts it per buffer
+(`foreign::hold_buffer`). The frame drawn from it carries the lease; every
+frame queued on `PresentPipe` pins the client frames its scenes draw
+(`FramePaint::client_frame_pins`) until it was presented. When the store
+has replaced the frame and the last pin and readback are gone, a GPU queue
+marker is submitted, and `tilo-buffer-retire` sends the release on the loop
+once that marker completed — after every render that could read the
+buffer. A client therefore gets a buffer back as soon as the frames already
+in flight that drew it are presented: with the one-frame `PresentPipe`
+queue that is at most about two refresh intervals after its newer commit
+applied, so a two-buffer swapchain renders into the other buffer meanwhile
+and does not stall. `CLIENT-BUFFER-RELEASE` lines (every 600 releases) give
+p50, p99 and maximum of that hold time, from the newer frame replacing the
+buffer's frame to the release; `gpu_frames::release_latency()` the same in
+process. Not yet measured on DRM hardware: run one 60 fps client in a GPU
+`tilo-vm` slot and read those lines (expected p50 ≤ one refresh interval).
 
 **What is verified, and what isn't.** The loop demonstrably holds the
 cadence it is configured for — including non-60 rates, via the
@@ -225,10 +251,32 @@ The Wayland state is decoupled from the graphical backend so the compositor's lo
 The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one `vello::Scene` per output per frame:
 
 1. Drive the shell-chrome widget tree (`ShellOverlayHost`) into the scene — top bar, wheel disc, palette, modals.
-2. For each foreign Wayland surface visible in the active workspace, look up its committed buffer (stored on the surface user-data in `CompositorHandler::commit`) and draw it into the scene at the tab's content-area rect. SHM buffers are converted ARGB8888 → RGBA8888 and rendered as `peniko::Image`. dmabuf foreign buffers are also supported via wgpu native textures.
+2. For each foreign Wayland surface visible in the active workspace, look up its committed buffer (stored on the surface user-data in `CompositorHandler::commit`) and draw it into the scene at the tab's content-area rect. SHM buffers are converted ARGB8888 → RGBA8888 and rendered as `peniko::Image`. dmabuf foreign buffers are imported on the presenting device (`shell::gpu_frames`), once per client buffer, and drawn into Vello's image atlas straight from the client's buffer, which the compositor holds until the last frame that drew it was presented.
 3. Hand the scene to the presenter — the render thread where the backend
    supports one, inline otherwise. It either presents into a winit window
    (winit backend) or schedules a page flip on the DRM output (drm backend).
+
+### Frame damage
+
+`FrameBuilder::paint_with_damage` records the shell in ordered sections and
+proves which pixels changed since the previous frame; `None` means "redraw
+everything". The top bar and Quick Settings are bounded sections. The
+workspace, its overlays and everything above Quick Settings are split into
+keyed **damage parts** (`ui::scene_parts`): a draw site marks a stretch of
+commands with a key and the bounds those commands can paint, and every
+boundary splits the section's encoded streams into pieces that are compared
+with the previous frame's piece by piece. A changed piece of a part damages
+that part's old and new bounds; a changed piece outside every part, or a
+different set of parts, leaves the frame dense. Parts today: each tile's
+clipped content, each tab pill, the peers' pointers and follow tethers, the
+follow chip and the notification stack. A retained scene carries its parts
+with it (`scene_parts::record` / `scene_parts::append`), so an in-process
+app's own parts (the terminal's rows and cursor) reach the compositor:
+typing or a peer's pointer moving repaints well under 1 % of a 4K output.
+Foreign buffer swaps keep their client-reported damage. Night light and the
+colour filters are per-pixel tints drawn into the same scene, so frames under
+them stay sparse while the tint is unchanged; the magnifier and the
+crosshair, which follow the pointer, keep every frame dense.
 
 ### Composited frames: GBM render targets, dumb-buffer fallback
 

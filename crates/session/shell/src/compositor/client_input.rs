@@ -2279,21 +2279,19 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
 mod tests {
     use super::*;
     use crate::shell::persist;
-    use winit::event::{DeviceId, KeyEvent};
-    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+    use winit::event::DeviceId;
+    use winit::keyboard::{Key, NamedKey};
 
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
-        // Mirrors the synthesis helpers already used by the test-control executor: winit's `KeyEvent` has a private platform field, so the struct is zero-initialised.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        };
-        ev.repeat = false;
+        let ev = ui::synthetic_input::key_event(
+            logical,
+            None,
+            if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+        );
         WindowEvent::KeyboardInput {
             device_id: unsafe { std::mem::zeroed::<DeviceId>() },
             event: ev,
@@ -2331,7 +2329,7 @@ mod tests {
                 tree,
             );
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1210.0, 70.0),
             };
 
@@ -2729,7 +2727,7 @@ mod tests {
                 &mut state,
                 &mut fb,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(640.0, 610.0),
                 },
                 &mods,
@@ -2760,7 +2758,7 @@ mod tests {
                 &mut state,
                 &mut fb,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(523.0, 339.0),
                 },
                 &mods,
@@ -2776,7 +2774,7 @@ mod tests {
                 &mut state,
                 &mut fb,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(880.0, 300.0),
                 },
                 &mods,

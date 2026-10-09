@@ -121,6 +121,9 @@ pub struct CalculatorApp {
     /// `mark_drawn`; without it the default (dirty every frame) repainted the
     /// whole desktop on every pointer move while the Calculator was active.
     dirty: bool,
+    /// The peers' carets last painted into a plot's formula. They follow
+    /// peer pointers, which the window does not damage for its widgets.
+    drawn_remote_carets: Vec<(Point, Color)>,
     /// An effect taken on the next sync, where the document is.
     pending_effect: Option<actions::CalculatorEffect>,
     node: Option<NodeId>,
@@ -181,6 +184,7 @@ impl CalculatorApp {
             last_click_pos: Point::ZERO,
             model_dirty: false,
             dirty: true,
+            drawn_remote_carets: Vec::new(),
             pending_effect: None,
             node: None,
             dispatch: None,
@@ -1415,7 +1419,10 @@ impl Widget for CalculatorApp {
         // Remote collaborators' carets, mapped into the active formula field's
         // 2D glyph layout (peers editing the same graph show up as coloured
         // carets inside the math, not just as a pointer over the window).
-        let remote = remote_carets(presence);
+        let remote = match self.model.mode {
+            Mode::Calc => Vec::new(),
+            Mode::Graph2d | Mode::Graph3d => remote_carets(presence),
+        };
         if !remote.is_empty() {
             match self.model.mode {
                 Mode::Graph2d => {
@@ -1428,6 +1435,12 @@ impl Widget for CalculatorApp {
                 }
                 Mode::Calc => {}
             }
+        }
+        // Moved, arrived or left carets change pixels no edit dirtied: report
+        // them as this frame's damage (collected after drawing).
+        if remote != self.drawn_remote_carets {
+            self.drawn_remote_carets = remote;
+            self.dirty = true;
         }
     }
 

@@ -13,7 +13,8 @@ pub mod approved_checks;
 mod committed_document;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) use file_clipboard::test_support::TestTransferPause;
 #[cfg(test)]
 #[path = "broker_services/native_effect_tests.rs"]
@@ -395,8 +396,14 @@ async fn record_receipt_elsewhere(
 
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
 impl WorkspaceAuthority for NativeWorkspaceAuthority {
-    fn snapshot(&self) -> Result<tilo_desktop_model::DesktopTree, String> {
-        Ok(self.0.read().desktop.clone())
+    /// Borrows the committed tree under the compositor's read lock for one
+    /// short policy read; nothing is copied.
+    fn with_tree(
+        &self,
+        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+    ) -> Result<(), String> {
+        read(&self.0.read().desktop);
+        Ok(())
     }
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         self.0.read().persist_path.as_ref().map(|path| {
@@ -1892,9 +1899,10 @@ pub(crate) fn test_broker_with_membership(
 }
 
 #[cfg(test)]
-pub(crate) fn test_broker_client_with_membership(
+pub(crate) fn test_broker_client_with_membership_and_services(
     membership: WorkspaceTreeHandle,
     trusted_devices: Vec<[u8; 32]>,
+    services: HostServices,
 ) -> (
     tilo_action_broker::collab_broker::AppActionBroker,
     Arc<tilo_action_broker::collab_broker::FanoutState>,
@@ -1911,7 +1919,7 @@ pub(crate) fn test_broker_client_with_membership(
         shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone()))),
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         app_action_grants: Some(Arc::new(NativeAppActionGrants(membership))),
-        ..Default::default()
+        ..services
     };
     tilo_action_broker::collab_broker_capnp::tests::broker_client_with_authority(
         authority,

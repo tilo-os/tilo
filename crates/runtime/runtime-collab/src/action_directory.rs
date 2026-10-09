@@ -173,21 +173,34 @@ pub struct ActionDirectoryPage {
 /// Exact, current-authority response before an invocation is admitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionDirectoryResolution {
-    Found(Box<ActionDirectoryRow>),
+    /// The row, and the revision the owner resolved it against: the named
+    /// one, or the directory as it is now for an empty revision. An
+    /// admission is bound to that revision, so its host refuses to run it
+    /// once the directory moved on. `None` only from an owner built before
+    /// the field existed.
+    Found {
+        row: Box<ActionDirectoryRow>,
+        revision: Option<String>,
+    },
     NotFound,
     StaleRevision,
     Unavailable,
 }
 
-/// The two mutually exclusive ways to ask a live application to resolve one
-/// exact directory action.
+/// The three mutually exclusive ways to ask a live application to resolve
+/// one exact directory action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionDirectoryResolutionRequest {
+    /// Resolve only the row published at this non-empty revision.
     RevisionBound {
         revision: String,
         resource: String,
         action: String,
     },
+    /// Resolve this exact address against the directory as it is now.
+    Current { resource: String, action: String },
+    /// Resolve the current handler only while its complete public semantic
+    /// binding remains unchanged.
     FreshBinding {
         resource: String,
         action: String,
@@ -195,14 +208,9 @@ pub enum ActionDirectoryResolutionRequest {
     },
 }
 
-/// An exact-resolution outcome and the live owner's authoritative revision.
-/// Revision-bound replies keep `revision` empty; a successful fresh reply must
-/// carry a non-empty revision.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionDirectoryResolutionReply {
-    pub resolution: ActionDirectoryResolution,
-    pub revision: String,
-}
+/// Compatibility name for callers which treated an exact resolution as a
+/// reply. The authoritative revision lives only in [`ActionDirectoryResolution::Found`].
+pub type ActionDirectoryResolutionReply = ActionDirectoryResolution;
 
 /// The most JSON text a directory descriptor's contract may occupy on the
 /// wire.
@@ -600,8 +608,11 @@ mod codec {
         resolution: &ActionDirectoryResolution,
     ) -> Result<(), capnp::Error> {
         match resolution {
-            ActionDirectoryResolution::Found(row) => {
-                write_action_directory_row(out.init_found(), row)?;
+            ActionDirectoryResolution::Found { row, revision } => {
+                write_action_directory_row(out.reborrow().init_found(), row)?;
+                if let Some(revision) = revision {
+                    out.set_resolved_revision(revision.as_str());
+                }
             }
             ActionDirectoryResolution::NotFound => out.set_not_found(()),
             ActionDirectoryResolution::StaleRevision => out.set_stale_revision(()),
@@ -903,9 +914,13 @@ mod codec {
         resolution: collab_capnp::action_directory_resolution::Reader<'_>,
     ) -> Result<ActionDirectoryResolution, capnp::Error> {
         match resolution.which()? {
-            collab_capnp::action_directory_resolution::Which::Found(row) => Ok(
-                ActionDirectoryResolution::Found(Box::new(decode_action_directory_row(row?)?)),
-            ),
+            collab_capnp::action_directory_resolution::Which::Found(row) => {
+                let revision = capnp_text(resolution.get_resolved_revision()?)?;
+                Ok(ActionDirectoryResolution::Found {
+                    row: Box::new(decode_action_directory_row(row?)?),
+                    revision: (!revision.is_empty()).then_some(revision),
+                })
+            }
             collab_capnp::action_directory_resolution::Which::NotFound(()) => {
                 Ok(ActionDirectoryResolution::NotFound)
             }
@@ -927,13 +942,11 @@ mod codec {
     pub fn decode_action_directory_resolution_reply(
         resolution: collab_capnp::action_directory_resolution::Reader<'_>,
     ) -> Result<ActionDirectoryResolutionReply, capnp::Error> {
-        Ok(ActionDirectoryResolutionReply {
-            revision: capnp_text(resolution.get_revision()?)?,
-            resolution: decode_action_directory_resolution(resolution)?,
-        })
+        decode_action_directory_resolution(resolution)
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 #[path = "action_directory_tests.rs"]
 mod tests;

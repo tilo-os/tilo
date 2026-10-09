@@ -15,7 +15,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use collab_types::{
+use fs_protocol::{
     ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileMutationParticipantRole,
     FileMutationTransaction, FileNameV1, FileNodeKind, FileRecordId,
 };
@@ -35,6 +35,9 @@ const CONTENT_REVISION_KEY: &str = "content_revision_v1";
 const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
 
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
+/// Most peer devices a namespace remembers sync progress with. An exchange
+/// with a device beyond it starts from a full sync, as a first one does.
+const MAX_PEER_SYNC_STATES: usize = 1024;
 
 mod changesets;
 mod leases;
@@ -376,6 +379,14 @@ pub struct Namespace {
     /// regenerates its changes from the op set (a pass over the document),
     /// so one per changed file is quadratic in a changeset.
     incremental_batch: Option<(Vec<automerge::ChangeHash>, Vec<u8>)>,
+    /// Per peer device (its certified key): the heads the last completed
+    /// sync exchange with it agreed both sides hold, as an encoded
+    /// [`automerge::sync::State`]. Without them every exchange would start
+    /// by summarising the document's whole history.
+    peer_sync_states: HashMap<[u8; 32], Vec<u8>>,
+    /// Bytes of every sync message this namespace generated.
+    #[cfg(test)]
+    sync_bytes_generated: usize,
     #[cfg(test)]
     record_index_rebuilds: u64,
     /// Changes whenever the verified (signed) content projection changes:
@@ -496,6 +507,9 @@ impl Namespace {
             record_ids_complete: false,
             resolved_heads: None,
             incremental_batch: None,
+            peer_sync_states: HashMap::new(),
+            #[cfg(test)]
+            sync_bytes_generated: 0,
             #[cfg(test)]
             record_index_rebuilds: 0,
             verified_generation: next_verified_generation(),
@@ -558,6 +572,9 @@ impl Namespace {
             record_ids_complete: false,
             resolved_heads: None,
             incremental_batch: None,
+            peer_sync_states: HashMap::new(),
+            #[cfg(test)]
+            sync_bytes_generated: 0,
             #[cfg(test)]
             record_index_rebuilds: 0,
             verified_generation: next_verified_generation(),
@@ -800,11 +817,69 @@ impl Namespace {
         Ok(self.doc.save_incremental())
     }
 
+    /// The sync state an exchange with the device `peer` begins at: where
+    /// the last exchange completed with it ([`Self::finish_sync_with`])
+    /// left off, so an idle exchange summarises only the changes since
+    /// rather than the document's whole history. A device this namespace
+    /// has completed no exchange with, or whose agreed heads this document
+    /// does not hold, gets a fresh state and so a full sync. A peer that
+    /// lost what it agreed to is caught by Automerge itself: it answers
+    /// with a reset, and the exchange falls back to a full sync.
+    pub fn begin_sync_with(&mut self, peer: &[u8; 32]) -> automerge::sync::State {
+        let resumed = self
+            .peer_sync_states
+            .get(peer)
+            .and_then(|encoded| automerge::sync::State::decode(encoded).ok());
+        match resumed {
+            Some(state)
+                if state
+                    .shared_heads
+                    .iter()
+                    .all(|hash| self.doc.get_change_meta_by_hash(hash).is_some()) =>
+            {
+                state
+            }
+            Some(_) => {
+                self.peer_sync_states.remove(peer);
+                automerge::sync::State::new()
+            }
+            None => automerge::sync::State::new(),
+        }
+    }
+
+    /// Remembers where a completed exchange with the device `peer` left
+    /// off, for [`Self::begin_sync_with`]. Only the heads both sides hold
+    /// persist ([`automerge::sync::State::encode`]); everything else in
+    /// `state` belongs to that one exchange.
+    pub fn finish_sync_with(&mut self, peer: [u8; 32], state: &automerge::sync::State) {
+        if !self.peer_sync_states.contains_key(&peer)
+            && self.peer_sync_states.len() >= MAX_PEER_SYNC_STATES
+            && let Some(evicted) = self.peer_sync_states.keys().next().copied()
+        {
+            self.peer_sync_states.remove(&evicted);
+        }
+        self.peer_sync_states.insert(peer, state.encode());
+    }
+
     pub fn sync_generate(&mut self, state: &mut automerge::sync::State) -> Option<Vec<u8>> {
-        self.doc
+        let message = self
+            .doc
             .sync()
             .generate_sync_message(state)
-            .map(automerge::sync::Message::encode)
+            .map(automerge::sync::Message::encode);
+        #[cfg(test)]
+        {
+            self.sync_bytes_generated = self
+                .sync_bytes_generated
+                .saturating_add(message.as_ref().map_or(0, Vec::len));
+        }
+        message
+    }
+
+    /// Bytes of every sync message this namespace has generated.
+    #[cfg(test)]
+    pub(crate) fn sync_bytes_generated(&self) -> usize {
+        self.sync_bytes_generated
     }
 
     /// # Errors
@@ -1535,7 +1610,7 @@ impl Namespace {
         transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         match transaction.manifest.operation {
-            collab_types::FileMutationOperation::RestoreContent { prior_revision, .. } => {
+            fs_protocol::FileMutationOperation::RestoreContent { prior_revision, .. } => {
                 transaction
                     .verify()
                     .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
@@ -1562,10 +1637,10 @@ impl Namespace {
                 }
                 Ok(Some(self.save_incremental()))
             }
-            collab_types::FileMutationOperation::ReplacementRename { .. } => {
+            fs_protocol::FileMutationOperation::ReplacementRename { .. } => {
                 self.apply_replacement_transaction(transaction)
             }
-            collab_types::FileMutationOperation::KeepBothContentConflict { .. } => {
+            fs_protocol::FileMutationOperation::KeepBothContentConflict { .. } => {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_keep_both_transaction_in_place(transaction)?;
                 if delta.is_some() {
@@ -1574,7 +1649,7 @@ impl Namespace {
                 }
                 Ok(delta)
             }
-            collab_types::FileMutationOperation::MergeContentConflict { .. } => {
+            fs_protocol::FileMutationOperation::MergeContentConflict { .. } => {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_merge_transaction_in_place(transaction)?;
                 if delta.is_some() {
@@ -1600,7 +1675,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::MergeContentConflict {
+        let fs_protocol::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -1657,7 +1732,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::MergeContentConflict {
+        let fs_protocol::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -1720,7 +1795,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::KeepBothContentConflict {
+        let fs_protocol::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
             parent_record,
@@ -1800,7 +1875,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::KeepBothContentConflict {
+        let fs_protocol::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
             parent_record,
@@ -1900,7 +1975,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::ReplacementRename {
+        let fs_protocol::FileMutationOperation::ReplacementRename {
             source_parent,
             source_name,
             destination_parent,
@@ -3569,12 +3644,12 @@ mod tests {
         // This scenario intentionally covers every durable phase and replay of a
         // two-record replacement transaction in one linear assertion trace.
         {
-            use collab_types::{
+            use ed25519_dalek::SigningKey;
+            use fs_protocol::{
                 ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperation,
                 FileMutationParticipant, FileMutationTransactionManifest, FileProvenance,
                 FileVersionId, FileVersionV1,
             };
-            use ed25519_dalek::SigningKey;
             use getrandom::{SysRng, rand_core::UnwrapErr};
 
             let mut ns = Namespace::new("a").unwrap();
@@ -3596,7 +3671,7 @@ mod tests {
                 assert!(ns.set_content_revision(
                     ino,
                     &ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id,
                         content_hash: Some(ContentHash([byte; 32])),
@@ -3641,7 +3716,7 @@ mod tests {
                         observed_at_ms: 2,
                     },
                     proposed_content_revision: Some(ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id: version.id,
                         content_hash: version.content_hash,
@@ -3669,7 +3744,7 @@ mod tests {
                 ),
             ];
             participants.sort_by_key(|participant| participant.record_id);
-            let transaction = collab_types::FileMutationTransaction::signed(
+            let transaction = fs_protocol::FileMutationTransaction::signed(
                 FileMutationTransactionManifest {
                     schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                     transaction_id: Uuid::new_v4(),
@@ -3717,12 +3792,12 @@ mod tests {
             assert!(ns.live_paths_for_blob(h(1)).is_empty());
 
             let revision = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([3; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([3; 32])),
                 byte_len: 3,
-                metadata_hash: collab_types::ContentHash([4; 32]),
+                metadata_hash: fs_protocol::ContentHash([4; 32]),
             };
             assert!(ns.install_verified_content_revision(revision));
             assert!(ns.install_verified_thumbnail(record_id, Some(h(4))));
@@ -3732,8 +3807,8 @@ mod tests {
             ns.set_field(&id, "size", 999_u64);
             ns.set_field(&id, "thumb", hash_to_hex(&h(9)));
             let mut forged = revision;
-            forged.version_id = collab_types::FileVersionId::new();
-            forged.content_hash = Some(collab_types::ContentHash([9; 32]));
+            forged.version_id = fs_protocol::FileVersionId::new();
+            forged.content_hash = Some(fs_protocol::ContentHash([9; 32]));
             forged.byte_len = 999;
             ns.set_field(
                 &id,
@@ -3768,12 +3843,12 @@ mod tests {
             );
             ns.enable_signed_content_authority();
             let revision = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([3; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([3; 32])),
                 byte_len: 3,
-                metadata_hash: collab_types::ContentHash([4; 32]),
+                metadata_hash: fs_protocol::ContentHash([4; 32]),
             };
             assert!(!ns.install_verified_content_revision(revision));
             assert_eq!(ns.hash_for(first), None);
@@ -3973,20 +4048,20 @@ mod tests {
             let mut b = Namespace::from_bytes("b", &bytes).unwrap();
             let bino = b.lookup(ROOT_INO, "atomic.bin").unwrap().ino.0;
             let revision_a = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([10; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([10; 32])),
                 byte_len: 10,
-                metadata_hash: collab_types::ContentHash([11; 32]),
+                metadata_hash: fs_protocol::ContentHash([11; 32]),
             };
             let revision_b = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([20; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([20; 32])),
                 byte_len: 20,
-                metadata_hash: collab_types::ContentHash([21; 32]),
+                metadata_hash: fs_protocol::ContentHash([21; 32]),
             };
             assert!(a.set_content_revision(ino, &revision_a, 2));
             assert!(b.set_content_revision(bino, &revision_b, 2));
@@ -4013,12 +4088,12 @@ mod tests {
                 .create_file(ROOT_INO, "compat.bin", Some(&h(1)), 1, 1)
                 .unwrap();
             let revision = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id: ns.record_id_for(ino).unwrap(),
-                version_id: collab_types::FileVersionId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
                 content_hash: None,
                 byte_len: 0,
-                metadata_hash: collab_types::ContentHash([7; 32]),
+                metadata_hash: fs_protocol::ContentHash([7; 32]),
             };
             assert!(ns.set_content_revision(ino, &revision, 2));
             assert_eq!(ns.hash_for(ino), None, "None must not resurrect the mirror");
@@ -4546,6 +4621,127 @@ mod tests {
                 );
             }
         }
+    }
+
+    const CLIENT: [u8; 32] = [1; 32];
+    const SERVER: [u8; 32] = [2; 32];
+
+    /// One exchange as a session runs it (the client writes, the server
+    /// answers, until neither has anything to send), each side beginning
+    /// where its last completed exchange with the other left off. Returns
+    /// the sync bytes both sides generated.
+    fn exchange(client: &mut Namespace, server: &mut Namespace) -> usize {
+        let before = client
+            .sync_bytes_generated()
+            .saturating_add(server.sync_bytes_generated());
+        let mut client_state = client.begin_sync_with(&SERVER);
+        let mut server_state = server.begin_sync_with(&CLIENT);
+        let mut completed = false;
+        for _ in 0..64 {
+            let message = client.sync_generate(&mut client_state);
+            if let Some(message) = &message {
+                server.sync_receive(&mut server_state, message).unwrap();
+            }
+            let reply = server.sync_generate(&mut server_state);
+            if let Some(reply) = &reply {
+                client.sync_receive(&mut client_state, reply).unwrap();
+            }
+            if message.is_none() && reply.is_none() {
+                completed = true;
+                break;
+            }
+        }
+        assert!(completed, "the exchange completes");
+        client.finish_sync_with(SERVER, &client_state);
+        server.finish_sync_with(CLIENT, &server_state);
+        client
+            .sync_bytes_generated()
+            .saturating_add(server.sync_bytes_generated())
+            .saturating_sub(before)
+    }
+
+    fn converged(a: &mut Namespace, b: &mut Namespace) -> bool {
+        a.heads() == b.heads()
+    }
+
+    /// Resuming from the agreed heads never costs convergence: heads this
+    /// document does not hold are not resumed from, and a peer that lost
+    /// what it agreed to (restarted from an older copy, without its own
+    /// record of the exchange) still receives everything.
+    #[test]
+    fn unknown_or_lost_agreed_heads_fall_back_to_a_full_sync() {
+        let mut host = Namespace::new("host").unwrap();
+        host.create_file(ROOT_INO, "base", Some(&h(1)), 1, 1)
+            .unwrap();
+        let mut device = Namespace::from_bytes("device", &host.save()).unwrap();
+        exchange(&mut device, &mut host);
+        assert_eq!(
+            device.begin_sync_with(&SERVER).shared_heads,
+            host.heads(),
+            "a completed exchange is resumed from"
+        );
+
+        // Phase `heads_this_document_does_not_hold_are_not_resumed_from`.
+        let mut unknown = automerge::sync::State::new();
+        unknown.shared_heads = vec![automerge::ChangeHash([7; 32])];
+        device.finish_sync_with(SERVER, &unknown);
+        assert!(
+            device.begin_sync_with(&SERVER).shared_heads.is_empty(),
+            "unknown agreed heads start a full sync"
+        );
+        host.create_file(ROOT_INO, "after-unknown", Some(&h(2)), 1, 2)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        assert!(device.lookup(ROOT_INO, "after-unknown").is_some());
+        assert!(converged(&mut device, &mut host));
+
+        // Phase `a_peer_restarted_from_an_older_copy_receives_everything`.
+        let older = host.save();
+        host.create_file(ROOT_INO, "lost-by-host", Some(&h(3)), 1, 3)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        assert!(device.lookup(ROOT_INO, "lost-by-host").is_some());
+        let mut host = Namespace::from_bytes("host", &older).unwrap();
+        device
+            .create_file(ROOT_INO, "from-device", Some(&h(4)), 1, 4)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        assert!(
+            host.lookup(ROOT_INO, "lost-by-host").is_some(),
+            "what the peer lost comes back"
+        );
+        assert!(host.lookup(ROOT_INO, "from-device").is_some());
+        assert!(converged(&mut device, &mut host));
+
+        // Phase `a_restarted_peer_with_its_document_converges_both_ways`.
+        let mut host = Namespace::from_bytes("host", &host.save()).unwrap();
+        host.create_file(ROOT_INO, "after-restart", Some(&h(5)), 1, 5)
+            .unwrap();
+        device
+            .create_file(ROOT_INO, "while-host-restarted", Some(&h(6)), 1, 5)
+            .unwrap();
+        exchange(&mut device, &mut host);
+        assert!(device.lookup(ROOT_INO, "after-restart").is_some());
+        assert!(host.lookup(ROOT_INO, "while-host-restarted").is_some());
+        assert!(converged(&mut device, &mut host));
+
+        // Phase `an_idle_exchange_after_the_fallbacks_is_small_again`.
+        let idle = exchange(&mut device, &mut host);
+        assert!(idle < 512, "an idle exchange resumes once more ({idle} B)");
+    }
+
+    /// The peers a namespace remembers are bounded; one beyond the bound
+    /// displaces another, which simply syncs in full next time.
+    #[test]
+    fn remembered_sync_progress_is_bounded() {
+        let mut ns = Namespace::new("bounded").unwrap();
+        let state = automerge::sync::State::new();
+        for peer in 0..=MAX_PEER_SYNC_STATES {
+            let mut key = [0_u8; 32];
+            key[..8].copy_from_slice(&u64::try_from(peer).unwrap().to_le_bytes());
+            ns.finish_sync_with(key, &state);
+        }
+        assert_eq!(ns.peer_sync_states.len(), MAX_PEER_SYNC_STATES);
     }
 
     // test-only helper to merge using a fresh loaded copy

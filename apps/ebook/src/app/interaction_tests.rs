@@ -9,7 +9,7 @@ use serial_test::serial;
 use ui::presence::PresenceCtx;
 use ui::widget::Edits;
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, KeyEvent};
+use winit::event::DeviceId;
 
 /// Point the compatibility `TILO_WORKSPACE_DIR` override at `path` until the
 /// returned scope is dropped, including during unwinding.
@@ -638,17 +638,13 @@ fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Sce
     scene
 }
 
-// Synthesised winit key presses (zeroed-KeyEvent trick; every field is
-// overwritten before use), routed through the real `handle_event`.
+// Synthesised winit key presses, routed through the real `handle_event`.
 fn char_press(ch: &str) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(ch.into());
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(ch.into());
+    let ev = ui::synthetic_input::key_event(
+        Key::Character(ch.into()),
+        Some(ch.into()),
+        ElementState::Pressed,
+    );
     WindowEvent::KeyboardInput {
         device_id: DeviceId::dummy(),
         event: ev,
@@ -656,14 +652,7 @@ fn char_press(ch: &str) -> WindowEvent {
     }
 }
 fn named_press(named: NamedKey) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(named);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
+    let ev = ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
     WindowEvent::KeyboardInput {
         device_id: DeviceId::dummy(),
         event: ev,

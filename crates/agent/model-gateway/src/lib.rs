@@ -696,7 +696,8 @@ pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result
         .map_err(|_| ClientError::Protocol("invalid gateway response".into()))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod wire_tests {
     use super::*;
 
@@ -728,7 +729,8 @@ mod wire_tests {
     }
 }
 
-#[cfg(all(test, not(unix)))]
+#[cfg(test)]
+#[cfg(not(unix))]
 mod unsupported_platform_tests {
     use super::*;
 

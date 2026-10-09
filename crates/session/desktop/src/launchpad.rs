@@ -1005,7 +1005,6 @@ impl Widget for CollaborationLaunchpad {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::MouseButton;
 
     fn deliver(
         pad: &mut CollaborationLaunchpad,
@@ -1032,13 +1031,7 @@ mod tests {
         handled
     }
 
-    fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_release;
 
     #[test]
     fn app_opener_waits_for_pointer_release_and_cancelled_drag_does_not_open() {
@@ -1048,20 +1041,20 @@ mod tests {
         let button = pad.app_button_rect().center();
         let mut doc = AutoCommit::new();
         deliver(&mut pad, &mut doc, &pointer_at(button));
-        assert!(deliver(&mut pad, &mut doc, &left_press()));
+        assert!(deliver(&mut pad, &mut doc, &mouse_press()));
         assert!(
             !take_open_app(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT),
             "a pointer press must not open Search before the person completes their click"
         );
         deliver(&mut pad, &mut doc, &pointer_at(Point::new(0.0, 0.0)));
-        assert!(deliver(&mut pad, &mut doc, &left_release()));
+        assert!(deliver(&mut pad, &mut doc, &mouse_release()));
         assert!(
             !take_open_app(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT),
             "dragging off the app opener cancels activation"
         );
         deliver(&mut pad, &mut doc, &pointer_at(button));
-        deliver(&mut pad, &mut doc, &left_press());
-        assert!(deliver(&mut pad, &mut doc, &left_release()));
+        deliver(&mut pad, &mut doc, &mouse_press());
+        assert!(deliver(&mut pad, &mut doc, &mouse_release()));
         assert!(take_open_app(
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
@@ -1082,17 +1075,17 @@ mod tests {
             let mut doc = AutoCommit::new();
             let button = pad.app_button_rect().center();
             deliver(&mut pad, &mut doc, &pointer_at(button));
-            deliver(&mut pad, &mut doc, &left_press());
+            deliver(&mut pad, &mut doc, &mouse_press());
             assert!(pad.wants_pointer_capture());
             deliver(&mut pad, &mut doc, &interruption);
-            assert!(deliver(&mut pad, &mut doc, &left_release()));
+            assert!(deliver(&mut pad, &mut doc, &mouse_release()));
             assert!(!pad.wants_pointer_capture());
             assert!(!take_open_app(
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
-            deliver(&mut pad, &mut doc, &left_press());
-            assert!(deliver(&mut pad, &mut doc, &left_release()));
+            deliver(&mut pad, &mut doc, &mouse_press());
+            assert!(deliver(&mut pad, &mut doc, &mouse_release()));
             assert!(take_open_app(
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
@@ -1108,17 +1101,17 @@ mod tests {
         let mut doc = AutoCommit::new();
         let button = pad.app_button_rect().center();
         deliver(&mut pad, &mut doc, &pointer_at(button));
-        deliver(&mut pad, &mut doc, &left_press());
+        deliver(&mut pad, &mut doc, &mouse_press());
         pad.set_presentation_area(Some(Rect::new(0.0, 0.0, 1000.0, 700.0)), false);
         let moved_button = pad.app_button_rect().center();
         deliver(&mut pad, &mut doc, &pointer_at(moved_button));
-        assert!(deliver(&mut pad, &mut doc, &left_release()));
+        assert!(deliver(&mut pad, &mut doc, &mouse_release()));
         assert!(!take_open_app(
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
-        deliver(&mut pad, &mut doc, &left_press());
-        assert!(deliver(&mut pad, &mut doc, &left_release()));
+        deliver(&mut pad, &mut doc, &mouse_press());
+        assert!(deliver(&mut pad, &mut doc, &mouse_release()));
         assert!(take_open_app(
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
@@ -1212,35 +1205,14 @@ mod tests {
 
     fn pointer_at(point: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(point.x, point.y),
         }
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
-    fn named_key(key: NamedKey) -> WindowEvent {
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(key);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::named_key;
 
     #[test]
     fn launchpad_layout_keeps_edges_bounds_and_clears_chrome_at_every_size() {
@@ -1469,7 +1441,7 @@ mod tests {
             let root = automerge::ROOT;
             let notes = pad.card_rects[1].center();
             let mut handled = false;
-            for event in [pointer_at(notes), left_press(), left_release()] {
+            for event in [pointer_at(notes), mouse_press(), mouse_release()] {
                 handled = deliver(&mut pad, &mut doc, &event);
             }
             assert!(handled);

@@ -2150,9 +2150,7 @@ mod tests {
     }
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// Apply `action` as the demo's own person did, as a window's

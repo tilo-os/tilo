@@ -1167,6 +1167,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::TaffyTreeExt;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
@@ -1195,17 +1196,14 @@ mod tests {
             _theme: &Theme,
             nodes: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..taffy::Style::default()
-                })
-                .unwrap();
-            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..taffy::Style::default()
+            };
+            taffy.widget_leaf(style, nodes, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy.layout(node).unwrap();
@@ -1653,7 +1651,7 @@ mod tests {
         );
 
         let control = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let close = crate::synthetic_input::key_event(
+        let close = crate::synthetic_input::key_input(
             &winit::keyboard::Key::Character(winit::keyboard::SmolStr::new("w")),
             ElementState::Pressed,
         );
@@ -1711,7 +1709,7 @@ mod tests {
         let mut handled = false;
         let mut focus = None;
         embedded.handle_event(
-            &crate::synthetic_input::key_event(
+            &crate::synthetic_input::key_input(
                 &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
                 ElementState::Pressed,
             ),

@@ -34,6 +34,7 @@ filesystem = [
     "dep:tilo-doc-codecs",
     "dep:tilo-content",
     "dep:collab-types",
+    "dep:fs-protocol",
     "dep:ed25519-dalek",
     "dep:tilo-thumbnail",
     "dep:tilo-user-identity",
@@ -140,6 +141,7 @@ tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
 tilo-content = { version = "0.1.0", path = "../content", optional = true, features = ["device"] }
 tilo-doc-codecs = { version = "0.1.0", path = "../../doc/tilo-doc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
+fs-protocol = { version = "0.1.0", path = "../fs-protocol", optional = true }
 getrandom = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 # The shared thumbnail generator + content-addressed cache. Default features

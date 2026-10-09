@@ -58,11 +58,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -130,8 +126,11 @@ pub mod workspace;
 mod workspace_io;
 pub mod workspace_join;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 tilo_automerge_isolate::test_worker!();
+#[cfg(all(test, feature = "agents"))]
+tilo_agent_participant::app_worker!();
 
 // The records and wire messages shared with relay clients live in
 // `tilo-relay-protocol`, the frame codec in `tilo-relay-client`, and the

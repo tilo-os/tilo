@@ -34,6 +34,15 @@ struct Writer {
     /// Rows per page of a resource's listing, as when the host's byte
     /// budget cuts it short.
     listing_page: Option<usize>,
+    /// Every question and invocation the host was sent, in order.
+    log: Arc<Mutex<Vec<Asked>>>,
+}
+
+/// One request a [`Writer`] was sent.
+#[derive(Clone, Debug, PartialEq)]
+enum Asked {
+    Query(Box<CatalogueQuery>),
+    Invoke { revision: Option<String> },
 }
 
 impl Writer {
@@ -45,7 +54,13 @@ impl Writer {
             blank_listings: Arc::default(),
             document: None,
             listing_page: None,
+            log: Arc::default(),
         }
+    }
+
+    /// What the host was sent since the last call, and forget it.
+    fn asked(&self) -> Vec<Asked> {
+        std::mem::take(&mut *self.log.lock().unwrap())
     }
 
     fn reading(mut self, document: impl Into<String>) -> Self {
@@ -249,6 +264,10 @@ impl ActionHost for Writer {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(Asked::Query(Box::new(query.clone())));
         let running = *self.running.lock().unwrap();
         let Some(provider) = query.provider.clone() else {
             return Pending::ready(Ok(CataloguePage {
@@ -338,11 +357,16 @@ impl ActionHost for Writer {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let invocation = request.invocation;
+        self.log.lock().unwrap().push(Asked::Invoke {
+            revision: request.revision.clone(),
+        });
         let known = self
             .rows(&request.target.provider)
             .iter()
             .any(|row| row.resource.id == request.target.address.resource);
-        if !known {
+        // As the broker refuses an instance that is no longer live.
+        let gone = request.target.provider != WORKSPACE && !*self.running.lock().unwrap();
+        if !known || gone {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
         if request.target.provider == WORKSPACE {
@@ -1468,4 +1492,153 @@ fn an_app_and_its_resources_are_named_as_an_agent_sees_them() {
         .collect::<Vec<_>>();
     assert_eq!(saves.len(), 1, "{saves:?}");
     assert_eq!(saves[0].1, DOC, "the kind named the document");
+}
+
+/// Whether `asked` is a question about which instances run: providers
+/// only, so a host builds no rows for it.
+fn lists_instances(asked: &Asked) -> bool {
+    matches!(asked, Asked::Query(query) if query.provider.is_none() && query.max_results == 0)
+}
+
+/// A started action, as the host saw it: a call naming no revision passes
+/// none on.
+const STARTED: Asked = Asked::Invoke { revision: None };
+
+fn toggle_bold() -> Value {
+    json!({"resource": STYLE, "action": "toggle-bold"})
+}
+
+/// TIL-588: an agent that listed or browsed an instance acts on it without
+/// asking the host anything first.
+#[test]
+fn invoke_on_a_seen_peer_asks_no_catalogue_question() {
+    let host = Writer::new(None);
+    *host.running.lock().unwrap() = true;
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        call(
+            &server,
+            "tilo_query",
+            json!({"peer_id": 1, "needle": "bold"}),
+        )
+        .await
+        .unwrap();
+        host.asked();
+        let reply = call(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id": 1, "resource": STYLE, "action": "toggle-bold"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+    });
+    assert_eq!(host.asked(), [STARTED]);
+}
+
+/// TIL-588: a batch asks at most once before its first step, and never
+/// between steps; listing instances asks for providers only.
+#[test]
+fn a_batch_asks_at_most_once_before_its_first_step() {
+    let host = Writer::new(None);
+    *host.running.lock().unwrap() = true;
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let steps = (0..10).map(|_| toggle_bold()).collect::<Vec<_>>();
+    run(async {
+        call(&server, "tilo_list_apps", json!({})).await.unwrap();
+        let listed = host.asked();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert!(lists_instances(&listed[0]), "{listed:?}");
+
+        let reply = call(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id": 1, "calls": steps}),
+        )
+        .await
+        .unwrap();
+        assert!(reply.get("stopped").is_none(), "{reply}");
+    });
+    assert_eq!(host.asked(), vec![STARTED; 10]);
+
+    // A session that never listed them, naming the app by id: one list.
+    let fresh = Writer::new(None);
+    *fresh.running.lock().unwrap() = true;
+    let server = McpServer::new(fresh.clone(), "room".into(), "owner".into());
+    let steps = (0..10).map(|_| toggle_bold()).collect::<Vec<_>>();
+    run(async {
+        let reply = call(
+            &server,
+            "tilo_invoke",
+            json!({"app_id": APP, "calls": steps}),
+        )
+        .await
+        .unwrap();
+        assert!(reply.get("stopped").is_none(), "{reply}");
+    });
+    let asked = fresh.asked();
+    assert_eq!(asked.len(), 11, "{asked:?}");
+    assert!(lists_instances(&asked[0]), "{asked:?}");
+    assert_eq!(asked[1..], vec![STARTED; 10]);
+}
+
+/// TIL-588: an instance the session saw that has gone since is refused as
+/// before, by asking once the host refused the call; a browse never takes
+/// it as live.
+#[test]
+fn a_seen_peer_that_has_gone_is_refused_as_unavailable() {
+    let host = Writer::new(None);
+    *host.running.lock().unwrap() = true;
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        call(
+            &server,
+            "tilo_query",
+            json!({"peer_id": 1, "needle": "bold"}),
+        )
+        .await
+        .unwrap();
+        *host.running.lock().unwrap() = false;
+        host.asked();
+        let refused = call(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id": 1, "resource": STYLE, "action": "toggle-bold"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused, "Unavailable live application instance");
+        let asked = host.asked();
+        assert_eq!(asked.len(), 2, "{asked:?}");
+        assert_eq!(asked[0], STARTED);
+        assert!(lists_instances(&asked[1]), "{asked:?}");
+
+        // Gone, it is asked about before the next call, and not started.
+        let again = call(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id": 1, "resource": STYLE, "action": "toggle-bold"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(again, "Unavailable live application instance");
+        let asked = host.asked();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert!(lists_instances(&asked[0]), "{asked:?}");
+
+        // Live again under a new list, a browse still asks first.
+        *host.running.lock().unwrap() = true;
+        call(&server, "tilo_list_apps", json!({})).await.unwrap();
+        *host.running.lock().unwrap() = false;
+        host.asked();
+        let browsed = call(
+            &server,
+            "tilo_query",
+            json!({"peer_id": 1, "needle": "bold"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(browsed, "Unavailable live application instance");
+    });
+    assert!(host.invoked().is_empty());
 }

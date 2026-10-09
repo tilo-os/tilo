@@ -1414,7 +1414,7 @@ mod tests {
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
     use std::collections::HashMap;
     use taffy::{AvailableSpace, Size as TSize};
-    use winit::dpi::PhysicalPosition;
+
     use winit::event::Modifiers;
 
     /// Fresh document with an empty table map object at `root["t"]`.
@@ -1593,49 +1593,15 @@ mod tests {
         (taffy, node)
     }
 
-    fn cursor(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(x, y),
-        }
-    }
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn char_key(s: &str) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::char_key;
+    use crate::synthetic_input::cursor_moved;
+    use crate::synthetic_input::mouse_press;
     fn enter() -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(NamedKey::Enter),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn dispatch(
@@ -1693,7 +1659,7 @@ mod tests {
                 node,
                 &mut doc,
                 &t,
-                &cursor(bx, TOP_GUTTER / 2.0),
+                &cursor_moved(bx, TOP_GUTTER / 2.0),
                 mods,
             );
             assert_eq!(
@@ -1701,7 +1667,8 @@ mod tests {
                 Hover::InsertCol(1),
                 "hover resolves to the middle insert pill"
             );
-            let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+            let (handled, _) =
+                dispatch(&mut table, &taffy, node, &mut doc, &t, &mouse_press(), mods);
 
             assert!(handled, "the insert click is consumed");
             assert_eq!(dims(&doc, &t), (1, 3), "a column was inserted");
@@ -1733,11 +1700,12 @@ mod tests {
                 node,
                 &mut doc,
                 &t,
-                &cursor(LEFT_GUTTER / 2.0, cy),
+                &cursor_moved(LEFT_GUTTER / 2.0, cy),
                 mods,
             );
             assert_eq!(table.hover, Hover::DeleteRow(1));
-            let (handled, _) = dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+            let (handled, _) =
+                dispatch(&mut table, &taffy, node, &mut doc, &t, &mouse_press(), mods);
 
             assert!(handled);
             assert_eq!(dims(&doc, &t), (2, 1));
@@ -1767,7 +1735,7 @@ mod tests {
                 node,
                 &mut doc,
                 &t,
-                &cursor(bx, by),
+                &cursor_moved(bx, by),
                 mods,
             );
             assert_eq!(
@@ -1775,7 +1743,7 @@ mod tests {
                 Hover::ResizeCol(1),
                 "interior boundary hover is a resize"
             );
-            dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+            dispatch(&mut table, &taffy, node, &mut doc, &t, &mouse_press(), mods);
             assert!(
                 table.resize.is_some(),
                 "press on the boundary starts a resize drag"
@@ -1786,7 +1754,7 @@ mod tests {
                 node,
                 &mut doc,
                 &t,
-                &cursor(bx + 40.0, by),
+                &cursor_moved(bx + 40.0, by),
                 mods,
             );
             assert!(
@@ -1794,7 +1762,7 @@ mod tests {
                 "the column follows the pointer; the owner gets the width when the drag ends"
             );
             let release = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             };
@@ -1823,11 +1791,11 @@ mod tests {
                 node,
                 &mut doc,
                 &t,
-                &cursor(c.x, c.y),
+                &cursor_moved(c.x, c.y),
                 mods,
             );
             assert_eq!(table.hover, Hover::EmptyAdd);
-            dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), mods);
+            dispatch(&mut table, &taffy, node, &mut doc, &t, &mouse_press(), mods);
 
             assert_eq!(dims(&doc, &t), (1, 1), "empty-add seeds a single cell");
         }

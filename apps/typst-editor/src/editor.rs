@@ -441,7 +441,7 @@ mod tests {
         // An editor nobody attached a dispatcher to only shows the text; the
         // keys it takes are taken back.
         {
-            use winit::event::{ElementState, KeyEvent};
+            use winit::event::ElementState;
             use winit::keyboard::{Key, SmolStr};
             let (mut doc, id) = doc_with("");
             let mut ed = editor_on(&id);
@@ -449,17 +449,13 @@ mod tests {
             ed.pull(&doc);
             ed.focused = true;
             for ch in ["h", "i"] {
-                let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = Key::Character(SmolStr::new(ch));
-                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
+                let ev = ui::synthetic_input::key_event(
+                    Key::Character(SmolStr::new(ch)),
+                    Some(SmolStr::new(ch)),
+                    ElementState::Pressed,
                 );
-                ev.location = winit::keyboard::KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                ev.text = Some(SmolStr::new(ch));
                 let event = WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     event: ev,
                     is_synthetic: false,
                 };

@@ -251,6 +251,54 @@ struct StripPlan {
 }
 
 impl FramePaint {
+    /// Every client frame any scene of this frame draws, pinned until the
+    /// frame was presented (see [`crate::shell::gpu_frames::FramePins`]).
+    ///
+    /// Destructured without `..`: a scene added to `FramePaint` must be
+    /// pinned here too, or a presenter could draw a client buffer after it
+    /// went back to its client.
+    pub fn client_frame_pins(&self) -> crate::shell::gpu_frames::FramePins {
+        let Self {
+            scene,
+            revision: _,
+            previous_revision: _,
+            damage_regions: _,
+            overview_patch,
+            workspace_id: _,
+            workspace_hold: _,
+            workspace_clip: _,
+            hdr_layers: _,
+            backdrop,
+            cache,
+        } = self;
+        let mut pins = crate::shell::gpu_frames::FramePins::default();
+        pins.add_scene(scene);
+        if let Some(patch) = overview_patch {
+            pins.add_scene(&patch.panel_scene);
+        }
+        if let Some(backdrop) = backdrop {
+            for region in &backdrop.regions {
+                pins.add_scene(&region.below);
+            }
+        }
+        if let Some(FrameCache {
+            width: _,
+            strips: _,
+            layers:
+                FrameLayers {
+                    backdrop,
+                    workspace,
+                    chrome,
+                },
+        }) = cache
+        {
+            pins.add_scene(backdrop);
+            pins.add_scene(workspace);
+            pins.add_scene(chrome);
+        }
+        pins
+    }
+
     /// Wrap a scene from a producer without retained-damage authority.
     pub fn full(scene: Scene) -> Self {
         Self {
@@ -317,8 +365,48 @@ struct ProducedSections {
     quick_settings: Scene,
     above_quick_settings: Scene,
     quick_settings_bounds: Option<Rect>,
+    /// Parts of the workspace, its overlays and the sections above Quick
+    /// Settings, which bound damage inside them.
+    parts: OpaqueParts,
+    /// A filter following the pointer (the magnifier, the crosshair): every
+    /// frame it is on is dense.
     global_filter: bool,
+    /// The per-pixel tint over the whole desktop (night light, a colour
+    /// filter). Sparse frames are exact under it while it stays the same.
+    tint: Tint,
     revision: u64,
+}
+
+/// [`scene_parts`](ui::scene_parts) of the sections whose damage is bounded
+/// only inside their parts. `None` for a section drawn without a recording.
+#[derive(Clone, Default)]
+struct OpaqueParts {
+    workspace: Option<ui::scene_parts::SectionParts>,
+    workspace_overlays: Option<ui::scene_parts::SectionParts>,
+    above_quick_settings: Option<ui::scene_parts::SectionParts>,
+}
+
+impl OpaqueParts {
+    fn of(
+        recorded: &ui::scene_parts::Recorded,
+        sections: &crate::shell::overlay_host::ShellSceneSections,
+    ) -> Self {
+        Self {
+            workspace: recorded.of(&sections.workspace),
+            workspace_overlays: recorded.of(&sections.workspace_overlays),
+            above_quick_settings: recorded.of(&sections.above_quick_settings),
+        }
+    }
+}
+
+/// The tint drawn over the whole desktop: a pure per-pixel function of what
+/// is below it, so it changes nothing about which pixels a frame changes as
+/// long as it is itself the same.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Tint {
+    night_light: Option<Color>,
+    color_filter: DesktopColorFilter,
+    viewport: (f64, f64),
 }
 
 enum QuickSettingsDamage {
@@ -2024,6 +2112,7 @@ impl FrameBuilder {
         let retained_scope = ui::retained_present::RetainedScene::begin(unbake);
         let foreign_recording = super::foreign_damage::Recording::begin();
         let backdrop_recording = BackdropRecording::begin();
+        let parts_recording = ui::scene_parts::Recording::begin();
         let mut sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
@@ -2080,6 +2169,7 @@ impl FrameBuilder {
         }
         drop(retained_scope);
 
+        let parts = OpaqueParts::of(&parts_recording.finish(), &sections);
         let backdrop_surfaces = backdrop_recording.finish();
         let foreign_images = foreign_recording.finish();
         let hdr_layers = self.hdr_layers_to_scene(
@@ -2101,14 +2191,8 @@ impl FrameBuilder {
             .last_produced_sections
             .as_ref()
             .map(|last| last.revision);
-        let global_filter = self.watch_configured_theme
-            && (self.night_light
-                || !matches!(
-                    self.visual_accessibility.color_filter,
-                    DesktopColorFilter::None
-                )
-                || self.visual_accessibility.magnifier.is_on()
-                || self.visual_accessibility.cursor_crosshair);
+        let pointer_filter = self.pointer_filter();
+        let tint = self.tint();
         let strips = unbake.then(|| {
             plan.as_ref()
                 .map(|plan| plan.strips.clone())
@@ -2121,9 +2205,14 @@ impl FrameBuilder {
         // Section and foreign-image bounds are in canvas coordinates while
         // a strip is unbaked. They cannot authorize sparse screen damage.
         let screen_space_damage = strips.as_ref().is_none_or(Vec::is_empty);
-        let damage_regions = (!global_filter && strips_kept && screen_space_damage)
+        let damage_regions = (!pointer_filter && strips_kept && screen_space_damage)
             .then(|| {
-                self.damage_from_sections_with_images(&sections, global_filter, &foreign_images)
+                self.damage_from_sections_with_images(
+                    &sections,
+                    &parts,
+                    (pointer_filter, tint),
+                    &foreign_images,
+                )
             })
             .flatten();
         let damage_regions = self.with_backdrop_damage(damage_regions, &backdrop_surfaces);
@@ -2206,7 +2295,9 @@ impl FrameBuilder {
             quick_settings: sections.quick_settings,
             above_quick_settings: sections.above_quick_settings,
             quick_settings_bounds: sections.quick_settings_bounds,
-            global_filter,
+            parts,
+            global_filter: pointer_filter,
+            tint,
             revision,
         });
         let overview_patch = self.host.take_overview_fast_patch();
@@ -2251,10 +2342,16 @@ impl FrameBuilder {
         Some(regions)
     }
 
-    fn foreign_damage_regions(
+    /// Damage in the sections that are opaque outside their parts: the
+    /// workspace, its overlays and the sections above Quick Settings. Each is
+    /// unchanged, or changed only by foreign buffer replacements (their
+    /// buffers' damage), or changed only inside its parts (their old and new
+    /// bounds), or both; anything else is `None`.
+    fn opaque_damage_regions(
         &self,
         previous: &ProducedSections,
         current: &crate::shell::overlay_host::ShellSceneSections,
+        parts: &OpaqueParts,
         images: &[super::foreign_damage::DrawnImage],
     ) -> Option<Vec<FineDamageRect>> {
         let old_scenes = [
@@ -2273,30 +2370,64 @@ impl FrameBuilder {
             &current.quick_settings,
             &current.above_quick_settings,
         ];
-        if !super::foreign_damage::unique_uses(old_scenes, &previous.foreign_images)
-            || !super::foreign_damage::unique_uses(new_scenes, images)
-        {
-            return None;
-        }
-        let mut image_regions = Vec::new();
-        for (old, new) in [
-            (&previous.workspace, &current.workspace),
-            (&previous.workspace_overlays, &current.workspace_overlays),
+        // A replacement is repaired only where it was recorded, so it may be
+        // normalized away only while its image has no other use (a preview).
+        // Without normalization, a replaced image is a changed command like
+        // any other: inside a part it damages the part, outside it none.
+        let normalizable = super::foreign_damage::unique_uses(old_scenes, &previous.foreign_images)
+            && super::foreign_damage::unique_uses(new_scenes, images);
+        let mut regions = Vec::new();
+        for (old, old_parts, new, new_parts) in [
+            (
+                &previous.workspace,
+                &previous.parts.workspace,
+                &current.workspace,
+                &parts.workspace,
+            ),
+            (
+                &previous.workspace_overlays,
+                &previous.parts.workspace_overlays,
+                &current.workspace_overlays,
+                &parts.workspace_overlays,
+            ),
             (
                 &previous.above_quick_settings,
+                &previous.parts.above_quick_settings,
                 &current.above_quick_settings,
+                &parts.above_quick_settings,
             ),
         ] {
-            for bounds in super::foreign_damage::image_only_damage(
-                old,
-                new,
-                &previous.foreign_images,
-                images,
-            )? {
-                image_regions.push(self.native_damage_rect(Some(bounds))?);
+            if old.encoding_eq(new) {
+                continue;
+            }
+            let normalized = (normalizable && !images.is_empty())
+                .then(|| {
+                    super::foreign_damage::normalize_images(new, &previous.foreign_images, images)
+                })
+                .flatten();
+            let compared = match &normalized {
+                Some((scene, image_damage)) => {
+                    for &bounds in image_damage {
+                        regions.push(self.native_damage_rect(Some(bounds))?);
+                    }
+                    scene
+                }
+                None => new,
+            };
+            if old.encoding_eq(compared) {
+                continue;
+            }
+            let rects =
+                ui::scene_parts::damage(old, old_parts.as_ref()?, compared, new_parts.as_ref()?)
+                    .ok()?;
+            // `scene_parts::damage` admits only finite, non-negative bounds,
+            // which already cover antialiasing; a part no display shows
+            // needs no repair.
+            for rect in rects {
+                regions.extend(self.native_damage_rect(Some(rect)));
             }
         }
-        Some(image_regions)
+        Some(regions)
     }
 
     /// Update only this producer's presenter capacity. Captures keep the default dense path.
@@ -2305,6 +2436,28 @@ impl FrameBuilder {
         if self.retained_layer_width != width {
             self.retained_layer_width = width;
             self.last_produced_sections = None;
+        }
+    }
+
+    /// A filter following the pointer (the magnifier, the crosshair) moves
+    /// pixels or lines across the whole desktop: no frame under it is sparse.
+    fn pointer_filter(&self) -> bool {
+        self.watch_configured_theme
+            && (self.visual_accessibility.magnifier.is_on()
+                || self.visual_accessibility.cursor_crosshair)
+    }
+
+    /// The per-pixel tint the scene ends with (night light, a colour filter).
+    fn tint(&self) -> Tint {
+        if !self.watch_configured_theme {
+            return Tint::default();
+        }
+        Tint {
+            night_light: self
+                .night_light
+                .then(|| night_light_multiplier(self.night_light_temperature)),
+            color_filter: self.visual_accessibility.color_filter,
+            viewport: self.viewport,
         }
     }
 
@@ -2429,23 +2582,30 @@ impl FrameBuilder {
         current: &crate::shell::overlay_host::ShellSceneSections,
         current_global_filter: bool,
     ) -> Option<Vec<FineDamageRect>> {
-        self.damage_from_sections_with_images(current, current_global_filter, &[])
+        self.damage_from_sections_with_images(
+            current,
+            &OpaqueParts::default(),
+            (current_global_filter, self.tint()),
+            &[],
+        )
     }
 
+    /// `filters` is the pointer filter and the tint this frame ends with.
     fn damage_from_sections_with_images(
         &self,
         current: &crate::shell::overlay_host::ShellSceneSections,
-        current_global_filter: bool,
+        parts: &OpaqueParts,
+        (pointer_filter, tint): (bool, Tint),
         images: &[super::foreign_damage::DrawnImage],
     ) -> Option<Vec<FineDamageRect>> {
         let previous = self.last_produced_sections.as_ref()?;
-        if previous.global_filter || current_global_filter {
+        if previous.global_filter || pointer_filter || previous.tint != tint {
             return None;
         }
         if !previous.backdrop.encoding_eq(&current.backdrop) {
             return None;
         }
-        let image_regions = self.foreign_damage_regions(previous, current, images)?;
+        let image_regions = self.opaque_damage_regions(previous, current, parts, images)?;
         let topbar_changed = !previous.topbar.encoding_eq(&current.topbar);
         let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
         if !topbar_changed && !quick_settings_changed {
@@ -4875,8 +5035,8 @@ mod tests {
     use crate::shell::state::FreshId as _;
     use automerge::ReadDoc as _;
     use automerge::transaction::Transactable;
-    use winit::event::{ElementState, KeyEvent};
-    use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
+    use winit::event::ElementState;
+    use winit::keyboard::ModifiersState;
 
     /// A peer's window arriving in a workspace nobody governs yet: owed a
     /// look, but [`crate::shell::peer_windows::examine`] keeps it pending
@@ -5618,19 +5778,9 @@ mod tests {
     }
 
     fn key_press(key: Key) -> WindowEvent {
-        // SAFETY: winit keeps platform-private key metadata inaccessible to
-        // constructors. The production path under test reads only the public
-        // fields initialized immediately below.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -8098,7 +8248,6 @@ mod tests {
     fn compositor_accessibility_marker_focuses_and_opens_once_on_exact_live_binding() {
         use crate::shell::state::{Tab, TileContent};
         use crate::shell::tab_binding::{self, Placement};
-        use ed25519_dalek::{Signer as _, SigningKey};
         use tilo_actions::{
             ActionApp, ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor,
             InteractionActorKind, InteractionAnchor, InteractionPhase, InvocationId,
@@ -8111,12 +8260,26 @@ mod tests {
         const APP: &str = "so.tilo.notes";
         crate::shell::foreign::store().forget(SURFACE);
         crate::shell::launcher::clear_pending_placements();
+        let identity_root = tempfile::tempdir().expect("isolated certified marker identity");
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("XDG_CONFIG_HOME", identity_root.path().join("config"));
+        environment.set("TILO_IDENTITY_ROOT", identity_root.path().join("device"));
+        environment.set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+        environment.remove("TILO_USER_ID");
+        let identity = runtime_identity::identity_dir_from_env().expect("identity directory");
+        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            &identity,
+            &paths,
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision the actual local Person's certified device");
         let mut tree = WorkspaceTree::bootstrap_default();
         let room = tree.desktop.workspaces[0].room;
-        let root = SigningKey::from_bytes(&[91; 32]);
-        let device = SigningKey::from_bytes(&[92; 32]);
+        let joined = tilo_identity_host::join_proof::trusted_current_join_proof(&room.to_string())
+            .expect("selected workspace identity has a real join proof");
         let principal = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
-            root.verifying_key().to_bytes(),
+            joined.certificate.user_public_key,
         );
         tree.desktop.workspaces[0].set_owner(principal);
         tree.desktop.workspaces[0].grant_capability(collab_types::CapOverride::membership(
@@ -8138,10 +8301,27 @@ mod tests {
             Placement::NewGroup,
         );
         let (broker, fanout, client) =
-            crate::shell::broker_services::test_broker_client_with_membership(
+            crate::shell::broker_services::test_broker_client_with_membership_and_services(
                 tree.clone().shared(),
-                vec![device.verifying_key().to_bytes()],
+                vec![joined.certificate.device_public_key],
+                tilo_action_broker::services::HostServices {
+                    native_certificates: Some(std::sync::Arc::new(
+                        crate::shell::broker_services::NativeCertificates::default(),
+                    )),
+                    ..Default::default()
+                },
             );
+        let local_person = crate::shell::state::local_user_id_for_room(&room);
+        assert_eq!(
+            local_person,
+            tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+                joined.certificate.user_public_key,
+            ),
+            "the displayed Person and the selected certified device agree"
+        );
+        crate::shell::certified_action_session::ActionSessionSource::new(broker.clone())
+            .open(&room.to_string(), Some(&local_person))
+            .expect("the marker opens under the actual selected Person's admitted custody");
         let mut frame = FrameBuilder::with_tree(tree, (1280, 800));
         frame.host_mut().attach_app_action_broker(broker);
         crate::shell::launcher::set_pending_placement(APP, Placement::IntoTab(tab));
@@ -8199,26 +8379,10 @@ mod tests {
                 let _ = delivered_tx.try_send(event.clone());
             }),
         );
-        let mut certificate = tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Agent marker integration".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_device_cert(&mut certificate, &root)
-            .expect("root signs the device certificate");
         let presentation = runtime_collab::CertifiedJoinIdentity {
             workspace_id: room.to_string(),
-            device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
-            proof: device
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    &room.to_string(),
-                ))
-                .to_bytes()
-                .to_vec(),
+            device_certificate: serde_json::to_vec(&joined.certificate).expect("certificate JSON"),
+            proof: joined.proof.to_vec(),
         }
         .encode()
         .expect("certified join presentation");

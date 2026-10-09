@@ -2649,7 +2649,7 @@ mod occlusion_probe_event_tests {
     #[test]
     fn occlusion_probe_only_explicit_exposure_or_interaction_bypasses_backoff() {
         let pointer = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(10.0, 20.0),
         };
         assert!(render_probe_event(&pointer));
@@ -2918,7 +2918,8 @@ mod document_routes;
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
 
-#[cfg(all(test, feature = "local-daemons"))]
+#[cfg(test)]
+#[cfg(feature = "local-daemons")]
 #[path = "app/local_privacy_tests.rs"]
 mod local_privacy_tests;
 
@@ -3850,7 +3851,7 @@ pub(crate) mod ordinary_confirmation_tests {
             }
         }
         fn key(&mut self, key: &str) {
-            let event = crate::synthetic_input::key_event(
+            let event = crate::synthetic_input::key_input(
                 &Key::Character(key.into()),
                 ElementState::Pressed,
             );
@@ -4389,7 +4390,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     &crate::a11y::Action::SetValue("not-a-value-field".into()),
                 );
                 layout(&mut app);
-                app.action_palette_handle_key(&crate::synthetic_input::key_event(
+                app.action_palette_handle_key(&crate::synthetic_input::key_input(
                     &Key::Named(NamedKey::Enter),
                     ElementState::Pressed,
                 ));
@@ -4590,7 +4591,7 @@ pub(crate) mod ordinary_confirmation_tests {
             host.value("CONFIRM");
             for key in [NamedKey::Tab, NamedKey::Tab] {
                 let event =
-                    crate::synthetic_input::key_event(&Key::Named(key), ElementState::Pressed);
+                    crate::synthetic_input::key_input(&Key::Named(key), ElementState::Pressed);
                 match &mut host {
                     Host::Native(app) => {
                         assert!(app.action_palette_handle_event(&event, 1.0));
@@ -4600,7 +4601,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 }
             }
             assert_eq!(host.focused_label().as_deref(), Some("Cancel"));
-            let event = crate::synthetic_input::key_event(
+            let event = crate::synthetic_input::key_input(
                 &Key::Named(NamedKey::Enter),
                 ElementState::Pressed,
             );

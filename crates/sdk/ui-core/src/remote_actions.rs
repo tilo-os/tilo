@@ -28,7 +28,7 @@ use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
     FreshActionBinding, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus,
-    RemoteActionMessage, RemoteActionTarget, serve,
+    RemoteActionMessage, RemoteActionTarget, UpdateMark, serve,
 };
 
 use crate::collaboration::{CollabEvent, CollabRequest};
@@ -55,7 +55,14 @@ impl Drop for RemoteActionsGuard {
     }
 }
 
-/// How long a running invocation is left before it is observed again.
+/// How long an invocation's receipt may be held for its outcome, so a quick
+/// action answers in the one round trip that started it.
+const INVOKE_WAIT_MS: u32 = 2_000;
+/// How long one waiting observe may be held (the host caps it too). A host
+/// answers sooner the moment the invocation moves.
+const OBSERVE_WAIT_MS: u32 = 10_000;
+/// How long a running invocation is left before it is observed again, for
+/// a host that answers a waiting observe at once: one that predates waits.
 const OBSERVE_INTERVAL: Duration = Duration::from_millis(200);
 /// Native shell chrome has no callback wake scope, so it revisits an
 /// outstanding reply at a bounded cadence until a receipt arrives. A timer
@@ -138,7 +145,8 @@ struct CatalogueWalk {
 struct Running {
     answer: LocalStateWriter<InvocationCall>,
     cancellation: Option<LocalState<CancellationCall>>,
-    /// When to observe it next, while the host is still running it.
+    /// When to observe it next, while a host that does not wait is still
+    /// running it.
     observe_at: Option<Instant>,
     /// Bound for the response currently in flight (initial Invoke or Observe).
     response_until: Option<Instant>,
@@ -146,6 +154,9 @@ struct Running {
     /// This is unresolved outcome, not proof that nothing ran, even when the
     /// original admission receipt was lost.
     outcome_uncertain: bool,
+    /// The waiting observe in flight: when it was sent, and how far it had
+    /// seen the invocation get.
+    waiting: Option<(Instant, UpdateMark)>,
 }
 
 struct Inner {
@@ -154,6 +165,9 @@ struct Inner {
     next_correlation: u64,
     catalogue: HashMap<u64, CatalogueWalk>,
     invocations: HashMap<InvocationId, Running>,
+    /// Whether the host holds a waiting observe until something changes;
+    /// cleared the first time it answers one at once with nothing new.
+    host_waits: bool,
     wake: WakeHandle,
 }
 
@@ -222,6 +236,7 @@ impl RemoteActions {
                 next_correlation: 1,
                 catalogue: HashMap::new(),
                 invocations: HashMap::new(),
+                host_waits: true,
                 wake: WakeHandle::new(),
             })),
         }
@@ -329,6 +344,7 @@ impl RemoteActions {
             confirmation,
             revision: Some(revision.into()),
             fresh_binding: None,
+            wait_ms: Some(INVOKE_WAIT_MS),
         });
         (invocation, call)
     }
@@ -354,6 +370,7 @@ impl RemoteActions {
             confirmation,
             revision: None,
             fresh_binding: Some(binding),
+            wait_ms: Some(INVOKE_WAIT_MS),
         });
         (invocation, call)
     }
@@ -380,6 +397,8 @@ impl RemoteActions {
             confirmation,
             revision: None,
             fresh_binding: None,
+            // A host that predates waits answers at admission, as before.
+            wait_ms: Some(INVOKE_WAIT_MS),
         })
     }
 
@@ -394,6 +413,7 @@ impl RemoteActions {
                 observe_at: None,
                 response_until: now.checked_add(RESPONSE_WINDOW),
                 outcome_uncertain: false,
+                waiting: None,
             },
         );
         self.send(RemoteActionMessage::Invoke(request));
@@ -478,7 +498,7 @@ impl RemoteActions {
         let Some((host, caller)) = served else {
             return;
         };
-        let Some(answer) = serve(host.as_ref(), &caller, message) else {
+        let Some(answer) = serve(&host, &caller, message) else {
             return;
         };
         let inner = Arc::clone(&self.inner);
@@ -492,9 +512,9 @@ impl RemoteActions {
         });
     }
 
-    /// Ask after invocations the host is still running, once each is due.
-    /// The host connection does this on every pump; call it directly only
-    /// for a client served [`with_host`](Self::with_host).
+    /// Ask after invocations a host that does not wait is still running,
+    /// once each is due. The host connection does this on every pump; call
+    /// it directly only for a client served [`with_host`](Self::with_host).
     pub fn poll(&self) {
         let now = crate::background::Background::current().now();
         let due: Vec<InvocationId> = {
@@ -519,7 +539,7 @@ impl RemoteActions {
             due
         };
         for invocation in due {
-            self.send(RemoteActionMessage::Observe { invocation });
+            self.send(RemoteActionMessage::observe(invocation));
         }
     }
 
@@ -648,24 +668,19 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                     return None;
                 }
             };
-            settle(inner, invocation, update);
-            None
+            settle(inner, invocation, update)
         }
         RemoteActionMessage::Update { invocation, state } => {
-            match state {
-                Some(state) => settle(inner, invocation, state.update),
-                // The request was already dispatched before it entered this
-                // map. Losing the host's retained lookup is therefore
-                // uncertainty, not proof that nothing ran, even when its
-                // admission receipt was lost. Keep the last state and do not
-                // retry either the invocation or observation.
-                None => {
-                    if let Some(running) = inner.invocations.get_mut(&invocation) {
-                        running.outcome_uncertain = true;
-                        running.observe_at = None;
-                        running.response_until = None;
-                    }
-                }
+            if let Some(state) = state {
+                return settle(inner, invocation, state.update);
+            }
+            // A lost lookup does not prove that dispatched work never ran.
+            // Keep ownership and the last observed state; never replay it.
+            if let Some(running) = inner.invocations.get_mut(&invocation) {
+                running.outcome_uncertain = true;
+                running.observe_at = None;
+                running.response_until = None;
+                running.waiting = None;
             }
             None
         }
@@ -687,24 +702,53 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
     }
 }
 
-/// Publish `update` for `invocation`; keep following it while it runs.
-fn settle(inner: &mut Inner, invocation: InvocationId, update: InvocationUpdate) {
+/// Publish `update` for `invocation`; keep following it while it runs,
+/// returning the waiting observe that does, if the host holds one.
+fn settle(
+    inner: &mut Inner,
+    invocation: InvocationId,
+    update: InvocationUpdate,
+) -> Option<RemoteActionMessage> {
     let terminal = update.is_terminal();
     if terminal {
         if let Some(running) = inner.invocations.remove(&invocation) {
             running.answer.set(RemoteCall::Done(update));
         }
-        return;
+        return None;
     }
-    let Some(running) = inner.invocations.get_mut(&invocation) else {
-        return;
-    };
+    let running = inner.invocations.get_mut(&invocation)?;
+    let mark = UpdateMark::of(&update);
     running.outcome_uncertain = false;
     running.response_until = None;
-    running.answer.set(RemoteCall::Done(update));
+    running.observe_at = None;
     let background = crate::background::Background::current();
-    running.observe_at = Some(background.now() + OBSERVE_INTERVAL);
+    let now = background.now();
+    // A host that waits answers early only with something new; nothing new,
+    // and long before the wait was up, is a host that does not wait.
+    let unheld = running.waiting.take().is_some_and(|(sent, seen)| {
+        seen == mark
+            && now.saturating_duration_since(sent)
+                < Duration::from_millis(u64::from(OBSERVE_WAIT_MS / 2))
+    });
+    running.answer.set(RemoteCall::Done(update));
+    if unheld {
+        inner.host_waits = false;
+    }
+    if inner.host_waits {
+        running.waiting = Some((now, mark));
+        // The host may hold this watch for its full requested wait. Bound
+        // transport uncertainty only after that wait plus the reply margin.
+        running.response_until =
+            now.checked_add(Duration::from_millis(u64::from(OBSERVE_WAIT_MS)) + RESPONSE_WINDOW);
+        return Some(RemoteActionMessage::Observe {
+            invocation,
+            wait_ms: Some(OBSERVE_WAIT_MS),
+            seen: Some(mark),
+        });
+    }
+    running.observe_at = Some(now + OBSERVE_INTERVAL);
     background.wake_after(OBSERVE_INTERVAL, inner.wake.clone());
+    None
 }
 
 impl Collaborative for RemoteActions {

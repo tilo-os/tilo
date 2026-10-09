@@ -3,11 +3,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -564,13 +560,13 @@ fn request_received_mount(
     uri: String,
     stream: &mut (impl std::io::Read + std::io::Write),
 ) -> Result<PathBuf, String> {
-    let request = collab_types::RecipientControlRequestV1 {
-        protocol_version: collab_types::RECIPIENT_CONTROL_VERSION,
-        operation: collab_types::RecipientControlOperationV1::AdmitV2 { uri },
+    let request = fs_protocol::RecipientControlRequestV1 {
+        protocol_version: fs_protocol::RECIPIENT_CONTROL_VERSION,
+        operation: fs_protocol::RecipientControlOperationV1::AdmitV2 { uri },
     };
     let request = collab_types::canonical_bytes(&request)
         .map_err(|_| "could not encode received-file request".to_string())?;
-    let framing = collab_types::RECIPIENT_CONTROL_FRAMING;
+    let framing = fs_protocol::RECIPIENT_CONTROL_FRAMING;
     let request = framing
         .encode(&request)
         .map_err(|_| "received-file request exceeds its bound".to_string())?;
@@ -585,15 +581,15 @@ fn request_received_mount(
         }
         Err(_) => return Err("received-file service response was truncated".into()),
     };
-    let response: collab_types::RecipientControlResponseV1 =
+    let response: fs_protocol::RecipientControlResponseV1 =
         collab_types::canonical::from_canonical_bytes(&response)
             .map_err(|_| "received-file service returned an invalid response".to_string())?;
     let status = match response.result {
-        collab_types::RecipientControlResultV1::Admitted { status, .. } => status,
-        collab_types::RecipientControlResultV1::Error { code } => {
+        fs_protocol::RecipientControlResultV1::Admitted { status, .. } => status,
+        fs_protocol::RecipientControlResultV1::Error { code } => {
             return Err(format!("received-file service refused the link ({code:?})"));
         }
-        collab_types::RecipientControlResultV1::Status(_) => {
+        fs_protocol::RecipientControlResultV1::Status(_) => {
             return Err("received-file service returned the wrong response".into());
         }
     };
@@ -976,12 +972,12 @@ mod admit_share_tests {
             let body_len = u32::try_from(stream.written.len() - 4).unwrap();
             assert_eq!(stream.written[..4], body_len.to_be_bytes());
             let length = u32::from_be_bytes(stream.written[..4].try_into().unwrap()) as usize;
-            let request: collab_types::RecipientControlRequestV1 =
+            let request: fs_protocol::RecipientControlRequestV1 =
                 collab_types::canonical::from_canonical_bytes(&stream.written[4..4 + length])
                     .unwrap();
             assert!(matches!(
                 request.operation,
-                collab_types::RecipientControlOperationV1::AdmitV2 { uri: got } if got == uri
+                fs_protocol::RecipientControlOperationV1::AdmitV2 { uri: got } if got == uri
             ));
         }
         // Phase `admission_refuses_a_relative_mount_from_the_service`.
@@ -1009,19 +1005,19 @@ mod admit_share_tests {
     }
 
     fn response(path: &str) -> ScriptedStream {
-        let response = collab_types::RecipientControlResponseV1 {
-            protocol_version: collab_types::RECIPIENT_CONTROL_VERSION,
-            result: collab_types::RecipientControlResultV1::Admitted {
+        let response = fs_protocol::RecipientControlResponseV1 {
+            protocol_version: fs_protocol::RECIPIENT_CONTROL_VERSION,
+            result: fs_protocol::RecipientControlResultV1::Admitted {
                 inserted: true,
-                status: collab_types::RecipientSubscriptionStatusV1 {
-                    key: collab_types::RecipientSubscriptionKeyV1 {
+                status: fs_protocol::RecipientSubscriptionStatusV1 {
+                    key: fs_protocol::RecipientSubscriptionKeyV1 {
                         workspace_id: uuid::Uuid::nil(),
-                        record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(1)),
+                        record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(1)),
                     },
-                    permission: collab_types::FilePermission::View,
+                    permission: fs_protocol::FilePermission::View,
                     last_success_at_ms: None,
                     last_error: None,
-                    mount: Some(collab_types::RecipientMountStatusV1 {
+                    mount: Some(fs_protocol::RecipientMountStatusV1 {
                         path: path.into(),
                         running: true,
                     }),

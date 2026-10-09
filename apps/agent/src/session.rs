@@ -2460,7 +2460,7 @@ impl Session {
         invocation: tilo_actions::InvocationId,
     ) -> Result<Result<tilo_actions::InvocationUpdate, String>> {
         self.link.send(&CollabRequest::RemoteAction {
-            message: RemoteActionMessage::Observe { invocation },
+            message: RemoteActionMessage::observe(invocation),
         })?;
         Ok(
             match self.wait_for_remote_answer(|message| {
@@ -2555,6 +2555,7 @@ impl Session {
                     }
                 },
                 revision: None,
+                wait_ms: None,
             }),
         })?;
         self.chat_dispatched(&resource, &action_label)?;
@@ -3730,7 +3731,7 @@ mod tests {
                         status: tilo_actions::remote::ReceiptStatus::Accepted,
                     }),
                     CollabRequest::RemoteAction {
-                        message: RemoteActionMessage::Observe { invocation },
+                        message: RemoteActionMessage::Observe { invocation, .. },
                     } => {
                         *self.observed.borrow_mut() += 1;
                         RemoteActionMessage::Update {
@@ -3908,7 +3909,7 @@ mod tests {
                         })
                     }
                     CollabRequest::RemoteAction {
-                        message: RemoteActionMessage::Observe { invocation },
+                        message: RemoteActionMessage::Observe { invocation, .. },
                     } => Some(CollabEvent::RemoteAction {
                         message: RemoteActionMessage::Update {
                             invocation: *invocation,
@@ -4196,7 +4197,7 @@ mod tests {
                         }
                     }
                     CollabRequest::RemoteAction {
-                        message: RemoteActionMessage::Observe { invocation },
+                        message: RemoteActionMessage::Observe { invocation, .. },
                     } => Some(CollabEvent::RemoteAction {
                         message: RemoteActionMessage::Update {
                             invocation: *invocation,

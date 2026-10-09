@@ -62,7 +62,7 @@ pub(super) fn helper(root: &Path, route: &str, denied: bool) -> Result<()> {
                     finished = Some(json!({"id": invocation.0.to_string(), "update": update}));
                 } else {
                     manager.send(CollabRequest::RemoteAction {
-                        message: RemoteActionMessage::Observe { invocation },
+                        message: RemoteActionMessage::observe(invocation),
                     });
                 }
             }
@@ -104,6 +104,7 @@ fn invoke_request(
         confirmation: None,
         revision: None,
         fresh_binding: None,
+        wait_ms: None,
     })
 }
 

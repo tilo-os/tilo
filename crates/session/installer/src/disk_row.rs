@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use ui::widget::ModelPath;
+use ui::widget::TaffyTreeExt;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -129,19 +130,15 @@ impl Widget for DiskRow {
         // returns a bare `NodeId` across every implementor, so surfacing a
         // theoretical error here would mean threading a `Result` through the
         // whole toolkit for a branch that can't be taken.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(ROW_HEIGHT),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(ROW_HEIGHT),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -363,7 +360,6 @@ impl ui::widget::controls::ActionControls for DiskRow {
 mod tests {
     use crate::control::Presses;
     use automerge::{AutoCommit, ROOT, ReadDoc};
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     use super::*;
 
@@ -388,22 +384,7 @@ mod tests {
         }
     }
 
-    fn press(key: NamedKey) -> WindowEvent {
-        // SAFETY: DiskRow reads only the initialized KeyEvent fields below.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(key);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
-        WindowEvent::KeyboardInput {
-            // SAFETY: DiskRow does not inspect the device id.
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::named_key;
 
     fn select() -> (Control, Presses) {
         Control::detached("installer.disk:/dev/vdb", "select", serde_json::Value::Null)
@@ -424,7 +405,7 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         row.handle_event(
-            &press(key),
+            &named_key(key),
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),

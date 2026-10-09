@@ -402,15 +402,13 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         editor.focus_block(0, CursorPlacement::Start);
         let mut doc = AutoCommit::new();
         let tree = TaffyTree::new();
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Character("x".into());
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let event = crate::synthetic_input::key_event(
+            Key::Character("x".into()),
+            Some("x".into()),
+            ElementState::Pressed,
         );
-        event.state = ElementState::Pressed;
-        event.text = Some("x".into());
         let character = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         };
@@ -434,15 +432,13 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             assert_eq!(editor.blocks[0].text(), source);
         }
         assert!(editor.take_edit_ops().is_empty());
-        let mut key: KeyEvent = unsafe { std::mem::zeroed() };
-        key.logical_key = Key::Named(NamedKey::Backspace);
-        key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let key = crate::synthetic_input::key_event(
+            Key::Named(NamedKey::Backspace),
+            None,
+            ElementState::Pressed,
         );
-        key.state = ElementState::Pressed;
-        key.text = None;
         let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: key,
             is_synthetic: false,
         };
@@ -609,7 +605,7 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
 fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     fn click_focuses_the_block_under_the_cursor() {
         use winit::dpi::PhysicalPosition;
-        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+        use winit::event::{ElementState, MouseButton, WindowEvent};
 
         let mut e = BlockEditor::new();
         e.set_blocks(vec![Block::paragraph("first"), Block::paragraph("second")]);
@@ -623,7 +619,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         e.focus_block(0, CursorPlacement::End);
         assert_eq!(e.focused, Some(0));
 
-        let dev: DeviceId = unsafe { std::mem::zeroed() };
+        let dev = winit::event::DeviceId::dummy();
         let moved = WindowEvent::CursorMoved {
             device_id: dev,
             position: PhysicalPosition::new(50.0, 30.0), // inside block 1
@@ -663,25 +659,10 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     }
 
     fn ctrl_shift_arrow_extends_selection_across_blocks() {
-        use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-        use winit::keyboard::{
-            Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey,
-        };
+        use winit::event::{Modifiers, WindowEvent};
+        use winit::keyboard::{ModifiersState, NamedKey};
 
-        fn arrow(named: NamedKey) -> WindowEvent {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(named);
-            ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-            ev.location = KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            }
-        }
+        use crate::synthetic_input::named_key;
 
         let mut e = BlockEditor::new();
         e.set_blocks(vec![
@@ -715,7 +696,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         };
 
         // Down once: selects the tail of block 0 ("llo"), caret into block 1.
-        send(&mut e, &arrow(NamedKey::ArrowDown));
+        send(&mut e, &named_key(NamedKey::ArrowDown));
         assert_eq!(e.focused_index(), Some(1), "active end walked into block 1");
         assert_eq!(
             e.blocks()[0].line.selection_range(),
@@ -724,7 +705,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         );
 
         // Down again: block 1 fully selected too.
-        send(&mut e, &arrow(NamedKey::ArrowDown));
+        send(&mut e, &named_key(NamedKey::ArrowDown));
         assert_eq!(e.focused_index(), Some(2));
         assert_eq!(e.blocks()[0].line.selection_range(), Some((2, 5)));
         assert_eq!(
@@ -734,7 +715,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         );
 
         // Retreat up: block 2 cleared, block 1 selected to its end.
-        send(&mut e, &arrow(NamedKey::ArrowUp));
+        send(&mut e, &named_key(NamedKey::ArrowUp));
         assert_eq!(e.focused_index(), Some(1));
         assert_eq!(
             e.blocks()[2].line.selection_range(),
@@ -1074,19 +1055,17 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
     }
 
     fn ctrl_a_then_typing_replaces_the_document_through_the_real_event_path() {
-        use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-        use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+        use winit::event::{ElementState, Modifiers, WindowEvent};
+        use winit::keyboard::{Key, ModifiersState};
 
         fn character(key: &str, text: Option<&str>) -> WindowEvent {
-            let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-            event.logical_key = Key::Character(key.into());
-            event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-            event.location = KeyLocation::Standard;
-            event.state = ElementState::Pressed;
-            event.repeat = false;
-            event.text = text.map(Into::into);
+            let event = crate::synthetic_input::key_event(
+                Key::Character(key.into()),
+                text.map(Into::into),
+                ElementState::Pressed,
+            );
             WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event,
                 is_synthetic: false,
             }

@@ -360,6 +360,7 @@ async fn main() {
             confirmation: None,
             revision: None,
             fresh_binding: None,
+            wait_ms: None,
         }),
         |message| match message {
             RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {

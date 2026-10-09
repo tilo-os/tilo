@@ -1610,9 +1610,16 @@ impl App {
         // No revision asks for the directory as it is now: a caller that
         // names an action it already knows (an agent's) chose it from no
         // page, and reading the revision first would cost it a round trip.
+        // The answer names the revision it resolved against either way, so
+        // the broker binds the admission to it and a host refuses to run
+        // the action once the directory moved on.
         if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
+        let found = |row| runtime_collab::ActionDirectoryResolution::Found {
+            row: Box::new(row),
+            revision: Some(current.clone()),
+        };
         if let Some(row) = self
             .actions
             .action_directory_snapshot
@@ -1623,15 +1630,13 @@ impl App {
                     .get(&tilo_actions::ActionAddress::new(resource_id, action_id))
             })
         {
-            return runtime_collab::ActionDirectoryResolution::Found(Box::new(row.clone()));
+            return found(row.clone());
         }
         let resource = self.resolve_publication_resource(resource_id, action_id);
         resource
             .as_ref()
             .and_then(|resource| Self::directory_action_row(resource, action_id))
-            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, |row| {
-                runtime_collab::ActionDirectoryResolution::Found(Box::new(row))
-            })
+            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, found)
     }
 
     fn published_action_directory_page(
@@ -1670,35 +1675,32 @@ impl App {
         resource: &str,
         action: &str,
         expected: &runtime_collab::FreshActionBinding,
-    ) -> runtime_collab::ActionDirectoryResolutionReply {
-        let mut reply = runtime_collab::ActionDirectoryResolutionReply {
-            resolution: runtime_collab::ActionDirectoryResolution::Unavailable,
-            revision: String::new(),
-        };
+    ) -> runtime_collab::ActionDirectoryResolution {
+        let unavailable = runtime_collab::ActionDirectoryResolution::Unavailable;
         if !self.published_action_history_ready()
             || expected.descriptor.resource != resource
             || expected.descriptor.action != action
             || expected.descriptor.semantic_identity.is_none()
         {
-            return reply;
+            return unavailable;
         }
         let Some(row) = self
             .resolve_publication_resource(resource, action)
             .as_ref()
             .and_then(|resource| Self::directory_action_row(resource, action))
         else {
-            reply.resolution = runtime_collab::ActionDirectoryResolution::NotFound;
-            return reply;
+            return runtime_collab::ActionDirectoryResolution::NotFound;
         };
         if row.fresh_binding.as_ref() != Some(expected) {
-            return reply;
+            return unavailable;
         }
         let Ok(revision) = self.try_action_directory_revision() else {
-            return reply;
+            return unavailable;
         };
-        reply.revision = revision;
-        reply.resolution = runtime_collab::ActionDirectoryResolution::Found(Box::new(row));
-        reply
+        runtime_collab::ActionDirectoryResolution::Found {
+            row: Box::new(row),
+            revision: Some(revision),
+        }
     }
 
     fn pump_action_directory_requests(&mut self) {
@@ -1714,7 +1716,11 @@ impl App {
                         .send(self.resolve_fresh_action_directory(&resource, &action, &expected));
                 }
                 ActionDirectoryRequest::Query { query, reply } => {
-                    let _ = reply.send(self.published_action_directory_page(query));
+                    // A cancelled caller never receives this page. Do not consume
+                    // its one-use continuation before admitting a live response.
+                    if !reply.is_closed() {
+                        let _ = reply.send(self.published_action_directory_page(query));
+                    }
                 }
                 ActionDirectoryRequest::Resolve {
                     revision,
@@ -2145,6 +2151,7 @@ impl App {
                 confirmation: Self::broker_confirmation(confirmation_evidence),
                 revision: None,
                 fresh_binding: None,
+                wait_ms: None,
             },
         );
         Ok(crate::widget::ResourceOperationStart::Accepted)
@@ -2793,6 +2800,7 @@ impl App {
                 confirmation: None,
                 revision: None,
                 fresh_binding: None,
+                wait_ms: None,
             };
             self.actions
                 .broker_requests
@@ -3629,6 +3637,7 @@ impl App {
             confirmation: None,
             revision: None,
             fresh_binding: None,
+            wait_ms: None,
         };
         self.actions
             .broker_requests

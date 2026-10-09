@@ -204,6 +204,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 revision: None,
                 fresh_binding: None,
                 on_behalf_of: None,
+                wait_ms: None,
             };
             tokio::runtime::Handle::current().block_on(local_host_answer(host.invoke(&caller, request.clone())))
                 .unwrap();

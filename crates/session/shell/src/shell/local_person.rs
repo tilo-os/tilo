@@ -166,6 +166,7 @@ mod tests {
             confirmation: None,
             revision: None,
             fresh_binding: None,
+            wait_ms: None,
         }
     }
 

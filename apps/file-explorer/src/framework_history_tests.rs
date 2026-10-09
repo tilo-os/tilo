@@ -2,7 +2,7 @@
 //! backend and mounted projections, restored through the hosted app.
 use super::*;
 use crate::FileExplorerShell;
-use collab_types::files::*;
+use fs_protocol::files::*;
 use std::sync::{Arc, Mutex};
 use ui::history_mode::checked_files::{FileHistorySource, FileHistoryTarget, FileHistoryTransport};
 use ui::prelude::TestApp;
@@ -58,7 +58,7 @@ impl FileHistoryTransport for Backend {
     fn preview(
         &self,
         scope: FileHistoryReadScopeV1,
-        version: collab_types::FileVersionId,
+        version: fs_protocol::FileVersionId,
     ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
         self.fs.read_file_history_preview(self.ino, scope, version)
     }
@@ -99,7 +99,7 @@ impl FileHistoryTransport for Counted {
     fn preview(
         &self,
         scope: FileHistoryReadScopeV1,
-        version: collab_types::FileVersionId,
+        version: fs_protocol::FileVersionId,
     ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
         self.inner.preview(scope, version)
     }
@@ -166,11 +166,11 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         .create_file(fs::ROOT_INO, "report.txt", Some(&live_hash), 20, 1)
         .unwrap();
     let record = namespace.record_id_for(ino).unwrap();
-    let old = collab_types::FileVersionId(uuid::Uuid::from_u128(101));
-    let current = collab_types::FileVersionId(uuid::Uuid::from_u128(102));
-    let actor = collab_types::FileActor {
-        person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-        device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+    let old = fs_protocol::FileVersionId(uuid::Uuid::from_u128(101));
+    let current = fs_protocol::FileVersionId(uuid::Uuid::from_u128(102));
+    let actor = fs_protocol::FileActor {
+        person: fs_protocol::Ed25519PublicKey::from_bytes([1; 32]),
+        device: fs_protocol::Ed25519PublicKey::from_bytes([2; 32]),
     };
     let history =
         Arc::new(fs::FileHistoryStore::open(directory.path().join("history.json")).unwrap());
@@ -180,25 +180,25 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             vec![],
             old_hash,
             1,
-            collab_types::FileProvenance::Create,
+            fs_protocol::FileProvenance::Create,
         ),
         (
             current,
             vec![old],
             live_hash,
             2,
-            collab_types::FileProvenance::Edit,
+            fs_protocol::FileProvenance::Edit,
         ),
     ] {
         history
-            .append(collab_types::FileVersionV1 {
+            .append(fs_protocol::FileVersionV1 {
                 id,
                 record_id: record,
                 parents,
                 actor,
                 timestamp_ms: time,
-                content_hash: Some(collab_types::ContentHash(*hash.as_bytes())),
-                metadata_hash: collab_types::ContentHash([7; 32]),
+                content_hash: Some(fs_protocol::ContentHash(*hash.as_bytes())),
+                metadata_hash: fs_protocol::ContentHash([7; 32]),
                 provenance,
             })
             .unwrap();
@@ -374,9 +374,9 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         fn install(
             path: &std::path::Path,
             record: u128,
-        ) -> (collab_types::FileRecordId, collab_types::FileVersionId) {
-            let record_id = collab_types::FileRecordId(uuid::Uuid::from_u128(record));
-            let id = collab_types::FileVersionId(uuid::Uuid::from_u128(record + 100));
+        ) -> (fs_protocol::FileRecordId, fs_protocol::FileVersionId) {
+            let record_id = fs_protocol::FileRecordId(uuid::Uuid::from_u128(record));
+            let id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(record + 100));
             std::fs::write(path, b"live file").unwrap();
             let scope = FileHistoryReadScopeV1 {
                 workspace_id: uuid::Uuid::from_u128(1),
@@ -384,18 +384,18 @@ fn framework_history_recovers_sessions_after_a_b_a() {
                 record_id,
                 frontier: [record as u8; 32],
             };
-            let version = collab_types::FileVersionV1 {
+            let version = fs_protocol::FileVersionV1 {
                 id,
                 record_id,
                 parents: vec![],
-                actor: collab_types::FileActor {
-                    person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                    device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+                actor: fs_protocol::FileActor {
+                    person: fs_protocol::Ed25519PublicKey::from_bytes([1; 32]),
+                    device: fs_protocol::Ed25519PublicKey::from_bytes([2; 32]),
                 },
                 timestamp_ms: 1,
-                content_hash: Some(collab_types::ContentHash([5; 32])),
-                metadata_hash: collab_types::ContentHash([6; 32]),
-                provenance: collab_types::FileProvenance::Create,
+                content_hash: Some(fs_protocol::ContentHash([5; 32])),
+                metadata_hash: fs_protocol::ContentHash([6; 32]),
+                provenance: fs_protocol::FileProvenance::Create,
             };
             let page = FileHistoryReadValueV1::Page(FileHistoryPageV1 {
                 scope,
@@ -560,13 +560,13 @@ fn framework_history_recovers_sessions_after_a_b_a() {
             .unwrap(),
             original
         );
-        let revision = |id| collab_types::ContentRevisionV1 {
+        let revision = |id| fs_protocol::ContentRevisionV1 {
             schema_version: 1,
             record_id: record_a,
-            version_id: collab_types::FileVersionId(uuid::Uuid::from_u128(id)),
-            content_hash: Some(collab_types::ContentHash([5; 32])),
+            version_id: fs_protocol::FileVersionId(uuid::Uuid::from_u128(id)),
+            content_hash: Some(fs_protocol::ContentHash([5; 32])),
             byte_len: 16,
-            metadata_hash: collab_types::ContentHash([6; 32]),
+            metadata_hash: fs_protocol::ContentHash([6; 32]),
         };
         let receipt = FileRestoreReceiptV1 {
             schema_version: 1,

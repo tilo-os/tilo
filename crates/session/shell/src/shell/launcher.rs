@@ -3660,7 +3660,8 @@ fn start_launch(
     events: &LaunchSession,
     authority: Option<action_authority::Lease>,
 ) -> Result<(), String> {
-    #[cfg(all(test, not(target_os = "linux")))]
+    #[cfg(test)]
+    #[cfg(not(target_os = "linux"))]
     if !TEST_EXECUTION_PROGRAM.with(|slot| slot.borrow().as_ref() == Some(&command.program)) {
         return Err("Linux package execution provider is unavailable".into());
     }

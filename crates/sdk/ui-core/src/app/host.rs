@@ -307,6 +307,170 @@ fn draw_visible_tooltip(
     );
 }
 
+/// Paint the presence a window shows over its widgets (legacy cursors, peer
+/// pointers with their names and edge mist, semantic action activity) into
+/// `layer`, each draw site one [`crate::scene_parts`] part bounded by what it
+/// painted, so the frame damages only the marks that changed.
+///
+/// Returns the frame's presence damage in scene (physical) coordinates
+/// against the last [`crate::presence::PresenceLayer::presented`] frame, or
+/// `None` when the window must repaint: the presence widgets paint from
+/// changed, or the layer's damage cannot be proven.
+///
+/// A pointer that arrived on a desktop scope is the compositor's to draw,
+/// and the helper skips it (see `presence::PointerOwner`). Only the
+/// *painting* has one owner; the shell threads this same context into its
+/// own overlay too.
+#[cfg(feature = "native")]
+fn draw_presence_layer(
+    app: &mut App,
+    layer: &mut crate::presence::PresenceLayer,
+    transform: Affine,
+    window_rect: KurboRect,
+    now: crate::time::Instant,
+) -> Option<Vec<KurboRect>> {
+    use crate::scene_parts::{PartKey, part_drawn};
+    // The presence the widgets were just drawn from.
+    let widgets_changed = layer.widgets_need_full_repaint(&app.presence_ctx, now);
+    app.presence_ctx.prune_interactions(now);
+    layer.record(|scene| {
+        part_drawn(scene, PartKey::new("ui.legacy-cursors", ()), |scene| {
+            draw_legacy_cursors(app, scene, transform)
+        });
+        part_drawn(scene, PartKey::new("ui.remote-presence", ()), |scene| {
+            crate::presence::draw_remote_presence(
+                scene,
+                transform,
+                window_rect,
+                &mut app.text_renderer,
+                &app.theme,
+                &app.presence_ctx,
+            )
+        });
+        part_drawn(scene, PartKey::new("ui.action-presence", ()), |scene| {
+            let before = scene.encoding().draw_tags.len();
+            // Re-resolve the same checked publication geometry and exact
+            // surface as every other App host, including modal suppression.
+            draw_agent_action_presence(app, scene, transform, window_rect, now);
+            // Outlines, labels, markers and the activity rail share no
+            // bounds; activity is rare and brief, so it damages the window
+            // while it paints and on the frame it stops.
+            if scene.encoding().draw_tags.len() == before {
+                Vec::new()
+            } else {
+                vec![transform.transform_rect_bbox(window_rect)]
+            }
+        });
+    });
+    let damage = layer.damage();
+    if widgets_changed { None } else { damage }
+}
+
+/// Turn a frame's widget damage (`regions`, logical, as collected) into the
+/// regions it submits (physical), with the presence layer's damage
+/// (`presence`, physical, from [`draw_presence_layer`]) added. Returns
+/// `false` when damage cannot describe the frame and it must repaint the
+/// window instead.
+///
+/// `content_marks`: widgets paint collaborators' carets, selections or
+/// activity, placed from their own content and labelled with name chips
+/// that hang outside the widget. A widget that changes can move those marks
+/// without reporting where they were, so a frame with widget damage
+/// repaints the window. A frame where only the presence layer changed (a
+/// peer's pointer moving) keeps to its marks.
+#[cfg(feature = "native")]
+fn submit_presence_damage(
+    regions: &mut Vec<KurboRect>,
+    presence: &[KurboRect],
+    content_marks: bool,
+    scale: f64,
+    physical_viewport: KurboRect,
+) -> bool {
+    if content_marks && !regions.is_empty() {
+        return false;
+    }
+    for rect in regions.iter_mut() {
+        *rect = KurboRect::new(
+            rect.x0 * scale,
+            rect.y0 * scale,
+            rect.x1 * scale,
+            rect.y1 * scale,
+        )
+        .inflate(16.0 * scale, 16.0 * scale)
+        .intersect(physical_viewport);
+    }
+    // Presence bounds already cover antialiasing; whole pixels plus one
+    // absorb rounding.
+    regions.extend(
+        presence
+            .iter()
+            .map(|rect| rect.expand().inflate(1.0, 1.0).intersect(physical_viewport)),
+    );
+    regions.retain(|rect| !rect.is_zero_area());
+    true
+}
+
+/// Paint the `state.collab` cursors. Returns the bounds, in scene
+/// coordinates, of everything painted.
+#[cfg(feature = "native")]
+fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) -> Vec<KurboRect> {
+    let mut painted = Vec::new();
+    for cursor in app.state.collab.cursors.values() {
+        let mut path = vello::kurbo::BezPath::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.line_to(Point::new(14.0, 14.0));
+        path.line_to(Point::new(6.0, 16.0));
+        path.line_to(Point::new(0.0, 22.0));
+        path.close_path();
+
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+        )]
+        let cursor_transform =
+            transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            cursor_transform,
+            cursor.color,
+            None,
+            &path,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5),
+            cursor_transform,
+            app.theme.tokens.colors.on_surface(cursor.color).ink,
+            None,
+            &path,
+        );
+
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+        )]
+        let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
+        app.text_renderer.draw_text(
+            scene,
+            &cursor.name,
+            10.0,
+            app.theme.tokens.colors.on_surface(cursor.color).ink,
+            name_transform,
+            None,
+        );
+        // The arrow with its stroke, and the name below and right of it,
+        // with room for antialiasing and glyph overhang.
+        let (name_w, name_h) = app.text_renderer.measure(&cursor.name, 10.0, None);
+        let local = KurboRect::new(
+            -4.0,
+            -4.0,
+            (10.0 + f64::from(name_w)).max(14.0) + 4.0,
+            (20.0 + f64::from(name_h)).max(22.0) + 4.0,
+        );
+        painted.push(cursor_transform.transform_rect_bbox(local));
+    }
+    painted
+}
+
 /// Complete a native CPU frame only after drawing and damage collection.
 /// Deferred or aborted frames retain return custody for the next completed
 /// frame, so dirty state and accessibility publication stay tied to pixels.

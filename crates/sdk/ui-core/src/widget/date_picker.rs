@@ -835,8 +835,6 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, MouseButton};
 
     fn modifiers() -> winit::event::Modifiers {
         winit::event::Modifiers::default()
@@ -906,7 +904,7 @@ mod tests {
                 },
             );
             dp.handle_event(
-                &mouse_pressed(),
+                &mouse_press(),
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
@@ -1018,26 +1016,9 @@ mod tests {
         focused_date_picker_paints_a_focus_ring();
     }
 
-    fn fake_device_id() -> DeviceId {
-        // `DeviceId::dummy()` needs a winit unstable feature and the
-        // regular constructor isn't pub; never inspected by `handle_event`.
-        unsafe { std::mem::zeroed() }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
-            position: PhysicalPosition::new(x, y),
-        }
-    }
-
-    fn mouse_pressed() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: fake_device_id(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn date_picker_semantics_and_shared_state_track_selection() {

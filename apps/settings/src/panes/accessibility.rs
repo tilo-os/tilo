@@ -14,6 +14,7 @@
 //!   accessibility layer, each set by an [`AccessibilityEffect`].
 
 use std::collections::HashMap;
+use ui::widget::TaffyTreeExt;
 
 use settings_store::magnifier;
 use taffy::{NodeId, TaffyTree};
@@ -830,9 +831,7 @@ impl Widget for AccessibilityPane {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     ui::forward_to_composed!(composed);

@@ -3,14 +3,8 @@
 
 use crate::{SettingsShell, categories::Category};
 use ui::framework::testing::TestApp;
-use winit::event::{DeviceId, WindowEvent};
 
-fn pointer(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 
 fn sidebar_toggle(app: &mut TestApp<SettingsShell>) -> ui::vello::kurbo::Rect {
     app.harness()
@@ -144,9 +138,9 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
             );
             let toggle = sidebar_toggle(&mut app);
             measure(&mut app, category, "pointer-hover", sample, |app| {
-                app.harness().send(&pointer(1190.0, 890.0));
+                app.harness().send(&cursor_moved(1190.0, 890.0));
                 app.harness()
-                    .send(&pointer(toggle.center().x, toggle.center().y));
+                    .send(&cursor_moved(toggle.center().x, toggle.center().y));
             });
             measure(&mut app, category, "sidebar-control-click", sample, |app| {
                 app.harness().click_at(toggle.center().x, toggle.center().y);

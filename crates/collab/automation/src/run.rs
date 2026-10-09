@@ -674,6 +674,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 // target itself.
                 revision: None,
                 fresh_binding: None,
+                wait_ms: None,
             },
             result: descriptor.contract.result.clone(),
         })

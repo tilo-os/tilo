@@ -505,6 +505,7 @@ mod tests {
                 confirmation,
                 revision: None,
                 fresh_binding: None,
+                wait_ms: None,
             },
         )
         .wait_timeout(tilo_test_env::hang_bound())
@@ -867,6 +868,7 @@ mod tests {
                 confirmation: None,
                 revision: None,
                 fresh_binding: None,
+                wait_ms: None,
             },
         );
         wait_for_parked_launches(&state, &launches, 1);

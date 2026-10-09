@@ -1208,8 +1208,8 @@ mod tests {
     use taffy::{Style, TaffyTree};
     use vello::Scene;
     use vello::kurbo::Affine;
-    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-    use winit::keyboard::{Key, NamedKey};
+    use winit::event::{ElementState, Modifiers, WindowEvent};
+    use winit::keyboard::NamedKey;
 
     fn mods(ctrl: bool, shift: bool) -> Modifiers {
         use winit::keyboard::ModifiersState;
@@ -1223,39 +1223,9 @@ mod tests {
         Modifiers::from(s)
     }
 
-    fn char_event(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::char_key;
 
-    fn named_event(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
     fn drive(ed: &mut CodeEditor, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         let mut handled = false;
@@ -1328,12 +1298,7 @@ mod tests {
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
             let mut doc = AutoCommit::new();
             for ch in ["f", "n", " ", "x"] {
-                assert!(drive(
-                    &mut ed,
-                    &mut doc,
-                    &char_event(ch),
-                    mods(false, false)
-                ));
+                assert!(drive(&mut ed, &mut doc, &char_key(ch), mods(false, false)));
             }
             assert_eq!(ed.value(), "fn x");
             assert_eq!(ed.cursor_pos(), 4);
@@ -1371,15 +1336,15 @@ mod tests {
             let mut doc = AutoCommit::new();
             {
                 let ch = "a";
-                drive(&mut ed, &mut doc, &char_event(ch), mods(false, false));
+                drive(&mut ed, &mut doc, &char_key(ch), mods(false, false));
             }
             drive(
                 &mut ed,
                 &mut doc,
-                &named_event(NamedKey::Enter),
+                &named_key(NamedKey::Enter),
                 mods(false, false),
             );
-            drive(&mut ed, &mut doc, &char_event("b"), mods(false, false));
+            drive(&mut ed, &mut doc, &char_key("b"), mods(false, false));
             assert_eq!(ed.value(), "a\nb");
             assert_eq!(
                 ed.line_count(),
@@ -1396,16 +1361,16 @@ mod tests {
             assert!(drive(
                 &mut ed,
                 &mut doc,
-                &named_event(NamedKey::Tab),
+                &named_key(NamedKey::Tab),
                 mods(false, false)
             ));
-            drive(&mut ed, &mut doc, &char_event("x"), mods(false, false));
+            drive(&mut ed, &mut doc, &char_key("x"), mods(false, false));
             assert_eq!(ed.value(), "    x", "Tab inserts four spaces");
             // Shift+Tab removes one indent level.
             assert!(drive(
                 &mut ed,
                 &mut doc,
-                &named_event(NamedKey::Tab),
+                &named_key(NamedKey::Tab),
                 mods(false, true)
             ));
             assert_eq!(
@@ -1428,23 +1393,13 @@ mod tests {
             ed.set_focused(true);
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
             let mut doc = AutoCommit::new();
-            assert!(drive(
-                &mut ed,
-                &mut doc,
-                &char_event("a"),
-                mods(true, false)
-            ));
+            assert!(drive(&mut ed, &mut doc, &char_key("a"), mods(true, false)));
             assert_eq!(
                 ed.inner().selection_range_public(),
                 Some((0, 3)),
                 "Ctrl+A selects the whole buffer on the real path",
             );
-            assert!(drive(
-                &mut ed,
-                &mut doc,
-                &char_event("x"),
-                mods(true, false)
-            ));
+            assert!(drive(&mut ed, &mut doc, &char_key("x"), mods(true, false)));
             assert_eq!(
                 ed.value(),
                 "",
@@ -1460,13 +1415,13 @@ mod tests {
             drive(
                 &mut ed,
                 &mut doc,
-                &named_event(NamedKey::Home),
+                &named_key(NamedKey::Home),
                 mods(false, false),
             );
             drive(
                 &mut ed,
                 &mut doc,
-                &named_event(NamedKey::ArrowRight),
+                &named_key(NamedKey::ArrowRight),
                 mods(true, true),
             );
             let sel = ed
@@ -1580,7 +1535,7 @@ mod tests {
                 &mut large,
                 &mut doc,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(point.x, point.y),
                 },
                 mods(false, false),
@@ -1589,7 +1544,7 @@ mod tests {
                 &mut large,
                 &mut doc,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: winit::event::MouseButton::Left,
                 },
@@ -1657,23 +1612,15 @@ mod tests {
 #[cfg(test)]
 mod document_tests {
     use super::*;
-    use winit::event::{ElementState, KeyEvent};
+    use winit::event::ElementState;
     use winit::keyboard::{Key, NamedKey};
 
     fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.text = text.map(Into::into);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            key,
+            text.map(Into::into),
+            ElementState::Pressed,
+        ))
     }
 
     fn send(editor: &mut CodeEditor, event: &WindowEvent) -> bool {

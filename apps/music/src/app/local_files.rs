@@ -1,5 +1,6 @@
 use super::{MusicApp, Track};
-#[cfg(all(test, feature = "audio"))]
+#[cfg(test)]
+#[cfg(feature = "audio")]
 use ui::widget::Continuable as _;
 use ui::widget::toast::ToastKind;
 
@@ -371,7 +372,7 @@ mod tests {
                 assert!(app.rect.contains(rect.center()));
                 assert!(rect.y1 <= app.body_rect.y0, "the action sits in the header");
                 assert_eq!(tree.children(node).unwrap().len(), app.children().len());
-                let device_id = unsafe { std::mem::zeroed() };
+                let device_id = winit::event::DeviceId::dummy();
                 let events = [
                     winit::event::WindowEvent::CursorMoved {
                         device_id,

@@ -94,6 +94,7 @@ fn invoke(invocation: InvocationId) -> RemoteActionMessage {
         confirmation: None,
         revision: None,
         fresh_binding: None,
+        wait_ms: None,
     })
 }
 
@@ -464,6 +465,7 @@ struct RecordingHost {
 }
 
 /// Lets the test keep a handle on the host the relay owns.
+#[derive(Clone)]
 struct SharedHost(Arc<RecordingHost>);
 
 impl ActionHost for SharedHost {

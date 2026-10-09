@@ -53,12 +53,7 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
     None
 }
 
-fn synth_cursor(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 fn synth_click(state: ElementState) -> WindowEvent {
     WindowEvent::MouseInput {
         device_id: winit::event::DeviceId::dummy(),
@@ -311,12 +306,12 @@ impl BenchHarness {
         let (_scene, taffy, child, _) = self.frame()?;
         let event_us = match *action {
             BenchAction::Click(x, y) => {
-                self.dispatch(&synth_cursor(x, y), child, &taffy)
+                self.dispatch(&cursor_moved(x, y), child, &taffy)
                     + self.dispatch(&synth_click(ElementState::Pressed), child, &taffy)
                     + self.dispatch(&synth_click(ElementState::Released), child, &taffy)
             }
             BenchAction::Scroll(x, y, dy) => {
-                self.dispatch(&synth_cursor(x, y), child, &taffy)
+                self.dispatch(&cursor_moved(x, y), child, &taffy)
                     + self.dispatch(&synth_wheel(dy), child, &taffy)
             }
         };

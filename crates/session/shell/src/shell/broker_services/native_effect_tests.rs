@@ -87,6 +87,7 @@ fn assert_governance_adversaries(
         confirmation: Some(Confirmation::Confirmed),
         revision,
         fresh_binding: None,
+        wait_ms: None,
         on_behalf_of: None,
     };
     assert!(
@@ -178,6 +179,7 @@ fn certified_owner_queries_and_invokes_native_workspace_governance() {
         confirmation: Some(Confirmation::Confirmed),
         revision: Some(page.revision.clone()),
         fresh_binding: None,
+        wait_ms: None,
         on_behalf_of: None,
     }))
     .expect("the certified owner invokes the retained governance descriptor");
@@ -433,6 +435,7 @@ fn native_profile_request(
         confirmation: Some(Confirmation::Confirmed),
         revision: Some(page.revision),
         fresh_binding: None,
+        wait_ms: None,
         context: None,
         on_behalf_of: None,
     }
@@ -529,6 +532,7 @@ fn invoke_certified_profile_action(
         confirmation: Some(Confirmation::Confirmed),
         revision: Some(page.revision),
         fresh_binding: None,
+        wait_ms: None,
         context: None,
         on_behalf_of: None,
     }))
@@ -1163,6 +1167,7 @@ fn failed_certified_effect(
         revision: None,
         fresh_binding: None,
         on_behalf_of: None,
+        wait_ms: None,
     };
     let mut pending = host.invoke(&caller, request);
     let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();

@@ -234,6 +234,67 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_switch_reads_only_its_own_change_and_derives_the_same_history() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let first = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        let reads = || {
+            (
+                ROOM_CHANGE_READS.with(Cell::get),
+                crate::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
+            )
+        };
+        for n in 0..12 {
+            tree.set_active(if n % 2 == 0 { second } else { first });
+            tree.commit_room_change();
+            let (diffs, forks) = reads();
+            pane.refresh(&mut tree);
+            let (diffs_after, forks_after) = reads();
+            // Each switch is one change: re-reading the room's whole history
+            // made a switch's first frame O(history).
+            assert_eq!(
+                diffs_after - diffs,
+                1,
+                "switch {n} diffs only its own change"
+            );
+            // The first visit to "Second" also checkpoints the change that
+            // created it; after that a switch forks for its own entry alone.
+            if n >= 1 {
+                assert!(
+                    forks_after - forks <= 1,
+                    "switch {n} forks the document at most for its own checkpoint"
+                );
+            }
+        }
+
+        // What the incremental refreshes derived is what one refresh of the
+        // whole history derives.
+        let mut fresh = native_pane();
+        fresh.refresh(&mut tree);
+        assert_eq!(
+            format!("{:?}", pane.derived),
+            format!("{:?}", fresh.derived),
+            "the feed rows and their workspaces"
+        );
+        let frames = |pane: &RoomActivityPane| {
+            pane.replay_frames
+                .iter()
+                .map(|frame| {
+                    format!(
+                        "{:?} {} {:?}",
+                        frame.entry_id, frame.summary, frame.workspaces
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(!frames(&pane).is_empty(), "the switches are replayable");
+        assert_eq!(frames(&pane), frames(&fresh), "the replay checkpoints");
+    }
+
+    #[test]
     fn workspace_switch_summary_fits_the_chrome_activity_line() {
         let summary = PatchCounts {
             active_switched: true,
@@ -3185,47 +3246,14 @@ mod tests {
     // widget — proving the whole chain, not just `apply_name`.
     // -----------------------------------------------------------------
 
-    pub(super) fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-
-    pub(super) fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        }
-    }
-
-    pub(super) fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: winit::event::ElementState::Released,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    pub(super) use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release};
 
     pub(super) fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: as in `ui`'s own widget tests — every pub field of `KeyEvent`
-        // tolerates the all-zero bit pattern, and winit 0.30 keeps
-        // `KeyEventExtra` crate-private so a struct literal is unavailable.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = winit::event::ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            logical_key,
+            None,
+            winit::event::ElementState::Pressed,
+        ))
     }
 
     /// Paint the sheet so the rects the click handler reads off the last frame

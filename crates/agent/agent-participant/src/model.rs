@@ -729,8 +729,10 @@ impl PlanModel for OpenAiModel {
         getrandom::fill(&mut run).map_err(|_| "no randomness for the model call".to_string())?;
         let mut revealed = tilo_agent::tools::Revealed::new();
         // The published operations come with the task (and are revealed), so
-        // a task they answer is planned on the first turn.
-        let task = tilo_agent::model::action_user_turn(task, &[], catalogue, &mut revealed);
+        // a task they answer is planned on the first turn. One string: an
+        // OpenAI-compatible provider caches the repeated operations prefix
+        // by itself.
+        let task = tilo_agent::model::action_user_turn(task, &[], catalogue, &mut revealed).text();
         let mut messages = vec![
             serde_json::json!({
                 "role": "system",

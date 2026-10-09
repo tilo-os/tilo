@@ -1060,18 +1060,14 @@ mod component_adapter {
                 return taffy.leaf_node(taffy::Style::default());
             };
             let child = root.build_layout(taffy, theme, node_map);
-            let node = taffy.parent_node(
-                taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..Default::default()
+            let style = taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
                 },
-                &[child],
-            );
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+                ..Default::default()
+            };
+            taffy.widget_node(style, &[child], node_map, self)
         }
         fn measure(
             &mut self,

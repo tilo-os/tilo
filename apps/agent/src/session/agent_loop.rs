@@ -37,7 +37,9 @@ use super::{
     ChunkedParagraph, Handoff, MAX_TASK_STEPS, Session, TaskAction, TaskActionStop,
     arguments_for_step, task_action_from_offer, with_param,
 };
-use crate::model::{Conversation, StreamSignal, TurnEvent, plan_stream::PlanArgumentsScanner};
+use crate::model::{
+    Conversation, FirstTurn, StreamSignal, TurnEvent, plan_stream::PlanArgumentsScanner,
+};
 use crate::plan::{self, ConfirmationEvidence, Instruction};
 use crate::surface;
 use crate::tools::{self, InvokeReport, Revealed};
@@ -822,16 +824,23 @@ impl Session {
         }
         let summary =
             tools::catalogue_summary(&catalogue, &mut state.revealed, tools::MOST_SUMMARISED);
-        // Stable first, volatile last: the provider caches the longest
-        // byte-identical prefix (system, tools, then this catalogue, which
-        // only changes when the applications republish), so the earlier
-        // conversation and the request come after it.
-        let user_turn = format!(
-            "Operations published right now:\n\n{summary}\n{}The request:\n\n{}",
-            self.memory.render(),
-            run.execution_instruction().trim()
-        );
-        let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &user_turn);
+        // Stable first, volatile last. System and tools are the same bytes on
+        // every turn of every task; this catalogue changes only when the
+        // applications republish, so it opens the first turn and the earlier
+        // conversation and the request follow it. For Anthropic the
+        // `FirstTurn` closes the catalogue with its own cache breakpoint,
+        // so the next task reads system, tools and catalogue back from the
+        // cache rather than prefilling them; an OpenAI-compatible provider
+        // caches the same repeated prefix by itself.
+        let first = FirstTurn {
+            operations: format!("Operations published right now:\n\n{summary}\n"),
+            task: format!(
+                "{}The request:\n\n{}",
+                self.memory.render(),
+                run.execution_instruction().trim()
+            ),
+        };
+        let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &first);
         for turn in 0..MAX_LOOP_TURNS {
             let left = total_budget.saturating_sub(began.elapsed());
             let left = self.task_deadline.map_or(left, |deadline| {
@@ -4137,6 +4146,51 @@ mod tests {
     }
 
     #[test]
+    fn cached_first_turn_keeps_owner_execution_instruction_instead_of_caption() {
+        for protocol in [
+            agent_provider_config::ProviderProtocol::OpenAiCompatible,
+            agent_provider_config::ProviderProtocol::Anthropic,
+        ] {
+            let events = match protocol {
+                agent_provider_config::ProviderProtocol::Anthropic => {
+                    anthropic_turn(&[finish("Done", true)], 64)
+                }
+                agent_provider_config::ProviderProtocol::OpenAiCompatible => {
+                    turn(&[finish("Done", true)], 64)
+                }
+            };
+            let mut f = fixture("UI caption only", World::default(), vec![events]);
+            f.run.instruction = Some("Owner-admitted instruction with saved direction".into());
+            f.session.chooser = Chooser::scripted(
+                Duration::from_secs(5),
+                protocol,
+                Arc::new(Scripted(f.script.clone())),
+            );
+            f.session.run_task(&f.run).unwrap();
+            let bodies = f.script.bodies.lock().unwrap().clone();
+            let user = bodies[0]["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "user")
+                .unwrap();
+            let task = match &user["content"] {
+                Value::String(text) => text.as_str(),
+                Value::Array(blocks) => {
+                    assert_eq!(blocks.len(), 2);
+                    assert!(blocks[1].get("cache_control").is_none());
+                    blocks[1]["text"].as_str().unwrap()
+                }
+                other => panic!("unexpected first-turn content: {other}"),
+            };
+            assert!(
+                task.ends_with("The request:\n\nOwner-admitted instruction with saved direction")
+            );
+            assert!(!task.contains("UI caption only"));
+        }
+    }
+
+    #[test]
     fn explicit_owner_task_budget_reaches_transport_and_preserves_legacy_default() {
         let turns = vec![turn(&[finish("Done", true)], 64)];
         let mut legacy = fixture("finish", World::default(), turns.clone());
@@ -4833,6 +4887,92 @@ mod tests {
             bodies[2]["messages"].as_array().unwrap()[..2],
             bodies[1]["messages"].as_array().unwrap()[..2]
         );
+        // OpenAI-compatible providers cache by themselves: no marker at all.
+        for body in &bodies {
+            assert!(!body.to_string().contains("cache_control"), "{body}");
+        }
+    }
+
+    /// Anthropic caches only up to a breakpoint, so the catalogue closes a
+    /// text block of its own with one: the first request of two different
+    /// tasks is byte-identical through that block (system, tools,
+    /// catalogue), and the next task reads it back from the cache instead of
+    /// prefilling it. The memory and the request follow in their own block.
+    #[test]
+    fn anthropic_tasks_share_the_cached_catalogue_block() {
+        let mut f = fixture(
+            "ignored",
+            World::default(),
+            vec![
+                anthropic_turn(
+                    &[invoke_replying(
+                        "type-text",
+                        &serde_json::json!({"text": "Hello chat."}),
+                        "Posted hello.",
+                    )],
+                    64,
+                ),
+                anthropic_turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64),
+                anthropic_turn(
+                    &[finish("I typed \"Hello chat.\" into the document.", true)],
+                    64,
+                ),
+            ],
+        );
+        f.session.chooser = Chooser::scripted(
+            Duration::from_secs(5),
+            agent_provider_config::ProviderProtocol::Anthropic,
+            Arc::new(Scripted(f.script.clone())),
+        );
+        for title in ["post hello", "what did you just do?"] {
+            let mut run = f.run.clone();
+            run.title = title.into();
+            f.session.run_task(&run).unwrap();
+        }
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 3);
+        // What Anthropic caches at the catalogue's breakpoint, in its render
+        // order: tools, system, then the first user message through it.
+        let prefix = |body: &Value| {
+            serde_json::to_string(&(
+                &body["tools"],
+                &body["system"],
+                &body["messages"][0]["content"][0],
+            ))
+            .unwrap()
+        };
+        for body in &bodies {
+            assert_eq!(prefix(body), prefix(&bodies[0]));
+            // The agent's one breakpoint; the gateway adds the rest.
+            assert_eq!(body.to_string().matches("cache_control").count(), 1);
+        }
+        let first_turn = |body: &Value| body["messages"][0]["content"].as_array().unwrap().clone();
+        let (first, second) = (first_turn(&bodies[0]), first_turn(&bodies[1]));
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
+        let catalogue = &first[0];
+        assert_eq!(catalogue["type"], "text");
+        assert_eq!(
+            catalogue["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        let catalogue = catalogue["text"].as_str().unwrap();
+        assert!(
+            catalogue.starts_with("Operations published right now:")
+                && catalogue.contains(&op("type-text")),
+            "{catalogue}"
+        );
+        assert!(!catalogue.contains("The request:"), "{catalogue}");
+        assert!(first[1].get("cache_control").is_none());
+        assert_eq!(first[1]["text"], "The request:\n\npost hello");
+        let task = second[1]["text"].as_str().unwrap();
+        assert!(task.contains("Earlier in this conversation"), "{task}");
+        assert!(
+            task.ends_with("The request:\n\nwhat did you just do?"),
+            "{task}"
+        );
+        // Within a task, the first turn is replayed unchanged.
+        assert_eq!(bodies[2]["messages"][0], bodies[1]["messages"][0]);
     }
 
     /// After a restart the process knows nothing; the host's history in the

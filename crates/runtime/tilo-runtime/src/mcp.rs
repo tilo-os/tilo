@@ -51,7 +51,25 @@ pub struct McpServer<H> {
     /// invocation that showed each: the same picture again is named, not
     /// sent again.
     shown: std::sync::Mutex<std::collections::HashMap<String, tilo_actions::InvocationId>>,
+    /// The live, browsable instances of this bridge's workspace its last
+    /// instance list named, with their app ids. An invocation on one does
+    /// not list them again first: discovery only, never authority — the host
+    /// decides every invocation, and one it refuses as not offered lists
+    /// them again ([`Self::invoke_one`]).
+    seen: std::sync::Mutex<std::collections::HashMap<u64, Option<String>>>,
+    /// Turns for the session's requests that work ([`Self::turn`]).
+    working: tokio::sync::Semaphore,
+    /// Places for the session's requests that work or wait for a turn.
+    admitted: tokio::sync::Semaphore,
 }
+
+/// A session's requests that work at once; more wait for a turn. One agent
+/// cannot occupy the host with every call it can send.
+pub(crate) const MAX_WORKING: usize = 16;
+/// A session's requests that work or wait for a turn; more are refused at
+/// once, so a flood of calls neither queues without end nor makes the one
+/// that cancels wait behind it.
+pub(crate) const MAX_ADMITTED: usize = 64;
 
 /// Where an answer carries the images it shows until [`tool_result`] moves
 /// them out of the JSON and into MCP image blocks. Not a valid JSON key an
@@ -413,6 +431,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             media: None,
             produced_by: std::sync::Mutex::default(),
             shown: std::sync::Mutex::default(),
+            seen: std::sync::Mutex::default(),
+            working: tokio::sync::Semaphore::new(MAX_WORKING),
+            admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
         }
     }
     pub(crate) fn execution_caller(&self) -> Caller {
@@ -948,6 +969,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 ));
             }
         }
+        let _turn = match self.turn(method, &params).await {
+            Ok(turn) => turn,
+            Err(message) => return Some(error(&id, -32000, message)),
+        };
         let result = match method {
             "initialize" => match self.initialize(&params) {
                 Ok(result) => Ok(result),
@@ -989,6 +1014,35 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(value) => json!({"jsonrpc":"2.0","id":id,"result":value}),
             Err(e) => error(&id, -32602, &e),
         })
+    }
+    /// The turn a request of this session works in: at most [`MAX_WORKING`]
+    /// work at once, and at most [`MAX_ADMITTED`] work or wait, beyond which
+    /// a request is refused rather than queued. A request that only reads
+    /// the session or stops one of its invocations (`tilo_status`,
+    /// `tilo_cancel`, `ping`, `tools/list`, `initialize`) needs no turn: it
+    /// never waits behind the calls it is about.
+    async fn turn(
+        &self,
+        method: &str,
+        params: &Value,
+    ) -> Result<Option<[tokio::sync::SemaphorePermit<'_>; 2]>, &'static str> {
+        let immediate = match method {
+            "initialize" | "ping" | "tools/list" => true,
+            "tools/call" => matches!(
+                params.get("name").and_then(Value::as_str),
+                Some("tilo_status" | "tilo_cancel")
+            ),
+            _ => false,
+        };
+        if immediate {
+            return Ok(None);
+        }
+        let admitted = self
+            .admitted
+            .try_acquire()
+            .map_err(|_| "too many requests in flight for this session")?;
+        let working = self.working.acquire().await.map_err(|_| "session closed")?;
+        Ok(Some([admitted, working]))
     }
     /// Negotiate the protocol version and take the client's page detail.
     fn initialize(&self, params: &Value) -> Result<Value, &'static str> {
@@ -1104,7 +1158,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             })
             .collect::<Vec<_>>();
         apps.sort_by_key(|(peer, _)| *peer);
+        *self.seen() = apps
+            .iter()
+            .map(|(peer, app)| (*peer, app["app_id"].as_str().map(str::to_owned)))
+            .collect();
         Ok((page.revision, apps))
+    }
+    fn seen(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Option<String>>> {
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     async fn apps(&self, args: ListArgs) -> Result<Value, String> {
         let (generation, apps) = self.instances().await?;
@@ -1200,6 +1263,28 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.addressed(peer_id, app_id, workspace)
             .await
             .map(|addressed| addressed.provider)
+    }
+    /// [`Self::addressed`] for an invocation: an instance this session's
+    /// last instance list named is taken as it was, without listing them
+    /// again. One that has gone since is refused by the host, and
+    /// [`Self::invoke_one`] asks then. A browse still lists them, so a gone
+    /// instance's empty page never reads as "no actions".
+    async fn invoked(
+        &self,
+        peer_id: Option<u64>,
+        app_id: Option<&str>,
+        workspace: bool,
+    ) -> Result<Addressed, String> {
+        let seen = peer_id
+            .filter(|_| app_id.is_none() && !workspace)
+            .and_then(|peer| Some((peer, self.seen().get(&peer)?.clone())));
+        if let Some((peer, app_id)) = seen {
+            return Ok(Addressed {
+                provider: peer.to_string(),
+                app_id,
+            });
+        }
+        self.addressed(peer_id, app_id, workspace).await
     }
     /// [`Self::provider`], with the app of the instance it names, read from
     /// the one listing of live instances it takes.
@@ -1584,7 +1669,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .ok_or("name resource and action, or calls")?;
         let _running = self.hold_invocation(a.invocation_id.as_deref()).await;
         let provider = self
-            .addressed(a.peer_id, a.app_id.as_deref(), a.workspace)
+            .invoked(a.peer_id, a.app_id.as_deref(), a.workspace)
             .await?;
         // Boxed: an invocation's future is large, and every tool call's
         // future would otherwise carry it.
@@ -1612,7 +1697,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// under an id derived from that one, so a retry does not run twice.
     async fn invoke_calls(&self, a: InvokeArgs, calls: Vec<InvokeCall>) -> Result<Value, String> {
         let provider = match self
-            .addressed(a.peer_id, a.app_id.as_deref(), a.workspace)
+            .invoked(a.peer_id, a.app_id.as_deref(), a.workspace)
             .await
         {
             Ok(provider) => provider,
@@ -1725,8 +1810,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             )
             .await
         {
-            // Nothing ran: the resource may be named by its kind or label.
+            // Nothing ran: the instance may have gone since this session
+            // saw it, or the resource be named by its kind or label.
             Err(error) if error.contains(&not_offered) => {
+                if let Ok(peer) = target.provider.parse::<u64>() {
+                    self.addressed(Some(peer), None, false).await?;
+                }
                 let Some(named) = self.named_resource(&target).await else {
                     return Err(self.not_offered(&target).await);
                 };
@@ -1973,9 +2062,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
             revision: Some(revision),
             fresh_binding: None,
+            wait_ms: None,
         };
         let mut started = self.start_confirmed(&mut request).await;
-        if current && started.as_ref().is_err_and(|error| error.contains(STALE)) {
+        if current
+            && started.as_ref().is_err_and(|error| {
+                error.contains(STALE)
+                    || error.contains(tilo_actions::remote::CONFIRMED_ACTION_NEEDS_REVISION)
+            })
+        {
             // The caller requested current state, but the pinned directory
             // moved before admission. Explicit caller revisions never move.
             request.revision = Some(self.current_revision(&request.target.provider).await?);
@@ -2237,7 +2332,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .await?
         {
             tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
+                // The phrase is the one the contract asks at this revision;
+                // the retry is bound to it, so a contract that moved on
+                // since is refused rather than answered with a stale phrase.
                 request.confirmation = Some(tilo_actions::remote::Confirmation::Phrase(phrase));
+                request.revision = Some(revision);
                 self.start(request.clone()).await
             }
             _ => Err(error),

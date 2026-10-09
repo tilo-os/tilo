@@ -510,6 +510,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                 confirmation: None,
                 revision: None,
                 fresh_binding: None,
+                wait_ms: None,
             };
             // The previous normal host door really admitted this action but
             // supplied no original custody. The generic door still cannot

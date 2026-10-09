@@ -145,7 +145,15 @@ fn a_directory_row_round_trips_typed() {
 #[test]
 fn an_exact_resolution_round_trips_typed() {
     for sent in [
-        ActionDirectoryResolution::Found(Box::new(action_row())),
+        ActionDirectoryResolution::Found {
+            row: Box::new(action_row()),
+            revision: Some("r9".into()),
+        },
+        // An owner built before the resolved revision existed names none.
+        ActionDirectoryResolution::Found {
+            row: Box::new(action_row()),
+            revision: None,
+        },
         ActionDirectoryResolution::NotFound,
         ActionDirectoryResolution::StaleRevision,
         ActionDirectoryResolution::Unavailable,
@@ -168,12 +176,15 @@ fn an_exact_resolution_round_trips_typed() {
 
 #[test]
 fn a_fresh_resolution_retains_its_authoritative_revision() {
-    let sent = ActionDirectoryResolution::Found(Box::new(action_row()));
+    let sent = ActionDirectoryResolution::Found {
+        row: Box::new(action_row()),
+        revision: Some("v6:fresh".into()),
+    };
     let mut message = capnp::message::Builder::new_default();
     {
         let mut out = message.init_root::<collab_capnp::action_directory_resolution::Builder<'_>>();
         write_action_directory_resolution(out.reborrow(), &sent).unwrap();
-        out.set_revision("v6:fresh");
+        out.set_resolved_revision("v6:fresh");
     }
     let received = decode_action_directory_resolution_reply(
         message
@@ -181,8 +192,7 @@ fn a_fresh_resolution_retains_its_authoritative_revision() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(received.resolution, sent);
-    assert_eq!(received.revision, "v6:fresh");
+    assert_eq!(received, sent);
 }
 
 #[test]

@@ -868,28 +868,26 @@ impl Widget for StatGroup {
             .iter_mut()
             .map(|tile| tile.build_layout(taffy, theme, node_map))
             .collect();
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Grid,
-                grid_template_columns: vec![taffy::style_helpers::fr(1.0_f32)],
-                grid_auto_rows: vec![taffy::style_helpers::min_content()],
-                gap: taffy::Size {
-                    width: length(crate::num::f32_of_f64(self.column_gap)),
-                    height: length(crate::num::f32_of_f64(self.row_gap)),
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: auto(),
-                },
-                min_size: taffy::Size {
-                    width: length(0.0_f32),
-                    height: auto(),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Grid,
+            grid_template_columns: vec![taffy::style_helpers::fr(1.0_f32)],
+            grid_auto_rows: vec![taffy::style_helpers::min_content()],
+            gap: taffy::Size {
+                width: length(crate::num::f32_of_f64(self.column_gap)),
+                height: length(crate::num::f32_of_f64(self.row_gap)),
             },
-            &self.nodes,
-        );
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: auto(),
+            },
+            min_size: taffy::Size {
+                width: length(0.0_f32),
+                height: auto(),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }

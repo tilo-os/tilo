@@ -2042,6 +2042,7 @@ mod tests {
     use super::*;
     use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
     use ui::Widget;
+    use ui::widget::TaffyTreeExt;
     use vello::kurbo::RoundedRect;
     use vello::peniko::{Color, Fill};
 
@@ -2074,17 +2075,14 @@ mod tests {
             _theme: &ui::theme::Theme,
             node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
-            let node = taffy
-                .new_leaf(taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::percent(1.0),
-                    },
-                    ..taffy::Style::default()
-                })
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..taffy::Style::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(

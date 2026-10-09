@@ -101,15 +101,14 @@ impl CapnpBrokerState {
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?;
-        let mut admitted = super::admit_verified_join_at(
-            &membership.snapshot()?,
-            &route,
-            super::VerifiedJoinIdentity::of(
-                certificate,
-                super::cert_capped_in(Some(authority.as_ref()), room, certificate),
-            ),
-            now / 1_000_000_000,
-        )?;
+        let verified = super::VerifiedJoinIdentity::of(
+            certificate,
+            super::cert_capped_in(Some(authority.as_ref()), room, certificate),
+        );
+        let mut admitted = membership.decide_in_room(&route.cluster_id, |workspace| {
+            super::admit_verified_join_at(workspace, &route, verified, now / 1_000_000_000)
+        })??;
+
         admitted.certificate = Some(certificate.clone());
         let actor = admitted.broker_actor();
         self.start_invocation_confirmed_for_origin(
@@ -141,16 +140,29 @@ impl CapnpBrokerState {
             return Ok(());
         };
         let now = self.policy_now_ns()?;
-        for workspace in authority.snapshot()?.workspaces {
-            let room = workspace.room.to_string();
+        // Describe every room on one borrowed sample; the membership
+        // service is asked about each room only after the borrow ends.
+        let rooms = authority.decide_in_tree(|tree| {
+            tree.workspaces
+                .iter()
+                .map(|workspace| {
+                    (
+                        workspace.room.to_string(),
+                        workspace.name.clone(),
+                        membership_actions(workspace, now / 1_000_000_000),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })?;
+        for (room, name, mut actions) in rooms {
             if !service.requires_room(&room) {
                 continue;
             }
-            let mut actions = membership_actions(&workspace, now / 1_000_000_000);
             actions.extend(super::workspace_tasks::actions(
                 &service.task_snapshot(&room)?,
-                &workspace.name,
+                &name,
             ));
+
             let existing = self
                 .workspace_membership_peers
                 .lock()
@@ -990,6 +1002,7 @@ mod tests {
             revision: Some(revision),
             fresh_binding: None,
             on_behalf_of: None,
+            wait_ms: None,
         }
     }
 

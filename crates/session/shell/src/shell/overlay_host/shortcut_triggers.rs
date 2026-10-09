@@ -405,6 +405,7 @@ impl ShellOverlayHost {
             confirmation: None,
             revision: None,
             fresh_binding: None,
+            wait_ms: None,
         };
         let outcome = BrokerActionHost::new(broker)
             .invoke_job(&caller, request)

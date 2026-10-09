@@ -474,10 +474,13 @@ struct PublishedInvocationObservation {
 # connection/capability goes away.
 interface ActionDirectory {
   query @0 (query :ActionDirectoryQuery) -> (page :ActionDirectoryPage);
-  # `expectedBinding` is an explicit fresh-resolution mode. Legacy callers
-  # leave it absent and supply `revision`; fresh callers leave `revision`
-  # empty and supply the full previously observed public descriptor. Resource
-  # and action remain the independently addressed target in both modes.
+  # Three explicit modes share this wire door. A non-empty `revision` with no
+  # binding is pinned to that revision. Empty revision and no binding resolves
+  # the exact address against the directory as it is now. Empty revision plus
+  # `expectedBinding` resolves the current handler only while its complete
+  # public semantic binding remains unchanged. A non-empty revision plus a
+  # binding is invalid. Current and fresh found replies name the revision they
+  # resolved against in `resolvedRevision`.
   resolve @1 (revision :Text, resource :Text, action :Text,
               expectedBinding :FreshActionBinding)
       -> (resolution :ActionDirectoryResolution);
@@ -545,9 +548,12 @@ struct ActionDirectoryResolution {
     staleRevision @2 :Void;
     unavailable @3 :Void;
   }
-  # Non-empty only for a successful fresh resolution. It is the live owner's
-  # authoritative current revision for the returned exact row.
-  revision @4 :Text;
+  # For `found`: the revision the owner resolved the row against, which is
+  # the named one or, for an empty revision, the directory as it is now. The
+  # broker binds the admission to it, so a host worker refuses to run the
+  # action once its directory moved on. Empty from an owner built before
+  # this field existed.
+  resolvedRevision @4 :Text;
 }
 
 interface WorkspaceControlHandle {

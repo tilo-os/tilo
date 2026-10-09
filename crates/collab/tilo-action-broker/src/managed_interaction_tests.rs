@@ -172,7 +172,7 @@ async fn observe_managed_action(
 ) -> Option<tilo_actions::remote::InvocationState> {
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
 
-    let frame = RemoteActionFrame::new(RemoteActionMessage::Observe { invocation })
+    let frame = RemoteActionFrame::new(RemoteActionMessage::observe(invocation))
         .encode()
         .unwrap();
     let mut request = client.remote_action_request();

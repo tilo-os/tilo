@@ -23,8 +23,8 @@ use wayland_client::protocol::{
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
 use crate::support::wayland::foreign_id;
 
@@ -47,22 +47,20 @@ fn surface_id(surface: &wl_surface::WlSurface) -> u32 {
     surface.id().protocol_id()
 }
 
-/// Construct the same minimal `WindowEvent` that the DRM/test-control input
-/// adapters feed to the capture path. `KeyEvent` keeps platform data private,
-/// hence zero-init plus the fields consumed by the compositor.
+/// Construct the same minimal `WindowEvent` that the DRM/test-control input adapters feed to the
+/// capture path.
 fn captured_key_event(logical: Key, pressed: bool) -> WindowEvent {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = logical;
-    event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
-    event.repeat = false;
+    let event = ui::synthetic_input::key_event(
+        logical,
+        None,
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    );
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     }

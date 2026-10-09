@@ -439,6 +439,16 @@ pub trait SearchProvider {
         "static".into()
     }
 
+    /// Whether the retained index behind [`Self::query_page`] still has
+    /// work outstanding for `ctx` — a build in flight, a source reply not yet
+    /// in — so an answer given now may be missing rows that are on their
+    /// way. A provider that reports settling must wake the loop that asked
+    /// when that work lands (`invocation_wake`), since that is what a
+    /// waiting caller sleeps on.
+    fn index_settling(&self, _ctx: &SearchContext<'_>) -> bool {
+        false
+    }
+
     /// Page a retained search index.  This is the canonical shell query
     /// surface.  `query` remains for small, direct callers and backwards
     /// compatible provider tests; registry/palette/agent discovery always
@@ -834,6 +844,40 @@ impl SearchRegistry {
             changed |= before != provider.search_revision(&ctx);
         }
         changed
+    }
+
+    /// Whether any provider `args` reaches is still settling its retained
+    /// index ([`SearchProvider::index_settling`]): an answer read now may be
+    /// incomplete. Routed exactly like [`Self::refresh_indexes`].
+    pub fn indexes_settling(&self, args: &QueryArgs<'_>) -> bool {
+        if !query_input_is_bounded(args.needle) {
+            return false;
+        }
+        self.enabled_providers().any(|provider| {
+            if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
+                return false;
+            }
+            let wanted = if args.wanted_kinds.is_empty() {
+                provider.resource_kinds().to_vec()
+            } else {
+                provider
+                    .resource_kinds()
+                    .iter()
+                    .filter(|kind| args.wanted_kinds.contains(kind))
+                    .cloned()
+                    .collect()
+            };
+            !wanted.is_empty()
+                && provider.index_settling(&SearchContext {
+                    query_scope: Some(args.scope),
+                    include_programmatic: false,
+                    needle: args.needle,
+                    wanted: &wanted,
+                    chrome: args.chrome,
+                    doc: args.doc,
+                    doc_root: args.doc_root,
+                })
+        })
     }
 
     /// Page one named source without flattening every provider into a single

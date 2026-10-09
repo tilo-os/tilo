@@ -23,6 +23,11 @@
 )]
 
 mod common;
+
+// Agents hold each record in a confined app worker (this binary, started
+// again), whose changes are admitted through the Automerge isolate.
+tilo_agent_participant::app_worker!();
+tilo_automerge_isolate::test_worker!();
 #[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
 mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
@@ -120,9 +125,8 @@ async fn ask(
     }
 }
 
-fn body(app: &Replica) -> String {
-    app.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
-        .unwrap()
+fn body(app: &impl common::Body) -> String {
+    app.body()
 }
 
 /// The browser's copy of `route`: its own mount, seeded from every change
@@ -487,6 +491,7 @@ async fn every_web_app_over_the_session() {
         confirmation: None,
         revision: None,
         fresh_binding: None,
+        wait_ms: None,
     };
     let RemoteActionMessage::Receipt(receipt) = ask(
         &browser,
@@ -586,6 +591,7 @@ async fn every_web_app_over_the_session() {
             confirmation: None,
             revision: None,
             fresh_binding: None,
+            wait_ms: None,
         }),
         &mut documents,
     )
@@ -619,6 +625,7 @@ async fn every_web_app_over_the_session() {
             confirmation: None,
             revision: None,
             fresh_binding: None,
+            wait_ms: None,
         }),
         &mut documents,
     )

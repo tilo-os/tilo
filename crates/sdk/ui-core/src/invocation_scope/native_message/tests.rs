@@ -47,6 +47,10 @@ fn source_spec() -> PublishedInvocationSpec {
 
 struct SourceStream;
 impl invocation_stream::Server for SourceStream {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "controlled RPC fixture requires a valid request and serializable source declaration"
+    )]
     fn read(
         self: Rc<Self>,
         params: invocation_stream::ReadParams,
@@ -102,6 +106,10 @@ impl collab_service::Server for SourceBroker {
     clippy::future_not_send,
     reason = "test RPC capabilities run solely on the LocalSet"
 )]
+#[expect(
+    clippy::unwrap_used,
+    reason = "controlled source fixture must fail fast unless actual RPC delivery supplies native custody"
+)]
 pub(crate) async fn delivered_source(
     lifetime: &NativeMessageStreamLifetime,
 ) -> NativeInvocationSource {
@@ -121,6 +129,10 @@ pub(crate) async fn delivered_source(
 #[expect(
     clippy::future_not_send,
     reason = "test RPC capabilities run solely on the LocalSet"
+)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "controlled in-process RPC broker must join its fixture channel"
 )]
 pub(crate) async fn source_channel() -> runtime_collab::ChannelHandle {
     let client = runtime_collab::CollabClient::from_raw(capnp_rpc::new_client(SourceBroker));
@@ -191,6 +203,10 @@ pub(crate) struct RecordFixture {
     _temp: tempfile::TempDir,
 }
 impl RecordFixture {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "controlled record fixture requires initialized storage and live capture custody"
+    )]
     pub(crate) fn new(source: NativeInvocationSource) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
@@ -214,6 +230,10 @@ impl RecordFixture {
         self.apply_to_workspace(ROOM, extra_writer)
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "controlled executor fixture requires valid encoding and exact record access; semantic refusals remain returned errors"
+    )]
     fn apply_to_workspace(
         &self,
         workspace: &str,
@@ -251,6 +271,10 @@ impl RecordFixture {
             .unwrap()
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "controlled production-dispatch fixture requires valid encoding, declaration and record access; handler refusals remain returned errors"
+    )]
     pub(crate) fn dispatch(&self, workspace: &str) -> Result<(), tilo_actions::DoorError> {
         let _invoker = super::super::InvokerScope::enter(self.capture.source.request.invoker());
         let _active = self.capture.enter();

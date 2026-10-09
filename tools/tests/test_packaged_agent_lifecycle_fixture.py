@@ -12,6 +12,7 @@ import json
 import urllib.request
 import urllib.error
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import call, patch
 
 
@@ -673,6 +674,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 action = {**category, "provider": "broker:1", "id": "category"}
                 evidence = {"provider_request_count": count,
                             "marker_activated": activated,
+                            "marker_pointer_activated": activated,
                             "quick_composer_accessible": accessible,
                             "terminal_status": status}
 
@@ -1472,8 +1474,32 @@ class PresentedEditorTargetTests(unittest.TestCase):
             (PROOF.atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren"),
             ("/window", "org.a11y.atspi.Accessible.GetChildren")])
 
+    def test_physical_marker_click_uses_current_semantic_subject_and_live_extents(self):
+        marker = {"bus": "owned", "address": "owned-address", "control": "/marker",
+                  "label": "Agent action: tide"}
+        for name, rect, accepted in (("Agent action: tide", (10, 20, 22, 20), True),
+                                     ("Foreign control", (10, 20, 22, 20), False),
+                                     ("Agent action: tide", None, False),
+                                     ("Agent action: tide", (10, 20, 0, 20), False),
+                                     ("Agent action: tide", (10, 20, float("nan"), 20), False)):
+            client = SimpleNamespace(property=lambda *_args: f"(<{name!r}>,)",
+                                     call=lambda *_args: "actual wire extents")
+            with patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF.atspi, "extents_reply", return_value=rect), \
+                    patch.object(PROOF, "call", return_value={"ok": True}) as calls, \
+                    patch.object(PROOF, "require_ok"):
+                if accepted:
+                    PROOF.click_current_agent_marker("socket", marker)
+                    calls.assert_called_once_with("socket", {"op": "click_at", "x": 21.0, "y": 30.0})
+                else:
+                    with self.assertRaises(RuntimeError):
+                        PROOF.click_current_agent_marker("socket", marker)
+                    calls.assert_not_called()
+
     def test_early_marker_close_reopen_uses_real_input_and_checks_retained_draft(self):
-        for retained, expired in ((True, False), (False, False), (True, True)):
+        for retained, expired, pointer in ((True, False, False), (False, False, False),
+                                          (True, True, False), (True, False, True),
+                                          (False, False, True), (True, True, True)):
             state = {"open": True, "draft": ""}
             marker = {"bus": "owned", "control": "/marker", "label": "Agent action: tide"}
             access = {"bus": "owned", "composer": "/editor"}
@@ -1502,17 +1528,22 @@ class PresentedEditorTargetTests(unittest.TestCase):
                                  lambda _access, value: state["draft"] == value), \
                     patch.object(PROOF, "call", side_effect=control) as called, \
                     patch.object(PROOF, "require_ok"), \
+                    patch.object(PROOF, "agent_marker_accessibility", return_value=marker), \
+                    patch.object(PROOF, "click_current_agent_marker",
+                                 side_effect=lambda _socket, actual: activate(actual, actual["label"])), \
                     patch.object(PROOF, "activate_shell_accessibility_control", side_effect=activate):
                 if expired:
                     with self.assertRaisesRegex(RuntimeError, "activation expired"):
-                        PROOF.reopen_marker_composer_while_live("socket", "tide", marker, [], None)
+                        PROOF.reopen_marker_composer_while_live("socket", "tide", marker, [], None,
+                                                               pointer=pointer)
                 elif retained:
                     result = PROOF.reopen_marker_composer_while_live(
-                        "socket", "tide", marker, [], None)
+                        "socket", "tide", marker, [], None, pointer=pointer)
                     self.assertEqual(result, "Keep this marker Message draft private.")
                 else:
                     with self.assertRaisesRegex(RuntimeError, "draft was lost"):
-                        PROOF.reopen_marker_composer_while_live("socket", "tide", marker, [], None)
+                        PROOF.reopen_marker_composer_while_live("socket", "tide", marker, [], None,
+                                                               pointer=pointer)
                 self.assertIn(call("socket", {"op": "type", "text":
                     "Keep this marker Message draft private."}), called.call_args_list)
                 self.assertIn(call("socket", {"op": "click_named", "name":

@@ -111,6 +111,7 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                     revision: Some("directory-r1".into()),
                     fresh_binding: None,
                     on_behalf_of: None,
+                    wait_ms: None,
                 };
                 let pending = host.invoke(&caller, request);
                 room.state.drain_action_directory_bridge(&room.directories);
@@ -196,6 +197,7 @@ async fn canonical_fresh_binding_invokes_current_revision_once_and_refuses_chang
                 revision: None,
                 fresh_binding: Some(row.fresh_binding.clone().expect("owner fresh binding")),
                 on_behalf_of: None,
+                wait_ms: None,
             };
             directory.borrow_mut().revision = "fresh-r2".into();
             let receipt = canonical_pending(&room, host.invoke(&caller, request.clone()))
@@ -273,6 +275,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
                 revision: Some("r1".into()),
                 fresh_binding: None,
                 on_behalf_of: None,
+                wait_ms: None,
             };
             let receipt = canonical_pending(&room, host.invoke(&caller, request.clone()))
                 .await

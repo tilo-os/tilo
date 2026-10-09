@@ -31,6 +31,8 @@ pub mod client_input;
 pub mod client_settle;
 #[cfg(target_os = "linux")]
 pub(crate) mod control_invocation;
+#[cfg(target_os = "linux")]
+pub(crate) mod control_listing;
 pub mod controller_nav;
 pub mod cursor;
 pub mod dev_env;
@@ -85,6 +87,7 @@ pub mod present;
 #[cfg(target_os = "linux")]
 pub mod presentation;
 pub mod projection_capture;
+pub mod published_room;
 #[cfg(target_os = "linux")]
 pub mod remote_seat;
 pub mod render_node;
@@ -105,6 +108,7 @@ pub mod surface_outputs;
 #[cfg(target_os = "linux")]
 pub mod surface_readback;
 pub mod switch_control;
+pub mod switch_latency;
 pub mod tab_binding;
 #[cfg(target_os = "linux")]
 pub mod tablet;

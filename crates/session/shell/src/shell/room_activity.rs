@@ -17,6 +17,7 @@ use crate::shell::state::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
+use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use tilo_desktop::activity::{
     ActivityHost, ActivityTree, PendingTaskDetail, PendingTaskOperation,
@@ -305,25 +306,43 @@ fn load_history_map_at<T: serde::de::DeserializeOwned>(
 
 /// Replace `key`'s map in the history file at `path`, keeping its other maps:
 /// directory `0700`, file `0600`, written atomically.
+#[cfg(test)]
 fn save_history_map_at<T: serde::Serialize>(
     path: &std::path::Path,
     key: &str,
     values: &HashMap<u64, T>,
+) -> std::io::Result<()> {
+    write_history_maps_at(path, std::iter::once((key, history_map_value(values))))
+}
+
+/// `values` as the JSON object the history file keeps under one key.
+fn history_map_value<T: serde::Serialize>(values: &HashMap<u64, T>) -> serde_json::Value {
+    serde_json::Value::Object(
+        values
+            .iter()
+            .filter_map(|(id, value)| {
+                serde_json::to_value(value)
+                    .ok()
+                    .map(|value| (id.to_string(), value))
+            })
+            .collect(),
+    )
+}
+
+/// Replace each named map in the history file at `path`, keeping the others,
+/// in one atomic write.
+fn write_history_maps_at<'a>(
+    path: &std::path::Path,
+    maps: impl IntoIterator<Item = (&'a str, serde_json::Value)>,
 ) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     let mut doc: serde_json::Map<String, serde_json::Value> = std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
-    let values = values
-        .iter()
-        .filter_map(|(id, value)| {
-            serde_json::to_value(value)
-                .ok()
-                .map(|value| (id.to_string(), value))
-        })
-        .collect();
-    doc.insert(key.into(), serde_json::Value::Object(values));
+    for (key, values) in maps {
+        doc.insert(key.into(), values);
+    }
     let bytes = serde_json::to_vec(&doc).map_err(std::io::Error::other)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -333,15 +352,120 @@ fn save_history_map_at<T: serde::Serialize>(
 }
 
 fn load_history_map<T: serde::de::DeserializeOwned>(key: &str) -> HashMap<u64, T> {
+    // A save still on its way to disk is part of what the file holds.
+    settle_history_writes();
     load_history_map_at(history_path().as_deref(), key)
 }
 
-fn save_history_map<T: serde::Serialize>(key: &str, values: &HashMap<u64, T>) {
-    let Some(path) = history_path() else {
+/// Hand `key`'s map to the history writer. Leaving a workspace saves both
+/// maps, and the compositor leaves one inside a frame: an atomic replacement
+/// syncs the file and its directory, which held a workspace switch's first
+/// frame for 2.1 s on a busy disk. The writer keeps the newest map per key
+/// and writes them in one replacement.
+fn save_history_map<T: serde::Serialize>(key: &'static str, values: &HashMap<u64, T>) {
+    if let Some(path) = history_path() {
+        queue_history_save(path, key, history_map_value(values));
+    }
+}
+
+/// Queue `values` as `key`'s map in the history file at `path`; returns at
+/// once unless the writer thread could not start.
+fn queue_history_save(path: std::path::PathBuf, key: &'static str, values: serde_json::Value) {
+    let request = HistoryWrite::Save { path, key, values };
+    let unsent = match history_writer() {
+        Some(writer) => writer.send(request).err().map(|error| error.0),
+        None => Some(request),
+    };
+    // No writer thread: write here rather than lose the save.
+    if let Some(HistoryWrite::Save { path, key, values }) = unsent {
+        write_history_now(&path, [(key, values)]);
+    }
+}
+
+fn write_history_now<'a>(
+    path: &std::path::Path,
+    maps: impl IntoIterator<Item = (&'a str, serde_json::Value)>,
+) {
+    if let Err(error) = write_history_maps_at(path, maps) {
+        tracing::warn!(%error, path = %path.display(), "could not persist history state");
+    }
+}
+
+enum HistoryWrite {
+    Save {
+        path: std::path::PathBuf,
+        key: &'static str,
+        values: serde_json::Value,
+    },
+    /// Answer once every earlier save is on disk.
+    Settle(mpsc::SyncSender<()>),
+}
+
+static HISTORY_WRITER: OnceLock<Option<mpsc::Sender<HistoryWrite>>> = OnceLock::new();
+
+/// The thread that writes the history file, started by the first save.
+/// `None` when it cannot start; saves are then written on the caller's thread.
+fn history_writer() -> Option<&'static mpsc::Sender<HistoryWrite>> {
+    HISTORY_WRITER
+        .get_or_init(|| {
+            let (requests, received) = mpsc::channel();
+            match std::thread::Builder::new()
+                .name("tilo-activity-history".into())
+                .spawn(move || write_history_requests(&received))
+            {
+                Ok(_) => Some(requests),
+                Err(error) => {
+                    tracing::warn!(%error, "history writer did not start");
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
+/// Wait until every history save made so far is on disk. Free while nothing
+/// was ever saved.
+fn settle_history_writes() {
+    let Some(Some(writer)) = HISTORY_WRITER.get() else {
         return;
     };
-    if let Err(error) = save_history_map_at(&path, key, values) {
-        tracing::warn!(%error, key, "could not persist history state");
+    let (done, wait) = mpsc::sync_channel(1);
+    if writer.send(HistoryWrite::Settle(done)).is_ok() {
+        let _ = wait.recv();
+    }
+}
+
+/// The writer thread: take every request waiting, keep the newest map per
+/// file and key, and write each file once.
+fn write_history_requests(received: &mpsc::Receiver<HistoryWrite>) {
+    type FileMaps = Vec<(&'static str, serde_json::Value)>;
+    while let Ok(first) = received.recv() {
+        let mut files: Vec<(std::path::PathBuf, FileMaps)> = Vec::new();
+        let mut settled = Vec::new();
+        for request in std::iter::once(first).chain(received.try_iter()) {
+            match request {
+                HistoryWrite::Save { path, key, values } => {
+                    let index = files
+                        .iter()
+                        .position(|(known, _)| *known == path)
+                        .unwrap_or_else(|| {
+                            files.push((path, Vec::new()));
+                            files.len().saturating_sub(1)
+                        });
+                    if let Some((_, maps)) = files.get_mut(index) {
+                        maps.retain(|(known, _)| *known != key);
+                        maps.push((key, values));
+                    }
+                }
+                HistoryWrite::Settle(done) => settled.push(done),
+            }
+        }
+        for (path, maps) in files {
+            write_history_now(&path, maps);
+        }
+        for done in settled {
+            let _ = done.send(());
+        }
     }
 }
 
@@ -514,6 +638,7 @@ impl NativePendingTaskOperation {
             revision: Some(page.revision),
             fresh_binding: None,
             on_behalf_of: None,
+            wait_ms: None,
         };
         self.phase = NativePendingTaskPhase::Admission {
             invocation,
@@ -777,6 +902,13 @@ impl std::ops::DerefMut for RoomActivityPane {
 impl Default for RoomActivityPane {
     fn default() -> Self {
         Self::new()
+    }
+}
+impl Drop for RoomActivityPane {
+    /// The session is ending: the departure it saved last is on disk before
+    /// the compositor goes.
+    fn drop(&mut self) {
+        settle_history_writes();
     }
 }
 impl RoomActivityPane {
@@ -1080,6 +1212,58 @@ mod tests {
         let missing: HashMap<u64, WorkspaceDeparture> =
             load_history_map_at(Some(&dir.path().join("absent.json")), "departures");
         assert!(missing.is_empty());
+    }
+
+    /// Leaving a workspace hands the history to the writer thread instead
+    /// of syncing the file inside the frame: saves queue without touching
+    /// the disk, the newest map per key wins, and a settled writer has both
+    /// maps in one private file.
+    #[test]
+    fn queued_history_saves_reach_disk_with_the_newest_map_per_key() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state/tilo/activity-history.json");
+        let departure = |secs| {
+            HashMap::from([(
+                7_u64,
+                WorkspaceDeparture {
+                    departed_at_secs: secs,
+                    frontier: WorkspaceSeenFrontier::default(),
+                },
+            )])
+        };
+        queue_history_save(
+            path.clone(),
+            "departures",
+            history_map_value(&departure(1_700_000_000)),
+        );
+        queue_history_save(
+            path.clone(),
+            "seen_frontiers",
+            history_map_value(&HashMap::from([(9_u64, WorkspaceSeenFrontier::default())])),
+        );
+        queue_history_save(
+            path.clone(),
+            "departures",
+            history_map_value(&departure(1_700_000_060)),
+        );
+        settle_history_writes();
+
+        let loaded: HashMap<u64, WorkspaceDeparture> =
+            load_history_map_at(Some(&path), "departures");
+        assert_eq!(
+            loaded.get(&7).map(|departure| departure.departed_at_secs),
+            Some(1_700_000_060),
+            "the newest departure wins"
+        );
+        let loaded: HashMap<u64, WorkspaceSeenFrontier> =
+            load_history_map_at(Some(&path), "seen_frontiers");
+        assert!(loaded.contains_key(&9), "both maps share the file");
+        let mode = std::fs::metadata(&path)
+            .expect("saved")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     /// A shortcut run the broker finished lands in the workspace document

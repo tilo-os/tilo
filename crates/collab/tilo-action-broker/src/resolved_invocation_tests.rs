@@ -475,81 +475,137 @@ async fn listed_fresh_binding(
         .expect("the owner publishes a complete fresh binding")
 }
 
-/// A revisionless invocation is not an implicit grant. The caller must copy
-/// the owner's complete fresh binding; that explicit mode asks the owner to
-/// resolve the action as the directory is now in the same admission turn.
-/// An empty pinned revision and an unbound revisionless request both refuse.
-#[tokio::test(flavor = "current_thread")]
-async fn a_directory_invoke_needs_an_owner_binding_to_resolve_the_current_directory() {
-    use tilo_actions::remote::{
-        ActionHostError, Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
-    };
-    struct Recording {
-        revisions: Rc<RefCell<Vec<String>>>,
-        row: runtime_collab::ActionDirectoryRow,
-    }
-    impl action_directory::Server for Recording {
-        fn resolve(
-            self: Rc<Self>,
-            params: action_directory::ResolveParams,
-            mut results: action_directory::ResolveResults,
-        ) -> Promise<(), capnp::Error> {
-            let revision = params.get().and_then(|request| {
-                request
-                    .get_revision()?
-                    .to_str()
-                    .map(str::to_owned)
-                    .map_err(|error| capnp::Error::failed(error.to_string()))
-            });
-            match revision {
-                Ok(revision) => self.revisions.borrow_mut().push(revision),
-                Err(error) => return Promise::err(error),
-            }
-            let mut resolution = results.get().init_resolution();
-            let written = runtime_collab::write_action_directory_row(
-                resolution.reborrow().init_found(),
-                &self.row,
-            );
-            resolution.set_revision("directory-current");
-            match written {
-                Ok(()) => Promise::ok(()),
-                Err(error) => Promise::err(error),
-            }
+/// A directory owner that records the revision each resolution asked for
+/// and answers the fixture row, naming `resolved` as the revision it
+/// resolved at (`None`: an owner built before it named one).
+struct RecordingDirectory {
+    revisions: Rc<RefCell<Vec<String>>>,
+    row: runtime_collab::ActionDirectoryRow,
+    resolved: Option<&'static str>,
+}
+
+impl action_directory::Server for RecordingDirectory {
+    fn resolve(
+        self: Rc<Self>,
+        params: action_directory::ResolveParams,
+        mut results: action_directory::ResolveResults,
+    ) -> Promise<(), capnp::Error> {
+        let revision = params.get().and_then(|request| {
+            request
+                .get_revision()?
+                .to_str()
+                .map(str::to_owned)
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        });
+        match revision {
+            Ok(revision) => self.revisions.borrow_mut().push(revision),
+            Err(error) => return Promise::err(error),
         }
+        let mut out = results.get().init_resolution();
+        if let Err(error) =
+            runtime_collab::write_action_directory_row(out.reborrow().init_found(), &self.row)
+        {
+            return Promise::err(error);
+        }
+        if let Some(resolved) = self.resolved {
+            out.set_resolved_revision(resolved);
+        }
+        Promise::ok(())
     }
+}
+
+/// Serve the fixture's directory through a [`RecordingDirectory`] naming
+/// `resolved`, returning the revisions it was asked to resolve.
+fn record_resolutions(
+    fixture: &LocalDirectoryFixture,
+    resolved: Option<&'static str>,
+) -> Rc<RefCell<Vec<String>>> {
+    let revisions = Rc::new(RefCell::new(Vec::new()));
+    let recording = capnp_rpc::new_client(RecordingDirectory {
+        revisions: Rc::clone(&revisions),
+        row: fixture.directory_state.borrow().row(),
+        resolved,
+    });
+    fixture
+        .directories
+        .directories
+        .borrow_mut()
+        .get_mut(&fixture.peer_id)
+        .unwrap()
+        .directory = recording;
+    revisions
+}
+
+/// A fixture whose broker journals admissions under `root`.
+fn journaled_directory_fixture(root: &std::path::Path) -> LocalDirectoryFixture {
+    let base = local_directory_fixture();
+    let membership = base.membership.as_ref().unwrap().clone();
+    membership.write().persist_path = Some(root.join("state.json"));
+    drop(base);
+    local_directory_fixture_with_membership(membership)
+}
+
+/// The fixture's directory action, named at `revision`.
+fn directory_request(
+    fixture: &LocalDirectoryFixture,
+    revision: Option<&str>,
+    confirmation: Option<tilo_actions::remote::Confirmation>,
+) -> tilo_actions::remote::InvokeRequest {
+    tilo_actions::remote::InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: fixture.peer_id.to_string(),
+            address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+        },
+        argument: tilo_actions::remote::InvokeArgument::None,
+        context: None,
+        confirmation,
+        revision: revision.map(str::to_owned),
+        fresh_binding: None,
+        on_behalf_of: None,
+        wait_ms: None,
+    }
+}
+
+/// Start `request` as the fixture's owner and drive the directory bridge
+/// until the broker answers.
+async fn admit_directory_invoke(
+    fixture: &LocalDirectoryFixture,
+    request: &tilo_actions::remote::InvokeRequest,
+) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError> {
+    use tilo_actions::remote::{Caller, PendingPoll};
+    let caller = Caller::local_person("fixture-owner")
+        .in_room(fixture.cluster_id.clone())
+        .in_new_execution();
+    let mut pending = fixture.state.action_invoke(&caller, None, None, request);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            drain_directory_bridge(fixture).await;
+            if let PendingPoll::Ready(result) = pending.poll_ready() {
+                break result;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("bounded directory admission")
+}
+
+/// An invoke naming no revision asks the directory's owner to resolve the
+/// action as the directory is now (an empty revision), in the same turn the
+/// broker admits it, so the caller need not read the revision first. A
+/// revision named empty is still refused.
+#[tokio::test(flavor = "current_thread")]
+async fn a_directory_invoke_naming_no_revision_resolves_the_directory_as_it_is_now() {
+    use tilo_actions::remote::{ActionHostError, Caller, PendingPoll};
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut fixture = local_directory_fixture();
-            fixture.directory_state.borrow_mut().fresh_binding = true;
+            let revisions = record_resolutions(&fixture, Some("r9"));
             let caller = Caller::local_person("fixture-owner")
                 .in_room(fixture.cluster_id.clone())
                 .in_new_execution();
-            let fresh_binding = listed_fresh_binding(&fixture, &caller).await;
-            let revisions = Rc::new(RefCell::new(Vec::new()));
-            let recording = capnp_rpc::new_client(Recording {
-                revisions: Rc::clone(&revisions),
-                row: fixture.directory_state.borrow().row(),
-            });
-            fixture
-                .directories
-                .directories
-                .borrow_mut()
-                .get_mut(&fixture.peer_id)
-                .unwrap()
-                .directory = recording;
-            let mut request = InvokeRequest {
-                invocation: tilo_actions::InvocationId::new(),
-                target: RemoteActionTarget {
-                    provider: fixture.peer_id.to_string(),
-                    address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
-                },
-                argument: InvokeArgument::None,
-                context: None,
-                confirmation: None,
-                revision: Some(String::new()),
-                fresh_binding: None,
-                on_behalf_of: None,
-            };
+            let mut request = directory_request(&fixture, Some(""), None);
             assert!(matches!(
                 fixture
                     .state
@@ -558,36 +614,161 @@ async fn a_directory_invoke_needs_an_owner_binding_to_resolve_the_current_direct
                 PendingPoll::Ready(Err(ActionHostError::InvalidRequest { .. }))
             ));
             request.revision = None;
-            assert!(matches!(
-                fixture
-                    .state
-                    .action_invoke(&caller, None, None, &request)
-                    .poll_ready(),
-                PendingPoll::Ready(Err(ActionHostError::InvalidRequest { .. }))
-            ));
-            assert!(
-                revisions.borrow().is_empty(),
-                "an unbound request is refused before contacting its owner"
-            );
-            request.fresh_binding = Some(fresh_binding);
-            let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
-            let admitted = tokio::time::timeout(Duration::from_secs(2), async {
-                loop {
-                    drain_directory_bridge(&fixture).await;
-                    if let PendingPoll::Ready(result) = pending.poll_ready() {
-                        break result;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("bounded directory admission");
-            admitted.expect("admitted against the directory as it is now");
+            admit_directory_invoke(&fixture, &request)
+                .await
+                .expect("admitted against the directory as it is now");
             assert_eq!(*revisions.borrow(), [String::new()]);
             let (_, delivered) = fixture
                 .take_invocation_identity()
                 .expect("the owner receives the invocation");
             assert_eq!(delivered, request.invocation);
+        })
+        .await;
+}
+
+/// Fresh semantic resolution is a distinct observed-binding mode, so a
+/// confirmation on that exact unchanged contract is not mistaken for an
+/// unbound Current request.
+#[tokio::test(flavor = "current_thread")]
+async fn fresh_bound_confirmation_does_not_use_unbound_current_rule() {
+    use tilo_actions::remote::{Caller, Confirmation};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut fixture = local_directory_fixture();
+            fixture.directory_state.borrow_mut().fresh_binding = true;
+            fixture.set_confirmation_required(true);
+            let caller = Caller::local_person("fixture-owner")
+                .in_room(fixture.cluster_id.clone())
+                .in_new_execution();
+            let binding = listed_fresh_binding(&fixture, &caller).await;
+            let revisions = record_resolutions(&fixture, Some("fresh-r9"));
+            let mut request = directory_request(&fixture, None, Some(Confirmation::Confirmed));
+            request.fresh_binding = Some(binding);
+            admit_directory_invoke(&fixture, &request)
+                .await
+                .expect("the observed unchanged binding carries its confirmation contract");
+            assert_eq!(*revisions.borrow(), [String::new()]);
+            assert!(fixture.take_invocation_identity().is_some());
+        })
+        .await;
+}
+
+/// TIL-652: an admission that named no revision is bound to the one its
+/// owner resolved it at, so the journal records which directory state the
+/// action was admitted against and a host worker can refuse it once that
+/// state moved on.
+#[tokio::test(flavor = "current_thread")]
+async fn revisionless_admission_records_the_resolved_revision() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let root = tempfile::tempdir().unwrap();
+            let mut fixture = journaled_directory_fixture(root.path());
+            let revisions = record_resolutions(&fixture, Some("r9"));
+            let request = directory_request(&fixture, None, None);
+            admit_directory_invoke(&fixture, &request)
+                .await
+                .expect("admitted against the directory as it is now");
+            assert_eq!(*revisions.borrow(), [String::new()]);
+            let (wire_id, _) = fixture
+                .take_invocation_identity()
+                .expect("the owner receives the invocation");
+            let snapshot =
+                invocation_journal::durable_snapshot(&root.path().join("state.json.invocations"));
+            let records = snapshot["records"].as_array().unwrap();
+            assert_eq!(records.len(), 1, "{snapshot}");
+            assert_eq!(records[0]["wire_id"], wire_id);
+            assert_eq!(
+                records[0]["intent"]["revision"], "r9",
+                "the journal names the revision the owner resolved at: {snapshot}"
+            );
+        })
+        .await;
+}
+
+/// An owner built before resolutions named their revision resolves an empty
+/// one, but leaves nothing to bind the admission to: the broker refuses it
+/// as stale rather than admitting it unbound.
+#[tokio::test(flavor = "current_thread")]
+async fn a_revisionless_invoke_an_owner_cannot_bind_is_refused() {
+    use tilo_actions::remote::ActionHostError;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut fixture = local_directory_fixture();
+            record_resolutions(&fixture, None);
+            let request = directory_request(&fixture, None, None);
+            let refused = admit_directory_invoke(&fixture, &request).await;
+            assert!(
+                matches!(
+                    &refused,
+                    Err(ActionHostError::InvalidRequest { reason })
+                        if reason.contains("changed since that revision")
+                ),
+                "{refused:?}"
+            );
+            assert!(
+                fixture.take_invocation_identity().is_none(),
+                "an unbound admission never reaches the owner"
+            );
+            // The same owner admits the action at a revision the caller names.
+            let named = directory_request(&fixture, Some("directory-r1"), None);
+            admit_directory_invoke(&fixture, &named)
+                .await
+                .expect("a named revision binds the admission");
+            assert!(fixture.take_invocation_identity().is_some());
+        })
+        .await;
+}
+
+/// TIL-652: a person's confirmation covers the action as they were shown
+/// it, which only the revision it was shown at identifies. A directory
+/// action that asks for confirmation is refused without one; with one it is
+/// admitted, and so is an action asking no confirmation without one.
+#[tokio::test(flavor = "current_thread")]
+async fn confirmed_directory_action_needs_a_revision() {
+    use tilo_actions::remote::{ActionHostError, CONFIRMED_ACTION_NEEDS_REVISION, Confirmation};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let root = tempfile::tempdir().unwrap();
+            let mut fixture = journaled_directory_fixture(root.path());
+            fixture.set_confirmation_required(true);
+            let unbound = directory_request(&fixture, None, Some(Confirmation::Confirmed));
+            let refused = admit_directory_invoke(&fixture, &unbound).await;
+            assert!(
+                matches!(
+                    &refused,
+                    Err(ActionHostError::InvalidRequest { reason })
+                        if reason == CONFIRMED_ACTION_NEEDS_REVISION
+                ),
+                "{refused:?}"
+            );
+            assert!(fixture.take_invocation_identity().is_none());
+
+            let bound = directory_request(
+                &fixture,
+                Some("directory-r1"),
+                Some(Confirmation::Confirmed),
+            );
+            admit_directory_invoke(&fixture, &bound)
+                .await
+                .expect("a confirmed action at the revision it was shown at");
+            assert!(fixture.take_invocation_identity().is_some());
+
+            fixture.set_confirmation_required(false);
+            let plain = directory_request(&fixture, None, None);
+            admit_directory_invoke(&fixture, &plain)
+                .await
+                .expect("an action asking no confirmation acts on the directory as it is now");
+            assert!(fixture.take_invocation_identity().is_some());
+            let snapshot =
+                invocation_journal::durable_snapshot(&root.path().join("state.json.invocations"));
+            let records = snapshot["records"].as_array().unwrap();
+            assert_eq!(records.len(), 2, "{snapshot}");
+            assert!(
+                records
+                    .iter()
+                    .all(|record| record["intent"]["revision"] == "directory-r1"),
+                "every directory admission is bound to a revision: {snapshot}"
+            );
         })
         .await;
 }

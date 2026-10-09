@@ -105,6 +105,9 @@ struct AppHandler {
     /// The last submitted frame painted something over the widgets that
     /// their damage does not describe; the next frame must erase it.
     top_layer_drawn: bool,
+    /// The collaborators' marks painted over the widgets, as last submitted,
+    /// so a frame damages only the marks that changed.
+    presence_layer: crate::presence::PresenceLayer,
     last_primary_frame_presented: u64,
     primary_retry: crate::render_thread::retry::RenderRetryState,
     /// `None` waits for the next primary submission; `Some(sequence)` waits
@@ -1271,51 +1274,6 @@ fn begin_window_render_init(
 /// rather than taking the window's quiet event loop for an answer.
 fn announce_frame(window: &Window) {
     window.announce_frame();
-}
-
-fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
-    for cursor in app.state.collab.cursors.values() {
-        let mut path = vello::kurbo::BezPath::new();
-        path.move_to(Point::new(0.0, 0.0));
-        path.line_to(Point::new(14.0, 14.0));
-        path.line_to(Point::new(6.0, 16.0));
-        path.line_to(Point::new(0.0, 22.0));
-        path.close_path();
-
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
-        )]
-        let cursor_transform =
-            transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            cursor_transform,
-            cursor.color,
-            None,
-            &path,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
-            cursor_transform,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            None,
-            &path,
-        );
-
-        app.text_renderer.draw_text(
-            scene,
-            &cursor.name,
-            10.0,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            {
-                #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
-                let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
-                name_transform
-            },
-            None,
-        );
-    }
 }
 
 impl AppHandler {
@@ -2740,7 +2698,6 @@ impl AppHandler {
             || app.actions.action_palette.is_some()
             || app.input.tooltip_host.needs_frame()
             || app.input.tooltip_host.visible().is_some()
-            || !app.presence_ctx.remote_cursors.is_empty()
             || app
                 .profiler
                 .as_ref()
@@ -2764,27 +2721,21 @@ impl AppHandler {
         }
         let backdrop =
             crate::backdrop::BackdropFrame::from_single_scene(backdrop_recording.finish());
-        let content_draw_tags = scene.encoding().draw_tags.len();
-
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
-        draw_legacy_cursors(app, &mut scene, transform);
-
-        // A pointer that arrived on a desktop scope is the
-        // compositor's to draw, and the helper skips it — see
-        // `presence::PointerOwner`. Only the *painting* has one
-        // owner; the shell threads this same context into its own
-        // overlay too.
-        let interaction_now = crate::time::now();
-        app.presence_ctx.prune_interactions(interaction_now);
-        crate::presence::draw_remote_presence(
-            &mut scene,
+        // Peer pointers, names and activity paint over the widgets and damage
+        // only the marks that changed. Carets, selections and marks widgets
+        // paint from presence carry no widget damage: a change to them (or
+        // unprovable layer damage) repaints the window.
+        let presence_damage = draw_presence_layer(
+            app,
+            &mut self.presence_layer,
             transform,
             window_rect,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
+            crate::time::now(),
         );
-        draw_agent_action_presence(app, &mut scene, transform, window_rect, interaction_now);
+        scene.append(self.presence_layer.scene(), None);
+        full_redraw_required |= presence_damage.is_none();
+        let content_draw_tags = scene.encoding().draw_tags.len();
 
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
@@ -2828,9 +2779,9 @@ impl AppHandler {
         }
         record_main_stage(&mut native_main_stages, MainStage::AfterDebugOutlines);
 
-        // Cursors, presence and the HUD paint over the widgets too. A layer
-        // drawn this frame, or one erased since the last, covers pixels no
-        // widget's damage reports.
+        // Debug outlines paint over the widgets too. A layer drawn this
+        // frame, or one erased since the last, covers pixels no widget's
+        // damage reports. (The presence layer reports its own.)
         top_layer |= scene.encoding().draw_tags.len() != content_draw_tags;
         full_redraw_required |=
             top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer);
@@ -2843,19 +2794,16 @@ impl AppHandler {
         // animation by one frame.
         if !full_redraw_required {
             collect_submitted_widget_damage(app.root_widget.as_ref(), &mut damage_regions);
-            let physical_viewport = KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height));
-            let scale = f64::from(scale_factor);
-            for rect in &mut damage_regions {
-                *rect = KurboRect::new(
-                    rect.x0 * scale,
-                    rect.y0 * scale,
-                    rect.x1 * scale,
-                    rect.y1 * scale,
-                )
-                .inflate(16.0 * scale, 16.0 * scale)
-                .intersect(physical_viewport);
+            if !submit_presence_damage(
+                &mut damage_regions,
+                presence_damage.as_deref().unwrap_or_default(),
+                self.presence_layer.widgets_place_content_marks(),
+                f64::from(scale_factor),
+                KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+            ) {
+                full_redraw_required = true;
+                damage_regions.clear();
             }
-            damage_regions.retain(|rect| !rect.is_zero_area());
         }
         if !app.capture_frame_ready() {
             scene.reset();
@@ -2990,6 +2938,7 @@ impl AppHandler {
                 return;
             }
             mark_first_frame("first-frame-submitted");
+            self.presence_layer.presented();
             self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
             let submitted = self.primary_frames_sent;
             app.capture_frame_submitted(submitted);
@@ -3337,25 +3286,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         match event {
             UserEvent::Hover { x, y } => {
                 let ev = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: PhysicalPosition::new(x, y),
                 };
                 self.injected_window_event(event_loop, window_id, ev);
             }
             UserEvent::Click { x, y } => {
                 let moved = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: PhysicalPosition::new(x, y),
                 };
                 self.injected_window_event(event_loop, window_id, moved);
                 let press = WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 };
                 self.injected_window_event(event_loop, window_id, press);
                 let release = WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 };
@@ -3366,13 +3315,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     self.injected_window_event(
                         event_loop,
                         window_id,
-                        crate::synthetic_input::key_event(&key, state),
+                        crate::synthetic_input::key_input(&key, state),
                     );
                 }
             }
             UserEvent::Wheel { dx, dy } => {
                 let ev = WindowEvent::MouseWheel {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
                     phase: winit::event::TouchPhase::Moved,
                 };
@@ -3452,18 +3401,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                 let scale = window.scale_factor();
                                 let (px, py) = (x * scale, y * scale);
                                 let moved = WindowEvent::CursorMoved {
-                                    device_id: unsafe { std::mem::zeroed() },
+                                    device_id: winit::event::DeviceId::dummy(),
                                     position: PhysicalPosition::new(px, py),
                                 };
                                 self.injected_window_event(event_loop, window_id, moved);
                                 let press = WindowEvent::MouseInput {
-                                    device_id: unsafe { std::mem::zeroed() },
+                                    device_id: winit::event::DeviceId::dummy(),
                                     state: ElementState::Pressed,
                                     button: MouseButton::Left,
                                 };
                                 self.injected_window_event(event_loop, window_id, press);
                                 let release = WindowEvent::MouseInput {
-                                    device_id: unsafe { std::mem::zeroed() },
+                                    device_id: winit::event::DeviceId::dummy(),
                                     state: ElementState::Released,
                                     button: MouseButton::Left,
                                 };
@@ -4723,6 +4672,7 @@ impl App {
             primary_frames_sent: 0,
             primary_frames_completed: 0,
             top_layer_drawn: false,
+            presence_layer: crate::presence::PresenceLayer::new(),
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
             floating_source_clear_frames: std::collections::HashMap::new(),

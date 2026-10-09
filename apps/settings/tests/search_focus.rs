@@ -33,8 +33,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::text_render::TextRenderer;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NativeKeyCode, PhysicalKey, SmolStr};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 const W: f32 = 1200.0;
 const H: f32 = 760.0;
@@ -43,23 +42,7 @@ fn root() -> automerge::ObjId {
     automerge::ROOT
 }
 
-/// A printable-character `KeyboardInput`, built the same way `TextInput`'s own
-/// tests do (`KeyEvent` has a `pub(crate)` platform field, so it can't be
-/// struct-literalled — zero it then overwrite the public fields).
-fn char_key_event(s: &str) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(SmolStr::new(s));
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(SmolStr::new(s));
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use ui::synthetic_input::char_key;
 
 /// A faithful stand-in for `ui::App` covering focus + the rebuild-on-filter
 /// cycle. Owns the app, its live taffy tree + node map, and the focus state.
@@ -193,16 +176,16 @@ impl Harness {
     fn click(&mut self, p: Point) {
         let mods = Modifiers::default();
         let cursor = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         };
         let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
         let release = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         };
@@ -233,7 +216,7 @@ impl Harness {
     /// thing `App` does with `autofocus_on_structure_change` set.
     fn type_char(&mut self, c: &str) {
         let mods = Modifiers::default();
-        let ev = char_key_event(c);
+        let ev = char_key(c);
         let mut handled = false;
         let mut focus_target = None;
         self.app.handle_event(

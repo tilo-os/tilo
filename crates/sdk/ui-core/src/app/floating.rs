@@ -1045,7 +1045,8 @@ fn open_standalone_instance(target: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(test, feature = "native"))]
+#[cfg(test)]
+#[cfg(feature = "native")]
 mod host_shell_allow_tests {
     use super::*;
     #[cfg(target_os = "linux")]

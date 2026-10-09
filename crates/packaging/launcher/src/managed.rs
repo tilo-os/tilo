@@ -1557,7 +1557,8 @@ impl Drop for OwnedChild {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod stamp_tests {
     use super::TreeStamp;
     #[test]

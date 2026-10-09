@@ -1037,8 +1037,6 @@ mod tests {
 
         // Case `disabled_toggle_does_not_toggle`.
         {
-            use winit::event::DeviceId;
-
             let mut t = Toggle::new("id", "on").with_enabled(false);
 
             let mut tree = TaffyTree::<()>::new();
@@ -1055,7 +1053,7 @@ mod tests {
             .unwrap();
             t.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             let mods = winit::event::Modifiers::default();
@@ -1162,7 +1160,6 @@ mod tests {
     /// its neighbour must still reach the neighbour.
     #[test]
     fn a_hover_change_leaves_the_move_for_the_next_control() {
-        use winit::event::DeviceId;
         let mut t = Toggle::new("id", "on");
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -1170,7 +1167,7 @@ mod tests {
         tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
             .unwrap();
         t.apply_layout(&tree, node, Point::ZERO);
-        let device: DeviceId = unsafe { std::mem::zeroed() };
+        let device = winit::event::DeviceId::dummy();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mods = winit::event::Modifiers::default();

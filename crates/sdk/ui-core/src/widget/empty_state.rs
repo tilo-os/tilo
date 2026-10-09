@@ -1238,22 +1238,13 @@ mod tests {
         scene
     }
 
-    fn synth() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
     fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.leaf_node(Style::default());
@@ -1527,7 +1518,7 @@ mod tests {
             assert!(target.x > 0.0, "action rect must resolve after draw");
             dispatch(&mut es, &cursor(target));
             assert!(
-                dispatch(&mut es, &press()),
+                dispatch(&mut es, &mouse_press()),
                 "click on the action pill is consumed"
             );
             assert!(es.take_action(), "the action signal fires");
@@ -1541,7 +1532,7 @@ mod tests {
             // Top-left corner is well outside the centered pill.
             dispatch(&mut es, &cursor(Point::new(2.0, 2.0)));
             assert!(
-                !dispatch(&mut es, &press()),
+                !dispatch(&mut es, &mouse_press()),
                 "click away from the pill is not consumed"
             );
             assert!(!es.take_action());
@@ -1641,7 +1632,7 @@ mod tests {
 
             let target = es.action_rect().center();
             dispatch(&mut es, &cursor(target));
-            assert!(dispatch(&mut es, &press()));
+            assert!(dispatch(&mut es, &mouse_press()));
             let invocation = crate::widget::controls::take_control_invocation(&mut es)
                 .expect("canonical invocation");
             assert_eq!(
@@ -1670,7 +1661,7 @@ mod tests {
             // A press anywhere is ignored when there's no action.
             let center = es.get_rect().center();
             dispatch(&mut es, &cursor(center));
-            assert!(!dispatch(&mut es, &press()));
+            assert!(!dispatch(&mut es, &mouse_press()));
             assert!(!es.take_action());
         }
 

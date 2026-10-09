@@ -1196,8 +1196,7 @@ impl crate::widget::controls::ActionControls for NumberInput {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{KeyEvent, Modifiers};
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+    use winit::event::Modifiers;
 
     fn layout_with_theme(n: &mut NumberInput, theme: &Theme) {
         let mut tree = TaffyTree::new();
@@ -1407,33 +1406,9 @@ mod tests {
         );
     }
 
-    fn cursor(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn named_key(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
+    use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn number_text_parses_and_formats_with_units_signs_and_precision() {
@@ -1556,19 +1531,19 @@ mod tests {
             );
 
             // Click + once: 70 → 72.
-            dispatch(&mut n, &cursor(plus_c.0, plus_c.1));
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &cursor_moved(plus_c.0, plus_c.1));
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), 72.0);
             assert_eq!(n.take_changed(), Some(72.0));
 
             // Click + again: already at max → no move, no report.
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), 72.0, "clamped at max");
             assert_eq!(n.take_changed(), None, "no change when already clamped");
 
             // Click − : 72 → 70.
-            dispatch(&mut n, &cursor(minus_c.0, minus_c.1));
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &cursor_moved(minus_c.0, minus_c.1));
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), 70.0);
             assert_eq!(n.take_changed(), Some(70.0));
         }
@@ -1612,8 +1587,8 @@ mod tests {
                 n.plus_rect.x0.midpoint(n.plus_rect.x1),
                 n.plus_rect.y0.midpoint(n.plus_rect.y1),
             );
-            dispatch(&mut n, &cursor(plus_c.0, plus_c.1));
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &cursor_moved(plus_c.0, plus_c.1));
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), before, "disabled field ignores stepper clicks");
             assert!(!Widget::is_focusable(&n));
         }

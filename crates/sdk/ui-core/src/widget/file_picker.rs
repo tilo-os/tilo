@@ -2392,27 +2392,16 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use std::fs;
-    use winit::event::{DeviceId, ElementState, MouseButton};
-
-    fn synth_device() -> DeviceId {
-        // Same pattern as `permission_prompt::tests` and `slider`.
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::ElementState;
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn dispatch(picker: &mut FilePicker, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
@@ -2570,7 +2559,7 @@ mod tests {
             for index in [0, 1] {
                 let center = single.entry_rect(index).unwrap().center();
                 dispatch(&mut single, &cursor_at(center));
-                dispatch_mods(&mut single, &left_press(), ctrl());
+                dispatch_mods(&mut single, &mouse_press(), ctrl());
             }
             assert_eq!(single.selected_indices(), vec![1]);
 
@@ -2581,7 +2570,7 @@ mod tests {
             for index in [0, 1] {
                 let center = multiple.entry_rect(index).unwrap().center();
                 dispatch(&mut multiple, &cursor_at(center));
-                dispatch_mods(&mut multiple, &left_press(), ctrl());
+                dispatch_mods(&mut multiple, &mouse_press(), ctrl());
             }
             assert_eq!(multiple.selected_indices(), vec![0, 1]);
 
@@ -2641,7 +2630,7 @@ mod tests {
             for index in [1, 2] {
                 let center = single.entry_rect(index).unwrap().center();
                 dispatch(&mut single, &cursor_at(center));
-                dispatch_mods(&mut single, &left_press(), ctrl());
+                dispatch_mods(&mut single, &mouse_press(), ctrl());
             }
             assert_eq!(single.selected_indices(), vec![2]);
 
@@ -2650,7 +2639,7 @@ mod tests {
             for index in [1, 2] {
                 let center = default_multiple.entry_rect(index).unwrap().center();
                 dispatch(&mut default_multiple, &cursor_at(center));
-                dispatch_mods(&mut default_multiple, &left_press(), ctrl());
+                dispatch_mods(&mut default_multiple, &mouse_press(), ctrl());
             }
             assert_eq!(default_multiple.selected_indices(), vec![1, 2]);
         }
@@ -2673,11 +2662,11 @@ mod tests {
             let center = picker.entry_rect(0).unwrap().center();
             dispatch(&mut picker, &cursor_at(center));
 
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.current_dir(), root.as_path());
             assert_eq!(picker.selection(), Some(0));
 
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.current_dir(), child.as_path());
         }
 
@@ -2690,10 +2679,10 @@ mod tests {
 
             let row = picker.entry_rect(0).unwrap().center();
             dispatch(&mut picker, &cursor_at(row));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             let confirm = picker.open_rect().center();
             dispatch(&mut picker, &cursor_at(confirm));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
 
             assert_eq!(
                 picker.take_outcome(),
@@ -2902,7 +2891,7 @@ mod tests {
             // Row 0 is the `nested` directory (dirs sort first).
             let center = picker.entry_rect(0).expect("row 0").center();
             dispatch(&mut picker, &cursor_at(center));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.current_dir(), root.join("nested").as_path());
         }
 
@@ -2912,7 +2901,7 @@ mod tests {
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
             let center = picker.entry_rect(1).expect("row 1").center();
             dispatch(&mut picker, &cursor_at(center));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.selection(), Some(1));
         }
 
@@ -2922,7 +2911,7 @@ mod tests {
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
             let center = picker.cancel_rect().center();
             dispatch(&mut picker, &cursor_at(center));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.take_outcome(), Some(FilePickerOutcome::Cancelled));
         }
 
@@ -2934,7 +2923,7 @@ mod tests {
             picker.select_by_path(&target);
             let center = picker.open_rect().center();
             dispatch(&mut picker, &cursor_at(center));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(
                 picker.take_outcome(),
                 Some(FilePickerOutcome::Selected(vec![target]))
@@ -2948,10 +2937,10 @@ mod tests {
             // entries: [nested(dir), alpha.txt(1), beta.txt(2)]. Select both files.
             let r1 = picker.entry_rect(1).unwrap().center();
             dispatch(&mut picker, &cursor_at(r1));
-            dispatch_mods(&mut picker, &left_press(), ctrl());
+            dispatch_mods(&mut picker, &mouse_press(), ctrl());
             let r2 = picker.entry_rect(2).unwrap().center();
             dispatch(&mut picker, &cursor_at(r2));
-            dispatch_mods(&mut picker, &left_press(), ctrl());
+            dispatch_mods(&mut picker, &mouse_press(), ctrl());
             assert_eq!(picker.selected_indices(), vec![1, 2]);
             picker.click_open();
             match picker.take_outcome() {
@@ -2970,8 +2959,8 @@ mod tests {
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
             let center = picker.entry_rect(1).unwrap().center();
             dispatch(&mut picker, &cursor_at(center));
-            dispatch(&mut picker, &left_press()); // first click selects
-            dispatch(&mut picker, &left_press()); // second click opens
+            dispatch(&mut picker, &mouse_press()); // first click selects
+            dispatch(&mut picker, &mouse_press()); // second click opens
             assert_eq!(
                 picker.take_outcome(),
                 Some(FilePickerOutcome::Selected(vec![root.join("alpha.txt")]))
@@ -3228,23 +3217,23 @@ mod tests {
             let mut picker = save_picker(&root, "alpha.txt");
             let at = picker.open_rect().center();
             dispatch(&mut picker, &cursor_at(at));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert!(picker.replace_prompt().is_some(), "Save asks first");
             // The picker's own Save button is behind the prompt now.
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.take_outcome(), None);
             let at = picker.keep_existing_rect.center();
             dispatch(&mut picker, &cursor_at(at));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.replace_prompt(), None);
             assert_eq!(picker.take_outcome(), None);
 
             let at = picker.open_rect().center();
             dispatch(&mut picker, &cursor_at(at));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             let at = picker.replace_rect.center();
             dispatch(&mut picker, &cursor_at(at));
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(
                 picker.take_outcome(),
                 Some(FilePickerOutcome::Selected(vec![root.join("alpha.txt")]))
@@ -3310,8 +3299,8 @@ mod tests {
             let mut picker = save_picker(&root, "");
             let row = picker.entry_rect(1).expect("alpha.txt row").center();
             dispatch(&mut picker, &cursor_at(row));
-            dispatch(&mut picker, &left_press());
-            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &mouse_press());
+            dispatch(&mut picker, &mouse_press());
             assert_eq!(picker.take_outcome(), None);
             assert_eq!(
                 picker.replace_prompt(),
@@ -3350,8 +3339,8 @@ mod tests {
         let field = picker.filename_rect().center();
         dispatch(&mut picker, &cursor_at(field));
         for _ in 0..3 {
-            dispatch(&mut picker, &left_press());
-            dispatch(&mut picker, &left_release());
+            dispatch(&mut picker, &mouse_press());
+            dispatch(&mut picker, &mouse_release());
         }
         dispatch(&mut picker, &key_char("y"));
         assert_eq!(
@@ -3364,13 +3353,7 @@ mod tests {
         assert!(!picker.filename.autocorrect_enabled());
     }
 
-    fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_release;
 
     fn dispatch_mods(picker: &mut FilePicker, event: &WindowEvent, mods: winit::event::Modifiers) {
         let mut tree = TaffyTree::<()>::new();
@@ -3401,14 +3384,14 @@ mod tests {
     }
 
     fn key_named(named: winit::keyboard::NamedKey) -> WindowEvent {
-        crate::synthetic_input::key_event(
+        crate::synthetic_input::key_input(
             &winit::keyboard::Key::Named(named),
             ElementState::Pressed,
         )
     }
 
     fn key_char(s: &str) -> WindowEvent {
-        crate::synthetic_input::key_event(
+        crate::synthetic_input::key_input(
             &winit::keyboard::Key::Character(s.into()),
             ElementState::Pressed,
         )
@@ -3442,7 +3425,7 @@ mod tests {
             dispatch(
                 &mut picker,
                 &WindowEvent::MouseWheel {
-                    device_id: synth_device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
                     phase: winit::event::TouchPhase::Moved,
                 },

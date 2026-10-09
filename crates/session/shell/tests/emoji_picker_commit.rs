@@ -17,7 +17,6 @@
     reason = "in a test these are the assertion, not a hazard; the counters and a 5 s deadline are far from overflow"
 )]
 
-use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,10 +27,7 @@ use shell::compositor::text_commit::DeliveredText;
 use shell::shell::overlay_host::ShellOverlayHost;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::kurbo::Point;
+use taffy::{NodeId, TaffyTree};
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::{
@@ -41,9 +37,9 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2, zwp_input_method_v2,
 };
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use crate::support::host::{Layout, lay_out, press_key};
 use crate::support::wayland::{Globals as _, foreign_id};
 
 const W: f32 = 1280.0;
@@ -198,56 +194,16 @@ impl Harness {
         let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
         host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .expect("the built-in shortcut table is valid");
-        let mut h = Self {
+        let Layout { taffy, child_node } = lay_out(&mut host, W, H);
+        Self {
             display,
             state,
             clients: Vec::new(),
             host,
-            taffy: TaffyTree::new(),
-            child: NodeId::new(0),
+            taffy,
+            child: child_node,
             _event_loop: event_loop,
-        };
-        h.lay_out();
-        h
-    }
-
-    fn lay_out(&mut self) {
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = self.host.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        let mut tr = ui::text_render::TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, available, node_id, _, _| {
-                    node_map.get(&node_id).map_or(taffy::Size::ZERO, |&ptr| {
-                        // SAFETY: the pointers were collected from the live host
-                        // tree during this very layout pass.
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    })
-                },
-            )
-            .expect("compute_layout");
-        self.host.apply_layout(&taffy, child, Point::ORIGIN);
-        self.taffy = taffy;
-        self.child = child;
+        }
     }
 
     fn connect(&mut self, credential: Option<TrustedInputMethod>) -> usize {
@@ -322,39 +278,7 @@ impl Harness {
     }
 
     fn key(&mut self, logical: Key, mods: ModifiersState) {
-        // winit's `KeyEvent` carries a private platform field, so the struct is
-        // zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        };
-        let modifiers = Modifiers::from(mods);
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            &event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.child,
-                taffy: &self.taffy,
-            },
-        );
+        press_key(&mut self.host, &self.taffy, self.child, logical, mods);
     }
 
     fn type_text(&mut self, text: &str) {

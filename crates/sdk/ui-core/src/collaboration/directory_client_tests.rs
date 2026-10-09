@@ -239,7 +239,7 @@ fn sdk_lazy_directory_query_resolve_and_invoke_use_exact_runtime_methods() {
         matches!(&replies[0], CollabEvent::ActionDirectoryPage {request_id:11,result:Ok(page)} if page.rows==vec![directory_test_row()] && page.revision=="revision-7" && page.next_cursor==b"cursor-2" && page.budget_exhausted)
     );
     assert!(
-        matches!(&replies[1], CollabEvent::PublishedActionResolution {request_id:12,result:Ok(runtime_collab::ActionDirectoryResolution::Found(row))} if **row==directory_test_row())
+        matches!(&replies[1], CollabEvent::PublishedActionResolution {request_id:12,result:Ok(runtime_collab::ActionDirectoryResolution::Found { row, revision: None })} if **row==directory_test_row())
     );
     assert!(
         matches!(&replies[2], CollabEvent::PublishedInvocationResult {request_id:13,result:Ok((47,tilo_actions::InvocationUpdate::Accepted { invocation }))} if invocation.0==Uuid::from_u128(47))

@@ -35,7 +35,7 @@ enum Command {
     NextPage,
     Scope(usize),
     Review(review::ReviewCommand),
-    FileParent(collab_types::FileVersionId),
+    FileParent(fs_protocol::FileVersionId),
     FileUndo,
     FileRedo,
     FileCheck,
@@ -91,7 +91,7 @@ pub struct HistoryHost {
     controller: Option<HistoryController>,
     files: Option<super::files_session::FileController>,
     retired_files: Vec<super::files_session::FileController>,
-    requested_file_version: Option<collab_types::FileVersionId>,
+    requested_file_version: Option<fs_protocol::FileVersionId>,
     observed_file_binding: Option<uuid::Uuid>,
     file_target_resolved: bool,
     toolbar: Column,
@@ -1679,6 +1679,7 @@ pub(super) fn unavailable_state(reason: &str) -> crate::widget::EmptyState {
         .with_icon(crate::icons::Icon::History)
         .with_message(I18nManager::lookup_plain(reason))
 }
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "refresh_heads_tests.rs"]
 mod refresh_heads_tests;

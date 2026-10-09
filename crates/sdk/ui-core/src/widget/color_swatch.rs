@@ -705,21 +705,7 @@ mod tests {
         handled
     }
 
-    fn named_press(key: NamedKey) -> WindowEvent {
-        use winit::keyboard::{NativeKeyCode, PhysicalKey};
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.logical_key = Key::Named(key);
-        event.text = None;
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn a_sampled_grid_tells_each_choice_and_paints_its_samples() {
@@ -744,14 +730,14 @@ mod tests {
         dispatch(
             &mut picker,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(third.x, third.y),
             },
         );
         dispatch(
             &mut picker,
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
@@ -817,14 +803,14 @@ mod tests {
         dispatch(
             &mut picker,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
             },
         );
         assert!(dispatch(
             &mut picker,
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             }
@@ -832,9 +818,9 @@ mod tests {
         assert_eq!(picker.take_choice(), Some(2));
 
         Widget::set_focus(&mut picker, true);
-        assert!(dispatch(&mut picker, &named_press(NamedKey::Home)));
-        assert!(dispatch(&mut picker, &named_press(NamedKey::ArrowRight)));
-        assert!(dispatch(&mut picker, &named_press(NamedKey::Space)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::Home)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::ArrowRight)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::Space)));
         assert_eq!(picker.take_choice(), Some(1));
 
         assert!(Widget::perform_semantic_action(

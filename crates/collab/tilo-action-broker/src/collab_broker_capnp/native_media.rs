@@ -436,10 +436,12 @@ impl CapnpChannelHandle {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod descriptor_tests {
     use super::*;
     use std::os::unix::fs::MetadataExt as _;

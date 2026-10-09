@@ -8,8 +8,9 @@
 //! ```text
 //!  client commit
 //!      ├─ wl_shm  ──► surface_readback::buffer_to_rgba ──┐
-//!      └─ dmabuf  ──► commit Barrier ─► capture worker ───┤
-//!                                      │ GPU / CPU import  ▼
+//!      └─ dmabuf  ──► commit Barrier ─► fence (loop) ─► capture worker
+//!           shared: drawn from the held buffer itself ───┤ or GPU / CPU import
+//!                                                        ▼
 //!                                            ForeignFrameStore (per surface)
 //!                                                        │  snapshot on seq change
 //!                                                        ▼
@@ -26,17 +27,25 @@
 //!
 //! dmabuf capture is coalesced per surface and runs outside the compositor
 //! thread. A Smithay commit [`Barrier`] keeps each submitted buffer owned by
-//! the compositor until its worker read completes; the pixels are published
-//! only when that exact commit is subsequently applied. The worker tries GPU
+//! the compositor until its read completes; the pixels are published only
+//! when that exact commit is subsequently applied. No thread waits on a
+//! client's GPU: a buffer still being rendered is parked until the compositor
+//! loop sees its implicit fence signal ([`dmabuf_fence_signalled`]), so a slow
+//! client delays only its own commits. On the shared route the worker imports
+//! the buffer (once per buffer) and copies nothing: the frame is drawn from the
+//! buffer itself, so once its commit applies the compositor holds the buffer
+//! ([`ForeignFrameStore::take_unheld_frame`]) and gives it back only after
+//! the last frame that drew it finished (`gpu_frames`). The worker tries GPU
 //! ([`crate::compositor::gpu_import`], the only route for a Vulkan
 //! client whose swapchain images refuse `mmap`), then CPU mmap
 //! ([`import_dmabuf_rgba`], for CPU-visible linear buffers or a box with
 //! no EGL device) — together covering the whole advertised set
 //! (single-plane RGBA under `Modifier::Linear`); anything else is **rejected with a visible on-tile message**, never silently blank.
 
-#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use ui::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
 #[cfg(any(test, target_os = "linux"))]
@@ -758,9 +767,22 @@ struct ForeignEntry {
     /// The current frame when it stayed on the GPU; `rgba` is then empty and
     /// read back only on demand.
     gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
+    /// `gpu`, while it is drawn from a client buffer the compositor has not
+    /// taken hold of yet: set when its commit applies, taken by the commit
+    /// handler that holds the buffer ([`ForeignFrameStore::take_unheld_frame`]).
+    unheld: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
 }
 
 impl ForeignEntry {
+    /// Make `frame` the current GPU frame. The one it replaces is superseded:
+    /// its buffer goes back once nothing draws it any more.
+    fn set_gpu(&mut self, frame: Option<Arc<crate::shell::gpu_frames::GpuFrame>>) {
+        self.unheld = None;
+        if let Some(replaced) = std::mem::replace(&mut self.gpu, frame) {
+            replaced.note_superseded();
+        }
+    }
+
     /// A committed buffer whose pixels are not this entry's yet.
     fn capturing(&self) -> bool {
         #[cfg(any(test, target_os = "linux"))]
@@ -794,6 +816,7 @@ impl ForeignEntry {
             colorimetry: None,
             hdr: None,
             gpu: None,
+            unheld: None,
             #[cfg(any(test, target_os = "linux"))]
             capture_tokens: VecDeque::new(),
             #[cfg(any(test, target_os = "linux"))]
@@ -1093,6 +1116,10 @@ struct CaptureJob<T> {
     payload: T,
     barrier: Barrier,
     client: Client,
+    /// The client's rendering into the buffer is known to be done. `false`
+    /// only when its fence could not be watched on the compositor loop; the
+    /// worker then waits for it.
+    readable: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -1161,6 +1188,12 @@ impl<T> LatestJobs<T> {
 #[cfg(target_os = "linux")]
 struct AsyncDmabufCapture {
     pending: Arc<Mutex<LatestJobs<DmabufJob>>>,
+    /// Commits whose buffer the client's GPU is still rendering, the newest
+    /// per surface. The compositor loop watches each buffer's implicit fence
+    /// and moves the job to `pending` when it signals
+    /// ([`dmabuf_fence_signalled`]), so no thread waits on a client's GPU and
+    /// a slow client never holds up another surface's frames.
+    awaiting_fence: Mutex<LatestJobs<DmabufJob>>,
     completed: Arc<Mutex<HashMap<ClientId, Client>>>,
     /// Pixel allocations handed back after a newer frame becomes current.
     /// Readback and painting never alias: the main thread returns the old
@@ -1196,6 +1229,25 @@ fn release_superseded<T>(job: CaptureJob<T>, completed: &Mutex<HashMap<ClientId,
     mark_capture_complete(job.client, completed);
 }
 
+/// Let a captured commit apply, and wake the compositor loop to apply it.
+#[cfg(target_os = "linux")]
+fn complete_capture(
+    barrier: &Barrier,
+    client: Client,
+    completed: &Mutex<HashMap<ClientId, Client>>,
+    ping: &Mutex<Option<smithay::reexports::calloop::ping::Ping>>,
+) {
+    signal_capture_barrier(barrier);
+    mark_capture_complete(client, completed);
+    if let Some(ping) = ping
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+    {
+        ping.ping();
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl AsyncDmabufCapture {
     fn spawn() -> Result<Self, String> {
@@ -1210,7 +1262,7 @@ impl AsyncDmabufCapture {
         let worker_completion_ping = Arc::clone(&completion_ping);
         // Capacity one is only a wake edge, never a job queue. The authoritative
         // queue is the latest-only map above, so `try_send` cannot block the
-        // compositor even while the worker is stuck on a GPU fence.
+        // compositor even while the worker is busy.
         let (wake, wakes) = sync_channel::<()>(1);
         std::thread::Builder::new()
             .name("tilo-foreign-capture".into())
@@ -1232,39 +1284,27 @@ impl AsyncDmabufCapture {
                         {
                             *rgba = previous;
                         }
-                        let colorimetry = store().colorimetry(job.surface);
-                        let accepted = if let Some(frame) = share_dmabuf(&job.payload, job.surface)
-                        {
-                            store().stage_gpu_capture(job.surface, job.token, frame)
-                        } else {
-                            let mut hdr = None;
-                            let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr)
-                                .map(|(width, height, route)| {
-                                    (width, height, CaptureRoute::Dmabuf(route))
-                                });
-                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr)
-                        };
+                        let surface = job.surface;
+                        let (accepted, barrier, client) = capture_dmabuf_job(job, rgba);
                         if !accepted {
                             // The toplevel was destroyed while this import was
                             // in flight. Do not retain a full framebuffer in
                             // the worker's per-surface scratch map forever.
-                            scratch.remove(&job.surface);
+                            scratch.remove(&surface);
                         }
-                        signal_capture_barrier(&job.barrier);
-                        mark_capture_complete(job.client, &worker_completed);
-                        if let Some(ping) = worker_completion_ping
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .as_ref()
-                        {
-                            ping.ping();
-                        }
+                        complete_capture(
+                            &barrier,
+                            client,
+                            &worker_completed,
+                            &worker_completion_ping,
+                        );
                     }
                 }
             })
             .map_err(|error| format!("could not start foreign-window capture worker: {error}"))?;
         Ok(Self {
             pending,
+            awaiting_fence: Mutex::new(LatestJobs::default()),
             completed,
             recycled,
             wake,
@@ -1272,7 +1312,56 @@ impl AsyncDmabufCapture {
         })
     }
 
+    /// A job whose buffer is still being rendered: it runs once
+    /// [`dmabuf_fence_signalled`] says the client's GPU is done with it.
+    fn park(&self, job: DmabufJob) {
+        let replaced = self
+            .awaiting_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(job.surface, job);
+        if let Some(replaced) = replaced {
+            // As in `enqueue`: only the newest commit can become visible, and
+            // the older one never read its buffer.
+            release_superseded(replaced, &self.completed);
+        }
+    }
+
+    /// Run the parked job of `surface` for commit `token`, if it is still the
+    /// newest. `readable` is `false` when its fence could not be watched.
+    fn unpark(&self, surface: SurfaceId, token: u64, readable: bool) {
+        let job = {
+            let mut awaiting = self
+                .awaiting_fence
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if awaiting
+                .jobs
+                .get(&surface)
+                .is_some_and(|job| job.token == token)
+            {
+                awaiting.remove(surface)
+            } else {
+                None
+            }
+        };
+        if let Some(mut job) = job {
+            job.readable = readable;
+            self.enqueue(job);
+        }
+    }
+
     fn enqueue(&self, job: DmabufJob) {
+        // Tokens grow with every commit, so a job still waiting for its fence
+        // belongs to an older commit of this surface.
+        let parked = self
+            .awaiting_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(job.surface);
+        if let Some(parked) = parked {
+            release_superseded(parked, &self.completed);
+        }
         let replaced = self
             .pending
             .lock()
@@ -1320,11 +1409,41 @@ impl AsyncDmabufCapture {
         if let Some(pending) = pending {
             release_superseded(pending, &self.completed);
         }
+        let parked = self
+            .awaiting_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(surface);
+        if let Some(parked) = parked {
+            release_superseded(parked, &self.completed);
+        }
         self.recycled
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&surface);
     }
+}
+
+/// Capture one readable dmabuf on the worker: share it on the GPU, or read it
+/// back. Returns whether the surface still took the frame, and the commit's
+/// barrier and client to let it apply: the shared route reads nothing here
+/// (the frame is drawn from the buffer itself, which the compositor holds
+/// from the commit on), the readback route is done reading.
+#[cfg(target_os = "linux")]
+fn capture_dmabuf_job(job: DmabufJob, rgba: &mut Vec<u8>) -> (bool, Barrier, Client) {
+    if !job.readable {
+        crate::shell::gpu_frames::wait_readable(&job.payload);
+    }
+    if let Some(frame) = share_dmabuf(&job.payload, job.surface) {
+        let accepted = store().stage_gpu_capture(job.surface, job.token, frame);
+        return (accepted, job.barrier, job.client);
+    }
+    let colorimetry = store().colorimetry(job.surface);
+    let mut hdr = None;
+    let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr)
+        .map(|(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)));
+    let accepted = store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr);
+    (accepted, job.barrier, job.client)
 }
 
 #[cfg(target_os = "linux")]
@@ -1453,6 +1572,94 @@ pub fn drain_completed_dmabuf_captures() -> Vec<Client> {
         .map_or_else(Vec::new, AsyncDmabufCapture::drain_completed)
 }
 
+/// Client buffers the compositor holds because frames are drawn from them,
+/// counted per buffer: a buffer re-attached while still held is held by each
+/// of its frames and goes back once, after the last.
+#[cfg(any(test, target_os = "linux"))]
+#[derive(Debug)]
+struct BufferHolds<B> {
+    held: HashMap<B, usize>,
+    /// Holds whose frame went, waiting to be counted off on the loop.
+    returned: Vec<B>,
+}
+
+#[cfg(any(test, target_os = "linux"))]
+impl<B: std::hash::Hash + Eq + Clone> BufferHolds<B> {
+    fn new() -> Self {
+        Self {
+            held: HashMap::new(),
+            returned: Vec::new(),
+        }
+    }
+
+    fn hold(&mut self, buffer: B) {
+        let count = self.held.entry(buffer).or_insert(0);
+        *count = count.saturating_add(1);
+    }
+
+    /// Count off every returned hold; the buffers no frame holds any more.
+    fn give_back(&mut self) -> Vec<B> {
+        let mut free = Vec::new();
+        for buffer in std::mem::take(&mut self.returned) {
+            match self.held.get_mut(&buffer) {
+                Some(count) if *count > 1 => *count = count.saturating_sub(1),
+                Some(_) => {
+                    self.held.remove(&buffer);
+                    free.push(buffer);
+                }
+                // Never held, or already given back: not ours to release.
+                None => {}
+            }
+        }
+        free
+    }
+}
+
+#[cfg(target_os = "linux")]
+static BUFFER_HOLDS: std::sync::LazyLock<Mutex<BufferHolds<WlBuffer>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BufferHolds::new()));
+
+/// Hold `buffer` for `frame`, which is drawn from it: the client gets it
+/// back (`wl_buffer.release`) on the compositor loop once `frame` is gone and
+/// the GPU finished reading it ([`crate::shell::gpu_frames::BufferLease`]).
+#[cfg(target_os = "linux")]
+pub fn hold_buffer(buffer: WlBuffer, frame: &crate::shell::gpu_frames::GpuFrame) {
+    BUFFER_HOLDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .hold(buffer.clone());
+    frame.hold(crate::shell::gpu_frames::BufferLease::new(move || {
+        BUFFER_HOLDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .returned
+            .push(buffer);
+        if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get()
+            && let Some(ping) = worker
+                .completion_ping
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+        {
+            ping.ping();
+        }
+    }));
+}
+
+/// On the compositor loop: give every buffer no frame holds any more back to
+/// its client.
+#[cfg(target_os = "linux")]
+pub fn give_back_released_buffers() {
+    let free = BUFFER_HOLDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .give_back();
+    for buffer in free {
+        // A buffer its client already destroyed takes no event.
+        buffer.release();
+    }
+}
+
 #[cfg(any(test, target_os = "linux"))]
 fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
     #[cfg(not(target_os = "linux"))]
@@ -1463,11 +1670,48 @@ fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
     }
 }
 
+/// A dmabuf commit's capture, as [`ForeignFrameStore::prepare_dmabuf_capture`]
+/// queued it.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct PreparedDmabufCapture {
+    /// Names the commit's frame when the commit applies.
+    pub token: u64,
+    /// Attach to the same commit: it holds the commit, and so the buffer it
+    /// replaces, until the capture is done.
+    pub barrier: Barrier,
+    /// The buffer's implicit fence, when the client's GPU was still writing
+    /// the buffer. Insert it into the compositor loop with a callback that
+    /// calls [`dmabuf_fence_signalled`]; the capture starts then. If it cannot
+    /// be inserted, call [`dmabuf_fence_unwatched`]. `None` when the buffer
+    /// was readable and the capture is already queued.
+    pub fence: Option<smithay::backend::allocator::dmabuf::DmabufSource>,
+}
+
+/// The fence of commit `token`'s buffer on `surface` signalled: the client's
+/// rendering into it is done, so its capture may read it. Nothing happens if
+/// a newer commit superseded it or the surface is gone.
+#[cfg(target_os = "linux")]
+pub fn dmabuf_fence_signalled(surface: SurfaceId, token: u64) {
+    if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
+        worker.unpark(surface, token, true);
+    }
+}
+
+/// The fence of commit `token`'s buffer could not be watched on the
+/// compositor loop: capture it anyway, waiting for the fence on the worker.
+#[cfg(target_os = "linux")]
+pub fn dmabuf_fence_unwatched(surface: SurfaceId, token: u64) {
+    if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
+        worker.unpark(surface, token, false);
+    }
+}
+
 /// Keep an SDR client frame on the GPU: import it on the presenting device
-/// and copy it into a compositor-owned texture. `None` sends it down the
-/// readback route instead (no presenting GPU yet, a 10-bit, half-float or
-/// YUV buffer, or a layout the import cannot describe), reported once per
-/// reason. An 8-bit buffer is shown as it is on either route.
+/// (once per buffer) and draw it from that import.
+/// `None` sends it down the readback route instead (no presenting GPU yet, a
+/// 10-bit, half-float or YUV buffer, or a layout the import cannot describe),
+/// reported once per reason. An 8-bit buffer is shown as it is on either route.
 #[cfg(target_os = "linux")]
 fn share_dmabuf(
     dmabuf: &Dmabuf,
@@ -1725,7 +1969,7 @@ impl ForeignFrameStore {
             match r {
                 Ok((w, h)) => {
                     e.hdr = None;
-                    e.gpu = None;
+                    e.set_gpu(None);
                     e.width = w;
                     e.height = h;
                     e.seq = e.seq.wrapping_add(1);
@@ -1767,6 +2011,10 @@ impl ForeignFrameStore {
     /// barrier that must be attached to that same commit. This is the lifetime
     /// contract: Smithay cannot release/reuse the buffer until capture has
     /// completed or the job has been explicitly superseded.
+    ///
+    /// When the client's GPU is still rendering into the buffer the capture
+    /// waits for its implicit fence, which the caller watches on the
+    /// compositor loop: see [`PreparedDmabufCapture::fence`].
     #[cfg(target_os = "linux")]
     pub fn prepare_dmabuf_capture(
         &self,
@@ -1774,7 +2022,7 @@ impl ForeignFrameStore {
         client: Client,
         dmabuf: Dmabuf,
         colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
-    ) -> Option<(u64, Barrier)> {
+    ) -> Option<PreparedDmabufCapture> {
         self.prepare_dmabuf_capture_with_damage(id, client, dmabuf, colorimetry, None)
     }
 
@@ -1786,7 +2034,7 @@ impl ForeignFrameStore {
         dmabuf: Dmabuf,
         colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
         damage: Option<Vec<Rect>>,
-    ) -> Option<(u64, Barrier)> {
+    ) -> Option<PreparedDmabufCapture> {
         let token = self
             .next_capture
             .fetch_add(1, Ordering::Relaxed)
@@ -1801,14 +2049,31 @@ impl ForeignFrameStore {
         match worker {
             Ok(worker) => {
                 let barrier = Barrier::new(false);
-                worker.enqueue(DmabufJob {
+                // Already readable unless the buffer still carries an
+                // unsignalled write fence; asking does not wait.
+                let fence = smithay::backend::allocator::dmabuf::DmabufSource::new(
+                    dmabuf.clone(),
+                    smithay::reexports::calloop::Interest::READ,
+                )
+                .ok();
+                let job = DmabufJob {
                     surface: id,
                     token,
                     payload: dmabuf,
                     barrier: barrier.clone(),
                     client,
-                });
-                Some((token, barrier))
+                    readable: true,
+                };
+                if fence.is_some() {
+                    worker.park(job);
+                } else {
+                    worker.enqueue(job);
+                }
+                Some(PreparedDmabufCapture {
+                    token,
+                    barrier,
+                    fence,
+                })
             }
             Err(reason) => {
                 // No worker owns this token, so it must not remain at the
@@ -1947,7 +2212,11 @@ impl ForeignFrameStore {
             Ok((width, height, route)) => {
                 let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
                 entry.hdr = ready.hdr.map(Arc::new);
-                entry.gpu = ready.gpu;
+                let shared = matches!(route, CaptureRoute::Dmabuf(DmabufRoute::Shared));
+                entry.set_gpu(ready.gpu);
+                if shared {
+                    entry.unheld.clone_from(&entry.gpu);
+                }
                 entry.width = width;
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
@@ -1970,7 +2239,7 @@ impl ForeignFrameStore {
             Err(reason) => {
                 entry.rgba.clear();
                 entry.hdr = None;
-                entry.gpu = None;
+                entry.set_gpu(None);
                 entry.width = 0;
                 entry.height = 0;
                 entry.seq = entry.seq.wrapping_add(1);
@@ -2054,7 +2323,7 @@ impl ForeignFrameStore {
         self.with_entry(id, |e| {
             e.mapped = true;
             e.hdr = hdr;
-            e.gpu = None;
+            e.set_gpu(None);
             e.rgba.clear();
             e.rgba.extend_from_slice(rgba);
             e.width = width;
@@ -2078,7 +2347,7 @@ impl ForeignFrameStore {
         self.with_entry(id, |entry| {
             entry.mapped = true;
             entry.hdr = None;
-            entry.gpu = None;
+            entry.set_gpu(None);
             entry.rgba.clear();
             entry.rgba.extend_from_slice(rgba);
             entry.width = width;
@@ -2093,7 +2362,8 @@ impl ForeignFrameStore {
 
     /// Exercise the identical capture publication/history seam from pixel
     /// oracles. Production damage provenance is independently wire-tested.
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn publish_damaged_rgba_for_test(
         &self,
         id: SurfaceId,
@@ -2129,7 +2399,7 @@ impl ForeignFrameStore {
             e.rgba.clear();
             e.rgba.shrink_to_fit();
             e.hdr = None;
-            e.gpu = None;
+            e.set_gpu(None);
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -2147,7 +2417,7 @@ impl ForeignFrameStore {
             e.rgba.clear();
             e.rgba.shrink_to_fit();
             e.hdr = None;
-            e.gpu = None;
+            e.set_gpu(None);
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -2257,8 +2527,11 @@ impl ForeignFrameStore {
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.remove(&id);
+        let forgotten = guard.remove(&id);
         drop(guard);
+        if let Some(mut entry) = forgotten {
+            entry.set_gpu(None);
+        }
         crate::shell::gpu_frames::forget_surface(id);
         let mut children = self
             .children
@@ -2317,6 +2590,44 @@ impl ForeignFrameStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(&id).is_some_and(|e| e.mapped)
+    }
+
+    /// The frame the commit just applied on `id` published, when it is drawn
+    /// from the client's buffer and nothing holds that buffer yet. The caller
+    /// takes hold of the buffer for it ([`crate::shell::gpu_frames::GpuFrame::hold`])
+    /// before anything can draw it, or withdraws it
+    /// ([`Self::withdraw_unheld_frame`]).
+    pub fn take_unheld_frame(
+        &self,
+        id: SurfaceId,
+    ) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&id)?
+            .unheld
+            .take()
+    }
+
+    /// Stop showing `frame` on `id`: its buffer could not be held, so it must
+    /// not be drawn from.
+    pub fn withdraw_unheld_frame(
+        &self,
+        id: SurfaceId,
+        frame: &Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) {
+        self.with_entry(id, |entry| {
+            if entry
+                .gpu
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, frame))
+            {
+                entry.set_gpu(None);
+                entry.width = 0;
+                entry.height = 0;
+                entry.seq = entry.seq.wrapping_add(1);
+            }
+        });
     }
 
     /// Copy out the current frame, or `None` when the surface has no pixels staged.
@@ -3297,17 +3608,14 @@ impl Widget for ForeignSurfaceWidget {
         // `new_leaf` can't fail in practice for a single-node insert; a
         // dummy id here just means the fallback is unreachable by real
         // traversal instead of panicking.
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap_or(NodeId::new(0));
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -4143,6 +4451,29 @@ mod tests {
         assert_eq!(frames.presentation_capture_state(primary), (None, false));
         frames.clear_frame(child);
         assert_eq!(frames.presentation_capture_state(child), (None, false));
+    }
+
+    #[test]
+    fn a_held_buffer_goes_back_once_after_its_last_frame() {
+        let mut holds = BufferHolds::new();
+        // Phase `a_re_attached_buffer_is_held_by_each_frame`.
+        holds.hold("a");
+        holds.hold("a");
+        holds.hold("b");
+        holds.returned.push("a");
+        assert!(
+            holds.give_back().is_empty(),
+            "the newer frame still draws it"
+        );
+        // Phase `the_last_frame_gives_it_back_once`.
+        holds.returned.extend(["a", "b"]);
+        assert_eq!(holds.give_back(), vec!["a", "b"]);
+        holds.returned.push("a");
+        assert!(
+            holds.give_back().is_empty(),
+            "a buffer is released once, and one never held is not ours"
+        );
+        assert!(holds.held.is_empty());
     }
 
     #[test]
@@ -6222,5 +6553,104 @@ mod tests {
             }
         }
         None
+    }
+
+    /// Wait until `barrier` is signalled, failing past the hang bound.
+    #[cfg(target_os = "linux")]
+    fn await_release(barrier: &Barrier, what: &str) {
+        let started = Instant::now();
+        while !barrier.is_signaled() {
+            assert!(started.elapsed() < tilo_test_env::hang_bound(), "{what}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_buffer_still_being_rendered_holds_only_its_own_commit() {
+        use smithay::backend::allocator::dmabuf::DmabufFlags;
+        use smithay::reexports::wayland_server::backend::ClientData;
+        use std::os::fd::{FromRawFd as _, OwnedFd};
+
+        struct NoClientData;
+        impl ClientData for NoClientData {}
+
+        let display = smithay::reexports::wayland_server::Display::<()>::new().expect("display");
+        let (server_end, _client_end) =
+            std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let client = display
+            .handle()
+            .insert_client(server_end, Arc::new(NoClientData))
+            .expect("client");
+        let buffer = |fd: OwnedFd| {
+            let mut builder = Dmabuf::builder(
+                (1, 1),
+                Fourcc::Argb8888,
+                Modifier::Linear,
+                DmabufFlags::empty(),
+            );
+            assert!(builder.add_plane(fd, 0, 0, 4));
+            builder.build().expect("dmabuf")
+        };
+        // An empty pipe polls unreadable, as a buffer whose write fence has
+        // not signalled; a memfd polls readable, as a rendered buffer.
+        let mut ends = [0; 2];
+        // SAFETY: `ends` has room for the two descriptors pipe2 writes.
+        assert_eq!(
+            unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        // SAFETY: pipe2 returned two new descriptors nothing else owns.
+        let (rendering, _writer) =
+            unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+        // SAFETY: a static nul-terminated name and MFD_CLOEXEC.
+        let raw = unsafe { libc::memfd_create(c"foreign-fence-test".as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(
+            raw >= 0,
+            "memfd_create: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: memfd_create returned a new descriptor nothing else owns.
+        let rendered = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
+        rendered.set_len(4).expect("size memfd");
+
+        let (slow, fast) = (sid(200), sid(201));
+        // Phase `a_rendering_buffer_waits_for_its_fence_on_the_loop`.
+        let held = store()
+            .prepare_dmabuf_capture(slow, client.clone(), buffer(rendering), None)
+            .expect("slow capture");
+        assert!(
+            held.fence.is_some(),
+            "an unsignalled buffer is handed to the loop to watch"
+        );
+        // Phase `another_surface_is_captured_meanwhile`.
+        let ready = store()
+            .prepare_dmabuf_capture(fast, client, buffer(rendered.into()), None)
+            .expect("fast capture");
+        assert!(
+            ready.fence.is_none(),
+            "a rendered buffer is captured at once"
+        );
+        await_release(
+            &ready.barrier,
+            "a surface's commit waited behind another surface's unsignalled fence",
+        );
+        assert!(
+            !held.barrier.is_signaled(),
+            "nothing captured the slow buffer before its fence signalled"
+        );
+        // Phase `the_signalled_fence_starts_the_capture`.
+        dmabuf_fence_signalled(slow, held.token.wrapping_add(1));
+        assert!(
+            !held.barrier.is_signaled(),
+            "a fence of another commit does not start this one"
+        );
+        dmabuf_fence_signalled(slow, held.token);
+        await_release(
+            &held.barrier,
+            "the signalled buffer's commit was never released",
+        );
+        store().forget(slow);
+        store().forget(fast);
     }
 }

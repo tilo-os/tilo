@@ -92,18 +92,15 @@ fn slash_menu_and_tooltips_are_semantic_and_viewport_bounded() {
 
 fn type_text(editor: &mut BlockEditor, doc: &mut AutoCommit, text: &str) {
     for character in text.chars() {
-        let mut key: KeyEvent = unsafe { std::mem::zeroed() };
-        key.logical_key = Key::Character(character.to_string().into());
-        key.text = Some(character.to_string().into());
-        key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let key = crate::synthetic_input::key_event(
+            Key::Character(character.to_string().into()),
+            Some(character.to_string().into()),
+            ElementState::Pressed,
         );
-        key.location = winit::keyboard::KeyLocation::Standard;
-        key.state = ElementState::Pressed;
         let mut handled = false;
         editor.handle_event(
             &WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: key,
                 is_synthetic: false,
             },

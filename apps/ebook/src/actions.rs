@@ -2096,9 +2096,7 @@ mod tests {
     }
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// A reader with a book open and one seeded highlight carrying two comments,

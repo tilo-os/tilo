@@ -503,7 +503,11 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
                 let (stream, _) = listener.accept().unwrap();
                 super::serve_connection(
                     stream,
-                    &crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into()),
+                    &std::sync::Arc::new(crate::mcp::McpServer::new(
+                        host.clone(),
+                        "room".into(),
+                        "owner".into(),
+                    )),
                     &super::Status {
                         version: 1,
                         pid: 1,
@@ -533,6 +537,42 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
     assert!(refused.to_string().contains("NotOffered"), "{refused}");
     assert_eq!(host.invoked.lock().unwrap().len(), 1, "nothing more ran");
     serving.join().unwrap();
+}
+
+/// The daemon's native socket answers one session's MCP requests as they
+/// finish, not in the order asked: a `tilo_status` and a `tilo_cancel`
+/// answer while two invokes of the same connection wait.
+#[test]
+fn native_socket_serves_parallel_requests() {
+    use crate::mcp_http::tests::settle_tests::{GatedHost, overlapping_lines};
+    let host = GatedHost::default();
+    let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
+        std::sync::Arc::new(host.clone()),
+        tilo_actions::remote::Caller::local_person("owner").in_room("room"),
+    ));
+    let (client, served) = std::os::unix::net::UnixStream::pair().unwrap();
+    let serving = {
+        let host = host.clone();
+        std::thread::spawn(move || {
+            super::serve_connection(
+                served,
+                &std::sync::Arc::new(crate::mcp::McpServer::new(
+                    host,
+                    "room".into(),
+                    "owner".into(),
+                )),
+                &super::Status {
+                    version: 1,
+                    pid: 1,
+                    room: "room".into(),
+                },
+                None,
+                &search,
+            )
+        })
+    };
+    overlapping_lines(&host, &client);
+    serving.join().unwrap().unwrap();
 }
 
 /// The `--connect` proxy hands each reply to the client as it arrives, while

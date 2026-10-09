@@ -1,5 +1,4 @@
 // Included in the real action-door fixture module.
-use crate::widget::TaffyTreeExt;
 use std::rc::Rc;
 
 struct ContextRosterProbe(Rc<RefCell<Vec<String>>>);
@@ -722,7 +721,7 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
         assert_ne!(app.action_directory_revision(), page.revision);
         assert!(!matches!(
             app.resolve_action_directory(&page.revision, "declared:0", "inspect"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
     }
 }

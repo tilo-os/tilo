@@ -25,11 +25,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -1449,11 +1445,13 @@ impl ChannelHandle {
         Ok(decode_action_directory_page(reply.get()?.get_page()?)?)
     }
 
-    /// Re-materialize an exact action at the revision that yielded it.
+    /// Re-materialize an exact action at the revision that yielded it, or
+    /// against the current directory when `revision` is empty.
     ///
     /// Call this immediately before beginning an invocation. `Found` is the
     /// only outcome that may be used for execution; stale/disconnected rows
-    /// are not served from a broker cache.
+    /// are not served from a broker cache. Current resolution returns the
+    /// authoritative revision the owner used in the `Found` value.
     ///
     /// # Errors
     ///
@@ -1475,7 +1473,9 @@ impl ChannelHandle {
             wire.set_action(action);
         }
         let reply = request.send().promise.await?;
-        Ok(decode_action_directory_resolution_reply(reply.get()?.get_resolution()?)?.resolution)
+        Ok(decode_action_directory_resolution_reply(
+            reply.get()?.get_resolution()?,
+        )?)
     }
 
     /// Re-materialize the current handler for a stable semantic target while
@@ -1514,9 +1514,10 @@ impl ChannelHandle {
         }
         let reply = request.send().promise.await?;
         let decoded = decode_action_directory_resolution_reply(reply.get()?.get_resolution()?)?;
-        if matches!(decoded.resolution, ActionDirectoryResolution::Found(_))
-            && decoded.revision.is_empty()
-        {
+        if matches!(
+            decoded,
+            ActionDirectoryResolution::Found { revision: None, .. }
+        ) {
             return Err(capnp::Error::failed(
                 "fresh action resolution omitted its current revision".into(),
             )
@@ -3213,7 +3214,8 @@ mod certified_join_tests {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod tests {
     #[cfg(feature = "client")]
     #[test]
@@ -4030,7 +4032,8 @@ impl ChannelHandle {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod resolved_invocation_tests {
     use super::*;
 
@@ -4645,7 +4648,8 @@ impl ChannelHandle {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 mod reliable_invocation_tests {
     use super::*;
 
@@ -4966,7 +4970,7 @@ mod reliable_invocation_tests {
         over_wire(s, |c| async move {
             assert!(matches!(
                 c.resolve_published_action(9, "v", "r", "a").await.unwrap(),
-                ActionDirectoryResolution::Found(_)
+                ActionDirectoryResolution::Found { .. }
             ));
             assert!(
                 c.resolve_published_action_for_invocation(9, "v", "r", "a")

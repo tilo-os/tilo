@@ -1288,6 +1288,7 @@ mod tests {
                     confirmation: None,
                     revision: Some(listed.revision),
                     fresh_binding: None,
+                    wait_ms: None,
                 },
             );
             let mut outcome = None;

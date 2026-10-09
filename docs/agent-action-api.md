@@ -129,8 +129,36 @@ back through `tilo-control windows`. It then creates a note through Notes' `new-
 {"answer":{"query":"terminal","count":2,"actions":[
   {"provider":"actions","id":"window.new.terminal","kind":"Actions",
    "title":"New terminal window","subtitle":null,"score":0}
-]}}
+],"total":2,"truncated":false,"next_cursor":null,
+ "revision":"3f9c0a17d2b4e861","complete":true}}
 ```
+
+`complete` is `false` while a source that would change the answer is still on
+its way: the app action index rebuilding after an app published, or an app's
+directory page not yet in. That is a different thing from `truncated` (see
+paging below). `truncated` says this page is not all of the listing, and
+following `next_cursor` gets the rest. `complete: false` says the listing
+itself is not all there yet. `revision` names the listing: it is the identity
+its cursors are cut from, and it changes when its rows do. Neither is a reason
+to poll. `wait_ms` holds the
+answer until the listing is complete (capped at 30 s); add
+`"after_revision":"…"` and it is held until the listing also differs from the
+one you have, which is how to wait for an app that was just opened to publish
+its actions. A waited answer carries `settled`: `false` when the wait ran out
+first, with the latest listing.
+
+```json
+{"op":"actions_enumerate","query":"read","wait_ms":10000,"after_revision":"3f9c0a17d2b4e861"}
+```
+
+```bash
+tilo-control actions list read --wait        # 5 s; --wait=MS for another bound
+```
+
+A held listing is parked rather than polled. It runs again, through the same
+path and the same capability checks, only when the action surface moves: an
+invocation or publication in the broker, the index finishing, a directory page
+arriving. Each of these wakes the compositor.
 
 Machine-oriented operations can be included explicitly through the same door:
 
@@ -262,6 +290,10 @@ tilo-control actions invoke app-actions "$ID" --wait        # 5 s; --wait=MS for
 `--wait` exits 1 when the action failed or was cancelled, and names the job to
 follow with `actions status` when it is still running. Without `wait_ms` the
 answer is the admission receipt, as before; with `device` it is ignored.
+`actions_status` takes the same `wait_ms` (`tilo-control actions status ID
+--wait`), so following a job is one held request rather than a loop of reads.
+`tilo-control read` uses both waits: one listing and one invocation, and no
+sleeps.
 
 A client making many calls can keep one connection: `tilo-control actions
 session` reads one wire request per stdin line and writes one answer per stdout
@@ -335,7 +367,13 @@ Invocation re-resolves the address against a freshly built catalogue before
 anything runs, so an address that was valid at enumeration time and is no longer
 valid now fails loudly instead of running something else. The request runs from
 that one resolution: nothing else runs between resolving the address and
-invoking it.
+invoking it. An application's directory action is admitted bound to the
+directory revision it was resolved at, which the invocation journal records;
+the host that runs it refuses (`published_invocation_revision_changed`) when
+the app's directory moved on before it ran, rather than acting on something
+other than what was resolved. A remote caller that names no revision is bound
+to the one the app resolved at, except for an action whose contract asks for
+confirmation: that one needs the revision it was shown at.
 
 ## Why enumeration carries no invoke handle
 

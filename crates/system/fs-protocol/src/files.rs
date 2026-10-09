@@ -16,7 +16,7 @@ use std::fmt;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{
+use collab_types::{
     CanonicalError, Ed25519PublicKey, Signature, VerifyError, canonical_bytes, sign_event,
     verify_event,
 };
@@ -1418,8 +1418,9 @@ mod tests {
                 properties: None,
             };
             metadata.validate().unwrap();
-            let bytes = crate::canonical::canonical_bytes(&metadata).unwrap();
-            let decoded: FileMetadataV1 = crate::canonical::from_canonical_bytes(&bytes).unwrap();
+            let bytes = collab_types::canonical::canonical_bytes(&metadata).unwrap();
+            let decoded: FileMetadataV1 =
+                collab_types::canonical::from_canonical_bytes(&bytes).unwrap();
             assert_eq!(decoded, metadata);
         }
 
@@ -1434,9 +1435,9 @@ mod tests {
                 metadata_hash: ContentHash([9; 32]),
             };
             revision.validate().unwrap();
-            let bytes = crate::canonical::canonical_bytes(&revision).unwrap();
+            let bytes = collab_types::canonical::canonical_bytes(&revision).unwrap();
             let decoded: ContentRevisionV1 =
-                crate::canonical::from_canonical_bytes(&bytes).unwrap();
+                collab_types::canonical::from_canonical_bytes(&bytes).unwrap();
             assert_eq!(decoded, revision);
         }
     }
@@ -1480,7 +1481,7 @@ mod tests {
             };
             let old_bytes = canonical_bytes(&legacy).unwrap();
             let migrated: FileBindingV1 =
-                crate::canonical::from_canonical_bytes(&old_bytes).unwrap();
+                collab_types::canonical::from_canonical_bytes(&old_bytes).unwrap();
             assert_eq!(migrated.name.as_bytes(), "Grüße.png".as_bytes());
             assert_eq!(canonical_bytes(&migrated).unwrap(), old_bytes);
         }
@@ -1523,9 +1524,9 @@ mod tests {
                 observed_at_ms: 7,
             };
             binding.validate().unwrap();
-            let bytes = crate::canonical::canonical_bytes(&binding).unwrap();
+            let bytes = collab_types::canonical::canonical_bytes(&binding).unwrap();
             assert_eq!(
-                crate::canonical::from_canonical_bytes::<FileBindingV1>(&bytes).unwrap(),
+                collab_types::canonical::from_canonical_bytes::<FileBindingV1>(&bytes).unwrap(),
                 binding
             );
             binding.parent = Some(record_id);
@@ -1541,10 +1542,16 @@ mod tests {
         {
             let record = FileRecordId::new();
             let other = FileRecordId::new();
-            let scope = crate::Scope::FsRecord(record.0.to_string());
-            assert!(scope.matches_resource(&crate::ResourceRef::FsRecord(record.0.to_string())));
-            assert!(!scope.matches_resource(&crate::ResourceRef::FsRecord(other.0.to_string())));
-            assert!(!scope.matches_resource(&crate::ResourceRef::FsPath("/renamed.txt".into())));
+            let scope = collab_types::Scope::FsRecord(record.0.to_string());
+            assert!(
+                scope.matches_resource(&collab_types::ResourceRef::FsRecord(record.0.to_string()))
+            );
+            assert!(
+                !scope.matches_resource(&collab_types::ResourceRef::FsRecord(other.0.to_string()))
+            );
+            assert!(
+                !scope.matches_resource(&collab_types::ResourceRef::FsPath("/renamed.txt".into()))
+            );
         }
     }
 

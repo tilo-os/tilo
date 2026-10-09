@@ -1392,11 +1392,11 @@ mod tests {
             // No highlight yet → Enter would commit the typed text. Arrow down arms
             // the first suggestion.
             assert!(ac.highlighted().is_none());
-            assert!(drive(&mut ac, &named(NamedKey::ArrowDown)));
+            assert!(drive(&mut ac, &named_key(NamedKey::ArrowDown)));
             assert_eq!(ac.highlighted().unwrap().value, "alpha");
-            assert!(drive(&mut ac, &named(NamedKey::ArrowDown)));
+            assert!(drive(&mut ac, &named_key(NamedKey::ArrowDown)));
             assert_eq!(ac.highlighted().unwrap().value, "album");
-            assert!(drive(&mut ac, &named(NamedKey::Enter)));
+            assert!(drive(&mut ac, &named_key(NamedKey::Enter)));
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
@@ -1411,7 +1411,7 @@ mod tests {
             ac.begin_edit();
             drive(&mut ac, &char_key("b"));
             assert!(
-                !drive(&mut ac, &named(NamedKey::Enter)),
+                !drive(&mut ac, &named_key(NamedKey::Enter)),
                 "Enter goes on to the form's default action"
             );
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Accepted("b".into()));
@@ -1422,7 +1422,7 @@ mod tests {
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
             drive(&mut ac, &char_key("a"));
-            assert!(drive(&mut ac, &named(NamedKey::Escape)));
+            assert!(drive(&mut ac, &named_key(NamedKey::Escape)));
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
             assert!(!ac.is_open());
         }
@@ -1436,8 +1436,8 @@ mod tests {
             // Click the second row ("album").
             let row = ac.row_rect(panel, 1);
             let c = row.center();
-            drive(&mut ac, &mouse_move(c.x, c.y));
-            assert!(drive(&mut ac, &left_press()));
+            drive(&mut ac, &cursor_moved(c.x, c.y));
+            assert!(drive(&mut ac, &mouse_press()));
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
@@ -1450,7 +1450,7 @@ mod tests {
             ac.begin_edit();
             drive(&mut ac, &char_key("a")); // "alpha","album"
             // Tab fills the field with the first suggestion but does not commit.
-            assert!(drive(&mut ac, &named(NamedKey::Tab)));
+            assert!(drive(&mut ac, &named_key(NamedKey::Tab)));
             assert_eq!(ac.text(), "alpha");
             assert_eq!(
                 ac.take_outcome(),
@@ -1465,8 +1465,8 @@ mod tests {
             ac.begin_edit();
             drive(&mut ac, &char_key("a"));
             // Move far away, then press: cancels but is not swallowed.
-            drive(&mut ac, &mouse_move(900.0, 900.0));
-            let consumed = drive(&mut ac, &left_press());
+            drive(&mut ac, &cursor_moved(900.0, 900.0));
+            let consumed = drive(&mut ac, &mouse_press());
             assert!(!consumed, "the outside click still reaches the host");
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
         }
@@ -1518,54 +1518,13 @@ mod tests {
         })
     }
 
-    fn char_key(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::char_key;
 
-    fn named(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
-    fn mouse_move(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn drive(ac: &mut Autocomplete, ev: &WindowEvent) -> bool {
         let mut handled = false;
@@ -1703,9 +1662,9 @@ mod tests {
             ac.open();
             assert!(ac.is_open());
             assert_eq!(ac.suggestions().len(), 2);
-            drive(&mut ac, &named(NamedKey::ArrowDown));
+            drive(&mut ac, &named_key(NamedKey::ArrowDown));
             assert_eq!(ac.highlighted().unwrap().value, "Paris");
-            drive(&mut ac, &named(NamedKey::ArrowDown));
+            drive(&mut ac, &named_key(NamedKey::ArrowDown));
             assert_eq!(ac.highlighted().unwrap().value, "Parma");
         }
 

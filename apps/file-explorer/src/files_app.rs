@@ -9,6 +9,7 @@
 //! frame. See [`crate::command`].
 
 use ui::tilo_resource::Effect as _;
+use ui::widget::TaffyTreeExt;
 
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::history_panel::HistoryPanel;
@@ -191,8 +192,8 @@ type MergePreflightResult = Arc<
     std::sync::Mutex<
         Option<(
             uuid::Uuid,
-            collab_types::FileVersionId,
-            Result<collab_types::MergePreflightProjectionV1, String>,
+            fs_protocol::FileVersionId,
+            Result<fs_protocol::MergePreflightProjectionV1, String>,
         )>,
     >,
 >;
@@ -252,7 +253,7 @@ enum CollabPanelAction {
     EmptyTrash,
     ApplySafeMerge {
         conflict_id: uuid::Uuid,
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
     },
     ChooseNearbyDestination {
         handle: ui::collaboration::NearbyTransferHandle,
@@ -457,19 +458,19 @@ fn grant_status_label(status: crate::model::ShareGrantStatus) -> String {
     })
 }
 
-fn conflict_strategy_label(strategy: collab_types::ConflictStrategy) -> String {
+fn conflict_strategy_label(strategy: fs_protocol::ConflictStrategy) -> String {
     t(match strategy {
-        collab_types::ConflictStrategy::KeepCurrent => "files-strategy-keep-current",
-        collab_types::ConflictStrategy::UseOther => "files-strategy-use-other",
-        collab_types::ConflictStrategy::KeepBoth => "files-strategy-keep-both",
-        collab_types::ConflictStrategy::Merge => "files-strategy-merge",
+        fs_protocol::ConflictStrategy::KeepCurrent => "files-strategy-keep-current",
+        fs_protocol::ConflictStrategy::UseOther => "files-strategy-use-other",
+        fs_protocol::ConflictStrategy::KeepBoth => "files-strategy-keep-both",
+        fs_protocol::ConflictStrategy::Merge => "files-strategy-merge",
     })
 }
 
-fn share_permission_label(permission: collab_types::FilePermission) -> String {
+fn share_permission_label(permission: fs_protocol::FilePermission) -> String {
     match permission {
-        collab_types::FilePermission::View => t("files-share-choice-view"),
-        collab_types::FilePermission::Edit => t("files-share-choice-edit"),
+        fs_protocol::FilePermission::View => t("files-share-choice-view"),
+        fs_protocol::FilePermission::Edit => t("files-share-choice-edit"),
     }
 }
 
@@ -482,10 +483,10 @@ fn share_expiry_label(expiry: crate::sharing::ShareExpiryChoice) -> String {
     })
 }
 
-fn named_delivery_status_key(delivery: collab_types::NamedShareDeliveryStateV1) -> &'static str {
+fn named_delivery_status_key(delivery: fs_protocol::NamedShareDeliveryStateV1) -> &'static str {
     match delivery {
-        collab_types::NamedShareDeliveryStateV1::Pending => "files-share-created-pending",
-        collab_types::NamedShareDeliveryStateV1::Delivered => "files-share-created-delivered",
+        fs_protocol::NamedShareDeliveryStateV1::Pending => "files-share-created-pending",
+        fs_protocol::NamedShareDeliveryStateV1::Delivered => "files-share-created-delivered",
     }
 }
 
@@ -566,7 +567,7 @@ enum FileServices {
 )]
 pub struct FileExplorerWidget {
     framework_history: ui::history_mode::checked_files::FileHistorySource,
-    framework_history_binding: Option<(PathBuf, collab_types::FileRecordId)>,
+    framework_history_binding: Option<(PathBuf, fs_protocol::FileRecordId)>,
     services: FileServices,
     startup_accounts: Option<Vec<crate::remote_accounts::RemoteAccount>>,
     current_path: PathBuf,
@@ -777,7 +778,7 @@ pub struct FileExplorerWidget {
     share_result: ui::LatestRequest<Result<crate::sharing::ShareActionResult, String>>,
     share_pending_path: Option<PathBuf>,
     /// Admission of a received bearer link, run on the app runtime.
-    received_share: ui::LatestRequest<Result<collab_types::RecipientSubscriptionStatusV1, String>>,
+    received_share: ui::LatestRequest<Result<fs_protocol::RecipientSubscriptionStatusV1, String>>,
     /// Host-projected names keyed by certified human roots. Labels affect
     /// presentation only; every command and request continues to carry the
     /// root key.
@@ -787,7 +788,7 @@ pub struct FileExplorerWidget {
     history_pending_success: Option<String>,
 
     merge_preflight_result: MergePreflightResult,
-    merge_preflight_pending: Option<(uuid::Uuid, collab_types::FileVersionId)>,
+    merge_preflight_pending: Option<(uuid::Uuid, fs_protocol::FileVersionId)>,
     /// The job of an effect still running (a share link, a nearby send),
     /// answered when its work settles.
     effect_reply: Option<ui::framework::EffectReply>,
@@ -2956,7 +2957,7 @@ impl FileExplorerWidget {
                 version_id,
             } => Some(FileCommand::ResolveConflict {
                 conflict_id: *conflict_id,
-                strategy: collab_types::ConflictStrategy::Merge,
+                strategy: fs_protocol::ConflictStrategy::Merge,
                 version_id: *version_id,
             }),
             CollabPanelAction::ChooseNearbyDestination { handle } => {
@@ -4054,7 +4055,7 @@ impl FileExplorerWidget {
                 self.spawn_share(async move {
                     crate::sharing::create_one_use_view_link(
                         &socket,
-                        collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
+                        fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record_id)),
                     )
                     .await
                     .map(crate::sharing::ShareActionResult::LinkCreated)
@@ -4082,7 +4083,7 @@ impl FileExplorerWidget {
                     return true;
                 };
                 let display = self.trusted_humans.display_name_or_fingerprint(&person);
-                let recipient_devices: Vec<collab_types::Ed25519PublicKey> = self
+                let recipient_devices: Vec<fs_protocol::Ed25519PublicKey> = self
                     .trusted_humans
                     .human(&person)
                     .map(|human| human.devices.iter().map(|device| device.device).collect())
@@ -4099,10 +4100,10 @@ impl FileExplorerWidget {
                 self.spawn_share(async move {
                     crate::sharing::create_named_share(
                         &socket,
-                        collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
+                        fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record_id)),
                         person,
                         recipient_devices,
-                        collab_types::FilePermission::View,
+                        fs_protocol::FilePermission::View,
                         None,
                     )
                     .await
@@ -4135,7 +4136,7 @@ impl FileExplorerWidget {
                 self.spawn_share(async move {
                     crate::sharing::create_share(
                         &socket,
-                        collab_types::FileRecordId(uuid::Uuid::from_bytes(record_id)),
+                        fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record_id)),
                         request,
                     )
                     .await
@@ -4184,7 +4185,7 @@ impl FileExplorerWidget {
                         for grant in &share.grants {
                             let (subject, devices) = match grant.subject {
                                 crate::model::ShareSubject::Person { person } => {
-                                    let person = collab_types::Ed25519PublicKey::from_bytes(person);
+                                    let person = fs_protocol::Ed25519PublicKey::from_bytes(person);
                                     self.trusted_humans.human(&person).map_or_else(
                                         || {
                                             (
@@ -4296,7 +4297,7 @@ impl FileExplorerWidget {
                         .map(|version| (version, entry.path.clone()))
                 });
                 let entry = selected.map(|(version, path)| {
-                    let person = collab_types::Ed25519PublicKey::from_bytes(version.actor.person);
+                    let person = fs_protocol::Ed25519PublicKey::from_bytes(version.actor.person);
                     let person_label = self.trusted_humans.display_name_or_fingerprint(&person);
                     let identity = short_fingerprint(&version.actor.person);
                     let action = t(version.provenance_key());
@@ -4325,8 +4326,8 @@ impl FileExplorerWidget {
                         ),
                         // This is a signed immutable checkpoint, not a shell
                         // CRDT operation the generic Revert affordance can undo.
-                        op_class: collab_types::OpClass::Compaction,
-                        artifact_kind: collab_types::ArtifactKind::File,
+                        op_class: ui::widget::OpClass::Compaction,
+                        artifact_kind: ui::widget::ArtifactKind::File,
                         timestamp: UNIX_EPOCH
                             .checked_add(Duration::from_millis(version.timestamp_ms))
                             .unwrap_or(UNIX_EPOCH),
@@ -4404,12 +4405,12 @@ impl FileExplorerWidget {
                     return true;
                 };
                 let verb = match strategy {
-                    collab_types::ConflictStrategy::KeepCurrent => t("files-keeping-current"),
-                    collab_types::ConflictStrategy::UseOther => t("files-applying-other"),
-                    collab_types::ConflictStrategy::KeepBoth => {
-                        conflict_strategy_label(collab_types::ConflictStrategy::KeepBoth)
+                    fs_protocol::ConflictStrategy::KeepCurrent => t("files-keeping-current"),
+                    fs_protocol::ConflictStrategy::UseOther => t("files-applying-other"),
+                    fs_protocol::ConflictStrategy::KeepBoth => {
+                        conflict_strategy_label(fs_protocol::ConflictStrategy::KeepBoth)
                     }
-                    collab_types::ConflictStrategy::Merge => t("files-merging-versions"),
+                    fs_protocol::ConflictStrategy::Merge => t("files-merging-versions"),
                 };
                 self.history_pending_path = Some(entry.path.clone());
                 self.history_pending_success = Some(t("files-conflict-resolved-signed"));
@@ -5670,7 +5671,7 @@ impl FileExplorerWidget {
                 .history
                 .as_ref()
                 .and_then(|h| uuid::Uuid::parse_str(&h.record_id).ok())?;
-            Some((entry.path, collab_types::FileRecordId(id), entry.name))
+            Some((entry.path, fs_protocol::FileRecordId(id), entry.name))
         });
         let identity = selected
             .as_ref()
@@ -6794,8 +6795,8 @@ impl FileExplorerWidget {
                             }),
                         ));
                         for permission in [
-                            collab_types::FilePermission::View,
-                            collab_types::FilePermission::Edit,
+                            fs_protocol::FilePermission::View,
+                            fs_protocol::FilePermission::Edit,
                         ] {
                             for expiry in [
                                 crate::sharing::ShareExpiryChoice::Day,
@@ -6836,8 +6837,8 @@ impl FileExplorerWidget {
                         Some(FileCommand::CreateOneTimeShareLink),
                     ));
                     for permission in [
-                        collab_types::FilePermission::View,
-                        collab_types::FilePermission::Edit,
+                        fs_protocol::FilePermission::View,
+                        fs_protocol::FilePermission::Edit,
                     ] {
                         for expiry in [
                             crate::sharing::ShareExpiryChoice::Day,
@@ -6902,7 +6903,7 @@ impl FileExplorerWidget {
                         };
                         let subject = match grant.subject {
                             crate::model::ShareSubject::Person { person } => {
-                                let person = collab_types::Ed25519PublicKey::from_bytes(person);
+                                let person = fs_protocol::Ed25519PublicKey::from_bytes(person);
                                 self.trusted_humans.display_name_or_fingerprint(&person)
                             }
                             crate::model::ShareSubject::BearerLink => t("files-shared-link"),
@@ -6920,7 +6921,7 @@ impl FileExplorerWidget {
                             (!history.heads.contains(&version.id) && version.content_hash.is_some())
                                 .then(|| uuid::Uuid::parse_str(&version.id).ok())
                                 .flatten()
-                                .map(collab_types::FileVersionId)
+                                .map(fs_protocol::FileVersionId)
                         })
                     }) {
                         spec.push((
@@ -6969,8 +6970,8 @@ impl FileExplorerWidget {
                                 ),
                                 Some(FileCommand::ResolveConflict {
                                     conflict_id: conflict.id,
-                                    strategy: collab_types::ConflictStrategy::KeepCurrent,
-                                    version_id: collab_types::FileVersionId(current_id),
+                                    strategy: fs_protocol::ConflictStrategy::KeepCurrent,
+                                    version_id: fs_protocol::FileVersionId(current_id),
                                 }),
                             ));
                             for other in members
@@ -6990,8 +6991,8 @@ impl FileExplorerWidget {
                                     ),
                                     Some(FileCommand::ResolveConflict {
                                         conflict_id: conflict.id,
-                                        strategy: collab_types::ConflictStrategy::UseOther,
-                                        version_id: collab_types::FileVersionId(other_id),
+                                        strategy: fs_protocol::ConflictStrategy::UseOther,
+                                        version_id: fs_protocol::FileVersionId(other_id),
                                     }),
                                 ));
                                 if merge_supported_path(&entry.path) {
@@ -7003,7 +7004,7 @@ impl FileExplorerWidget {
                                         ),
                                         Some(FileCommand::ReviewConflictMerge {
                                             conflict_id: conflict.id,
-                                            version_id: collab_types::FileVersionId(other_id),
+                                            version_id: fs_protocol::FileVersionId(other_id),
                                             other_device: other.actor.device,
                                         }),
                                     ));
@@ -7012,14 +7013,14 @@ impl FileExplorerWidget {
                                     format!(
                                         "{} ({})",
                                         conflict_strategy_label(
-                                            collab_types::ConflictStrategy::KeepBoth,
+                                            fs_protocol::ConflictStrategy::KeepBoth,
                                         ),
                                         short_fingerprint(&other.actor.device),
                                     ),
                                     Some(FileCommand::ResolveConflict {
                                         conflict_id: conflict.id,
-                                        strategy: collab_types::ConflictStrategy::KeepBoth,
-                                        version_id: collab_types::FileVersionId(other_id),
+                                        strategy: fs_protocol::ConflictStrategy::KeepBoth,
+                                        version_id: fs_protocol::FileVersionId(other_id),
                                     }),
                                 ));
                             }
@@ -7788,7 +7789,7 @@ impl FileExplorerWidget {
         &mut self,
         path: PathBuf,
         conflict_id: uuid::Uuid,
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
     ) {
         self.merge_preflight_pending = Some((conflict_id, version_id));
         let result = Arc::clone(&self.merge_preflight_result);
@@ -9052,13 +9053,7 @@ impl Widget for FileExplorerWidget {
         };
         // `new_with_children` only fails when a child belongs to a
         // different tree; the shell was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "nav_node was just created in this same tree"
-        )]
-        let node = taffy.new_with_children(style, &[nav_node]).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[nav_node], node_map, self)
     }
 
     fn apply_layout(
@@ -9524,7 +9519,7 @@ impl Widget for FileExplorerWidget {
                 Action::Focus | Action::Activate | Action::ScrollIntoView
             ) {
                 return self.apply_command(FileCommand::SelectHistoryVersion {
-                    version_id: collab_types::FileVersionId(version),
+                    version_id: fs_protocol::FileVersionId(version),
                 });
             }
             return false;
@@ -9741,7 +9736,8 @@ pub(crate) mod published {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 #[path = "framework_history_tests.rs"]
 mod framework_history_tests;
 

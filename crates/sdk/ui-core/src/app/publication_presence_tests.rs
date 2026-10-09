@@ -29,6 +29,10 @@ crate::testing::test_app_widget!(
     icon = crate::widget::IconDescriptor::Named("notes".into())
 );
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "test fixture requires its declared production action binding; missing setup must fail fast"
+)]
 fn component(
     mut context: crate::application::HostContext,
     count: usize,
@@ -67,6 +71,10 @@ impl AppSurface for Surface {
     fn set_cursor(&self, _: CursorIcon) {}
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "test fixture requires a mounted production component and exact published owner; missing setup must fail fast"
+)]
 fn mounted(count: usize) -> (ProbeHost, App, SemanticInteraction) {
     let host = ProbeHost::new();
     let create: crate::application::ComponentFactory = if count == 1 {
@@ -142,6 +150,10 @@ fn mounted(count: usize) -> (ProbeHost, App, SemanticInteraction) {
     (host, app, interaction)
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "test fixture interaction must be admitted before checking painted production markers; refusal must fail fast"
+)]
 fn paint(
     app: &mut App,
     interaction: &SemanticInteraction,
@@ -245,4 +257,85 @@ fn bound_publication_activity_withdraws_the_marker_when_its_mount_disappears() {
             .agent_marker_targets(&surface, crate::time::now())
             .is_empty()
     );
+}
+
+#[test]
+fn cached_native_presence_layer_publishes_and_retires_exact_bound_markers() {
+    let clock = crate::background::Pumped::new();
+    let _entered = clock.background().enter();
+    let (_host, mut app, interaction) = mounted(1);
+    let mut scene = Scene::new();
+    let _ = app.surface_frame(&Surface, &mut scene);
+    // Both production drawing paths receive the same stopped UI tick.
+    // Comparing draws at different ticks would compare animation positions,
+    // rather than whether the cached layer uses the exact published locus.
+    let now = clock.now();
+    app.presence_ctx_mut()
+        .apply_interaction_at(interaction.clone(), now)
+        .unwrap();
+    let viewport = KurboRect::new(0.0, 0.0, 640.0, 480.0);
+    draw_agent_action_presence(&mut app, &mut scene, Affine::IDENTITY, viewport, now);
+    let surface = app.presence_ctx().agent_marker_surface_key("primary");
+    let expected = app.presence_ctx().agent_marker_targets(&surface, now);
+    assert_eq!(expected.len(), 1);
+    let before = app.state.doc.clone().save();
+    app.presence_ctx_mut().clear_agent_marker_surface(&surface);
+    let mut layer = crate::presence::PresenceLayer::new();
+    let _ = draw_presence_layer(&mut app, &mut layer, Affine::IDENTITY, viewport, now);
+    let markers = app.presence_ctx().agent_marker_targets(&surface, now);
+    assert_eq!(markers.len(), 1);
+    assert_eq!(markers[0].interaction, interaction);
+    assert_eq!(markers[0].bounds, expected[0].bounds);
+    assert_eq!(
+        app.window.agent_marker_surface.as_deref(),
+        Some(surface.as_str())
+    );
+    assert!(!layer.scene().encoding().is_empty());
+    layer.presented();
+
+    // A frame re-records the layer against the current retained owner; it
+    // must not reuse last frame's marker when that owner disappears.
+    app.root_widget = Box::new(crate::widget::Text::new("Replacement"));
+    app.init_layout();
+    let _ = draw_presence_layer(&mut app, &mut layer, Affine::IDENTITY, viewport, now);
+    assert!(
+        app.presence_ctx()
+            .agent_marker_targets(&surface, now)
+            .is_empty()
+    );
+    let damage = layer
+        .damage()
+        .expect("both recorded layers have bounded parts");
+    assert!(
+        damage
+            .iter()
+            .any(|rect| rect.contains(expected[0].bounds.center()))
+    );
+    assert_eq!(app.state.doc.clone().save(), before);
+}
+
+#[test]
+fn cached_native_presence_layer_refuses_foreign_and_ambiguous_bound_loci() {
+    for ambiguous in [false, true] {
+        let (_host, mut app, mut interaction) = mounted(if ambiguous { 2 } else { 1 });
+        if !ambiguous {
+            interaction.action.app.as_mut().unwrap().id = "so.tilo.foreign".into();
+        }
+        assert!(paint(&mut app, &interaction).is_empty());
+        let surface = app.presence_ctx().agent_marker_surface_key("primary");
+        let mut layer = crate::presence::PresenceLayer::new();
+        let now = crate::time::now();
+        let _ = draw_presence_layer(
+            &mut app,
+            &mut layer,
+            Affine::IDENTITY,
+            KurboRect::new(0.0, 0.0, 640.0, 480.0),
+            now,
+        );
+        assert!(
+            app.presence_ctx()
+                .agent_marker_targets(&surface, now)
+                .is_empty()
+        );
+    }
 }

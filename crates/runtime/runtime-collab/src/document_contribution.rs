@@ -213,6 +213,10 @@ mod tests {
 
     struct Recipient(Rc<Cell<usize>>);
     impl collab_capnp::channel_handle::Server for Recipient {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "overflow in the controlled RPC fixture call counter must fail the test, never wrap"
+        )]
         fn send(
             self: Rc<Self>,
             params: collab_capnp::channel_handle::SendParams,
@@ -264,6 +268,10 @@ mod tests {
 
     struct FailedWriter(Rc<Cell<usize>>);
     impl collab_capnp::document_contribution_writer::Server for FailedWriter {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "overflow in the controlled failed-write call counter must fail the test, never wrap"
+        )]
         fn write(
             self: Rc<Self>,
             _params: collab_capnp::document_contribution_writer::WriteParams,

@@ -41,7 +41,7 @@ use crate::accesskit_bridge::{
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
-use crate::synthetic_input::key_event;
+use crate::synthetic_input::key_input;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{EventCtx, TaffyTreeExt, Widget};
@@ -7516,7 +7516,7 @@ impl FrameHarness {
         self.pump_component_wakes();
         let key = parse_key(spec);
         for state in [ElementState::Pressed, ElementState::Released] {
-            self.send_host_event(&key_event(&key, state));
+            self.send_host_event(&key_input(&key, state));
         }
     }
 
@@ -9594,7 +9594,7 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Character("k".into()),
             ElementState::Pressed,
         ));
@@ -9632,14 +9632,14 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Character("a".into()),
             ElementState::Pressed,
         ));
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::default(),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Character("x".into()),
             ElementState::Pressed,
         ));
@@ -9654,7 +9654,7 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::default(),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Named(winit::keyboard::NamedKey::Tab),
             ElementState::Pressed,
         ));
@@ -9662,7 +9662,7 @@ mod tests {
         frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::ALT),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Named(winit::keyboard::NamedKey::ArrowUp),
             ElementState::Pressed,
         ));
@@ -9672,7 +9672,7 @@ mod tests {
                 winit::keyboard::ModifiersState::ALT | winit::keyboard::ModifiersState::SHIFT,
             ),
         ));
-        frame.send_host_event(&key_event(
+        frame.send_host_event(&key_input(
             &Key::Named(winit::keyboard::NamedKey::ArrowLeft),
             ElementState::Pressed,
         ));
@@ -9689,7 +9689,7 @@ mod tests {
         document.set_platform_conventions(crate::platform::PlatformConventions::new(
             crate::platform::Platform::MacOs,
         ));
-        document.send_host_event(&key_event(
+        document.send_host_event(&key_input(
             &Key::Character("a".into()),
             ElementState::Pressed,
         ));
@@ -9700,7 +9700,7 @@ mod tests {
         document.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER),
         ));
-        document.send_host_event(&key_event(
+        document.send_host_event(&key_input(
             &Key::Character("z".into()),
             ElementState::Pressed,
         ));
@@ -10317,17 +10317,14 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(120.0),
-                        height: Dimension::length(40.0),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = Style {
+                size: Size {
+                    width: Dimension::length(120.0),
+                    height: Dimension::length(40.0),
+                },
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -10435,17 +10432,14 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -10528,8 +10522,8 @@ mod tests {
         use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 
         let key = Key::Character("Q".into());
-        let pressed = key_event(&key, ElementState::Pressed);
-        let released = key_event(&key, ElementState::Released);
+        let pressed = key_input(&key, ElementState::Pressed);
+        let released = key_input(&key, ElementState::Released);
 
         for (window_event, expected_state, expected_text) in [
             (pressed, ElementState::Pressed, Some("Q")),
@@ -11929,9 +11923,7 @@ mod a11y_driver_tests {
             _t: &crate::theme::Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.new_leaf(taffy::Style::default()).unwrap();
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(taffy::Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: vello::kurbo::Point) {}
         fn draw(
@@ -13672,17 +13664,14 @@ mod framed_tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(self.width),
-                        height: Dimension::length(40.0),
-                    },
-                    ..Default::default()
-                })
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            let style = Style {
+                size: Size {
+                    width: Dimension::length(self.width),
+                    height: Dimension::length(40.0),
+                },
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -13722,13 +13711,7 @@ mod framed_tests {
         }
     }
 
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn framed_root_runs_a_frame_on_mount_and_recomposes_after_mutable_access() {
@@ -13760,7 +13743,7 @@ mod framed_tests {
     fn dispatch_to_root_reaches_the_root_and_keeps_the_retained_tree() {
         let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
         let outcome = Framed::harness_mut(&mut probe)
-            .dispatch_to_root_outcome(&press(), &winit::event::Modifiers::default());
+            .dispatch_to_root_outcome(&mouse_press(), &winit::event::Modifiers::default());
         assert!(outcome.handled);
         assert_eq!(outcome.focus_target, None);
         assert_eq!(probe.presses, 1);
@@ -13799,9 +13782,7 @@ mod framed_tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
 
         fn measure(

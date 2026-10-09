@@ -83,6 +83,13 @@ unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
 # its own allowlist of variables.
 cd "$REPO"
 read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
+if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
+    extra_cargo_args+=(--message-format=json-render-diagnostics)
+    # Keep the actual unit identities on the producing machine; no runtime bytes change.
+    exec 3>&1
+    exec > >(tee "$SDK_COMPILER_UNITS" >&3)
+    sdk_compiler_stream_pid=$!
+fi
 "${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
     --config "build.rustc-workspace-wrapper=\"$REPO/tools/ci/rustc-thin-app-wrapper.sh\"" \
     --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
@@ -133,3 +140,10 @@ done
 
 printf 'built %s thin tapp apps with %s\n' \
     "${#binaries[@]}" "$TARGET_DIR/$PROFILE/libruntime_dylib.so"
+
+# The producer may capture the unit stream immediately after this script exits.
+# Join its writer rather than exposing a still-being-written inventory.
+if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
+    exec 1>&3 3>&-
+    wait "$sdk_compiler_stream_pid"
+fi

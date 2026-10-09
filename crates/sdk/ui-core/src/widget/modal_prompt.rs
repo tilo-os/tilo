@@ -363,12 +363,8 @@ mod tests {
     use crate::widget::ModalDialog;
     use automerge::AutoCommit;
     use vello::kurbo::Point;
-    use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton};
-    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
-
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::ElementState;
+    use winit::keyboard::{Key, NamedKey};
 
     fn laid_out(body: PromptBody, viewport: Rect) -> ModalDialog<PromptBody> {
         let mut d = ModalDialog::new("Prompt", body)
@@ -409,10 +405,10 @@ mod tests {
         let body = PromptBody::confirm_phrase("Everything on sdb will be erased.", "sdb");
         let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
         assert!(!d.content().confirms());
-        dispatch(&mut d, &char_event("s"));
-        dispatch(&mut d, &char_event("d"));
+        dispatch(&mut d, &char_key("s"));
+        dispatch(&mut d, &char_key("d"));
         assert!(!d.content().confirms());
-        dispatch(&mut d, &char_event("b"));
+        dispatch(&mut d, &char_key("b"));
         assert!(d.content().confirms(), "the phrase confirms");
         let node = Widget::accessibility(d.content()).unwrap();
         assert_eq!(node.name.as_deref(), Some("Type sdb to confirm"));
@@ -422,35 +418,16 @@ mod tests {
         );
     }
 
-    fn char_event(ch: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(ch.into());
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(ch.into());
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::char_key;
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn dispatch(d: &mut ModalDialog<PromptBody>, event: &WindowEvent) {
         let mut taffy = TaffyTree::<()>::new();
@@ -515,8 +492,8 @@ mod tests {
         {
             let body = PromptBody::new("Name", "New volume");
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-            dispatch(&mut d, &char_event("h"));
-            dispatch(&mut d, &char_event("i"));
+            dispatch(&mut d, &char_key("h"));
+            dispatch(&mut d, &char_key("i"));
             assert_eq!(
                 d.content().value(),
                 "hi",
@@ -529,7 +506,7 @@ mod tests {
             let body = PromptBody::new("Name", "").with_initial("old-name");
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
             assert_eq!(d.content().value(), "old-name");
-            dispatch(&mut d, &char_event("x"));
+            dispatch(&mut d, &char_key("x"));
             assert_eq!(
                 d.content().value(),
                 "x",
@@ -541,16 +518,16 @@ mod tests {
         {
             let body = PromptBody::new("Name", "hint");
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-            dispatch(&mut d, &char_event("a"));
-            dispatch(&mut d, &char_event("b"));
+            dispatch(&mut d, &char_key("a"));
+            dispatch(&mut d, &char_key("b"));
             let center = d.dialog_rect().center();
             dispatch(&mut d, &cursor_at(center));
-            dispatch(&mut d, &left_press());
+            dispatch(&mut d, &mouse_press());
             assert!(
                 d.content().is_focused(),
                 "the field stays focused after an in-box click",
             );
-            dispatch(&mut d, &char_event("c"));
+            dispatch(&mut d, &char_key("c"));
             assert!(
                 d.content().value().contains('c'),
                 "typing continues to reach the field after the click",
@@ -561,26 +538,23 @@ mod tests {
         {
             let body = PromptBody::new("Notes", "").multiline(true);
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-            dispatch(&mut d, &char_event("a"));
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(NamedKey::Enter);
-            ev.physical_key =
-                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-            ev.location = KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
+            dispatch(&mut d, &char_key("a"));
+            let ev = crate::synthetic_input::key_event(
+                Key::Named(NamedKey::Enter),
+                None,
+                ElementState::Pressed,
+            );
             // The dialog itself does not intercept Enter (only Escape), so it
             // forwards to the multiline field, which inserts a newline.
             dispatch(
                 &mut d,
                 &WindowEvent::KeyboardInput {
-                    device_id: synth_device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     event: ev,
                     is_synthetic: false,
                 },
             );
-            dispatch(&mut d, &char_event("b"));
+            dispatch(&mut d, &char_key("b"));
             assert_eq!(
                 d.content().value(),
                 "a\nb",

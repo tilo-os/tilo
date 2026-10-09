@@ -91,12 +91,13 @@ struct HostedPumpFixture {
     pending_label: std::rc::Rc<RefCell<Option<String>>>,
     sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
     events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
+    directory: std::rc::Rc<RefCell<Vec<crate::collaboration::ActionDirectoryRequest>>>,
 }
 
 struct HostedPumpTransport {
     sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
     events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
-    directory_requests: std::rc::Rc<RefCell<Vec<crate::collaboration::ActionDirectoryRequest>>>,
+    directory: std::rc::Rc<RefCell<Vec<crate::collaboration::ActionDirectoryRequest>>>,
 }
 impl crate::collaboration::PeerTransport for HostedPumpTransport {
     fn is_connected(&self) -> bool {
@@ -115,7 +116,7 @@ impl crate::collaboration::PeerTransport for HostedPumpTransport {
     fn take_action_directory_requests(
         &mut self,
     ) -> Vec<crate::collaboration::ActionDirectoryRequest> {
-        std::mem::take(&mut *self.directory_requests.borrow_mut())
+        std::mem::take(&mut *self.directory.borrow_mut())
     }
 }
 
@@ -142,11 +143,12 @@ impl HostedPumpFixture {
             .register::<CounterAction>(COUNTER_TYPE);
         let sent = std::rc::Rc::new(RefCell::new(vec![]));
         let events = std::rc::Rc::new(RefCell::new(vec![]));
+        let directory = std::rc::Rc::new(RefCell::new(vec![]));
         app.collaboration.manager =
             CollaborationManager::with_peer_transport(HostedPumpTransport {
                 sent: sent.clone(),
                 events: events.clone(),
-                directory_requests: Default::default(),
+                directory: directory.clone(),
             });
         app.init_layout();
         let mut fixture = Self {
@@ -157,6 +159,7 @@ impl HostedPumpFixture {
             pending_label,
             sent,
             events,
+            directory,
         };
         // Construction wakes and the first publication settle here.
         fixture.app.pump_hosted_model_as(false);
@@ -206,7 +209,7 @@ fn hosted_pump_repairs_invalidated_snapshot_before_queued_directory_reply() {
         CollaborationManager::with_peer_transport(HostedPumpTransport {
             sent: fixture.sent.clone(),
             events: fixture.events.clone(),
-            directory_requests: requests.clone(),
+            directory: requests.clone(),
         });
     fixture.pump();
     let first = fixture
@@ -611,4 +614,162 @@ fn hosted_pump_action_authority_revoke_refreshes_without_forced_sync() {
     );
     assert_ne!(fixture.app.actions.resource_generation.get(), generation);
     fixture.assert_idle();
+}
+
+/// The broker uses an event-only wake for pull-directory requests. Route the
+/// real queue through the owner pump, rather than calling the page helper alone.
+#[test]
+fn hosted_directory_rpc_wake_preserves_no_change_cursor_and_rejects_model_change() {
+    let mut fixture = HostedPumpFixture::new(1);
+    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+    fixture.wake.wake();
+    fixture.pump();
+    fixture.pump();
+    let before = fixture.app.state.doc.save();
+    let mut query = directory_query("", "", 1, 8192, 8);
+    let mut revision = None;
+    let mut rows = Vec::new();
+    for _ in 0..4 {
+        let (reply, mut response) = tokio::sync::oneshot::channel();
+        fixture
+            .directory
+            .borrow_mut()
+            .push(crate::collaboration::ActionDirectoryRequest::Query {
+                query: query.clone(),
+                reply,
+            });
+        fixture.wake.notify_events();
+        let report = fixture.pump();
+        let page = response
+            .try_recv()
+            .expect("owner pump answers the actual queued request");
+        assert!(
+            !page.stale_cursor,
+            "metadata-only owner wakes keep consecutive pages valid"
+        );
+        assert!(
+            !report.synced,
+            "directory event wake alone must not force model sync"
+        );
+        assert!(
+            !report.published,
+            "directory reads must not republish declarations"
+        );
+        if let Some(revision) = &revision {
+            assert_eq!(&page.revision, revision);
+        } else {
+            revision = Some(page.revision.clone());
+        }
+        rows.extend(page.rows);
+        if page.exhausted {
+            break;
+        }
+        query.revision = page.revision;
+        query.cursor = page.next_cursor;
+    }
+    assert_eq!(
+        rows.len(),
+        3,
+        "all declared roots appear once across real queue turns"
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.resource.as_str())
+            .collect::<Vec<_>>(),
+        ["probe:0", "probe:1", "probe:2"]
+    );
+    assert_eq!(fixture.app.state.doc.save(), before);
+    let page = fixture
+        .app
+        .action_directory_page(directory_query("", "", 1, 8192, 8));
+    assert!(!page.next_cursor.is_empty());
+    *fixture.pending_label.borrow_mut() = Some("Changed".into());
+    fixture.wake.wake();
+    assert!(fixture.pump().synced);
+    let (reply, mut response) = tokio::sync::oneshot::channel();
+    let mut query = directory_query(&page.revision, "", 1, 8192, 8);
+    query.cursor = page.next_cursor;
+    fixture
+        .directory
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query { query, reply });
+    fixture.wake.notify_events();
+    fixture.pump();
+    assert!(
+        response.try_recv().unwrap().stale_cursor,
+        "a real changed model still invalidates the old cursor"
+    );
+}
+
+#[test]
+fn cancelled_directory_rpc_does_not_consume_undelivered_cursor() {
+    let mut fixture = HostedPumpFixture::new(1);
+    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+    fixture.wake.wake();
+    fixture.pump();
+    fixture.pump();
+    let cursors = fixture.app.actions.action_directory_cursors.len();
+    let (reply, response) = tokio::sync::oneshot::channel();
+    drop(response);
+    fixture
+        .directory
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query {
+            query: directory_query("", "", 1, 8192, 8),
+            reply,
+        });
+    fixture.wake.notify_events();
+    let report = fixture.pump();
+    assert!(!report.synced && !report.published);
+    assert_eq!(
+        fixture.app.actions.action_directory_cursors.len(),
+        cursors,
+        "a cancelled root request must not allocate an undeliverable cursor"
+    );
+    let page = fixture
+        .app
+        .action_directory_page(directory_query("", "", 1, 8192, 8));
+    assert!(!page.next_cursor.is_empty());
+    let mut query = directory_query(&page.revision, "", 1, 8192, 8);
+    query.cursor = page.next_cursor;
+    let (reply, response) = tokio::sync::oneshot::channel();
+    drop(response);
+    fixture
+        .directory
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query {
+            query: query.clone(),
+            reply,
+        });
+    fixture.wake.notify_events();
+    let report = fixture.pump();
+    assert!(!report.synced && !report.published);
+    let (reply, mut response) = tokio::sync::oneshot::channel();
+    fixture
+        .directory
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query {
+            query: query.clone(),
+            reply,
+        });
+    fixture.wake.notify_events();
+    fixture.pump();
+    let next = response.try_recv().unwrap();
+    assert!(
+        !next.stale_cursor,
+        "a request cancelled before owner admission must not consume the offered continuation"
+    );
+    assert_eq!(next.rows.len(), 1);
+    assert_eq!(next.rows.first().unwrap().resource, "probe:1");
+    let (reply, mut response) = tokio::sync::oneshot::channel();
+    fixture
+        .directory
+        .borrow_mut()
+        .push(crate::collaboration::ActionDirectoryRequest::Query { query, reply });
+    fixture.wake.notify_events();
+    fixture.pump();
+    assert!(
+        response.try_recv().unwrap().stale_cursor,
+        "a delivered continuation remains strictly one-use"
+    );
 }

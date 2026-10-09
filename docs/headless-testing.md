@@ -160,9 +160,10 @@ not establish application identity.
 
 After launch, enumerate again and inspect the app actions' `application`,
 `resource`, `operation`, `params`, and `contract` fields. Invoke the returned
-provider/ID with its declared arguments. Inspect the invocation receipt and,
-when pending, use `actions status INVOCATION_ID` until it reaches a terminal
-state. Then read back the affected resource or desktop state to verify the
+provider/ID with its declared arguments, adding `--wait` so the answer is the
+result and not the admission. To follow a pending receipt, use
+`actions status INVOCATION_ID --wait`, never a sleep-and-retry loop (see
+`docs/agent-action-api.md`). Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
 not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
 presented app identity, surface, frame count, and rendering errors for foreign
@@ -294,6 +295,15 @@ echo '{"op":"snapshot","path":"/tmp/after-add-workspace.png"}' | nc -U $XDG_RUNT
 # Kill when done:
 kill %1
 ```
+
+To time what an agent waits for on this socket, run
+`scripts/perf/agent_rtt.py`. It measures actions list, state dump, a no-op
+invoke (accepted, and completed through `wait_ms`), throughput under
+concurrent clients and the same no-op through the MCP server. Give it
+`--socket PATH` for a running desktop, or `--spawn SHELL` to start a
+compositor through `spawn-headless.sh`. A spawned compositor is removed on
+exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set. A
+release build serves the socket only with `--features dev-overrides`.
 
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash

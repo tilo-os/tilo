@@ -168,6 +168,7 @@ mod tests {
                 path: (*path).to_string(),
                 hash: recorded.unwrap_or_else(|| BlobHash::of(bytes)).to_hex(),
                 size: bytes.len() as u64,
+                verity: None,
             });
         }
         let manifest = runtime_bundle::BundleManifest {
@@ -178,6 +179,7 @@ mod tests {
             produced_at: 0,
             publisher_hex: None,
             signature_hex: None,
+            verity_signature_hex: None,
         };
         fs::write(
             dir.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME),

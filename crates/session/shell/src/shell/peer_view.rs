@@ -956,7 +956,7 @@ mod tests {
                 handled
             };
             let wheel = || WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
                 phase: winit::event::TouchPhase::Moved,
             };

@@ -2029,15 +2029,10 @@ mod tests {
         s
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
     fn mouse(state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state,
             button: MouseButton::Left,
         }
@@ -2936,7 +2931,7 @@ mod tests {
             assert!(s.is_focused());
 
             assert!(
-                dispatch(&mut s, &key(NamedKey::PageDown)),
+                dispatch(&mut s, &named_key(NamedKey::PageDown)),
                 "PageDown handled"
             );
             let page = 300.0 * PAGE_FRACTION;
@@ -2946,25 +2941,28 @@ mod tests {
                 s.offset_y()
             );
 
-            assert!(dispatch(&mut s, &key(NamedKey::End)), "End handled");
+            assert!(dispatch(&mut s, &named_key(NamedKey::End)), "End handled");
             assert!(
                 (s.offset_y() - 900.0).abs() < 1e-3,
                 "End → bottom, got {}",
                 s.offset_y()
             );
 
-            assert!(dispatch(&mut s, &key(NamedKey::PageUp)), "PageUp handled");
+            assert!(
+                dispatch(&mut s, &named_key(NamedKey::PageUp)),
+                "PageUp handled"
+            );
             assert!(
                 (s.offset_y() - (900.0 - page)).abs() < 0.5,
                 "PageUp from bottom, got {}",
                 s.offset_y()
             );
 
-            assert!(dispatch(&mut s, &key(NamedKey::Home)), "Home handled");
+            assert!(dispatch(&mut s, &named_key(NamedKey::Home)), "Home handled");
             assert_eq!(s.offset_y(), 0.0, "Home → top");
 
             assert!(
-                dispatch(&mut s, &key(NamedKey::ArrowDown)),
+                dispatch(&mut s, &named_key(NamedKey::ArrowDown)),
                 "ArrowDown handled"
             );
             assert!(
@@ -2979,7 +2977,7 @@ mod tests {
             let mut s = vertical(1200.0);
             assert!(!s.is_focused());
             assert!(
-                !dispatch(&mut s, &key(NamedKey::PageDown)),
+                !dispatch(&mut s, &named_key(NamedKey::PageDown)),
                 "unfocused key not handled"
             );
             assert_eq!(s.offset_y(), 0.0, "unfocused container does not scroll");
@@ -2993,7 +2991,7 @@ mod tests {
             let mut s = vertical(1200.0);
             let before = s.offset_y();
             let ev = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -3007,7 +3005,7 @@ mod tests {
             let mut s = both(1200.0, 1200.0);
             let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
             let wheel = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0), // a plain vertical wheel
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -3024,7 +3022,7 @@ mod tests {
         {
             let mut s = both(1200.0, 1200.0);
             let tilt = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(-1.0, 0.0), // horizontal tilt
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -3496,23 +3494,7 @@ mod tests {
         s
     }
 
-    fn key(named: NamedKey) -> WindowEvent {
-        // winit keeps `KeyEvent`'s tail fields non-public; zero-init and set
-        // what we read.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
     fn dispatch_mods(
         s: &mut Scrollable,

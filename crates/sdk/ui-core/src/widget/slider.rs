@@ -1127,28 +1127,11 @@ mod tests {
         s
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_release;
 
     /// Drive an event through the slider with default scaffolding.
     fn dispatch(s: &mut Slider, event: &WindowEvent) {
@@ -1557,14 +1540,8 @@ mod tests {
         slider.set_focus(true);
         let doc = AutoCommit::new();
         let key = |slider: &mut Slider, named: winit::keyboard::NamedKey| {
-            // SAFETY: winit keeps one field private; the zero pattern is valid
-            // for it and every public field is set below.
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(named);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            );
-            ev.state = ElementState::Pressed;
+            let ev =
+                crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
             slider.handle_key(&ev, &doc, &automerge::ROOT)
         };
         assert!(key(&mut slider, NamedKey::ArrowRight));

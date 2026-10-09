@@ -294,7 +294,8 @@ pub(super) struct BrokerTransport {
     _thread: Option<thread::JoinHandle<()>>,
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(crate) struct NativeHistoryInvocationFixture {
     pub manager: CollaborationManager,
     pub refresh: Box<dyn Fn(Vec<u8>, tokio::sync::oneshot::Receiver<()>)>,
@@ -2723,12 +2724,14 @@ struct ConnectedBroker {
     primary_route: PrimaryRouteState,
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(crate) struct NativeRefreshProbe {
     replace_history: Box<dyn Fn(Vec<u8>)>,
     committed_read_count: Box<dyn Fn() -> usize>,
 }
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 impl NativeRefreshProbe {
     pub(crate) fn committed_read_count(&self) -> usize {
         (self.committed_read_count)()
@@ -2964,7 +2967,8 @@ impl CollaborationManager {
         .map_err(|error| error.to_string())
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_history_invocation_fixture_for_test(
         history: Vec<u8>,
     ) -> NativeHistoryInvocationFixture {
@@ -2972,7 +2976,8 @@ impl CollaborationManager {
     }
 
     /// Wire/SDK ordering fixture only; not a native authority proof.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_initial_fixture_for_test(
         app: &str,
         room: Uuid,
@@ -2983,7 +2988,8 @@ impl CollaborationManager {
 
     /// Socket-backed ordering fixture on an actual acknowledged named route.
     /// This fixture does not establish native caller authority.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_initial_named_fixture_for_test(
         route: RouteSpec,
         history: Vec<u8>,
@@ -3005,12 +3011,14 @@ impl CollaborationManager {
 
     /// A connected route whose document reads are not Required, as a
     /// standalone runtime admits it.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn connected_fixture_for_test(app: &str, room: Uuid) -> Self {
         tests::connected_manager_for(app, room)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_initial_fixture_gated_for_test(
         app: &str,
         room: Uuid,
@@ -3021,7 +3029,8 @@ impl CollaborationManager {
     }
 
     /// Socket-backed committed-read fixture; the probe observes real recheck requests.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_initial_parked_fixture_for_test(
         app: &str,
         room: Uuid,
@@ -3031,7 +3040,8 @@ impl CollaborationManager {
         tests::native_initial_parked_fixture(app, room, history, gate)
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn native_refresh_fixture_for_test(
         app: &str,
         room: Uuid,
@@ -3316,13 +3326,15 @@ impl CollaborationManager {
     }
 
     /// Real socket-backed SDK transport for App lifecycle integration tests.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn connected_for_lifecycle_test() -> Self {
         tests::connected_manager()
     }
 
     /// Retire the actual socket-backed capture generation, as a rejoin does.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn retire_document_capture_for_test(&self, route: &RouteSpec) {
         let Backend::Transport(transport) = &self.backend else {
             panic!("a broker transport");
@@ -3343,7 +3355,8 @@ impl CollaborationManager {
     /// far. A route join enqueues the route's initial action catalogue before
     /// its command completes, so the next [`Self::poll`] then sees everything
     /// those commands produced. Panics at the hang bound.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn wait_for_commands_for_test(&self) {
         let Backend::Transport(transport) = &self.backend else {
             panic!("a broker transport");
@@ -3368,7 +3381,8 @@ impl CollaborationManager {
 
     /// Real socket-backed SDK transport plus a probe returning every signed
     /// envelope the broker accepted, in order.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn capturing_for_test() -> (Self, Box<dyn Fn() -> Vec<SignedOp>>) {
         tests::capturing_manager()
     }
@@ -3376,7 +3390,8 @@ impl CollaborationManager {
     /// Like [`Self::connected_for_lifecycle_test`], but still connecting:
     /// returns the manager with the wake scope it reports to and a channel
     /// that receives each of its wakes.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn connecting_for_lifecycle_test()
     -> (Self, crate::wake::WakeScope, mpsc::Receiver<()>) {
         tests::connecting_manager()
@@ -3385,14 +3400,16 @@ impl CollaborationManager {
     /// Test-only: build a manager talking to an SDK broker on the given
     /// already-connected client fd, bypassing env-var lookup so two
     /// tests in one process don't race on `TILO_SVC_COLLAB_FD`.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
         Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, Vec::new())
     }
 
     /// Like [`Self::from_sdk_fd_for_test`] but stamps the `join_channel`
     /// call with a caller-supplied identity blob.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     fn from_sdk_fd_for_test_with_identity(
         fd: RawFd,
         app_id: &str,
@@ -5934,21 +5951,13 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
                 )
                 .is_err()
                 {
-                    runtime_collab::ActionDirectoryResolutionReply {
-                        revision: String::new(),
-                        resolution: directory_unavailable(),
-                    }
+                    directory_unavailable()
                 } else {
-                    response.await.unwrap_or_else(|_| {
-                        runtime_collab::ActionDirectoryResolutionReply {
-                            revision: String::new(),
-                            resolution: directory_unavailable(),
-                        }
-                    })
+                    response.await.unwrap_or_else(|_| directory_unavailable())
                 }
             } else {
                 let (reply, response) = tokio::sync::oneshot::channel();
-                let resolution = if submit_directory_request(
+                if submit_directory_request(
                     &requests,
                     &owner,
                     ActionDirectoryRequest::Resolve {
@@ -5964,15 +5973,10 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
                 } else {
                     // As for a query: the asker's deadline, not one of ours.
                     response.await.unwrap_or_else(|_| directory_unavailable())
-                };
-                runtime_collab::ActionDirectoryResolutionReply {
-                    revision: String::new(),
-                    resolution,
                 }
             };
-            let mut out = results.get().init_resolution();
-            out.set_revision(&reply_value.revision);
-            runtime_collab::write_action_directory_resolution(out, &reply_value.resolution)
+            let out = results.get().init_resolution();
+            runtime_collab::write_action_directory_resolution(out, &reply_value)
         })
     }
 }
@@ -6424,6 +6428,31 @@ async fn dispatch_sdk_request(
                 Err(error) => {
                     tracing::warn!(%error, "collab: encoding local effect receipt failed");
                     inbound_tx.state.fail_closed("effect receipt encoding");
+                }
+            }
+        }
+        CollabRequest::RemoteAction { message } if message.waits() => {
+            // The host holds this answer until the invocation moves; the
+            // connection's other traffic must not wait behind it. Polled
+            // once here, so the call still goes out in the order it was
+            // asked (a cancel right after its invoke stays after it).
+            let channel = route.channel.clone();
+            let mut round_trip =
+                Box::pin(async move { remote_action_round_trip(&channel, message).await });
+            let first = std::future::poll_fn(|context| {
+                std::task::Poll::Ready(round_trip.as_mut().poll(context))
+            })
+            .await;
+            match first {
+                std::task::Poll::Ready(answer) => {
+                    let _ = inbound_tx.send_durable(CollabEvent::RemoteAction { message: answer });
+                }
+                std::task::Poll::Pending => {
+                    let inbound = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        let answer = round_trip.await;
+                        let _ = inbound.send_durable(CollabEvent::RemoteAction { message: answer });
+                    });
                 }
             }
         }
