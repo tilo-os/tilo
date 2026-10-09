@@ -26,6 +26,7 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
+#[cfg(not(target_arch = "wasm32"))]
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use threshold_identity::ThresholdIdentity;

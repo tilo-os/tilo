@@ -2549,6 +2549,17 @@ impl App {
     pub fn window_app_id(&self) -> Option<&str> {
         self.window.app_id.as_deref()
     }
+
+    /// `None` clears the override and restores automatic resolution.
+    pub fn set_window_title(&mut self, title: Option<String>) {
+        self.window.title = title;
+    }
+
+    /// Precedence: explicit override → `TILO_APP_NAME` → package id → binary
+    /// name → generic default.
+    pub fn resolved_window_title(&self) -> String {
+        resolve_window_title(self.window.title.as_deref())
+    }
 }
 
 impl Drop for App {
