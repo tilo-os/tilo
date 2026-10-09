@@ -72,6 +72,17 @@ pub trait Resource: Sized + 'static {
         Ok(())
     }
 
+    /// Opt in to reusing the document-owned publication between changes.
+    ///
+    /// Return an epoch for every non-document input used by declarations,
+    /// children, views or local operations (for example the local date of a
+    /// daily-note action). The framework also invalidates on state and locale
+    /// revisions; surface bindings and effect availability remain live.
+    /// `None` preserves publication on every request for dynamic resources.
+    fn publication_cache_epoch(_state: &Self::State) -> Option<String> {
+        None
+    }
+
     /// Where `obj` sits in the document, when the state already knows: the
     /// path from the root to it. A change to an object the state has read
     /// (the paragraph being typed in) is then placed without asking the
