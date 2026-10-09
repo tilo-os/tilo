@@ -56,6 +56,12 @@ with open(os.environ['FIXTURE_CARGO_LOG'], 'a') as log:
         self.write("bin/uname", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_ARCH\"\n")
         self.write("stdlib/libstd-fixture.so", "\x7fELF fixture standard library")
         self.write("native/libc.so.6", "\x7fELF fixture native dependency")
+        self.write("keyboard/libxkbcommon.so.0", "\x7fELF fixture default keyboard library")
+        self.write("bin/pkg-config", """#!/usr/bin/env python3
+import pathlib, sys
+assert sys.argv[1:] == ['--variable=libdir', 'xkbcommon']
+print(pathlib.Path('keyboard').resolve())
+""")
         self.write("bin/ldd", """#!/usr/bin/env python3
 import pathlib, sys
 dependency = pathlib.Path('native/libc.so.6').resolve()
@@ -281,6 +287,8 @@ exit 99
                     abi = "2026.07+native." + "ab" * 16
                     self.assertTrue((artifact / "runtime/tilo-runtime" / abi / "bundle.toml").is_file(),
                                     "workflow did not transport the produced runtime")
+                    self.assertTrue((artifact / "runtime/tilo-runtime" / abi / "lib/libxkbcommon.so.0").is_file(),
+                                    "a partial calculator release omitted the default SDK keyboard dependency")
                     self.assertTrue((artifact / f"runtime-package/runtime-0.1.0-{architecture}.tapp").is_file(),
                                     "workflow did not transport the runtime package")
                     self.assertTrue(list((artifact / "runtime-package").glob("*.blob")),
@@ -326,6 +334,15 @@ exit 99
                                 env=self.env, text=True, capture_output=True, timeout=60)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("signed runtime is missing libc.so.6", result.stderr)
+        self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
+
+    def test_missing_default_keyboard_library_fails_even_for_partial_selection(self):
+        self.env["FIXTURE_ARCH"] = "x86_64"
+        (self.root / "keyboard/libxkbcommon.so.0").unlink()
+        result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("default SDK keyboard library is missing", result.stderr)
         self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
 
 
