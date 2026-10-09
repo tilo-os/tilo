@@ -55,25 +55,25 @@ fn valid_signature_round_trips_the_wire_and_verifies() {
 
 #[test]
 fn signature_by_other_device_is_refused() {
-    let signer = key(1);
-    let claimed = key(2);
+    let device_a = key(1);
+    let device_b = key(2);
     // A device cannot sign an action naming another source...
     assert_eq!(
-        SignedDirectedAction::sign(&invoke(&claimed, "a"), NOW, &signer),
+        SignedDirectedAction::sign(&invoke(&device_b, "a"), NOW, &device_a),
         Err(ActionSignatureError::Source)
     );
     // ...and a signature by device A does not verify as device B.
-    let signed = SignedDirectedAction::sign(&invoke(&signer, "a"), NOW, &signer).unwrap();
+    let by_a = SignedDirectedAction::sign(&invoke(&device_a, "a"), NOW, &device_a).unwrap();
     assert_eq!(
-        signed.verify(&claimed.verifying_key().to_bytes()),
+        by_a.verify(&device_b.verifying_key().to_bytes()),
         Err(ActionSignatureError::Source)
     );
-    let mut forged = signed;
-    forged.action.source = claimed.verifying_key().to_bytes();
+    let mut forged = by_a;
+    forged.action.source = device_b.verifying_key().to_bytes();
     forged.encoded = postcard::to_allocvec(&forged.action).unwrap();
     let forged = decoded(&wire(&forged));
     assert_eq!(
-        forged.verify(&claimed.verifying_key().to_bytes()),
+        forged.verify(&device_b.verifying_key().to_bytes()),
         Err(ActionSignatureError::Signature)
     );
 }
@@ -86,7 +86,7 @@ fn tampered_message_is_refused() {
     let original = wire(&signed);
     // Flip one byte of the signed argument in the frame as a host would see it.
     let at = original.windows(9).position(|w| w == b"notes.txt").unwrap();
-    let mut tampered = original.clone();
+    let mut tampered = original;
     tampered[at] = b'm';
     let received = decoded(&tampered);
     assert_ne!(received.action(), signed.action());

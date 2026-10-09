@@ -191,7 +191,7 @@ impl SignedDirectedAction {
 }
 
 fn signing_message(issued_at_ns: u64, encoded: &[u8]) -> Vec<u8> {
-    let mut message = Vec::with_capacity(ACTION_SIGNATURE_DOMAIN.len() + 8 + 32);
+    let mut message = Vec::new();
     message.extend_from_slice(ACTION_SIGNATURE_DOMAIN);
     message.extend_from_slice(&issued_at_ns.to_le_bytes());
     message.extend_from_slice(blake3::hash(encoded).as_bytes());
