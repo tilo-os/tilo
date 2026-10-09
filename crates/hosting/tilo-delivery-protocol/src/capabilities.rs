@@ -28,8 +28,7 @@ pub const PRODUCT_DATA_V1: u64 = 31;
 pub const MULTI_GROUP_REPLAY_V1: u64 = 32;
 /// Every transcript-only extension bit that every replay host serves.
 pub const TRANSCRIPT_EXTENSIONS: u64 = MULTI_GROUP_REPLAY_V1;
-/// Optional transcript-only extension: chained held event polls
-/// ([`super::poll_chain`]). Unlike [`MULTI_GROUP_REPLAY_V1`] it is not part of
+/// Optional transcript-only extension: chained held event polls. Unlike [`MULTI_GROUP_REPLAY_V1`] it is not part of
 /// [`handshake_policy`]: only a host that implements chained polls adds it to
 /// its policy ([`pipelined_policy`]), so other hosts negotiate it away and
 /// their clients keep one held poll. Never advertised in a descriptor and never
