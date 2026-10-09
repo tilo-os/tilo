@@ -35,13 +35,13 @@ fn public_status(
     })
 }
 
-pub(super) fn run(
+pub(super) fn discover(
     root: &Path,
     device: &str,
     service: &str,
     workspace: u64,
     registry: Option<&Path>,
-) -> Result<()> {
+) -> Result<tilo_relay::transport::ContentPeerRegistration> {
     let paths = IdentityPaths::under(root);
     // load_device_key is deliberately read-only: unlike the mount's first-boot
     // loader, it cannot create a missing key or substitute another identity.
@@ -123,9 +123,25 @@ pub(super) fn run(
             })?
             .map_err(anyhow::Error::from)
     })??;
+    public_status(&registration, workspace, service_id)?;
+    Ok(registration)
+}
+
+pub(super) fn run(
+    root: &Path,
+    device: &str,
+    service: &str,
+    workspace: u64,
+    registry: Option<&Path>,
+) -> Result<()> {
+    let registration = discover(root, device, service, workspace, registry)?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&public_status(&registration, workspace, service_id)?)?
+        serde_json::to_string_pretty(&public_status(
+            &registration,
+            workspace,
+            super::device_key(service)?
+        )?)?
     );
     Ok(())
 }
