@@ -76,7 +76,7 @@ impl RoomAdminProtocol {
         let rooms = &self.rooms;
         let result = match command {
             RoomCommand::Create { name } => {
-                match rooms.authorize(device, super::now_ns(), "room.create") {
+                match rooms.authorize(device, tilo_clock::unix_now_ns(), "room.create") {
                     Ok(()) => rooms
                         .create(&name)
                         .await
@@ -85,10 +85,12 @@ impl RoomAdminProtocol {
                     Err(error) => Err(error),
                 }
             }
-            RoomCommand::List => match rooms.authorize(device, super::now_ns(), "room.list") {
-                Ok(()) => Ok(RoomReply::Rooms(rooms.list().await)),
-                Err(error) => Err(error),
-            },
+            RoomCommand::List => {
+                match rooms.authorize(device, tilo_clock::unix_now_ns(), "room.list") {
+                    Ok(()) => Ok(RoomReply::Rooms(rooms.list().await)),
+                    Err(error) => Err(error),
+                }
+            }
             RoomCommand::Enter { room } => rooms
                 .enter(&room, device)
                 .await

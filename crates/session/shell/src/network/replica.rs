@@ -21,6 +21,7 @@
 //! [`TopicSubscriber`]: crate::network::hub::TopicSubscriber
 //! [`WorkspaceTree`]: crate::shell::state::WorkspaceTree
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::network::hub::TopicSubscriber;
@@ -34,7 +35,7 @@ use crate::shell::state::{PeerOrigin, RoomId};
 /// and a FIFO queue of messages to broadcast on its behalf.
 ///
 /// The tree is a [`WorkspaceTreeHandle`]
-/// (`Arc<parking_lot::RwLock<WorkspaceTree>>`) shared with the shell chrome
+/// (one tree behind a lock, with a write generation) shared with the shell chrome
 /// and the portal's grant store, so `apply_changes` is visible to both
 /// immediately. `pending_outgoing` uses `std::sync::Mutex` — drained from
 /// arbitrary threads, no read-heavy workload to motivate `RwLock`.
@@ -56,7 +57,10 @@ pub struct WorkspaceTreeReplica {
     /// transport-authenticated identity rather than anything the message
     /// claimed, so a peer can't put itself in here by saying it is here.
     /// Session-scoped, never persisted.
-    pub participants: std::collections::HashMap<RoomId, std::collections::BTreeSet<u64>>,
+    participants: std::collections::HashMap<RoomId, std::collections::BTreeSet<u64>>,
+    /// Advanced each time a peer is first seen taking part in a room, so the
+    /// roster can tell that nobody new arrived without locking the replica.
+    participants_epoch: Arc<AtomicU64>,
 }
 
 impl WorkspaceTreeReplica {
@@ -67,6 +71,7 @@ impl WorkspaceTreeReplica {
             pending_outgoing: Arc::new(Mutex::new(Vec::new())),
             origin: PeerOrigin::hub(id),
             participants: std::collections::HashMap::new(),
+            participants_epoch: Arc::default(),
         }
     }
 
@@ -76,7 +81,16 @@ impl WorkspaceTreeReplica {
         let Some(handle) = from.liveness_handle() else {
             return;
         };
-        self.participants.entry(room).or_default().insert(handle);
+        if self.participants.entry(room).or_default().insert(handle) {
+            self.participants_epoch.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// A counter that advances whenever [`Self::participants_in`] gains a
+    /// peer in any room. Shared, so a reader holding it can compare two
+    /// loads without taking the replica's lock.
+    pub fn participants_epoch(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.participants_epoch)
     }
 
     /// The peers that have taken part in `room`'s document this session.
@@ -1139,6 +1153,8 @@ mod tests {
                 rep.participants_in(room).is_empty(),
                 "nobody has asked about this room yet",
             );
+            let epoch = rep.participants_epoch();
+            let arrivals = || epoch.load(std::sync::atomic::Ordering::Acquire);
 
             // A room this machine is not in — answering nothing is tested elsewhere; this also leaves no trace of a participant.
             let elsewhere = RoomId::new();
@@ -1172,20 +1188,30 @@ mod tests {
                 "a hub subscriber is not a peer that arrived: {:?}",
                 rep.participants_in(room),
             );
-
-            rep.handle_from(
-                &PeerOrigin::peer(&guest),
-                &NeighbourMsg::SyncReq {
-                    since,
-                    room: room.to_string(),
-                    invite_id: None,
-                    nonce: 0,
-                },
+            assert_eq!(
+                arrivals(),
+                0,
+                "nobody arrived, so the roster has nothing to re-read"
             );
+
+            let ask = NeighbourMsg::SyncReq {
+                since,
+                room: room.to_string(),
+                invite_id: None,
+                nonce: 0,
+            };
+            rep.handle_from(&PeerOrigin::peer(&guest), &ask);
             assert!(
                 rep.participants_in(room).contains(&handle),
                 "a peer that asked this room for its changes is in it: {:?}",
                 rep.participants_in(room),
+            );
+            assert_eq!(arrivals(), 1, "an arrival is announced to the roster");
+            rep.handle_from(&PeerOrigin::peer(&guest), &ask);
+            assert_eq!(
+                arrivals(),
+                1,
+                "asking again is not arriving again, so the roster is not re-read",
             );
         }
     }
@@ -1253,7 +1279,7 @@ mod tests {
             use crate::shell::state::WorkspaceTreeHandleExt;
 
             // Construct via the handle so chrome + replica share the same
-            // `Arc<RwLock<WorkspaceTree>>`; starts empty so every chrome mutation is captured.
+            // tree; starts empty so every chrome mutation is captured.
             let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::test_default();
             let replica = WorkspaceTreeReplica::new(42, handle.clone());
             let chrome = ChromeState::new_with_handle(handle.clone());

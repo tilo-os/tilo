@@ -180,11 +180,7 @@ const APP_ID: &str = "so.tilo.pdf-viewer";
 
 /// Wall-clock unix milliseconds, for stamping authored markup.
 fn now_ms() -> i64 {
-    ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|d| i64::try_from(d.as_millis()).ok())
-        .unwrap_or(0)
+    i64::try_from(ui::time::unix_now_ms()).unwrap_or(0)
 }
 
 /// Today's local date as `YYYY-MM-DD`, through the toolkit clock: the

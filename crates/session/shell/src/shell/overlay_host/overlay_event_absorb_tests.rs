@@ -1948,6 +1948,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
                     ssid: format!("Network {index}"),
                     signal: 3,
                     secure: false,
+                    security: os_actions::WifiSecurity::Open,
                     connected: false,
                 })
                 .collect();
@@ -2452,6 +2453,11 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
             ssid: ssid.into(),
             signal,
             secure,
+            security: if secure {
+                os_actions::WifiSecurity::Wpa2
+            } else {
+                os_actions::WifiSecurity::Open
+            },
             connected,
         }
     }

@@ -85,7 +85,7 @@ fn navigation_first_layout_reveals_and_marks_canonical_focus() {
         (&mut *ptr)
             .row_mut(StripId(2))
             .unwrap()
-            .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+            .tick_snap_at(ui::time::Instant::now() + ui::time::Duration::from_secs(1));
     }
     frame.relayout();
     let row = unsafe { (&*ptr).row(StripId(2)).unwrap() };
@@ -187,7 +187,7 @@ impl NavigationFrame {
             self.surface_mut()
                 .row_mut(strip)
                 .unwrap()
-                .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+                .tick_snap_at(ui::time::Instant::now() + ui::time::Duration::from_secs(1));
         }
         self.frame.relayout();
     }
@@ -511,7 +511,7 @@ fn navigation_stepping_back_twice_pans_once_and_then_asks_for_no_frame() {
             test.surface_mut()
                 .row_mut(StripId(2))
                 .unwrap()
-                .scroll_group_into_view_animated(4, ui::clock::Instant::now());
+                .scroll_group_into_view_animated(4, ui::time::Instant::now());
             std::thread::sleep(std::time::Duration::from_millis(16));
             test.frame.poll_frame().unwrap();
             false

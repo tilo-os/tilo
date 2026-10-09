@@ -1,7 +1,7 @@
 use super::ActivityTree;
 use super::pane::{RoomActivityPane, RoomScope};
 use std::collections::HashMap;
-use ui::clock::SystemTime;
+use ui::time::SystemTime;
 use ui::widget::{HistoryEntry, HistoryEntryId};
 #[derive(Clone, Debug)]
 pub(super) struct ReplayGroup {

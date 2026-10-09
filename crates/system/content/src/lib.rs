@@ -303,12 +303,12 @@ impl ContentStore {
         ) {
             return Self::in_page_files();
         }
-        let Some(data) = xdg_paths::data_dir() else {
+        let Some(data) = tilo_paths::data_dir() else {
             tracing::warn!("no data directory; binary content is kept in memory only");
             return Self::memory();
         };
         let mut backend = DirBackend::new(data.join("tilo").join("content"));
-        if let Some(cache) = xdg_paths::cache_dir() {
+        if let Some(cache) = tilo_paths::cache_dir() {
             backend = backend.reading_also(cache.join("tilo").join("blobs"));
         }
         Self::new(backend)

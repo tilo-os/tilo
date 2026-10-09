@@ -5,16 +5,14 @@ use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
+mod tree_handle;
 mod window_hosting;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
+pub use tree_handle::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard};
 pub use window_hosting::WindowHosting;
-
-fn now_unix_nanos() -> u64 {
-    tilo_clock::unix_now_ns()
-}
 
 pub use collab_types::caps::{
     Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
@@ -877,15 +875,7 @@ impl FsExport {
     }
 }
 
-/// Shared handle to a single [`WorkspaceTree`], cloned by the
-/// compositor, portal and peer-sync so every mutation lands on the same
-/// tree. `parking_lot::RwLock` rather than a `Mutex`: readers vastly
-/// outnumber writers at ~60 Hz repaint, and an uncontended read lock is
-/// ~10 ns.
-pub type WorkspaceTreeHandle = std::sync::Arc<parking_lot::RwLock<WorkspaceTree>>;
-
-/// Constructors for [`WorkspaceTreeHandle`] — Rust won't let us add
-/// inherent methods to a type alias, so they live on this trait instead.
+/// Constructors for [`WorkspaceTreeHandle`] used by tests across modules.
 pub trait WorkspaceTreeHandleExt: Sized {
     /// A handle wrapped around a default (empty) tree.
     fn test_default() -> Self;
@@ -906,7 +896,7 @@ impl std::ops::DerefMut for WorkspaceTree {
 
 impl WorkspaceTreeHandleExt for WorkspaceTreeHandle {
     fn test_default() -> Self {
-        std::sync::Arc::new(parking_lot::RwLock::new(WorkspaceTree::default()))
+        Self::new(WorkspaceTree::default())
     }
 }
 
@@ -915,7 +905,7 @@ impl WorkspaceTree {
     /// (there should only ever be one instance) and returns the shared
     /// handle every subsystem clones from.
     pub fn shared(self) -> WorkspaceTreeHandle {
-        std::sync::Arc::new(parking_lot::RwLock::new(self))
+        WorkspaceTreeHandle::new(self)
     }
 }
 
@@ -1110,6 +1100,30 @@ impl WorkspaceTree {
         let _ = tilo_resource::history::commit_stamped(&mut self.doc);
     }
 
+    /// A copy of the tree with an empty [`Self::doc`] and no
+    /// [`Self::room_docs`]: a candidate to encode and maybe install, without
+    /// copying every document and its whole history. Before installing it,
+    /// [`Self::adopt_documents_of`] the tree it was copied from.
+    pub(crate) fn clone_without_documents(&mut self) -> Self {
+        let doc = std::mem::replace(&mut self.doc, AutoCommit::new());
+        let room_docs = std::mem::take(&mut self.room_docs);
+        let copy = self.clone();
+        self.doc = doc;
+        self.room_docs = room_docs;
+        copy
+    }
+
+    /// Take `source`'s documents into a tree made by
+    /// [`Self::clone_without_documents`]. A room document this tree already
+    /// holds is newer than `source`'s and stays. Anything written to this
+    /// tree's placeholder [`Self::doc`] is dropped: reseed it from the cache.
+    pub(crate) fn adopt_documents_of(&mut self, source: &mut Self) {
+        self.doc = std::mem::replace(&mut source.doc, AutoCommit::new());
+        for (room, doc) in source.room_docs.drain() {
+            self.room_docs.entry(room).or_insert(doc);
+        }
+    }
+
     /// Snapshot of the current automerge change-graph heads, the
     /// baseline peer-sync computes what to send against. Takes `&mut
     /// self` because `AutoCommit` flushes any pending transaction
@@ -1300,7 +1314,7 @@ impl WorkspaceTree {
     ) -> bool {
         if !self.governs_room(room)
             || tilo_user_identity::verify_device_cert(&device_cert).is_err()
-            || device_cert.is_expired_at(now_unix_nanos())
+            || device_cert.is_expired_at(tilo_clock::unix_now_ns())
             || device_cert.device_label.is_empty()
             || device_cert.device_label.trim() != device_cert.device_label
             || device_cert.device_label.len()
@@ -1482,7 +1496,7 @@ impl WorkspaceTree {
             .flat_map(|identity| identity.revocations.iter())
             .map(|entry| (entry.user_public_key, entry.revoked_device_public_key))
             .collect::<std::collections::BTreeSet<_>>();
-        let now = now_unix_nanos();
+        let now = tilo_clock::unix_now_ns();
         identities
             .into_iter()
             .filter_map(|(peer, identity)| {
@@ -1983,7 +1997,9 @@ impl WorkspaceTree {
             };
             if endpoint.as_bytes() == &identity.device_cert.device_public_key
                 && tilo_user_identity::verify_device_cert(&identity.device_cert).is_ok()
-                && !identity.device_cert.is_expired_at(now_unix_nanos())
+                && !identity
+                    .device_cert
+                    .is_expired_at(tilo_clock::unix_now_ns())
                 && identity.revocations.len()
                     <= tilo_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
                 && identity.revocations.iter().all(|entry| {
@@ -2224,14 +2240,14 @@ impl WorkspaceTree {
         let before = Self::governance_of(self.room_docs.get(&room));
         let after = Self::governance_of(Some(candidate));
         let Some(proposed) = after
-            .3
+            .identities
             .get(endpoint)
             .and_then(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes).ok())
         else {
             return false;
         };
         let Ok(admitted) = before
-            .3
+            .identities
             .get(endpoint)
             .map(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes))
             .transpose()
@@ -2244,8 +2260,8 @@ impl WorkspaceTree {
             return false;
         }
         let certificate = &proposed.device_cert;
-        let now = now_unix_nanos();
-        let prior_owner = before.0.as_deref().or_else(|| {
+        let now = tilo_clock::unix_now_ns();
+        let prior_owner = before.owner.as_deref().or_else(|| {
             self.workspace_in_room(room)
                 .and_then(|workspace| workspace.owner.as_deref())
         });
@@ -2256,13 +2272,13 @@ impl WorkspaceTree {
             || certificate.is_expired_at(now)
             || certificate.issued_at_ns > now
             || tilo_user_identity::verify_device_cert(certificate).is_err()
-            || after.0.as_deref() != Some(hex::encode(certificate.user_public_key).as_str())
-            || prior_owner.is_some_and(|owner| after.0.as_deref() != Some(owner))
+            || after.owner.as_deref() != Some(hex::encode(certificate.user_public_key).as_str())
+            || prior_owner.is_some_and(|owner| after.owner.as_deref() != Some(owner))
         {
             return false;
         }
         let mut revocations = tilo_user_identity::RevocationList::new();
-        for bytes in before.3.values().chain(after.3.values()) {
+        for bytes in before.identities.values().chain(after.identities.values()) {
             let Ok(identity) = serde_json::from_slice::<GovernedPeerIdentity>(bytes) else {
                 return false;
             };

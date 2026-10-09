@@ -2761,12 +2761,7 @@ impl Widget for GitClientApp {
         // Real fallback rather than a panic if `node` somehow doesn't
         // belong to this tree, matching every `ui` widget's `apply_layout`.
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(&layout, origin);
         // The drawer adopts the new width now, so the next press is tested
         // against the layout the next paint shows.
         self.drawer.resolve(self.rect);

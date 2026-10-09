@@ -378,8 +378,32 @@ pub struct Namespace {
     incremental_batch: Option<(Vec<automerge::ChangeHash>, Vec<u8>)>,
     #[cfg(test)]
     record_index_rebuilds: u64,
+    /// Changes whenever the verified (signed) content projection changes:
+    /// that state lives beside the document, so its heads alone miss it.
+    /// Drawn from a process-wide counter so no two instances share a value.
+    verified_generation: u64,
     #[cfg(test)]
     record_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(test)]
+    node_entry_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// Source of `Namespace::verified_generation` values.
+static NEXT_VERIFIED_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+fn next_verified_generation() -> u64 {
+    NEXT_VERIFIED_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Cheap fingerprint of everything a [`Namespace`] projects: the document
+/// heads plus the generation of the verified content projection beside it.
+/// Equal tokens mean no node, path, hash or content revision changed, so a
+/// background reconciler can skip a pass without walking the namespace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamespaceChangeToken {
+    heads: Vec<automerge::ChangeHash>,
+    verified_generation: u64,
 }
 
 fn hash_to_hex(h: &Hash) -> String {
@@ -474,8 +498,11 @@ impl Namespace {
             incremental_batch: None,
             #[cfg(test)]
             record_index_rebuilds: 0,
+            verified_generation: next_verified_generation(),
             #[cfg(test)]
             record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(test)]
+            node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
@@ -533,8 +560,11 @@ impl Namespace {
             incremental_batch: None,
             #[cfg(test)]
             record_index_rebuilds: 0,
+            verified_generation: next_verified_generation(),
             #[cfg(test)]
             record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(test)]
+            node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
@@ -593,6 +623,7 @@ impl Namespace {
         }
         self.content_authority = ContentAuthority::SignedRecords;
         self.verified_records.clear();
+        self.verified_generation = next_verified_generation();
     }
 
     /// Install a content tuple that has already passed record-repository
@@ -619,6 +650,7 @@ impl Namespace {
                 thumbnail,
             },
         );
+        self.verified_generation = next_verified_generation();
         true
     }
 
@@ -1066,6 +1098,15 @@ impl Namespace {
     #[must_use]
     pub fn record_index_page_read_count(&self) -> u64 {
         self.record_index_page_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Calls of [`Self::entry_for_node`]: a whole-namespace walk makes one
+    /// per live node, so a test can prove a pass did not walk.
+    #[cfg(test)]
+    #[must_use]
+    pub fn node_entry_read_count(&self) -> u64 {
+        self.node_entry_reads
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -2712,6 +2753,17 @@ impl Namespace {
         self.doc.get_heads()
     }
 
+    /// O(heads): a token that changes whenever anything this namespace
+    /// projects changes — document edits (local or remote) and verified
+    /// content installs alike. Background reconcilers compare it instead of
+    /// walking every node to discover that nothing happened.
+    pub fn change_token(&mut self) -> NamespaceChangeToken {
+        NamespaceChangeToken {
+            heads: self.doc.get_heads(),
+            verified_generation: self.verified_generation,
+        }
+    }
+
     /// Whether the document file `ino` (its node: codec and content) changed
     /// between namespace heads `before` and `after`. The diff walks only
     /// that node's objects, so a change to another file costs little and
@@ -3213,6 +3265,9 @@ impl Namespace {
     /// Stable entry lookup used by the storage authority.  It intentionally
     /// exposes logical metadata, never an underlying host path.
     pub fn entry_for_node(&self, id: &str) -> Option<Entry> {
+        #[cfg(test)]
+        self.node_entry_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.entry(id).filter(|_| self.reaches_root(id))
     }
 

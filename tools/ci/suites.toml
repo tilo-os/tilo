@@ -346,6 +346,7 @@ suites = [
   "dist/ci/tests/test_failed_rpm_retention.py",
   "dist/ci/tests/test_host_session_rpm_replay.py",
   "dist/session/tests/vm-e2e-exit-status.py",
+  "dist/session/tests/test-files-workspace.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
   "dist/local-models/u2net-subject/contract-test.sh",
@@ -714,7 +715,6 @@ inputs = [
   "crates/system/tilo-startup-metrics/",
   "crates/system/tts/",
   "crates/system/wire-frame/",
-  "crates/system/xdg-paths/",
   "crates/text/spellcheck/",
   "crates/workspace-hack/",
 ]
@@ -1261,6 +1261,10 @@ suite = "os/tests/prove_kernel_failure_cache_local.py"
 reason = "needs rootful Podman with cached images"
 
 [[unrequired]]
+suite = "os/tests/rootfs_firmware_cache.py"
+reason = "needs rootful Podman to observe real firmware mount layer-cache reuse on the build host"
+
+[[unrequired]]
 suite = "os/tests/recovery-boot-check.sh"
 reason = "runs inside a booted guest, as root"
 
@@ -1415,6 +1419,8 @@ reason = "explicit root private-mount-namespace integration entrypoint; run with
 [[cargo]]
 package = "runtime-bundle"
 inputs = [
+  "tools/font-catalog.py",
+  "crates/sdk/ui-core/assets/fonts/",
   "tools/apps/browser_runtime_release.py",
   "tools/apps/signal_runtime_fixture.py",
   "tools/apps/signal_provider_release.py",
@@ -1438,6 +1444,7 @@ inputs = [
   "os/Containerfile",
 ]
 readers = [
+  "crates/packaging/runtime-bundle/src/lib.rs",
   "crates/packaging/runtime-bundle/examples/browser_runtime_release.rs",
   "crates/packaging/runtime-bundle/examples/signal_runtime_fixture.rs",
   "crates/packaging/runtime-bundle/examples/signal_provider_release.rs",
@@ -1480,3 +1487,7 @@ readers = ["apps/video-player/build.rs"]
 [[covered]]
 suite = "tools/android/mediation/prepare-res.py"
 by = "tools/tests/test_android_fixture_resources.py"
+
+[[unrequired]]
+suite = "os/tests/flatpak_default_initialization_test.py"
+reason = "requires native Flatpak, GPG and bubblewrap user namespaces; the digest-pinned ci-fast image has no Flatpak; run explicitly with python3 os/tests/flatpak_default_initialization_test.py, failing when prerequisites are absent"
