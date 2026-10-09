@@ -197,7 +197,7 @@ fail P01 if the VM booted anything else, was moved onto another image since, or 
 | Area | Checks |
 |---|---|
 | provenance | P01 image ↔ commit, P02 headful slot on two outputs with an identity, P03 no failed or restart-looping session units |
-| window | W01–W21: open/focus, move, resize, maximize, full screen, tabs, strips, workspaces, two outputs, overview, workspace wheel, touch, touchpad, animation pacing (frame trace), real keyboard typing, touch that never drives the cursor (a launchpad card tapped open, the cursor hidden until the mouse moves), the on-screen keyboard (shown for a tapped field, typing into it, hidden by the physical keyboard), the on-screen keyboard typing into the shell's own search field, unlocking the session by touch on the lock screen's own keyboard |
+| window | W01–W21: open/focus, move, resize, maximize, full screen, tabs, strips, workspaces, two outputs, overview, workspace wheel, touch, touchpad, animation pacing (frame trace), real keyboard typing, touch that never drives the cursor (a launchpad card tapped open, the cursor hidden until the mouse moves), the on-screen keyboard (shown for a tapped field, typing into it, hidden by the physical keyboard), the on-screen keyboard typing into the shell's own search field, unlocking the session by touch on the lock screen's own keyboard (and the lock refusing a control-socket snapshot) |
 | ui | U01 theme and language through actions, U02/U03 Settings, quick settings, workspace settings, overview in light/dark/high-contrast (en, de) with layout checks on `list-targets` rects, U04 German action titles |
 | apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts. A08–A13, the apps used every day, one per toolkit and protocol path: Chromium on Wayland (A08, the engine Electron apps ship) and forced onto X11 (A09), GNOME Text Editor (A10, GTK4/libadwaita), FeatherPad (A11, Qt6 Wayland), alacritty (A12, winit/OpenGL), glxgears (A13, OpenGL X11 like games) — window in the current strip with focus, a first frame with content, the right buffer scale on both outputs as it moves between them, real-keyboard typing, copy to and paste from Tilo's clipboard, exit on close; A13 also full screen and back. A14 Files' first launch: process start to first presented frame within budget, and its folder listing read off its AT-SPI tree. A15 ten warm opens each of Files, Notes and Settings, request to first frame; A16 every launch of the run within its app's budget |
 | search | S01–S09: empty-query view, English and German names, launch from search, windows, actions, files, room activity, workspace history |
@@ -213,6 +213,17 @@ back from `wp_fractional_scale_v1`), X11 clients at 1 or a whole scale, sized to
 Text goes in on the real keyboard (see W17), and the clipboard is read and written through
 the control socket's `clipboard_paste`/`clipboard_copy`, the in-process route Tilo's own apps
 use; alacritty copies through OSC 52.
+
+Every check runs in the one session the run shares, so every check must leave it unlocked:
+while locked the compositor refuses every action invocation and snapshot with
+`session_locked` (on purpose; W21 asserts the snapshot refusal), and each later check would
+report that instead of its subject. The harness enforces it: after every check `run_check`
+reads the state dump, and a check that ended with the session locked fails ("left the
+session locked") and the slot's session is restarted (`tilo-vm slot restart`) before the next
+one; the report's `session_recovered_after` lists those checks. W21, the one check that locks
+on purpose, unlocks in a `finally` the way a person would (the passcode on the real
+keyboard), falls back to the restart, and records the route in its `unlock_recovery` metric.
+Nothing goes around the lock. The guard is unit-tested in `test_lock_guard.py`.
 
 Budgets live in `run.py` (`BUDGETS`). The German pass (U03, U04, S03) runs after the
 English one: the shell takes its language from the session's environment, so the run
