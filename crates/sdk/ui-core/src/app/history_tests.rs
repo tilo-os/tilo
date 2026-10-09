@@ -2,6 +2,21 @@ use super::*;
 use crate::history_mode::*;
 use crate::widget::{AppModel, ModelPath};
 use automerge::{ROOT, transaction::Transactable};
+
+#[test]
+fn native_focus_order_enumerates_history_once() {
+    let state = State::new();
+    let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(2_000, &state);
+    let mut app = App::new_with_controlled_inputs(state, Box::new(root));
+    layout(&mut app);
+    visits.set(0);
+    app.update_focusable_order();
+    assert!(
+        app.focusable_order.len() >= 2_000,
+        "all live rows remain focusable"
+    );
+    assert_eq!(visits.get(), 1, "one History enumeration per recomputation");
+}
 static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "dev.tilo.native-history-fixture",
     scopes: &[HistoryScopeDefinition {
