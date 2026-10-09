@@ -558,7 +558,10 @@ async fn sync_with_peer_at_boundaries(
             },
         )
         .await?;
-        let mut state = automerge::sync::State::new();
+        let mut state = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .begin_sync_with(&remote.device_public_key);
         // Initiator: write-then-read each round; the responder mirrors.
         let mut received_change = false;
         for _ in 0..200 {
@@ -606,6 +609,11 @@ async fn sync_with_peer_at_boundaries(
                     .sync_receive(&mut state, &peer_msg);
             }
             if sent_nothing && peer_msg.is_empty() {
+                // Complete: the next exchange with this device resumes here.
+                namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .finish_sync_with(remote.device_public_key, &state);
                 break;
             }
         }
@@ -785,7 +793,11 @@ impl SyncProtocol {
         recv: &mut RecvStream,
     ) -> Result<(), AcceptError> {
         // Responder: read-then-write each round (mirrors the initiator).
-        let mut state = automerge::sync::State::new();
+        let mut state = self
+            .namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .begin_sync_with(&peer.device_public_key);
         for _ in 0..200 {
             // The authority handle is live. A newer signed
             // tombstone/revocation cuts an already-connected
@@ -845,6 +857,11 @@ impl SyncProtocol {
                 .await
                 .map_err(AcceptError::from_err)?;
             if peer_msg.is_empty() && sent_nothing {
+                // Complete: the next exchange with this device resumes here.
+                self.namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .finish_sync_with(peer.device_public_key, &state);
                 break;
             }
         }
